@@ -81,7 +81,6 @@ Deno.test("capturePulledTypes: records typed rows and add-on targets per extensi
   assertEquals(snapshot.get("@a/one"), [
     { kind: "model", type: "@a/m" },
     { kind: "vault", type: "@a/v" },
-    // An add-on records the type it extends (swamp-club#2745).
     { kind: "extension", type: "@a/m" },
   ]);
 });
@@ -132,10 +131,6 @@ Deno.test("unregisterPulledType: removes the type from the registry of its kind"
   }
 });
 
-/**
- * Runs `fn`, then puts back any built-in entry it removed or replaced, so
- * a red run cannot leave the process-global registries without them.
- */
 async function preservingBuiltIns(fn: () => void | Promise<void>) {
   const model = modelRegistry.get("command/shell")!;
   const vault = vaultTypeRegistry.get("local_encryption")!;

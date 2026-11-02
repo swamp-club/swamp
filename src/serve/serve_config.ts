@@ -38,17 +38,14 @@ import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_p
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
 import { validateSinkFilter } from "../domain/serve_audit/mod.ts";
 
-/**
- * A UserError about the serve config file at `path`, with the path marked so
- * telemetry removes it exactly (swamp-club#2830).
- */
+/** the path is marked so telemetry removes it exactly */
 function configError(path: string, message: string): UserError {
   return markErrorPaths(new UserError(message), [path]);
 }
 
 /**
- * The error for a serve.yaml field that must be a string. YAML reads an
- * unquoted `0` or `3600` as a number, so a number gets a quoting hint.
+ * YAML reads an unquoted `0` or `3600` as a number, so a number gets a quoting
+ * hint
  */
 function stringTypeMessage(name: string, path: string, value: unknown): string {
   const message =
@@ -58,15 +55,10 @@ function stringTypeMessage(name: string, path: string, value: unknown): string {
     : message;
 }
 
-/** The type of a serve.yaml value as an error names it: `array`, not `object`. */
 function yamlTypeName(value: unknown): string {
   return Array.isArray(value) ? "array" : typeof value;
 }
 
-/**
- * Throws unless a serve.yaml field that must be a list of strings is one. A
- * missing or empty key (YAML `null`) is unset.
- */
 function validateStringList(name: string, value: unknown, path: string): void {
   if (value === undefined || value === null) {
     return;
@@ -90,8 +82,6 @@ function validateStringList(name: string, value: unknown, path: string): void {
 }
 
 const logger = getSwampLogger(["serve", "config"]);
-
-// ── Env Var Map ───────────────────────────────────────────────────────
 
 export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   certFile: "SWAMP_SERVE_CERT_FILE",
@@ -132,8 +122,6 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   tagRequiresExplicitGrant: "SWAMP_TAG_REQUIRES_EXPLICIT_GRANT",
 };
 
-// ── Webhook Config Types ──────────────────────────────────────────────
-
 export interface WebhookConfigEntry {
   readonly route: string;
   readonly workflow: string;
@@ -141,18 +129,13 @@ export interface WebhookConfigEntry {
   readonly scheme?: string;
   readonly header?: string;
   readonly prefix?: string;
-  /** Extension-specific config, validated against the type's configSchema. */
   readonly config?: Record<string, unknown>;
 }
-
-// ── Trigger Override Types ────────────────────────────────────────────
 
 export interface TriggerOverrideEntry {
   readonly schedule?: string;
   readonly inputs?: Record<string, unknown>;
 }
-
-// ── Config File Shape ─────────────────────────────────────────────────
 
 export interface ServeConfigFile {
   port?: number;
@@ -176,7 +159,6 @@ export interface ServeConfigFile {
   tls?: {
     "cert-file"?: string;
     "key-file"?: string;
-    /** CA certificates this node trusts when it calls its team's leader. */
     "ca-cert"?: string;
   };
   webhooks?: WebhookConfigEntry[];
@@ -188,9 +170,7 @@ export interface ServeConfigFile {
   "trusted-hosts"?: string[];
   "dispatch-env-allow"?: string[];
   "grants-file"?: string;
-  /** The address clients put in serverAddress (swamp-club#4063). */
   address?: string;
-  /** This node's own address, as its team's other nodes reach it. */
   "advertise-address"?: string;
   "grants-dir"?: string;
   "grant-reload"?: string;
@@ -303,8 +283,6 @@ export interface AlertRuleConfigEntry {
   };
 }
 
-// ── Known Keys ────────────────────────────────────────────────────────
-
 const KNOWN_TOP_LEVEL_KEYS = new Set([
   "port",
   "host",
@@ -374,14 +352,11 @@ const KNOWN_TLS_KEYS = new Set([
   "ca-cert",
 ]);
 
-// ── Config Loading ────────────────────────────────────────────────────
-
 const DEFAULT_CONFIG_PATH = ".swamp/serve.yaml";
 
-// A relative serve path (--config, cert-file, key-file) resolves against the
-// repository directory, whether it came from a flag, an env var or serve.yaml,
-// so the same configuration reads the same files wherever serve was started
-// from. An absolute path is returned unchanged.
+// a relative serve path resolves against the repository directory, whether from
+// a flag, env var or serve.yaml, so the same config reads the same files
+// wherever serve starts
 export function resolveServePath(
   repoDir: string,
   configuredPath: string,
@@ -759,11 +734,6 @@ function validateConfigValues(
   }
 }
 
-/**
- * Validates the `token-secrets` block, which opts serve in to an external key
- * for the `_token-secrets` control-plane vault. Both fields are required, and
- * the vault cannot be `_token-secrets` itself.
- */
 export function validateTokenSecretsConfig(value: unknown, path: string): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw configError(
@@ -797,11 +767,7 @@ export function validateTokenSecretsConfig(value: unknown, path: string): void {
   }
 }
 
-/**
- * Returns the external token key reference from a loaded serve config, or
- * undefined when the `token-secrets` block is absent. Serve reads it once at
- * startup; changing it needs a restart.
- */
+/** serve reads it once at startup; changing it needs a restart */
 export function parseTokenSecretsKeyConfig(
   config: ServeConfigFile | null,
   path: string,
@@ -949,8 +915,6 @@ export function validateTriggerOverrideEntry(
   }
 }
 
-// ── Webhook Config to WebhookEndpoint ─────────────────────────────────
-
 export async function parseWebhookConfig(
   entry: WebhookConfigEntry,
   vault?: VaultSecretResolver,
@@ -980,8 +944,6 @@ export async function parseWebhookConfig(
   };
 }
 
-// ── Explicit Flag Detection ───────────────────────────────────────────
-
 export function parseExplicitFlags(args: readonly string[]): Set<string> {
   const flags = new Set<string>();
   for (const arg of args) {
@@ -1005,12 +967,9 @@ export function parseExplicitFlags(args: readonly string[]): Set<string> {
   return flags;
 }
 
-// kebab-case flag name → camelCase option name
 function kebabToCamel(s: string): string {
   return s.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 }
-
-// ── Merge Logic ───────────────────────────────────────────────────────
 
 export type EnvLookup = (name: string) => string | undefined;
 
@@ -1020,14 +979,11 @@ export interface MergedServeOptions {
   schedule: boolean;
   certFile?: string;
   keyFile?: string;
-  /** CA certificates this node trusts when it calls its team's leader. */
   caCert?: string;
   grantsFile?: string;
   grantsDir?: string;
   grantReload: string;
-  /** The address clients put in serverAddress (swamp-club#4063). */
   address?: string;
-  /** This node's own address, as its team's other nodes reach it. */
   advertiseAddress?: string;
   webhook?: string[];
   webhookConfigs?: WebhookConfigEntry[];
@@ -1042,20 +998,8 @@ export interface MergedServeOptions {
   restrictedModelTypes?: string;
   restrictedCommands?: string;
   groupRefreshInterval?: string;
-  /**
-   * Require an explicit `approve` grant to decide a manual approval gate,
-   * instead of accepting any `run` grant. Off by default.
-   */
   approveRequiresExplicitGrant: boolean;
-  /**
-   * Require an explicit `signal` grant to deliver a signal to a workflow's
-   * wait, instead of accepting any `run` grant. Off by default.
-   */
   signalRequiresExplicitGrant: boolean;
-  /**
-   * Require an explicit `tag` grant to change a model's or workflow's tags,
-   * instead of accepting any `write` grant. Off by default (swamp-club#3085).
-   */
   tagRequiresExplicitGrant: boolean;
   trustProxy: boolean;
   wsIdleTimeout?: string;
@@ -1084,19 +1028,12 @@ export interface MergedServeOptions {
   enableInternalApi: boolean;
   remoteOnly: boolean;
   dashboard: boolean;
-  /**
-   * Resume a run once every approval gate on it is decided and every wait
-   * for a signal is settled, for workflows that declare no inputs and do
-   * not set `autoResume` themselves.
-   */
   autoResume: boolean;
 }
 
-// Applies the relative-path rule of resolveServePath to the TLS files, once,
-// on the merged options, so the certificate serve reads and the one it
-// reports to administrators are the same path. An empty value (an env var set
-// to nothing, or `cert-file: ""`) is left as it is: it means TLS is off, and
-// resolving it would name the repository directory.
+// resolved once on the merged options so the certificate serve reads and the
+// one it reports are the same path; an empty value means TLS is off and is left
+// alone
 export function resolveServeTlsPaths(
   repoDir: string,
   merged: MergedServeOptions,
@@ -1585,7 +1522,6 @@ export function mergeServeOptions(
     webhookConfigs = config.webhooks;
   }
 
-  // Trigger overrides: serve.yaml only (no CLI flag or env var in v1)
   const triggerOverrides: Record<string, TriggerOverrideEntry> | undefined =
     config?.triggers && Object.keys(config.triggers).length > 0
       ? config.triggers
@@ -1650,14 +1586,8 @@ export function mergeServeOptions(
   };
 }
 
-// ── Serve Config Write ──────────────────────────────────────────────
-
 export const SERVE_CONFIG_PATH = DEFAULT_CONFIG_PATH;
 
-/**
- * Reads the serve config file serve was started with: `configPath` (the
- * resolved `--config` file) when given, otherwise `<repoDir>/.swamp/serve.yaml`.
- */
 export async function readServeConfigFile(
   repoDir: string,
   configPath?: string,
@@ -1703,11 +1633,9 @@ export async function readServeConfigFile(
 }
 
 /**
- * Writes the serve config file at `configPath` when given, otherwise at
- * `<repoDir>/.swamp/serve.yaml`. An existing `configPath` file is written
- * through its real path, so the atomic rename replaces a symlink's target, not
- * the symlink. An existing file keeps its permission bits, so a `0600` file
- * holding webhook secrets is not left world-readable.
+ * written through its real path so the atomic rename replaces a symlink's
+ * target, not the symlink; an existing file keeps its permission bits so a 0600
+ * file holding webhook secrets stays private
  */
 export async function writeServeConfigFile(
   repoDir: string,
@@ -1739,8 +1667,6 @@ export async function writeServeConfigFile(
     mode === undefined ? undefined : { mode: mode & 0o777 },
   );
 }
-
-// ── Audit Config ─────────────────────────────────────────────────────
 
 const KNOWN_AUDIT_KEYS = new Set([
   "stores",
@@ -2217,7 +2143,7 @@ export function parseAuditConfig(
     if (parsed !== null) flushIntervalMs = parsed;
   }
 
-  let walMaxBytes = 100 * 1024 * 1024; // 100MB default
+  let walMaxBytes = 100 * 1024 * 1024;
   if (audit.wal?.["max-size"]) {
     const parsed = parseByteSize(audit.wal["max-size"]);
     if (parsed !== null) walMaxBytes = parsed;

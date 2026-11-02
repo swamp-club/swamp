@@ -100,12 +100,10 @@ Deno.test("matchSignalRoute: matches only the signal path with a UUID, lower-cas
     matchSignalRoute(`/api/v1/signal/${WAIT_ID.toUpperCase()}`),
     { waitId: WAIT_ID },
   );
-  // Any UUID, whatever its version digits, as the WebSocket request accepts.
   assertEquals(
     matchSignalRoute("/api/v1/signal/00000000-0000-0000-0000-000000000001"),
     { waitId: "00000000-0000-0000-0000-000000000001" },
   );
-  // With no wait ID the path is the by-key route: the address is in the body.
   assertEquals(matchSignalRoute("/api/v1/signal"), { byKey: true });
   for (
     const path of [
@@ -168,7 +166,6 @@ Deno.test("handleSignalHttpRequest: repeated bad tokens are rate limited without
     attempts++;
   }
   assertEquals(status, 429);
-  // The request that was limited did not reach the authenticator.
   assertEquals(calls.length, attempts - 1);
   resetRateLimitState();
 });
@@ -244,7 +241,6 @@ Deno.test("handleSignalHttpRequest: by key, a body that does not name a workflow
     { workflow: "release", key: 7, payload },
     { workflow: "w".repeat(257), key: "verdict", payload },
     { workflow: "release", key: "k".repeat(65), payload },
-    // Both addresses: which one is meant is not left to the server.
     { workflow: "release", key: "verdict", waitId: WAIT_ID, payload },
     { workflow: "release", key: "verdict" },
   ];
@@ -308,7 +304,6 @@ Deno.test("handleSignalHttpRequest: the by-key route passes the token, restricte
   resetRateLimitState();
 });
 
-/** A context with a policy, and `workflow.signal` restricted to admins. */
 function restrictedDeps(grants: Grant[]): SignalHttpDeps {
   const base = deps();
   return {
@@ -370,7 +365,6 @@ Deno.test("handleSignalHttpRequest: a restricted workflow.signal lets an admin t
       callerGrant(["admin"], { kind: "access", pattern: "*" }),
     ]),
   );
-  // Past the gate, the malformed body is what refuses the request.
   assertEquals(response.status, 400);
   await response.body?.cancel();
 });
@@ -412,7 +406,6 @@ Deno.test("handleSignalHttpRequest: the Bearer scheme is matched in any case and
       "203.0.113.9",
       deps("token", calls),
     );
-    // Authenticated: the malformed body, not the token, refuses the request.
     assertEquals(response.status, 400, scheme);
     assertEquals(calls, ["good.secret"], scheme);
     await response.body?.cancel();

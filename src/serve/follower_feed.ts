@@ -17,25 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve follower following its leader's commit feed (swamp-club#4120).
- *
- * The follower opens one socket to the leader's advertised address with the
- * team's peer key and subscribes from the last cursor its copy holds. Each
- * frame's commits are applied to the copy in order and mark it fresh; a
- * frame with no commits (the leader's heartbeat) marks it fresh too, since
- * the leader sends only what it has published. The feed is current only
- * for the leader it subscribed to: a new leader, a disconnect, a gap or a
- * compacted cursor stops it, and the next tick restores from the lineage
- * and follows again from there.
- *
- * {@link barrier} lets a forwarded write's reply wait, for a bounded time,
- * until the copy holds what the leader had committed, so the caller reads
- * its own write from this node next.
- *
- * @module
- */
-
 import { LEASE_OPS_FEATURE } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
@@ -44,51 +25,39 @@ import type { FollowerCopyFeed } from "./serve_leadership.ts";
 
 const logger = getSwampLogger(["serve", "follower-feed"]);
 
-/** How long a feed may go without a frame before it counts as down. */
 export const FOLLOWER_FEED_SILENCE_MS = 15_000;
 
-/** How long a forwarded write's reply waits for the copy to catch up. */
 export const FOLLOWER_FEED_BARRIER_MS = 5_000;
 
 /**
- * How long a feed may go without being live, since it last was or since
- * it began to follow its leader, before a read it is behind on is answered
- * as before rather than refused (swamp-club#4254): the readiness bound.
+ * how long before a read the feed is behind on is answered as before rather
+ * than refused: the readiness bound
  */
 export const FOLLOWER_FEED_STUCK_MS = 30_000;
 
 /**
- * Where a follower's copy stands against its leader (swamp-club#4254):
- * `caught-up`, it holds a head the leader named after the caller asked;
- * `catching-up`, its feed is live or recently was; `stuck`, its feed has not
- * been live for {@link FOLLOWER_FEED_STUCK_MS}, so it cannot tell catching
- * up from a log behind the caller.
+ * caught-up: holds a head the leader named after the caller asked; catching-up:
+ * feed is live or recently was; stuck: not live for the stuck bound, so it
+ * cannot tell catching up from a log behind the caller
  */
 export type FollowerCatchUp = "caught-up" | "catching-up" | "stuck";
 
-/** One commit the leader sent. */
 export interface FeedChange {
   readonly cursor: number;
   readonly commit: unknown;
 }
 
-/** What a {@link FollowerFeed} needs. */
 export interface FollowerFeedOptions {
   readonly link: LeaderLink;
-  /** The bearer token the peer key makes. */
   peerToken(): Promise<string>;
-  /** The last cursor this node's copy holds. */
   copyCursor(): number;
-  /** Applies the leader's commits to the copy, in order. */
   apply(changes: readonly FeedChange[]): Promise<void>;
-  /** The copy holds what the leader had published, as of now. */
   onFresh(): void;
   readonly now?: () => number;
 }
 
 const SUBSCRIBE_ID = "follower-feed";
 
-/** See the module documentation. */
 export class FollowerFeed implements FollowerCopyFeed {
   readonly #options: FollowerFeedOptions;
   readonly #now: () => number;
@@ -122,7 +91,6 @@ export class FollowerFeed implements FollowerCopyFeed {
     return this.#now() - this.#lastFrameAt <= FOLLOWER_FEED_SILENCE_MS;
   }
 
-  /** Whether the feed is up and applying, for the barrier. */
   get live(): boolean {
     return this.current(this.#leader);
   }
@@ -150,12 +118,9 @@ export class FollowerFeed implements FollowerCopyFeed {
   }
 
   /**
-   * Waits, for at most {@link FOLLOWER_FEED_BARRIER_MS}, until the copy
-   * holds what the leader had published when asked. Returns at once while
-   * the feed is down: the reply is not held for a copy that cannot catch up.
-   * Resolves true only when the copy holds that head (swamp-club#4254):
-   * false when the feed is down, the leader did not name its head, or the
-   * wait ran out.
+   * returns false at once while the feed is down, the leader named no head, or
+   * the wait ran out; true only when the copy holds the head the leader had
+   * published when asked
    */
   async barrier(): Promise<boolean> {
     const socket = this.#socket;
@@ -179,7 +144,7 @@ export class FollowerFeed implements FollowerCopyFeed {
         resolve(undefined);
       }
     });
-    // Undefined: the leader named none in time; negative: the feed closed.
+    // undefined: the leader named none in time; negative: the feed closed
     if (head === undefined || head < 0) return false;
     while (this.#applied < head && this.live) {
       const left = deadline - this.#now();
@@ -198,13 +163,9 @@ export class FollowerFeed implements FollowerCopyFeed {
   }
 
   /**
-   * Where the copy stands against the leader, for a read that found it
-   * behind its caller (swamp-club#4254). Callers share barriers, so a burst
-   * of such reads asks the leader for its head at most twice at a time, but
-   * a caller never shares one that asked before it arrived: that head may
-   * predate a commit the caller holds. A caller arriving while one is in
-   * flight shares the next, which asks once that one settles. A forwarded
-   * write's reply waits on {@link barrier} itself.
+   * callers share barriers but never one that asked before they arrived, since
+   * that head may predate a commit the caller holds; one arriving mid-flight
+   * shares the next, which asks once that one settles
    */
   caughtUp(): Promise<FollowerCatchUp> {
     let run: Promise<boolean>;
@@ -230,11 +191,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     return run;
   }
 
-  /**
-   * Whether the feed has not been live for {@link FOLLOWER_FEED_STUCK_MS}:
-   * since its last frame, or since it began following when it has had
-   * none. A feed that follows no leader is stuck.
-   */
+  /** a feed that follows no leader is stuck */
   #stuck(): boolean {
     if (this.live) return false;
     if (this.#followedAt === undefined) return true;
@@ -259,7 +216,7 @@ export class FollowerFeed implements FollowerCopyFeed {
       socket.send(JSON.stringify({
         type: "commits.subscribe",
         id: SUBSCRIBE_ID,
-        // This copy applies the leader's lease ops (swamp-club#4168).
+        // this copy applies the leader's lease ops
         payload: { cursor: this.#applied, features: [LEASE_OPS_FEATURE] },
       }));
     };
@@ -312,8 +269,8 @@ export class FollowerFeed implements FollowerCopyFeed {
       return;
     }
     this.#chain = this.#chain.then(async () => {
-      // A step the previous socket queued, from a leader this node no longer
-      // follows, applies nothing and marks nothing fresh (swamp-club#4148).
+      // a step the previous socket queued, from a leader this node does not
+      // follow, applies nothing and marks nothing fresh
       if (this.#failed || generation !== this.#generation) return;
       try {
         if (changes.length > 0) {

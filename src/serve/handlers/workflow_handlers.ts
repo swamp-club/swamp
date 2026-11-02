@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Workflow-domain request handlers (workflow.* verbs).
- */
-
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -291,13 +287,8 @@ import { containedLogFileReader } from "./log_file_containment.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
-/** Page size for `workflow.run.search` when the client sends no limit. */
 export const WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT = 500;
 
-/**
- * Finds a workflow by name, then by id. Returns null when neither matches or
- * the lookup fails.
- */
 export async function resolveWorkflow(
   workflowRepo: WorkflowRepository,
   idOrName: string,
@@ -309,11 +300,6 @@ export async function resolveWorkflow(
   }
 }
 
-/**
- * Resolves the workflow a request names — including a workflow file that
- * fails to parse — so the handler authorizes its canonical name
- * (swamp-club#2674).
- */
 function resolveWorkflowRequest(
   ctx: ConnectionContext,
   idOrName: string,
@@ -358,15 +344,15 @@ export async function handleWorkflowRun(
   const resourceId = target.status === "found" ? target.id : undefined;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
-  // Captured now, while the socket's memberships are at hand: the run's
-  // vault operations are decided for this principal (swamp-club#2676).
+  // captured now, while the socket's memberships are at hand: the run's vault
+  // operations are decided for this principal
   const vaultAccess = requestRunVaultScope(ctx, socket, principal);
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let registeredRunId: string | undefined;
-    // Events are redacted per client before they are sent (swamp-club#2736),
-    // which may wait: sends are chained so they keep the run's order, and
-    // drained before the request's own reply.
+    // events are redacted per client before sending, which may wait: sends are
+    // chained to keep the run's order and drained before the request's own
+    // reply
     const redact = redactingFor(ctx, socket, principal);
     let sending = Promise.resolve();
     try {
@@ -540,9 +526,9 @@ export async function handleWorkflowRun(
         },
         runController.signal,
         (event) => {
-          // A nested workflow's started event carries the child's run id;
-          // the registry entry stays keyed on the run this request started,
-          // and a client reattaching by the child's id finds it.
+          // a nested started event carries the child's run id; the entry stays
+          // keyed on this request's run, and a client reattaching by the
+          // child's id finds it
           if (event.kind === "started" && event.parentRunId !== undefined) {
             registry.addNestedRun(runId, event.runId);
           } else if (event.kind === "started") {
@@ -585,8 +571,7 @@ export async function handleWorkflowRun(
           runWriteFence: ctx.runWriteFence,
         },
       );
-      // Reported finished only once its commits are replicated
-      // (swamp-club#3489).
+      // reported finished only once its commits are replicated
       const unconfirmed = await confirmRunReplicated(
         ctx,
         "workflow_execution_failed",
@@ -734,16 +719,15 @@ export async function handleWorkflowSearch(
   }
 }
 
-/** The fields of an approvals row that its read filter and redaction use. */
 interface ApprovalsRow {
   workflowId: string;
   workflowName: string;
   parentRun?: NamedWorkflow;
   parentWaiting?: boolean;
   /**
-   * On a pending gate: whether this caller holds `approve` on its workflow
-   * (swamp-club#3697). It answers for the caller only and never says who
-   * else may decide; approve and reject authorize the decision themselves.
+   * whether this caller holds approve on the workflow; answers for the caller
+   * only and never says who else may decide, since approve and reject authorize
+   * themselves
    */
   canDecide?: boolean;
 }
@@ -767,8 +751,8 @@ export async function handleWorkflowApprovals(
   ) return;
 
   try {
-    // The suspended-run reads stop when the request is cancelled, so it
-    // gives up its place among the shared scan permits (swamp-club#4088).
+    // suspended-run reads stop when the request is cancelled, giving up its
+    // place among the shared scan permits
     const libCtx = handlerLibSwampContext(ctx, { signal: controller.signal });
     const runRepo = ctx.repoContext.workflowRunRepo;
     const evaluatedRepo = new YamlEvaluatedWorkflowRepository(
@@ -802,17 +786,16 @@ export async function handleWorkflowApprovals(
       return;
     }
 
-    // The reply is built from the lists filtered here, never the generator's
-    // object as it came: a list the generator adds later is withheld until
-    // it is filtered too. `approvals` stays the first key, which dashboards
-    // older than the expired list read by position.
+    // build the reply from the lists filtered here, never the generator's
+    // object, so a list added later is withheld until filtered; approvals stays
+    // the first key because older dashboards read by position
     const listed = (result ?? {}) as {
       approvals?: ApprovalsRow[];
       expired?: ApprovalsRow[];
     };
     const canonical = canonicalResources(ctx);
-    // A nested run's row names its parent only to a reader of the
-    // parent's workflow (swamp-club#2736).
+    // a nested run's row names its parent only to a reader of the parent's
+    // workflow
     const canRead = nestedRunReadDecider(ctx, socket, principal);
     const readable = async (rows: ApprovalsRow[] | undefined) => {
       const kept = await filterByResources(
@@ -929,10 +912,8 @@ export async function handleWorkflowGet(
 }
 
 /**
- * Limits step outputs in workflow history to resources the principal may
- * read as data. Reading a workflow's history must not reveal a model's data
- * that `data.get` would refuse, so each resource goes through the same data
- * read decision, keyed by the model's definition fields.
+ * reading history must not reveal data that data.get would refuse, so each
+ * resource goes through the same data read decision
  */
 function dataReadPolicy(
   socket: WebSocket,
@@ -944,8 +925,6 @@ function dataReadPolicy(
   return async (ref) =>
     (await filterByResources(
       [ref],
-      // Inside a diagnostic phase, finding the owners is timed apart from
-      // the decision on them (design/enablers/serve-phase-telemetry.md).
       (item) =>
         currentDiagnosticTally().measure(
           "owner_lookup",
@@ -966,9 +945,8 @@ export async function handleWorkflowHistoryGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Resolve first and authorize the workflow of the run read, not the raw
+  // resolve first and authorize the workflow of the run read, not the raw
   // argument: a run id prefix matches across every workflow
-  // (swamp-club#2673).
   const access = await resolveRunAccess(
     ctx.repoContext.workflowRepo,
     async () => {
@@ -1013,7 +991,7 @@ export async function handleWorkflowHistoryGet(
       workflowHistoryGet(libCtx, deps, payload.workflowIdOrName, {
         includeOutputs: true,
         reference,
-        // A cancelled read stops resolving outputs (swamp-club#3968).
+        // a cancelled read stops resolving outputs
         signal: controller.signal,
       }),
       {
@@ -1078,9 +1056,8 @@ export async function handleWorkflowHistoryLogs(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Resolve first and authorize the workflow of the run read, not the raw
+  // resolve first and authorize the workflow of the run read, not the raw
   // argument: a run id prefix matches across every workflow
-  // (swamp-club#2673).
   const access = await resolveRunAccess(
     ctx.repoContext.workflowRepo,
     async () => {
@@ -1093,8 +1070,8 @@ export async function handleWorkflowHistoryLogs(
         ),
         retentionWatermarks: ctx.repoContext.retentionWatermarks,
       };
-      // A run record's log path may have been written by a forwarded commit
-      // (swamp-club#3922): read only the repo's own run logs.
+      // a run record's log path may come from a forwarded commit, so read only
+      // the repo's own run logs
       deps.readLogFile = containedLogFileReader(ctx.repoDir, deps.readLogFile);
       return {
         deps,
@@ -1272,8 +1249,8 @@ export async function handleWorkflowRunSearch(
   try {
     const libCtx = handlerLibSwampContext(ctx);
     const canonical = canonicalResources(ctx);
-    // Readability is decided per run while selecting, before the page is
-    // cut, so unreadable runs never shorten a page or count in `total`.
+    // readability is decided per run before the page is cut, so unreadable runs
+    // never shorten a page or count in total
     const deps: WorkflowRunSearchDeps = {
       findAllWorkflows: () => listWorkflows(ctx.repoContext.workflowRepo),
       runIndexOf: (id) =>
@@ -1341,8 +1318,8 @@ export async function handleWorkflowRunSearch(
       >;
     };
     const page = data.results ?? [];
-    // Links to other runs name only workflows the principal may read
-    // (swamp-club#2736); the derived awaitingResume flag stays.
+    // links to other runs name only workflows the principal may read; the
+    // derived awaitingResume flag stays
     const canRead = nestedRunReadDecider(ctx, socket, principal);
     await withSpan("swamp.serve.redact", {}, async () => {
       for (const item of page) {
@@ -1370,10 +1347,8 @@ export async function handleWorkflowRunSearch(
 }
 
 /**
- * Counts runs per workflow, in total and optionally per hour. The counts
- * are taken after the per-workflow read filter, as `workflow.run.search`
- * pages after it, so an unreadable workflow never reaches totals or the
- * timeline.
+ * counts are taken after the per-workflow read filter so an unreadable workflow
+ * never reaches totals or the timeline
  */
 export async function handleWorkflowRunSummary(
   socket: WebSocket,
@@ -1592,8 +1567,8 @@ export async function handleWorkflowApprove(
               approved = e.data;
             },
             error: async (e) => {
-              // A nested step's refusal names the nested run only to a reader
-              // of its workflow (swamp-club#2736).
+              // a nested step's refusal names the nested run only to a reader
+              // of its workflow
               throw new Error(
                 await nestedGateRefusalForClient(
                   e.error,
@@ -1631,11 +1606,9 @@ export async function handleWorkflowApprove(
   );
   if (!result) return;
 
-  // Launched only once the approval is saved and pushed. The resume runs
-  // detached and is never awaited here: this handler holds the sync gate,
-  // which is not reentrant.
-  // The approval is already saved: a failure deciding or launching the
-  // auto-resume must not cost the client its reply.
+  // launched only once the approval is saved and pushed, detached and never
+  // awaited since this handler holds the non-reentrant sync gate; a failure
+  // must not cost the client its reply
   let autoResumed = false;
   let ownerResumes = false;
   try {
@@ -1653,8 +1626,7 @@ export async function handleWorkflowApprove(
     });
   }
 
-  // The parent run is named only to a reader of its workflow
-  // (swamp-club#2736).
+  // the parent run is named only to a reader of its workflow
   const canRead = nestedRunReadDecider(ctx, socket, principal);
   if (
     result.awaitingParent && !(await canRead(result.awaitingParent))
@@ -1676,11 +1648,8 @@ export async function handleWorkflowApprove(
 }
 
 /**
- * Delivers a signal to the wait it names, by ID or by workflow and key. The
- * caller is authorized on the wait's workflow inside
- * {@link deliverSignalForCaller}, which the HTTP signal routes share: a wait
- * the caller may not signal is answered as one that does not exist. Nothing
- * here reserves or saves a run.
+ * a wait the caller may not signal is answered as one that does not exist;
+ * nothing here reserves or saves a run
  */
 function idempotencyKeyOf(
   payload: WorkflowSignalPayload,
@@ -1768,7 +1737,6 @@ export async function handleWorkflowSignal(
         id: requestId,
         payload: { accepted: result.data },
       });
-      // Continues the run of a wait that took the signal, after the reply.
       await continueAfterSignal(
         ctx,
         result,
@@ -1803,20 +1771,9 @@ export async function handleWorkflowSignal(
 }
 
 /**
- * Lists the waits for a signal nothing has answered, to a caller who may
- * read their workflows. A caller with no `read` grant on any workflow, such
- * as one granted `signal` alone, is refused.
- *
- * The listing is not read-only, here as for the local command: it registers
- * the waits of runs suspended before waits were registered, settles a wait
- * past its deadline as timed out, and sweeps wait records, for every
- * workflow. Each of those writes depends only on stored state, never on the
- * request.
- *
- * With `includeSignalled` the reply also lists, under `signalled`, the waits
- * a signal has settled whose run has not been resumed (swamp-club#3110).
- * With `includePending` it also lists, under `pending`, the signals by key
- * held for the next wait of their key (swamp-club#3214).
+ * not read-only: listing registers waits of older suspended runs, settles waits
+ * past their deadline and sweeps wait records, all from stored state alone; a
+ * caller with no workflow read grant is refused
  */
 export async function handleWorkflowWaits(
   socket: WebSocket,
@@ -1902,10 +1859,9 @@ export async function handleWorkflowWaits(
       )
       : undefined;
 
-    // A pending signal names its sender and the key it is held for: it is
-    // listed only to a reader of the workflow it is for. workflowOwners
-    // prefers the workflow with both the ID and the name, so a signal bound
-    // to one of two workflows sharing an ID is never listed under the other.
+    // a pending signal names its sender and key, so it is listed only to a
+    // reader of its workflow; workflowOwners prefers the workflow matching both
+    // ID and name so it never lists under a same-ID workflow
     const pending = data.pending
       ? await filterByResources(
         data.pending,
@@ -1999,8 +1955,8 @@ export async function handleWorkflowReject(
         );
         deps.runRecordCurrency = ctx.repoContext.runRecordCurrency;
         deps.fetchMissing = (run) => fetchMissingRunUnderGate(ctx, run);
-        // The suspended nested runs the rejected run waited on are cancelled
-        // in this gated unit of work (swamp-club#2867).
+        // the suspended nested runs the rejected run waited on are cancelled in
+        // this gated unit of work
         if (ctx.activeRunRegistry) {
           deps.cascade = serveNestedCascade(
             ctx,
@@ -2032,8 +1988,8 @@ export async function handleWorkflowReject(
               result = e.data as unknown as Record<string, unknown>;
             },
             error: async (e) => {
-              // A nested step's refusal names the nested run only to a reader
-              // of its workflow (swamp-club#2736).
+              // a nested step's refusal names the nested run only to a reader
+              // of its workflow
               throw new Error(
                 await nestedGateRefusalForClient(
                   e.error,
@@ -2059,8 +2015,7 @@ export async function handleWorkflowReject(
           return;
         }
         rejected = result as unknown as WorkflowRejectData;
-        // Other runs are named only to a reader of their workflow
-        // (swamp-club#2736).
+        // other runs are named only to a reader of their workflow
         const canRead = nestedRunReadDecider(ctx, socket, principal);
         if (
           rejected.awaitingParent && !(await canRead(rejected.awaitingParent))
@@ -2087,9 +2042,8 @@ export async function handleWorkflowReject(
     },
   );
 
-  // A rejected nested run has finished: its parent may continue. Launched
-  // once the decision is saved, pushed and released; it may wait on a parent
-  // this instance still drives, so the reply does not wait for it.
+  // launched once the decision is saved, pushed and released; it may wait on a
+  // parent this instance still drives, so the reply does not wait
   const rejectedRun = rejected;
   if (rejectedRun) {
     autoResumeParentAfterChild(
@@ -2113,10 +2067,8 @@ type ReservedSuspendedRun =
   | { ok: false; message: string };
 
 /**
- * Resolves the suspended run an approve or reject names (the only one, when
- * the payload gives no run id) and reserves its id, so a cancel of the same
- * run in this process cannot interleave with the decision. Resolution errors
- * propagate unchanged. Without a registry there is nothing to reserve.
+ * reserves the run id so a cancel of the same run in this process cannot
+ * interleave with the decision; without a registry there is nothing to reserve
  */
 async function reserveSuspendedRun(
   ctx: ConnectionContext,
@@ -2138,17 +2090,9 @@ async function reserveSuspendedRun(
 }
 
 /**
- * Cancels a workflow run by id: one this instance is driving through the
- * active-run registry, otherwise a persisted suspended run. Authorization is
- * checked against the workflow the server knows the run belongs to, never the
- * payload's, and silently: a caller refused, a missing run, and a run of
- * another workflow than the payload names all get the same reply.
- *
- * A registered run is aborted, then awaited outside the sync gate, which the
- * run needs for its final push. If it leaves the registry, the persisted run
- * is checked again: a resume can save the run suspended at its next gate just
- * before the abort lands, and then the abort stopped nothing. Only the
- * persisted cancel and its push take the gate.
+ * authorized silently on the server's workflow for the run, so a refused
+ * caller, a missing run and another workflow's run get the same reply; a
+ * registered run is awaited outside the sync gate
  */
 export async function handleWorkflowCancel(
   socket: WebSocket,
@@ -2195,8 +2139,7 @@ export async function handleWorkflowCancel(
       },
       (workflow) => mayCancel(workflow),
     );
-  // Nested runs are named only to a reader of their workflow
-  // (swamp-club#2736).
+  // nested runs are named only to a reader of their workflow
   const reply = async (
     workflowName: string,
     status: string,
@@ -2247,8 +2190,8 @@ export async function handleWorkflowCancel(
       } else if (left.status === "cancelled") {
         await reply(workflowName, "cancelled", left);
       } else {
-        // The aborted run settled itself, which leaves the nested runs it
-        // waited on: they are cancelled here (swamp-club#2867).
+        // the aborted run settled itself, leaving the nested runs it waited on,
+        // so they are cancelled here
         await reply(
           workflowName,
           "cancelled",
@@ -2282,10 +2225,9 @@ export async function handleWorkflowCancel(
 }
 
 /**
- * Aborts a workflow run this instance is driving, authorizing on the workflow
- * recorded in the registry entry. Returns that workflow's name, or undefined
- * for a method run, a refused caller, or a payload naming another workflow,
- * which the caller reports as not found.
+ * authorizes on the workflow recorded in the registry entry; returns undefined
+ * for a method run, a refused caller or another workflow's payload, which the
+ * caller reports as not found
  */
 async function abortActiveWorkflowRun(
   ctx: ConnectionContext,
@@ -2427,8 +2369,7 @@ export async function handleWorkflowResume(
           const resumeGenerator = async function* (): AsyncGenerator<
             WorkflowRunEvent
           > {
-            // Held to the principal that triggered the run, never the
-            // resumer (swamp-club#2676).
+            // held to the principal that triggered the run, never the resumer
             for await (
               const event of runGeneratorWithVaultAccess(
                 resumeRunVaultScope(runVaultScopeContext(ctx), run)?.access,
@@ -2525,7 +2466,6 @@ export async function handleWorkflowResume(
         () => ctx.runTracker,
         error,
       );
-      // Names the steps a recovery must acknowledge (swamp-club#3882).
       throw withCommittedUnknownSteps(error, runCheckpointer);
     }).finally(() => runCheckpointer.close());
     return;
@@ -2577,7 +2517,7 @@ export async function handleWorkflowCreate(
     }, ctx).allowed
   ) return;
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -2661,7 +2601,7 @@ export async function handleWorkflowDelete(
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -2737,9 +2677,9 @@ export async function handleWorkflowEdit(
 ): Promise<void> {
   if (rejectEditWithoutContent(socket, requestId, payload.content)) return;
 
-  // Authorize the workflow the edit will act on, by its canonical name, not
-  // the raw id-or-name: a grant matches the resource name, so an id would
-  // sidestep name-scoped denies (swamp-club#2426, swamp-club#2674).
+  // authorize the workflow the edit will act on by its canonical name, not the
+  // raw id-or-name: a grant matches the resource name, so an id would sidestep
+  // name-scoped denies
   const workflow = await resolveWorkflow(
     ctx.repoContext.workflowRepo,
     payload.workflowIdOrName,
@@ -2764,7 +2704,7 @@ export async function handleWorkflowEdit(
     return;
   }
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -2814,10 +2754,9 @@ export async function handleWorkflowEdit(
                   ctx,
                 ).allowed
               ) return false;
-              // A retag or rename needs `tag`, judged against the tags stored
-              // now too (swamp-club#3085). Ids are not unique, so the stored
-              // workflow counts only under the name the edit loaded; a lookup
-              // by name reads one file, where one by id reads them all.
+              // A retag or rename needs tag, judged against the stored tags
+              // too; ids are not unique so the stored workflow counts only
+              // under the name the edit loaded.
               const named = await ctx.repoContext.workflowRepo.findByName(
                 before.name,
               );
@@ -2830,8 +2769,8 @@ export async function handleWorkflowEdit(
                 afterTags: after.tags,
               }, ctx);
             },
-            // The expressions and steps the edit adds are authorized against
-            // this writer; those already stored are not (swamp-club#2755).
+            // expressions and steps the edit adds are authorized against this
+            // writer; those already stored are not
             authorizeContent: async (before, after) => {
               const refusal = await authorizeWorkflowEdit(
                 socketAuthority(socket, requestId, principal, ctx),
@@ -2885,8 +2824,8 @@ export async function handleWorkflowValidate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Without a workflow this validates every workflow the caller may read, and
-  // only those (swamp-club#2675). A named workflow is resolved first.
+  // without a workflow this validates only the workflows the caller may read; a
+  // named workflow is resolved first
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
@@ -2977,8 +2916,8 @@ export async function handleWorkflowEvaluate(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Without a workflow this evaluates every workflow the caller may read, and
-  // only those (swamp-club#2675). A named workflow is resolved first.
+  // without a workflow this evaluates only the workflows the caller may read; a
+  // named workflow is resolved first
   const workflowIdOrName = payload?.workflowIdOrName;
   let workflow:
     | { idOrName: string; byId: boolean; expectedName?: string }
@@ -3017,10 +2956,9 @@ export async function handleWorkflowEvaluate(
     ) return;
     workflow = targetArgument(target, workflowIdOrName);
   }
-  // A later --last-evaluated run replays what evaluate saves, inputs
-  // included, so it saves only what the caller may run, as the runs that
-  // write the same file are decided (swamp-club#3940). A caller who may
-  // only read gets the evaluation back unsaved.
+  // a later --last-evaluated run replays what evaluate saves, inputs included,
+  // so save only what the caller may run; a read-only caller gets the
+  // evaluation back unsaved
   const runnable = resourceDecider(socket, principal, "run", ctx);
   const persist = (
     candidate: { name: string; tags: Record<string, string> },
@@ -3074,8 +3012,6 @@ export async function handleWorkflowEvaluate(
     sendError(socket, requestId, "workflow_evaluate_failed", message);
   }
 }
-
-// ── Workflow trigger override handlers ──────────────────────────────
 
 export async function handleWorkflowTriggerSet(
   socket: WebSocket,
@@ -3289,14 +3225,6 @@ export async function handleWorkflowTriggerRemove(
   }
 }
 
-// ── Workflow schedule pause handlers (swamp-club#3522) ─────────────
-
-/**
- * The schedule operations' deps on serve: pauses in the control-plane store
- * the scheduler checks, overrides and schedules as the running scheduler
- * holds them (the config file when serve runs without one). Null when serve
- * has no control-plane store.
- */
 function scheduleDeps(ctx: ConnectionContext): WorkflowScheduleDeps | null {
   if (!ctx.controlPlaneStore) return null;
   const scheduler = ctx.scheduledExecution;
@@ -3535,10 +3463,8 @@ export async function handleWorkflowScheduleList(
 }
 
 /**
- * Writes trigger overrides to the serve config file serve was started with.
- * A failed write (a read-only `--config` mount, for one) is refused with a
- * message that names no server path; the path and cause go to the log.
- * Returns false after sending the error.
+ * a failed write is refused with a message that names no server path; the path
+ * and cause go to the log
  */
 async function writeTriggerConfig(
   socket: WebSocket,

@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The HTTP signal routes. `POST /api/v1/signal/<waitId>` with a JSON body
- * `{ "payload": { ... } }` is how a system that holds a token and a wait
- * ID, and no WebSocket client, answers a wait. `POST /api/v1/signal` with
- * `{ "workflow": "...", "key": "...", "payload": { ... } }` answers the wait
- * that holds a key (swamp-club#3211); the workflow travels in the body, as
- * its name may hold `@` and `/`. Delivery itself is
- * {@link deliverSignalForCaller}, shared with the `workflow.signal` request.
+ * the by-key route carries the workflow in the body, as its name may hold `@`
+ * and `/`
  */
 
 import { parsePrincipal } from "../domain/access/principal.ts";
@@ -64,16 +59,12 @@ import { readBodyWithLimit } from "./webhook.ts";
 import { followerHttpForward } from "./follower_requests.ts";
 
 /**
- * The most of a request body that is read. It only bounds the read: the
- * payload's own limit is checked on the parsed value, in
- * {@link deliverSignalForCaller}. A body can be several times its payload,
- * since a client may write each non-ASCII character as a six-byte escape and
- * may indent the JSON, so the cap leaves room for a payload at its limit
- * sent either way.
+ * only bounds the read; the payload limit is checked on the parsed value. A
+ * body can be several times its payload (six-byte escapes, indentation), so the
+ * cap leaves room for a payload at its limit.
  */
 export const MAX_SIGNAL_BODY_BYTES = SIGNAL_PAYLOAD_MAX_BYTES * 6 + 1024;
 
-/** Whether a request declares the JSON representation this API accepts. */
 export function hasJsonContentType(req: Request): boolean {
   const contentType = req.headers.get("content-type");
   return contentType !== null &&
@@ -83,21 +74,17 @@ export function hasJsonContentType(req: Request): boolean {
 // Only narrows the path segment; normalizeWaitId decides what a wait ID is.
 const SIGNAL_ROUTE = /^\/api\/v1\/signal\/([0-9A-Fa-f-]{36})$/;
 
-/** The route of a signal addressed by workflow and key, both in the body. */
 const SIGNAL_BY_KEY_ROUTE = "/api/v1/signal";
 
-/** The request type these routes are the HTTP form of. */
 const SIGNAL_REQUEST_TYPE = "workflow.signal";
 
-/** Which signal route a path is: by the wait ID it names, or by key. */
 export type SignalRoute =
   | { readonly waitId: string }
   | { readonly byKey: true };
 
 /**
- * The signal route a request path is, or undefined when it is neither. By
- * ID it carries the wait ID, lower-cased; only a UUID matches, so no other
- * client text reaches a store key or the audit log through the path.
+ * only a UUID matches, so no other client text reaches a store key or the audit
+ * log through the path
  */
 export function matchSignalRoute(pathname: string): SignalRoute | undefined {
   if (pathname === SIGNAL_BY_KEY_ROUTE) return { byKey: true };
@@ -109,7 +96,6 @@ export function matchSignalRoute(pathname: string): SignalRoute | undefined {
 
 export interface SignalHttpDeps {
   ctx: ConnectionContext;
-  /** Authenticates a bearer token. Not called when authorization is off. */
   authenticate: (
     token: string,
     sourceIp: string,
@@ -141,11 +127,6 @@ const STATUS: Record<SignalDeliveryResult["status"], number> = {
 
 const BEARER_PREFIX_LEN = "Bearer ".length;
 
-/**
- * The token of a `Bearer` authorization header, or null. The scheme is
- * matched in any case, as HTTP defines it and as the WebSocket upgrade
- * reads it (`extractWebSocketToken`); the token is returned as sent.
- */
 function bearerToken(req: Request): string | null {
   const header = req.headers.get("authorization");
   if (
@@ -168,10 +149,9 @@ function badRequest(message: string, status = 400): Response {
 }
 
 /**
- * Answers a request `matchSignalRoute` matched. Everything before the token
- * is checked costs the same for every caller: a rate-limit lookup and
- * nothing else. The body is read only for an authenticated caller, and only
- * once the server's audit and restricted-command gates let the request in.
+ * everything before the token is checked costs the same for every caller; the
+ * body is read only for an authenticated caller after the audit and
+ * restricted-command gates let the request in
  */
 export async function handleSignalHttpRequest(
   req: Request,
@@ -230,9 +210,9 @@ export async function handleSignalHttpRequest(
       503,
     );
   }
-  // A follower passes the signal on to the leader with the caller's own
-  // credentials (swamp-club#4120), and refuses it with a retryable 503,
-  // not a failed delivery, when no leader can be reached (swamp-club#4096).
+  // a follower passes the signal to the leader with the caller's own
+  // credentials, and refuses with a retryable 503, not a failed delivery, when
+  // no leader can be reached
   const forwarded = followerHttpForward(SIGNAL_REQUEST_TYPE, req, ctx, {
     clientIp: sourceIp,
   });
@@ -339,11 +319,9 @@ export async function handleSignalHttpRequest(
 }
 
 /**
- * Audits the response, as the WebSocket dispatch audits every request. The
- * resource is the workflow once the caller was told it, otherwise `named`:
- * the wait ID, or the workflow a key address names (its canonical name once
- * it resolved, else the string as sent). A denial is audited separately,
- * with the workflow, where it is decided.
+ * the resource is the workflow once the caller was told it, otherwise the name
+ * as sent or its canonical name once resolved. A denial is audited separately
+ * where it is decided.
  */
 function emitResponseAudit(
   ctx: ConnectionContext,

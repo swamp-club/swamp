@@ -82,9 +82,9 @@ function makeDeps(overrides: Partial<AdminAuthDeps> = {}): AdminAuthDeps {
 }
 
 /**
- * A client address unique to this run. The rate limiter is module state that
- * keys a malformed token by client address, so tests sharing one address
- * exhaust it across `deno test --repeats`.
+ * a client address unique to this run: the rate limiter is module state keyed
+ * by client address, so tests sharing one address exhaust it across deno test
+ * --repeats
  */
 function freshClientAddr(): string {
   return `client-${crypto.randomUUID()}`;
@@ -260,7 +260,6 @@ const PRINCIPAL = {
   groups: ["ops"],
 };
 
-/** A policy answering from `rules`, keyed by "action kind:name". */
 function policy(
   rules: Record<string, "allow" | "deny">,
 ): PolicySnapshotLoader {

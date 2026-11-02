@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Data-domain request handlers (data.* and summarise verbs).
- */
-
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createDataDeleteDeps,
@@ -129,14 +125,14 @@ export function resolveRunGcInput(
   payload: RunGcPayload | undefined,
   policy?: RunGcGarbageCollectionPolicy,
 ): RunGcInput {
-  // Resolved as the CLI's: a request value, then the kind's own key, then
-  // `retention`, then the built-in default.
+  // resolved as the CLI's: a request value, then the kind's own key, then
+  // `retention`, then the built-in default
   const configuredRetention = runGcRetentionFromPolicy(policy);
   const workflowRunRetentionDays = payload?.workflowRunRetentionDays ??
     configuredRetention.workflowRunRetentionDays ??
     DEFAULT_WORKFLOW_RUN_RETENTION_DAYS;
-  // A request's run retention overrides the snapshot retention too: the
-  // snapshots then go with their runs, as `--older-than` does.
+  // a request's run retention overrides the snapshot retention too: the
+  // snapshots then go with their runs, as `--older-than` does
   const evaluatedSnapshotRetentionDays =
     payload?.workflowRunRetentionDays === undefined
       ? configuredRetention.evaluatedSnapshotRetentionDays
@@ -161,16 +157,15 @@ export async function handleDataGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // A model-scoped read resolves its model first and authorizes the model's
-  // canonical name (swamp-club#2674). A workflow-scoped read authorizes the
-  // workflow, then every owner of the item it will return, and reads exactly
-  // that item (swamp-club#2603).
+  // a model-scoped read resolves its model first and authorizes the model's
+  // canonical name; a workflow-scoped read authorizes the workflow, then every
+  // owner of the item it returns, and reads exactly that item
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
     | undefined;
   if (!payload.workflowName && !payload.modelIdOrName) {
-    // Neither: libswamp reports the missing argument. An empty name reads as
-    // absent, exactly as libswamp reads it.
+    // neither: libswamp reports the missing argument. An empty name reads as
+    // absent, exactly as libswamp reads it
     if (
       !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
     ) return;
@@ -278,9 +273,8 @@ export async function handleDataGet(
 }
 
 /**
- * A silent check of whether the principal may read data owned by a model, by
- * the rules data.list filters items with, so a read's warnings never name a
- * producer the caller could not list.
+ * by the rules data.list filters items with, so a read's warnings never name a
+ * producer the caller could not list
  */
 function ownerReadCheck(
   socket: WebSocket,
@@ -297,12 +291,9 @@ function ownerReadCheck(
 }
 
 /**
- * Authorizes a workflow-scoped data read and returns the item to pin it to,
- * or null when the request was replied to. The workflow is resolved and its
- * `read` authorized before any run is looked up, so a run-not-found, a
- * pending run or a run id reaches only a caller who may read that workflow's
- * history; then `data` read is authorized on every owner of the item the
- * read will return (swamp-club#2603).
+ * the workflow's read is authorized before any run is looked up, so a
+ * run-not-found or run id reaches only a caller who may read that workflow's
+ * history; then data read on every owner of the returned item
  */
 async function authorizeWorkflowData(
   socket: WebSocket,
@@ -362,7 +353,7 @@ async function authorizeWorkflowData(
         .allowed
     ) return null;
   }
-  // Audited as the data read — its owners — not the workflow asked for.
+  // audited as the data read, its owners, not the workflow asked for
   recordAuditedResource(
     socket,
     requestId,
@@ -381,14 +372,9 @@ async function authorizeWorkflowData(
 }
 
 /**
- * Resolves `latestRun("<workflow>")` for a data query over serve with the
- * checks a workflow history read of the latest run makes: `read` on the
- * workflow, then on every workflow the run is recorded under — a copy
- * shares its original's id and runs (swamp-club#2957). The run is looked up
- * by the resolved id, so it belongs to the workflow that was authorized. A
- * refusal is audited but never replied; it, an unknown workflow and a file
- * that does not parse all fail as one not-found naming only the argument,
- * so the error says nothing about what the caller may not read.
+ * a copy shares its original's id and runs, so read is checked on every
+ * workflow the run is recorded under; a refusal is audited but never replied,
+ * and all failures are one not-found naming only the argument
  */
 function servedLatestRunResolver(
   socket: WebSocket,
@@ -427,13 +413,9 @@ function servedLatestRunResolver(
 }
 
 /**
- * Resolves `model("<name or id>")` for a data query over serve with the
- * check a model-scoped `data.get` makes: `read` on the data of the model the
- * reference resolves to, looked up by name then exact id
- * (swamp-club#2960). A refusal is audited but never replied; it, an unknown
- * model and a definition that cannot be read all fail as one not-found
- * naming only the argument, so the error says nothing about what the
- * caller may not read.
+ * a refusal is audited but never replied; it, an unknown model and an
+ * unreadable definition all fail as one not-found naming only the argument, so
+ * the error says nothing about what the caller may not read
  */
 function servedModelResolver(
   socket: WebSocket,
@@ -477,10 +459,9 @@ export async function handleDataQuery(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Matched records are filtered to what the caller may read inside the
-  // query, before the limit, `limited` and any projection are computed, so
-  // neither a projection nor the page size says anything about data the
-  // caller may not read (swamp-club#2675).
+  // matched records are filtered to what the caller may read inside the query,
+  // before limit, `limited` and projection, so neither says anything about data
+  // the caller may not read
   if (
     !authorizeAnyOrReject(
       socket,
@@ -581,8 +562,8 @@ export async function handleDataList(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // An empty name reads as absent, exactly as libswamp reads it, so it takes
-  // the "*" form and its per-item filtering.
+  // an empty name reads as absent, exactly as libswamp reads it, so it takes
+  // the "*" form and its per-item filtering
   const resourceName = payload.modelIdOrName || "*";
   let model:
     | { idOrName: string; byId: boolean; expectedName?: string }
@@ -611,10 +592,9 @@ export async function handleDataList(
     ) return;
     model = targetArgument(target, resourceName);
   } else if (payload.workflowName) {
-    // A workflow-scoped list reveals the run and its steps, so it needs read
-    // on the workflow, resolved the way the list resolves it (by name, then
-    // id), before any run is looked up; items are then filtered on their
-    // owners (swamp-club#2603).
+    // a workflow-scoped list reveals the run and its steps, so it needs read on
+    // the workflow, resolved as the list resolves it (name, then id), before
+    // any run is looked up; items are then filtered on their owners
     const target = await resolveWorkflowTarget(
       ctx.repoContext.workflowRepo,
       payload.workflowName,
@@ -943,7 +923,7 @@ export async function handleDataDelete(
     payload.modelIdOrName,
     "data",
   );
-  // Deleting a restricted model's data needs admin (swamp-club#3131).
+  // deleting a restricted model's data needs admin
   const { action, resolution: target } = restrictedModelAuthorization(
     resolved,
     "write",
@@ -1033,7 +1013,7 @@ export async function handleDataRename(
     payload.modelIdOrName,
     "data",
   );
-  // Renaming a restricted model's data needs admin (swamp-club#3131).
+  // renaming a restricted model's data needs admin
   const { action, resolution: target } = restrictedModelAuthorization(
     resolved,
     "write",
@@ -1123,8 +1103,8 @@ export async function handleSummarise(
   principal: Principal | null,
   payload?: SummarisePayload,
 ): Promise<void> {
-  // Summarises models, workflows and their data across the repository, so it
-  // needs read on every resource of each kind (swamp-club#2675).
+  // summarises models, workflows and their data across the repository, so it
+  // needs read on every resource of each kind
   for (const kind of ["model", "workflow", "data"] as const) {
     if (
       !authorizeAllOrReject(socket, requestId, principal, "read", kind, ctx)
@@ -1187,7 +1167,7 @@ export async function handleDataGc(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Reaches every data resource, so any deny for it refuses (swamp-club#2675).
+  // reaches every data resource, so any deny for it refuses
   if (
     !authorizeAllOrReject(socket, requestId, principal, "write", "data", ctx)
       .allowed
@@ -1205,7 +1185,7 @@ export async function handleDataGc(
           ctx.repoContext.markDirty,
         );
 
-        // Re-read so a retention edited while serve runs applies.
+        // re-read so a retention edited while serve runs applies
         const marker = await new RepoMarkerRepository().read(
           RepoPath.create(ctx.repoDir),
         );
@@ -1261,7 +1241,7 @@ export async function handleDataPrune(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Reaches every data resource, so any deny for it refuses (swamp-club#2675).
+  // reaches every data resource, so any deny for it refuses
   if (
     !authorizeAllOrReject(socket, requestId, principal, "write", "data", ctx)
       .allowed
@@ -1320,7 +1300,7 @@ export async function handleRunGc(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Reaches every data resource, so any deny for it refuses (swamp-club#2675).
+  // reaches every data resource, so any deny for it refuses
   if (
     !authorizeAllOrReject(socket, requestId, principal, "write", "data", ctx)
       .allowed

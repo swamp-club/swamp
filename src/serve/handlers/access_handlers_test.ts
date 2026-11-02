@@ -338,10 +338,9 @@ Deno.test("handleAccessReload: pushes reconciled grants to remote datastore befo
 
   await handleAccessReload(socket, ctx, "req-reload", null);
 
-  // The handler itself sends no bare markDirty(), which would set
-  // bulkInvalidated and turn the push into a walk of the whole cache
-  // (swamp-club#2415). Per-path marks come from the repositories, which this
-  // mock context does not wire; the real-repo test below covers them.
+  // the handler itself sends no bare markDirty(), which would set
+  // bulkInvalidated and turn the push into a walk of the whole cache; per-path
+  // marks come from the repositories, which this mock does not wire
   assertEquals(markDirtyCalls, []);
   assertGreater(pushCalls.length, 0);
   assertGreater(pullCalls.length, 0);
@@ -377,8 +376,6 @@ Deno.test("handleAccessReload: works without syncService (local-only mode)", asy
   const response = JSON.parse(socket.sent[0]);
   assertEquals(response.payload.success, true);
 });
-
-// --- approval policy: run implying approve ---
 
 function makeGrant(overrides: Partial<Grant> = {}): Grant {
   return {
@@ -602,10 +599,9 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-// Models a concurrent push landing right after each mark: the repositories
-// mark a path before writing it, so that push finds
-// the path absent, takes it as a delete and clears the mark. Only marks made
-// after the write are still set when the handler pushes.
+// models a concurrent push landing right after each mark: repositories mark a
+// path before writing it, so that push finds it absent, takes it as a delete
+// and clears the mark; only later marks stay set
 function createRacingSyncService(cacheRoot: string): {
   service: DatastoreSyncService;
   marks: Array<string | undefined>;
@@ -636,7 +632,6 @@ function createRacingSyncService(cacheRoot: string): {
   return { service, marks, dirtyAtPush };
 }
 
-/** The production callers of route-2 writes made while `fn` runs. */
 async function unscopedWritesDuring(
   fn: () => Promise<unknown>,
 ): Promise<string[]> {
@@ -697,8 +692,8 @@ Deno.test("handleAccessReload: re-marks the paths reconcile wrote, per path, bef
         datastoreConfig,
       };
 
-      // The reconcile writes stage into a root unit, not through
-      // signalChange's fallback (swamp-club#3056).
+      // the reconcile writes stage into a root unit, not through signalChange's
+      // fallback
       const unscoped = await unscopedWritesDuring(() =>
         handleAccessReload(createMockSocket(), ctx, "req-1", null)
       );
@@ -724,7 +719,6 @@ Deno.test("handleAccessReload: re-marks the paths reconcile wrote, per path, bef
         `grant data must still be marked at the push, got ${pushed}`,
       );
 
-      // Nothing changed on the second reload, so nothing is marked.
       marks.length = 0;
       await handleAccessReload(createMockSocket(), ctx, "req-2", null);
       assertEquals(marks, []);
@@ -734,8 +728,6 @@ Deno.test("handleAccessReload: re-marks the paths reconcile wrote, per path, bef
     }
   });
 });
-
-// ── token sessions end only when the revoke or rotate succeeds ──────────
 
 function bindSession(name: string): { closes: number[] } {
   const closes: number[] = [];
@@ -765,7 +757,6 @@ function cleanupSessions(name: string): void {
   });
 }
 
-// No repository behind the context, so the token operation itself fails.
 const failingCtx = () => createCtx(createMockDecisionService().service);
 
 Deno.test("handleAccessTokenRevoke: a failed revoke closes no sessions", async () => {
@@ -806,8 +797,6 @@ Deno.test("handleAccessTokenRotate: a failed rotate closes no sessions", async (
   cleanupSessions(name);
 });
 
-// ── external grant files keep one source across mount paths ─────────────
-
 Deno.test("handleAccessReload: --grants-dir and --grants-file grants keep their source when mounted at another path (swamp-club#2848)", async () => {
   await withTempDir(async (dir) => {
     const repoDir = join(dir, "repo");
@@ -824,7 +813,6 @@ Deno.test("handleAccessReload: --grants-dir and --grants-file grants keep their 
     actions: [run]
     resource: "workflow:*"
 `;
-    // The same files, mounted at two paths as two instances would see them.
     for (const mount of ["a", "b"]) {
       await ensureDir(join(dir, mount, "grants-dir"));
       await Deno.writeTextFile(
@@ -885,8 +873,6 @@ Deno.test("handleAccessReload: --grants-dir and --grants-file grants keep their 
   });
 });
 
-// ── the token name lock around mint, rotate and revoke ──────────────────
-
 function lockCtx(
   dir: string,
   allow: boolean,
@@ -903,7 +889,6 @@ function lockCtx(
   } as unknown as ConnectionContext;
 }
 
-/** A definition repo holding server-token definitions by id. */
 function definitionsNamed(byId: Record<string, string>) {
   const entry = (id: string) => ({
     definition: { id, name: byId[id] },
@@ -1096,15 +1081,12 @@ Deno.test("withServerTokenWriteLock: a token named by definition id takes the lo
   });
 });
 
-// --- vault:<name> (swamp-club#2676) ---
-
 const PROD_VAULT = {
   id: "vault-id-1",
   name: "prod-db",
   type: "local_encryption",
 };
 
-/** A ctx whose vault config repository holds only {@link PROD_VAULT}. */
 function withVaultRepo(ctx: ConnectionContext): ConnectionContext {
   const byName = (name: string) =>
     Promise.resolve(name === PROD_VAULT.name ? PROD_VAULT : null);
@@ -1229,7 +1211,6 @@ Deno.test("handleAccessCanI: a concrete vault also reports the run-time decision
   assertEquals(report.allowed, false);
   assertEquals(report.restricted, true);
   assertEquals(report.rule, "vault-scoped");
-  // A wildcard names no vault, so it has no run-time decision.
   const wildcard = createMockSocket();
   await handleAccessCanI(wildcard, ctx, "req-3", {
     action: "read",
@@ -1314,7 +1295,6 @@ Deno.test("handleAccessCheck: another subject's run-time vault decision without 
     report.reason,
     "IdP-group and collective memberships are not included",
   );
-  // The caller's own check uses its session's groups, so it has no note.
   const self = createMockSocket();
   await handleAccessCheck(self, ctx, "req-2", {
     subject: "user:resumer",
@@ -1350,8 +1330,6 @@ Deno.test("handleAccessCheck: another subject's run-time vault decision names on
     groupsOnlyReport.reason,
     "(collective memberships are not included",
   );
-  // A simulated collective is used, so its grant decides and there is no
-  // note about collectives.
   const withCollective = createMockSocket();
   await handleAccessCheck(withCollective, ctx, "req-2", {
     subject: "user:stranger",
@@ -1367,8 +1345,6 @@ Deno.test("handleAccessCheck: another subject's run-time vault decision names on
     "(IdP-group memberships are not included",
   );
 });
-
-// --- collective: subjects ---
 
 Deno.test("handleAccessCanI: a collective grant allows a member whose session has no IdP groups", async () => {
   const collectiveGrant = makeGrant({
@@ -1396,8 +1372,6 @@ Deno.test("handleAccessCanI: a collective grant allows a member whose session ha
   assertEquals(decisions[0].grantId, collectiveGrant.id);
   assertEquals(decisions[0].via, "collective:blaze-commerce");
 
-  // The listing shows the collective grant and not the IdP-group grant of
-  // the same name.
   const listing = createMockSocket();
   setConnectionCollectives(listing, ["jayr", "blaze-commerce"], []);
   await handleAccessCanI(listing, ctx, "req-2", {}, member);
@@ -1407,7 +1381,6 @@ Deno.test("handleAccessCanI: a collective grant allows a member whose session ha
     [collectiveGrant.id],
   );
 
-  // A user outside the collective is not covered.
   const outsider = createMockSocket();
   setConnectionCollectives(outsider, ["someone-else"], []);
   await handleAccessCanI(outsider, ctx, "req-3", {
@@ -1416,8 +1389,6 @@ Deno.test("handleAccessCanI: a collective grant allows a member whose session ha
   }, { kind: "user", id: "outsider" });
   assertEquals(JSON.parse(outsider.sent[0]).payload.decisions, []);
 });
-
-// --- access.reload: grant-file usernames (swamp-club#3123) ---
 
 function reloadUsernameResolver(table: Record<string, string>) {
   const requests: UsernameResolutionRequest[] = [];
@@ -1519,8 +1490,6 @@ Deno.test("handleAccessReload: without a resolver a username subject is rejected
     );
   });
 });
-
-// --- grant list: subject display names (swamp-club#3547) ---
 
 function serverTokenRecord(
   name: string,

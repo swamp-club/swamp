@@ -27,62 +27,45 @@ import type { GcMutex } from "./gc_mutex.ts";
 
 const logger = getSwampLogger(["serve", "retention"]);
 
-export const DEFAULT_RETENTION_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+export const DEFAULT_RETENTION_GC_INTERVAL_MS = 60 * 60 * 1000;
 /**
- * The first pass runs this long after serve starts rather than a full
- * interval later, so a serve restarted more often than hourly still applies
- * retention, without adding work to boot itself.
+ * the first pass runs this long after start, not a full interval later, so a
+ * serve restarted more often than hourly still applies retention without
+ * slowing boot
  */
 export const DEFAULT_RETENTION_GC_INITIAL_DELAY_MS = 5 * 60 * 1000;
 /**
- * How long one pass may run batches. A backlog bigger than one budget's
- * worth is cleared over several hourly passes, and the mutex a manual gc
- * waits on is never held for longer (swamp-club#3535).
+ * budget of one pass: a bigger backlog clears over several passes, and the
+ * mutex a manual gc waits on is never held longer
  */
 export const DEFAULT_RETENTION_GC_BUDGET_MS = 5 * 60 * 1000;
 
-/** What a pass checks between batches. */
 export interface RetentionPassControl {
-  /** Stop starting batches after this long; the next pass continues. */
   readonly budgetMs: number;
-  /** True once serve is shutting down. */
   isStopping(): boolean;
-  /** True while a `run.gc` or `data.gc` request waits on the mutex. */
   manualGcWaiting(): boolean;
 }
 
 export interface RetentionGcDeps {
   readonly intervalMs: number;
-  /** Delay before the first pass; defaults to the interval. */
   readonly initialDelayMs?: number;
-  /** Budget of each pass; defaults to `DEFAULT_RETENTION_GC_BUDGET_MS`. */
   readonly budgetMs?: number;
-  /** This process, recorded on the hourly claim. */
   readonly instanceId: string;
-  /** Reads `.swamp.yaml` each tick, so edits apply without a restart. */
   readPolicy(): Promise<RetentionPolicy>;
-  /** Claims each hour's pass; absent, every tick runs. */
   readonly watermarks?: RetentionWatermarkRepository;
-  /** Serializes the pass with the `run.gc` and `data.gc` requests. */
   readonly mutex: GcMutex;
-  /** Runs one pass in batches; see `runRepoRetention`. */
   runPass(
     policy: RetentionPolicy,
     control: RetentionPassControl,
   ): Promise<RetentionPassResult>;
-  /** Called with each finished pass, e.g. to write the audit summary. */
   onPass?(result: RetentionPassResult): void;
   now?(): Date;
 }
 
 /**
- * Applies the repository's retention on a timer while serve runs
- * (swamp-club#3473). Runs only when `.swamp.yaml` sets
- * `garbageCollection.automatic: true`. Of several serves sharing a
- * datastore, the one that claims the hour runs its pass; the others skip.
- * A pass works in small batches and stops at a batch boundary on shutdown,
- * when its budget is spent, or when a manual gc waits for the mutex, so
- * the next pass continues where it stopped.
+ * runs only when garbageCollection.automatic is true; of serves sharing a
+ * datastore the one claiming the hour runs its pass. A pass stops at a batch
+ * boundary on shutdown, spent budget or a waiting manual gc.
  */
 export class RetentionGcService {
   readonly #deps: RetentionGcDeps;
@@ -113,7 +96,6 @@ export class RetentionGcService {
     }
   }
 
-  /** Runs one tick now; for tests. Undefined when the tick ran no pass. */
   async runOnce(): Promise<RetentionPassResult | undefined> {
     return await this.#sweep();
   }

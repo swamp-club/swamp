@@ -27,7 +27,6 @@ import {
   healthSnapshotFor,
 } from "./health_snapshot_view.ts";
 
-/** A webhook route's queue state with nothing running or waiting. */
 const IDLE_WEBHOOK = {
   active: 0,
   queued: 0,
@@ -142,11 +141,6 @@ function reader(
   };
 }
 
-/**
- * Resolves the fixture's entries the way the repositories would: `wf-2` is the
- * id of `secret-flow`, `echo-model` is of type `@acme/echo`, and `ghost`
- * exists nowhere.
- */
 const RESOLVER: HealthResourceResolver = {
   workflow: (idOrName) => {
     const name = idOrName === "wf-2" ? "secret-flow" : idOrName;
@@ -340,7 +334,6 @@ Deno.test("healthSnapshotFor: an entry that cannot be resolved is hidden", async
   assertEquals(view.webhooks, []);
 });
 
-/** Wraps RESOLVER, counting lookups per kind and name. */
 function countingResolver(): {
   resolver: HealthResourceResolver;
   lookups: (key: string) => number;

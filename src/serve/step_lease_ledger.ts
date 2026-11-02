@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve's store of step leases (see design/enablers/remote-execution.md).
- *
- * A lease transition reads one lease record, applies the lease lifecycle
- * from step_lease_model.ts and writes the next version, through the same
- * resource reader and writer a `swamp/step-lease` method run uses. It does
- * not run the method itself: a method run resolves, evaluates and records a
- * whole run around a body that only reads and writes that one record, and
- * a finished step waits on its `complete` (swamp-club#4038).
+ * transitions use the same resource reader and writer a swamp/step-lease run
+ * does but skip the method run, which would resolve, evaluate and record a
+ * whole run around a body that only touches one record
  */
 
 import {
@@ -50,7 +45,6 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import type { ModelMethodRunner } from "./worker_gateway.ts";
 
-/** The step-lease transitions dispatch records. */
 export interface StepLeaseStore {
   acquire(args: AcquireLeaseArgs): Promise<void>;
   markWrites(leaseId: string): Promise<void>;
@@ -61,14 +55,12 @@ export interface StepLeaseStore {
   ): Promise<void>;
 }
 
-/** The step-lease method that ends a lease in each state. */
 export const LEASE_END_METHODS: Readonly<Record<EndedLeaseState, string>> = {
   completed: "complete",
   failed: "fail",
   expired: "expire",
 };
 
-/** Lease transitions as `swamp/step-lease` method runs on the `leases` instance. */
 export function methodRunnerLeaseStore(
   runModelMethod: ModelMethodRunner,
 ): StepLeaseStore {
@@ -91,9 +83,8 @@ export function methodRunnerLeaseStore(
 }
 
 /**
- * Writes lease records directly. Until the `leases` definition exists a
- * transition runs through `fallback`, the method run, which creates it the
- * way any direct type execution does.
+ * writes lease records directly; until the leases definition exists a
+ * transition runs through fallback, the method run, which creates it
  */
 export class StepLeaseLedger implements StepLeaseStore {
   readonly #repoContext: Pick<

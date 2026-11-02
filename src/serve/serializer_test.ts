@@ -31,8 +31,6 @@ import {
 } from "./serializer.ts";
 import type { SwampError } from "../libswamp/errors.ts";
 
-// ── serializeSwampError ─────────────────────────────────────────────────
-
 Deno.test("serializeSwampError - basic error with code and message", () => {
   const err: SwampError = {
     code: "not_found",
@@ -78,8 +76,6 @@ Deno.test("serializeSwampError - does not include cause (non-serializable)", () 
   assertEquals("cause" in result, false);
 });
 
-// ── serializeEvent with error kind ──────────────────────────────────────
-
 Deno.test("serializeEvent - error event serializes the SwampError", () => {
   const swampError: SwampError = {
     code: "not_authenticated",
@@ -108,8 +104,6 @@ Deno.test("serializeEvent - error event with details", () => {
     },
   });
 });
-
-// ── serializeEvent with non-error kinds (jsonSafeClone) ─────────────────
 
 Deno.test("serializeEvent - simple event passes through", () => {
   const event = { kind: "started", runId: "abc-123", workflowName: "deploy" };
@@ -222,8 +216,6 @@ Deno.test("deserializeEvent: error events round-trip losslessly through the wire
     message: string;
     details?: unknown;
   };
-  // The restored error satisfies the SwampError structural contract that
-  // renderers consume; only the non-rendered `cause` Error is dropped.
   assertEquals(error.code, "method_execution_failed");
   assertEquals(error.message, "boom in method");
   assertEquals(error.details, { stepName: "build", attempt: 2 });
@@ -398,11 +390,9 @@ Deno.test("serializeEvent: a wait's key and a key's holder round-trip in kinds a
   assertEquals(failed.waitKeyHolder, waitKeyHolder);
 });
 
-// Every kind a workflow run publishes, checked against the union by the
-// compiler: `true` for a kind sent to clients, `false` for one kept local.
-// A released client dispatches by kind and crashes on one it does not know,
-// so a new kind starts as `false` here, and what it says is carried in a
-// field of a kind already sent (swamp-club#3110).
+// every workflow run event kind, checked against the union: true for a kind
+// sent to clients, false for one kept local; a released client crashes on an
+// unknown kind, so new kinds start false
 const WORKFLOW_RUN_EVENT_KINDS: Record<WorkflowRunEvent["kind"], boolean> = {
   validating_inputs: true,
   superseded_runs: true,

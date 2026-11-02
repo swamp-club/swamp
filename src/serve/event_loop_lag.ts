@@ -18,17 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Event-loop lag sampling for `swamp serve` (swamp-club#3741).
- *
- * A timer armed for `intervalMs` from now fires late by however long the
- * event loop was busy with other work when it came due. The monitor keeps
- * one timer armed at a time, records each firing's lateness, and reports the
- * largest lateness seen over a rolling window. A traced request records that
- * value when it ends, which tells a burst of slow requests that waited on a
- * blocked event loop apart from ones that waited on I/O.
- *
- * The timer is unref'd, so the monitor never keeps the process alive, and is
- * armed outside any active span, so it never joins a request's trace.
+ * the timer is unref'd so it never keeps the process alive, and armed outside
+ * any active span so it never joins a request's trace
  */
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
@@ -36,11 +27,8 @@ import { runDetached } from "../infrastructure/tracing/mod.ts";
 export const DEFAULT_EVENT_LOOP_LAG_INTERVAL_MS = 250;
 export const DEFAULT_EVENT_LOOP_LAG_WINDOW_MS = 10_000;
 
-/** The clock and timer functions the monitor uses; replaced in tests. */
 export interface EventLoopLagMonitorOptions {
-  /** How long after arming each sampling timer is due. */
   intervalMs?: number;
-  /** How far back {@link EventLoopLagMonitor.maxLagMs} looks. */
   windowMs?: number;
   now?: () => number;
   setTimeout?: (fn: () => void, delayMs: number) => number;
@@ -76,13 +64,11 @@ export class EventLoopLagMonitor {
     this.#unrefTimer = options.unrefTimer ?? ((id) => Deno.unrefTimer(id));
   }
 
-  /** Begins sampling. Does nothing while already started. */
   start(): void {
     if (this.#timer !== null) return;
     this.#arm();
   }
 
-  /** Stops sampling and forgets every sample. Safe to call repeatedly. */
   stop(): void {
     if (this.#timer !== null) {
       this.#clearTimeout(this.#timer);
@@ -91,11 +77,6 @@ export class EventLoopLagMonitor {
     this.#samples = [];
   }
 
-  /**
-   * The largest lag, in milliseconds, among the samples taken within the
-   * window ending now; `undefined` while stopped or before the first sample
-   * in the window.
-   */
   maxLagMs(): number | undefined {
     if (this.#timer === null) return undefined;
     this.#prune(this.#now());
@@ -108,8 +89,8 @@ export class EventLoopLagMonitor {
   }
 
   /**
-   * Arms the next sampling timer. Each firing re-arms from its own time, so
-   * one late firing never shifts the lag measured by the next.
+   * each firing re-arms from its own time, so one late firing never shifts the
+   * lag measured by the next
    */
   #arm(): void {
     const expectedAt = this.#now() + this.#intervalMs;

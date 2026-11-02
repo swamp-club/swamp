@@ -57,7 +57,6 @@ const logger = getSwampLogger(["serve", "token-gc"]);
 
 const TOKEN_DATA_NAME = "token-main";
 
-/** The caller recorded in the vault audit log for the GC's deletes. */
 const GC_CALLER = "serve:token-gc";
 
 export interface ServerTokenGcDepsInput {
@@ -70,29 +69,23 @@ export interface ServerTokenGcDepsInput {
     VaultService,
     "delete" | "supportsDelete" | "list"
   >;
-  /** Built over the process's shared repositories and `markDirty` hook. */
   readonly modelDeleteDeps: ModelDeleteDeps;
   /**
-   * That `markDirty` hook. Each collection runs in a root unit of work over
-   * it, so its deletes stage into the root (swamp-club#3056).
+   * each collection runs in a root unit of work over this hook, so its deletes
+   * stage into the root
    */
   readonly markDirty?: MarkDirtyHook;
   readonly libCtx: LibSwampContext;
-  /** Pushes local changes to the remote datastore; absent without one. */
   readonly pushChanged?: () => Promise<void>;
   /**
-   * Pulls remote changes into the local copy; absent without a remote
-   * datastore. Each collection pulls before it re-reads, so it sees a write
-   * another replica pushed (swamp-club#2534).
+   * each collection pulls before it re-reads, so it sees a write another
+   * replica pushed
    */
   readonly pullChanged?: () => Promise<void>;
-  /** Serve's sync gate; absent without a remote datastore. */
   readonly syncGate?: SyncGate;
   /**
-   * Runs `fn` holding the server token name lock for `tokenName`, the lock
-   * every other writer of a token's record and secret takes
-   * (`withServerTokenLock`). Unlike the sync gate it exists in every
-   * deployment (swamp-club#2534).
+   * the server token name lock every other writer of a token's record and
+   * secret takes; unlike the sync gate it exists in every deployment
    */
   readonly withTokenLock: <T>(
     tokenName: string,
@@ -101,14 +94,9 @@ export interface ServerTokenGcDepsInput {
 }
 
 /**
- * Builds the repositories the server token GC reads and deletes through.
- *
- * The owning definition is looked up through the process's shared definition
- * repository, the one authentication reads through (`readServerTokenRecord`),
- * so the GC and authentication always agree on which definition owns a name.
- * That repository searches the primary models directory first, then the
- * auto-definitions directory, and deletes a definition from either. Data,
- * outputs and marks go through the process's shared repositories too.
+ * the owning definition is looked up in the shared repository authentication
+ * reads, so GC and authentication agree who owns a name; it searches models
+ * first, then auto-definitions, and deletes from either
  */
 export function createServerTokenGcRepos(
   repoDir: string,
@@ -133,15 +121,9 @@ export function createServerTokenGcRepos(
 }
 
 /**
- * Wires `ServerTokenGcService` to the repository, the vaults and the sync
- * service.
- *
- * Every secret key it deletes is derived from the token name, never read
- * from the persisted `token-main` record: anyone who can write the datastore
- * could otherwise point a revoked record at an unrelated secret and have
- * serve delete it. And because that key is shared by every definition that
- * has carried the name, the secret is only deleted when the record being
- * collected belongs to the definition that currently owns the name.
+ * secret keys derive from the token name, never the persisted record, so a
+ * datastore writer cannot aim a revoked record at another secret; deleted only
+ * when the record's definition owns the name
  */
 export function createServerTokenGcDeps(
   input: ServerTokenGcDepsInput,
@@ -181,10 +163,8 @@ export function createServerTokenGcDeps(
     }
   };
 
-  // Each legacy vault is listed at most once per sweep: listTokens starts a
-  // sweep and clears the cache. Tokens are no longer minted into these
-  // vaults, so a listing cannot miss a key added during the sweep. A failed
-  // listing is not cached, so the next legacy token in the sweep retries it.
+  // each legacy vault is listed once per sweep, as tokens are not minted there;
+  // a failed listing is not cached so the next legacy token retries it
   let listings = new Map<string, Set<string>>();
   const listVault = async (vaultName: string): Promise<Set<string>> => {
     const cached = listings.get(vaultName);
@@ -224,13 +204,9 @@ export function createServerTokenGcDeps(
       );
       return;
     }
-    // Anyone who can write the datastore can change the recorded vault, so
-    // the key is only deleted from a vault whose listing holds it. A vault
-    // that cannot be listed is left alone and the token is still collected:
-    // with its records and _token-secrets copy gone, the leftover secret
-    // cannot authenticate, and keeping the token would leave it listed for
-    // good when the vault's credentials allow deletes but not listing. A
-    // failed delete still keeps the token for the next sweep.
+    // the recorded vault is untrusted, so delete only from a vault whose
+    // listing holds the key. An unlistable vault is left alone and the token
+    // still collected; a failed delete keeps it for the next sweep.
     let keys: Set<string>;
     try {
       keys = await listVault(token.vaultName);
@@ -251,11 +227,9 @@ export function createServerTokenGcDeps(
   };
 
   const deleteRecords = async (definition: Definition): Promise<void> => {
-    // The lookup is pinned to the definition already resolved by type and
-    // name: modelDelete's default lookup searches every model type by name,
-    // so a user model sharing the token's name could match. The workflow
-    // reference check is skipped because it also matches by name, and a
-    // server-token definition is never a workflow step's model.
+    // lookup pinned to the resolved definition: modelDelete's default searches
+    // every model type by name, so a user model sharing the token's name could
+    // match; the workflow reference check is skipped likewise
     const scopedDeps: ModelDeleteDeps = {
       ...modelDeleteDeps,
       lookupDefinition: () =>
@@ -311,24 +285,9 @@ export function createServerTokenGcDeps(
     },
 
     collectToken: (listed, isEligible) =>
-      // One unit under the token's name lock, which mint, rotate, revoke and
-      // the secret migration hold across their writes in the CLI and in
-      // serve, so the re-read below sees the token as it is now rather than
-      // as the sweep listed it. The lock exists in every deployment; the
-      // sync gate only with a remote datastore (swamp-club#2534). Like the
-      // token handlers, the lock is taken before the gate, so the GC never
-      // waits on it while holding the gate.
-      //
-      // Inside it, the sync gate: the local deletes and the push that
-      // commits them must not interleave with a poller pull, or the pull
-      // would restore the deleted files (swamp-club#2247). The GC runs from
-      // a timer, never inside a gated handler, so taking the non-reentrant
-      // gate here is safe.
-      //
-      // The lock orders the GC after another replica's write, but the
-      // re-read is of the local copy, so the GC pulls first, as the token
-      // handlers do. A failed pull fails the collection: deleting on a stale
-      // record is what the lock is there to prevent.
+      // name lock before the sync gate, so GC never waits on the lock while
+      // holding the gate. Pull before the re-read; a failed pull fails the
+      // collection, since deleting on a stale record is what the lock prevents
       withTokenLock(listed.name, () =>
         withSyncGate(syncGate, async () => {
           if (pullChanged) await pullChanged();
@@ -336,9 +295,9 @@ export function createServerTokenGcDeps(
           if (!token || !isEligible(token)) return "skipped";
 
           let touchedLocalFiles = false;
-          // The deletes run in a root unit of work whose flush is the push,
-          // on every outcome (swamp-club#3056). pushDeletes logs a failed push
-          // rather than throwing it, so a collection error is never masked.
+          // the deletes run in a root unit of work whose flush is the push on
+          // every outcome; pushDeletes logs a failed push rather than throwing,
+          // so a collection error is never masked
           return await runInRootUnitOfWork({ markDirty }, {
             // Push whatever was deleted, even after a partial failure, so no
             // delete is left uncommitted.

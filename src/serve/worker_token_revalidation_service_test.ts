@@ -132,11 +132,11 @@ Deno.test("WorkerTokenRevalidationService: a token that reappears resets the mis
     readTokens: () =>
       Promise.resolve(present ? tokens(tokenRecord({})) : tokens()),
   });
-  await service.runOnce(); // missing once
+  await service.runOnce();
   present = true;
-  await service.runOnce(); // readable again
+  await service.runOnce();
   present = false;
-  await service.runOnce(); // missing once more — not two in a row
+  await service.runOnce();
   assertEquals(calls, []);
 });
 
@@ -199,7 +199,6 @@ Deno.test("WorkerTokenRevalidationService: dispose stops further passes", async 
   });
   service.start();
   await service.dispose();
-  // After dispose, a pass exits before reading any token.
   assertEquals(await service.runOnce(), []);
   assertEquals(reads, 0);
 });

@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Re-checks the server token behind every open WebSocket session and ends the
- * sessions whose token has lost its authority — revoked, expired, deleted, or
- * rotated — wherever that happened: on this instance, on an HA peer (the
- * runtime data poller brings the record in), or from the CLI.
+ * ends sessions whose token lost its authority (revoked, expired, deleted,
+ * rotated) wherever that happened: here, on an HA peer, or from the CLI
  */
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
@@ -40,7 +38,6 @@ import {
 
 const logger = getSwampLogger(["serve", "token-session-revalidation"]);
 
-/** Matches the default datastore poll interval, bounding HA revoke latency. */
 export const DEFAULT_TOKEN_SESSION_REVALIDATION_MS = 30_000;
 
 const REVOKED_CLOSE_CODE = 4003;
@@ -56,10 +53,8 @@ export type TokenSessionVerdict =
   };
 
 /**
- * Decides whether a session opened with the mint `sessionCreatedAt` of a token
- * may stay open. `token` is the current record, or null when it no longer
- * exists. A session is kept only while its own mint is still the active,
- * unexpired record.
+ * a session is kept only while its own mint is still the active, unexpired
+ * record
  */
 export function tokenSessionVerdict(
   token: ServerToken | null,
@@ -121,10 +116,8 @@ export interface TokenSessionCloseOptions {
 
 export interface TokenSessionRevalidationDeps {
   readonly intervalMs: number;
-  /** Each distinct token mint with at least one open session. */
   listTokenSessions(): readonly { name: string; createdAt: string }[];
   readToken(name: string): Promise<ServerToken>;
-  /** Closes (and audits) the sessions of one mint; returns how many. */
   terminateSessions(name: string, options: TokenSessionCloseOptions): number;
   now?(): number;
 }
@@ -157,7 +150,6 @@ export class TokenSessionRevalidationService {
     await this.#pending;
   }
 
-  /** Runs one revalidation pass; returns the number of sessions closed. */
   async runOnce(): Promise<number> {
     return await this.#revalidate();
   }
@@ -218,9 +210,8 @@ export class TokenSessionRevalidationService {
           }
           continue;
         } else {
-          // A transient read failure must not drop every session; the next
-          // pass retries, and the 8-hour session cap still bounds the worst
-          // case.
+          // a transient read failure must not drop every session; the next pass
+          // retries, and the session cap still bounds the worst case
           logger.warn(
             "Could not revalidate sessions for token {name}, keeping them until the next pass: {error}",
             { name, error: message },

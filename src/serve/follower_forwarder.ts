@@ -17,31 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Forwarding a client's WebSocket requests from a serve follower to its
- * team's leader (swamp-club#4120).
- *
- * At upgrade a follower keeps the caller's credential (the bearer token, or
- * the dashboard session cookie with its Origin) as connection-private state,
- * never in socket metadata or logs. The first request the follower does not
- * answer itself opens one socket to the leader for that client connection,
- * with that credential: the leader authenticates and authorises the caller
- * as if it had connected directly, so the follower never says who the
- * caller is. Requests pass through unchanged by id, and every frame the
- * leader sends comes back to the client. A cancel for a forwarded request,
- * or for a run the follower does not have, passes on too.
- *
- * A worker's connection is relayed whole from its first RPC frame: from
- * then on the worker is in the leader's pool.
- *
- * When the leader's socket closes with requests in flight, each gets the
- * `serve_not_leader` refusal, marked `inFlight` when the request had been
- * sent: it may already have run, so it is never sent again. A close the
- * leader gave the session (revoked, expired) closes the client the same way.
- *
- * @module
- */
-
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
@@ -49,14 +24,8 @@ import { closeSession, sendError, sendSerialized } from "./handlers/shared.ts";
 
 const logger = getSwampLogger(["serve", "follower-forwarder"]);
 
-/** Close codes the leader ends a session with that end the client's too. */
 const SESSION_CLOSE_CODES: ReadonlySet<number> = new Set([4002, 4003]);
 
-/**
- * What a follower needs to reach the leader as the caller: the headers that
- * carry the caller's credential, and the path and query the caller
- * connected with (credentials and compression removed).
- */
 export interface ForwardCredential {
   readonly headers: Readonly<Record<string, string>>;
   readonly pathAndQuery: string;
@@ -66,12 +35,9 @@ const credentials = new WeakMap<WebSocket, ForwardCredential>();
 const forwarders = new WeakMap<WebSocket, FollowerForwarder>();
 
 /**
- * The caller's credential from its upgrade request, read before the upgrade
- * (the request's headers cannot be read after it): the bearer token (from
- * the header, the `bearer.` subprotocol or the query) as an `Authorization`
- * header, or the dashboard session cookie with the browser's Origin. With
- * auth off, no credential: the leader takes the caller as it takes any
- * caller then.
+ * read before the upgrade, since request headers cannot be read after it; with
+ * auth off there is no credential and the leader takes the caller as it takes
+ * any caller then
  */
 export function forwardCredentialOf(
   req: Request,
@@ -91,20 +57,19 @@ export function forwardCredentialOf(
     if (cookie !== null) headers["cookie"] = cookie;
     if (origin !== null) headers["origin"] = origin;
   }
-  // The address this node took the caller's from: its own peer's, unless
-  // it trusts the proxy in front of it, so a caller cannot name the address
-  // the leader limits and audits it by.
+  // the address this node took the caller's from: its own peer's unless it
+  // trusts the proxy in front, so a caller cannot name the address the leader
+  // limits and audits it by
   const prior = trustProxy ? req.headers.get("x-forwarded-for") : null;
   headers["x-forwarded-for"] = prior ? `${prior}, ${clientIp}` : clientIp;
   const url = new URL(req.url);
-  // The token travels in the header, and the leader's frames come back as
-  // text: the follower compresses them for its client as the client asked.
+  // the token travels in the header and the leader's frames come back as text,
+  // so the follower compresses them for its client as asked
   url.searchParams.delete("token");
   url.searchParams.delete("compress");
   return { headers, pathAndQuery: url.pathname + url.search };
 }
 
-/** Keeps `credential` for `socket`, for its forwards to the leader. */
 export function rememberForwardCredential(
   socket: WebSocket,
   credential: ForwardCredential,
@@ -112,10 +77,6 @@ export function rememberForwardCredential(
   credentials.set(socket, credential);
 }
 
-/**
- * The forwarder for `socket`, made on first use; undefined when this node
- * has no route to a leader or kept no credential for the socket.
- */
 export function forwarderFor(
   socket: WebSocket,
   link: LeaderLink | undefined,
@@ -130,14 +91,12 @@ export function forwarderFor(
   return forwarder;
 }
 
-/** The forwarder `socket` already has, if any. */
 export function existingForwarder(
   socket: WebSocket,
 ): FollowerForwarder | undefined {
   return forwarders.get(socket);
 }
 
-/** Whether `raw` is a worker's RPC frame (`rpc.*`). */
 export function isRpcFrame(raw: string): boolean {
   if (!raw.includes('"rpc.')) return false;
   try {
@@ -158,11 +117,9 @@ interface Forwarded {
   readonly type: string;
   sent: boolean;
   readonly done: () => void;
-  /** The relay of this request's frames, in order. */
   chain: Promise<void>;
 }
 
-/** One client connection's route to the leader. */
 export class FollowerForwarder {
   readonly #client: WebSocket;
   readonly #link: LeaderLink;
@@ -186,16 +143,13 @@ export class FollowerForwarder {
     client.addEventListener("close", () => this.close());
   }
 
-  /** Whether the whole connection is relayed (a worker's). */
   get relaying(): boolean {
     return this.#relaying;
   }
 
   /**
-   * Passes request `id` of `type` (its raw frame `raw`) to the leader.
-   * Returns false when no leader can be reached: the caller refuses it.
-   * `done` runs once the request's last frame came back, or it failed;
-   * aborting `signal` while the client is connected cancels it upstream.
+   * returns false when no leader can be reached, so the caller refuses it;
+   * aborting signal while the client is connected cancels upstream
    */
   forward(
     id: string,
@@ -214,13 +168,13 @@ export class FollowerForwarder {
     };
     this.#pending.set(id, entry);
     signal.addEventListener("abort", () => {
-      // A client that went away closes the leader's socket instead, as its
-      // own disconnect would have.
+      // a client that went away closes the leader's socket instead, as its own
+      // disconnect would have
       if (this.#client.readyState !== WebSocket.OPEN) return;
       if (this.#pending.get(id) !== entry) return;
       this.#send(JSON.stringify({ type: "cancel", id }));
-      // A cancelled request may end with no frame (a detached attach): its
-      // slot is free now, and any frame still coming passes through.
+      // a cancelled request may end with no frame (a detached attach): its slot
+      // is free now, and any frame still coming passes through
       this.#pending.delete(id);
       entry.chain = entry.chain.then(() => entry.done());
     }, { once: true });
@@ -229,21 +183,16 @@ export class FollowerForwarder {
   }
 
   /**
-   * Passes a client's `cancel` for `id` on when this node has nothing of
-   * that id: a run executes on the leader, never on a follower.
+   * a run executes on the leader, never on a follower, so a cancel for an id
+   * this node does not have goes to the leader
    */
   cancel(raw: string): void {
-    // Opened for it when this connection forwarded nothing yet: a client
-    // that reconnected cancels a run it started on another connection.
+    // opened for it when this connection forwarded nothing yet: a client that
+    // reconnected cancels a run it started on another connection
     if (this.#connect() === undefined) return;
     this.#send(raw);
   }
 
-  /**
-   * Relays the whole connection from `raw` on: a worker's, whose first RPC
-   * frame (its enrollment) came to a follower. Returns false when no leader
-   * can be reached.
-   */
   relay(raw: string): boolean {
     this.#relaying = true;
     const upstream = this.#connect();
@@ -255,14 +204,12 @@ export class FollowerForwarder {
     return true;
   }
 
-  /** Relays one more frame of a relayed connection. */
   relayFrame(data: string | ArrayBuffer | Blob): void {
     const upstream = this.#upstream;
     if (upstream === undefined) return;
     this.#send(data);
   }
 
-  /** Closes the leader's socket, once the client's is gone. */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -340,8 +287,8 @@ export class FollowerForwarder {
     const final = isFinalFrame(frame, entry.type);
     if (final) this.#pending.delete(frame.id!);
     entry.chain = entry.chain.then(async () => {
-      // The caller reads its own write from this node next: the reply
-      // waits until this node's copy holds what the leader had committed.
+      // the caller reads its own write from this node next: the reply waits
+      // until this node's copy holds what the leader had committed
       if (final && frame.type !== "error" && this.#barrier !== undefined) {
         await this.#barrier().catch(() => {});
       }
@@ -382,9 +329,8 @@ export class FollowerForwarder {
   }
 }
 
-/** Replies of another type that end a request, by request type. */
 const FINAL_REPLY_TYPES: Readonly<Record<string, readonly string[]>> = {
-  // A run live elsewhere, or one that ended without its stream.
+  // a run live elsewhere, or one that ended without its stream
   "run.attach": ["run.elsewhere", "run.interrupted"],
 };
 
@@ -408,11 +354,6 @@ function parseFrame(raw: string): Frame | undefined {
   }
 }
 
-/**
- * Whether `frame` is the last the leader sends for a request of
- * `requestType`: an error or `done` frame, or a reply that is not a stream
- * event and does not say more follows (`payload.done: false`).
- */
 export function isFinalFrame(frame: Frame, requestType: string): boolean {
   if (frame.type === "error" || frame.type === "done") return true;
   if (FINAL_REPLY_TYPES[requestType]?.includes(frame.type)) return true;

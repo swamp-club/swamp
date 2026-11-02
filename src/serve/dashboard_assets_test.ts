@@ -48,7 +48,6 @@ Deno.test("DASHBOARD_DIST_DIR: resolves to packages/dashboard/dist at the repo r
     DASHBOARD_DIST_DIR,
     resolve(import.meta.dirname!, "..", "..", "packages", "dashboard", "dist"),
   );
-  // The parent is the dashboard package and its grandparent's parent the repo.
   assert(Deno.statSync(join(DASHBOARD_DIST_DIR, "..", "package.json")).isFile);
   assert(
     Deno.statSync(join(DASHBOARD_DIST_DIR, "..", "..", "..", "deno.json"))

@@ -20,7 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { EventLoopLagMonitor } from "./event_loop_lag.ts";
 
-/** A hand-driven clock and timer queue. */
 function fakeTimers() {
   let clock = 1_000;
   let nextId = 1;
@@ -36,7 +35,6 @@ function fakeTimers() {
     advance(ms: number) {
       clock += ms;
     },
-    /** Fires the single pending timer `lateByMs` after it was due. */
     fire(lateByMs: number) {
       assertEquals(pending.size, 1);
       const [[id, timer]] = [...pending];
@@ -116,7 +114,6 @@ Deno.test("EventLoopLagMonitor: one late firing does not inflate the next sample
   timers.fire(500);
   timers.fire(3);
   timers.advance(800);
-  // The 500 ms sample has left the window; the next one measured only 3 ms.
   assertEquals(monitor.maxLagMs(), 3);
   monitor.stop();
 });
@@ -134,7 +131,6 @@ Deno.test("EventLoopLagMonitor: reports the max over the rolling window and expi
   timers.fire(20);
   assertEquals(monitor.maxLagMs(), 300);
 
-  // Move just past the 300 ms sample's expiry: only the 20 ms one remains.
   timers.advance(1_000 - 120 + 1);
   assertEquals(monitor.maxLagMs(), 20);
 
@@ -153,7 +149,6 @@ Deno.test("EventLoopLagMonitor: keeps samples bounded by the window", () => {
   monitor.start();
   timers.fire(1_000);
   for (let i = 0; i < 50; i++) timers.fire(1);
-  // Fifty more firings 101 ms apart push the large sample out of the window.
   assertEquals(monitor.maxLagMs(), 1);
   monitor.stop();
 });

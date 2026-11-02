@@ -62,7 +62,6 @@ class CapturingRepository implements TelemetryRepository {
 
 const TARGET = { modelName: "enricher", methodName: "enrich" };
 
-/** Installs an active service for the duration of `fn`. */
 async function withActiveService(
   fn: (repo: CapturingRepository) => Promise<void>,
 ): Promise<void> {
@@ -76,9 +75,6 @@ async function withActiveService(
 }
 
 Deno.test("createRunTelemetry: returns undefined when telemetry is disabled", () => {
-  // --no-telemetry, the marker opt-out, the user-level opt-out, and an init
-  // failure all leave no active service. Serve must then stay exactly as
-  // silent as it was before any of this was wired.
   clearActiveTelemetryService();
   assertEquals(createRunTelemetry("schedule", "nightly"), undefined);
 });
@@ -241,7 +237,6 @@ Deno.test("createCommandTelemetry: records a success entry with initiatedBy", as
     assertEquals(entry.invocation.subcommand, "method run");
     assertEquals(entry.invocation.args, ["enricher", "enrich"]);
     assertEquals(entry.invocation.commandPath, ["model", "method", "run"]);
-    // Synthetic: no root word was typed, so no commandSpelling (swamp-club#3411).
     assertEquals("commandSpelling" in entry.toData().invocation, false);
     assertEquals(entry.result.status, "success");
     assertEquals(entry.initiatedBy, "user:abc-123");

@@ -18,27 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Letting go of work a background service no longer wants once it is
- * stopped: a read that does not watch the service's signal, or watches it
- * only between records, must not hold shutdown for as long as it takes
- * (swamp-club#3468, swamp-club#3472).
+ * a read that does not watch the service's signal, or only between records,
+ * must not hold shutdown for as long as it takes
  */
 
-/** What {@link untilStopped} settles with when the stop comes first. */
 export const STOPPED = Symbol("stopped");
 
-/** A promise that resolves once a signal aborts. */
 export interface Stopped {
-  /** Resolves with {@link STOPPED} once the signal aborts; never rejects. */
   readonly stopped: Promise<typeof STOPPED>;
-  /** Stops listening to the signal. */
   release(): void;
 }
 
-/**
- * Resolves with {@link STOPPED} once `signal` aborts, at once if it already
- * has. Call `release` when done, so the listener does not outlive the work.
- */
 export function stoppedBy(signal: AbortSignal): Stopped {
   const { promise: stopped, resolve } = Promise.withResolvers<
     typeof STOPPED
@@ -53,9 +43,8 @@ export function stoppedBy(signal: AbortSignal): Stopped {
 }
 
 /**
- * Settles as `work` does, or with {@link STOPPED} once `stopped` resolves
- * first. `work` is then let go: its outcome, failure included, is no longer
- * wanted.
+ * once stopped resolves first, work is let go: its outcome, failure included,
+ * is not wanted
  */
 export function untilStopped<T>(
   work: Promise<T>,

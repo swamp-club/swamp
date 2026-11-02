@@ -18,29 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The remote-execution HTTP data plane (see design/enablers/remote-execution.md,
- * "Data plane: two transports").
- *
- * Byte-heavy operations only — artifact reads, writes, appends, bundle and
- * asset fetches. Served from the same listener as the control socket; over
- * TLS Deno negotiates HTTP/2 via ALPN, over plain TCP the identical handlers
- * run on HTTP/1.1. Every route is bearer-authenticated with the worker's
- * session credential, and every data read and write is authorized against
- * the worker's active dispatch: a read is held to the dispatch's behavior
- * type, and persistence flows through the same data writers a local run
- * uses, so declared-spec enforcement comes for free.
- *
- * Routes:
- *   GET    /data/{type}/{modelId}/{dataName}/{version}   read artifact bytes
- *   POST   /data/resource                                write a resource (JSON)
- *   DELETE /data/resource                                delete a resource
- *   POST   /data/writers                                 open a file writer
- *   POST   /data/writers/{id}/line                       durable line append
- *   POST   /data/writers/{id}/content                    stream bytes + finalize
- *   POST   /data/writers/{id}/finalize                   finalize a line writer
- *   POST   /data/secrets                                 load dispatch references
- *   GET    /bundle/{fingerprint}                         fetch extension bundle
- *   GET    /bundle/{fingerprint}/file/{relPath}          fetch co-located asset
+ * byte-heavy routes only, bearer-authenticated with the worker's session
+ * credential and authorized against its active dispatch; persistence uses the
+ * same data writers as a local run
  */
 
 import type { z } from "zod";
@@ -100,13 +80,10 @@ export interface DataPlaneOptions {
   };
   dispatches: DispatchRegistry;
   bundles: BundleRegistry;
-  /** Fired on a dispatch's first durable write (drives lease.mark_writes). */
   onFirstWrite?: (dispatch: ActiveDispatch) => Promise<void>;
-  /** Overridable for tests; defaults to VaultService.fromRepository. */
   createVaultService?: () => Promise<VaultService>;
 }
 
-/** The caller address serve audit records when none is passed to `handle`. */
 const UNKNOWN_SOURCE_IP = "unknown";
 
 interface WriterSession {
@@ -126,11 +103,6 @@ function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
 }
 
-/**
- * Parses the optional write overrides a worker sends. Absent overrides mean
- * the spec defaults, as for a local write. Returns the error message for a
- * malformed value, naming the field.
- */
 function parseOverrides<T>(
   schema: z.ZodType<T>,
   raw: unknown,
@@ -148,9 +120,8 @@ function parseOverrides<T>(
 }
 
 /**
- * How long a failed dispatch waits for its write requests still running
- * before reporting the versions they finalized (swamp-club#3146). The step
- * holds its model lock meanwhile.
+ * how long a failed dispatch waits for its running write requests before
+ * reporting finalized versions; the step holds its model lock meanwhile
  */
 export const DISPATCH_WRITES_SETTLE_TIMEOUT_MS = 10_000;
 
@@ -176,13 +147,8 @@ function handleToJson(handle: DataHandle): Record<string, unknown> {
 }
 
 /**
- * The data plane handler. `handle()` returns null for requests outside its
- * routes so the caller can fall through to other endpoints on the listener.
- */
-/**
- * Whether `req` is for the data plane (`/data/...` or `/bundle/...`). A
- * follower passes such requests on to the leader (swamp-club#4120): a
- * worker's session credentials live only in the leader's memory.
+ * a follower passes these requests on to the leader: a worker's session
+ * credentials live only in the leader's memory
  */
 export function isDataPlaneRequest(req: Request): boolean {
   const root = new URL(req.url).pathname.split("/").find((s) => s.length > 0);
@@ -194,11 +160,10 @@ export class DataPlane {
   readonly #writers = new Map<string, WriterSession>();
   readonly #dispatchesWithWrites = new Set<string>();
   /**
-   * The data versions each dispatch's writes finalized, so a failed
-   * dispatch can still hand them to its lock's push (swamp-club#3146).
+   * versions each dispatch's writes finalized, so a failed dispatch can still
+   * hand them to its lock's push
    */
   readonly #writtenByDispatch = new Map<string, WrittenVersion[]>();
-  /** Write requests still running, per dispatch, and who waits for them. */
   readonly #inFlight = new Map<
     string,
     { count: number; idle: PromiseWithResolvers<void> }
@@ -220,22 +185,20 @@ export class DataPlane {
   }
 
   /**
-   * Where the protected secret load route's audit events go. Serve creates
-   * its audit emitter after the data plane, so it is read per request.
+   * serve creates its audit emitter after the data plane, so it is read per
+   * request
    */
   setAudit(audit: () => DispatchSecretLoadsAudit | undefined): void {
     this.#audit = audit;
   }
 
-  /** Number of open writer sessions (test introspection). */
   get openWriterCount(): number {
     return this.#writers.size;
   }
 
   /**
-   * Drop all writer sessions for a finished or failed dispatch. Called by
-   * the dispatcher when a dispatch ends, so an abandoned line-writer cannot
-   * leak across dispatches.
+   * called when a dispatch ends so an abandoned line-writer cannot leak across
+   * dispatches
    */
   releaseDispatch(dispatchId: string): void {
     for (const [id, session] of [...this.#writers.entries()]) {
@@ -248,10 +211,9 @@ export class DataPlane {
   }
 
   /**
-   * The data versions a dispatch's writes finalized, once its write
-   * requests still running have finished or `timeoutMs` has passed, so a
-   * failed dispatch reports a version a request was still finalizing
-   * (swamp-club#3146). A request that outlives the wait is not reported.
+   * waits for running write requests or timeoutMs so a failed dispatch reports
+   * a version still being finalized; a request outliving the wait is not
+   * reported
    */
   async writtenVersions(
     dispatchId: string,
@@ -278,7 +240,6 @@ export class DataPlane {
     return [...(this.#writtenByDispatch.get(dispatchId) ?? [])];
   }
 
-  /** Counts one write request of `dispatchId`; call the result when it ends. */
   #beginWrite(dispatch: ActiveDispatch): () => void {
     const dispatchId = dispatch.dispatchId;
     const leave = dispatch.progress?.enter("persisting", {
@@ -310,8 +271,8 @@ export class DataPlane {
       modelId: dispatch.modelId,
       dataName: handle.name,
       version: handle.version,
-      // A publish lock tells this write from another clone's of the same
-      // number by it (swamp-club#3934).
+      // a publish lock tells this write from another clone's of the same number
+      // by it
       dataId: handle.dataId,
     });
     this.#writtenByDispatch.set(dispatch.dispatchId, versions);
@@ -360,10 +321,9 @@ export class DataPlane {
         () =>
           root === "bundle"
             ? this.#handleBundle(req, segments)
-            // The writes run in a root unit of work with no push, so they
-            // stage into it instead of reaching the hook through
-            // signalChange's fallback (swamp-club#3056). Nothing pushes
-            // here, as before: the dispatching run's push carries them.
+            // writes run in a root unit of work with no push, so they stage
+            // into it instead of signalChange's fallback; the dispatching run's
+            // push carries them
             : runInRootUnitOfWork(
               this.#options.repoContext,
               { flush: undefined },
@@ -405,10 +365,9 @@ export class DataPlane {
   }
 
   /**
-   * Runs `fn` under a `swamp.serve.data_plane` span. When the request's
-   * dispatch recorded trace headers, the span joins that trace — the run
-   * that dispatched the work — so the runner's reads and writes appear in
-   * it. Otherwise it nests under the request's own span.
+   * joins the dispatch's recorded trace when it has one, so the runner's reads
+   * and writes appear in the dispatching run; otherwise nests under the
+   * request's span
    */
   #inDispatchTrace(
     req: Request,
@@ -441,8 +400,8 @@ export class DataPlane {
           return response;
         },
       );
-    // A dispatch's writes, sensitive fields included, are held to the
-    // dispatching run's vault scope (swamp-club#2676).
+    // a dispatch's writes, sensitive fields included, are held to the
+    // dispatching run's vault scope
     const scope = dispatch?.vaultAccess;
     const scoped = scope ? () => runWithVaultAccess(scope, run) : run;
     const parent = dispatchTraceCarrier(dispatch?.traceHeaders, {
@@ -494,8 +453,8 @@ export class DataPlane {
     this.#dispatchesWithWrites.add(dispatch.dispatchId);
     const onFirstWrite = this.#options.onFirstWrite;
     if (onFirstWrite === undefined) return;
-    // The lease hook waits its turn on serve's transition tail, so the span
-    // separates that wait from the write itself (swamp-club#3755).
+    // the lease hook waits its turn on serve's transition tail, so the span
+    // separates that wait from the write
     await withSpan(
       "swamp.serve.data_plane.mark_writes",
       {},
@@ -531,8 +490,6 @@ export class DataPlane {
     }
     return this.#options.repoContext.unifiedDataRepo;
   }
-
-  // ── /data routes ───────────────────────────────────────────────────────
 
   async #handleData(
     req: Request,
@@ -582,19 +539,17 @@ export class DataPlane {
     const notFound = () =>
       errorResponse(404, `No data '${dataName}' version ${version}`);
 
-    // Control-plane record bytes are never served to a worker (except the
-    // fleet probe reading its own). Judged before the lookup and the ETag
-    // branch, and answered as a missing record, so the response says
-    // nothing about whether such a record exists (swamp-club#3129).
+    // control-plane record bytes are never served to a worker (except the fleet
+    // probe reading its own); judged before the lookup and ETag, answered as
+    // missing so the response reveals nothing
     const dispatch = dispatchId
       ? this.#options.dispatches.forDispatch(workerName, dispatchId)
       : soleDispatch(this.#options.dispatches.forWorker(workerName));
     if (isHiddenFromWorker(type.normalized, dispatch)) return notFound();
 
-    // Every other read is held to the dispatch's own behavior type, as
-    // `getData` is (swamp-club#3528): judged on the normalized type, before
-    // the lookup and the ETag branch, so a refused read learns nothing about
-    // the record. With no resolvable dispatch, #activeDispatch says why.
+    // every other read is held to the dispatch's own behavior type, judged on
+    // the normalized type before the lookup and ETag, so a refused read learns
+    // nothing about the record
     const active = dispatch ?? this.#activeDispatch(workerName, dispatchId);
     if (type.normalized !== active.modelType.normalized) {
       return errorResponse(
@@ -678,7 +633,7 @@ export class DataPlane {
       dispatch.definitionName,
       await this.#vault(),
       dispatch.methodName,
-      undefined, // onEvent
+      undefined,
       dispatch.redactor,
     );
     // Mark the lease BEFORE persisting: a lease may over-report writes
@@ -774,7 +729,7 @@ export class DataPlane {
       dispatch.modelDef.files ?? {},
       dispatch.tagOverrides,
       dispatch.dataOutputOverrides,
-      undefined, // callbacks
+      undefined,
       dispatch.definitionTags,
       dispatch.runtimeTags,
       dispatch.definitionName,
@@ -868,8 +823,6 @@ export class DataPlane {
     }
   }
 
-  // ── /bundle routes ─────────────────────────────────────────────────────
-
   async #handleBundle(req: Request, segments: string[]): Promise<Response> {
     if (req.method !== "GET") {
       return errorResponse(405, "Bundles are read-only");
@@ -927,10 +880,8 @@ export class DataPlane {
   }
 
   /**
-   * Return only files explicitly declared in the manifest's
-   * `additionalFiles`, verified to exist on disk. Undeclared files —
-   * including `.git/`, `.env`, and other repository content — are never
-   * listed, closing the confidentiality exposure in issue #1910.
+   * only files declared in additionalFiles and present on disk are listed, so
+   * undeclared repository content such as .git/ and .env is never exposed
    */
   #listDeclaredAssetFiles(
     bundle: import("./bundle_registry.ts").RegisteredBundle,
@@ -942,7 +893,7 @@ export class DataPlane {
     const root = resolve(filesRoot);
     const files: string[] = [];
     for (const relPath of additionalFiles) {
-      // Only the files the fingerprint hashed (swamp-club#3594).
+      // only the files the fingerprint hashed
       if (assetHashes && !assetHashes.has(relPath)) continue;
       const target = resolve(join(root, relPath));
       if (
@@ -975,9 +926,9 @@ export class DataPlane {
     } catch {
       return errorResponse(404, `No asset '${relPath}' in bundle`);
     }
-    // A fingerprint names the bytes it hashed. An asset changed on disk
-    // since the dispatch took it is refused rather than shipped under it;
-    // the next dispatch fingerprints the new bytes (swamp-club#3594).
+    // a fingerprint names the bytes it hashed: an asset changed on disk since
+    // is refused rather than shipped under it; the next dispatch fingerprints
+    // the new bytes
     if (
       assetHashes &&
       assetHashes.get(relPath) !== await hashAssetBytes(bytes)
@@ -1005,8 +956,8 @@ function soleDispatch(
 }
 
 /**
- * Names a data-plane request's operation for its span. Derived from the
- * route shape only: paths carry data names and are never recorded.
+ * derived from the route shape only: paths carry data names and are never
+ * recorded
  */
 export function dataPlaneOperation(
   method: string,

@@ -70,7 +70,6 @@ Deno.test("InstanceHeartbeatService: start writes initial heartbeat", async () =
   await service.start();
   await service.stop();
 
-  // The start should have written but stop deletes. Check the deleted key.
   assertEquals(store.deleted, ["heartbeats/test-id"]);
 });
 
@@ -82,13 +81,11 @@ Deno.test("InstanceHeartbeatService: stop deletes heartbeat", async () => {
 
   await service.start();
 
-  // Heartbeat should be present after start
   const data = store.entries.get("heartbeats/stop-test");
   assertExists(data);
 
   await service.stop();
 
-  // Heartbeat should be deleted after stop
   assertEquals(store.entries.has("heartbeats/stop-test"), false);
 });
 
@@ -138,8 +135,6 @@ Deno.test("InstanceHeartbeatService: publishes its stale TTL when given one, and
   assertEquals("staleTtlMs" in read("plain"), false);
   assertEquals(read("slow").staleTtlMs, 600_000);
 
-  // Five minutes on, a reader whose own default is 90 s still counts the
-  // slow instance alive, and the one that published nothing dead.
   const liveness = heartbeatLiveness(store, {
     now: () => new Date(Date.now() + 300_000),
   });
@@ -304,7 +299,6 @@ Deno.test("InstanceHeartbeatService: a heartbeat delete that never settles is cu
 
   await service.stop({ writeTimeoutMs: 10 });
 
-  // Left to go stale; its late failure is handled, never unhandled.
   assertExists(store.entries.get("heartbeats/hung-delete"));
   fail?.(new Error("Request aborted"));
   await held.catch(() => {});
@@ -347,7 +341,6 @@ Deno.test("InstanceHeartbeatService: a periodic write in flight at stop cannot r
   store.put = (key, data) => {
     if (held) return put(key, data);
     held = true;
-    // The next periodic write is held until released, then lands.
     return new Promise<void>((resolve) => {
       release = () => put(key, data).then(resolve);
     });

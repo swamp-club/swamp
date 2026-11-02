@@ -437,7 +437,6 @@ Deno.test(
     const wal = new AuditWal({ dir });
     await wal.initialize();
 
-    // Write a valid segment then create an empty one
     await wal.append([makeEvent("valid")]);
     const emptyName = `${Date.now()}-${crypto.randomUUID()}.wal.jsonl`;
     await Deno.writeTextFile(`${dir}/${emptyName}`, "");
@@ -454,7 +453,6 @@ Deno.test(
   }),
 );
 
-/** A downstream sink whose writes hang until released. */
 function createHangingSink(): AuditSink & {
   written: AuditEvent[][];
   outstanding: number;
@@ -500,7 +498,6 @@ Deno.test(
     await sink.write([makeEvent("second")]);
     assertEquals(wal.segmentCount, 2);
 
-    // Deliveries go one at a time, in order, each segment once.
     for (let i = 0; i < 2; i++) {
       await waitFor(() => downstream.outstanding === 1, "a delivery to start");
       downstream.release();
@@ -557,11 +554,9 @@ Deno.test(
     const sink = new WalSink({ wal, downstream });
 
     await sink.write([makeEvent("one")]);
-    // "one" is read back and being delivered before the limit drops it.
     await waitFor(() => downstream.outstanding === 1, "first delivery");
     await sink.write([makeEvent("two")]);
     await sink.write([makeEvent("three")]);
-    // Only the newest segment is kept.
     assertEquals(wal.segmentCount, 1);
 
     downstream.release();
@@ -658,7 +653,6 @@ Deno.test(
       () => downstream.written.length === 2 && downstream.outstanding === 1,
       "delivery of the kept segment",
     );
-    // The head checkpoint ran before the kept segment was sent.
     assertEquals(flushes, 1);
 
     downstream.release();
@@ -686,10 +680,9 @@ Deno.test(
     await wal.initialize();
     const downstream = createHangingSink();
     const walSink = new WalSink({ wal, downstream, deliveryWaitMs: 20 });
-    // A generous timeout: the WAL append is real disk I/O, which a slow
-    // Windows runner can take longer than a few milliseconds to finish
-    // (swamp-club#3167). A write that waited on the hung store would still
-    // never settle within it and leave the durable path stalled.
+    // a generous timeout: the WAL append is real disk I/O that a slow Windows
+    // runner can take long to finish. A write that waited on the hung store
+    // would still never settle within it.
     const emitter = new AuditEmitter({
       sinks: [walSink],
       sinkTimeoutMs: 10_000,

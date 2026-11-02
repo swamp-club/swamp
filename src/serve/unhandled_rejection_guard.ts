@@ -26,11 +26,8 @@ export interface UnhandledRejectionGuard {
 }
 
 /**
- * Installs global `unhandledrejection` and `error` event listeners that
- * prevent the serve process from terminating when extension code produces
- * detached rejecting promises or uncaught exceptions.
- *
- * Call `dispose()` during shutdown to deregister the listeners.
+ * keeps the serve process alive when extension code produces detached rejecting
+ * promises or uncaught exceptions
  */
 export function installUnhandledRejectionGuard(): UnhandledRejectionGuard {
   const onUnhandledRejection = (event: PromiseRejectionEvent): void => {

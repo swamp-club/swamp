@@ -18,30 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serializes the garbage collections of one serve process: the retention
- * timer and the `run.gc` / `data.gc` requests (swamp-club#3473). A
- * filesystem datastore has no sync gate, so without it a manual gc could
- * delete the same files as a retention pass at the same time.
+ * a filesystem datastore has no sync gate, so without this a manual gc could
+ * delete the same files as a retention pass at the same time
  */
 export class GcMutex {
   #tail: Promise<void> = Promise.resolve();
-  /** Collections running or queued. */
   #pending = 0;
 
-  /** True while a collection runs or waits to run. */
   get held(): boolean {
     return this.#pending > 0;
   }
 
   /**
-   * True while a collection waits behind the one running: serve's
-   * retention pass stops at its next batch for it (swamp-club#3535).
+   * serve's retention pass stops at its next batch while a collection waits
+   * behind it
    */
   get waiting(): boolean {
     return this.#pending > 1;
   }
 
-  /** Runs `fn` once every collection queued before it has finished. */
   async run<T>(fn: () => Promise<T>): Promise<T> {
     const previous = this.#tail;
     let release!: () => void;
@@ -58,7 +53,6 @@ export class GcMutex {
     }
   }
 
-  /** Runs `fn` only when no collection runs or waits; otherwise undefined. */
   async tryRun<T>(fn: () => Promise<T>): Promise<T | undefined> {
     if (this.held) return undefined;
     return await this.run(fn);

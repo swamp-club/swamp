@@ -24,23 +24,12 @@ import {
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
 import type { ActorIdentity } from "../domain/serve_audit/audit_event.ts";
 
-/**
- * Records user names by user id. Serve learns names from OAuth logins and from
- * the tokens they minted, and adds them to the names it resolved from its
- * configuration, so audit events and messages name a user who was admitted
- * through a collective or group rather than by name.
- */
 export type UsernamesResolved = (
   usernamesBySub: Readonly<Record<string, string>>,
 ) => void;
 
 const USER_PREFIX = "user:";
 
-/**
- * The user name the OAuth provider gave for a user principal at login, keyed
- * by the principal's id. Empty for another kind of principal, or when the
- * provider sent no username.
- */
 export function usernameFromLogin(
   principalId: string,
   identity: ActorIdentity | undefined,
@@ -52,10 +41,8 @@ export function usernameFromLogin(
 }
 
 /**
- * The user names recorded on server tokens minted by an OAuth login, keyed by
- * user id. Only an OAuth login writes `oauthIdentity`, never a manual mint, so
- * a name here is one the provider gave. Where a user has several tokens the
- * newest login's name wins, as a user can be renamed.
+ * only an OAuth login writes oauthIdentity, never a manual mint; the newest
+ * login's name wins since a user can be renamed
  */
 export function usernamesFromServerTokens(
   tokens: readonly ServerToken[],
@@ -76,10 +63,6 @@ export function usernamesFromServerTokens(
   return usernamesBySub;
 }
 
-/**
- * A principal's display name: `user:<name>` for a user whose id has a known
- * user name, otherwise the principal itself.
- */
 export function displayPrincipal(
   principal: Principal,
   usernamesBySub: Readonly<Record<string, string>> | undefined,
@@ -95,10 +78,9 @@ export function displayPrincipal(
 }
 
 /**
- * Adds the names for users `usernamesBySub` does not name yet. A token records
- * the name its user had at login, so a token cannot replace a name a later
- * login or the provider gave, and two tokens of a renamed user cannot make the
- * name alternate.
+ * a token records the name at login, so it cannot replace a name a later login
+ * or the provider gave, and two tokens of a renamed user cannot make the name
+ * alternate
  */
 export function addUnknownUsernames(
   usernamesBySub: Record<string, string>,

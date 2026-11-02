@@ -60,14 +60,12 @@ export interface CollectiveRefreshDeps {
 
   closeConnectionsForPrincipal(principalId: string): void;
 
-  /** Told the user name the provider now gives for each token's user. */
   onUsernamesResolved?: UsernamesResolved;
 }
 
 export interface ActiveTokenInfo {
   readonly name: string;
   readonly principalId: string;
-  /** Vault the token's secrets live in, from its record. */
   readonly vaultName: string;
   readonly collectives: string[];
   readonly groups: string[];
@@ -164,8 +162,6 @@ export class CollectiveRefreshService {
         return;
       }
 
-      // A token minted before logins recorded a username names its user
-      // once the provider has given one here.
       const learned = usernameFromLogin(token.principalId, userInfo);
       if (Object.keys(learned).length > 0) {
         this.#deps.onUsernamesResolved?.(learned);

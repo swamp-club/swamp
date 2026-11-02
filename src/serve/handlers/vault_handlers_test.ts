@@ -209,8 +209,8 @@ Deno.test("handleVaultAnnotate: makes no datastore push, since nothing it writes
     const response = JSON.parse(socket.sent[0]);
     assertEquals(response.type, "vault.annotate");
 
-    // Annotations live in the always-local .swamp/secrets. A bare
-    // markDirty() here used to turn every annotate into a full-cache push.
+    // annotations live in the always-local .swamp/secrets, so annotating must
+    // not mark the datastore dirty or push
     assertEquals(markDirtyCalls, []);
     assertEquals(pushCalls, []);
   });
@@ -427,13 +427,11 @@ Deno.test("handleVaultCreate: marks the new config file by path under managedCon
     const repoDir = join(dir, "repo");
     const cacheRoot = join(dir, "cache");
     await Deno.mkdir(repoDir, { recursive: true });
-    // Keyed by this run's temp dir, so it cannot leak into another test.
     registerManagedConfig(repoDir, true, join(cacheRoot, "config"));
 
     const { events, response } = await runVaultCreate(repoDir, cacheRoot);
 
     assertEquals(response.type, "vault.create");
-    // Marked before the write and again after it (swamp-club#2421).
     assertEquals(events.length, 3);
     const [mark, markAfter, push] = events;
     assertEquals(markAfter, mark);
@@ -555,8 +553,6 @@ Deno.test("handleVaultAnnotate: removeLabels removes only the named labels", asy
   });
 });
 
-// --- handleVaultEdit (swamp-club#2426) ---
-
 const VAULT_EDITOR: Principal = { kind: "user", id: "editor" };
 
 function vaultGrant(overrides: Partial<Grant>): Grant {
@@ -578,14 +574,9 @@ interface VaultEditRun {
   frames: Array<Record<string, unknown> & { type: string }>;
   events: VaultSyncEvent[];
   read: (id: string) => Promise<VaultConfig | null>;
-  /** The vault file's text, for files that may not parse. */
   readRaw: (id: string) => Promise<string>;
 }
 
-/**
- * Seeds `vaults` into a real repository context for `repoDir`, then runs one
- * vault.edit request built by `payloadFor` from the seeded configs.
- */
 async function runVaultEdit(
   repoDir: string,
   cacheRoot: string,
@@ -703,7 +694,6 @@ Deno.test("handleVaultEdit: updates the managed vault config and pushes it by pa
     const repoDir = join(dir, "repo");
     const cacheRoot = join(dir, "cache");
     await Deno.mkdir(repoDir, { recursive: true });
-    // Keyed by this run's temp dir, so it cannot leak into another test.
     registerManagedConfig(repoDir, true, join(cacheRoot, "config"));
     const vault = localVault("managed-vault");
 
@@ -724,7 +714,6 @@ Deno.test("handleVaultEdit: updates the managed vault config and pushes it by pa
       "updated",
     );
     assertEquals((await read(vault.id))?.auditReads, true);
-    // Marked before the write and again after it (swamp-club#2421).
     assertEquals(events.length, 3);
     const [mark, markAfter, push] = events;
     assertEquals(markAfter, mark);
@@ -850,8 +839,6 @@ Deno.test("handleVaultEdit: reports an unknown vault as not found", async () => 
   });
 });
 
-// --- repairing a vault whose config does not parse (swamp-club#2693) ---
-
 const BROKEN_ID = "0b0b0b0b-0000-4000-8000-000000000001";
 
 const ADMIN_GRANT = vaultGrant({
@@ -939,13 +926,11 @@ Deno.test("handleVaultEdit: a broken vault file stays not found when the request
   await withTempDir(async (dir) => {
     for (
       const payload of [
-        // A name that matches nothing, with a type.
         {
           vaultNameOrId: "missing-vault",
           vaultType: "local_encryption",
           content: "name: missing-vault\n",
         },
-        // The broken vault's id without a type.
         { vaultNameOrId: BROKEN_ID, content: "name: fixed-vault\n" },
       ]
     ) {
@@ -1009,9 +994,6 @@ Deno.test("handleVaultEdit: an admin repairs one broken vault while another is b
   });
 });
 
-// --- local_encryption key source over serve (swamp-club#2690) ---
-
-/** Runs one vault.create request against a repo with no datastore sync. */
 async function runVaultCreateWith(
   repoDir: string,
   payload: Parameters<typeof handleVaultCreate>[3],
@@ -1241,8 +1223,6 @@ Deno.test("handleVaultEdit: a repair gets the server's key source and refuses it
   });
 });
 
-// --- vault:<name> grants (swamp-club#2676) ---
-
 const VAULT_TABLE_TYPE = "local_encryption";
 
 interface VaultTableRepo {
@@ -1252,11 +1232,6 @@ interface VaultTableRepo {
   repoContext: ReturnType<typeof createRepositoryContext>;
 }
 
-/**
- * A real repository holding `names` as local_encryption vaults, each with
- * the secret `api`, and an audit entry per vault. `ctx(grants)` enforces
- * `grants` for {@link VAULT_EDITOR}; `ctx(null)` turns authorization off.
- */
 async function withVaultTableRepo(
   names: string[],
   fn: (repo: VaultTableRepo) => Promise<void>,
@@ -1315,13 +1290,10 @@ type Frame = Record<string, unknown> & {
   error?: { code: string; message: string };
 };
 
-/** One vault request, run against the vault `vaultName`. */
 interface VaultRequestCase {
   readonly request: string;
   readonly action: Action;
-  /** The vault the request acts on; create names one that does not exist. */
   readonly target: (vaultName: string) => string;
-  /** False when a `vault:<name>` grant alone never admits the request. */
   readonly vaultGrantAdmits?: false;
   readonly run: (
     socket: WebSocket,
@@ -1517,7 +1489,6 @@ const VAULT_REQUESTS: readonly VaultRequestCase[] = [
   },
 ];
 
-/** Runs one request and returns its frames. */
 async function runVaultCase(
   repo: VaultTableRepo,
   testCase: VaultRequestCase,
@@ -1535,7 +1506,6 @@ async function runVaultCase(
   return socket.sent.map((raw) => JSON.parse(raw) as Frame);
 }
 
-/** The authorization refusal among `frames`, or null when there is none. */
 function refusalOf(frames: Frame[]): string | null {
   const refused = frames.find((f) =>
     f.type === "error" && f.error?.code === "unauthorized"
@@ -1577,7 +1547,6 @@ Deno.test("vault requests: a vault:<name> allow alone allows each request with i
         grantOn("vault", target, [testCase.action]),
       ], "prod-db");
       if (testCase.vaultGrantAdmits === false) {
-        // Today's refusal, unchanged.
         assertEquals(
           frames,
           await runVaultCase(repo, testCase, [], "prod-db"),
@@ -1636,7 +1605,6 @@ Deno.test("handleVaultPut: refresh options need admin on data:vault; vault:<name
         label,
       );
     }
-    // A plain put is still admitted by a vault:<name> write grant.
     const plain = VAULT_REQUESTS.find((c) => c.request === "vault.put")!;
     assertEquals(
       refusalOf(
@@ -1829,7 +1797,6 @@ Deno.test("handleVaultGet: a vault renamed between the check and the read is not
     for (const request of ["vault.get", "vault.describe"]) {
       for (const nameOrId of ["prod-db", vault.id]) {
         const testCase = VAULT_REQUESTS.find((c) => c.request === request)!;
-        // Rename the vault on disk as soon as the handler has looked it up.
         const realRepo = repo.repoContext.vaultConfigRepo;
         let renamed = false;
         const renameAfter = async <T>(found: T): Promise<T> => {

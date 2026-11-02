@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The checkout-local record of the workflow runs a `swamp serve` shutdown
- * interrupted but could not push (swamp-club#3958), or on a v3 datastore
- * could not commit in time (swamp-club#3961). The next serve in the same
- * checkout pushes, or commits, once at boot while it is present, so the
- * datastore does not keep those runs `running` until some unrelated write
- * lands them.
- *
- * The file sits beside `serve.pid` and the run tracker, which never sync.
- * Its run ids are only logged: whether it exists is what decides the push.
+ * checkout-local record of runs a shutdown interrupted but could not push or
+ * commit in time; the next serve here pushes once at boot while it exists. Its
+ * run ids are only logged: its existence decides the push.
  */
 
 import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
@@ -42,29 +36,25 @@ import {
 
 const logger = getSwampLogger(["serve", "interrupts"]);
 
-/** The marker's file name under the checkout's `.swamp` directory. */
 export const UNPUSHED_INTERRUPTS_FILE = "serve-unpushed-interrupts.json";
 
 /**
- * One run the marker names. The workflow id is kept when shutdown knew it,
- * so the next start can read the record by id: the status index does not
- * notice a pull that replaced a record with an older status.
+ * the workflow id is kept when known so the next start can read the record by
+ * id: the status index does not notice a pull that replaced a record with an
+ * older status
  */
 export interface UnpushedRun {
   readonly runId: string;
   readonly workflowId?: string;
 }
 
-/** What a marker read found. */
 export type UnpushedInterrupts =
   | { readonly present: false }
   | { readonly present: true; readonly runs: readonly UnpushedRun[] };
 
 /**
- * Reads the marker at `path`. A missing file is absent; a file that is not
- * a JSON object with a `runs` array of `{ runId, workflowId? }` strings is
- * logged and counted as present with no runs, so the next start still
- * pushes.
+ * a missing file is absent; an unparsable one is logged and counted present
+ * with no runs, so the next start still pushes
  */
 export async function readUnpushedInterrupts(
   path: string,
@@ -113,7 +103,6 @@ export async function recordUnpushedInterrupts(
   );
 }
 
-/** Removes the marker at `path`; a missing marker is not an error. */
 export async function clearUnpushedInterrupts(path: string): Promise<void> {
   try {
     await Deno.remove(path);
@@ -123,11 +112,9 @@ export async function clearUnpushedInterrupts(path: string): Promise<void> {
 }
 
 /**
- * The runs `marker` names that are still `running` in the cache, read by id.
- * Serve's boot reap adds them to the runs it judges: a record a pull put
- * back to `running` is not in the status index under that status. Only ids
- * that are both UUIDs are read, since they name a file. A run that cannot be
- * read is left out.
+ * a record a pull put back to running is not in the status index under that
+ * status, so boot reap reads marked runs by id; only UUID ids are read since
+ * they name a file
  */
 export async function markedRunsStillRunning(
   marker: UnpushedInterrupts,
@@ -180,10 +167,9 @@ function parseRuns(text: string): UnpushedRun[] | undefined {
 }
 
 /**
- * On a v3 datastore, the flush of serve's boot reap: its root has committed
- * the runs the previous shutdown could not commit in time
- * (swamp-club#3961), so the record of them is cleared. A root that failed
- * never flushes, and keeps the record for the next start.
+ * the boot reap's root has committed the runs the previous shutdown could not,
+ * so the record is cleared; a failed root never flushes and keeps the record
+ * for the next start
  */
 export async function clearCommittedAtBoot(options: {
   readonly marker: UnpushedInterrupts;
@@ -206,10 +192,8 @@ export async function clearCommittedAtBoot(options: {
 }
 
 /**
- * The push serve's boot reap makes as its root's flush: once, when the reap
- * interrupted a run or the previous shutdown left `marker`. A push that
- * fails is logged and keeps the marker for the next start; one that lands
- * clears it. Nothing is thrown, so boot goes on.
+ * a push that fails is logged and keeps the marker for the next start; one that
+ * lands clears it. Nothing is thrown, so boot goes on
  */
 export async function pushSettledAtBoot(options: {
   readonly reaped: number;

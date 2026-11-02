@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Orchestrator-side implementation of the capability protocol's metadata
- * verbs (see design/enablers/remote-execution.md, "The capability protocol").
- *
- * Each verb runs a worker's proxied context call against the orchestrator's
- * real repositories and services. Byte transfer is NOT here — `getData`
- * answers metadata plus a data-plane content path, and writes arrive as
- * data-plane HTTP requests (`src/serve/data_plane.ts`).
- */
-
 import { ModelType } from "../domain/models/model_type.ts";
 import {
   dispatchTraceCarrier,
@@ -95,7 +85,6 @@ import {
 
 const capLogger = getSwampLogger(["serve", "capability"]);
 
-/** Runs `fn` held to `scope`, or unscoped when there is none. */
 function inVaultScope<T>(
   scope: RunVaultAccess | undefined,
   fn: () => Promise<T>,
@@ -122,7 +111,6 @@ function sanitizeRpcError(error: unknown): string {
   return raw;
 }
 
-/** Builds the data-plane content path for an artifact version. */
 export function dataContentPath(
   modelType: string,
   modelId: string,
@@ -139,15 +127,12 @@ export interface CapabilityServiceOptions {
   repoDir: string;
   repoContext: RepositoryContext;
   dispatches?: DispatchRegistry;
-  /** Overridable for tests; defaults to VaultService.fromRepository. */
   createVaultService?: () => Promise<VaultService>;
 }
 
 /**
- * Application service answering capability verbs. One instance serves every
- * enrolled worker — verbs carry full addressing, and authorization beyond
- * enrollment is the data writer's declared-spec enforcement on the write
- * path (see the design doc's "Authenticating the data plane").
+ * one instance serves every enrolled worker; beyond enrollment, authorization
+ * is the data writer's declared-spec enforcement on the write path
  */
 export class CapabilityService {
   readonly #repoDir: string;
@@ -155,7 +140,6 @@ export class CapabilityService {
   readonly #dispatches: DispatchRegistry | undefined;
   readonly #createVaultService: () => Promise<VaultService>;
   #vaultService: Promise<VaultService> | null = null;
-  /** Verifies resource claims on resolveSecret (swamp-club#3529). */
   readonly #claims: ResourceClaimVerifier;
 
   constructor(options: CapabilityServiceOptions) {
@@ -218,9 +202,8 @@ export class CapabilityService {
   }
 
   /**
-   * The dispatch a read belongs to, for deciding which control-plane records
-   * it may see. Never throws: a worker with no dispatch, or with several and
-   * no dispatchId, gets null, and every control-plane type is then hidden.
+   * never throws: a worker with no dispatch, or several and no dispatchId, gets
+   * null and every control-plane type is hidden
    */
   #visibleDispatch(
     workerName: string,
@@ -234,13 +217,9 @@ export class CapabilityService {
   }
 
   /**
-   * findDefinitionByIdOrName, skipping definitions hidden from the worker.
-   * The usual lookup returns the first match across types, so a
-   * control-plane record named like a user model would shadow it; when the
-   * first match is hidden, look again among the visible ones, primary
-   * definitions before auto-definitions, then by id. That fallback reads
-   * every definition, but runs only when a control-plane record shares the
-   * name or id asked for.
+   * the usual lookup returns the first match across types, so a control-plane
+   * record named like a user model would shadow it; when hidden, look again
+   * among visible ones, primary before auto, then by id
    */
   async #findVisibleDefinition(
     idOrName: string,
@@ -357,10 +336,8 @@ export class CapabilityService {
         );
       }
     }
-    // Control-plane records are left out of the query itself, before any
-    // limit, so a broad predicate returns the rest rather than failing. The
-    // exclusion is set here, after the worker's options, so a worker cannot
-    // replace it (swamp-club#3129).
+    // control-plane records are excluded in the query itself, before any limit,
+    // set after the worker's options so a worker cannot replace it
     const records = await observeExecutionWork(
       "query.execute",
       {},
@@ -424,10 +401,8 @@ export class CapabilityService {
     );
     const type = ModelType.create(params.modelType);
     const repo = this.#repoForWorker(workerName, params.dispatchId);
-    // The delete runs in a root unit of work with no push, so its mark stages
-    // into it instead of reaching the hook through signalChange's fallback
-    // (swamp-club#3056). Nothing pushes here, as before: the dispatching
-    // run's push carries it.
+    // root unit of work with no push, so the mark stages into it instead of the
+    // signalChange fallback; the dispatching run's push carries it
     await runInRootUnitOfWork(
       this.#repoContext,
       { flush: undefined },
@@ -481,11 +456,9 @@ export class CapabilityService {
           `resolveSecret: worker '${workerName}' has no active dispatch`,
         );
       }
-      // A version 6 runner loads its arguments' references, and the
-      // sensitive fields `readResource` claims, through the protected route
-      // (design/enablers/typed-secrets.md Section 9), so a claim never
-      // arrives here for it. A method's own vault read by name still does,
-      // held to the allowlist below as for version 5.
+      // a version 6 runner loads references and sensitive fields through the
+      // protected route, so a claim never arrives for it; a method's own vault
+      // read still does, held to the allowlist below
       if (
         params.resource !== undefined &&
         dispatch.protocolVersion !== undefined &&
@@ -534,8 +507,8 @@ export class CapabilityService {
     }
     const scope = dispatch?.vaultAccess;
     const vault = await this.#vault();
-    // Held to the dispatching run's vault scope, as the same read in-process
-    // would be (swamp-club#2676).
+    // held to the dispatching run's vault scope, as the same read in-process
+    // would be
     return await inVaultScope(scope, async () => {
       if (params.annotation) {
         const annotation = await vault.getAnnotation(
@@ -549,11 +522,9 @@ export class CapabilityService {
         params.secretKey,
         `serve:${workerName}`,
       );
-      // Serve is about to deliver this value to the dispatch, so the
-      // dispatch's redactor must know it before the reply leaves: the data
-      // plane scrubs the dispatch's resource writes with it
-      // (swamp-club#3527). A step dispatched without pre-dispatch secrets
-      // has no redactor yet, so the first delivery creates it.
+      // the dispatch's redactor must know the value before the reply leaves,
+      // since the data plane scrubs resource writes with it; a step with no
+      // pre-dispatch secrets gets its redactor here
       if (dispatch) {
         (dispatch.redactor ??= new SecretRedactor()).addSecret(value);
       }
@@ -583,8 +554,8 @@ export class CapabilityService {
     }
     const vault = await this.#vault();
     const secretValue = params.secretValue;
-    // Held to the dispatching run's vault scope, as the same write
-    // in-process would be (swamp-club#2676).
+    // held to the dispatching run's vault scope, as the same write in-process
+    // would be
     return await inVaultScope(scope, async () => {
       if (params.deleteAnnotation) {
         await vault.deleteAnnotation(params.vaultName, params.secretKey);
@@ -639,7 +610,6 @@ export class CapabilityService {
       this.#visibleDispatch(workerName, params.dispatchId),
     );
     if (hidden) {
-      // The shape each branch returns when nothing is stored.
       const single = params.outputId !== undefined &&
           params.methodName !== undefined ||
         params.definitionId !== undefined && params.latestOnly === true;
@@ -684,9 +654,8 @@ export class CapabilityService {
   }
 
   /**
-   * Register every capability verb on an enrolled worker's channel. Params
-   * are schema-validated at the boundary; handler errors are sanitized to
-   * avoid leaking internal paths in rpc.error frames sent to workers.
+   * handler errors are sanitized so internal paths do not leak in rpc.error
+   * frames sent to workers
    */
   registerHandlers(channel: RpcChannel, workerName: string): void {
     const safe = <T>(

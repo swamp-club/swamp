@@ -73,10 +73,6 @@ function active(
   return { runId: run.id, kind, startedAt: new Date() };
 }
 
-/**
- * A run repository and sync service that record, in order, each save (with
- * the status it saved) and each push.
- */
 function harness(runs: WorkflowRun[], workflowId: WorkflowId) {
   const events: string[] = [];
   const repoContext: ShutdownInterruptDeps["repoContext"] = {
@@ -123,8 +119,7 @@ Deno.test("interruptShutdownRuns: saves a running run interrupted, then pushes i
 });
 
 Deno.test("interruptShutdownRuns: a run that ended cancelled is interrupted and pushed", async () => {
-  // The run's own unit of work pushed `cancelled` before the interrupt ran,
-  // as in the live reproduction.
+  // the run's own unit of work pushed cancelled before the interrupt ran
   const wf = workflow();
   const run = runningRun(wf);
   run.endAsCancelled("server shutdown");
@@ -197,7 +192,6 @@ Deno.test("interruptShutdownRuns: a push that never settles is cut off at the de
     syncService: {
       pushChanged: (options) => {
         signal = options?.signal;
-        // Settles only when aborted, as a push honouring the signal does.
         return new Promise((_, reject) =>
           options?.signal?.addEventListener(
             "abort",
@@ -222,7 +216,6 @@ Deno.test("interruptShutdownRuns: a gate held by a pull is cut off at the deadli
   const run = runningRun(wf);
   const { events, repoContext } = harness([run], wf.id);
   const gate = createSyncGate();
-  // A pull holds the gate exclusively for the whole shutdown.
   await gate.acquire();
   try {
     const result = await interruptShutdownRuns([active(run)], {
@@ -291,7 +284,6 @@ Deno.test("interruptShutdownRuns: no aborted workflow run loads nothing and push
   assertEquals(events, []);
 });
 
-/** A run tracker that records each row completion. */
 function tracker(
   rows: Map<string, ActiveRunStatus> = new Map(),
 ): ShutdownInterruptDeps["runTracker"] & { completed: string[] } {
@@ -299,7 +291,6 @@ function tracker(
   return {
     completed,
     complete: (runId, status, reason) => {
-      // As the store does: only a running or suspended row is completed.
       const current = rows.get(runId) ?? "running";
       if (current !== "running" && current !== "suspended") return;
       rows.set(runId, status);
@@ -582,10 +573,6 @@ Deno.test("interruptShutdownRuns: on a filesystem datastore nothing is reported 
   assertEquals(result, { interrupted: [] });
 });
 
-/**
- * A v3 commit-log engine whose root runs `fn` and then waits on `commit`,
- * as a v3 root waits on its chunk uploads before it commits locally.
- */
 function v3Engine(commit: () => Promise<void>): CommitLogEngine {
   const view = { stage: () => {}, staged: () => [] } as unknown as Parameters<
     Parameters<CommitLogEngine["runRoot"]>[1]
@@ -724,7 +711,6 @@ Deno.test("stopHeartbeatAtShutdown: with nothing unpushed the heartbeat is delet
       writeTimeoutMs: 1_234,
     },
   );
-  // The delete is bounded as the stopped record is (swamp-club#3961).
   assertEquals(events, ["stop false 1234"]);
 });
 

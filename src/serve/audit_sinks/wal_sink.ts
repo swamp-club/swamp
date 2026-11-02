@@ -31,16 +31,7 @@ const logger = getSwampLogger(["serve", "audit", "wal-sink"]);
 export interface WalSinkOptions {
   readonly wal: AuditWal;
   readonly downstream: AuditSink;
-  /**
-   * How long flush waits for queued deliveries to the downstream sink before
-   * leaving the rest in the WAL. Default 30s.
-   */
   readonly deliveryWaitMs?: number;
-  /**
-   * How often delivered segments are checkpointed: the downstream sink is
-   * flushed and the segments it confirmed are deleted from the WAL. 0 turns
-   * the timer off, leaving it to flush. Default 5s.
-   */
   readonly checkpointIntervalMs?: number;
 }
 
@@ -53,12 +44,7 @@ export class WalSink implements AuditSink {
   readonly #wal: AuditWal;
   readonly #downstream: AuditSink;
   readonly #deliveryWaitMs: number;
-  // Segments handed downstream since the last checkpoint, with the
-  // sequences they hold, so a checkpoint can tell which ones the store
-  // confirmed.
   readonly #delivered = new Map<string, DeliveredSegment>();
-  // Segments to send again: their delivery failed, or the store reported
-  // their events unconfirmed at a checkpoint.
   #redeliver: string[] = [];
   // Work for the delivery loop, in WAL order: segment names to deliver and
   // checkpoints. One loop drains it, so downstream sees one call at a time.
@@ -100,10 +86,8 @@ export class WalSink implements AuditSink {
   }
 
   /**
-   * Resolves once the events are appended to the WAL. Delivery downstream
-   * follows on its own, so a slow or hung store never holds the audit
-   * pipeline; while it is outstanding, later writes still reach the WAL and
-   * queue behind it.
+   * resolves once appended to the WAL; delivery downstream follows on its own
+   * so a slow or hung store never holds the audit pipeline
    */
   async write(events: readonly AuditEvent[]): Promise<void> {
     if (events.length === 0) return;
@@ -114,10 +98,9 @@ export class WalSink implements AuditSink {
 
   #enqueue(item: string | typeof CHECKPOINT): void {
     this.#queue.push(item);
-    // While downstream hangs the queue only grows; names the WAL size limit
-    // has already dropped are pruned, and so is a checkpoint left directly
-    // behind another, so it stays bounded by the WAL. A checkpoint at the
-    // head is kept: segments already delivered wait on it.
+    // queue only grows while downstream hangs; names the WAL size limit dropped
+    // and a checkpoint directly behind another are pruned to stay bounded; a
+    // checkpoint at the head stays
     if (this.#queue.length > 2 * this.#wal.segmentCount + 16) {
       const held = new Set(this.#wal.listSegments());
       const kept: (string | typeof CHECKPOINT)[] = [];
@@ -135,7 +118,6 @@ export class WalSink implements AuditSink {
     }
   }
 
-  /** Runs queued work one item at a time until the queue is empty. */
   async #drain(): Promise<void> {
     try {
       while (this.#queue.length > 0) {
@@ -156,9 +138,9 @@ export class WalSink implements AuditSink {
   }
 
   /**
-   * Sends one segment downstream, reading it back from disk so the queue
-   * holds segment names, not events. A segment the size limit has dropped is
-   * skipped; one that fails is delivered again at the next checkpoint.
+   * reads the segment back from disk so the queue holds names, not events; a
+   * segment the size limit dropped is skipped, a failed one is delivered again
+   * at the next checkpoint
    */
   async #deliverSegment(segmentName: string): Promise<void> {
     try {
@@ -184,7 +166,6 @@ export class WalSink implements AuditSink {
     }
   }
 
-  /** Waits for queued work, up to the delivery wait. */
   async #awaitDeliveries(): Promise<void> {
     if (!this.#looping) return;
     const draining = this.#draining;
@@ -212,19 +193,14 @@ export class WalSink implements AuditSink {
     }
   }
 
-  /**
-   * Waits, up to the delivery wait, for queued deliveries and a checkpoint
-   * that removes the segments the store has confirmed.
-   */
   async flush(): Promise<void> {
     this.#queueCheckpoint();
     await this.#awaitDeliveries();
   }
 
   /**
-   * Queues a checkpoint behind everything queued so far. One already waiting
-   * covers only the segments ahead of it, so it stands in for this one only
-   * when nothing has been queued behind it.
+   * a waiting checkpoint covers only the segments ahead of it, so it stands in
+   * for a new one only when nothing is queued behind it
    */
   #queueCheckpoint(): void {
     if (this.#queue.at(-1) === CHECKPOINT) return;
@@ -232,10 +208,8 @@ export class WalSink implements AuditSink {
   }
 
   /**
-   * Delivers segments waiting to be sent again, flushes the downstream sink,
-   * then deletes the delivered segments the store confirmed. A segment whose
-   * events the flush reports unconfirmed is kept and delivered again at the
-   * next checkpoint; the rest are in the store and are deleted.
+   * a segment the flush reports unconfirmed is kept and delivered again at the
+   * next checkpoint; the rest are in the store and deleted
    */
   async #removeConfirmedSegments(): Promise<void> {
     for (const segmentName of this.#redeliver.splice(0)) {
@@ -333,11 +307,9 @@ export class WalSink implements AuditSink {
   }
 
   /**
-   * Queues the segments a previous session left in the WAL for delivery,
-   * ahead of anything written after, and returns how many events they hold.
-   * Like live segments they are deleted only once a checkpoint confirms the
-   * store has them; this does not wait for that, so a store that is down
-   * does not hold startup.
+   * queues segments a previous session left, ahead of new writes; deleted only
+   * once a checkpoint confirms the store has them, and not waited on so a down
+   * store does not hold startup
    */
   async replay(): Promise<number> {
     let queuedCount = 0;
@@ -387,11 +359,8 @@ interface ChainPosition {
 }
 
 interface DeliveredSegment {
-  /** The chain sequences in the segment, or null when any event lacks one. */
   readonly sequences: readonly number[] | null;
-  /** The segment's last chain position, when its events carry one. */
   readonly last: ChainPosition | null;
-  /** The downstream sink has said it is still retrying these events. */
   readonly pending: boolean;
 }
 

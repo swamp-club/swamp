@@ -139,8 +139,6 @@ function getRequest(path: string): Request {
   return new Request(`http://localhost:8080${path}`, { method: "GET" });
 }
 
-// ── Route matching ────────────────────────────────────────────────────
-
 Deno.test("handleDeviceAuth: returns null for non-matching path", async () => {
   const deps = makeMockDeps();
   const result = await handleDeviceAuth(
@@ -155,8 +153,6 @@ Deno.test("handleDeviceAuth: returns null for /auth but not /auth/device", async
   const result = await handleDeviceAuth(postRequest("/auth"), deps);
   assertEquals(result, null);
 });
-
-// ── Method enforcement ────────────────────────────────────────────────
 
 Deno.test("handleDeviceAuth: returns 405 for GET /auth/device", async () => {
   const deps = makeMockDeps();
@@ -176,8 +172,6 @@ Deno.test("handleDeviceAuth: returns 405 for GET /auth/device/token", async () =
   const body = await result!.json();
   assertEquals(body.error, "Method not allowed");
 });
-
-// ── POST /auth/device ─────────────────────────────────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device returns device grant response", async () => {
   const deps = makeMockDeps();
@@ -200,8 +194,6 @@ Deno.test("handleDeviceAuth: POST /auth/device returns 502 on provider error", a
   const body = await result!.json();
   assertEquals(body.error, "Failed to start device authorization");
 });
-
-// ── POST /auth/device/token — validation ──────────────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device/token returns 400 for missing deviceCode", async () => {
   const deps = makeMockDeps();
@@ -248,8 +240,6 @@ Deno.test("handleDeviceAuth: POST /auth/device/token refuses a body over the cap
   const result = await handleDeviceAuth(req, deps);
   assertEquals(result?.status, 413);
 });
-
-// ── POST /auth/device/token — poll errors ─────────────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device/token returns 202 for authorization_pending", async () => {
   const deps = makeMockDeps({
@@ -327,8 +317,6 @@ Deno.test("handleDeviceAuth: POST /auth/device/token returns 502 for unknown pol
   assertEquals(body.error, "Upstream provider returned an unexpected error");
 });
 
-// ── POST /auth/device/token — admission ───────────────────────────────
-
 Deno.test("handleDeviceAuth: POST /auth/device/token returns 403 when admission denied", async () => {
   const deps = makeMockDeps({
     checkAdmission: () => ({
@@ -348,8 +336,6 @@ Deno.test("handleDeviceAuth: POST /auth/device/token returns 403 when admission 
     "user is not a member of any allowed collective (team-a)",
   );
 });
-
-// ── POST /auth/device/token — success ─────────────────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device/token returns token and principal on success", async () => {
   const deps = makeMockDeps();
@@ -432,8 +418,6 @@ Deno.test("handleDeviceAuth: POST /auth/device/token passes correct args to deps
   assertEquals(capturedCollectives, ["team-x"]);
 });
 
-// ── POST /auth/device/token — access token storage ───────────────────
-
 Deno.test("handleDeviceAuth: POST /auth/device/token stores access token in vault", async () => {
   let storedTokenName = "";
   let storedAccessToken = "";
@@ -460,8 +444,6 @@ Deno.test("handleDeviceAuth: POST /auth/device/token stores access token in vaul
   assertEquals(storedTokenName, "oauth-mint-1");
   assertEquals(storedAccessToken, "access-tok-xyz");
 });
-
-// ── POST /auth/device/token — groups separation ─────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device/token passes collectives and groups separately to mint", async () => {
   let capturedCollectives: string[] = [];
@@ -532,8 +514,6 @@ Deno.test("handleDeviceAuth: POST /auth/device/token admission only checks colle
   assertEquals(admissionCollectives, ["team-a"]);
 });
 
-// ── POST /auth/device/token — unexpected error ────────────────────────
-
 Deno.test("handleDeviceAuth: POST /auth/device/token returns 500 on unexpected error", async () => {
   const deps = makeMockDeps({
     pollForToken: () => Promise.reject(new Error("unexpected failure")),
@@ -572,8 +552,6 @@ Deno.test("handleDeviceAuth: POST /auth/device/token returns 500 on mintServerTo
   const body = await result!.json();
   assertEquals(body.error, "Internal error during token exchange");
 });
-
-// ── Audit event emission ─────────────────────────────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device emits auth.login.started event", async () => {
   const sink = createCollectingSink();
@@ -760,7 +738,6 @@ Deno.test("handleDeviceAuth: no audit events emitted when auditEmitter is undefi
   const deps = makeMockDeps();
   const result = await handleDeviceAuth(postRequest("/auth/device"), deps);
   assertEquals(result?.status, 200);
-  // No crash, no events — auditEmitter is undefined by default in makeMockDeps
 });
 
 Deno.test("handleDeviceAuth: no audit events on pending poll (not a security event)", async () => {
@@ -781,8 +758,6 @@ Deno.test("handleDeviceAuth: no audit events on pending poll (not a security eve
   await emitter.flush();
   assertEquals(sink.events.length, 0);
 });
-
-// ── Tracing (swamp-club#2417) ─────────────────────────────────────────
 
 Deno.test("handleDeviceAuth: POST /auth/device/token traces each login phase under one parent", async () => {
   await withCapturedSpans(async (spans) => {

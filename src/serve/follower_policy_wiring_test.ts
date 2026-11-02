@@ -37,10 +37,6 @@ const GRANT = partitionOf({
   id: "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
 });
 
-/**
- * A copy whose head the test moves; the source bound is its head, and its
- * read model applies a commit only once the test says so.
- */
 function fakeSource() {
   const rows: { cursor: number; partition: PartitionKey }[] = [];
   let readModelCursor = 0;
@@ -70,12 +66,10 @@ function fakeSource() {
   } as unknown as V3CommitFeedSource;
   return {
     source,
-    /** A leader commit lands in the copy; the read model has not applied it. */
     land(partition: PartitionKey) {
       rows.push({ cursor: head() + 1, partition });
       for (const listener of listeners) listener(false);
     },
-    /** The read model catches up to the head. */
     applied() {
       readModelCursor = head();
     },
@@ -106,7 +100,6 @@ function setup(
   return {
     store,
     wiring,
-    /** As the follower feed does once it applied a frame. */
     async catchUp() {
       store.applied();
       wiring.effects.poke();
@@ -149,7 +142,6 @@ Deno.test("wireFollowerPolicy: a follower keeps answering reads through a replac
     const follower = t.wiring.gate(leadership("follower"));
     t.store.land(GRANT);
     await t.catchUp();
-    // A failover: the tick restores the copy, then catches up and pokes.
     t.store.restored();
     t.store.land(GRANT);
     assertEquals(follower.isStale(), false);
@@ -176,7 +168,6 @@ Deno.test("wireFollowerPolicy: a follower whose reload failed reads as stale unt
     fail = false;
     await t.catchUp();
     assertEquals(follower.isStale(), false);
-    // A stale copy still reads as stale.
     assertEquals(t.wiring.gate(leadership("follower", true)).isStale(), true);
   } finally {
     await t.wiring.effects.stop();
@@ -212,7 +203,6 @@ Deno.test("wireFollowerPolicy: a forwarded write's barrier returns once its comm
       t.wiring.effects.poke();
       return Promise.resolve();
     })();
-    // A busy feed: a pass is always queued behind the one running.
     let landing = true;
     const busy = (async () => {
       while (landing) {

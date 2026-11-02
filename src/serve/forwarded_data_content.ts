@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Content checks for forwarded data puts (swamp-club#3922).
- *
- * A data save carries content a run produced, which serve accepts from a
- * caller with `run` on the behavior: that is team mode's model, a client
- * runs methods itself. Two things in it serve acts on beyond storing it:
- * the vault references its sensitive fields hold, which serve admits to
- * later runs of the behavior, and nothing else. A data removal or rename
- * needs only `write` on the behavior's data, so it may only move or lower
- * what the repository already wrote, never choose bytes.
- *
- * @module
+ * a data save carries content a run produced; serve acts on its vault
+ * references beyond storing it. A removal or rename needs only write, so it may
+ * only move or lower what the repository wrote.
  */
 
 import type { ContentRefusal } from "../domain/datastore_v3/commit_authorization.ts";
@@ -53,12 +45,9 @@ import {
   refused,
 } from "./forwarded_content_authorization.ts";
 
-/** A data key, split: the name's directory, the name, and below it. */
 interface DataKey {
-  /** `data/{type}/{modelId}`. */
   readonly base: string;
   readonly name: string;
-  /** The version, absent for the latest marker. */
   readonly version?: number;
   readonly file: "raw" | "metadata.yaml" | "latest";
 }
@@ -88,7 +77,6 @@ function keyOf(base: string, name: string, tail: string): string {
   return `${base}/${name}/${tail}`;
 }
 
-/** Dispatches a data put by its intent. */
 export async function checkDataPut(
   context: ContentCheckContext,
   op: PutOp,
@@ -109,7 +97,6 @@ export async function checkDataPut(
   return refused(op, "it is not a data write");
 }
 
-/** The bytes a commit puts at `key`, or the record stored there. */
 async function bytesAt(
   context: ContentCheckContext,
   commit: readonly Op[],
@@ -132,12 +119,9 @@ function metadataOf(bytes: Uint8Array): DataMetadata | undefined {
 }
 
 /**
- * A saved version's sensitive fields hold vault references serve admits
- * to later runs of the behavior (`capability_service.ts`), so each must be
- * one the caller may read, or one it may write under the key the data
- * writer derives for this behavior's own records. A key outside that
- * prefix (a field's declared `vaultKey`, or another behavior's) could
- * point a later run at a secret the caller cannot read.
+ * sensitive fields hold vault references admitted to later runs, so each must
+ * be readable by the caller or writable under this behavior's derived key; any
+ * other key could point a run at an unreadable secret
  */
 async function sensitiveReferenceRefusal(
   context: ContentCheckContext,
@@ -172,7 +156,7 @@ async function sensitiveReferenceRefusal(
   try {
     data = JSON.parse(new TextDecoder().decode(raw));
   } catch {
-    // Not JSON: serve admits no reference from it.
+    // not JSON: serve admits no reference from it
     return undefined;
   }
   if (data === null || typeof data !== "object" || Array.isArray(data)) {
@@ -209,16 +193,15 @@ async function sensitiveReferenceRefusal(
   return undefined;
 }
 
-/** A latest marker's version, or undefined when it holds anything else. */
 function markerVersion(bytes: Uint8Array): number | undefined {
   const text = new TextDecoder().decode(bytes);
   return /^[1-9][0-9]*$/.test(text) ? Number(text) : undefined;
 }
 
 /**
- * A removal's put may only lower a name's latest marker, or keep it, to a
- * version that is stored and that the commit does not remove: the
- * repository's own marker after a removal.
+ * a removal's put may only lower or keep a name's latest marker, to a stored
+ * version the commit does not remove: the repository's own marker after a
+ * removal
  */
 async function markerRefusal(
   context: ContentCheckContext,
@@ -255,7 +238,6 @@ async function markerRefusal(
     : refused(op, "its latest marker names a version that is not stored");
 }
 
-/** The fields a rename carries over from the version it renames. */
 function carried(metadata: DataMetadata): string {
   return canonicalJson({
     lifetime: metadata.lifetime,
@@ -266,10 +248,9 @@ function carried(metadata: DataMetadata): string {
 }
 
 /**
- * A rename moves the latest version of a name to another, as the data
- * repository writes it: the new name gets the source's content and
- * metadata, the old name a rename marker version, and each name's latest
- * marker names the version the commit writes. Nothing else is accepted.
+ * a rename moves the latest version of a name as the data repository writes it:
+ * new name gets content and metadata, old name a rename marker version, each
+ * latest marker names the written version; nothing else
  */
 async function renameRefusal(
   context: ContentCheckContext,

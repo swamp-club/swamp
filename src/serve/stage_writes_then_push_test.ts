@@ -23,7 +23,6 @@ import { createLegacyUnitOfWork } from "../infrastructure/persistence/legacy_uni
 import { useUnitOfWorkFactoryForTesting } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { stageWritesThenPush } from "./stage_writes_then_push.ts";
 
-/** A mark hook and push that record what they were called with, in order. */
 function recording(options: { failMark?: string; failPush?: boolean } = {}) {
   const events: string[] = [];
   return {

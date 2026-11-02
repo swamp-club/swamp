@@ -56,7 +56,6 @@ function gatedWorkflow(name: string, autoResume: boolean): Workflow {
   });
 }
 
-/** A run suspended on a gate, decided or not. */
 function gatedRun(workflow: Workflow, decided: boolean): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -75,7 +74,6 @@ function harness(
   runs: WorkflowRun[],
   options: {
     failListingOf?: string;
-    /** Replaces a workflow's listing when it returns a promise. */
     listing?: (
       workflowId: string,
       signal: AbortSignal | undefined,
@@ -219,7 +217,6 @@ Deno.test("sweepContinuations: stops waiting for a listing once its signal abort
 
   assertEquals(await pass, { examined: 0, launched: 0 });
   assertEquals(listingSignal, abort.signal);
-  // The pass ended: the next workflow was not listed.
   assertEquals(listed, [held.id]);
   assertEquals(launched, []);
 });
@@ -251,7 +248,6 @@ Deno.test("sweepContinuations: a listing its signal aborted ends the pass rather
   assertEquals(launched, []);
 });
 
-/** A context whose datastore holds wait records in `store`, or cannot. */
 function waitsCtx(
   store: InMemorySignalWaitStore | undefined,
 ): Pick<ConnectionContext, "repoContext"> {
@@ -315,18 +311,15 @@ Deno.test("heldSignalSweeper: sweeps on the first call, then only once the inter
 
   await sweep(ctx, boot);
   assertEquals(sweeps, 1);
-  // Continuation passes inside the interval read nothing.
   await sweep(ctx, at(30_000));
   await sweep(ctx, at(599_999));
   assertEquals(sweeps, 1);
   await sweep(ctx, at(600_000));
   assertEquals(sweeps, 2);
-  // The interval runs from the last sweep, not from boot.
   await sweep(ctx, at(1_199_999));
   assertEquals(sweeps, 2);
   await sweep(ctx, at(1_200_000));
   assertEquals(sweeps, 3);
-  // Another sweeper keeps its own time.
   await heldSignalSweeper(600_000)(ctx, at(1_200_001));
   assertEquals(sweeps, 4);
 });
@@ -384,7 +377,6 @@ Deno.test("ContinuationSweepService: the first pass is the boot pass, and later 
   });
   try {
     service.start();
-    // Waits for the boot pass in flight, then runs one of its own.
     await service.runOnce();
     await service.runOnce();
     assertEquals(passes, [true, false]);
@@ -467,7 +459,6 @@ Deno.test("ContinuationSweepService: dispose waits for the pass in flight and te
   assertEquals(sawStopping, true);
   assertEquals(sawAborted, true);
 
-  // Nothing starts after dispose.
   service.start();
 });
 
@@ -496,8 +487,8 @@ Deno.test("ContinuationSweepService: start does not wait for the boot pass, and 
 
 Deno.test("ContinuationSweepService: dispose does not wait for the boot pass's listing of suspended runs", async () => {
   const workflow = gatedWorkflow("on", true);
-  // The boot pass's listing never settles on its own, as a run index
-  // rebuild queued behind a request's rebuild does not (swamp-club#3472).
+  // the boot pass's listing never settles on its own, as a run index rebuild
+  // queued behind a request's rebuild does not
   const { ctx, listed } = harness([workflow], [gatedRun(workflow, true)], {
     listing: () => new Promise(() => {}),
   });
@@ -527,7 +518,6 @@ Deno.test("decideContinuationSweepStart: a synced datastore needs claims every i
     decideContinuationSweepStart({ ...synced, intervalMs: 0 }),
     "disabled",
   );
-  // No shared store, or one that cannot create a record atomically.
   assertEquals(
     decideContinuationSweepStart({ ...synced, sharedClaims: false }),
     "no_shared_claims",

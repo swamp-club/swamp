@@ -91,10 +91,6 @@ Deno.test("publishGrantWrites: is a no-op without a sync service", async () => {
   await publishGrantWrites(["a"], {});
 });
 
-/**
- * Runs `fn` with grant-write-tracking's log records captured, and returns the
- * level and `error` property of each.
- */
 async function capturingWarnings(
   fn: () => Promise<void>,
 ): Promise<{ level: string; error: unknown }[]> {
@@ -259,7 +255,6 @@ Deno.test("createGrantWriteCommit: the unit's writes stage into a root over the 
   });
   try {
     await commit(async () => {
-      // As a grant store's repository signals before writing.
       await signalChange(deps.markDirty, {
         kind: "write",
         path: "grant-data-dir",

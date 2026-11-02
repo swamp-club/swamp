@@ -26,16 +26,14 @@ import type { ReadAuthorizer } from "./admin_auth.ts";
 import type { HealthSnapshot } from "./health_collector.ts";
 
 /**
- * Turns the workflow or model a health entry names, by id or name, into the
- * access resource a read is decided on: its real name plus the fields grants
- * match (tags, and a model's type). Null when it cannot be found.
+ * resolves to the access resource a read is decided on: real name plus the
+ * fields grants match; null when not found
  */
 export interface HealthResourceResolver {
   workflow(idOrName: string): Promise<AccessResource | null>;
   model(idOrName: string): Promise<AccessResource | null>;
 }
 
-/** Resolves health entries with the same fields the WebSocket handlers use. */
 export function createHealthResourceResolver(repos: {
   workflowRepo: WorkflowRepository;
   definitionRepo: DefinitionRepository;
@@ -75,27 +73,17 @@ export function createHealthResourceResolver(repos: {
   };
 }
 
-/** Resolved entries a cached resolver holds before sweeping expired ones. */
 const MAX_CACHED_HEALTH_RESOURCES = 1024;
 
 export interface CachedHealthResourceResolverOptions {
-  /** How long, in milliseconds, one resolution is reused. */
   readonly ttlMs: number;
-  /** Monotonic clock. Defaults to `performance.now`. */
   readonly now?: () => number;
 }
 
 /**
- * Reuses each resolution for `ttlMs` across snapshots, so health readers and
- * stream ticks do not look the same workflow or model up in the repositories
- * again and again. Callers asking at once share one lookup, and a lookup that
- * fails is not kept.
- *
- * Only the resource is reused, never a read decision: every reader is still
- * judged on its own grants against it. A tag edit that changes which grants
- * match can therefore take up to `ttlMs` to change which health entries a
- * reader sees. Changes to a principal's access are unaffected, since those end
- * the principal's health streams.
+ * reuses only the resource, never a read decision, so a tag edit can take up to
+ * ttlMs to change what a reader sees; access changes are unaffected since they
+ * end the principal's health streams
  */
 export function cachedHealthResourceResolver(
   inner: HealthResourceResolver,
@@ -146,12 +134,9 @@ export function cachedHealthResourceResolver(
 }
 
 /**
- * The health snapshot as one reader may see it. Admins get it whole. Anyone
- * else sees the runs, schedules and webhooks of the workflows and models they
- * may read, without who started each run, and none of the worker or component
- * detail, which describes the deployment rather than any resource. An entry
- * whose workflow or model cannot be resolved is hidden. Instance status,
- * uptime and aggregate run metrics stay visible to every reader.
+ * non-admins see only entries for workflows and models they may read, without
+ * who started each run and without worker or component detail; unresolvable
+ * entries are hidden
  */
 export async function healthSnapshotFor(
   snapshot: HealthSnapshot,

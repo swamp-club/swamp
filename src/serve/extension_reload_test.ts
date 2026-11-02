@@ -243,8 +243,6 @@ Deno.test("reloadAfterExtensionChange: waits for a running reload, then reloads 
     assertEquals(serveReloadStatus(aResult), "ok");
     assertEquals(serveReloadStatus(bResult), "ok");
     assertEquals(aResult.reloadedCount, 1);
-    // Both callers arrived while the first reload ran, so they share one
-    // follow-up reload.
     assertEquals(followUpRuns, 1);
     assertEquals(isReloading(), false);
   } finally {
@@ -742,8 +740,6 @@ Deno.test("performServeReload: shares config read between triggers and webhooks"
   }
 });
 
-// -- Uncatalogued pulled extensions and discovery skip (swamp-club#2355) ----
-
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/nonexistent/swamp-test/deno"),
   getDenoEnv: () => Deno.env.toObject(),
@@ -774,7 +770,6 @@ export const model = {
 };
 `;
 
-/** A pulled-extension fixture repo: lockfile, catalog and staged sources. */
 async function withPulledRepo(
   extensionNames: readonly string[],
   fn: (args: {
@@ -839,7 +834,6 @@ async function withPulledRepo(
   }
 }
 
-/** Mock `deno bundle`: copies the source file to the `-o` output path. */
 const copyingBundler = async (_cmd: string, args: string[]) => {
   const out = args[args.indexOf("-o") + 1];
   await Deno.writeTextFile(out, await Deno.readTextFile(args[args.length - 1]));
@@ -891,7 +885,6 @@ Deno.test("reloadPulledExtensions: catalogues an uncatalogued pulled extension a
         "noop v1",
       );
 
-      // The next sync delivers a changed source and bundle.
       await stage(extName, "noop", pulledModelCode(typeId, "noop v2"));
       const { calls } = await withMockedCommand(
         copyingBundler,
@@ -995,7 +988,6 @@ Deno.test("createExtensionDiscoverer: skips catalogued registered sources before
   await withPulledRepo(
     [knownExt, newExt],
     async ({ repoDir, lockfilePath, catalog, stage }) => {
-      // The catalogued source's bundle records that it was imported.
       const knownPath = await stage(
         knownExt,
         "known",
@@ -1129,14 +1121,12 @@ Deno.test("reloadPulledExtensions: does not re-bundle a catalogued row whose sou
         source_mtime: "",
         source_fingerprint: "fingerprint-that-does-not-match",
       });
-      // Control: a changed source on disk is re-bundled.
       const changedPath = await stage(
         extName,
         "changed",
         pulledModelCode(`${extName}/changed`, "changed"),
       );
       catalog.upsert(row(changedPath, join(bundleDir, "changed.js")));
-      // A row whose source file has been deleted.
       const deletedPath = join(modelsDir, "deleted.ts");
       const deletedBundle = join(bundleDir, "deleted.js");
       catalog.upsert(row(deletedPath, deletedBundle));
@@ -1198,12 +1188,6 @@ Deno.test("reloadPulledExtensions: does not re-bundle a catalogued row whose sou
   );
 });
 
-// -- Removed extensions unregister on reload (swamp-club#2742) --------------
-
-/**
- * A pulled model registered by a first reload, as `extension pull` leaves
- * it on every instance. `pulledDir` is the extension's pulled root dir.
- */
 async function withReloadedPulledModel(
   fn: (args: {
     repoDir: string;
@@ -1307,7 +1291,6 @@ Deno.test("reloadPulledExtensions: the instance that ran rm unregisters the type
     async (
       { repoDir, lockfilePath, catalog, typeId, sourcePath, pulledDir },
     ) => {
-      // `extension rm` on this checkout: rows, lockfile entry and files go.
       catalog.removeBySourcePrefix(pulledDir);
       await Deno.remove(sourcePath);
       await removeLockfileEntries(lockfilePath);
@@ -1350,7 +1333,6 @@ Deno.test("reloadPulledExtensions: keeps an extension re-installed before the sw
       const installed = await Deno.readTextFile(lockfilePath);
       await removeLockfileEntries(lockfilePath);
       const withLock = pulledExtensionsLock.withLock.bind(pulledExtensionsLock);
-      // A pull lands between the sweep's first check and its lock.
       pulledExtensionsLock.withLock = async <T>(
         dir: string,
         fn: () => Promise<T>,
@@ -1450,7 +1432,6 @@ Deno.test("seedPulledTypeSnapshot: a vault type registered at boot is unregister
       });
       try {
         await seedPulledTypeSnapshot(repoDir, lockfilePath);
-        // The removal on this checkout drops the row with the lockfile entry.
         catalog.removeBySourcePrefix(canonicalizePath(pulledDir + "/"));
         await removeLockfileEntries(lockfilePath);
 
@@ -1475,7 +1456,6 @@ Deno.test("reloadPulledExtensions: a missing lockfile skips the sweep instead of
       assertEquals(modelRegistry.has(typeId), true, "kept while missing");
       assertEquals(catalog.findBySourcePathPrefix(pulledDir).length > 0, true);
 
-      // The sync lands. The extension is still installed, so nothing goes.
       await Deno.writeTextFile(lockfilePath, installed);
       await reload(repoDir, lockfilePath);
       assertEquals(modelRegistry.has(typeId), true);
@@ -1579,7 +1559,6 @@ Deno.test("seedPulledTypeSnapshot: records extensions only the transitional in-r
     try {
       await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
         await seedPulledTypeSnapshot(repoDir, lockfilePath);
-        // `extension rm` on this checkout drops the row and the entry.
         catalog.removeBySourcePrefix(canonicalizePath(pulledDir + "/"));
         await Deno.writeTextFile(localLockfile, JSON.stringify({}));
 
@@ -1598,17 +1577,14 @@ Deno.test("reloadPulledExtensions: never sweeps local or source-mounted extensio
   const mountDir = await Deno.makeTempDir({ prefix: "swamp_2742_mount_" });
   await withPulledRepo([], async ({ repoDir, lockfilePath, catalog }) => {
     const extensions = [
-      // A repo whose top-level manifest names its local extensions.
       {
         name: `@acme/tools-${id}`,
         source: join(repoDir, "extensions", "models", "tool.ts"),
       },
-      // A per-subdirectory manifest under extensions/<kind>/<dir>/.
       {
         name: `@acme/sub-${id}`,
         source: join(repoDir, "extensions", "models", "sub", "tool.ts"),
       },
-      // An --extension-source mount outside the repo.
       {
         name: `@acme/mounted-${id}`,
         source: join(mountDir, "models", "tool.ts"),
@@ -1695,15 +1671,12 @@ Deno.test("seedPulledTypeSnapshot: a later call adds rows catalogued after the f
           canonicalizePath(join(pulledRoot, ext) + "/"),
         );
       try {
-        // Boot baseline: only `early` has rows yet.
         addRow(early);
         await seedPulledTypeSnapshot(repoDir, lockfilePath);
-        // The startup load catalogues `late`; `early` is removed meanwhile.
         addRow(late);
         dropRows(early.ext);
         await seedPulledTypeSnapshot(repoDir, lockfilePath);
 
-        // `extension rm` of `late` on this instance, then the reload.
         dropRows(late.ext);
         await removeLockfileEntries(lockfilePath);
         await reload(repoDir, lockfilePath);
@@ -1718,8 +1691,6 @@ Deno.test("seedPulledTypeSnapshot: a later call adds rows catalogued after the f
   );
 });
 
-// -- Removed add-ons detach from types they do not own (swamp-club#2745) ----
-
 const addOnCode = (type: string, method: string, description: string) => `
 export const extension = {
   type: "${type}",
@@ -1733,11 +1704,6 @@ export const extension = {
 };
 `;
 
-/**
- * Pulled add-ons attached to `baseType`, as a pulled extension adding a
- * method to a built-in or local type leaves them. `addOns` lists each
- * extension's name, the method it adds and that method's description.
- */
 async function withAttachedAddOns(
   baseType: string,
   addOns: ReadonlyArray<{ ext: string; method: string; description: string }>,
@@ -1809,7 +1775,6 @@ async function withAttachedAddOns(
       if (options.attachFirst ?? true) {
         await loader.attachPendingExtensionsForType(baseType);
       }
-      // Serve's first reload records the add-ons in its type snapshot.
       await reload(repo.repoDir, repo.lockfilePath);
       await fn({
         ...repo,
@@ -1866,7 +1831,6 @@ Deno.test("reloadPulledExtensions: the instance that ran rm detaches a removed a
     "command/shell",
     [{ ext, method, description: "added" }],
     async ({ repoDir, lockfilePath, catalog, sourceOf, pulledDir }) => {
-      // `extension rm` on this checkout: rows, lockfile entry and files go.
       catalog.removeBySourcePrefix(pulledDir(ext));
       await Deno.remove(sourceOf(ext));
       await removeLockfileEntries(lockfilePath);
@@ -1909,14 +1873,12 @@ Deno.test("reloadPulledExtensions: attaches an add-on pulled into a running serv
   const id = crypto.randomUUID().slice(0, 8);
   const ext = `@test/addon-${id}`;
   const method = `pulled_${id.replaceAll("-", "_")}`;
-  // The add-on's rows land while serve runs; nothing has attached them yet.
   await withAttachedAddOns(
     "command/shell",
     [{ ext, method, description: "pulled" }],
     async ({ repoDir, lockfilePath }) => {
       assertEquals(methodOn("command/shell", method), "pulled");
 
-      // A second reload finds it already attached and changes nothing.
       await reload(repoDir, lockfilePath);
       assertEquals(methodOn("command/shell", method), "pulled");
       assertEquals(
@@ -1962,7 +1924,6 @@ Deno.test("reloadPulledExtensions: attaches a pulled add-on when serve reaches t
       source_mtime: "",
       source_fingerprint: "",
     });
-    // Serve configured with a pulled root spelled through a symlink.
     const link = `${repoDir}-link`;
     await Deno.symlink(repoDir, link, { type: "dir" });
     try {
@@ -2040,13 +2001,9 @@ Deno.test("reloadPulledExtensions: detaches a removed add-on's method from a loc
   }
 });
 
-// -- Pulled types named like a built-in (swamp-club#2746) ------------------
-
 /**
- * Runs `fn`, then puts back any built-in entry it replaced or removed. The
- * registries are process-global, so a red run on unfixed code must not
- * leave later tests without the built-ins. A built-in is never cleaned up
- * with invalidateType alone.
+ * puts back any built-in entry fn replaced or removed: the registries are
+ * process-global, and a built-in is never cleaned up with invalidateType alone
  */
 async function restoringBuiltIns(fn: () => Promise<void>): Promise<void> {
   const models = ["command/shell", "swamp/grant"].map((type) => ({

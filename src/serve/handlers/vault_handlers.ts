@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Vault-domain request handlers (vault.* verbs).
- */
-
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createVaultAnnotateDeps,
@@ -148,10 +144,9 @@ function rejectReservedVault(
 }
 
 /**
- * Sends a SwampError thrown by a vault preview (e.g. vaultPutPreview,
- * vaultDeletePreview) as an error frame. A missing vault gets a fixed message:
- * libswamp's lists every configured vault, but vault put and delete are
- * authorized by write on data:vault and listing vaults needs read.
+ * a missing vault gets a fixed message: libswamp's lists every configured
+ * vault, but put and delete are authorized by write on data:vault while listing
+ * needs read
  */
 function sendVaultSwampError(
   socket: WebSocket,
@@ -178,10 +173,9 @@ function sendVaultSwampError(
 export { vaultAccessResource };
 
 /**
- * A caller admitted only by a `vault:<name>` grant learns nothing about
- * other vaults: when the vault it names does not exist it gets a fixed
- * not-found reply instead of libswamp's, which lists every configured vault
- * (swamp-club#2676). Returns true when it replied.
+ * a caller admitted only by a vault:<name> grant must learn nothing about other
+ * vaults, so a missing vault gets a fixed not-found instead of libswamp's
+ * reply, which lists every vault
  */
 async function rejectUnknownVaultForVaultGrant(
   socket: WebSocket,
@@ -203,12 +197,7 @@ async function rejectUnknownVaultForVaultGrant(
   return true;
 }
 
-/**
- * Resolves the vault a get or describe names by name or id and authorizes
- * it by the name it resolves to, so an id cannot sidestep a name-scoped
- * grant. Returns the vault the handler may act on (or the requested name,
- * when nothing resolves), or null when it replied.
- */
+/** authorize by the resolved name so an id cannot sidestep a name-scoped grant */
 async function authorizeVaultByNameOrId(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -250,9 +239,8 @@ async function authorizeVaultByNameOrId(
 }
 
 /**
- * Whether a result is the vault that was authorized: the resolved vault by
- * both id and name, or, when nothing resolved, the requested name or id. A
- * vault renamed or replaced between the check and the read is not it.
+ * a vault renamed or replaced between the check and the read is not the
+ * authorized one
  */
 function isAuthorizedVault(
   result: Record<string, unknown>,
@@ -338,9 +326,9 @@ export async function handleVaultPut(
 ): Promise<void> {
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
-  // Storing a value is write, and a vault:<name> grant admits it. Setting or
-  // clearing a refresh hook is admin on data:vault only: the hook is a shell
-  // command serve runs on its host, so a grant on one vault never admits it.
+  // a refresh hook is a shell command serve runs on its host, so setting or
+  // clearing it is admin on data:vault only; a grant on one vault never admits
+  // it
   const refresh = payload.refreshFrom !== undefined || payload.clearRefresh;
   if (
     !authorizeVaultOrReject(socket, requestId, principal, {
@@ -540,12 +528,9 @@ export async function handleVaultDelete(
       payload: { data: result ?? {} },
     });
 
-    // No datastore push: secrets and annotations live in the always-local
-    // .swamp/secrets (or an external provider), and vault audit entries go
-    // to the repo-local .swamp/audit, so nothing here enters the datastore
-    // cache. Like vault.put, this handler has nothing to push; add a
-    // per-path mark and push if either ever moves into the cache
-    // (swamp-club#2415).
+    // no datastore push: secrets, annotations and vault audit entries live in
+    // always-local paths outside the datastore cache; add a push if either ever
+    // moves into it
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -794,9 +779,8 @@ export async function handleVaultSearch(
   principal: Principal | null,
   payload?: VaultSearchPayload,
 ): Promise<void> {
-  // Admitted by today's check for every vault, or by a vault grant for the
-  // caller's own vaults; either way each vault is kept only when the caller
-  // may read it, as a named request would decide (swamp-club#2676).
+  // each vault is kept only when the caller may read it, as a named request
+  // would decide
   const admission = admitVaultListingOrReject(
     socket,
     requestId,
@@ -930,12 +914,9 @@ export async function handleVaultAnnotate(
       payload: { data: result },
     });
 
-    // No datastore push: secrets and annotations live in the always-local
-    // .swamp/secrets (or an external provider), and vault audit entries go
-    // to the repo-local .swamp/audit, so nothing here enters the datastore
-    // cache. Like vault.put, this handler has nothing to push; add a
-    // per-path mark and push if either ever moves into the cache
-    // (swamp-club#2415).
+    // no datastore push: secrets, annotations and vault audit entries live in
+    // always-local paths outside the datastore cache; add a push if either ever
+    // moves into it
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_annotate_failed", message);
@@ -958,7 +939,7 @@ export async function handleVaultCreate(
     }, ctx).allowed
   ) return;
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -977,7 +958,6 @@ export async function handleVaultCreate(
     async () => {
       try {
         const libCtx = handlerLibSwampContext(ctx);
-        // The shared repository's mark hook signals the config it writes.
         const deps = await createVaultCreateDeps(
           ctx.repoDir,
           ctx.repoContext.vaultConfigRepo,
@@ -991,9 +971,8 @@ export async function handleVaultCreate(
             config: payload.config,
             repoDir: ctx.repoDir,
             auditReads: payload.auditReads,
-            // No trustKeySource: the client does not own this host, so a
+            // no trustKeySource: the client does not own this host, so a
             // local_encryption vault gets the server's key source
-            // (swamp-club#2690).
           }),
           {
             creating: () => {},
@@ -1037,9 +1016,9 @@ export async function handleVaultEdit(
 
   const vaultConfigRepo = ctx.repoContext.vaultConfigRepo;
 
-  // Authorize the vault the edit will act on, by its name, not the raw
+  // authorize the vault the edit will act on by its name, not the raw
   // name-or-id: a grant matches the resource name, so an id would sidestep
-  // name-scoped denies (swamp-club#2426, swamp-club#2674).
+  // name-scoped denies
   let resolved: VaultEditConfigInfo | null = null;
   // Set when the requested vault's own file does not parse. Its stored name
   // cannot be read, so replacing it needs admin authority as well as write
@@ -1103,7 +1082,7 @@ export async function handleVaultEdit(
       existing: vaultAccessResource(name),
     }, ctx).allowed;
 
-  // The root pushes only once the success reply was sent (swamp-club#3035).
+  // the root pushes only once the success reply was sent
   let replied = false;
   await runInRootUnitOfWork(
     ctx.repoContext,
@@ -1131,15 +1110,13 @@ export async function handleVaultEdit(
             vaultType: target.type,
             byId: true,
             stdinContent: payload.content,
-            // No trustKeySource: the client does not own this host, so a
-            // local_encryption vault keeps its stored key source, and a repair
-            // gets the defaults under this repo (swamp-club#2690).
+            // no trustKeySource: the client does not own this host, so a
+            // local_encryption vault keeps its stored key source and a repair
+            // gets the defaults under this repo
             repoDir: ctx.repoDir,
-            // Every save is authorized against the edited vault too, so a
-            // rename needs write on the new name, as vault.create requires for
-            // the name it creates. A repair request was authorized by id only,
-            // so if the file parses again by now its stored name is checked as
-            // well.
+            // every save is authorized against the edited vault too, so a
+            // rename needs write on the new name; a repair authorized by id
+            // only also checks its stored name if the file parses again
             authorizeUpdate: (before, after) =>
               (!repairTarget ||
                 authorizeVaultWrite(before.name)) &&
@@ -1212,11 +1189,8 @@ export async function handleVaultAuditTrail(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // A named vault is authorized as that vault. Without one the trail covers
-  // every vault, so each entry is kept only when its vault is readable, as a
-  // named read of it would be (swamp-club#2675).
-  // A vault grant reads a vault's trail as a data grant on its name does
-  // (swamp-club#2676).
+  // a named vault is authorized as that vault; without one each entry is kept
+  // only when its vault is readable, as a named read would be
   let include: ((entry: { vaultName: string }) => boolean) | undefined;
   if (payload?.vaultName) {
     if (
@@ -1371,8 +1345,6 @@ export async function handleVaultTypeSearch(
   principal: Principal | null,
   payload?: VaultTypeSearchPayload,
 ): Promise<void> {
-  // A caller whose only read grants are vault grants may list vault types
-  // too (swamp-club#2676); today's refusal is sent unchanged otherwise.
   if (
     !admitVaultListingOrReject(
       socket,

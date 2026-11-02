@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The protected data-plane route a runner loads its dispatch's references
- * through (design/enablers/typed-secrets.md Section 9):
- *
- *   POST /data/secrets   load references of the dispatch's own bag
- *
- * Authenticated with the per-dispatch credential alone. Serve answers only
- * for references in the dispatch's bag, or held by a tagged sensitive field
- * of the dispatch's own resource (the resource claim, swamp-club#3529),
- * under the dispatching run's
- * vault access, and only while the attempt holds its lease: access is
- * checked again after the vault reads, so a read in flight when the
- * dispatch ends gets no value. Every reply is `no-store`, errors name the
- * code and the reference and never a value, and serve audit records only
- * metadata.
+ * per-dispatch credential alone; answers only for bag references or a resource
+ * claim, under the run's vault access, rechecked after the vault reads; replies
+ * are no-store, errors never name a value
  */
 
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -71,17 +60,14 @@ const logger = getSwampLogger(["serve", "data-plane", "secrets"]);
 
 const VERB = "loadSecrets";
 
-/** The serve audit action of the route's events. */
 export const DISPATCH_SECRET_LOAD_AUDIT_ACTION = "worker.secrets.load";
 
-/** Where the route's audit events go, once serve has an emitter. */
 export interface DispatchSecretLoadsAudit {
   emitter: AuditEmitter;
   instanceId: string;
   /**
-   * True while serve audit runs fail-secure and cannot durably record
-   * events, as every other audited request checks, so the route refuses
-   * rather than serve a value whose audit event may be lost.
+   * true while serve audit is fail-secure and cannot durably record events, so
+   * the route refuses rather than serve a value whose audit event may be lost
    */
   refuseRequests?: () => boolean;
 }
@@ -94,25 +80,21 @@ export interface DispatchSecretLoadsOptions {
   };
   dispatches: DispatchRegistry;
   vault: () => Promise<VaultService>;
-  /** The repository holding a dispatch's records, for resource claims. */
   repoFor: (dispatch: ActiveDispatch) => UnifiedDataRepository;
   /** Read per request, since serve creates its emitter after the data plane. */
   audit?: () => DispatchSecretLoadsAudit | undefined;
 }
 
-/** The authenticated caller of one load request. */
 export interface DispatchSecretLoadCaller {
   workerName: string;
   dispatchId: string;
 }
 
-/** Runs a request's work in the dispatch's trace (the data plane's span). */
 export type DispatchSecretLoadTrace = (
   caller: DispatchSecretLoadCaller,
   fn: () => Promise<Response>,
 ) => Promise<Response>;
 
-/** Whether `segments` (a data-plane path split on `/`) name this route. */
 export function isDispatchSecretsRoute(segments: readonly string[]): boolean {
   return `/${segments.join("/")}` === DISPATCH_SECRETS_PATH;
 }
@@ -203,7 +185,6 @@ export class DispatchSecretLoads {
     });
   }
 
-  /** Answers one request to the route. Never throws. */
   async handle(
     req: Request,
     sourceIp: string,
@@ -295,8 +276,7 @@ export class DispatchSecretLoads {
     } catch {
       return refusal(400, "malformed_request", "The body is not JSON", 0);
     }
-    // Untrusted input: a refusal costs the same however large it is
-    // (swamp-club#3862).
+    // untrusted input: a refusal costs the same however large it is
     const parsed = parseUntrusted(DispatchSecretLoadRequestSchema, raw);
     if (!parsed.success) {
       return refusal(
@@ -311,11 +291,8 @@ export class DispatchSecretLoads {
     const refused = await this.#authorize(dispatch, references);
     if (refused !== null) return refused;
 
-    // The run's vault scope holds the reads, as the same read in-process
-    // would be (swamp-club#2676). A run with none reads unscoped, as
-    // resolveSecret does. The data plane's trace applies the same scope;
-    // applying it here too keeps the route held to it whatever runs it, and
-    // nesting the same scope changes nothing.
+    // reads run under the run's vault scope, unscoped if none; applying it here
+    // holds the route to it whatever runs it
     const scope = dispatch.vaultAccess;
     const read = () => this.#read(dispatch, references);
     const loaded = await (scope ? runWithVaultAccess(scope, read) : read());
@@ -330,9 +307,8 @@ export class DispatchSecretLoads {
       );
       return refusal(410, "access_ended", "The dispatch has ended", count);
     }
-    // Serve is about to deliver these values to the dispatch, so its
-    // redactor must know them before the reply leaves, as for resolveSecret
-    // (swamp-club#3527).
+    // the redactor must know these values before the reply leaves, as for
+    // resolveSecret
     const redactor = dispatch.redactor ??= new SecretRedactor();
     for (const { value } of loaded) redactor.addSecret(value);
     const response: DispatchSecretLoadResponse = { values: loaded };
@@ -340,9 +316,9 @@ export class DispatchSecretLoads {
   }
 
   /**
-   * Refuses the request when any reference is reserved, or neither in the
-   * dispatch's bag nor admitted by a verified resource claim. All or
-   * nothing: one refused reference returns no value for the others.
+   * refuses when any reference is reserved, or neither in the dispatch's bag
+   * nor admitted by a verified resource claim; one refusal returns no values
+   * for the others
    */
   async #authorize(
     dispatch: ActiveDispatch,
@@ -398,7 +374,6 @@ export class DispatchSecretLoads {
     return null;
   }
 
-  /** Reads each distinct reference once, in order of first occurrence. */
   async #read(
     dispatch: ActiveDispatch,
     references: DispatchSecretLoadRequest["references"],

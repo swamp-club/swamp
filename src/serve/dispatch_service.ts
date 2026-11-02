@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The orchestrator's step dispatcher (see design/enablers/remote-execution.md,
- * "Scheduling, fan-out, and provisioning" and "Failure, reconnection, and
- * retry").
- *
- * Implements the domain's RemoteStepDispatcher port: schedules a placed
- * step onto the pool (queueing while every eligible worker is busy),
- * acquires a step lease, ships the dispatch with the environment snapshot
- * and bundle fingerprint, and applies the grace-window failure semantics —
- * a no-write step whose worker drops is re-dispatched; a write-bearing one
- * fails the run.
- */
-
 import { currentRunProgress } from "../domain/remote/run_progress.ts";
 import {
   currentVaultAccess,
@@ -108,18 +95,13 @@ export { hasPlacement };
 
 const logger = getSwampLogger(["serve", "dispatch"]);
 
-/** Sentinel fingerprint for models compiled into the swamp binary. */
 export const BUILTIN_BUNDLE_PREFIX = "builtin:";
 
-/** Default ceiling on how long a step queues for a matching worker. */
 export const DEFAULT_QUEUE_TIMEOUT_MS = 600 * 1000;
 
 /**
- * Cap on a single #waitForPoolChange call when the deadline is null
- * (wait-forever). The actual poll interval is Math.min(this, 5_000)
- * inside #waitForPoolChange, so this value never takes effect directly —
- * the 5s backstop always wins. It exists only to satisfy the maxWaitMs
- * parameter; the real wake signal is onWorkerEnrolled/onWorkerIdle.
+ * never takes effect: the 5s backstop in #waitForPoolChange always wins; the
+ * real wake signal is onWorkerEnrolled/onWorkerIdle
  */
 const WAIT_FOREVER_POLL_CAP_MS = 60 * 1000;
 
@@ -134,7 +116,6 @@ async function sha256Hex(text: string): Promise<string> {
   ).join("");
 }
 
-/** The slice of the worker gateway the dispatcher drives. */
 export interface DispatchGateway {
   workers(): WorkerSnapshot[];
   worker(name: string): WorkerSnapshot | null;
@@ -154,30 +135,17 @@ export interface DispatchGateway {
   ): Promise<DispatchResult>;
 }
 
-/**
- * What one attempt's dispatch frame carries, for the protocol version of the
- * worker it goes to (design/enablers/typed-secrets.md Section 9). A version 6
- * frame carries the arguments with their sentinels and the reference behind
- * each; a version 5 frame carries today's resolved arguments and values.
- */
 interface DispatchFrame {
   protocolVersion: number;
   globalArgs: Record<string, unknown>;
   methodArgs: Record<string, unknown>;
-  /** The secret fields of the frame, by version; see DispatchParams. */
   secrets: Pick<
     DispatchParams,
     "referenceBag" | "secretValues" | "unresolvedMethodArgs" | "secretBag"
   >;
-  /** What serve's dispatch redactor starts out masking. */
   redactorSeeds: string[] | undefined;
 }
 
-/**
- * `event` with the text of an output line passed through `redactor`, as the
- * worker scrubs it: only the line is text the method wrote, and its type,
- * stream and level stay as sent so the run log reads it as the worker meant.
- */
 function scrubbedOutputEvent(
   event: RpcStreamEvent,
   redactor: SecretRedactor,
@@ -195,26 +163,19 @@ export interface DispatchServiceOptions {
   dispatches: DispatchRegistry;
   bundles: BundleRegistry;
   queueTimeoutMs?: number;
-  /**
-   * Test seam: overrides the modelMethodRun-backed pending-dispatch
-   * transitions, and runs lease transitions as method runs through it
-   * instead of writing them with the lease ledger.
-   */
   runModelMethod?: ModelMethodRunner;
   /**
    * Serve's `dispatch-env-allow`: the only variables the environment
    * snapshot ships. Unset ships the full snapshot (minus the denylist).
    */
   dispatchEnvAllow?: readonly string[];
-  /** Test seam: overrides the shipped environment snapshot capture. */
   captureEnvironment?: () => Record<string, string>;
 }
 
 /**
- * `error` carrying the data versions a failed dispatch wrote, as
- * `writtenVersions`, for the step's lock push (swamp-club#3146). Used
- * wherever a dispatch's error is replaced, so the versions survive it. An
- * error that cannot take the property is returned unchanged.
+ * carries the versions a failed dispatch wrote as writtenVersions, for the
+ * step's lock push; an error that cannot take the property is returned
+ * unchanged
  */
 export function withWrittenVersions(
   error: unknown,
@@ -246,35 +207,23 @@ export class DispatchService {
     | ((dispatchId: string) => Promise<readonly WrittenVersion[]>)
     | null = null;
   /**
-   * Per-worker count of steps the scheduler placed but the gateway has not
-   * registered yet. A reservation ends when the dispatch appears in the
-   * worker's `activeDispatchIds`, so a dispatch is counted by exactly one
-   * of the two.
+   * steps placed but not yet registered by the gateway; a reservation ends when
+   * the dispatch appears in activeDispatchIds, so exactly one of the two counts
+   * it
    */
   readonly #reserved = new Map<string, number>();
-  /** Dispatches that performed at least one durable write. */
   readonly #writesByDispatch = new Set<string>();
-  /** Steps waiting for the pool to change (a worker idled or expired). */
   #poolWaiters: Array<() => void> = [];
   /**
-   * Orders the transitions of each lease and each pending dispatch
-   * (sole-writer rule, like the gateway). Different records do not wait on
-   * each other (swamp-club#4038).
+   * orders transitions of each lease and pending dispatch (sole-writer rule,
+   * like the gateway); different records do not wait on each other
    */
   readonly #transitions = new TransitionTail("dispatch");
   /**
-   * Worker affinity pins: maps an affinity key to the worker that
-   * executed the first step in the group. Subsequent steps with the
-   * same key are forced onto that worker; if the worker disconnects,
-   * or starts draining, the step fails with a WorkerAffinityLostError.
+   * affinity key to the worker that ran the group's first step; if that worker
+   * disconnects or drains, later steps fail with WorkerAffinityLostError
    */
   readonly #affinityPins = new Map<string, string>();
-  /**
-   * In-flight affinity resolution: when the first step for a key is
-   * being scheduled, concurrent steps with the same key await this
-   * promise to learn which worker was pinned. It resolves undefined when
-   * the first step ended without binding the group.
-   */
   readonly #affinityInflight = new Map<string, Promise<string | undefined>>();
   constructor(options: DispatchServiceOptions) {
     this.#options = options;
@@ -310,71 +259,48 @@ export class DispatchService {
     this.#gateway = gateway;
   }
 
-  /**
-   * Resolves once every pending-dispatch and step-lease transition queued so
-   * far has settled, including ones queued while waiting: a test awaits it
-   * after closing the server, so the queue records written without waiting
-   * land before it removes the repo (swamp-club#3954).
-   */
   async settled(): Promise<void> {
     await this.#transitions.settled();
   }
 
-  /** Called by serve wiring so finished dispatches release writer sessions. */
   setOnDispatchEnd(callback: (dispatchId: string) => void): void {
     this.#onDispatchEnd = callback;
   }
 
-  /**
-   * Called by serve wiring with the data plane's record of the versions a
-   * dispatch wrote, which a failed dispatch attaches to its error for the
-   * step's lock push (swamp-club#3146).
-   */
   setWrittenVersionsSource(
     source: (dispatchId: string) => Promise<readonly WrittenVersion[]>,
   ): void {
     this.#writtenVersionsOf = source;
   }
 
-  /** Gateway hook: a worker became idle — wake queued steps. */
   notifyWorkerIdle(_worker: WorkerSnapshot): void {
     this.#wakePoolWaiters();
   }
 
-  /** Gateway hook: a worker's grace window expired — wake queued steps. */
   notifyGraceExpired(_worker: WorkerSnapshot): void {
     this.#wakePoolWaiters();
   }
 
-  /**
-   * Gateway hook: a worker was removed because its enrollment token lost
-   * its authority — wake queued steps and any dispatch awaiting its fate.
-   */
   notifyWorkerRemoved(_worker: WorkerSnapshot): void {
     this.#wakePoolWaiters();
   }
 
-  /** Gateway hook: a worker enrolled or re-enrolled — wake queued steps. */
   notifyWorkerEnrolled(_worker: WorkerSnapshot): void {
     this.#wakePoolWaiters();
   }
 
-  /** Gateway hook: a worker started draining — wake queued steps to re-evaluate. */
   notifyWorkerDraining(_worker: WorkerSnapshot): void {
     this.#wakePoolWaiters();
   }
 
-  /** Release a previously-pinned affinity key (e.g. when a job completes). */
   releaseAffinity(key: string): void {
     this.#affinityPins.delete(key);
     this.#affinityInflight.delete(key);
   }
 
   /**
-   * Data-plane hook, awaited BEFORE the first durable write persists, so a
-   * lease can never say "no writes" while a write exists. The converse
-   * (lease marked, write failed) is safe — it only makes failure semantics
-   * more conservative.
+   * awaited before the first durable write persists, so a lease never says no
+   * writes while one exists; the converse is safe, only more conservative
    */
   async recordFirstWrite(dispatch: ActiveDispatch): Promise<void> {
     if (this.#writesByDispatch.has(dispatch.dispatchId)) {
@@ -388,11 +314,6 @@ export class DispatchService {
     );
   }
 
-  /**
-   * Execute a placed step remotely. Re-dispatches across workers when a
-   * no-write attempt is lost to a socket drop; fails the run when a
-   * write-bearing attempt drops.
-   */
   async executeRemote(request: RemoteStepRequest): Promise<RemoteStepResult> {
     return await observeExecutionWork("dispatch.logical", {
       "swamp.logical_dispatch.id": crypto.randomUUID(),
@@ -454,24 +375,19 @@ export class DispatchService {
     const onAbort = () => endQueue("cancel");
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
-    // Set while this step is the first of its affinity group.
     let affinitySlot: Promise<string | undefined> | null = null;
     let affinityResolve: ((name: string | undefined) => void) | null = null;
     let affinityReject: ((err: Error) => void) | null = null;
-    // The worker of the attempt in progress, cleared when the attempt ends
-    // and the step tries again: the step ending there, however it ends,
-    // names the worker a first affinity step binds its group to.
     let attemptWorker: string | undefined;
     let failure: unknown;
     try {
       const affinityKey = request.placement.affinityKey;
       let effectivePlacement = request.placement;
-      // The worker this step's affinity group is bound to, when it is bound.
       let pinnedWorker: string | undefined;
 
       if (affinityKey) {
-        // A first step that ends without binding the group hands its place
-        // to the next waiting step (swamp-club#4113).
+        // a first step that ends without binding the group hands its place to
+        // the next waiting step
         while (!pinnedWorker && !affinityResolve) {
           pinnedWorker = this.#affinityPins.get(affinityKey);
           if (pinnedWorker) break;
@@ -497,11 +413,9 @@ export class DispatchService {
           effectivePlacement = { ...request.placement, target: pinnedWorker };
         }
       }
-      // A bound pin whose worker has left or is draining can never be
-      // honoured, so the step fails rather than queueing until its timeout.
-      // The pin narrows where the step may run but does not replace its own
-      // placement: a pinned worker that does not meet it fails the step,
-      // which is never sent elsewhere, since that would break co-location.
+      // a pin whose worker left or is draining fails the step rather than
+      // queueing; a pinned worker not meeting placement also fails it, never
+      // sent elsewhere, to keep co-location
       const assertPinHeld = () => {
         if (!affinityKey || !pinnedWorker) return;
         const worker = this.#gateway!.worker(pinnedWorker);
@@ -564,8 +478,6 @@ export class DispatchService {
           )
           : effectivePlacement.target!;
         attemptWorker = workerName;
-        // One per attempt: every pass of this loop takes its own
-        // reservation. An unscheduled attempt took none.
         let reservationHeld = scheduled;
         const releaseReservation = () => {
           if (!reservationHeld) return;
@@ -578,10 +490,9 @@ export class DispatchService {
           }
         };
         try {
-          // Built for the chosen worker before anything is acquired for the
-          // attempt: a version 5 frame loads and validates here, and its
-          // failure fails the step with nothing to unwind but the
-          // reservation, never as a lost worker.
+          // built before anything is acquired, so a version 5 load failure
+          // fails the step with only the reservation to unwind, not as a lost
+          // worker
           const frame = await this.#frameFor(workerName, request);
           const result = await this.#dispatchOnce(
             workerName,
@@ -594,8 +505,8 @@ export class DispatchService {
           return result;
         } catch (error) {
           if (error instanceof WorkerLostError) {
-            // Before the pin binds, no other step of the group has run on
-            // the lost worker, so a no-write first step re-dispatches below.
+            // before the pin binds, no other step of the group ran on the lost
+            // worker, so a no-write first step re-dispatches below
             if (affinityKey && (pinnedWorker || error.hadWrites)) {
               endQueue("mark_dispatched", {
                 dispatchId: error.dispatchId ?? "unknown",
@@ -628,9 +539,8 @@ export class DispatchService {
             attemptWorker = undefined;
             continue;
           }
-          // The attempt never ran: the gateway refused to send it, or the
-          // worker refused to take it. A probe names one worker and has no
-          // other to fall back on, so the gateway's refusal fails it.
+          // the attempt never ran; a probe names one worker with no fallback,
+          // so the gateway's refusal fails it
           const refusal = error instanceof WorkerNotDispatchableError
             ? (request.skipScheduler ? null : error.reason)
             : error instanceof RpcError &&
@@ -645,10 +555,9 @@ export class DispatchService {
               refusal === "not_in_pool" || refusal === "disconnected" ||
               refusal === "draining" || refusal === "version_changed"
             ) {
-              // The scheduler no longer offers this worker, so the step goes
-              // straight back to it instead of waiting on a pool change. A
-              // worker that re-enrolled at another protocol version is
-              // offered again, and the next attempt's frame is built for it.
+              // the scheduler does not offer this worker, so retry it directly
+              // rather than wait for a pool change; a re-enrolled worker is
+              // offered again and gets a frame built for it
               logger.warn(
                 "Worker {worker} was {code} on dispatch; re-scheduling step",
                 { worker: workerName, code: refusal },
@@ -684,7 +593,6 @@ export class DispatchService {
           }
           throw error;
         } finally {
-          // An attempt that failed before the gateway registered it.
           releaseReservation();
         }
       }
@@ -702,14 +610,9 @@ export class DispatchService {
       }
       throw error;
     } finally {
-      // The first step of an affinity group settles the steps waiting on it
-      // (swamp-club#4113). Its error naming a lost worker fails them with an
-      // error of their own naming that worker. Otherwise the group binds to
-      // the worker its last attempt ran on, whether the step succeeded or
-      // failed there, and a worker lost since then fails the next step as a
-      // lost pin. A step that ended before an attempt of its own leaves the
-      // group unbound for the next of them, as does a group released while
-      // the step ran, which is never bound again.
+      // The first step of an affinity group settles waiting steps: a
+      // lost-worker error fails them naming it, otherwise the group binds to
+      // the last worker.
       const key = request.placement.affinityKey;
       if (affinityResolve && affinityReject && key) {
         const held = this.#affinityInflight.get(key) === affinitySlot;
@@ -728,12 +631,9 @@ export class DispatchService {
   }
 
   /**
-   * One dispatch attempt, as one hand-off of the locks held for the step
-   * (design/enablers/datastores.md, "Parent-Process Lock Awareness"). The
-   * hand-off ends when the attempt does, however it ends, before the
-   * caller retries or the step writes: the locks are re-keyed, so a retry
-   * after a lost worker carries new nonces and a swamp the first runner
-   * left behind stops skipping them.
+   * hands off the step's locks for one attempt and ends the hand-off however
+   * the attempt ends, before any retry or write; locks are re-keyed so a retry
+   * carries new nonces
    */
   async #dispatchOnce(
     workerName: string,
@@ -747,29 +647,19 @@ export class DispatchService {
     }, () => this.#dispatchObserved(workerName, request, frame, onRegistered));
   }
 
-  /**
-   * The frame `request` is dispatched with to `workerName`, by the protocol
-   * version the worker enrolled at. A version 6 worker receives the
-   * arguments with their sentinels and the references behind them, and
-   * nothing is loaded here. A version 5 worker receives the plaintext frame
-   * the request's legacy delivery builds, the documented exception of the
-   * deprecation window typed-secrets 5.3 ends.
-   */
   async #frameFor(
     workerName: string,
     request: RemoteStepRequest,
   ): Promise<DispatchFrame> {
     const worker = this.#gateway!.worker(workerName);
-    // A worker that left the pool after it was chosen has no platform to
-    // place for; the step goes back to the scheduler, as the gateway's own
-    // refusal to send to it would send it.
+    // a worker that left the pool after being chosen goes back to the
+    // scheduler, as the gateway's own refusal would send it
     if (!worker) {
       throw new WorkerNotDispatchableError(workerName, "not_in_pool");
     }
     const protocolVersion = worker.protocolVersion ?? REMOTE_PROTOCOL_VERSION;
-    // Data text in the arguments is placed for this worker's shell, on every
-    // attempt, since a re-dispatch can choose a worker of another platform
-    // (swamp-club#3868).
+    // placed for this worker's shell on every attempt, since a re-dispatch can
+    // choose a worker of another platform
     const place = (args: Pick<DispatchFrame, "globalArgs" | "methodArgs">) =>
       request.placeArguments(args, worker.platform);
     if (shipsReferencesOnly(protocolVersion)) {
@@ -784,19 +674,16 @@ export class DispatchService {
         redactorSeeds: request.redactorSeeds,
       };
     }
-    // Placed on the sentinel form first, so a refusal comes before the
-    // version 5 frame reads any vault value.
+    // placed on the sentinel form first, so a refusal comes before the version
+    // 5 frame reads any vault value
     place(request);
     const legacy = await request.legacyDelivery?.();
-    // A version 5 frame's arguments hold values in place of sentinels; the
-    // placer refuses one whose data-bearing text no longer matches. The
-    // sentinel form a version 5 worker's shell reads is placed alike.
+    // a version 5 frame holds values in place of sentinels; the placer refuses
+    // one whose data-bearing text does not match
     const placed = place({
       globalArgs: legacy?.globalArgs ?? request.globalArgs,
       methodArgs: legacy?.methodArgs ?? request.methodArgs,
     });
-    // unresolvedMethodArgs already holds the global arguments merged under
-    // the method's, as the version 5 shell reads them, so it is placed whole.
     const unresolvedMethodArgs = legacy?.unresolvedMethodArgs &&
       place({ globalArgs: {}, methodArgs: legacy.unresolvedMethodArgs })
         .methodArgs;
@@ -809,7 +696,6 @@ export class DispatchService {
         ...(unresolvedMethodArgs ? { unresolvedMethodArgs } : {}),
         ...(legacy?.secretBag ? { secretBag: legacy.secretBag } : {}),
       },
-      // The values the frame ships cover the request's own literals.
       redactorSeeds: legacy?.secretValues ?? request.redactorSeeds,
     };
   }
@@ -843,18 +729,18 @@ export class DispatchService {
       outcome = { ok: false, error };
     }
     try {
-      // An attempt that failed has nothing to write, so a cancel ends the
-      // wait for a structural command. One that succeeded waits: a cancel
-      // must not discard its result.
+      // a failed attempt has nothing to write, so a cancel ends the wait for a
+      // structural command; a succeeded one waits so its result is not
+      // discarded
       await observeExecutionWork(
         "dispatch.lock_reclaim",
         {},
         async () => await handOff?.end(outcome.ok ? undefined : request.signal),
       );
     } catch (error) {
-      // The locks could not be taken back, so the step must not write. An
-      // attempt that succeeded fails here even when the step was cancelled
-      // meanwhile: its result would otherwise be returned and written.
+      // the locks could not be taken back, so the step must not write; a
+      // succeeded attempt fails here even if cancelled meanwhile, else its
+      // result would be written
       if (outcome.ok || !request.signal?.aborted) {
         if (!outcome.ok) {
           logger.warn(
@@ -871,9 +757,9 @@ export class DispatchService {
           ? error
           : withWrittenVersions(error, writtenVersionsOf(outcome.error));
       }
-      // A cancelled attempt that failed writes nothing to the model, so the
-      // step stays cancelled rather than failing on a structural command it
-      // did not wait out.
+      // a cancelled attempt that failed writes nothing to the model, so the
+      // step stays cancelled rather than failing on a structural command it did
+      // not wait out
       logger.warn(
         "Could not take back the locks of cancelled step {step}: {error}",
         {
@@ -940,23 +826,19 @@ export class DispatchService {
       tagOverrides: request.tagOverrides,
       dataOutputOverrides: request.dataOutputOverrides,
       dataRepo: request.dataRepo,
-      // The references the step's arguments hold admit the worker's own
-      // reads of them. A workflow step's arguments arrive resolved, so its
-      // references come from its secret bag; a direct caller's literal
-      // expressions are still read from the arguments (swamp-club#3529).
+      // a workflow step's arguments arrive resolved, so its references come
+      // from its secret bag; a direct caller's literal expressions are read
+      // from the arguments
       allowedSecrets: withVaultReferences(
         extractVaultReferences(frame.globalArgs, frame.methodArgs),
         request.secretReferences,
       ),
-      // The step's bag, the only references the protected load route
-      // answers for this dispatch (design/enablers/typed-secrets.md
-      // Section 9).
       bagReferences: bagReferenceSet(request.secretReferences),
       redactor: this.#buildDispatchRedactor(frame.redactorSeeds),
       protocolVersion: frame.protocolVersion,
       traceHeaders: request.traceHeaders,
-      // The dispatching run's vault scope, so the worker's secret reads and
-      // sensitive writes are held to it (swamp-club#2676).
+      // the dispatching run's vault scope, so the worker's secret reads and
+      // sensitive writes are held to it
       vaultAccess: currentVaultAccess(),
     });
 
@@ -985,29 +867,21 @@ export class DispatchService {
       },
       probeMarker: request.probeMarker,
       ...frame.secrets,
-      // Copied only to drop `readonly` for the schema's inferred type.
+      // copied only to drop `readonly` for the schema's inferred type
       lockHolder: lockHolder
         ? { ...lockHolder, lockIds: [...lockHolder.lockIds] }
         : undefined,
     };
 
-    // A version 6 worker reports its parse of the arguments with an event of
-    // its own, which stands for the parse serve makes for a version 5
-    // worker: it calls the caller's hook, at most once and only before the
-    // result, and is never forwarded as a run event (swamp-club#3681).
-    // The method runs while the hook does, so a hook that fails cannot stop
-    // it and leaves the step the outcome the method reported: failing a step
-    // whose method ran would invite a retry that runs it again. The failure
-    // is caught from the moment the hook starts, so it is never an unhandled
-    // rejection.
+    // a v6 worker parse event stands for serve parse on v5: calls the hook at
+    // most once, before the result, never forwarded. A failing hook must not
+    // fail a step whose method ran, or a retry reruns it.
     let validation: Promise<void> | undefined;
     let resultArrived = false;
     const referencesOnly = shipsReferencesOnly(frame.protocolVersion);
-    // What the method writes on the worker reaches the run log through the
-    // dispatch's redactor, read when each line arrives so it holds every
-    // value the load route and resolveSecret have served the dispatch so
-    // far: a version 6 run's own redactor never sees those values, so this
-    // is the scrub after the worker's own.
+    // read per line so it holds every value the load route and resolveSecret
+    // served so far; a v6 run's own redactor never sees them, so this is the
+    // scrub after the worker's own
     const dispatchRedactor = () => {
       const redactor = this.#options.dispatches.forDispatch(
         workerName,
@@ -1066,13 +940,9 @@ export class DispatchService {
       });
       resultArrived = true;
       await validation;
-      // What the method wrote to the console on the worker travels in the
-      // result, not the stream. Forward it as output so it reaches the run
-      // log whether the dispatch succeeded or failed (swamp-club#3080). The
-      // capture does not record which console method wrote a line, so every
-      // line is reported as stdout.
-      // A listener that throws must not turn a finished dispatch into a
-      // failed one.
+      // console output travels in the result, not the stream: forward it as
+      // output on success or failure, all as stdout since the capture does not
+      // record the method. A throwing listener must not fail the dispatch.
       for (const line of result.logs) {
         try {
           request.onEvent?.({
@@ -1096,12 +966,9 @@ export class DispatchService {
         }
       }
       if (result.status === "error") {
-        // The worker scrubs its result error before sending it
-        // (swamp-club#3525). Scrub it again here with the registration's
-        // redactor, which also holds every value resolveSecret delivered
-        // mid-dispatch (swamp-club#3527): a worker built before those fixes
-        // still enrolls on the same protocol version, and the lease record is
-        // durable.
+        // Scrub the worker's result error again with the registration's
+        // redactor, which also holds values resolveSecret delivered
+        // mid-dispatch.
         const redactor = this.#options.dispatches.forDispatch(
           workerName,
           dispatchId,
@@ -1113,8 +980,8 @@ export class DispatchService {
           "failed",
           scrub(result.error ?? "remote execution failed"),
         );
-        // A coded UserError the worker's method threw comes back as one, its
-        // code scrubbed like the message (swamp-club#3773).
+        // a coded UserError the worker's method threw comes back as one, its
+        // code scrubbed like the message
         const message = scrub(result.error ?? "Remote execution failed");
         throw markErrorPaths(
           result.errorCode !== undefined
@@ -1143,8 +1010,8 @@ export class DispatchService {
     } catch (dispatchError) {
       resultArrived = true;
       await validation;
-      // Every way out of here throws; the versions the dispatch wrote go
-      // with the error, read before the finally releases the dispatch.
+      // every way out throws; the versions the dispatch wrote go with the
+      // error, read before the finally releases the dispatch
       let failure: unknown;
       try {
         failure = await this.#failedDispatchError(
@@ -1167,9 +1034,6 @@ export class DispatchService {
     }
   }
 
-  /**
-   * The error the step sees for a failed dispatch, after ending its lease.
-   */
   async #failedDispatchError(
     error: unknown,
     workerName: string,
@@ -1210,10 +1074,8 @@ export class DispatchService {
       }
       return new WorkerLostError(workerName, hadWrites, dispatchId);
     }
-    // Anything else (worker_busy desync, unexpected RPC failure): the
-    // attempt is abandoned, not a method failure — end the lease so it
-    // cannot leak as 'active', then let executeRemote decide. Leases the
-    // try block already settled (fail/complete) are left alone.
+    // anything else is an abandoned attempt, not a method failure: end the
+    // lease so it cannot leak as active, then let executeRemote decide
     if (!leaseSettled) {
       await this.#endLease(
         leaseId,
@@ -1224,7 +1086,6 @@ export class DispatchService {
     return error;
   }
 
-  /** Schedule against the live pool, queueing while eligible workers are busy or absent. */
   async #acquireWorker(
     placement: StepPlacement,
     signal: AbortSignal | undefined,
@@ -1262,19 +1123,14 @@ export class DispatchService {
   }
 
   /**
-   * Whether an affinity group's pinned worker, still in the pool, can no
-   * longer take its steps: disconnected or draining. Pass the gateway's own
-   * snapshot — the reservation overlay reports a full draining worker as
-   * busy.
+   * pass the gateway's own snapshot: the reservation overlay reports a full
+   * draining worker as busy
    */
   #pinnedWorkerLost(worker: WorkerSnapshot): boolean {
     return !worker.connected || worker.status === "draining";
   }
 
-  /**
-   * The live pool with reservations overlaid onto active dispatch counts.
-   * Reservations cover only dispatches the gateway has not registered yet.
-   */
+  /** reservations cover only dispatches the gateway has not registered yet */
   #poolSnapshot(): WorkerSnapshot[] {
     return this.#gateway!.workers().map((worker) => {
       const reservations = this.#reserved.get(worker.name) ?? 0;
@@ -1326,10 +1182,6 @@ export class DispatchService {
     });
   }
 
-  /**
-   * After a mid-dispatch socket drop, observe the worker's fate: it either
-   * reconnects within the grace window or the gateway removes it.
-   */
   async #awaitWorkerFate(
     workerName: string,
     signal?: AbortSignal,
@@ -1348,17 +1200,14 @@ export class DispatchService {
   }
 
   /**
-   * Registers the definition's bundle under a fingerprint of its JS and of
-   * its assets as read now. The JS is what the definition's factory built
-   * from the source serve registered; the assets are read at each dispatch,
-   * as serve's own runs read them, so an edited asset ships under a new
-   * fingerprint. The recorded asset hashes let the data plane refuse bytes
-   * that changed after the fingerprint was taken (swamp-club#3594).
+   * the JS is what the definition's factory built; assets are read at each
+   * dispatch so an edited asset ships under a new fingerprint, and recorded
+   * hashes let the data plane refuse bytes changed since
    */
   async #ensureBundle(modelDef: ModelDefinition): Promise<string> {
     if (!modelDef.bundleSourceFactory) {
-      // Built-in model: the worker's own binary carries it; enrollment
-      // already guaranteed version lockstep.
+      // built-in model: the worker's own binary carries it; enrollment already
+      // guaranteed version lockstep
       return `${BUILTIN_BUNDLE_PREFIX}${modelDef.type.normalized}`;
     }
     const js = await modelDef.bundleSourceFactory();
@@ -1400,8 +1249,8 @@ export class DispatchService {
     methodName: string,
     inputs: Record<string, unknown>,
   ): void {
-    // Control-plane bookkeeping: chained from inside the dispatching run, it
-    // must not be held to that run's vault scope (swamp-club#2676).
+    // control-plane bookkeeping chained from inside the dispatching run must
+    // not be held to that run's vault scope
     const run = () =>
       withoutVaultAccess(() =>
         this.#runModelMethod({
@@ -1411,7 +1260,7 @@ export class DispatchService {
           inputs,
         })
       );
-    // Ordered per queue entry: each one is its own record.
+    // ordered per queue entry: each is its own record
     this.#transitions.run(
       `pending_dispatch.${methodName}`,
       run,
@@ -1419,17 +1268,13 @@ export class DispatchService {
     ).catch(() => {});
   }
 
-  /**
-   * Runs one lease's transition after that lease's earlier ones. Each lease
-   * is its own record, so a lease never waits on another's (swamp-club#4038).
-   */
   #leaseTransition(
     methodName: string,
     leaseId: string,
     transition: (leases: StepLeaseStore) => Promise<void>,
   ): Promise<void> {
-    // Control-plane bookkeeping: chained from inside the dispatching run, it
-    // must not be held to that run's vault scope (swamp-club#2676).
+    // control-plane bookkeeping chained from inside the dispatching run must
+    // not be held to that run's vault scope
     const run = () => withoutVaultAccess(() => transition(this.#stepLeases));
     return this.#transitions.run(
       `step_lease.${methodName}`,
@@ -1464,8 +1309,8 @@ export class DispatchService {
     const libCtx = createLibSwampContext({
       openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
     });
-    // Control-plane bookkeeping: never held to the dispatching run's vault
-    // scope (swamp-club#2676).
+    // control-plane bookkeeping is never held to the dispatching run's vault
+    // scope
     for await (
       const event of runGeneratorWithoutVaultAccess(() =>
         modelMethodRun(libCtx, deps, {
@@ -1475,8 +1320,8 @@ export class DispatchService {
           lastEvaluated: false,
           typeArg: input.typeArg,
           definitionName: input.definitionName,
-          // Control-plane bookkeeping: skip per-run report artifacts so pool
-          // churn stays bounded to the state records themselves.
+          // skip per-run report artifacts so pool churn stays bounded to the
+          // state records
           skipAllReports: true,
         })
       )
@@ -1493,7 +1338,6 @@ export class DispatchService {
   }
 }
 
-/** A step's affinity-pinned worker is no longer reachable. */
 export class WorkerAffinityLostError extends Error {
   readonly workerName: string;
   readonly affinityKey: string;
@@ -1509,7 +1353,6 @@ export class WorkerAffinityLostError extends Error {
   }
 }
 
-/** A step's affinity-pinned worker does not meet the step's own placement. */
 export class AffinityPlacementMismatchError extends Error {
   readonly workerName: string;
   readonly affinityKey: string;
@@ -1528,7 +1371,6 @@ export class AffinityPlacementMismatchError extends Error {
   }
 }
 
-/** A dispatch was lost to a control-socket drop. */
 export class WorkerLostError extends Error {
   readonly workerName: string;
   readonly hadWrites: boolean;

@@ -45,12 +45,10 @@ export class RegistryCapacityError extends Error {
 export interface ActiveRun {
   readonly runId: string;
   readonly kind: RunKind;
-  /** The canonical name of the model or workflow the run was authorized on. */
   readonly resourceName: string;
   /**
-   * The id of that model or workflow, when it resolved. Cancel and attach
-   * authorize against the resource with this id, so a rename during the run
-   * cannot point them at a different resource that took the old name.
+   * cancel and attach authorize against this id, so a rename during the run
+   * cannot point them at another resource that took the old name
    */
   readonly resourceId?: string;
   /**
@@ -59,9 +57,8 @@ export interface ActiveRun {
    */
   readonly methodName?: string;
   /**
-   * The normalized model type of a method run's model. Cancel and attach use
-   * it when the model is gone, so a control-plane run stays admin-only
-   * (swamp-club#2756).
+   * used by cancel and attach when the model is gone, so a control-plane run
+   * stays admin-only
    */
   readonly resourceType?: string;
   readonly buffer: RunEventBuffer;
@@ -84,9 +81,7 @@ export class ActiveRunRegistry {
   readonly #maxRunDurationMs: number | undefined;
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #reserved = new Set<string>();
-  /** Nested child run id -> the registered run whose workflow started it. */
   readonly #nested = new Map<string, string>();
-  /** Set once shutdown begins: no run registers after it. */
   #draining = false;
 
   constructor(options?: ActiveRunRegistryOptions) {
@@ -149,14 +144,9 @@ export class ActiveRunRegistry {
   }
 
   /**
-   * Claims a run id so no run can be registered under it until the returned
-   * release function is called. Serve takes it around every change it makes
-   * to a persisted run it is not driving (cancelling, approving or rejecting
-   * a suspended run), so those changes and a resume never interleave within
-   * this process. Returns null when the id is already registered or
-   * reserved. A reservation is not a run: it is not listed, counted against
-   * the caps, cancelled, or drained, and it does not block rekey. Release is
-   * idempotent; call it from a finally.
+   * claims a run id so changes to a persisted run serve is not driving never
+   * interleave with a resume; a reservation is not a run: unlisted, uncapped,
+   * undrained. Release is idempotent
    */
   reserve(runId: string): (() => void) | null {
     if (this.#runs.has(runId) || this.#reserved.has(runId)) return null;
@@ -202,22 +192,11 @@ export class ActiveRunRegistry {
     return this.#runs.get(runId);
   }
 
-  /**
-   * Records that a nested workflow step of the registered run `parentId`
-   * started the child run `childId`. The child is not registered: it is
-   * cancelled through its parent, and only {@link findForAttach} resolves it.
-   */
   addNestedRun(parentId: string, childId: string): void {
     if (!this.#runs.has(parentId) || this.#runs.has(childId)) return;
     this.#nested.set(childId, parentId);
   }
 
-  /**
-   * The run a client reattaches to by `runId`: a registered run, or the one
-   * whose nested workflow step started the child run `runId`. A client older
-   * than swamp-club#2470 tracks the child's id once a nested step starts, so
-   * its reconnect names the child.
-   */
   findForAttach(runId: string): ActiveRun | undefined {
     const run = this.#runs.get(runId);
     if (run) return run;
@@ -225,7 +204,6 @@ export class ActiveRunRegistry {
     return parentId === undefined ? undefined : this.#runs.get(parentId);
   }
 
-  /** `reason` becomes the cancelled run's `cancel_reason`. */
   cancel(runId: string, reason = "cancelled by user"): boolean {
     const run = this.#runs.get(runId);
     if (!run) return false;
@@ -252,15 +230,13 @@ export class ActiveRunRegistry {
   }
 
   /**
-   * Stops new registrations, so a run started after shutdown began (a
-   * chained auto-resume, for one) is refused rather than left running on a
-   * dead instance. Called at the start of every shutdown, drained or not.
+   * stops new registrations so a run started after shutdown began is refused
+   * rather than left running on a dead instance
    */
   beginDraining(): void {
     this.#draining = true;
   }
 
-  /** True once shutdown began. */
   get draining(): boolean {
     return this.#draining;
   }

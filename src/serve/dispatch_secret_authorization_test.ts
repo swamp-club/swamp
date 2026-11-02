@@ -105,7 +105,6 @@ const CONTENT = {
   note: "${{ vault.get('default', 'note-key') }}",
 };
 
-/** A legacy record: written before the writers stamped `_swamp.kind`. */
 const LEGACY_UNTAGGED: Stored = {
   name: "state-main",
   version: 1,
@@ -162,8 +161,8 @@ Deno.test("ResourceClaimVerifier: a tagged field is admitted, an untagged field 
 });
 
 Deno.test("ResourceClaimVerifier: a legacy untagged record is refused, even when the dispatch's spec marks the field sensitive", async () => {
-  // Such a record predates the writer guards, so a reference in it may be
-  // text nobody vaulted; the schema fallback waits for typed-secrets 5.2.
+  // such a record predates the writer guards, so a reference in it may be text
+  // nobody vaulted
   const { repo } = repoHolding(LEGACY_UNTAGGED);
   assertEquals(
     await refusalReason(

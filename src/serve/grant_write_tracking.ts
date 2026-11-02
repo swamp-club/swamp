@@ -42,16 +42,13 @@ import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 const logger = getSwampLogger(["serve", "grant-write-tracking"]);
 
 /**
- * File and admin grant stores that record every path they write, so serve
- * can push the grant writes of its startup reconcile and of the grants
- * auto-reload the way `access.reload` pushes its own. Without the push, a
- * second instance on the same datastore never sees the first one's grants
- * and creates its own copies (swamp-club#2822).
+ * records every path written so serve can push startup reconcile and grants
+ * auto-reload writes; without the push a second instance on the same datastore
+ * never sees these grants and creates its own copies
  */
 export interface GrantWriteTracking {
   readonly fileGrantStore: FileGrantStore;
   readonly adminGrantStore: AdminGrantStore;
-  /** Returns the paths written since the last call, and forgets them. */
   takeWrittenPaths(): string[];
 }
 
@@ -110,15 +107,9 @@ export interface GrantWritePublishDeps {
 }
 
 /**
- * Re-marks each written path and pushes once, through a root unit of work
- * whose flush is the push ({@link stageWritesThenPush}). Must run inside the
- * exclusive sync gate, in the same unit as the writes, so a poller pull cannot
- * land between them and the push (swamp-club#2247, swamp-club#2405).
- *
- * Paths are marked one by one, never with a bare markDirty(), which would
- * turn the push into a walk of the whole cache (swamp-club#2415). A push
- * failure is logged, not thrown: the local policy already holds the writes,
- * and reconcile collapses any duplicate a missed push lets a peer create.
+ * must run inside the exclusive sync gate, in the same unit as the writes, so a
+ * poller pull cannot land between them and the push. Mark paths one by one: a
+ * bare markDirty() makes the push walk the whole cache.
  */
 export async function publishGrantWrites(
   paths: readonly string[],
@@ -137,12 +128,6 @@ export async function publishGrantWrites(
   }
 }
 
-/**
- * Returns a runner for grant-writing units: each unit runs inside the
- * exclusive sync gate, and the grant writes it made are pushed before the
- * gate is released. Serve's startup reconcile and the grants auto-reload
- * both run through it.
- */
 export function createGrantWriteCommit(
   gate: SyncGate | undefined,
   tracking: Pick<GrantWriteTracking, "takeWrittenPaths">,
@@ -150,12 +135,9 @@ export function createGrantWriteCommit(
 ): <T>(unit: () => Promise<T>) => Promise<T> {
   return (unit) =>
     withSyncGate(gate, async () => {
-      // Paths are not cleared before the unit runs. If an earlier unit threw
-      // after writing, its recorded paths are still pending, and this unit's
-      // push carries them with its own. The unit's writes run in a root unit
-      // of work with no push, so their marks stage into it instead of
-      // reaching the hook through signalChange's fallback (swamp-club#3056);
-      // the push opens its own root once this one has ended.
+      // paths are not cleared first: an earlier unit that threw after writing
+      // leaves paths pending and this push carries them. Writes run in a root
+      // unit with no push so marks stage into it; the push opens its own.
       const result = await runInRootUnitOfWork(
         { markDirty: deps.markDirty },
         { flush: undefined },

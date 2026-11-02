@@ -125,8 +125,6 @@ Deno.test("registerHandlers: refuses malformed capability params before the verb
   );
 });
 
-// ── queryData post-query filter tests ───────────────────────────────────
-
 Deno.test("queryData: rejects results containing swamp/grant records", async () => {
   const dispatches = new DispatchRegistry();
   withDispatch(dispatches);
@@ -240,8 +238,6 @@ Deno.test("queryData: passes without dispatch registry (no scoping)", async () =
   assertEquals(result.length, 1);
 });
 
-// ── dispatch scoping tests ──────────────────────────────────────────────
-
 Deno.test("getData: rejects when worker has no active dispatch", async () => {
   const dispatches = new DispatchRegistry();
   const service = createService(dispatches);
@@ -347,8 +343,6 @@ Deno.test("getData: passes when no dispatch registry configured", async () => {
   });
   assertEquals(result.found, false);
 });
-
-// ── secret key denylist tests ──────────────────────────────────────────
 
 function withDispatchAndSecrets(
   dispatches: DispatchRegistry,
@@ -481,8 +475,6 @@ Deno.test("putSecret: denylist is case-insensitive", async () => {
   );
 });
 
-// ── per-step allowlist tests (resolveSecret only) ──────────────────────
-
 Deno.test("resolveSecret: allows key present in static allowlist", async () => {
   const dispatches = new DispatchRegistry();
   withDispatchAndSecrets(dispatches, {
@@ -575,8 +567,6 @@ Deno.test("resolveSecret: passes without dispatch registry (no scoping)", async 
   assertEquals(result.value, "value");
 });
 
-// ── resolveSecret registers delivered values with the dispatch redactor ──
-
 Deno.test("resolveSecret: registers the delivered value with the dispatch redactor (swamp-club#3527)", async () => {
   const dispatches = new DispatchRegistry();
   withDispatchAndSecrets(dispatches, {
@@ -619,7 +609,6 @@ Deno.test("resolveSecret: creates the dispatch redactor when the step shipped no
     secretKey: "api-key",
   });
 
-  // The same registry entry the data plane reads now carries the value.
   assertEquals(
     dispatches.forDispatch("worker-1", "d-1")!.redactor?.redact(
       "got learned-value",
@@ -658,8 +647,6 @@ Deno.test("putSecret: passes without dispatch registry (no scoping)", async () =
   });
   assertEquals(result.ok, true);
 });
-
-// ── reserved vault name tests (hoisted guards) ──────────────────────────
 
 Deno.test("resolveSecret: rejects _token-secrets vault name", async () => {
   const service = createService(undefined);
@@ -757,8 +744,6 @@ Deno.test("deleteData: the delete stages into a root unit over the repository co
   assertEquals(reports, []);
   assertEquals(marks, ["result"]);
 });
-
-// ── control-plane records hidden from workers (swamp-club#3129) ─────────
 
 interface RecordingContext {
   context: RepositoryContext;
@@ -1085,9 +1070,6 @@ Deno.test("readDefinition: an ambiguous dispatch hides control-plane types inste
   assertEquals(scoped.found, true);
 });
 
-// ── dispatching run's vault scope (swamp-club#2676) ─────────────────────
-
-/** A vault service that, as VaultService does, checks the ambient scope. */
 function scopeCheckingVault(): CapabilityService {
   const checked = (vault: string, action: "read" | "write") =>
     currentVaultAccess()?.check(vault, action) ?? Promise.resolve();
@@ -1183,11 +1165,8 @@ for (const { name, call } of SCOPED_CALLS) {
   });
 }
 
-// ── resource claim tests (swamp-club#3529) ─────────────────────────────
-
 const CLAIM_DISPATCH_TYPE = ModelType.create("acme/invoices");
 
-/** A stored record of the dispatch's model, as the claim check reads it. */
 interface StoredRecord {
   name: string;
   version: number;
@@ -1201,11 +1180,6 @@ interface StoredRecord {
   };
 }
 
-/**
- * A service whose data repository holds `record` for every model, and
- * records the identity each lookup asked for, so a test can see the claim
- * check look under the dispatch's own behavior type and model id.
- */
 function createServiceWithRecord(
   dispatches: DispatchRegistry,
   record: StoredRecord | null,
@@ -1287,7 +1261,6 @@ const TAGGED: StoredRecord = {
   },
 };
 
-/** An empty allowlist, as a workflow step's dispatch registers today. */
 const EMPTY_ALLOWLIST: VaultExtractionResult = {
   staticRefs: [],
   hasDynamicRefs: false,
@@ -1339,7 +1312,6 @@ Deno.test("resolveSecret: a verified resource claim admits a tagged field's refe
     "state-main",
     2,
   ]]);
-  // Without the claim the same read is still held to the allowlist.
   await assertRejects(
     () =>
       service.resolveSecret("worker-1", {
@@ -1483,7 +1455,6 @@ Deno.test("resolveSecret: a claim never admits an annotation read or a denyliste
     Error,
     "a resource claim admits a secret value, not an annotation",
   );
-  // Neither refusal consulted the record.
   assertEquals(lookups, []);
 });
 
@@ -1515,9 +1486,7 @@ Deno.test("resolveSecret: a record's verified references are read once per dispa
     Error,
     "its sensitive fields do not reference it",
   );
-  // Three reads of one record: one lookup.
   assertEquals(lookups.length, 1);
-  // Another version is its own record.
   await assertRejects(
     () =>
       service.resolveSecret("worker-1", {
@@ -1575,7 +1544,6 @@ Deno.test("resolveSecret: a protocol version 6 dispatch's resource claim is refu
     "reads a resource's sensitive fields through /data/secrets",
   );
   assertEquals(reads, []);
-  // A method's own read by name keeps the verb and its allowlist.
   assertEquals(
     await serviceFor(6).resolveSecret("worker-1", {
       vaultName: "default",

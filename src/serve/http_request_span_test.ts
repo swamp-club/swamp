@@ -111,7 +111,6 @@ Deno.test("traceHttpRequests: records no path or route for an unknown path", asy
 
 Deno.test("traceHttpRequests: never records the path under a templated route", async () => {
   await withCapturedSpans(async (spans) => {
-    // A webhook route can sit under a templated prefix and hold a secret.
     const handler = traceHttpRequests(() => new Response("ok"));
     await handler(request("/dashboard/s3cr3t-token", { method: "POST" }), INFO);
     const span = findSpan(spans, "POST /dashboard/*");

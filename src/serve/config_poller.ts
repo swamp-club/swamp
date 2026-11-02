@@ -43,10 +43,6 @@ const DEFAULT_CONFIG_POLL_INTERVAL_MS = 30_000;
 export const MAX_FAILED_RELOAD_ATTEMPTS = 3;
 
 export interface ConfigPollerOptions {
-  /**
-   * Pulls `config/` each poll when set. Without one the poller only watches
-   * the lockfile hash, which still catches writes from the same host.
-   */
   syncService?: DatastoreSyncService;
   syncGate?: SyncGate;
   catalogInvalidate: () => void;
@@ -56,25 +52,12 @@ export interface ConfigPollerOptions {
    * should not log them itself.
    */
   extensionReloader: () => Promise<ExtensionReloadResult>;
-  /** Hash of the managedConfig tier lockfile, or `null` when it is missing. */
   lockfileHash: () => Promise<string | null>;
-  /**
-   * The hash the loaded extension set came from, read at serve boot. When
-   * omitted, the first poll seeds the baseline without reloading.
-   */
   baselineLockfileHash?: string | null;
   pollIntervalMs?: number;
   namespace?: string;
 }
 
-/**
- * Keeps serve in step with the managedConfig tier. Each poll pulls `config/`
- * (when a sync service exists) and invalidates the catalogs if anything
- * changed, then compares the tier lockfile's hash with the last one it acted
- * on. A different hash means the extension set changed — a peer's pull,
- * update, rm or pin — and the extension reloader runs. A busy or failed
- * reload stays pending and is retried on later polls.
- */
 export class ConfigPoller {
   readonly #syncService?: DatastoreSyncService;
   readonly #syncGate?: SyncGate;
@@ -89,9 +72,7 @@ export class ConfigPoller {
   #timer: ReturnType<typeof setInterval> | null = null;
   #pendingPull: Promise<void> = Promise.resolve();
   #pulling = false;
-  /** {@link pollNow} asked for a check while one was running. */
   #again = false;
-  /** Last lockfile hash acted on; `undefined` until seeded. */
   #baselineHash: string | null | undefined;
   #reloadPending = false;
   #failedReloads = 0;
@@ -134,10 +115,8 @@ export class ConfigPoller {
   }
 
   /**
-   * Checks once now, outside the interval: on a v3 datastore the commits
-   * serve sees, its own and the leader's feed, call this when the config or
-   * the extension lockfile changed (swamp-club#4120). One asked for while a
-   * check runs runs again after it, so a change landing mid-check is seen.
+   * checks once now, outside the interval; a request made while a check runs
+   * triggers another after it, so a change landing mid-check is seen
    */
   pollNow(): void {
     if (this.#pulling) {

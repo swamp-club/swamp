@@ -26,17 +26,11 @@ import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
 
 /**
- * The data names the policy loader reads. Only their versions decide
- * access, so other data a grant or group model keeps (method-summary
- * reports) is not watched.
+ * only their versions decide access, so other data a grant or group model keeps
+ * is not watched
  */
 const ACCESS_DATA_NAMES: readonly string[] = ["grant-main", "group-main"];
 
-/**
- * One record directory (`<subdir>/<modelId>`): every entry of its access
- * data by relative path, and the version directories (`<dataName>/<N>`)
- * among them.
- */
 interface RecordFingerprint {
   readonly entries: ReadonlyMap<string, string>;
   readonly versions: ReadonlySet<string>;
@@ -45,39 +39,14 @@ interface RecordFingerprint {
 type Fingerprint = Map<string, RecordFingerprint>;
 
 export interface FilesystemAccessDataChangeSourceOptions {
-  /** Absolute grant and group data directories to watch. */
   dirs: readonly string[];
-  /** This process's event bus, where its own grant and group runs publish. */
   eventBus: EventBus;
 }
 
 /**
- * Detects grant and group changes on a v2 filesystem datastore, where peers
- * share the files and there is nothing to pull (swamp-club#3371).
- *
- * Each `detect()` compares a fingerprint of the records' access data (entry
- * names, sizes, mtimes, inodes) with the previous one and returns how many
- * records another process changed: a peer serve, a CLI, or a remote worker.
- * A record this process changed is not counted, so a manual-mode instance
- * keeps its own writes staged, as on S3/GCS, where serve never pulls its
- * own writes. Its own writes are the exact data versions its grant and
- * group method runs name in their `ModelUpdated` events.
- *
- * Attribution fails safe: a changed record counts as a peer change unless
- * every version added to it is one this process's events named and nothing
- * but older versions went away. A cycle that sees an own version before its
- * run publishes the event therefore reloads, which can apply a staged own
- * write one interval early, but a peer's change is never swallowed: a peer's
- * version is never named by this process's events.
- *
- * A record, or a part of one, that cannot be read (a peer wrote it with a
- * restrictive umask or as another uid) does not stop the cycle
- * (swamp-club#3386). Each directory or entry that cannot be read is
- * fingerprinted as its error, so it counts as changed when it turns
- * unreadable and again when it reads, while everything readable beside it
- * and every other record is still compared. While it stays unreadable it
- * is not counted again; a snapshot missing records it could not read is
- * retried by the poller on its own.
+ * a changed record counts as a peer change unless every added version is one
+ * this process's events named and only older versions went away; an early own
+ * version just reloads, a peer's change is never swallowed
  */
 export class FilesystemAccessDataChangeSource {
   readonly #dirs: readonly string[];
@@ -92,10 +61,6 @@ export class FilesystemAccessDataChangeSource {
     this.listen();
   }
 
-  /**
-   * Records this process's own grant and group writes from its event bus.
-   * Listening from construction; call again after `dispose()` to resume.
-   */
   listen(): void {
     if (this.#unsubscribers.length > 0) return;
     this.#unsubscribers.push(
@@ -115,28 +80,19 @@ export class FilesystemAccessDataChangeSource {
     );
   }
 
-  /** Whether `detect()` has a baseline to compare against. */
   get hasBaseline(): boolean {
     return this.#baseline !== null;
   }
 
-  /** Takes the baseline the first `detect()` compares against. */
   async prime(): Promise<void> {
     this.#baseline = await this.#fingerprint();
     this.#ownVersions = new Map();
   }
 
-  /**
-   * The number of records another process changed since the last call.
-   * Without a baseline (`prime()` failed) it reports one change, so the
-   * caller reloads rather than trusting a snapshot it cannot vouch for.
-   */
   async detect(): Promise<number> {
-    // Counted into the poller's change_detection phase, when one records.
     const tally = currentDiagnosticTally();
     const current = await this.#fingerprint();
     if (tally.recording) {
-      // A directory that could not be listed is keyed by itself, not a record.
       const dirs = new Set(this.#dirs);
       for (const [key, record] of current) {
         if (!dirs.has(key)) tally.add("records");
@@ -144,9 +100,9 @@ export class FilesystemAccessDataChangeSource {
         tally.add("unreadable_entries", unreadableEntries(record.entries).size);
       }
     }
-    // Own versions are only ever matched against the versions added since
-    // the last call. One named by an event that arrived after its version
-    // was already counted can match nothing later, so it is dropped.
+    // own versions match only versions added since the last call; one named by
+    // an event arriving after its version was counted can match nothing later,
+    // so it is dropped
     const ownVersions = this.#ownVersions;
     this.#ownVersions = new Map();
     const baseline = this.#baseline;
@@ -205,11 +161,9 @@ export class FilesystemAccessDataChangeSource {
 }
 
 /**
- * True when the change to one record is accounted for by versions this
- * process wrote: the record still exists, it gained at least one version,
- * every version it gained is one of `ownVersions`, and any version it lost
- * is older than every version it gained (pruned by garbage collection on an
- * own write).
+ * own change: the record still exists, gained versions all in ownVersions, and
+ * any lost version is older than every gained one (garbage collection on an own
+ * write)
  */
 function isOwnChange(
   before: RecordFingerprint | undefined,
@@ -236,11 +190,9 @@ function isOwnChange(
 }
 
 /**
- * The fingerprint of a record or directory that could not be read: one
- * entry naming the error, and no versions. It differs from any readable
- * fingerprint, so turning unreadable or readable again counts as a change,
- * and it never counts as an own change. While the same error persists it
- * stays equal, so the record is not counted every cycle.
+ * differs from any readable fingerprint so turning unreadable or readable
+ * counts as a change, never an own change; stays equal while the same error
+ * persists, so it is not counted every cycle
  */
 function unreadableFingerprint(error: unknown): RecordFingerprint {
   return {
@@ -249,7 +201,6 @@ function unreadableFingerprint(error: unknown): RecordFingerprint {
   };
 }
 
-/** The entries of a fingerprint that record something it could not read. */
 function unreadableEntries(
   entries: ReadonlyMap<string, string> | undefined,
 ): Map<string, string> {
@@ -258,7 +209,6 @@ function unreadableEntries(
   );
 }
 
-/** The fingerprint entry of something that could not be read: its error. */
 function unreadableEntry(error: unknown): string {
   return `!unreadable:${error instanceof Error ? error.name : "Error"}`;
 }
@@ -301,12 +251,9 @@ async function listDirectories(dir: string): Promise<string[]> {
 }
 
 /**
- * Records every entry under `dir` by its `/`-joined path relative to the
- * record directory. Symlinks are recorded, never followed, and dot-named
- * entries (atomic-write temp files) are skipped. An entry removed mid-walk
- * is left out. A directory or entry that cannot be read is recorded as its
- * error and its siblings are still walked, so an unreadable old version
- * never hides a new version or a changed `latest` beside it.
+ * symlinks are recorded, never followed; dot-named entries (atomic-write temp
+ * files) are skipped; an unreadable entry is recorded as its error and siblings
+ * are still walked
  */
 async function walk(
   dir: string,
@@ -318,8 +265,8 @@ async function walk(
     children = await Array.fromAsync(Deno.readDir(dir));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
-    // Beside the directory's own entry, which stays: a version directory
-    // that cannot be read is still that version.
+    // beside the directory's own entry, which stays: a version directory that
+    // cannot be read is still that version
     entries.set(`${prefix}/!unreadable`, unreadableEntry(error));
     return;
   }
@@ -335,8 +282,8 @@ async function walk(
       entries.set(path, unreadableEntry(error));
       continue;
     }
-    // A directory is recorded by name only: its own mtime moves whenever
-    // a temp file comes and goes, and its children carry every real change.
+    // a directory is recorded by name only: its mtime moves whenever a temp
+    // file comes and goes, and its children carry every real change
     if (info.isDirectory) {
       entries.set(path, "d");
       await walk(fullPath, path, entries);

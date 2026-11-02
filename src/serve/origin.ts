@@ -20,10 +20,8 @@
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 /**
- * Parses a `--trusted-hosts` entry as `hostname` or `hostname:port`. Returns
- * null for an entry that is not exactly such an authority (a path, user info,
- * an unbracketed IPv6 literal, a non-ASCII name), which keeps its historic
- * literal comparison.
+ * an entry that is not exactly hostname or hostname:port (path, user info,
+ * unbracketed IPv6, non-ASCII) returns null and keeps its literal comparison
  */
 function parseTrustedHost(
   entry: string,
@@ -43,10 +41,8 @@ function parseTrustedHost(
 }
 
 /**
- * Browser origins this server trusts. `anyPort` holds `protocol//hostname`
- * bases matched on every port: loopback, the TLS bind host and trusted host
- * entries without a port. `exact` holds the full origins of entries that name
- * a port, so `host:9443` trusts only that public origin.
+ * anyPort holds protocol//hostname bases matched on every port; exact holds
+ * full origins of entries naming a port, so host:9443 trusts only that origin
  */
 function trustedOrigins(
   bindHost: string,
@@ -138,11 +134,6 @@ function validateHost(
   return { allowed: true };
 }
 
-/**
- * Checks a WebSocket upgrade's Origin (always) and Host (when bound off
- * loopback) against the hosts this server trusts. Shared by `swamp serve`
- * and the `swamp start` server.
- */
 export function validateWebSocketOrigin(
   origin: string | null,
   hostHeader: string | null,
@@ -172,10 +163,8 @@ export function validateWebSocketOrigin(
 }
 
 /**
- * Checks browser-facing HTTP API traffic to a loopback listener in deprecated
- * no-auth mode. Unlike WebSocket validation, Host is always checked so a DNS
- * rebinding authority cannot read the HTTP API. A configured reverse proxy is
- * admitted only through its explicit trusted host entry.
+ * Host is always checked so a DNS rebinding authority cannot read the HTTP API;
+ * a reverse proxy is admitted only through its explicit trusted host entry
  */
 export function validateNoAuthHttpRequest(
   origin: string | null,

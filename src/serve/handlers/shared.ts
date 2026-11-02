@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Shared utilities for serve WebSocket request handlers: the connection context, response senders, error sanitization, and the authorization gate every handler routes through.
- */
-
 import type { FollowerCatchUp } from "../follower_feed.ts";
 import type { GcMutex } from "../gc_mutex.ts";
 import type { EventLoopLagReader } from "../ws_request_span.ts";
@@ -124,10 +120,9 @@ const pushLogger = getSwampLogger(["serve", "sync"]);
 const streamLogger = getSwampLogger(["serve", "stream"]);
 
 /**
- * The `LibSwampContext` for a serve request. Each write use case's unit of
- * work is bound to the serve process's `repoContext.markDirty` itself, so
- * the repositories stage into it (datastore rework Phase 2, swamp-club#3025).
- * Read use cases never open a unit, so every handler uses it.
+ * each write use case's unit of work is bound to the process's
+ * repoContext.markDirty itself, so the repositories stage into it; read use
+ * cases never open a unit
  */
 export function handlerLibSwampContext(
   ctx: Pick<ConnectionContext, "repoContext">,
@@ -139,20 +134,13 @@ export function handlerLibSwampContext(
   });
 }
 
-/** How {@link pushChangedToRemote} reports a failed push. */
 export interface PushChangedOptions {
-  /**
-   * Reports a failed push's message; by default a `serve.sync` warning.
-   * Handlers pass their own so their log category and text stay their own.
-   */
   onError?: (error: string) => void;
 }
 
 /**
- * Pushes local data mutations to the remote datastore. Call after any
- * handler that writes data locally — without this push, mutations are
- * lost on cold boot when the local filesystem is ephemeral. A failed push
- * is reported, never thrown.
+ * without this push, mutations are lost on cold boot when the local filesystem
+ * is ephemeral; a failed push is reported, never thrown
  */
 export async function pushChangedToRemote(
   ctx: ConnectionContext,
@@ -191,10 +179,8 @@ export const SWAMP_INTERNAL_PATH_PATTERN = /\/.swamp\//;
 const withheldErrorLogger = getSwampLogger(["serve", "error"]);
 
 /**
- * Returns the text of an error that is safe to send to a client. A message
- * that names a path is withheld and replaced with a generic one; the original
- * is logged server-side so the operator can still diagnose the failure
- * (swamp-club#3465).
+ * a message that names a path is withheld and replaced with a generic one; the
+ * original is logged server-side so the operator can still diagnose the failure
  */
 export function sanitizeErrorForClient(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -259,11 +245,6 @@ export function lockTimeoutErrorForClient(
   };
 }
 
-/**
- * Carries a libswamp stream error out of a `consumeStream` callback so the
- * handler's catch block can forward its reason alongside the handler's own
- * error code.
- */
 export class LibSwampStreamError extends Error {
   constructor(readonly swampError: SwampError) {
     super(swampError.message);
@@ -271,7 +252,6 @@ export class LibSwampStreamError extends Error {
   }
 }
 
-/** Machine-readable reasons a client may branch on (e.g. an expired version). */
 export type ClientErrorReason =
   | "not_found"
   | "validation_failed"
@@ -295,12 +275,7 @@ const CLIENT_ENTITY_TYPES: ReadonlySet<string> = new Set([
 export interface ClientErrorDetails {
   reason: ClientErrorReason;
   entityType?: string;
-  /**
-   * On a `not_found`: items of this kind before this ISO time have been
-   * reaped by retention (swamp-club#3473).
-   */
   reapedBefore?: string;
-  /** On a `not_found` with `reapedBefore`: the retention timeframe. */
   retention?: string;
 }
 
@@ -308,9 +283,8 @@ export interface ClientErrorDetails {
 const RETENTION_TIMEFRAME = /^[0-9A-Za-z ]{1,32}$/;
 
 /**
- * The retention watermark a libswamp not-found error carries, when both
- * fields are well formed. Never user data: the cutoff is a timestamp and the
- * timeframe comes from the repository's own configuration.
+ * never user data: the cutoff is a timestamp and the timeframe comes from the
+ * repository's own configuration
  */
 function reapedDetails(
   details: object,
@@ -330,9 +304,8 @@ function reapedDetails(
 }
 
 /**
- * Extracts the allow-listed reason and entity type from a libswamp stream
- * error. Returns undefined for anything else, so identifiers and message
- * fragments never reach the client through `details`.
+ * returns undefined for anything else, so identifiers and message fragments
+ * never reach the client through `details`
  */
 export function clientErrorDetails(
   error: unknown,
@@ -365,122 +338,50 @@ export const DEFAULT_QUERY_LIMIT = 1000;
 export interface ConnectionContext {
   repoDir: string;
   repoContext: RepositoryContext;
-  /**
-   * Serve's role in team mode on a v3 datastore (swamp-club#4096): a
-   * follower refuses writes, and reads once its copy is too old. Absent
-   * outside team mode.
-   */
   followerGate?: FollowerGate;
-  /**
-   * A follower's route to the leader (swamp-club#4120): writes a follower
-   * takes are passed on through it with the caller's own credentials.
-   * Absent outside team mode, where a follower refuses them instead.
-   */
   leaderLink?: LeaderLink;
-  /**
-   * Waits, for a bounded time, until this follower's copy holds what the
-   * leader had committed: a forwarded write's reply waits on it, so the
-   * caller reads its own write from this node next (swamp-club#4120).
-   */
   feedBarrier?: () => Promise<void>;
-  /**
-   * Waits, for a bounded time, for this follower's copy to hold a head its
-   * leader names after the call, and says where the copy stands: a read
-   * from a caller whose copy is past this one's waits on it before it is
-   * refused as behind (swamp-club#4254). Absent outside team mode, or
-   * without a leader feed.
-   */
   followerCatchUp?: () => Promise<FollowerCatchUp>;
-  /**
-   * Serve's v3 commit log, as the `commits.subscribe` feed reads it
-   * (swamp-club#4120). Absent when the datastore is not v3.
-   */
   commitFeed?: V3CommitFeedSource;
-  /**
-   * The changes serve keeps because their author lacks a grant they need
-   * (swamp-club#4195), as `datastore status --server` lists them to an
-   * admin. Absent when the datastore is not v3.
-   */
   quarantine?: QuarantineStore;
-  /**
-   * The explicit leases this node holds for callers of its datastore API
-   * (swamp-club#4195), as `datastore status --server` lists them to an
-   * admin. Absent when serve holds none for callers.
-   */
   explicitLeases?: () => readonly {
     readonly lockKey: string;
     readonly principal: string;
     readonly expiresAt: string;
   }[];
-  /**
-   * Serializes `run.gc` and `data.gc` with serve's retention pass
-   * (swamp-club#3473). Absent in contexts built without the retention timer.
-   */
   gcMutex?: GcMutex;
-  /**
-   * Serve's event-loop lag monitor. A traced request records the largest lag
-   * seen recently (swamp-club#3741). Absent outside `swamp serve`.
-   */
   eventLoopLag?: EventLoopLagReader;
-  /**
-   * Where serve finds the definitions owning what a request reads, kept
-   * between requests instead of scanning every definition each time
-   * (swamp-club#3968). Absent outside `swamp serve`: requests then scan.
-   */
   definitionIndex?: DefinitionOwnerIndex;
-  /**
-   * The normalized address clients reach this serve at (`serve --address`):
-   * the owner a claim through serve records (swamp-club#4063). Absent when
-   * serve was started without it.
-   */
   ownerAddress?: string;
   datastoreConfig: DatastoreConfig;
   datastoreResolver: DatastorePathResolver;
   /**
-   * Shared sync service instance. Same one the repo context's markDirty hook
-   * references — see `design/enablers/datastores.md`. Undefined for filesystem
-   * datastores or custom datastores without a cache.
+   * same one the repo context's markDirty hook references; undefined for
+   * filesystem datastores or custom datastores without a cache
    */
   syncService?: DatastoreSyncService;
   /**
-   * In-process gate serializing poller pulls against whole mutation+push
-   * units, so a pull cannot land between a handler's local delete and the
-   * push that would delete the remote object (swamp-club#2247). Present
-   * whenever `syncService` is — without a sync service there is nothing to
-   * race. Not reentrant: see `src/serve/sync_gate.ts`.
+   * serializes poller pulls against whole mutation+push units, so a pull cannot
+   * land between a local delete and the push that deletes the remote object;
+   * present whenever syncService is. Not reentrant.
    */
   syncGate?: SyncGate;
-  /**
-   * Serve's run write fence, handed to every executor a handler builds and
-   * closed by shutdown for the runs it interrupts (swamp-club#4101).
-   */
   runWriteFence?: RunWriteFence;
   /**
-   * Confirms that the commits serve made so far are replicated, before a
-   * write request answers (swamp-club#3489): set only on a v3 datastore
-   * while replication is on, so without it nothing waits. See
-   * {@link confirmRequest}.
+   * set only on a v3 datastore while replication is on, so without it nothing
+   * waits
    */
   confirmReplicated?: () => Promise<void>;
   /**
-   * The high-water mark of serve's commits, set with `confirmReplicated`:
-   * read when a write request starts, so one that committed nothing — a
-   * `run doctor` without `--fix` — never waits on other writers' commits.
+   * read when a write request starts, so one that committed nothing, such as
+   * `run doctor` without `--fix`, never waits on other writers' commits
    */
   replicationMark?: () => number;
   /**
-   * Holds a write request's replies until its handler, and so its root's
-   * commit, has ended (swamp-club#3759): set on every v3 datastore, which
-   * commits when a root ends, replicating or not. `confirmReplicated` adds
-   * the replication check on top. See {@link confirmRequest}.
+   * set on every v3 datastore, which commits when a root ends, replicating or
+   * not; confirmReplicated adds the replication check on top
    */
   holdRepliesUntilCommitted?: boolean;
-  /**
-   * Remote-execution worker gateway. When present, `rpc.*` frames on this
-   * socket are routed to it (worker enrollment and capability verbs); the
-   * legacy client protocol on the same listener is unaffected. See
-   * design/enablers/remote-execution.md.
-   */
   workerGateway?: WorkerGateway;
   policySnapshotLoader?: PolicySnapshotLoader;
   authConfig: ServeAuthConfig;
@@ -490,87 +391,46 @@ export interface ConnectionContext {
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   controlPlaneStore?: ControlPlaneStore;
   defaultVault?: string;
-  /** HA instance identifier — always generated at startup. */
   instanceId?: string;
-  /** Heartbeat stale TTL in ms — used by cross-instance run.attach fallback. */
   staleTtlMs?: number;
-  /** Resolved path to external grants file, if --grants-file was provided. */
   grantsFile?: string;
-  /** Resolved path to external grants directory, if --grants-dir was provided. */
   grantsDir?: string;
-  /** Whether --hot-reload is enabled — gates serve.reload over WebSocket. */
   hotReload?: boolean;
-  /**
-   * Resolved `--config` path serve was started with. Reload and the
-   * workflow.trigger handlers read and write it; undefined means
-   * `.swamp/serve.yaml`.
-   */
   serveConfigPath?: string;
-  /** Scheduled execution service — used by serve.reload to update trigger overrides. */
   scheduledExecution?: ScheduledExecutionService;
-  /** Reloads extension workflow directories and rescans schedules during hot reload. */
   workflowReloader?: () => Promise<number>;
-  /**
-   * Reloads serve's extensions after an extension pull, update, install or
-   * rm through serve. Set only with --hot-reload (swamp-club#3594).
-   */
   extensionChangeReloader?: () => Promise<
     import("../protocol.ts").ServeReloadResponse
   >;
-  /** Live receipt admission state for admin diagnostics. */
   webhookAdmissionSnapshots?: () =>
     import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[];
-  /** Reloads webhook endpoint config from serve.yaml during hot reload. */
   webhookUpdater?: (
     configs: readonly import("../serve_config.ts").WebhookConfigEntry[],
   ) => Promise<number>;
-  /** Inverted resolvedAdmins map: OAuth sub → username. Populated at startup in OAuth mode. */
   resolvedUserNames?: Record<string, string>;
-  /**
-   * Resolves grant-file `username:` subjects on access.reload. Outside OAuth
-   * mode it rejects every name; absent, so does access.reload.
-   */
   grantUsernameResolver?: GrantUsernameResolver;
-  /** Resolved serve options — used by serve.config endpoint. */
   serveOptions?: MergedServeOptions;
-  /** Health collector — used by cluster.instances to enrich the local instance. */
   healthCollector?: HealthCollector;
-  /** Resolved vault config directory — the managed-config tier when active, otherwise `<repoDir>/vaults`. */
   vaultsDir?: string;
-  /** Managed definitions directory when managedConfig is active. */
   managedDefinitionsDir?: string;
-  /** Audit emitter — present when audit config is set in serve.yaml. */
   auditEmitter?: AuditEmitter;
-  /** Audit stores — present when audit config is set in serve.yaml. */
   auditStores?: readonly AuditStore[];
-  /** Audit policy — controls detail level per event category/action. */
   auditPolicy?: AuditPolicy;
-  /** When false, refuse requests that cannot be durably audited. */
   auditFailOpen?: boolean;
-  /** WAL instance — used to check health for fail-secure mode. */
   auditWal?: AuditWal;
-  /** WebSocket audit sink — broadcasts events to subscribed connections. */
   auditWebSocketSink?: import("../audit_sinks/websocket_sink.ts").WebSocketSink;
   auditNamespace?: string;
-  /** Rebuilds external audit sinks from current config during hot-reload. */
   auditSinkRebuilder?: () => Promise<
     import("../../domain/serve_audit/audit_sink.ts").AuditSink[]
   >;
-  /** Vault service for HMAC key rotation — present when audit HMAC is enabled. */
   auditVaultService?:
     import("../../domain/vaults/vault_service.ts").VaultService;
-  /** HMAC vault and key names from config — used by key rotation. */
   auditHmacConfig?: { vaultName: string; keyName: string };
 }
 
-// SECURITY: Authorization must operate on canonical model types, never raw
-// client input. normalizeModelTypeName applies ModelType's normalization
-// (trimming, lowercasing, separator canonicalization :: . whitespace → /,
-// deduplication) and then drops every leading @ and /, so each spelling that
-// executes a type maps to one key. Any raw typeArg that normalizes to a
-// control-plane model type — access control (grant, group, server-token) or
-// the worker fleet (enrollment-token, worker, step-lease, pending-dispatch,
-// fleet-probe) — must require admin authority (swamp-club#2756).
+// authorize on canonical model types, never raw client input; any type that
+// normalizes to a control-plane type (access control or worker fleet) requires
+// admin
 export function isAccessModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
@@ -583,13 +443,9 @@ export function isAccessModelType(
 }
 
 /**
- * Whether a model type needs admin authority: a control-plane type, or one
- * named in `restricted-model-types`. The requested type, the resolved type
- * and every list entry are compared by their normalizeModelTypeName key, so
- * listing a type in any spelling — `@exp/probe`, `exp/probe`, `@Exp::Probe` —
- * restricts it on every path that names it in any spelling (swamp-club#3129).
- * List entries are canonicalized here as well as when the config is parsed,
- * so a ServeAuthConfig built without the parser is judged the same way.
+ * requested, resolved and listed types are compared by normalized key so any
+ * spelling restricts every path; list entries are canonicalized here too in
+ * case the config skipped the parser
  */
 export function isAdminOnlyModelType(
   typeArg: string | undefined,
@@ -611,9 +467,8 @@ export function isAdminOnlyModelType(
 }
 
 /**
- * The canonical key of a requested type. A blank or separator-only type
- * (`"::"`, `"@"`) names no type and fails the request rather than passing
- * the gate unjudged.
+ * a blank or separator-only type names no type and fails the request rather
+ * than passing the gate unjudged
  */
 function requestedTypeKey(typeArg: string): string {
   const key = normalizeModelTypeName(typeArg);
@@ -726,7 +581,6 @@ export function closeConnectionsForPrincipal(principalId: string): void {
 
 const connectionTeardowns = new WeakMap<WebSocket, () => void>();
 
-/** Registers the function that stops a connection's in-flight work. */
 export function setConnectionTeardown(
   socket: WebSocket,
   teardown: () => void,
@@ -735,10 +589,8 @@ export function setConnectionTeardown(
 }
 
 /**
- * Ends a session from the server side. The session's work (in-flight
- * requests, subscriptions) stops now: the close event only fires once the
- * peer completes the close handshake, and a peer that ignores the close frame
- * could otherwise keep it running indefinitely.
+ * stop the session's work now: the close event waits for the peer's close
+ * handshake, which a peer ignoring the close frame could withhold indefinitely
  */
 export function closeSession(
   socket: WebSocket,
@@ -755,18 +607,12 @@ export function closeSession(
   socket.close(code, reason);
 }
 
-/**
- * The server token a session was opened with. `createdAt` identifies the mint:
- * rotation rewrites it, so sessions opened with a rotated-away credential can
- * be told apart from sessions opened with its replacement.
- */
 export interface TokenSessionBinding {
   readonly name: string;
   readonly createdAt: string;
   readonly principalId: string;
 }
 
-/** Why the server ended a token's sessions. Recorded as the audit detail. */
 export type TokenSessionTerminationCause =
   | "revoked"
   | "rotated"
@@ -774,11 +620,9 @@ export type TokenSessionTerminationCause =
   | "deleted"
   | "invalid";
 
-// Close reasons for server-initiated revocations (all well under the 123-byte
-// close-frame limit). Each names its cause, so a client can tell a revoked
-// token apart from a principal losing access.
+// each close reason names its cause so a client can tell a revoked token from a
+// principal losing access; keep under the close-frame size limit
 export const PRINCIPAL_REVOKED_REASON = "Session revoked: access removed";
-/** The token still works; reconnecting picks up the principal's new access. */
 export const ACCESS_CHANGED_CLOSE_CODE = 4004;
 export const STREAM_ACCESS_CHANGED_REASON =
   "Session ended: access changed, reconnect";
@@ -798,14 +642,11 @@ export interface TokenSessionAuditContext {
 }
 
 export interface TerminateTokenSessionsOptions {
-  /** Only close sessions opened with this mint of the token. */
   readonly onlyCreatedAt?: string;
-  /** Close every session except those opened with this mint. */
   readonly exceptCreatedAt?: string;
   readonly code: number;
   readonly reason: string;
   readonly cause: TokenSessionTerminationCause;
-  /** Principal that caused the termination, or `system`. */
   readonly initiatedBy: string;
   readonly requestId?: string;
   readonly audit?: TokenSessionAuditContext;
@@ -814,26 +655,19 @@ export interface TerminateTokenSessionsOptions {
 const sessionLogger = getSwampLogger(["serve", "sessions"]);
 
 /**
- * Open token-bound HTTP streams one token may hold. Streams run until their
- * client leaves, so without a bound any token holder could hold open an
- * unlimited number of them.
+ * streams run until the client leaves, so bound them or a token holder could
+ * hold open unlimited streams
  */
 export const MAX_STREAM_SESSIONS_PER_TOKEN = 10;
 
 /**
- * Open token-bound HTTP streams one principal may hold across all of its
- * tokens, so minting more tokens does not raise the per-token bound.
+ * counted across all of a principal's tokens so minting more tokens does not
+ * raise the bound
  */
 export const MAX_STREAM_SESSIONS_PER_PRINCIPAL = 20;
 
-/**
- * A long-lived HTTP response bound to a server token, such as the health
- * stream. It is a token session like a WebSocket: revoking, rotating or
- * expiring the token, or removing the principal's access, ends it.
- */
 export interface StreamSessionHandle {
   readonly sourceIp: string;
-  /** Ends the response, telling the client why. */
   close(code: number, reason: string): void;
 }
 
@@ -842,13 +676,7 @@ interface StreamSession {
   readonly handle: StreamSessionHandle;
 }
 
-/**
- * Registers a token-bound HTTP stream so the token's session lifecycle can end
- * it. Returns the function that unregisters it (safe to call more than once),
- * or null when the token already holds `MAX_STREAM_SESSIONS_PER_TOKEN` streams
- * or its principal holds `MAX_STREAM_SESSIONS_PER_PRINCIPAL`. The token count
- * spans every mint of the name, so rotating does not reset it.
- */
+/** the token count spans every mint of the name, so rotating does not reset it */
 export function registerStreamSession(
   binding: TokenSessionBinding,
   handle: StreamSessionHandle,
@@ -909,7 +737,6 @@ export function setConnectionToken(
   sockets.add(socket);
 }
 
-/** Each distinct token mint that has at least one open session. */
 export function listTokenSessions(): {
   name: string;
   createdAt: string;
@@ -939,12 +766,6 @@ export function listTokenSessions(): {
   return sessions;
 }
 
-/**
- * Ends the open sessions of a server token, WebSockets and token-bound
- * streams alike, auditing each one before it closes. This is the single path
- * the server uses to cut off a token whose authority has ended. Returns the
- * number of sessions closed.
- */
 export function terminateTokenSessions(
   name: string,
   options: TerminateTokenSessionsOptions,
@@ -1059,20 +880,16 @@ export function setConnectionSourceIp(
 }
 
 /**
- * Message-level compression a client opted into at upgrade. Deno's
- * `upgradeWebSocket` cannot negotiate `permessage-deflate`, so large protocol
- * frames are instead sent as gzip-compressed binary frames to clients that
- * ask for them.
+ * Deno upgradeWebSocket cannot negotiate permessage-deflate, so large frames go
+ * as gzip binary frames to clients that opt in
  */
 export type ConnectionCompression = "gzip";
 
-/** Frames shorter than this stay uncompressed text even when opted in. */
 export const COMPRESSION_THRESHOLD_BYTES = 16 * 1024;
 
 /**
- * Reads the client's compression opt-in from the upgrade URL
- * (`?compress=gzip`). The query string is used because the subprotocol slot
- * already carries the bearer token. Any other value means no compression.
+ * the opt-in is in the query string because the subprotocol slot already
+ * carries the bearer token
  */
 export function resolveConnectionCompression(
   url: string,
@@ -1093,10 +910,6 @@ export function getConnectionSourceIp(socket: WebSocket): string {
   return connectionSourceIp.get(socket) ?? "unknown";
 }
 
-/**
- * Records who the OAuth provider said a connection's user is, from the token
- * that authenticated it (swamp-club#3076).
- */
 export function setConnectionLoginIdentity(
   socket: WebSocket,
   identity: ActorIdentity | undefined,
@@ -1104,17 +917,12 @@ export function setConnectionLoginIdentity(
   if (identity) connectionLoginIdentity.set(socket, identity);
 }
 
-/** Who the OAuth provider said a connection's user is, when known. */
 export function getConnectionLoginIdentity(
   socket: WebSocket,
 ): ActorIdentity | undefined {
   return connectionLoginIdentity.get(socket);
 }
 
-/**
- * The username and email audit events record for a connection's principal,
- * or `undefined` when none is known.
- */
 export function connectionActorIdentity(
   socket: WebSocket,
   principal: Principal | null,
@@ -1143,24 +951,16 @@ type AccessOutcome =
     groups: readonly string[];
   };
 
-/**
- * Who a request is decided for. A WebSocket request's caller is read from
- * its connection; a request with no connection, such as an HTTP route,
- * builds one from the token it authenticated with.
- */
 export interface AccessCaller {
   readonly principal: Principal | null;
   readonly collectives: readonly string[];
   readonly groups: readonly string[];
   readonly sourceIp: string;
-  /** Who the OAuth provider said the caller is, when their token says. */
   readonly loginIdentity?: ActorIdentity;
 }
 
-/** Where a refused request came from, for its denial audit event. */
 type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity">;
 
-/** The caller behind a request on this socket. */
 export function accessCallerOf(
   socket: WebSocket,
   principal: Principal | null,
@@ -1174,11 +974,6 @@ export function accessCallerOf(
   };
 }
 
-/**
- * The single access decision behind {@link authorizeOrReject} and
- * {@link isAuthorized}: an explicit grant allows, an explicit deny refuses,
- * and with neither the admin permission decides.
- */
 function decideAccess(
   socket: WebSocket,
   principal: Principal | null,
@@ -1240,17 +1035,14 @@ function decideForCaller(
 }
 
 /**
- * Who acted on a request, kept so a later decision made with no socket (a
- * chained auto-resume of a nested run's parent, swamp-club#2736) is taken for
- * the same principal and credential.
+ * kept so a later decision made with no socket is taken for the same principal
+ * and credential
  */
 export interface DecisionSubject {
   readonly principal: Principal | null;
-  /** The server token the session was opened with, when there was one. */
   readonly token?: TokenSessionBinding;
 }
 
-/** Captures the subject behind a request on this socket. */
 export function captureDecisionSubject(
   socket: WebSocket,
   principal: Principal | null,
@@ -1260,14 +1052,8 @@ export function captureDecisionSubject(
 }
 
 /**
- * Decides, with no socket, whether a captured subject may still `action` the
- * resource. The memberships are re-read from the subject's server token
- * record, as of the last membership refresh: the token must still be active,
- * unexpired, the same mint (`createdAt`) and the same principal. With no
- * token, a missing record or no policy it refuses. An explicit grant allows,
- * an explicit deny refuses, and with neither the admin permission decides,
- * as {@link decideAccess} does. Everything is allowed when authorization is
- * off.
+ * memberships are re-read from the token record: it must be active, unexpired,
+ * same mint and same principal; no token, record or policy refuses
  */
 export async function decideSubjectAccess(
   ctx: ConnectionContext,
@@ -1331,18 +1117,9 @@ export function authorizeOrReject(
 }
 
 /**
- * Authorizes `tag` for an edit that changes a model's or workflow's tags or
- * name (swamp-club#3085): on the resource as each prior tag set has it, so a
- * principal cannot move it out of a tag their grants depend on, and as the
- * edit leaves it, so they cannot move it in. A rename counts as a retag: a
- * `tag` grant scoped by name would otherwise be passed by renaming the
- * resource into its pattern first and retagging it after. `loaded` is the
- * tags the edit read when it started and `stored` the tags stored now: an
- * edit whose tags match what it loaded can still undo a retag made since. A
- * `stored` of null (the resource is no longer found as loaded) fails closed:
- * the edit is judged a retag. An edit that changes neither tags nor name
- * needs no `tag`. Stops at the first refusal, which it replies and audits as
- * {@link authorizeOrReject} does; returns whether the edit may proceed.
+ * tag is checked on every prior tag set and on the result so a principal cannot
+ * move a resource out of or into a tag; a rename counts as a retag; a null
+ * stored set fails closed
  */
 export function authorizeRetag(
   socket: WebSocket,
@@ -1357,21 +1134,14 @@ export function authorizeRetag(
   );
 }
 
-/** What a retag is judged on, as {@link authorizeRetag} describes it. */
 export interface Retag {
-  /** The resource before the edit, with the given tags. */
   readonly prior: (tags: Record<string, string>) => AccessResource;
-  /** The resource as the edit leaves it. */
   readonly after: AccessResource;
   readonly loaded: Record<string, string>;
   readonly stored: Record<string, string> | null;
   readonly afterTags: Record<string, string>;
 }
 
-/**
- * The resources {@link authorizeRetag} needs `tag` on, in the order it
- * decides them: none when the edit changes neither tags nor name.
- */
 export function retagResources(retag: Retag): AccessResource[] {
   const { loaded, stored, afterTags } = retag;
   const renamed = retag.prior(loaded).name !== retag.after.name;
@@ -1388,11 +1158,8 @@ export function retagResources(retag: Retag): AccessResource[] {
 }
 
 /**
- * Authorizes an operation over every resource of `kind` that cannot be
- * filtered per resource (garbage collection, prune, summarise): any deny that
- * applies to the principal for the kind and action refuses it, whatever its
- * pattern, since the operation reaches every resource (swamp-club#2675).
- * Replies and audits as {@link authorizeOrReject} does.
+ * any deny for the kind and action refuses whatever its pattern, since the
+ * operation reaches every resource
  */
 export function authorizeAllOrReject(
   socket: WebSocket,
@@ -1469,8 +1236,8 @@ function replyToOutcome(
     case "refused": {
       const { decision, groups } = outcome;
       const principalStr = resolveDisplayPrincipal(outcome.principal, ctx);
-      // A control-plane record is decided as admin whatever was asked, so
-      // the refusal names what it needed (swamp-club#2756).
+      // a control-plane record is decided as admin whatever was asked, so the
+      // refusal names admin
       const needed = isControlPlaneRecordResource(resource) ? "admin" : action;
       if (decision && decision.effect === "deny" && every) {
         // An operation over every resource is decided per kind, never on a
@@ -1514,11 +1281,6 @@ function replyToOutcome(
   }
 }
 
-/**
- * The decision {@link authorizeOrReject} will make, with no reply and no
- * audit. For a dispatch site that has to know the outcome before the handler
- * runs and reports it.
- */
 export function wouldAuthorize(
   socket: WebSocket,
   principal: Principal | null,
@@ -1531,10 +1293,8 @@ export function wouldAuthorize(
 }
 
 /**
- * Makes the same decision as {@link authorizeOrReject} and audits a refusal
- * the same way, but sends nothing to the client. For a handler whose reply
- * must not reveal what the caller was refused, such as the name of the
- * workflow a run id belongs to.
+ * audits a refusal but sends nothing, for replies that must not reveal what the
+ * caller was refused
  */
 export function isAuthorized(
   socket: WebSocket,
@@ -1555,13 +1315,6 @@ export function isAuthorized(
   );
 }
 
-/**
- * {@link isAuthorized} over every resource of `kind`: any deny that applies
- * to the principal for the kind and action refuses, whatever its pattern, as
- * {@link authorizeAllOrReject} decides. For a check whose target cannot be
- * named, such as an expression that computes the model it reads
- * (swamp-club#2755).
- */
 export function isAuthorizedForAll(
   socket: WebSocket,
   requestId: string,
@@ -1582,10 +1335,6 @@ export function isAuthorizedForAll(
   );
 }
 
-/**
- * {@link isAuthorized} for a caller with no socket: the same decision, a
- * refusal audited the same way, and nothing sent.
- */
 export function isCallerAuthorized(
   caller: AccessCaller,
   requestId: string,
@@ -1604,11 +1353,6 @@ export function isCallerAuthorized(
   );
 }
 
-/**
- * {@link isAuthorizedForAll} for a caller with no socket: `action` on every
- * resource of `kind`, any deny for the kind refusing, a refusal audited the
- * same way, and nothing sent.
- */
 export function isCallerAuthorizedForAll(
   caller: AccessCaller,
   requestId: string,
@@ -1628,21 +1372,11 @@ export function isCallerAuthorizedForAll(
   );
 }
 
-/**
- * The audited access decisions of one request, whoever made it: a WebSocket
- * connection or a caller with no socket, such as a forwarded datastore
- * commit. Checks that authorize content against its author (expressions,
- * workflow steps) take one, so both paths share them. A refusal is audited
- * as {@link isAuthorized} audits it; nothing is sent.
- */
 export interface RequestAuthority {
-  /** `action` on `resource`, as {@link isAuthorized} decides it. */
   allows(action: Action, resource: AccessResource): boolean;
-  /** `action` on every resource of `kind`, as {@link isAuthorizedForAll}. */
   allowsAll(action: Action, kind: ResourceKind): boolean;
 }
 
-/** The {@link RequestAuthority} of a request on `socket`. */
 export function socketAuthority(
   socket: WebSocket,
   requestId: string,
@@ -1657,7 +1391,6 @@ export function socketAuthority(
   };
 }
 
-/** The {@link RequestAuthority} of a request by `caller`, with no socket. */
 export function callerAuthority(
   caller: AccessCaller,
   requestId: string,
@@ -1671,7 +1404,6 @@ export function callerAuthority(
   };
 }
 
-/** Whether `outcome` allows; a refusal is audited, nothing is sent. */
 function auditRefusal(
   socket: WebSocket,
   requestId: string,
@@ -1821,11 +1553,6 @@ function emitDenialFrom(
   }));
 }
 
-/**
- * A principal's display name: `user:<name>` for a user whose id resolved to a
- * user name, otherwise the principal itself. Audit events' `initiatedBy` and a
- * cancelled run's `cancel_reason` both use it, so they name a caller alike.
- */
 export function resolveDisplayPrincipal(
   principal: Principal,
   ctx: Pick<ConnectionContext, "resolvedUserNames">,
@@ -1834,11 +1561,8 @@ export function resolveDisplayPrincipal(
 }
 
 /**
- * Keeps the items the principal may `action`: an item is kept only when
- * every resource `resourcesOf` returns for it is allowed — an item with
- * several owners (a copied model shares its data) needs them all. A resource
- * no grant decides is allowed only for an admin. Decisions are made once per distinct
- * resource and are not audited, as filtering never refuses the request.
+ * an item with several owners needs all of them allowed; a resource no grant
+ * decides is allowed only for an admin
  */
 export async function filterByResources<T>(
   items: T[],
@@ -1863,12 +1587,6 @@ export async function filterByResources<T>(
   return kept;
 }
 
-/**
- * {@link filterByResources}'s rule for one item at a time: whether the
- * principal may `action` every resource `resourcesOf` returns, and there
- * is at least one. Lets a caller decide before it builds the items it would
- * otherwise filter. Always true when authorization is off; not audited.
- */
 export function resourceReadability<A extends unknown[]>(
   resourcesOf: (...args: A) => Promise<AccessResource[]>,
   socket: WebSocket,
@@ -1884,13 +1602,6 @@ export function resourceReadability<A extends unknown[]>(
   };
 }
 
-/**
- * A silent check of whether the principal may `action` a resource, by the
- * rules {@link filterByResources} applies: an explicit allow or deny decides,
- * and a resource no grant decides is allowed only for an admin. Decisions are
- * cached per distinct resource and are not audited. Everything is allowed
- * when authorization is off; nothing when there is no principal or policy.
- */
 export function resourceDecider(
   socket: WebSocket,
   principal: Principal | null,
@@ -1900,7 +1611,6 @@ export function resourceDecider(
   return callerResourceDecider(accessCallerOf(socket, principal), action, ctx);
 }
 
-/** {@link resourceDecider} for a caller with no socket. */
 export function callerResourceDecider(
   caller: AccessCaller,
   action: Action,
@@ -1938,10 +1648,8 @@ export function callerResourceDecider(
 }
 
 /**
- * Slices one page out of an already-authorized result list. Apply after
- * {@link filterByResources} so `total` and page boundaries reflect only
- * what the principal may read. An omitted `limit` returns everything from
- * `offset` on.
+ * apply after filterByResources so total and page boundaries reflect only what
+ * the principal may read
  */
 export function paginate<T>(
   items: T[],
@@ -1953,12 +1661,6 @@ export function paginate<T>(
   return { page: items.slice(start, end), total: items.length };
 }
 
-/**
- * Admits a request that lists resources of `kind` and filters them per
- * resource: it passes when the principal holds any allow of the kind for
- * `action`, or is an admin. With several kinds any of them admits, and a
- * refusal names the first, so adding a kind leaves the refusal unchanged.
- */
 export function authorizeAnyOrReject(
   socket: WebSocket,
   requestId: string,
@@ -2055,55 +1757,43 @@ export function authorizeAnyOrReject(
 }
 
 /**
- * The data resource a vault is authorized as by the checks that predate the
- * vault kind: `data:vault` for the whole set of vaults, or `data:<name>` for
- * one. Its fields are complete — a vault has no tags or namespace — so a
- * conditional data deny decides on it rather than failing closed
- * (swamp-club#2675).
+ * a vault has complete fields, so a conditional data deny decides on it rather
+ * than failing closed
  */
 export function vaultAccessResource(name: string): AccessResource {
   return { kind: "data", name, fields: { name, ns: "", tags: {} } };
 }
 
-// Moved to the domain so the local `swamp access check` shares it
-// (swamp-club#3224); handlers keep importing it from here.
 export { vaultKindResource };
 
-/** A request on one vault, as {@link authorizeVaultOrReject} decides it. */
 export interface VaultRequest {
-  /** The name of the vault the request acts on. */
   readonly vaultName: string;
   readonly action: Action;
   /**
-   * The resource the request was authorized as before the vault kind
-   * existed (`data:vault`, `data:<name>` or `model` kind for migrate). It
-   * is still decided first and unchanged, and its refusal is the reply when
-   * nothing else allows.
+   * the resource the request was authorized as before the vault kind existed;
+   * it is decided first and unchanged, and its refusal is the reply when
+   * nothing else allows
    */
   readonly existing: AccessResource;
-  /** The secret key the request names, for a vault grant's `key` field. */
   readonly key?: string;
   /**
-   * False when only today's check may admit the request: a `vault:<name>`
-   * allow does not, though a deny on any name of the vault still refuses.
-   * For requests whose effect reaches beyond the vault, such as setting a
-   * refresh hook that serve runs as a shell command. Defaults to true.
+   * false when only the existing check may admit: a vault:<name> allow does
+   * not, though a deny still refuses; for requests reaching beyond the vault,
+   * such as a refresh hook run as a shell command
    */
   readonly vaultGrantAdmits?: boolean;
 }
 
-/** The result of a vault decision, and which check admitted it. */
 export interface VaultAuthorizationResult extends AuthorizationResult {
   /**
-   * `vault` when only a `vault:<name>` grant admitted the request, so the
-   * handler must not reveal anything beyond that one vault.
+   * vault means only a vault:<name> grant admitted the request, so the handler
+   * must not reveal anything beyond that one vault
    */
   readonly admittedBy?: "existing" | "vault";
 }
 
 interface VaultOutcome {
   readonly outcome: AccessOutcome;
-  /** The resource the outcome is reported against. */
   readonly resource: AccessResource;
   readonly admittedBy?: "existing" | "vault";
 }
@@ -2139,13 +1829,9 @@ function sameResource(a: AccessResource, b: AccessResource): boolean {
 }
 
 /**
- * The decision behind {@link authorizeVaultOrReject}. Today's check runs
- * first and unchanged; an explicit deny on today's resource is today's
- * refusal. A deny on any other name of the vault refuses a request that
- * today's check or a `vault:<name>` allow would admit. Otherwise today's
- * allow (admin fallback included) admits, then a `vault:<name>` allow. A
- * request neither admits gets today's refusal unchanged, whatever else
- * denies it.
+ * the existing check runs first and unchanged; a deny on any name of the vault
+ * refuses; otherwise the existing allow, then a vault:<name> allow admits;
+ * anything else gets the existing refusal
  */
 function decideVaultRequest(
   caller: AccessCaller,
@@ -2207,14 +1893,6 @@ function decideVaultRequest(
   };
 }
 
-/**
- * Authorizes a request on one vault (swamp-club#2676). A deny that matches
- * `data:vault`, `data:<name>` or `vault:<name>` for the request's action
- * refuses it. Otherwise it is allowed when today's check allows — unchanged,
- * admin fallback included — or a `vault:<name>` grant allows (unless the
- * request sets `vaultGrantAdmits: false`). Anything else gets today's
- * refusal, reply and audit unchanged.
- */
 export function authorizeVaultOrReject(
   socket: WebSocket,
   requestId: string,
@@ -2241,10 +1919,6 @@ export function authorizeVaultOrReject(
     : result;
 }
 
-/**
- * {@link authorizeVaultOrReject} for a caller with no socket: the same
- * decision, a refusal audited the same way, and nothing sent.
- */
 export function isCallerVaultAuthorized(
   caller: AccessCaller,
   requestId: string,
@@ -2264,12 +1938,9 @@ export function isCallerVaultAuthorized(
 }
 
 /**
- * Whether a request whose vault is named by name or id may go on to look it
- * up. A caller today's check allows may; so may one holding any vault-kind
- * allow for the action, since the vault it names may be one of its own.
- * Every other caller gets today's refusal before any lookup. The request
- * must still be authorized with {@link authorizeVaultOrReject} once the
- * vault's name is known.
+ * admits the lookup for callers the existing check allows or that hold any
+ * vault allow; others are refused before any lookup; authorize again once the
+ * vault name is known
  */
 export function admitVaultLookupOrReject(
   socket: WebSocket,
@@ -2300,20 +1971,11 @@ export function admitVaultLookupOrReject(
   ).allowed;
 }
 
-/** Whether a listing request was admitted, and by which check. */
 export interface VaultListingAdmission {
   readonly allowed: boolean;
-  /** True when today's check admitted the request for every vault. */
   readonly existingAllowed: boolean;
 }
 
-/**
- * Admits a request that lists vaults (vault.search): today's check on
- * `existing` admits it for every vault; a caller it does not decide is
- * still admitted when it holds any vault-kind allow for the action, and the
- * listing is then filtered to its vaults. Any other caller gets today's
- * refusal.
- */
 export function admitVaultListingOrReject(
   socket: WebSocket,
   requestId: string,
@@ -2339,14 +2001,6 @@ export function admitVaultListingOrReject(
   return { allowed: false, existingAllowed: false };
 }
 
-/**
- * A silent per-vault check for listings (swamp-club#2676). A vault is kept
- * when no deny on `data:vault`, `data:<name>` or `vault:<name>` matches it
- * for `action`, and `existingAllows` (today's rule for the listing) or a
- * `vault:<name>` allow admits it. Decisions are cached per name and are not
- * audited. Everything is kept when authorization is off; nothing when there
- * is no principal or policy.
- */
 export function vaultListingDecider(
   socket: WebSocket,
   principal: Principal | null,
@@ -2385,11 +2039,6 @@ export function vaultListingDecider(
   };
 }
 
-/**
- * Sends `message` inside a `swamp.serve.response.send` span, so a traced
- * read shows the time spent serializing and compressing its reply
- * (swamp-club#3741).
- */
 export function sendTraced(
   socket: WebSocket,
   message: ServerMessage,
@@ -2403,8 +2052,8 @@ export function sendTraced(
 export function send(socket: WebSocket, message: ServerMessage): void {
   const held = heldReplies.get(socket)?.get(message.id);
   if (message.type === "event") {
-    // A run's outcome, and what follows it, waits for the commit with the
-    // request's other replies; its progress streams (swamp-club#3759).
+    // a run's outcome, and what follows it, waits for the commit with the
+    // request's other replies; its progress streams
     if (
       held !== undefined &&
       (held.outcome || OUTCOME_EVENT_KINDS.has(message.event.kind))
@@ -2418,14 +2067,13 @@ export function send(socket: WebSocket, message: ServerMessage): void {
       held.replies.push(message);
       return;
     }
-    // A request a failed confirmation answered: its handler's own reply
-    // would contradict the error the client already has.
+    // a request a failed confirmation answered: its handler's own reply would
+    // contradict the error the client already has
     if (unconfirmedRequests.get(socket)?.has(message.id)) return;
   }
   sendNow(socket, message);
 }
 
-/** The run events that report a run's outcome (swamp-club#3759). */
 const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
   "completed",
   "cancelled",
@@ -2436,18 +2084,12 @@ function sendNow(socket: WebSocket, message: ServerMessage): void {
   sendSerialized(socket, JSON.stringify(message));
 }
 
-/**
- * Sends a frame already serialized, as {@link send} sends one it
- * serializes: gzipped when the connection asked and the frame is large. A
- * follower relays the leader's frames to its client this way
- * (swamp-club#4120).
- */
 export function sendSerialized(socket: WebSocket, json: string): void {
   if (socket.readyState !== WebSocket.OPEN) return;
   if (connectionCompression.get(socket) === "gzip") {
     const bytes = new TextEncoder().encode(json);
     if (bytes.byteLength >= COMPRESSION_THRESHOLD_BYTES) {
-      // Synchronous so frames keep their order; ~9 ms for a 1.7 MB frame.
+      // synchronous so frames keep their order
       socket.send(gzipSync(bytes));
       return;
     }
@@ -2458,45 +2100,19 @@ export function sendSerialized(socket: WebSocket, json: string): void {
 const MAX_ERRORED_REQUESTS = 10_000;
 const erroredRequests = new WeakMap<WebSocket, Set<string>>();
 
-/** A write request's replies waiting for its commit and confirmation. */
 interface HeldReplies {
   readonly replies: ServerMessage[];
-  /** Whether the run reported its outcome: its later events wait too. */
   outcome: boolean;
 }
 
-/**
- * The replies of write requests waiting for their commits to land and be
- * confirmed replicated (swamp-club#3489, swamp-club#3759), by socket and
- * request id. A run's progress events pass; its outcome event, and every
- * other reply, waits.
- */
 const heldReplies = new WeakMap<WebSocket, Map<string, HeldReplies>>();
 
-/** Requests a failed confirmation answered with an error, capped per socket. */
 const unconfirmedRequests = new WeakMap<WebSocket, Set<string>>();
 
 /**
- * Runs a write request's handler and, on a v3 datastore
- * (`ctx.holdRepliesUntilCommitted`), holds the request's replies until the
- * handler, and so its root's commit, has ended (swamp-club#3759); when
- * `ctx.confirmReplicated` is set, also until the commits it made are
- * confirmed replicated (swamp-club#3489). Handlers reply inside their root
- * unit of work, before it commits, so the replies wait here, around the
- * whole handler, rather than in a root's flush. Serve's dispatch wraps each
- * write request in it (`CONFIRMED_WRITE_REQUESTS`); a run's progress events
- * pass unheld, and its outcome event waits.
- *
- * Once the handler has finished, a success is confirmed and its replies go
- * out in order. A reply that is already an error goes out without waiting:
- * the request failed whatever its commits do. When the handler's commit or
- * the confirmation fails, the held success is dropped and the client gets
- * the error instead, with the replication codes the CLI uses; any later
- * reply for the request is dropped too. The commits stay in commits.db and
- * ship with the next sync.
- *
- * On a v2 datastore it runs the handler: nothing is held, and nothing
- * waits.
+ * replies are held around the whole handler, not a root's flush, because
+ * handlers reply before their root commits; a failed commit or confirmation
+ * drops the held success and sends the error
  */
 export async function confirmRequest(
   ctx: Pick<
@@ -2552,9 +2168,8 @@ export async function confirmRequest(
       answered.delete(answered.values().next().value!);
     }
   } else {
-    // A request that answered with an error never reports its run's
-    // outcome, or that it finished, before the error: the held outcome
-    // events and `done` drop (swamp-club#3759).
+    // a request that answered with an error never reports its run's outcome or
+    // that it finished before the error, so held outcome events and done drop
     const failed = errored();
     for (const reply of replies) {
       if (failed && (reply.type === "event" || reply.type === "done")) continue;
@@ -2565,12 +2180,6 @@ export async function confirmRequest(
   if (!ended && failure !== undefined) throw failure.error;
 }
 
-/**
- * Confirms a run's commits before serve reports the run as finished
- * (swamp-club#3489): resolves with undefined once they are replicated, or
- * with the error terminal to report instead. Without
- * `ctx.confirmReplicated` it resolves at once.
- */
 export async function confirmRunReplicated(
   ctx: Pick<ConnectionContext, "confirmReplicated">,
   errorCode: string,
@@ -2584,14 +2193,6 @@ export async function confirmRunReplicated(
   }
 }
 
-/**
- * The code and message a failed run reports (swamp-club#3759): a run whose
- * commit could not reach the datastore's storage keeps that code, or the
- * run-partly-committed one when a checkpoint had committed it
- * (swamp-club#3802), as the CLI reports it, worded for a run whose steps
- * ran. Secret refusals retain their stable code through wrappers; any other
- * failure is `fallbackCode`.
- */
 export function runFailureForClient(
   error: unknown,
   fallbackCode: string,
@@ -2603,7 +2204,7 @@ export function runFailureForClient(
       message: sanitizeErrorForClient(worded),
     };
   }
-  // A run a checkpoint committed is left running (swamp-club#3802).
+  // a run a checkpoint committed is left running
   if (error instanceof RunPartlyCommittedError) {
     return {
       code: RUN_PARTLY_COMMITTED_CODE,
@@ -2616,11 +2217,6 @@ export function runFailureForClient(
   };
 }
 
-/**
- * `error`, a partly-committed run's error with the steps each run had in
- * flight as `checkpointer` last committed it (swamp-club#3882), so the
- * recovery it names works as printed; any other error unchanged.
- */
 export function withCommittedUnknownSteps(
   error: unknown,
   checkpointer: {
@@ -2633,15 +2229,6 @@ export function withCommittedUnknownSteps(
   );
 }
 
-/**
- * The error reply for a write whose commit or replication failed: the
- * CLI's codes for an unconfirmed sync, a fenced lease, a commit that could
- * not reach the storage, a writer cut off from the storage before it wrote
- * a writer lease another process holds and a serve node that does not lead
- * (swamp-club#4096), `config_edit_conflict` with who changed what for a
- * managed-config edit another writer's change refused (swamp-club#4097),
- * otherwise `fallbackCode`.
- */
 export function replicationErrorForClient(
   error: unknown,
   fallbackCode: string,
@@ -2671,11 +2258,8 @@ export function replicationErrorForClient(
 }
 
 /**
- * The resolved name a request's response audit event records in place of the
- * identifier the client sent (swamp-club#2603): a model asked for by UUID is
- * audited under its name. Recorded only when an audit emitter will consume
- * it, capped per socket like {@link erroredRequests}, and taken — removed —
- * by the audit wrapper on every outcome.
+ * recorded only when an audit emitter will consume it, capped per socket, and
+ * removed by the audit wrapper on every outcome
  */
 const auditedResources = new WeakMap<
   WebSocket,
@@ -2683,10 +2267,8 @@ const auditedResources = new WeakMap<
 >();
 
 /**
- * Records the resolved name of a `kind` resource for the request's response
- * audit event. It is used only when the event audits that kind — a run
- * attach audited as the run keeps the run id, although it authorized the
- * run's model.
+ * used only when the event audits that kind: a run attach audited as the run
+ * keeps the run id although it authorized the run's model
  */
 export function recordAuditedResource(
   socket: WebSocket,
@@ -2708,10 +2290,6 @@ export function recordAuditedResource(
   }
 }
 
-/**
- * Returns and forgets the resolved name recorded for a request, if it was
- * recorded for `kind`.
- */
 export function takeAuditedResource(
   socket: WebSocket,
   requestId: string,
@@ -2723,7 +2301,6 @@ export function takeAuditedResource(
   return recorded?.kind === kind ? recorded.name : undefined;
 }
 
-/** The client reason `clientErrorDetails` put in an error reply's details. */
 function clientErrorReasonOf(details: unknown): string | undefined {
   if (details === null || typeof details !== "object") return undefined;
   if (!("reason" in details) || typeof details.reason !== "string") {
@@ -2732,12 +2309,6 @@ function clientErrorReasonOf(details: unknown): string | undefined {
   return CLIENT_ERROR_REASONS.has(details.reason) ? details.reason : undefined;
 }
 
-/**
- * Whether an error code reports a failure on the server's side: an internal
- * error, or a handler's own `<operation>_failed` code for an operation that
- * threw. Client errors such as `not_found`, `forbidden` and
- * `validation_failed` are not.
- */
 export function isServerFailureCode(code: string): boolean {
   if (code === "internal_error") return true;
   return code.endsWith("_failed") && code !== "validation_failed";
@@ -2760,10 +2331,8 @@ export function sendError(
     const first = errors.values().next().value!;
     errors.delete(first);
   }
-  // Records the outcome on the request's span; a failed request answers
-  // with an error frame instead of throwing (swamp-club#3741). An
-  // `<operation>_failed` reply whose details name a client reason, such as a
-  // run that is not found, is the caller's error, not the server's.
+  // an operation_failed reply whose details name a client reason, such as a run
+  // not found, is the caller's error, not the server's
   const reason = clientErrorReasonOf(details);
   setActiveSpanAttributes({
     "swamp.serve.response.error_code": code,
@@ -2781,10 +2350,8 @@ export function sendError(
 }
 
 /**
- * Rejects an edit request (`model.edit`, `workflow.edit`, `vault.edit`) that
- * carries no content. The edit generators fall back to opening an editor,
- * which on serve would launch on the server host, so remote edits must send
- * the new YAML (swamp-club#2426). Returns true when the request was rejected.
+ * edit generators fall back to opening an editor, which on serve would launch
+ * on the server host, so remote edits must send the new YAML
  */
 export function rejectEditWithoutContent(
   socket: WebSocket,
@@ -2816,9 +2383,8 @@ export function clearRequestErrored(
 }
 
 /**
- * A run stream subscriber that sends each event to the socket. With
- * `transform`, each event is sent as it returns, which may wait: deliveries
- * are chained, so events, the terminal and the detach keep their order.
+ * with transform, deliveries are chained so events, the terminal and the detach
+ * keep their order
  */
 export function createSocketSubscriber(
   socket: WebSocket,
@@ -2895,10 +2461,6 @@ export function subscribeUntilDetach(
   });
 }
 
-/**
- * Who cancelled a run, as recorded in its `cancel_reason` and audit event:
- * the principal's display name, or `anonymous` when serve runs without auth.
- */
 export function cancelActor(
   principal: Principal | null,
   ctx: Pick<ConnectionContext, "resolvedUserNames">,
@@ -2907,22 +2469,17 @@ export function cancelActor(
   return resolveDisplayPrincipal(principal, ctx);
 }
 
-/** The longest reason a serve cancel request may give, in UTF-16 code units. */
 export const MAX_CANCEL_REASON_LENGTH = 1024;
 
-/** The `cancel_reason` a run cancelled through serve records. */
 export function cancelReasonFor(actor: string, reason?: string): string {
   return reason ? `${reason} (cancelled by ${actor})` : `cancelled by ${actor}`;
 }
 
 export interface RunCancelAudit {
-  /** The request's own action name, e.g. `cancel` or `cancel.all`. */
   action: string;
   resourceKind: string;
-  /** The run id, or `*` for a bulk cancel. */
   resourceName: string;
   principal: Principal | null;
-  /** Who the OAuth provider said the caller is, when their token says. */
   loginIdentity?: ActorIdentity;
   sourceIp: string;
   requestId: string;
@@ -2930,11 +2487,6 @@ export interface RunCancelAudit {
   detail?: string;
 }
 
-/**
- * Audits a run cancellation made through serve, over HTTP or WebSocket, with
- * the principal who made it. Every path that aborts or cancels a run calls
- * this once, whatever the outcome.
- */
 export function emitRunCancelAudit(
   ctx: Pick<
     ConnectionContext,
@@ -2966,10 +2518,8 @@ export function emitRunCancelAudit(
 }
 
 /**
- * Runs `fn` under the context's gc mutex, when it has one: `run.gc` and
- * `data.gc` run one at a time with serve's retention pass
- * (swamp-club#3473). Taken outside the sync gate, as the pass takes the gate
- * per batch while holding the mutex; the other order would stall both.
+ * taken outside the sync gate because the retention pass takes the gate per
+ * batch while holding the mutex; the other order would stall both
  */
 export function withGcMutex<T>(
   ctx: Pick<ConnectionContext, "gcMutex">,

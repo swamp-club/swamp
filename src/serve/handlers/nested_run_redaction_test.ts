@@ -94,10 +94,6 @@ Deno.test("readableNestedRuns: keeps only nested runs of readable workflows", as
   );
 });
 
-/**
- * A suspended run of a readable workflow whose parent, nested wait and
- * waiting step all name a workflow the principal may not read.
- */
 function linkedView(childId = "secret-id"): WorkflowRunView {
   return {
     id: "run-1",
@@ -183,7 +179,6 @@ Deno.test("redactStreamEvent: a suspension drops its nested block with the waiti
   });
 });
 
-/** A suspension naming open waits of nested runs (swamp-club#3110). */
 function suspendedOnWaits(
   waits: { workflowId: string; workflowName: string; waitId: string }[],
   childId = "readable-id",
@@ -227,7 +222,6 @@ Deno.test("redactStreamEvent: drops nestedSignalWaits when no wait is readable",
 });
 
 Deno.test("redactStreamEvent: judges a grandchild's wait on its own workflow, not the direct child's", async () => {
-  // The direct child is readable, the wait sits in a grandchild that is not.
   const hidden = await redactStreamEvent(
     suspendedOnWaits(
       [{ workflowId: "secret-id", workflowName: "leaf", waitId: "w-leaf" }],
@@ -238,7 +232,6 @@ Deno.test("redactStreamEvent: judges a grandchild's wait on its own workflow, no
   assertEquals(hidden.nested !== undefined, true);
   assertEquals("nestedSignalWaits" in hidden, false);
 
-  // The direct child is hidden, the grandchild's wait is readable.
   const shown = await redactStreamEvent(
     suspendedOnWaits(
       [{ workflowId: "readable-id", workflowName: "leaf", waitId: "w-leaf" }],
@@ -321,7 +314,6 @@ Deno.test("redactStreamEvent: hides a nested step's failure that names a run the
   assertStrictEquals(await redactStreamEvent(shown, canRead), shown);
 });
 
-// A wait_key_held failure naming the wait that holds the key (swamp-club#3214).
 function keyHeld(
   holderWorkflowId: string,
   extra: Record<string, unknown> = {},
@@ -353,7 +345,6 @@ Deno.test("redactStreamEvent: names the wait holding a key only to a reader of i
   assertEquals(hidden.error, "wait_key_held");
   assertEquals(hidden.stepId, "review");
   assert(!JSON.stringify(hidden).includes("holder-run"));
-  // The buffered event other clients share is left as it was.
   assertEquals(event, keyHeld("secret-id"));
 });
 
@@ -434,7 +425,6 @@ Deno.test("nestedGateRefusalForClient: names the nested run only to a reader of 
   );
 });
 
-/** A refusal naming a direct child and, through it, the run that has to act. */
 function pendingRefusal(
   childId: string,
   targetId: string,
@@ -505,8 +495,6 @@ Deno.test("redactingFor: leaves the stream alone when serve runs without auth", 
   assertEquals(redactingFor(ctx, {} as WebSocket, null), undefined);
 });
 
-// --- swamp-club#2867
-
 const orphanRefusal = (workflowId?: string) => ({
   kind: "orphaned" as const,
   message: 'parent run p-1 of workflow "secret-parent" ended',
@@ -533,7 +521,6 @@ Deno.test("nestedGateRefusalForClient: names the run above an orphaned nested ru
     ),
     'parent run p-1 of workflow "secret-parent" ended',
   );
-  // With no parent named in the details, nothing shows the message is safe.
   assertEquals(
     await nestedGateRefusalForClient(
       orphanedNestedRunError(orphanRefusal()),

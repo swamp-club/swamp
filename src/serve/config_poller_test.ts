@@ -98,7 +98,6 @@ function createCallbackTrackers() {
   };
 }
 
-/** A lockfile whose hash a test changes, counting each read. */
 function createLockfile(initial: string | null = "hash-a") {
   const lockfile = {
     hash: initial,
@@ -214,7 +213,6 @@ Deno.test("ConfigPoller: does not invalidate catalogs when pullChanged returns 0
 });
 
 Deno.test("ConfigPoller: invalidates catalogs when pullChanged returns void", async () => {
-  // The sync contract treats an unknown count as a changed cache.
   const sync = createMockSyncService({ pullResultFn: () => undefined });
   const { state, catalogInvalidate, extensionReloader } =
     createCallbackTrackers();
@@ -303,12 +301,9 @@ Deno.test("ConfigPoller: serializes pulls — skips tick while pulling", async (
   });
 
   poller.start();
-  // Wait enough ticks that multiple would fire during the slow pull
   await new Promise<void>((r) => setTimeout(r, 200));
   await poller.stop();
 
-  // Despite 200ms with 20ms intervals (10 ticks), only 1–2 pulls
-  // should have started because the first blocks for 100ms
   assertEquals(sync.pullCalls.length <= 3, true);
 });
 
@@ -331,8 +326,6 @@ Deno.test("ConfigPoller: double start does not create duplicate timers", async (
   const countAfterDoubleStart = sync.pullCalls.length;
   await poller.stop();
 
-  // If duplicate timers existed, we'd see roughly 2x the pull count.
-  // With a single timer at 30ms over ~100ms, expect 2–4 calls, not 6+.
   assertEquals(countAfterDoubleStart <= 5, true);
 });
 
@@ -357,9 +350,7 @@ Deno.test("ConfigPoller: stop awaits pending pull before returning", async () =>
   });
 
   poller.start();
-  // Wait for at least one pull to start
   await waitFor(() => sync.pullCalls.length >= 1, "at least one pull");
-  // Stop should await the pending pull
   await poller.stop();
 
   assertEquals(pullCompleted, true);
@@ -378,11 +369,9 @@ Deno.test("ConfigPoller: respects custom pollIntervalMs", async () => {
   });
 
   poller.start();
-  // At 80ms interval, after 50ms we should have 0 pulls
   await new Promise<void>((r) => setTimeout(r, 50));
   assertEquals(sync.pullCalls.length, 0);
 
-  // After 120ms total we should have exactly 1
   await new Promise<void>((r) => setTimeout(r, 70));
   assertEquals(sync.pullCalls.length, 1);
 
@@ -541,7 +530,6 @@ Deno.test("ConfigPoller: pulled files without a lockfile change invalidate catal
   assertEquals(state.extensionReloaderCalls, 0);
   assertGreater(state.catalogInvalidateCalls, 0);
 
-  // Archives arrive in one poll, the lockfile in a later one: one reload.
   lockfile.hash = "hash-b";
   await waitFor(() => state.extensionReloaderCalls >= 1, "reload");
   const readsAfterReload = lockfile.reads;
@@ -822,12 +810,10 @@ Deno.test("ConfigPoller: a poll still running when stop() is called does not sta
 Deno.test("ConfigPoller: each poll cycle is the root of its own trace", async () => {
   const sync = createMockSyncService();
   const pull = sync.pullChanged.bind(sync);
-  // Stands in for the datastore's own spans, which must nest under the cycle.
   sync.pullChanged = (options) =>
     withSpan("swamp.datastore.sync", {}, () => pull(options));
 
   await withCapturedSpans(async (spans) => {
-    // Started under an active span, as serve starts it under swamp.cli.
     await withSpan("swamp.cli", {}, async () => {
       const { catalogInvalidate, extensionReloader } = createCallbackTrackers();
       const poller = new ConfigPoller({

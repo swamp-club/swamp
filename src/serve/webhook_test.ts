@@ -60,8 +60,6 @@ import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.
 
 await initializeLogging({});
 
-// ── buildWebhookPayload ────────────────────────────────────────────────
-
 Deno.test("buildWebhookPayload: parses a JSON body into webhook.body", () => {
   const body = new TextEncoder().encode(
     '{"data":{"issue":{"identifier":"PLT-1057"}}}',
@@ -114,12 +112,9 @@ Deno.test("buildWebhookPayload: drops the scheme-specific signature header", () 
     "/hooks/stripe",
     "stripe-signature",
   );
-  // Only the active scheme's header is excluded; others pass through.
   assertEquals("stripe-signature" in payload.headers, false);
   assertEquals(payload.headers["x-hub-signature-256"], "sha256=keep-me");
 });
-
-// ── parseWebhookFlag ───────────────────────────────────────────────────
 
 Deno.test("parseWebhookFlag: parses valid flag", async () => {
   const result = await parseWebhookFlag("/hooks/github:my-workflow:mysecret");
@@ -247,8 +242,6 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", async () => {
   );
 });
 
-// ── resolveSecret ─────────────────────────────────────────────────────
-
 Deno.test("resolveSecret: returns a literal string unchanged", async () => {
   assertEquals(await resolveSecret("mysecretvalue"), "mysecretvalue");
 });
@@ -341,8 +334,6 @@ Deno.test("resolveSecret: throws for a file containing only a newline", async ()
   }
 });
 
-// ── resolveSecret: @vault= ──────────────────────────────────────────
-
 function createMockVault(
   secrets: Record<string, Record<string, string>>,
 ): VaultSecretResolver {
@@ -408,8 +399,6 @@ Deno.test("resolveSecret: throws for @vault= when vault get fails", async () => 
   );
 });
 
-// ── parseWebhookFlag with secret indirection ──────────────────────────
-
 Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", async () => {
   await withMockedEnv(
     { TEST_WH_SECRET_LEGACY_758: "resolved-secret" },
@@ -447,8 +436,6 @@ Deno.test("parseWebhookFlag: resolves @file= secret", async () => {
   }
 });
 
-// ── listEndpoints ─────────────────────────────────────────────────────
-
 Deno.test("listEndpoints: includes scheme from each endpoint verifier", async () => {
   const service = new WebhookService({
     repoDir: "/tmp/fake",
@@ -470,8 +457,6 @@ Deno.test("listEndpoints: includes scheme from each endpoint verifier", async ()
   assertEquals(infos[1].scheme, "stripe");
   assertEquals(infos[2].scheme, "generic");
 });
-
-// ── drain (swamp-club#2484) ──────────────────────────────────────────
 
 Deno.test("WebhookService.drain: matched routes get 503 with Retry-After while unmatched stay null", async () => {
   const service = new WebhookService({
@@ -521,8 +506,6 @@ Deno.test("WebhookService.drain: with no in-flight run resolves and stop still s
   await service.drain(60_000);
   await service.stop();
 });
-
-// ── buildWebhookPayload header redaction ─────────────────────────────
 
 Deno.test("buildWebhookPayload: strips authorization header", () => {
   const headers = new Headers({
@@ -654,8 +637,6 @@ Deno.test("buildWebhookPayload: preserves idempotency-key header", () => {
   assertEquals(payload.headers["idempotency-key"], "unique-key-123");
 });
 
-// ── isSensitiveHeader ────────────────────────────────────────────────
-
 Deno.test("isSensitiveHeader: returns true for known sensitive headers", () => {
   const sensitiveHeaders = [
     "authorization",
@@ -696,11 +677,8 @@ Deno.test("isSensitiveHeader: returns false for safe headers", () => {
   }
 });
 
-// ── Extension webhook schemes ─────────────────────────────────────────
-
 const TOKEN_HEADER = "x-test-secret-token";
 
-/** Registers a uniquely named webhook extension type built from `handler`. */
 function registerExtension(
   handler: Partial<WebhookHandler>,
   configSchema?: z.ZodTypeAny,
@@ -826,7 +804,6 @@ Deno.test("handleRequest: a follower in team mode answers a verified delivery wi
   await service.stop();
 });
 
-/** A route to a leader that records what it is sent. */
 function recordingLink(
   sent: { url: string; body: string; token: string | null }[],
 ): LeaderLink {
@@ -934,8 +911,6 @@ Deno.test("WebhookService.drain: waits for dropped entries' control-plane writes
     } as unknown as ControlPlaneStore,
   });
 
-  // The first delivery is dequeued and waits on its put; the second queues
-  // behind it.
   for (let i = 0; i < 2; i++) {
     const res = await service.handleRequest(extensionRequest("s3cret"));
     assertEquals(res?.status, 200);
@@ -952,7 +927,6 @@ Deno.test("WebhookService.drain: waits for dropped entries' control-plane writes
   await service.stop();
 
   assertEquals(order, ["released", "drained"]);
-  // Neither entry started, so both stay pending for the next boot.
   assertEquals(localDeletes, []);
   assertEquals(remoteDeletes, []);
   assertEquals(service.queueStatus("/hooks/ext").active, 0);
@@ -1076,7 +1050,6 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects an unresolvable type", asyn
     UserError,
     "no installed extension provides that webhook type",
   );
-  // The scheme is a type, not an extension name (swamp-club#2476).
   assertEquals(error.message.includes("extension pull @test/nope"), false);
   assertStringIncludes(error.message, "swamp extension search");
 });
@@ -1089,8 +1062,6 @@ Deno.test("resolveExtensionWebhookEndpoints: leaves built-in endpoints untouched
   );
   assertEquals(resolved, [builtin]);
 });
-
-// ── updateEndpoints ─────────────────────────────────────────────────
 
 Deno.test("updateEndpoints: swaps active endpoints and returns change count", async () => {
   const ep1 = await parseWebhookFlag("/hooks/a:wf-a:secret-a");
@@ -1159,8 +1130,6 @@ Deno.test("updateEndpoints: clears all endpoints when given empty list", async (
   assertEquals(changed, 1);
   assertEquals(service.listEndpoints().length, 0);
 });
-
-// ── service principal, authorization and audit events (swamp-club#2464) ──
 
 type ExecutorCall = {
   input: { workflowIdOrName: string; initiatedBy?: string };
@@ -1419,8 +1388,6 @@ Deno.test("WebhookService: a nested workflow's started event does not retarget t
   );
 });
 
-// ── trace context of queued runs (swamp-club#2467) ──
-
 Deno.test("WebhookService: telemetry distinguishes queued receipt from refused execution", async () => {
   await withCapturedSpans(async (spans) => {
     installExecutionObserver();
@@ -1529,7 +1496,6 @@ Deno.test("WebhookService: malformed replay receipt metadata does not reject exe
   });
 });
 
-/** An executor that records the span active when each run starts. */
 function spanRecordingExecutor(seen: (Span | undefined)[]) {
   return ((
     _repoDir: string,
@@ -1554,8 +1520,6 @@ Deno.test("WebhookService: queued runs do not inherit the span of the request th
     const { service } = await triggerService({
       executeWorkflow: spanRecordingExecutor(seen),
     });
-    // Each delivery arrives inside its own request span, as traceHttpRequests
-    // wraps it; the first one starts the queue processor.
     for (const route of ["first", "second"]) {
       await withSpan(`POST /hooks/gh ${route}`, {}, async () => {
         await service.handleRequest(await signedDelivery("{}"));
@@ -1574,7 +1538,6 @@ Deno.test("WebhookService: a replayed run does not inherit the span active at bo
     const { service } = await triggerService({
       executeWorkflow: spanRecordingExecutor(seen),
     });
-    // Boot reconciliation replays inside serve's never-ending swamp.cli span.
     await withSpan("swamp.cli", {}, () => {
       service.enqueueForReplay({
         pendingRunId: crypto.randomUUID(),
@@ -1642,10 +1605,6 @@ Deno.test("WebhookService: each queued run gets its own vault scope and starts o
   assertEquals(seen.map((s) => s.ambient), [undefined, undefined]);
 });
 
-/**
- * An executor whose run starts as `runId`, with a nested child, and settles as
- * cancelled once its signal aborts. `aborts` receives each abort reason.
- */
 function cancellableExecutor(runId: string, aborts: unknown[]) {
   return ((
     _repoDir: string,
@@ -1681,7 +1640,6 @@ Deno.test("WebhookService.cancelByRunId: aborts the in-flight run with the reaso
   );
 
   assertEquals(service.cancelByRunId("other-run"), false);
-  // A nested run is cancelled through its parent, not by its own id.
   assertEquals(service.cancelByRunId("run-1-child"), false);
   assertEquals(service.cancelByRunId("run-1", "no longer needed"), true);
 
@@ -1696,7 +1654,6 @@ Deno.test("WebhookService.cancelByRunId: aborts the in-flight run with the reaso
     failed?.kind === "webhook_failed" && failed.error,
     "workflow was cancelled",
   );
-  // A settled run is no longer held, so it cannot be cancelled again.
   assertEquals(service.cancelByRunId("run-1"), false);
   await service.stop();
 });
@@ -1748,8 +1705,6 @@ Deno.test("WebhookService.cancelByRunId: a run whose start is not recorded yet i
   await service.stop();
 });
 
-// ── concurrent webhook runs (swamp-club#3665) ──
-
 type GatedRun = {
   input: {
     workflowIdOrName: string;
@@ -1764,7 +1719,6 @@ type GatedRun = {
   fail: (error: Error) => void;
 };
 
-/** An executor whose runs stay in flight until the test releases them. */
 function gatedExecutor() {
   const runs: GatedRun[] = [];
   const executor = ((

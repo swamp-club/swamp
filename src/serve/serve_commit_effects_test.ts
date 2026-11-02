@@ -38,11 +38,9 @@ const GRANT = partitionOf({
   id: ID,
 });
 
-/** A store of commits by partition, whose head the test moves. */
 function fakeSource() {
   const rows: { cursor: number; partition: PartitionKey }[] = [];
   let compactedTo = 0;
-  /** Past this cursor, the read model has not applied the commit. */
   let unappliedFrom: number | undefined;
   const listeners = new Set<(replaced: boolean) => void>();
   const source = {
@@ -78,20 +76,16 @@ function fakeSource() {
       this.landQuietly(partition);
       for (const listener of listeners) listener(false);
     },
-    /** Lands a commit the read model has not applied yet. */
     landUnapplied(partition: PartitionKey) {
       unappliedFrom ??= rows.at(-1)?.cursor ?? compactedTo;
       this.land(partition);
     },
-    /** The read model catches up to the head. */
     applied() {
       unappliedFrom = undefined;
     },
-    /** A restore that replaced the copy, head at or above what was read. */
     restored() {
       for (const listener of listeners) listener(true);
     },
-    /** As another process lands a commit: no head moves here. */
     landQuietly(partition: PartitionKey) {
       rows.push({
         cursor: (rows.at(-1)?.cursor ?? compactedTo) + 1,
@@ -279,7 +273,6 @@ Deno.test("ServeCommitEffects: a pass queued before a restore does not spend the
     store.land(GRANT);
     effects.poke();
     await waitFor(() => calls.policy === 1, "the first reload started");
-    // Queued while the slow reload runs; it reruns during the restore.
     effects.poke();
     store.restored();
     release();
@@ -310,7 +303,6 @@ Deno.test("ServeCommitEffects: a follower taking the lead applies what its takeo
   effects.start();
   try {
     store.land(GRANT);
-    // onLead, before the role flips.
     effects.poke();
     await effects.settled();
     assertEquals(calls, { catalog: 1, policy: 1, config: 0 });
@@ -323,7 +315,6 @@ Deno.test("ServeCommitEffects: a follower taking the lead applies what its takeo
   }
 });
 
-/** A follower whose reload fails while `fail()` says so. */
 function failingSetup(
   fail: () => boolean,
   follower: () => boolean = () => true,

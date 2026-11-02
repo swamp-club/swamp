@@ -455,8 +455,6 @@ Deno.test("authorizeAnyOrReject: returns true for admin fallback", () => {
   assertEquals(result, true);
 });
 
-// ── emitSystemAuditEvent tests ─────────────────────────────────────────
-
 Deno.test("emitSystemAuditEvent: emits event with system category", () => {
   const emitted: unknown[] = [];
   const ctx = {
@@ -485,8 +483,6 @@ Deno.test("emitSystemAuditEvent: no-op without emitter", () => {
   emitSystemAuditEvent(ctx, "instance.start");
 });
 
-// ── paginate ──────────────────────────────────────────────────────────────
-
 Deno.test("paginate: slices by offset and limit and reports the full total", () => {
   assertEquals(paginate([1, 2, 3, 4, 5], 1, 2), { page: [2, 3], total: 5 });
 });
@@ -501,8 +497,6 @@ Deno.test("paginate: omitted offset and limit return everything", () => {
 Deno.test("paginate: offset past the end returns an empty page", () => {
   assertEquals(paginate([1, 2], 5, 10), { page: [], total: 2 });
 });
-
-// ── WebSocket compression ─────────────────────────────────────────────────
 
 Deno.test("resolveConnectionCompression: reads compress=gzip from the upgrade URL", () => {
   assertEquals(
@@ -579,14 +573,11 @@ Deno.test("send: socket without opt-in gets large frames as text", () => {
   assertEquals(frames[0], JSON.stringify(message));
 });
 
-// ── token session binding and termination ───────────────────────────────
-
 interface ClosableSocket {
   socket: WebSocket;
   closes: { code?: number; reason?: string }[];
 }
 
-/** A fake socket whose close runs removeConnection, as the upgrade wires it. */
 function makeClosableSocket(sourceIp = "192.0.2.10"): ClosableSocket {
   const closes: { code?: number; reason?: string }[] = [];
   const socket = {
@@ -1356,7 +1347,6 @@ Deno.test("resolveDisplayPrincipal: names a user by resolved name, else the prin
     }),
     "user:u-1",
   );
-  // Only user principals are looked up by name.
   assertEquals(
     resolveDisplayPrincipal({ kind: "worker", id: "u-1" }, {
       resolvedUserNames: { "u-1": "alice" },
@@ -1580,7 +1570,6 @@ Deno.test("isAccessModelType: every control-plane type, bare or @-prefixed, is a
     ]
   ) {
     assertEquals(isAccessModelType(type, undefined), true, type);
-    // Resolved types come normalized, with or without the @.
     assertEquals(
       isAccessModelType(undefined, ModelType.create(type).normalized),
       true,
@@ -1601,8 +1590,6 @@ Deno.test("isAccessModelType: odd spellings of a control-plane type are admin-on
     assertEquals(isAccessModelType(type, undefined), true, type);
   }
 });
-
-// --- isAdminOnlyModelType (swamp-club#3129) ---------------------------------
 
 const REQUESTED_SPELLINGS = [
   "@exp/probe",
@@ -1666,8 +1653,6 @@ Deno.test("isAdminOnlyModelType: a requested type that names no type fails the r
   }
 });
 
-// --- decideSubjectAccess (swamp-club#2736) ----------------------------------
-
 interface TokenRecordFields {
   state?: "active" | "expired" | "revoked";
   principalId?: string;
@@ -1676,7 +1661,6 @@ interface TokenRecordFields {
   groups?: string[];
 }
 
-/** A context whose repository answers one server token record. */
 function withTokenRecord(
   ctx: ConnectionContext,
   fields: TokenRecordFields | null,
@@ -1745,7 +1729,6 @@ Deno.test("decideSubjectAccess: reads group memberships from the token record, n
     await decideSubjectAccess(member, subjectOn(), "approve", deployWorkflow),
     true,
   );
-  // Removed from the group since the subject was captured.
   const removed = withTokenRecord(makeCtx([grant]), { groups: [] });
   assertEquals(
     await decideSubjectAccess(removed, subjectOn(), "approve", deployWorkflow),
@@ -1802,7 +1785,6 @@ Deno.test("decideSubjectAccess: refuses a subject with no token or no principal,
   );
 });
 
-/** A context whose sync service records each push and may fail it. */
 function pushCtx(
   fail?: Error,
 ): { ctx: ConnectionContext; pushes: { namespace?: string }[] } {
@@ -1872,7 +1854,6 @@ Deno.test("isAuthorizedForAll: any deny that applies to the kind refuses, whatev
   assertEquals(narrowDeny.allowed, false);
   assertEquals(narrowDeny.audit.length, 1);
   assertEquals(narrowDeny.audit[0].outcome, "denied");
-  // A deny on another kind does not apply.
   assertEquals(
     audited([
       allowAll,
@@ -1885,8 +1866,6 @@ Deno.test("isAuthorizedForAll: any deny that applies to the kind refuses, whatev
   );
   assertEquals(frames, []);
 });
-
-// ── sanitizeErrorForClient logging (swamp-club#3465) ───────────────────────
 
 async function captureWithheldErrors(fn: () => void): Promise<LogRecord[]> {
   const records: LogRecord[] = [];
@@ -1965,9 +1944,6 @@ Deno.test("sanitizeErrorForClient: logs nothing for a message the client receive
   assertEquals(records, []);
 });
 
-// ── Confirming write requests (swamp-club#3489) ─────────────────────────
-
-/** A socket recording the JSON frames sent to it. */
 function messageSocket(): { socket: WebSocket; sent: ServerMessage[] } {
   const sent: ServerMessage[] = [];
   const socket = {
@@ -1977,7 +1953,6 @@ function messageSocket(): { socket: WebSocket; sent: ServerMessage[] } {
   return { socket, sent };
 }
 
-/** A confirmation the test settles by hand, counting calls. */
 function manualConfirm() {
   const calls: PromiseWithResolvers<void>[] = [];
   return {
@@ -2049,7 +2024,6 @@ Deno.test("confirmRequest: replaces the held success with the replication error"
     (reply as { error: { code: string } }).error.code,
     "datastore_v3_replication_unconfirmed",
   );
-  // The handler's later reply for the request is dropped.
   send(socket, { type: "done", id: "r1" });
   assertEquals(sent.length, 1);
 });
@@ -2120,7 +2094,6 @@ Deno.test("confirmRequest: without confirmReplicated nothing is held and nothing
     ran = true;
     return Promise.resolve();
   });
-  // Sent synchronously, as without the wrapper.
   assertEquals(ran, true);
   assertEquals(sent, [{ type: "done", id: "r1" }]);
   await done;
@@ -2199,9 +2172,6 @@ Deno.test("confirmRequest: a request during which nothing committed is not confi
   assertEquals(sent.length, 2);
 });
 
-// --- authorizeRetag (swamp-club#3085) ---
-
-/** A context where `write` does not imply `tag`, as with the flag on. */
 function explicitTagCtx(grants: Grant[]): ConnectionContext {
   return {
     ...makeCtx(grants),
@@ -2222,7 +2192,6 @@ function modelWithTags(tags: Record<string, string>) {
   };
 }
 
-/** Write on every model, and tag only on team-a models. */
 const teamATagGrants = [
   makeGrant({ actions: ["write"] }),
   makeGrant({ actions: ["tag"], condition: 'tags.team == "team-a"' }),
@@ -2287,7 +2256,6 @@ Deno.test("authorizeRetag: a retag within a granted tag is allowed", () => {
 });
 
 Deno.test("authorizeRetag: an edit carrying the loaded tags cannot undo a retag stored since", () => {
-  // The edit loaded team-a and writes team-a back, but team-b is stored now.
   const result = retag(explicitTagCtx(teamATagGrants), {
     loaded: { team: "team-a" },
     stored: { team: "team-b" },
@@ -2375,8 +2343,6 @@ Deno.test("authorizeRetag: by default a rename passes on the tag write implies",
     true,
   );
 });
-
-// ── Request span outcome (swamp-club#3741) ──────────────────────────────
 
 Deno.test("isServerFailureCode: internal errors and operation failures are server failures", () => {
   assertEquals(isServerFailureCode("internal_error"), true);
@@ -2501,9 +2467,6 @@ Deno.test("sendTraced: sends the message inside a swamp.serve.response.send chil
   });
 });
 
-// ── Replies after a v3 root's commit (swamp-club#3759) ─────────────────
-
-/** A run event frame of `kind` for request `id`. */
 function runEvent(kind: string, id = "r1"): ServerMessage {
   return { type: "event", id, event: { kind } } as unknown as ServerMessage;
 }

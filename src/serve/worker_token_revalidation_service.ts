@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Re-checks the enrollment token behind every worker in the pool and cuts
- * off the workers whose token has lost its authority — revoked, re-minted,
- * or deleted — wherever that happened: from the CLI without --server, on an
- * HA peer (the runtime data poller brings the record in), or here. The
- * serve revoke handler cuts workers off immediately; this pass covers the
- * revokes that never reach this instance's gateway.
+ * cuts off workers whose token lost its authority wherever that happened (CLI
+ * without --server, HA peer, here); the serve revoke handler is immediate, this
+ * covers revokes that never reach this gateway
  */
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
@@ -36,20 +33,17 @@ import {
 
 const logger = getSwampLogger(["serve", "worker-token-revalidation"]);
 
-/** Matches the server-token session revalidation interval. */
 export const DEFAULT_WORKER_TOKEN_REVALIDATION_MS = 30_000;
 
 /**
- * Consecutive passes a token must be missing before its workers are cut off.
- * A record that is present but momentarily unreadable (a remote datastore
- * returning no content, an HA peer mid-sync) looks missing for one pass; a
- * deleted token stays missing.
+ * a token must be missing this many consecutive passes before its workers are
+ * cut off: a present but momentarily unreadable record looks missing for one
+ * pass, a deleted token stays missing
  */
 export const MISSING_PASSES_BEFORE_CUTOFF = 2;
 
 export interface WorkerTokenRevalidationDeps {
   readonly intervalMs: number;
-  /** Each distinct token mint held by a pool member. */
   listBoundTokens(): readonly {
     tokenName: string;
     tokenCreatedAt: string;
@@ -60,7 +54,6 @@ export interface WorkerTokenRevalidationDeps {
    * failures, which keep every worker until the next pass.
    */
   readTokens(): Promise<ReadonlyMap<string, EnrollmentToken>>;
-  /** Cuts off the workers enrolled on one mint; returns their names. */
   revokeToken(
     name: string,
     cause: EnrollmentBindingCutoffCause,
@@ -70,7 +63,6 @@ export interface WorkerTokenRevalidationDeps {
 
 export class WorkerTokenRevalidationService {
   readonly #deps: WorkerTokenRevalidationDeps;
-  /** Consecutive passes each bound token name has been missing. */
   readonly #missingPasses = new Map<string, number>();
   #timer: ReturnType<typeof setTimeout> | null = null;
   #pending: Promise<void> = Promise.resolve();
@@ -98,7 +90,6 @@ export class WorkerTokenRevalidationService {
     await this.#pending;
   }
 
-  /** Runs one revalidation pass; returns the names of the workers cut off. */
   async runOnce(): Promise<string[]> {
     return await this.#revalidate();
   }
@@ -153,7 +144,6 @@ export class WorkerTokenRevalidationService {
       return [];
     }
 
-    // Forget names no worker is bound to any more.
     for (const name of this.#missingPasses.keys()) {
       if (!mintsByName.has(name)) this.#missingPasses.delete(name);
     }

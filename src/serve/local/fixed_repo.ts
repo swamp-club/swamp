@@ -20,22 +20,12 @@
 import { basename } from "@std/path";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
-/** What {@link resolveFixedRepo} reads. */
 export interface FixedRepoDeps {
-  /** The folder as it really is (symlinks and `/tmp` resolved); throws when missing. */
   realPath(path: string): Promise<string>;
   isRepo(path: string): Promise<boolean>;
-  /** The registered workspaces, or none when nothing is registered. */
   registered(): Promise<readonly { name: string; path: string }[]>;
 }
 
-/**
- * The one repo `swamp dashboard` serves: its folder, under its workspace
- * name when that folder is registered, else under the folder's own name.
- * It never registers anything.
- *
- * @throws UserError code `not_a_repo` when the folder is not a swamp repo
- */
 export async function resolveFixedRepo(
   deps: FixedRepoDeps,
   repoDir: string,

@@ -52,10 +52,8 @@ const CANCEL_RUN_PATTERN =
 const DATA_PLANE_ROOT_PATTERN = /^\/(data|bundle)(?:\/|$)/;
 
 /**
- * Maps a request path to a low-cardinality route template for span names and
- * the `http.route` attribute. Returns `undefined` for any path that is not a
- * known route — including operator-configured webhook routes, which may carry
- * a secret segment, and arbitrary paths from scanners.
+ * unknown paths return undefined, including operator webhook routes, which may
+ * carry a secret segment, and scanner paths
  */
 export function resolveHttpRoute(pathname: string): string | undefined {
   if (EXACT_ROUTES.has(pathname)) return pathname;
@@ -69,9 +67,8 @@ export function resolveHttpRoute(pathname: string): string | undefined {
   return undefined;
 }
 
-// The methods OpenTelemetry's HTTP conventions name as known. Any other
-// method is reported as _OTHER so arbitrary tokens from scanners cannot
-// multiply span names.
+// any method outside OpenTelemetry's known set is reported as _OTHER so scanner
+// tokens cannot multiply span names
 const KNOWN_METHODS: ReadonlySet<string> = new Set([
   "CONNECT",
   "DELETE",
@@ -89,20 +86,9 @@ function isWebSocketUpgrade(req: Request): boolean {
 }
 
 /**
- * Wraps a `Deno.serve` handler so every HTTP request runs inside a root
- * SERVER span named `{method} {route}` (or `{method}` when the route is
- * unknown), per the OpenTelemetry HTTP semantic conventions. The span is the
- * active context for all work the request does.
- *
- * WebSocket upgrades pass through untraced: the connection outlives the
- * upgrade, and every message on it would otherwise join one trace.
- *
- * Only a 5xx response or a thrown error marks the span ERROR. The request
- * path, query string, headers and body are never recorded — only the route
- * template. An operator's webhook route may hold a secret segment and can sit
- * under a templated prefix such as /dashboard/, and data-plane paths carry
- * data names. The span ends when the handler returns its Response, so a
- * streamed body is not included in its duration.
+ * WebSocket upgrades pass untraced; only the route template is recorded, never
+ * path, query, headers or body, since webhook routes may hold a secret and
+ * data-plane paths carry data names
  */
 export function traceHttpRequests<A extends Deno.Addr = Deno.Addr>(
   handler: Deno.ServeHandler<A>,

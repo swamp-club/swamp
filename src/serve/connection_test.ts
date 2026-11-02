@@ -80,8 +80,6 @@ import {
 
 await initializeLogging({});
 
-// ── Mock WebSocket ──────────────────────────────────────────────────────
-
 interface MockSocket {
   sent: string[];
   closed: boolean;
@@ -115,8 +113,6 @@ const stubCtx = {} as ConnectionContext;
 function makeEvent(data: string): MessageEvent {
   return new MessageEvent("message", { data });
 }
-
-// ── validateServerRequest ───────────────────────────────────────────────
 
 Deno.test("validateServerRequest accepts a valid workflow.run request", () => {
   const input = {
@@ -466,8 +462,6 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
     });
     assertEquals(typeof sent, "object");
   }
-  // A key address may say the client reads a pending reply, and an accepted
-  // one.
   const flagged = validateServerRequest({
     type: "workflow.signal",
     id: "req-1",
@@ -491,7 +485,6 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
         .acceptsReceipt,
     true,
   );
-  // Either address may carry an idempotency key, in the form of one.
   for (
     const address of [
       { waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90" },
@@ -519,7 +512,6 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
       assertStringIncludes(refused, "idempotencyKey");
     }
   }
-  // An address that names no wait is still told about the address.
   const result = validateServerRequest({
     type: "workflow.signal",
     id: "req-1",
@@ -539,8 +531,6 @@ Deno.test("validateServerRequest rejects missing methodName for model.method.run
   assertEquals(typeof result, "string");
 });
 
-// ── extractRequestId ────────────────────────────────────────────────────
-
 Deno.test("extractRequestId: returns id when present", () => {
   assertEquals(extractRequestId({ type: "foo", id: "req-1" }), "req-1");
 });
@@ -556,8 +546,6 @@ Deno.test("extractRequestId: returns 'unknown' for non-string id", () => {
 Deno.test("extractRequestId: returns 'unknown' for null data", () => {
   assertEquals(extractRequestId(null), "unknown");
 });
-
-// ── handleMessage: invalid JSON ─────────────────────────────────────────
 
 Deno.test("handleMessage sends error for invalid JSON", () => {
   const mock = createMockSocket();
@@ -575,8 +563,6 @@ Deno.test("handleMessage sends error for invalid JSON", () => {
   assertEquals(msg.type, "error");
   assertEquals((msg.error as Record<string, unknown>).code, "invalid_request");
 });
-
-// ── handleMessage: validation failure ───────────────────────────────────
 
 Deno.test("handleMessage sends error for invalid request shape", () => {
   const mock = createMockSocket();
@@ -652,8 +638,6 @@ Deno.test("handleMessage echoes id for valid type with invalid payload", () => {
   assertEquals((msg.error as Record<string, unknown>).code, "invalid_request");
 });
 
-// ── handleMessage: cancel ───────────────────────────────────────────────
-
 Deno.test("handleMessage cancel aborts the matching controller", () => {
   const mock = createMockSocket();
   const controller = new AbortController();
@@ -667,7 +651,6 @@ Deno.test("handleMessage cancel aborts the matching controller", () => {
   );
 
   assertEquals(controller.signal.aborted, true);
-  // Cancel does not send a response
   assertEquals(mock.sent.length, 0);
 });
 
@@ -891,8 +874,6 @@ Deno.test("handleMessage does not reject in fail-secure mode when no durable aud
   assertEquals(auditUnavailableSent(mock), false);
 });
 
-// ── handleMessage: duplicate request ID ─────────────────────────────────
-
 Deno.test("handleMessage rejects duplicate request ID", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>([
@@ -916,8 +897,6 @@ Deno.test("handleMessage rejects duplicate request ID", () => {
   assertEquals((msg.error as Record<string, unknown>).code, "duplicate_id");
 });
 
-// ── handleMessage: unknown type not leaked ──────────────────────────────
-
 Deno.test("handleMessage does not leak unknown type value in error", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -932,14 +911,11 @@ Deno.test("handleMessage does not leak unknown type value in error", () => {
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
   assertEquals(msg.type, "error");
-  // The error message should NOT contain the actual type value
   const errorMessage = String(
     (msg.error as Record<string, unknown>).message,
   );
   assertEquals(errorMessage.includes("secret.op"), false);
 });
-
-// ── validateServerRequest: new access frame types ─────────────────────
 
 Deno.test("validateServerRequest accepts access.grant.list", () => {
   const input = {
@@ -1099,8 +1075,6 @@ Deno.test("validateServerRequest rejects access.can-i with resource but no actio
   assertEquals(typeof result, "string");
 });
 
-// ── Authorization test helpers ────────────────────────────────────────────
-
 const modeNoneConfig: ServeAuthConfig = {
   mode: "none",
   admins: [],
@@ -1178,7 +1152,6 @@ const stubRepoContext = {
   },
 } as unknown as ConnectionContext["repoContext"];
 
-/** A ctx over its own temp repo dir, removed when the ctx is disposed. */
 function makeCtx(
   authConfig: ServeAuthConfig,
   grants: Grant[] = [],
@@ -1206,8 +1179,6 @@ function makeCtx(
   };
 }
 
-// ── Authorization: mode:none bypass ───────────────────────────────────────
-
 Deno.test("authorizeOrReject: mode:none allows all requests without principal", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -1224,8 +1195,6 @@ Deno.test("authorizeOrReject: mode:none allows all requests without principal", 
     null,
   );
 
-  // mode:none should not send an error — the request proceeds to the handler
-  // (which will fail for other reasons in this stub, but not with "unauthorized")
   for (const sent of mock.sent) {
     const msg = JSON.parse(sent);
     if (msg.type === "error") {
@@ -1236,8 +1205,6 @@ Deno.test("authorizeOrReject: mode:none allows all requests without principal", 
     }
   }
 });
-
-// ── Authorization: null principal rejected in enforcing mode ──────────────
 
 Deno.test("authorizeOrReject: null principal rejected in token mode", () => {
   const mock = createMockSocket();
@@ -1265,8 +1232,6 @@ Deno.test("authorizeOrReject: null principal rejected in token mode", () => {
   assertStringIncludes(errorMessage, "access:*");
 });
 
-// ── Authorization: authorized request succeeds ────────────────────────────
-
 Deno.test("authorizeOrReject: authorized workflow.run proceeds", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -1290,7 +1255,6 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", async () => {
   );
 
   await waitFor(() => mock.sent.length >= 1, "workflow.run response sent");
-  // Should not get an unauthorized error — the request proceeds to the handler
   for (const sent of mock.sent) {
     const msg = JSON.parse(sent);
     if (msg.type === "error") {
@@ -1301,8 +1265,6 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", async () => {
     }
   }
 });
-
-// ── Authorization: unauthorized request gets error frame ──────────────────
 
 Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", async () => {
   const mock = createMockSocket();
@@ -1330,8 +1292,6 @@ Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", as
   assertStringIncludes(errorMessage, "run");
   assertStringIncludes(errorMessage, "workflow:@acme/deploy");
 });
-
-// ── Authorization: admin boundary ─────────────────────────────────────────
 
 Deno.test("authorizeOrReject: access.reload requires admin on access:*", () => {
   const mock = createMockSocket();
@@ -1383,7 +1343,6 @@ Deno.test("authorizeOrReject: access.reload allowed with admin grant", () => {
     testPrincipal,
   );
 
-  // Should not get unauthorized — proceeds to handler (which may fail for other reasons)
   for (const sent of mock.sent) {
     const msg = JSON.parse(sent);
     if (msg.type === "error") {
@@ -1394,8 +1353,6 @@ Deno.test("authorizeOrReject: access.reload allowed with admin grant", () => {
     }
   }
 });
-
-// ── Authorization: cluster.instances and serve.config match REST (admin) ──
 
 for (const type of ["cluster.instances", "serve.config"]) {
   Deno.test(`authorizeOrReject: ${type} rejects read-only access:* grant`, async () => {
@@ -1459,8 +1416,6 @@ for (const type of ["cluster.instances", "serve.config"]) {
   });
 }
 
-// ── Authorization: grant list requires read on access:grant ───────────────
-
 Deno.test("authorizeOrReject: access.grant.list rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -1486,8 +1441,6 @@ Deno.test("authorizeOrReject: access.grant.list rejected without read grant", ()
   assertStringIncludes(errorMessage, "access:grant");
 });
 
-// ── Authorization: group list requires read on access:group ───────────────
-
 Deno.test("authorizeOrReject: access.group.list rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -1512,8 +1465,6 @@ Deno.test("authorizeOrReject: access.group.list rejected without read grant", ()
   assertStringIncludes(errorMessage, "read");
   assertStringIncludes(errorMessage, "access:group");
 });
-
-// ── Authorization: admin on access:* implies other actions ────────────────
 
 Deno.test("authorizeOrReject: admin on access:* allows grant list without explicit read", () => {
   const mock = createMockSocket();
@@ -1574,8 +1525,6 @@ Deno.test("authorizeOrReject: admin on access:* allows group list without explic
     );
   assertEquals(unauthorizedErrors.length, 0);
 });
-
-// ── Authorization: admin superuser fallback & explicit deny ──────────────
 
 Deno.test("authorizeOrReject: admin on access:* grants workflow run (superuser)", () => {
   const mock = createMockSocket();
@@ -1742,12 +1691,9 @@ Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent
   assertStringIncludes(errorMessage, `user:${opaqueId}`);
 });
 
-// ── Authorization: missing policySnapshotLoader in enforcing mode ─────────
-
-// ── Authorization: denormalized access model typeArgs require admin ──────────
-// Regression tests for CVE: canonicalization mismatch between authorization
-// gate (raw typeArg) and executor (normalized ModelType). Every separator
-// variant that normalizes to an access-control model must require admin.
+// every separator variant that normalizes to an access-control model must
+// require admin: the gate sees the raw typeArg, the executor the normalized
+// ModelType
 
 const lowPrivGrant = makeGrant({
   subject: { kind: "user", name: "adam" },
@@ -1781,7 +1727,6 @@ function assertDenormDenied(
       testPrincipal,
     );
 
-    // handleModelMethodRun is async — wait for the task to settle
     await new Promise((r) => setTimeout(r, 50));
 
     assertEquals(mock.sent.length, 1);
@@ -1796,67 +1741,39 @@ function assertDenormDenied(
   });
 }
 
-// grant: dot separator
 assertDenormDenied("swamp.grant", "grant-dot");
-// grant: double-colon separator
 assertDenormDenied("swamp::grant", "grant-doublecolon");
-// grant: uppercase
 assertDenormDenied("SWAMP/GRANT", "grant-uppercase");
-// grant: double-slash
 assertDenormDenied("swamp//grant", "grant-doubleslash");
-// grant: whitespace separator
 assertDenormDenied("swamp grant", "grant-space");
-// grant: canonical with @ prefix
 assertDenormDenied("@swamp/grant", "grant-at-prefix");
-// grant: canonical without @
 assertDenormDenied("swamp/grant", "grant-canonical");
 
-// group: dot separator
 assertDenormDenied("swamp.group", "group-dot");
-// group: double-colon separator
 assertDenormDenied("swamp::group", "group-doublecolon");
-// group: uppercase
 assertDenormDenied("SWAMP/GROUP", "group-uppercase");
-// group: whitespace separator
 assertDenormDenied("swamp group", "group-space");
-// group: canonical
 assertDenormDenied("swamp/group", "group-canonical");
 
-// server-token: dot separator (swamp.server-token normalizes to swamp/server-token)
 assertDenormDenied("swamp.server-token", "server-token-dot");
-// server-token: double-colon separator
 assertDenormDenied("swamp::server-token", "server-token-doublecolon");
-// server-token: uppercase
 assertDenormDenied("SWAMP/SERVER-TOKEN", "server-token-uppercase");
-// server-token: canonical
 assertDenormDenied("swamp/server-token", "server-token-canonical");
 
-// enrollment-token: dot separator
 assertDenormDenied("swamp.enrollment-token", "enrollment-token-dot");
-// enrollment-token: double-colon separator
 assertDenormDenied("swamp::enrollment-token", "enrollment-token-doublecolon");
-// enrollment-token: uppercase
 assertDenormDenied("SWAMP/ENROLLMENT-TOKEN", "enrollment-token-uppercase");
-// enrollment-token: whitespace separator
 assertDenormDenied("swamp enrollment-token", "enrollment-token-space");
-// enrollment-token: canonical with @ prefix
 assertDenormDenied("@swamp/enrollment-token", "enrollment-token-at-prefix");
-// enrollment-token: canonical
 assertDenormDenied("swamp/enrollment-token", "enrollment-token-canonical");
 
-// worker: dot separator
 assertDenormDenied("swamp.worker", "worker-dot");
-// worker: double-colon separator
 assertDenormDenied("swamp::worker", "worker-doublecolon");
-// worker: uppercase
 assertDenormDenied("SWAMP/WORKER", "worker-uppercase");
-// worker: whitespace separator
 assertDenormDenied("swamp worker", "worker-space");
-// worker: canonical with @ prefix
 assertDenormDenied("@swamp/worker", "worker-at-prefix");
-// worker: canonical
 assertDenormDenied("swamp/worker", "worker-canonical");
-// The worker-fleet control-plane types are admin-only too (swamp-club#2756).
+// the worker-fleet control-plane types are admin-only too
 assertDenormDenied("swamp/step-lease", "step-lease-canonical");
 assertDenormDenied("SWAMP.Step-Lease", "step-lease-dot-uppercase");
 assertDenormDenied("swamp/pending-dispatch", "pending-dispatch-canonical");
@@ -1888,7 +1805,6 @@ Deno.test("isAccessModelType: normal model typeArg still uses model:* run, not a
 
   await new Promise((r) => setTimeout(r, 50));
 
-  // Should NOT get an unauthorized error — the request proceeds past authz
   for (const sent of mock.sent) {
     const msg = JSON.parse(sent);
     if (msg.type === "error") {
@@ -1929,7 +1845,6 @@ Deno.test("isAccessModelType: admin user can still run canonical swamp/grant", a
 
   await new Promise((r) => setTimeout(r, 50));
 
-  // Should not get unauthorized — admin on access:* is sufficient
   const unauthorizedErrors = mock.sent
     .map((s) => JSON.parse(s))
     .filter((m) =>
@@ -1938,8 +1853,6 @@ Deno.test("isAccessModelType: admin user can still run canonical swamp/grant", a
     );
   assertEquals(unauthorizedErrors.length, 0);
 });
-
-// ── restrictedModelTypes: admin-only enforcement via config ───────────────
 
 const restrictedConfig: ServeAuthConfig = {
   mode: "token",
@@ -2091,8 +2004,6 @@ Deno.test("restrictedModelTypes: non-restricted type still allowed for non-admin
   assertEquals(unauthorizedErrors.length, 0);
 });
 
-// ── restrictedCommands: admin-only enforcement via config ─────────────────
-
 const restrictedCommandConfig: ServeAuthConfig = {
   mode: "token",
   admins: [],
@@ -2204,8 +2115,6 @@ Deno.test("restrictedCommands: non-restricted command still allowed for non-admi
   assertEquals(unauthorizedErrors.length, 0);
 });
 
-// ── Authorization: missing policySnapshotLoader in enforcing mode ─────────
-
 Deno.test("authorizeOrReject: missing snapshot loader rejects in token mode", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -2232,8 +2141,6 @@ Deno.test("authorizeOrReject: missing snapshot loader rejects in token mode", ()
     "access_not_configured",
   );
 });
-
-// ── validateServerRequest: new data/model/workflow/vault/report types ────
 
 Deno.test("validateServerRequest accepts data.get", () => {
   const input = {
@@ -2476,8 +2383,6 @@ Deno.test("validateServerRequest accepts report.type.search", () => {
   };
   assertEquals(typeof validateServerRequest(input), "object");
 });
-
-// ── Authorization: new request types ────────────────────────────────────
 
 Deno.test("authorizeOrReject: data.get rejected without read grant", async () => {
   const mock = createMockSocket();
@@ -2861,14 +2766,6 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", as
   );
 });
 
-// ── Authorization: control-plane records need admin (swamp-club#2756) ──────
-
-/**
- * A ctx whose definition repo resolves each name in `definitions` to a
- * definition of the given model type, so a data request authorizes the
- * resolved model's canonical resource.
- */
-/** `ctx` with a policy that evaluates grant conditions. */
 function withConditions(
   ctx: ConnectionContext,
   grants: Grant[],
@@ -3048,9 +2945,6 @@ Deno.test("authorizeOrReject: data.get on a user model still allowed for read on
 });
 
 Deno.test("authorizeOrReject: a direct-type run on a control-plane definition is judged on its own name", async () => {
-  // A name-conditioned deny must still match an existing control-plane
-  // definition: its fields are its own, not its access resource's
-  // (swamp-club#2756).
   const grants = [
     makeGrant({
       subject: { kind: "user", name: "adam" },
@@ -3088,8 +2982,6 @@ Deno.test("authorizeOrReject: a direct-type run on a control-plane definition is
 });
 
 Deno.test("authorizeOrReject: a method run on a control-plane model by name is judged on its own name", async () => {
-  // The standard path (no typeArg) must keep the record's own fields too, so
-  // a deny naming one grant still refuses it (swamp-club#2756).
   const grants = [
     makeGrant({
       subject: { kind: "user", name: "adam" },
@@ -3150,10 +3042,6 @@ Deno.test("authorizeOrReject: a data read of a control-plane record honours a de
     "explicitly denied",
   );
 });
-
-// ── Authorization: typeArg execution-target mismatch (SWAMP-003) ────────────
-// Regression tests: authorization must check the execution target (typeArg),
-// not just the claimed model (modelIdOrName).
 
 const narrowModelGrant = makeGrant({
   subject: { kind: "user", name: "adam" },
@@ -3427,8 +3315,6 @@ Deno.test("typeArg authz: @ prefix on typeArg is preserved for authorization", a
   );
 });
 
-// ── handleRunAttach cross-instance fallback tests ───────────────────────
-
 function createMockControlPlaneStore():
   & import("../domain/datastore/control_plane_store.ts").ControlPlaneStore
   & {
@@ -3622,8 +3508,6 @@ Deno.test("handleRunAttach: miss + active-runs record + stale heartbeat returns 
 });
 
 Deno.test("handleRunAttach: a run of a gone control-plane model stays admin-only", async () => {
-  // The definition is gone, so the run is judged on its recorded type: model
-  // run grants do not reach it (swamp-club#2756).
   const cpStore = createMockControlPlaneStore();
   cpStore.data.set(
     "active-runs/instance-remote/run-grant",
@@ -3657,8 +3541,6 @@ Deno.test("handleRunAttach: a run of a gone control-plane model stays admin-only
 });
 
 Deno.test("handleRunAttach: a control-plane run stays admin-only when a user model now holds its name", async () => {
-  // The run's definition was replaced by a user model: the recorded type
-  // still decides (swamp-club#2756).
   const cpStore = createMockControlPlaneStore();
   cpStore.data.set(
     "active-runs/instance-remote/run-reused",
@@ -3825,8 +3707,6 @@ Deno.test("handleRunAttach: miss + active-runs record + unauthorized principal r
   assertEquals(allTypes.includes("run.interrupted"), false);
 });
 
-// ── sanitizeErrorForClient tests ────────────────────────────────────────
-
 Deno.test("sanitizeErrorForClient: redacts absolute Unix paths", () => {
   const result = sanitizeErrorForClient(
     new Error("File not found: /opt/swamp/.swamp/data/foo"),
@@ -3880,7 +3760,7 @@ Deno.test("sanitizeErrorForClient: passes relative paths in user-facing errors",
 Deno.test("sanitizeErrorForClient: truncates long messages at 512 chars", () => {
   const longMessage = "x".repeat(600);
   const result = sanitizeErrorForClient(new Error(longMessage));
-  assertEquals(result.length, 515); // 512 + "..."
+  assertEquals(result.length, 515);
   assertEquals(result.endsWith("..."), true);
 });
 
@@ -3914,8 +3794,6 @@ Deno.test("sanitizeErrorForClient: handles non-Error values", () => {
   assertEquals(sanitizeErrorForClient("simple string"), "simple string");
   assertEquals(sanitizeErrorForClient(42), "42");
 });
-
-// ── exceptionTypeForClient tests ─────────────────────────────────────────
 
 Deno.test("exceptionTypeForClient: returns constructor name for custom Error subclass", () => {
   class LockTimeoutError extends Error {
@@ -3974,8 +3852,6 @@ Deno.test("exceptionTypeForClient: returns undefined for anonymous Error subclas
   const AnonError = (() => class extends Error {})();
   assertEquals(exceptionTypeForClient(new AnonError("anon")), undefined);
 });
-
-// ── lockTimeoutErrorForClient tests ──────────────────────────────────────
 
 Deno.test("lockTimeoutErrorForClient: returns lock_timeout code with retryable details", () => {
   const err = new LockTimeoutError("data/mytype/my-model/.lock", null, 30000);
@@ -4036,8 +3912,6 @@ Deno.test("lockTimeoutErrorForClient: sanitizes .swamp internal path in lockKey"
   const result = lockTimeoutErrorForClient(err);
   assertStringIncludes(result.message, '"behavior lock"');
 });
-
-// ── data.query validation tests ─────────────────────────────────────────
 
 Deno.test("validateServerRequest: data.query rejects predicate over 4096 chars", () => {
   const input = {
@@ -4100,8 +3974,6 @@ Deno.test("validateServerRequest: rejects request ID over 256 chars", () => {
   assertEquals(typeof result, "string");
   assertStringIncludes(result as string, "id");
 });
-
-// ── Report/check filter fields on run payloads ──────────────────────────
 
 Deno.test("validateServerRequest: model.method.run accepts report filter fields", () => {
   const input = {
@@ -4210,8 +4082,6 @@ Deno.test("validateServerRequest: workflow.run rejects non-boolean skipAllChecks
   assertEquals(typeof result, "string");
 });
 
-// ── workflow.schema empty payload fix ───────────────────────────────────
-
 Deno.test("validateServerRequest: workflow.schema accepts empty payload", () => {
   const input = {
     type: "workflow.schema",
@@ -4255,11 +4125,6 @@ Deno.test("validateServerRequest: workflow.resume accepts request without trace 
   const result = validateServerRequest(input);
   assertEquals(typeof result, "object");
 });
-
-// ── validateServerRequest: payload fields survive validation ────────────
-//
-// zod strips unknown keys, so a field missing from a schema is dropped
-// silently. Assert the whole validated request, not just that one came back.
 
 Deno.test("validateServerRequest: workflow.resume keeps from", () => {
   const input = {
@@ -4306,9 +4171,6 @@ Deno.test("validateServerRequest: vault.audit-trail keeps action", () => {
   assertEquals(validateServerRequest(input), input);
 });
 
-// ── handleMessage: workflow.resume routing on from (swamp-club#2356) ────
-
-/** A ctx whose repos hold one workflow and one run in the given status. */
 function makeResumeCtx(
   runId: string,
   runStatus: string,
@@ -4381,9 +4243,9 @@ Deno.test("handleMessage: workflow.resume without from uses the suspended-run re
   assertStringIncludes(String(error.message), "is not suspended");
 });
 
-// A step of a run this serve hosts calls back in with --server. The run it
+// a step of a run this serve hosts calls back in with --server; the run it
 // requests must start as also holding the step's lock, which the client
-// forwards (swamp-club#2982).
+// forwards
 for (
   const [type, payload] of [
     ["workflow.run", { workflowIdOrName: "deploy" }],
@@ -4392,7 +4254,6 @@ for (
   ] as const
 ) {
   Deno.test(`handleMessage: ${type} runs under the held locks the client forwarded`, async () => {
-    // What a swamp started by the handler would be told this process holds.
     const seen: (string | undefined)[] = [];
     const lookup = () => {
       seen.push(
@@ -4435,7 +4296,6 @@ for (
       const stepLock = crypto.randomUUID();
       let finish = () => {};
       const waiting = new Promise<void>((resolve) => finish = resolve);
-      // The calling step, holding its lock while it waits on the client.
       const step = processLockHolderMarker.runHolding(
         [stepLock],
         () => waiting,
@@ -4445,9 +4305,8 @@ for (
           `${Deno.pid}:${stepLock}`,
         ]);
         assertEquals(await handled(undefined), [undefined]);
-        // A lock some other swamp holds for the calling run is adopted too:
-        // the nonce is the proof, whichever pid the list names it for
-        // (swamp-club#3096).
+        // a lock some other swamp holds for the calling run is adopted too: the
+        // nonce is the proof, whichever pid the list names it for
         const upstreamLock = crypto.randomUUID();
         assertEquals(await handled(`7:${upstreamLock}`), [
           `${Deno.pid}:${upstreamLock}`,
@@ -4460,8 +4319,6 @@ for (
     });
   });
 }
-
-// ── validateServerRequest: new command types (issue #1531) ─────────────
 
 Deno.test("validateServerRequest accepts access.token.list", () => {
   assertEquals(
@@ -4903,8 +4760,6 @@ Deno.test("validateServerRequest accepts datastore.namespace.list", () => {
   );
 });
 
-// ── Authorization: new command types (issue #1531) ───────────────────────
-
 Deno.test("authorizeOrReject: access.token.list requires admin on access:*", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -4995,7 +4850,7 @@ Deno.test("authorizeOrReject: model.edit requires write on model:<name>", async 
     testPrincipal,
   );
 
-  // The handler resolves the model before authorizing it (swamp-club#2426).
+  // the handler resolves the model before authorizing it
   await waitFor(() => mock.sent.length >= 1, "model.edit response sent");
   assertEquals(mock.sent.length, 1);
   const msg = parseSent(mock);
@@ -5242,8 +5097,6 @@ Deno.test("authorizeOrReject: admin on access:* allows all new command types", a
   await waitFor(() => active.size === 0, "admin requests settled");
 });
 
-// ── workflow.approve → auto-resume ─────────────────────────────────────────
-
 function makeApproveCtx(
   autoResume: boolean | undefined,
 ): {
@@ -5359,8 +5212,6 @@ Deno.test("handleMessage: workflow.approve leaves a run that has not opted in su
   assertEquals(run.status, "suspended");
 });
 
-// ── server-initiated close stops the session's work (swamp-club#2469) ──
-
 Deno.test("createConnectionTeardown: aborts in-flight work, ends subscriptions, runs once", () => {
   const request = new AbortController();
   const unsubscribed: string[] = [];
@@ -5392,7 +5243,6 @@ interface LiveSocket {
   log: string[];
 }
 
-/** A socket handleConnection can wire, recording close and worker events. */
 function connectForTeardown(): LiveSocket & { fed: string[] } {
   const log: string[] = [];
   const fed: string[] = [];
@@ -5427,7 +5277,6 @@ Deno.test("closeSession: tears the session's work down before the close handshak
   // Work stopped first; the close event has not fired and may never.
   assertEquals(log, ["worker-closed", "close"]);
 
-  // The close event later runs the same teardown, which does nothing twice.
   socket.onclose?.(new CloseEvent("close"));
   assertEquals(log, ["worker-closed", "close"]);
 });
@@ -5466,8 +5315,6 @@ Deno.test("handleMessage: server.version lists the literal-inputs and resume-fro
   ]);
 });
 
-// ── handleMessage: request spans (swamp-club#3741) ─────────────────────────
-
 function tracedCtx(lagMs?: number): ConnectionContext & Disposable {
   return {
     ...makeCtx(modeTokenConfig),
@@ -5483,7 +5330,6 @@ for (
   const type of [
     "workflow.approvals",
     "workflow.run.summary",
-    // Behavior history reads (swamp-club#4056).
     "model.output.search",
     "model.usage.summary",
     "model.method.history.search",
@@ -5591,8 +5437,6 @@ Deno.test("handleMessage: an untraced request opens no swamp.serve.request span"
     );
   });
 });
-
-// ── datastore.claim / datastore.release (swamp-club#4063) ────────────────
 
 Deno.test("handleMessage: a datastore.claim from a non-admin is refused, and audited with the normalized address and no credential", async () => {
   const audit: AuditEvent[] = [];

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Properties of the vault request decision (swamp-club#2676): grant sets
- * without vault grants decide as before, except that a deny on any of a
- * vault's data names now refuses it, and today's refusals are replied and
- * audited byte for byte as before; vault grants add allows only through a
- * `vault:<name>` allow matching the vault, and refusals only through denies
- * matching `data:vault`, `data:<name>` or `vault:<name>`.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
@@ -185,7 +176,6 @@ function arbGrant(kinds: ResourceKind[]): fc.Arbitrary<Grant> {
       kind,
       pattern: kind === "access" || kind === "model" ? "*" : pattern,
     },
-    // `key` is declared for the vault kind only.
     ...(condition && (kind === "vault" || !condition.startsWith("key"))
       ? { condition }
       : {}),
@@ -196,7 +186,6 @@ function arbGrant(kinds: ResourceKind[]): fc.Arbitrary<Grant> {
   }));
 }
 
-/** A vault request as a handler builds it, with today's resource. */
 const arbRequest: fc.Arbitrary<VaultRequest> = fc.record({
   vaultName: fc.constantFrom(...VAULT_NAMES),
   action: arbAction,
@@ -236,7 +225,6 @@ Deno.test("authorizeVaultOrReject: without vault grants it decides as today, plu
         const today = runToday(grants, request);
         const now = runVault(grants, request);
         if (!today.allowed) {
-          // Today's refusal, replied and audited byte for byte.
           assertEquals(now, today);
           return;
         }
@@ -255,8 +243,6 @@ Deno.test("authorizeVaultOrReject: vault grants add allows only from a matching 
       arbRequest,
       fc.boolean(),
       (generated, request, seedVaultAllow) => {
-        // Half the runs hold a vault allow for the request, so the denies
-        // and today's refusals it meets are exercised often.
         const grants = seedVaultAllow
           ? [
             ...generated,
@@ -281,8 +267,6 @@ Deno.test("authorizeVaultOrReject: vault grants add allows only from a matching 
         } else if (today.allowed) {
           assert(deniedByVaultNames(grants, request));
         }
-        // A vault grant whose pattern does not match the vault changes
-        // nothing.
         const matching = grants.filter((g) =>
           g.resource.kind !== "vault" ||
           resourceSelectorMatches(g.resource, request.vaultName)
@@ -301,7 +285,6 @@ Deno.test("authorizeVaultOrReject: with vaultGrantAdmits false only today's chec
       arbRequest,
       (generated, base) => {
         const request: VaultRequest = { ...base, vaultGrantAdmits: false };
-        // A matching vault allow for the action is always present.
         const grants = [
           ...generated,
           {
@@ -314,7 +297,6 @@ Deno.test("authorizeVaultOrReject: with vaultGrantAdmits false only today's chec
         const today = runToday(withoutVault, request);
         const now = runVault(grants, request);
         if (!today.allowed) {
-          // Today's refusal, replied and audited byte for byte.
           assertEquals(now, today);
           return;
         }

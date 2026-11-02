@@ -26,9 +26,9 @@ const logger = getSwampLogger(["serve", "heartbeat"]);
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 export const DEFAULT_STALE_TTL_MS = 90_000;
 /**
- * How long a stop waits for the write of its stopped record. The record is
- * written when the datastore was too slow for the shutdown push, so it may
- * be slow for this write too; the last periodic record is left either way.
+ * the stopped record is written when the datastore was too slow for the
+ * shutdown push, so it may be slow here too; the last periodic record is left
+ * either way
  */
 export const STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS = 5_000;
 
@@ -39,17 +39,11 @@ export interface HeartbeatRecord {
   startedAt: string;
   heartbeatAt: string;
   address?: string;
-  /**
-   * How long after `heartbeatAt` this instance asks to be counted dead. A
-   * reader that cannot know the instance's settings, such as a local
-   * command, goes by it.
-   */
   staleTtlMs?: number;
   /**
-   * When the instance stopped. A stopped record is dead at once: an
-   * instance that stopped without pushing its interrupted runs leaves one
-   * instead of deleting its heartbeat, so a peer reconciles it
-   * (swamp-club#3958).
+   * a stopped record is dead at once: an instance that stopped without pushing
+   * its interrupted runs leaves one instead of deleting its heartbeat, so a
+   * peer reconciles it
    */
   stoppedAt?: string;
 }
@@ -64,7 +58,6 @@ export class InstanceHeartbeatService {
   readonly #address: string | undefined;
   readonly #staleTtlMs: number | undefined;
   #timer: ReturnType<typeof setInterval> | null = null;
-  /** The periodic writes in flight; none of them rejects. */
   readonly #ticks = new Set<Promise<void>>();
 
   constructor(
@@ -105,10 +98,8 @@ export class InstanceHeartbeatService {
   }
 
   /**
-   * Stops the heartbeat and deletes its record, or with `leaveStoppedRecord`
-   * writes a stopped one in its place. A stopped record that cannot be
-   * written in {@link STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS} is logged, and the
-   * last periodic record is left to go stale: never deleted.
+   * a stopped record that cannot be written within the timeout is logged and
+   * the last periodic record is left to go stale, never deleted
    */
   async stop(
     options: { leaveStoppedRecord?: boolean; writeTimeoutMs?: number } = {},
@@ -123,10 +114,8 @@ export class InstanceHeartbeatService {
       );
       return;
     }
-    // Bounded when a bound is given (serve's shutdown, swamp-club#3961): a
-    // delete that misses leaves the heartbeat to go stale, as a failed one
-    // does. Handled here as well, so one that outlives the bound never
-    // rejects unhandled.
+    // a delete that misses the bound leaves the heartbeat to go stale; also
+    // handled here so one that outlives the bound never rejects unhandled
     const deleted = this.#store.delete(`heartbeats/${this.#instanceId}`);
     deleted.catch(() => {});
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -198,7 +187,6 @@ export class InstanceHeartbeatService {
     );
   }
 
-  /** Whether `record` was left by an instance that stopped. */
   static isStopped(record: HeartbeatRecord): boolean {
     return record.stoppedAt !== undefined;
   }

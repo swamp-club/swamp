@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Authorizes expression text against the principal who supplies it: a writer
- * saving a definition or workflow, or a caller passing run inputs
- * (swamp-club#2755, swamp-club#2786). Stored content is never re-checked when
- * it runs or is evaluated, so a user running automation an admin wrote is
- * unaffected; only text a principal adds is held to what that principal may
- * read.
+ * stored content is never re-checked when it runs, so a user running automation
+ * an admin wrote is unaffected; only text a principal adds is held to what that
+ * principal may read
  */
 
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
@@ -41,34 +38,19 @@ import {
 import type { ConnectionContext, RequestAuthority } from "./shared.ts";
 
 /**
- * Most distinct models the expressions of one request may name. Each is a
- * catalog query and a definition lookup; past this the request is judged as
- * reading any data, so caller text cannot make the check do unbounded work.
+ * past the cap the request is judged as reading any data, so caller text cannot
+ * make the check do unbounded work
  */
 export const MAX_EXPRESSION_TARGETS = 32;
 
-/** How `env` reads in the expressions are judged. */
 export type EnvAccess =
-  /** The principal holds write on the model: env is theirs to author. */
   | "allowed"
-  /**
-   * Run inputs from a principal without write on the model named. The
-   * caller has already audited that refusal.
-   */
   | { refusedFor: string };
 
-/** A refusal, worded the same whether the target exists or is denied. */
 export interface ExpressionRefusal {
   readonly message: string;
 }
 
-/**
- * Checks `expressions` against the principal `authority` decides for.
- * Returns the refusal for the first expression that reads something the
- * principal may not read, or undefined when every one is allowed. Every
- * refusal is audited; nothing is sent, so the caller replies in its own
- * error shape.
- */
 export async function authorizeExpressionReferences(
   authority: RequestAuthority,
   ctx: ConnectionContext,
@@ -110,8 +92,8 @@ export async function authorizeExpressionReferences(
     }
     let allowed = true;
     if (tooMany) {
-      // Past the cap no target is looked up one by one: the expressions are
-      // judged as reading any data, and any model they name.
+      // past the cap no target is looked up one by one: the expressions are
+      // judged as reading any data, and any model they name
       allowed = readsAllData() &&
         (references.modelTargets.size === 0 || readsAllModels());
     } else if (references.dataWide) {
@@ -119,8 +101,8 @@ export async function authorizeExpressionReferences(
     }
     for (const target of tooMany ? [] : references.dataTargets) {
       if (!allowed) break;
-      // A namespace prefix names another repository's data, which no
-      // definition here describes; judge it as reading any data.
+      // a namespace prefix names another repository's data, which no definition
+      // here describes; judge it as reading any data
       if (target.includes(":")) {
         allowed = readsAllData();
         continue;
@@ -150,13 +132,6 @@ export async function authorizeExpressionReferences(
   return undefined;
 }
 
-/**
- * Checks run inputs' expressions against the caller passing them
- * (swamp-club#2755, swamp-club#2786): data they read must be readable by the
- * caller, and `env` needs write on `runOn` (the behavior the inputs run),
- * as authoring it in the definition would. `runOn` is the resource run is
- * decided on; its `methodName` field is dropped for the write decision.
- */
 export async function authorizeRunInputExpressions(
   authority: RequestAuthority,
   ctx: ConnectionContext,
@@ -165,8 +140,8 @@ export async function authorizeRunInputExpressions(
 ): Promise<ExpressionRefusal | undefined> {
   if (expressions.length === 0) return undefined;
   const { methodName: _methodName, ...fields } = runOn.fields;
-  // Decided only when an input reads env, so a refusal is audited exactly
-  // when it decides the request.
+  // decided only when an input reads env, so a refusal is audited exactly when
+  // it decides the request
   const writable = !expressions.some((e) => e.references.usesEnv) ||
     authority.allows("write", { ...runOn, fields });
   return await authorizeExpressionReferences(
@@ -177,10 +152,8 @@ export async function authorizeRunInputExpressions(
   );
 }
 
-/** Longest expression text quoted in a refusal. */
 export const MAX_SHOWN = 120;
 
-/** `raw` for an error message, shortened past {@link MAX_SHOWN}. */
 export function shown(raw: string): string {
   const flat = raw.replace(/\s+/g, " ");
   return flat.length > MAX_SHOWN ? `${flat.slice(0, MAX_SHOWN)}…` : flat;
@@ -200,12 +173,9 @@ function memo(
 }
 
 /**
- * Whether the principal may read everything `data.*("<target>", ...)` can
- * return. The data accessors match records by the model name stored on
- * them, and fall back to the definition with that name or id, so both count:
- * the current owner of every record stored under the name, and the
- * definition the name resolves to. A name that matches neither needs read
- * on all data. Deny wins.
+ * data accessors match records by stored model name and fall back to the
+ * definition with that name or id, so both count: each record's owner and the
+ * definition. A name matching neither needs all-data read.
  */
 async function dataReadable(
   authority: RequestAuthority,
@@ -216,11 +186,9 @@ async function dataReadable(
 ): Promise<boolean> {
   const resources: AccessResource[] = [];
   const ns = ctx.repoContext.unifiedDataRepo.namespace;
-  // Every version of a data item has the item's owner, so the latest
-  // versions name every owner without reading the whole history. Records
-  // of control-plane types are left out as the data.* accessors leave them
-  // out; a control-plane definition with the name is still judged below,
-  // as its access record.
+  // every version of a data item has the item's owner, so latest versions name
+  // every owner without reading the history; control-plane records are left out
+  // as data.* leaves them, their definition is judged below
   let records: DataRecord[];
   try {
     records = await ctx.repoContext.dataQueryService.query(
@@ -228,8 +196,8 @@ async function dataReadable(
       { excludeModelTypes: CONTROL_PLANE_STORED_TYPES },
     ) as DataRecord[];
   } catch {
-    // Owners that cannot be listed cannot be judged; refuse, as a failed
-    // definition listing does.
+    // owners that cannot be listed cannot be judged; refuse, as a failed
+    // definition listing does
     return false;
   }
   const seen = new Set<string>();
@@ -254,14 +222,13 @@ async function dataReadable(
     resources.push(modelAccessResource(definition, "data"));
   }
   if (resources.length === 0) {
-    // Nothing owns the name yet, so the reference will read whatever is
-    // stored under it later, by anyone: judge it as reading any data.
+    // nothing owns the name yet, so the reference will read whatever is stored
+    // under it later, by anyone: judge it as reading any data
     return authority.allowsAll("read", "data");
   }
   return resources.every((resource) => authority.allows("read", resource));
 }
 
-/** Whether the principal may read the definition `model.<target>` exposes. */
 async function modelReadable(
   authority: RequestAuthority,
   definitions: DefinitionIndex,
@@ -276,15 +243,13 @@ async function modelReadable(
 }
 
 /**
- * Every definition `target` names, by name or by id, or "failed" when the
- * definitions cannot be listed. Evaluation reads every definition sharing a
- * name, so each one is judged, not only the first a lookup returns.
+ * evaluation reads every definition sharing a name, so each one is judged, not
+ * only the first a lookup returns
  */
 type DefinitionIndex = (
   target: string,
 ) => Promise<DefinitionLookupResult[] | "failed">;
 
-/** A {@link DefinitionIndex} that lists the definitions once per request. */
 function definitionIndex(ctx: ConnectionContext): DefinitionIndex {
   let all: Promise<DefinitionLookupResult[] | "failed"> | undefined;
   return async (target) => {

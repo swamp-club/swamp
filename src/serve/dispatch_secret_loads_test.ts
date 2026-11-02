@@ -66,14 +66,12 @@ interface Fixture {
   credential: string;
   reads: string[];
   events: AuditEvent[];
-  /** Resolves when the next vault read starts; the read waits on `release`. */
   gate?: { started: Promise<void>; release: () => void };
 }
 
 interface FixtureOptions {
   bag?: { vaultName: string; key: string }[];
   vaultAccess?: RunVaultAccess;
-  /** Hold every vault read until the test releases it. */
   gated?: boolean;
   vaultError?: Error;
   repo?: UnifiedDataRepository;
@@ -297,7 +295,6 @@ Deno.test("DispatchSecretLoads: a reserved secret is refused even when the bag h
 Deno.test("DispatchSecretLoads: an oversized body is refused before any read", async () => {
   const f = fixture();
   const oversized = "x".repeat(MAX_DISPATCH_SECRET_LOAD_BODY_BYTES + 1);
-  // Declared by its length, and streamed with no length at all.
   const streamed = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new TextEncoder().encode(oversized));
@@ -403,7 +400,6 @@ for (
     assertEquals(response.status, 410);
     assertEquals(JSON.parse(text).code, "access_ended");
     assertFalse(text.includes(SECRET));
-    // Nothing was delivered, so the dispatch's redactor learned nothing.
     assertEquals(f.dispatch.redactor, undefined);
   });
 }
@@ -476,7 +472,6 @@ Deno.test("DispatchSecretLoads: every request is audited with metadata only", as
   await denied.body?.cancel();
   const anonymous = await load(f, request({ references: [IN_BAG] }, "forged"));
   await anonymous.body?.cancel();
-  // A wrong method with a valid credential still names its worker.
   const get = await load(f, request(null, f.credential, { method: "GET" }));
   await get.body?.cancel();
 
@@ -579,7 +574,6 @@ Deno.test("DispatchSecretLoads: in fail-secure mode, with audit unable to record
   const refused = await refusalOf(await handle());
   assertEquals([refused.status, refused.code], [503, "audit_unavailable"]);
   assertEquals(f.events.map((e) => e.outcome), ["failure"]);
-  // Once audit records again, so does the route (here, up to the vault).
   refusing = false;
   const next = await refusalOf(await handle());
   assertEquals(next.code, "internal_error");

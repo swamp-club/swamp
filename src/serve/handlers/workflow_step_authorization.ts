@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Authorizes the steps a workflow edit adds against the writer. A run of a
- * workflow invokes its steps' models and nested workflows under only the
- * workflow's own `run` grant, so whoever adds a step must be allowed to run
- * what it targets. Steps already stored are not re-checked, so users running
- * a workflow an admin wrote are unaffected.
+ * a run invokes its steps' targets under only the workflow's own run grant, so
+ * whoever adds a step must be allowed to run its target; stored steps are not
+ * re-checked
  */
 
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
@@ -57,10 +55,8 @@ import {
 } from "./expression_reference_authorization.ts";
 
 /**
- * Checks each target against the principal `authority` decides for. Returns a refusal message for the
- * first one the principal may not run, worded the same whether the target
- * exists or is denied, or undefined when all are allowed. Refusals are
- * audited; nothing is sent.
+ * the refusal is worded the same whether the target exists or is denied;
+ * refusals are audited, nothing is sent
  */
 export async function authorizeStepTargets(
   authority: RequestAuthority,
@@ -94,13 +90,9 @@ export async function authorizeStepTargets(
 }
 
 /**
- * Checks the stored steps an edit changes. A run of the workflow invokes a
- * step's model with whatever inputs the step holds, so changing a stored
- * step that runs a restricted or control-plane model changes what that
- * model runs with, and needs admin as adding it does (swamp-club#3131). A
- * changed step whose model is computed may run any model, so it needs admin
- * too. Other changed steps need nothing more: their target was checked when
- * added. Returns a refusal message, or undefined when all are allowed.
+ * changing a stored step that runs a restricted or control-plane model changes
+ * what it runs with, so it needs admin as adding it does; a changed step with a
+ * computed model needs admin too
  */
 export async function authorizeChangedSteps(
   authority: RequestAuthority,
@@ -122,11 +114,6 @@ export async function authorizeChangedSteps(
   return undefined;
 }
 
-/**
- * The fields to judge admin on when a model step needs it — a computed
- * target, an unreadable definition, or a restricted or control-plane type —
- * or undefined when it does not.
- */
 async function adminOnlyStepFields(
   ctx: ConnectionContext,
   target: Exclude<StepTarget, { kind: "workflow" }>,
@@ -181,9 +168,9 @@ async function stepAllowed(
   const restricted = ctx.authConfig.restrictedModelTypes;
 
   if (isComputedStepTarget(target)) {
-    // The run decides the target. A nested workflow needs run on every
-    // workflow; a model can be any model, a restricted or control-plane one
-    // included, which the engine does not gate, so it needs admin.
+    // the run decides the target: a nested workflow needs run on every
+    // workflow; a model can be any model, which the engine does not gate, so it
+    // needs admin
     return target.kind === "workflow"
       ? authority.allowsAll("run", "workflow")
       : allowed("admin", { kind: "access", name: "*", fields: {} });
@@ -270,11 +257,8 @@ function normalizedType(typeArg: string): string {
 }
 
 /**
- * The refusal for a workflow edit, or undefined when the writer may add
- * everything it adds: expressions that read only what they may read, and
- * steps that run only what they may run. A change to the workflow's inputs
- * or a step's forEach re-checks computed targets that read `inputs` or
- * `self`, since those are what can retarget them.
+ * a change to the workflow's inputs or a step's forEach re-checks computed
+ * targets that read inputs or self, since those can retarget them
  */
 export async function authorizeWorkflowEdit(
   authority: RequestAuthority,
@@ -332,9 +316,8 @@ export async function authorizeWorkflowEdit(
       })(added.find(({ references }) => references.runsComputed)),
   );
   if (stepRefusal) return stepRefusal;
-  // A stored step whose inputs, method or conditions change keeps its
-  // target, so the check above passes it; what it runs with changed
-  // (swamp-club#3131).
+  // a stored step whose inputs, method or conditions change keeps its target
+  // and passes the check above, but what it runs with changed
   const checkedAt = new Set(checked.map((t) => t.location));
   return await authorizeChangedSteps(
     authority,

@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A follower's route to its team's leader (swamp-club#4120). A follower
- * passes every write on to the node that leads, as the caller sent it: the
- * caller's own credentials go through unchanged and the leader
- * authenticates and authorises the caller itself, so a follower never says
- * who the caller is. The follower keeps one HTTP client per leader address
- * (HTTP/2 carries every forwarded request over one connection), replaced
- * when the leader record names another node.
- *
- * A forward that could not reach the leader is refused as today
- * (`serve_not_leader`, nothing was changed). One that failed after the
- * request reached it is refused `inFlight`: the request may already have
- * run, so it is never retried here.
- *
- * @module
+ * a follower forwards writes with the caller's own credentials and never says
+ * who the caller is; a forward that never reached the leader is refused, one
+ * that failed after reaching it is inFlight and never retried
  */
 
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -45,7 +34,6 @@ import { TEAM_PEER_HEADER } from "./peer_auth.ts";
 
 const logger = getSwampLogger(["serve", "leader-link"]);
 
-/** Headers that belong to one hop and never pass on to the leader. */
 const HOP_HEADERS = [
   "host",
   "connection",
@@ -59,14 +47,12 @@ const HOP_HEADERS = [
 ];
 
 /**
- * Errors that mean the request never left this node: the leader could not
- * be resolved, connected to or completed a TLS handshake with. Anything
- * else is taken as in flight, since the leader may have started on it.
+ * errors meaning the request never left this node; anything else is taken as in
+ * flight, since the leader may have started on it
  */
 const NOT_SENT_PATTERN =
   /tcp connect error|error trying to connect|connection refused|dns error|failed to lookup address|no route to host|network is unreachable|invalid peer certificate|unknownissuer|certificate verify failed/i;
 
-/** Whether a failed forward never reached the leader. */
 export function forwardNeverSent(error: unknown): boolean {
   for (
     let e: unknown = error, depth = 0;
@@ -78,7 +64,6 @@ export function forwardNeverSent(error: unknown): boolean {
   return false;
 }
 
-/** The refusal reply an HTTP route gives, as `followerHttpRefusal`'s. */
 export function notLeaderResponse(
   refusal: ServeNotLeaderError,
   nameLeader = true,
@@ -99,10 +84,8 @@ export function notLeaderResponse(
 }
 
 /**
- * The reply to a read a follower refused because the caller's copy is past
- * its own (swamp-club#4254): a retryable 503 that names nothing of the
- * leader. The follower is catching up, which is usually quick, so the
- * caller is told to retry after a second.
+ * a retryable 503 that names nothing of the leader; the follower is catching
+ * up, so retry after a second
  */
 export function followerBehindResponse(): Response {
   const refusal = new ServeFollowerBehindError();
@@ -112,36 +95,27 @@ export function followerBehindResponse(): Response {
   );
 }
 
-/** What a {@link LeaderLink} needs. */
 export interface LeaderLinkOptions {
   /**
    * Whether this node trusts the proxy in front of it (`--trust-proxy`):
    * only then does a caller's own `X-Forwarded-For` pass on.
    */
   readonly trustProxy?: boolean;
-  /** The leader as this node last read its record. */
   leader(): ServeLeader | undefined;
-  /** PEM CA certificates to trust besides the system store. */
   readonly caCerts?: readonly string[];
-  /** Makes the HTTP client for a leader address; replaced in tests. */
   readonly createClient?: (
     caCerts: readonly string[] | undefined,
   ) => Deno.HttpClient | undefined;
-  /** Replaced in tests. */
   readonly fetch?: typeof fetch;
   /**
-   * The team's peer token, sent in {@link TEAM_PEER_HEADER} with every
-   * forward so the leader keys it on the caller's address
-   * (swamp-club#4148); undefined while this node holds no usable key.
+   * sent with every forward so the leader keys it on the caller's address;
+   * undefined while this node holds no usable key
    */
   readonly peerToken?: () => string | undefined;
 }
 
-/** Options for one forwarded HTTP request. */
 export interface ForwardOptions {
-  /** The caller's address, appended to `X-Forwarded-For`. */
   readonly clientIp?: string;
-  /** The body to send when the request's own was already read. */
   readonly body?: Uint8Array;
   /**
    * Whether this node's own refusal names the leader: false for a caller
@@ -150,7 +124,6 @@ export interface ForwardOptions {
   readonly nameLeader?: boolean;
 }
 
-/** A follower's route to the leader. */
 export class LeaderLink {
   readonly #options: LeaderLinkOptions;
   readonly #clients = new Map<string, Deno.HttpClient | undefined>();
@@ -160,17 +133,14 @@ export class LeaderLink {
     this.#options = options;
   }
 
-  /** The leader as last read, which a refusal names. */
   leader(): ServeLeader | undefined {
     return this.#options.leader();
   }
 
-  /** The leader's address, when the leader is known and published one. */
   address(): string | undefined {
     return this.#options.leader()?.address;
   }
 
-  /** The HTTP client for the current leader address, made on first use. */
   client(address: string): Deno.HttpClient | undefined {
     if (!this.#clients.has(address)) {
       // The leader moved: a client for the old address carries no new
@@ -250,11 +220,6 @@ export class LeaderLink {
     });
   }
 
-  /**
-   * Opens a WebSocket to the leader at `pathAndQuery` with `headers` (the
-   * caller's credential), or returns undefined when no leader address is
-   * known.
-   */
   openSocket(
     pathAndQuery: string,
     headers: Readonly<Record<string, string>>,
@@ -281,7 +246,6 @@ export class LeaderLink {
     return { socket, leader };
   }
 
-  /** Ends every forwarded body and closes the clients, at shutdown. */
   close(): void {
     this.#closed.abort();
     for (const client of this.#clients.values()) {
@@ -296,10 +260,8 @@ export class LeaderLink {
 }
 
 /**
- * The leader's URL for a caller's path and query. Only the path and query
- * are the caller's: the origin is always the leader's, so a request target
- * such as `//internal-host/x`, which URL resolution would read as another
- * host, never sends the caller's credential anywhere but the leader.
+ * the origin is always the leader's, so a target like //internal-host/x never
+ * sends the caller's credential anywhere but the leader
  */
 export function leaderTarget(
   address: string,
@@ -328,12 +290,9 @@ function defaultClient(
 }
 
 /**
- * The caller's headers as the leader gets them: hop-by-hop headers dropped
- * and `X-Forwarded-For` set to the caller's address, after the caller's own
- * only when this node trusts the proxy in front of it (`trustProxy`), so a
- * caller cannot name the address the leader limits and audits it by.
- * Nothing is added that says who the caller is: the leader reads that from
- * the caller's own credential.
+ * X-Forwarded-For follows the caller's own only when trustProxy is set, so a
+ * caller cannot name the address the leader limits and audits by; nothing says
+ * who the caller is
  */
 export function forwardedHeaders(
   incoming: Headers,

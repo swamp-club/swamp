@@ -24,7 +24,6 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
 
-/** Runs `fn` and returns the warnings the fence logged meanwhile. */
 async function fenceWarnings(fn: () => Promise<void>): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({
@@ -102,6 +101,5 @@ Deno.test("ServeRunWriteFence: a save that fails is still released and its failu
     caught = e;
   });
   assertEquals(caught, failure);
-  // Nothing left in flight, so close reports no save still under way.
   assertEquals(await fenceWarnings(() => fence.close(["a"], 60_000)), []);
 });

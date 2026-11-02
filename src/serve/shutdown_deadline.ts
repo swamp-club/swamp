@@ -18,19 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The one deadline a `swamp serve` shutdown has (swamp-club#3961). Every
- * stage after the drain that waits on the datastore's storage (the interrupt
- * commit or push, the active-run records and stopped heartbeat, the v3
- * sidecar upkeep, the closing sync and the writer lease release) takes its
- * bound from it, so a slow or stalled bucket cannot hold shutdown past the
- * pod grace period serve's documentation asks for: the drain timeout plus
- * about 25 s.
+ * every post-drain stage that waits on datastore storage takes its bound from
+ * this one deadline, so a slow bucket cannot hold shutdown past the pod grace
+ * period: the drain timeout plus about 25 s
  */
 
 /**
- * How long shutdown may run past the drain timeout, the abort grace
- * included. A floor that bites once it is spent can add up to
- * {@link SHUTDOWN_STAGE_FLOOR_MS} per stage, so it stays a little below 25 s.
+ * stays a little below 25 s because a floor that bites once the budget is spent
+ * can add up to SHUTDOWN_STAGE_FLOOR_MS per stage
  */
 export const SHUTDOWN_AFTER_DRAIN_BUDGET_MS = 23_000;
 
@@ -40,18 +35,12 @@ export const SHUTDOWN_AFTER_DRAIN_BUDGET_MS = 23_000;
  */
 export const SHUTDOWN_STAGE_FLOOR_MS = 500;
 
-/** A fixed point in time each shutdown stage measures what is left against. */
 export class ShutdownDeadline {
   private constructor(
-    /** Epoch milliseconds. */
     readonly at: number,
     private readonly now: () => number,
   ) {}
 
-  /**
-   * The deadline of a shutdown that started at `startedAt` (epoch
-   * milliseconds) with a drain timeout of `drainTimeoutMs`.
-   */
   static forShutdown(
     startedAt: number,
     drainTimeoutMs: number,
@@ -64,10 +53,6 @@ export class ShutdownDeadline {
     );
   }
 
-  /**
-   * What a stage may wait: the time left, capped at `capMs` when given,
-   * and never below {@link SHUTDOWN_STAGE_FLOOR_MS}.
-   */
   remaining(capMs?: number): number {
     const left = this.at - this.now();
     const bounded = capMs === undefined ? left : Math.min(capMs, left);

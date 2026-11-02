@@ -18,41 +18,26 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Registry of dispatchable extension bundles, keyed by content fingerprint.
- *
- * The dispatcher registers a bundle (and the filesystem root its co-located
- * assets resolve from) when it ships a fingerprint in a dispatch; the data
- * plane serves `GET /bundle/{fingerprint}` and
- * `GET /bundle/{fingerprint}/file/{relPath}` from here. Fingerprints are
- * content hashes, so entries never change once registered — a worker caches
- * them forever (see design/enablers/remote-execution.md, "Shipping extension code").
+ * fingerprints are content hashes, so entries never change once registered and
+ * a worker caches them forever
  */
 
 export interface RegisteredBundle {
-  /** The self-contained bundle source (a single JS module). */
   js: string;
-  /**
-   * Absolute root for co-located asset resolution (`extensionFilesRoot`).
-   * Undefined for built-in models, which carry no assets.
-   */
   filesRoot?: string;
   /**
-   * Declared `additionalFiles` from the extension manifest. Only these
-   * files are served to workers; an empty or undefined list means no
-   * co-located assets are shipped.
+   * only these files are served to workers; an empty or undefined list ships no
+   * co-located assets
    */
   additionalFiles?: string[];
   /**
-   * Each declared asset's content hash ({@link hashAssetBytes}) when the
-   * fingerprint was computed, keyed by relative path; a file missing then
-   * has no entry. The data plane serves only bytes that still match, so a
-   * fingerprint never names assets other than those it hashed
-   * (swamp-club#3594). Undefined for a bundle with no assets.
+   * content hash of each asset when the fingerprint was computed; the data
+   * plane serves only bytes that still match, so a fingerprint never names
+   * other assets
    */
   assetHashes?: ReadonlyMap<string, string>;
 }
 
-/** The content hash a bundle fingerprint records for one asset file. */
 export async function hashAssetBytes(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",

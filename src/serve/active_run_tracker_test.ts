@@ -215,7 +215,6 @@ Deno.test("writeActiveRun: does not throw on store failure", async () => {
     startedAt: "2026-08-01T12:00:00Z",
   });
   await new Promise((r) => setTimeout(r, 10));
-  // No throw — the error is caught and logged
 });
 
 Deno.test("deleteActiveRun: does not throw on store failure", async () => {
@@ -224,7 +223,6 @@ Deno.test("deleteActiveRun: does not throw on store failure", async () => {
 
   deleteActiveRun(store, "instance-1", "run-abc");
   await new Promise((r) => setTimeout(r, 10));
-  // No throw — the error is caught and logged
 });
 
 async function withFsStore(

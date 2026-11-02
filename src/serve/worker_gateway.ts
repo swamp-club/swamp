@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The orchestrator's worker gateway (see design/enablers/remote-execution.md,
- * "Enrollment" and "Failure, reconnection, and retry").
- *
- * Owns the live worker pool: enrollment over the control socket, session
- * credentials for the data plane, dispatch/cancel toward workers, the
- * reconnection grace window, and the persistence of every pool transition
- * through the built-in worker/enrollment-token models — the orchestrator
- * process serializes those transitions in memory, which is what makes the
- * token state machine race-free without datastore CAS.
- */
-
 import { runGeneratorWithoutVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
@@ -89,16 +77,13 @@ import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 
 const logger = getSwampLogger(["serve", "worker-gateway"]);
 
-/** Default reconnection grace window after a control-socket drop. */
 export const DEFAULT_GRACE_WINDOW_MS = 60_000;
 
-/** The enrollment-token model's single resource name. */
 const TOKEN_DATA_NAME = "token-main";
 
 /**
- * Redeem rejections, matched on the message with quoted names removed, and
- * the code the worker decides on. Anything unmatched is rethrown as is and
- * reaches the worker as a retryable `handler_failed`.
+ * unmatched redeem rejections are rethrown as is and reach the worker as a
+ * retryable handler_failed
  */
 const REDEEM_FAILURE_CODES: readonly [string, string][] = [
   ["has been revoked", "token_revoked"],
@@ -119,7 +104,6 @@ function codedRedeemFailure(error: unknown): unknown {
   return error;
 }
 
-/** Human wording for each way a token loses its authority. */
 const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
   revoked: "revoked",
   reminted: "re-minted",
@@ -129,11 +113,6 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
-/**
- * Splits a presented enrollment credential of the form `<name>.<secret>`.
- * The name half addresses the token aggregate; the secret half is compared
- * against the vault-stored plaintext.
- */
 export function splitEnrollmentToken(
   presented: string,
 ): { name: string; secret: string } | null {
@@ -145,11 +124,8 @@ export function splitEnrollmentToken(
 }
 
 /**
- * Stable 8-hex-char suffix derived from a machineId, used to give each
- * fleet member a distinct worker name: `<tokenName>-<suffix>`.
- *
- * 4 bytes → ~4 billion values; birthday-paradox collision is negligible
- * for any practical fleet size.
+ * 8 hex chars from a machineId hash give each fleet member a distinct worker
+ * name; 4 bytes make collisions negligible for any practical fleet size
  */
 export async function fleetMemberSuffix(machineId: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -169,10 +145,6 @@ export interface WorkerSnapshot {
   platform: string;
   arch: string;
   swampVersion: string;
-  /**
-   * The remote-execution protocol version the worker enrolled at, which
-   * decides the frame its dispatches carry (typed-secrets 5.2).
-   */
   protocolVersion: number;
   status: "idle" | "busy" | "unverified" | "draining";
   connected: boolean;
@@ -183,7 +155,6 @@ export interface WorkerSnapshot {
 
 interface WorkerEntry {
   name: string;
-  /** The enrollment-token model instance name (differs from `name` for fleet workers). */
   tokenName: string;
   /**
    * The token mint (`createdAt`) this worker enrolled on. Re-minting a
@@ -195,18 +166,14 @@ interface WorkerEntry {
   platform: string;
   arch: string;
   swampVersion: string;
-  /** The protocol version of the process that holds the entry. */
   protocolVersion: number;
   channel: RpcChannel | null;
-  /** Force-closes the current control socket (absent for test transports). */
   closeSocket: (() => void) | null;
   status: "idle" | "busy" | "unverified" | "draining";
   capacity: number;
   activeDispatchIds: string[];
   verifyFailureReason?: string;
-  /** An enrollment verification is running for this entry. */
   verifying?: boolean;
-  /** Another verification was asked for while one was running. */
   verifyAgain?: boolean;
   /**
    * A probe was refused for want of a slot while the unverified worker's
@@ -215,11 +182,9 @@ interface WorkerEntry {
    */
   probeRefusedForCapacity?: boolean;
   graceTimer?: ReturnType<typeof setTimeout>;
-  /** Fires at the token's `expiresAt` to disconnect the worker. */
   expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
-/** Runs a built-in model method; injectable for tests. */
 export type ModelMethodRunner = (input: {
   typeArg: string;
   definitionName: string;
@@ -233,7 +198,6 @@ export type ModelMethodRunner = (input: {
   expectedDefinitionId?: string;
 }) => Promise<void>;
 
-/** Why the gateway refused to send a dispatch to a worker. */
 export type WorkerNotDispatchableReason =
   | "not_in_pool"
   | "disconnected"
@@ -270,30 +234,23 @@ export class WorkerNotDispatchableError extends Error {
 
 export interface WorkerGatewayOptions {
   /**
-   * Whether this serve node takes workers: false on a follower in team mode
-   * (swamp-club#4096). A worker refused here retries, as for any coded
-   * rejection outside `PERMANENT_ENROLLMENT_ERROR_CODES`, and reaches
-   * the leader or this node once it leads. Absent, every node takes them.
+   * whether this serve node takes workers: false on a team-mode follower. A
+   * refused worker retries and reaches the leader or this node once it leads.
+   * Absent, every node takes them.
    */
   acceptsWorkers?: () => boolean;
   repoDir: string;
   repoContext: RepositoryContext;
-  /** Registers the capability verb handlers on an enrolled channel. */
   capabilityService: {
     registerHandlers(channel: RpcChannel, workerName: string): void;
   };
   sessionCredentials?: SessionCredentialService;
   graceWindowMs?: number;
   swampVersion?: string;
-  /** A worker became idle (enrolled, finished a dispatch, or reconnected). */
   onWorkerIdle?: (worker: WorkerSnapshot) => void;
-  /** A worker's control socket dropped; the grace window has started. */
   onWorkerDisconnected?: (worker: WorkerSnapshot) => void;
-  /** The grace window elapsed without reconnection; the worker is gone. */
   onGraceExpired?: (worker: WorkerSnapshot) => void;
-  /** A worker enrolled or re-enrolled (including within the grace window). */
   onWorkerEnrolled?: (worker: WorkerSnapshot) => void;
-  /** A worker announced it is draining (no longer schedulable). */
   onWorkerDraining?: (worker: WorkerSnapshot) => void;
   /**
    * A worker was removed from the pool because its enrollment token lost
@@ -301,60 +258,24 @@ export interface WorkerGatewayOptions {
    * socket drop there is no grace window: the worker cannot re-enroll.
    */
   onWorkerRemoved?: (worker: WorkerSnapshot) => void;
-  /**
-   * When true, dispatch a fleet probe to each enrolling worker before it
-   * becomes schedulable. Workers that fail the probe are marked `unverified`.
-   * Requires `verifyWorker` to be set.
-   */
   verifyOnEnroll?: boolean;
-  /**
-   * Dispatches the fleet probe to a worker and returns whether it passed.
-   * Wired by the serve command to use the DispatchService.
-   */
   verifyWorker?: (
     workerName: string,
   ) => Promise<{ ok: boolean; failureReason?: string }>;
-  /**
-   * The auth gate pass this serve hands each worker it enrolls
-   * (`formatOrchestratorGatePass`), or undefined when it has none. A worker
-   * without a swamp-club credential passes the gate on it
-   * (design/surfaces/auth-gate.md, "Remote workers").
-   */
   gatePass?: () => string | undefined;
-  /** Test seam: overrides the modelMethodRun-backed transition runner. */
   runModelMethod?: ModelMethodRunner;
-  /**
-   * Test seam: the id of an enrollment token's definition in the local
-   * repo, or null when this repo has none. Defaults to a definition lookup
-   * by name.
-   */
   findTokenDefinitionId?: (tokenName: string) => Promise<string | null>;
-  /**
-   * Test seam: reads a token's current record, or null when it does not
-   * exist or no longer parses. Throws on read failures (I/O). Enrollment
-   * reads it once after redemption and fails when it cannot. Defaults to a
-   * datastore query.
-   */
   readTokenRecord?: (tokenName: string) => Promise<EnrollmentToken | null>;
-  /**
-   * Test seam: the `expiresAt` to enforce, taken from the record read at
-   * enrollment; null disables expiry enforcement for that worker.
-   */
   readTokenExpiresAt?: (
     tokenName: string,
     record: EnrollmentToken,
   ) => Promise<string | null>;
-  /**
-   * Test seam: the `maxEnrollments` used for fleet naming, taken from the
-   * record read at enrollment.
-   */
   readTokenMaxEnrollments?: (
     tokenName: string,
     record: EnrollmentToken,
   ) => Promise<MaxEnrollments | null>;
 }
 
-/** Tracks one attached control socket before/after enrollment. */
 interface SocketState {
   channel: RpcChannel;
   closeSocket: (() => void) | null;
@@ -405,32 +326,27 @@ export class WorkerGateway {
       ((tokenName) => this.#findTokenRecord(tokenName));
   }
 
-  /** The credential service the data plane authenticates against. */
   get sessions(): SessionCredentialService {
     return this.#sessions;
   }
 
-  /** Clean up internal timers (dispatch credential refresh). */
   dispose(): void {
     this.#sessions.dispose();
   }
 
   /**
-   * Resolves once every transition queued so far has settled, including
-   * ones queued while waiting: a test awaits it after closing the server's
-   * sockets, so the disconnects they record are written before it removes
-   * the repo (swamp-club#3854).
+   * resolves once every queued transition settles, including ones queued while
+   * waiting; a test awaits it after closing sockets so the recorded disconnects
+   * land before the repo is removed
    */
   async settled(): Promise<void> {
     await this.#transitions.settled();
   }
 
   /**
-   * Attach a control socket. Returns the per-socket state whose channel
-   * consumes RPC frames; the caller feeds raw messages to `feed()` and must
-   * call `closed()` from the socket's close handler. `close` lets the
-   * gateway force-disconnect the socket (token expiry); the close must
-   * still surface through the caller's close handler.
+   * the caller must call closed() from the socket close handler; close lets the
+   * gateway force-disconnect the socket (token expiry) and must still surface
+   * through that handler
    */
   attachTransport(transport: RpcTransport, close?: () => void): {
     feed: (raw: string) => boolean;
@@ -451,13 +367,9 @@ export class WorkerGateway {
             // Authentication is server-owned; only an accepted peer may link
             // its context into the enrollment trace.
             ctx.responseTrace = observation.carrier;
-            // Records when and how this process saw the call cancelled: an
-            // rpc.cancel frame from the worker, or the socket closing. The
-            // worker's own submit is its rpc.submit span; a submit alone
-            // does not show that it arrived. Enrollment does not act on it.
-            // Starts false, so a query can tell an uncancelled request from
-            // one exported by a build without this field. Telemetry never
-            // fails the enrollment, nor throws from the abort listener.
+            // Records when and how this process saw the call cancelled; starts
+            // false so a query can tell uncancelled from a build without the
+            // field.
             const started = performance.now();
             const setRequestAttributes = (values: ObservationAttributes) => {
               try {
@@ -499,30 +411,19 @@ export class WorkerGateway {
     };
   }
 
-  /** Live pool snapshot for scheduling decisions. */
   workers(): WorkerSnapshot[] {
     return [...this.#workers.values()].map((entry) => this.#snapshot(entry));
   }
 
-  /** Snapshot of one worker, or null when not in the pool. */
   worker(name: string): WorkerSnapshot | null {
     const entry = this.#workers.get(name);
     return entry ? this.#snapshot(entry) : null;
   }
 
-  /**
-   * Every token's current record, keyed by name, from one datastore scan.
-   * A token that does not exist or no longer parses is absent. Read
-   * failures propagate.
-   */
   readTokenRecords(): Promise<Map<string, EnrollmentToken>> {
     return this.#scanTokenRecords();
   }
 
-  /**
-   * Each distinct token mint held by a pool member, including members
-   * inside a reconnection grace window.
-   */
   boundTokens(): { tokenName: string; tokenCreatedAt: string }[] {
     const seen = new Map<
       string,
@@ -541,13 +442,9 @@ export class WorkerGateway {
   }
 
   /**
-   * Cut off every pool member enrolled on `tokenName` (all fleet members):
-   * each is removed at once, its control and dispatch credentials are
-   * revoked, and its control socket is closed. With `mint`, only members
-   * enrolled on that mint are cut off, so a worker that enrolled on a newer
-   * mint of the same name keeps its connection. Runs on the transition tail
-   * so an enrollment already in progress lands first and is cut off too.
-   * Returns the names of the removed workers.
+   * cuts off every pool member on tokenName, or only one mint so newer-mint
+   * workers keep their connection; runs on the transition tail so an enrollment
+   * in progress lands first and is cut off too
    */
   async revokeToken(
     tokenName: string,
@@ -578,15 +475,9 @@ export class WorkerGateway {
   }
 
   /**
-   * Dispatch one execution request to a named worker. Resolves with the
-   * worker's result; rejects with a WorkerNotDispatchableError when the
-   * worker is unknown, busy, disconnected, unverified or draining, or when
-   * the control socket drops mid-dispatch (the caller owns grace-window
-   * failure semantics — see DispatchService).
-   *
-   * A dispatch moves a worker between idle and busy only. An unverified
-   * worker takes a probe without leaving `unverified`: the enrollment
-   * verification alone promotes it (swamp-club#3388).
+   * an unverified worker takes a probe without leaving unverified; only
+   * enrollment verification promotes it. The caller owns grace-window failure
+   * semantics (see DispatchService).
    */
   async dispatch(
     name: string,
@@ -604,11 +495,9 @@ export class WorkerGateway {
     if (entry.channel === null) {
       throw new WorkerNotDispatchableError(name, "disconnected");
     }
-    // The frame was built for the version the worker held when it was
-    // chosen. A process that re-enrolled under the name since may speak
-    // another version: a version 5 worker would run a reference-only frame's
-    // sentinels as values, and a plaintext frame must never reach a worker
-    // that loads its own. Nothing is sent, so the dispatch retries.
+    // a re-enrolled process may speak another version than the frame was built
+    // for: a v5 worker would run reference-only sentinels as values, and
+    // plaintext must never reach a worker that loads its own
     if (entry.protocolVersion !== params.execution.protocolVersion) {
       throw new WorkerNotDispatchableError(name, "version_changed");
     }
@@ -639,16 +528,15 @@ export class WorkerGateway {
     );
     const dispatchStart = performance.now();
     entry.activeDispatchIds.push(params.dispatchId);
-    // An unverified worker is only ever sent a probe, and the probe's result
-    // has not been judged yet: it holds a slot but stays unverified, so the
-    // scheduler never sees it idle in between (swamp-club#3388).
+    // an unverified worker is only sent a probe not yet judged: it holds a slot
+    // but stays unverified so the scheduler never sees it idle in between
     const unverified = entry.status === "unverified";
     if (!unverified) {
       entry.status = "busy";
     }
-    // The slot is taken from here on, so everything below runs under the
-    // finally that gives it back: a dispatch that fails before it reaches
-    // the worker must not keep the slot (swamp-club#3294).
+    // the slot is taken from here on, so everything below runs under the
+    // finally that gives it back: a dispatch failing before it reaches the
+    // worker must not keep the slot
     try {
       // Kept in the same synchronous turn as the push: the dispatcher drops
       // its reservation here, and an await in between would count the
@@ -762,11 +650,9 @@ export class WorkerGateway {
         }
         this.#options.onWorkerIdle?.(this.#snapshot(entry));
       }
-      // An unverified worker's enrollment probe can be refused for want of
-      // a slot: one held by a dispatch from before a reconnect
-      // (swamp-club#3388), or by a manual probe (swamp-club#3404). When the
-      // last slot frees, probe again, whichever socket that dispatch used:
-      // nothing else would.
+      // an unverified worker's enrollment probe can be refused for want of a
+      // slot; when the last slot frees, probe again whichever socket that
+      // dispatch used, as nothing else would
       if (
         currentStatus === "unverified" && entry.probeRefusedForCapacity &&
         entry.activeDispatchIds.length === 0 &&
@@ -778,7 +664,6 @@ export class WorkerGateway {
     }
   }
 
-  /** Number of grace timers currently pending (test introspection). */
   get pendingGraceWindows(): number {
     return [...this.#workers.values()].filter((w) => w.graceTimer !== undefined)
       .length;
@@ -810,8 +695,8 @@ export class WorkerGateway {
     }
     const { name, secret } = split;
 
-    // Before the token is redeemed, so a refused worker spends no
-    // enrollment. The reply names no leader: the token is not checked yet.
+    // before the token is redeemed, so a refused worker spends no enrollment;
+    // the reply names no leader because the token is not checked yet
     if (this.#options.acceptsWorkers?.() === false) {
       throw new RpcError({
         code: SERVE_NOT_LEADER_CODE,
@@ -820,10 +705,9 @@ export class WorkerGateway {
       });
     }
 
-    // Only a worker that asks gets the pass, which carries the serve key
-    // holder's proof payload. Read once, so the refusal below and the reply
-    // agree. A worker that needs a pass is refused before the token is
-    // redeemed, so it spends no enrollment.
+    // only a worker that asks gets the pass, read once so refusal and reply
+    // agree; a worker needing a pass is refused before token redemption so it
+    // spends no enrollment
     const gatePass = params.needsGatePass
       ? this.#options.gatePass?.()
       : undefined;
@@ -842,19 +726,17 @@ export class WorkerGateway {
     const runPreparing = (input: Parameters<ModelMethodRunner>[0]) =>
       preparing(() => this.#runModelMethod(input));
     return await this.#recordTransition<EnrollResult>("enroll", async () => {
-      // The worker gave up on this attempt while it waited for its turn (its
-      // enroll call timed out). Nothing is recorded yet, so skip it rather
-      // than delay the live enrollments queued behind it (swamp-club#3405).
-      // The channel aborts the call's signal on its cancel and on close.
+      // the worker gave up while waiting its turn (enroll call timed out): skip
+      // rather than delay live enrollments queued behind; the channel aborts
+      // the signal on cancel and close
       if (state.channel.closed || signal.aborted) {
         throw new ChannelClosedError(
           "control socket closed before enrollment began",
         );
       }
-      // Redeem validates state, expiry, the secret, and allowance — and
-      // appends a binding on first enrollment or re-auths a known machine.
-      // Must happen before the already-connected check because the worker
-      // name depends on maxEnrollments (fleet vs single-machine).
+      // redeem validates state, expiry, secret and allowance and binds the
+      // machine; it must precede the already-connected check because the worker
+      // name depends on maxEnrollments
       const definitionId = await preparing(() =>
         this.#requireTokenDefinition(name)
       );
@@ -885,11 +767,9 @@ export class WorkerGateway {
         ? name
         : `${name}-${await fleetMemberSuffix(params.machineId)}`;
 
-      // The worker gave up while its token was redeemed. Stop before the
-      // pool or the worker's definition changes, so an abandoned attempt
-      // does not pay for recording a worker nobody is waiting for
-      // (swamp-club#3984). Redeem bound its machine, which re-authenticates
-      // on the worker's next attempt without spending another enrollment.
+      // the worker gave up during redeem: stop before the pool or definition
+      // changes; redeem bound its machine, which re-authenticates next attempt
+      // without spending another enrollment
       if (state.channel.closed || signal.aborted) {
         throw new ChannelClosedError(
           "control socket closed before enrollment was recorded",
@@ -922,7 +802,6 @@ export class WorkerGateway {
         existing.expiryTimer = undefined;
       }
 
-      // Auto-inject fleet label for multi-machine tokens.
       const labels = { ...params.labels };
       if (maxEnrollments !== 1) {
         if (labels.fleet !== undefined) {
@@ -936,9 +815,9 @@ export class WorkerGateway {
       }
 
       const capacity = (params.resourceLimits?.capacity as number) ?? 1;
-      // Under verify-on-enroll the worker is unverified until its probe
-      // passes. The durable record says so too, so `swamp worker list`
-      // matches the pool while the probe is pending (swamp-club#3501).
+      // under verify-on-enroll the worker is unverified until its probe passes,
+      // and the durable record says so too so `swamp worker list` matches the
+      // pool
       const initialStatus = this.#options.verifyOnEnroll
         ? "unverified"
         : "idle";
@@ -1014,10 +893,9 @@ export class WorkerGateway {
       this.#workers.set(workerName, entry);
       state.workerName = workerName;
 
-      // The socket closed while the enrollment was being recorded, and its
-      // close handler found no worker to disconnect. Disconnect it now, so it
-      // gets the usual grace window instead of staying in the pool as a live
-      // worker on a dead socket (swamp-club#3405).
+      // the socket closed during recording and its close handler found no
+      // worker to disconnect: disconnect now so it gets the usual grace window
+      // instead of staying a live worker on a dead socket
       if (state.channel.closed) {
         logger.info(
           "Worker {worker} closed its socket before enrollment finished",
@@ -1080,7 +958,6 @@ export class WorkerGateway {
         workerId: workerName,
         sessionCredential: session.credential,
         sessionExpiresAtMs: session.expiresAtMs,
-        // The version this worker's dispatches speak.
         protocolVersion: params.protocolVersion,
         ...(gatePass === undefined ? {} : { gatePass }),
       };
@@ -1177,7 +1054,6 @@ export class WorkerGateway {
     this.#options.onWorkerDisconnected?.(snapshot);
   }
 
-  /** Arm the token-expiry timer, chaining past the setTimeout cap. */
   #scheduleTokenExpiry(entry: WorkerEntry, deadlineMs: number): void {
     if (Number.isNaN(deadlineMs)) {
       return;
@@ -1197,10 +1073,9 @@ export class WorkerGateway {
   }
 
   /**
-   * The token lifetime elapsed for a pool member: record the durable
-   * `expired` state and cut the worker off. The worker's re-enrollment
-   * attempt is rejected as expired, so there is no grace window: it is
-   * removed and its credentials revoked at once.
+   * token lifetime elapsed: record the durable expired state and cut the worker
+   * off at once, with no grace window since re-enrollment would be rejected as
+   * expired
    */
   #handleTokenExpired(workerName: string): void {
     const entry = this.#workers.get(workerName);
@@ -1211,10 +1086,9 @@ export class WorkerGateway {
     logger.info("Enrollment token for {worker} expired — disconnecting", {
       worker: workerName,
     });
-    // Bookkeeping only: redeem independently rejects on time, so a failure
-    // here just delays the durable record catching up. A token whose
-    // definition is gone has nothing to record, and running `expire` by
-    // name would auto-create one.
+    // bookkeeping only: redeem rejects on time itself, so a failure just delays
+    // the durable record; a token with no definition has nothing to record, and
+    // running expire by name would auto-create one
     this.#recordTransition("token_expire", async () => {
       const definitionId = await this.#findTokenDefinitionId(entry.tokenName);
       if (definitionId === null) {
@@ -1250,11 +1124,9 @@ export class WorkerGateway {
   }
 
   /**
-   * Remove a worker whose token lost its authority. The pool entry goes
-   * first, so the socket close this triggers is ignored by
-   * #handleSocketClosed instead of opening a grace window. Closing the
-   * channel rejects in-flight dispatches now; DispatchService then sees the
-   * worker gone and applies its usual lost-worker semantics.
+   * the pool entry goes first so the socket close this triggers is ignored by
+   * #handleSocketClosed instead of opening a grace window; closing the channel
+   * rejects in-flight dispatches now
    */
   #removeWorker(entry: WorkerEntry, reason: string): void {
     if (entry.graceTimer !== undefined) {
@@ -1429,19 +1301,17 @@ export class WorkerGateway {
   }
 
   /**
-   * Append a transition to the serialized tail. Every durable pool/token
-   * mutation flows through here, preserving the sole-writer invariant.
-   * `operation` labels its span (swamp-club#3755).
+   * every durable pool/token mutation flows through this serialized tail,
+   * preserving the sole-writer invariant; operation labels its span
    */
   #recordTransition<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     return this.#transitions.run(operation, fn);
   }
 
   /**
-   * Reads the record redeem just validated. Redeem read the same record a
-   * moment ago, so a failure here is transient: the enrollment fails and
-   * the worker retries, rather than joining the pool without a known mint
-   * or expiry deadline.
+   * redeem read this record a moment ago, so a failure here is transient: the
+   * enrollment fails and the worker retries rather than joining the pool
+   * without a known mint or expiry deadline
    */
   async #readEnrolledRecord(tokenName: string): Promise<EnrollmentToken> {
     let record: EnrollmentToken | null;
@@ -1465,11 +1335,9 @@ export class WorkerGateway {
   }
 
   /**
-   * The id of the token's definition in this repo. Redeem runs pinned to
-   * it, so enrollment never creates a token definition (swamp-club#3074).
-   * Without one, a token whose record is already here was minted on an HA
-   * peer whose definition this replica has not pulled yet: that refusal is
-   * retryable. Otherwise the token does not exist.
+   * redeem runs pinned to this id so enrollment never creates a token
+   * definition; with none but a record present, the token was minted on an HA
+   * peer this replica has not pulled yet, a retryable refusal
    */
   async #requireTokenDefinition(tokenName: string): Promise<string> {
     const definitionId = await this.#findTokenDefinitionId(tokenName);
@@ -1487,15 +1355,13 @@ export class WorkerGateway {
     });
   }
 
-  /** Finds one token's current record; null when there is no usable one. */
   async #findTokenRecord(tokenName: string): Promise<EnrollmentToken | null> {
     return (await this.#scanTokenRecords()).get(tokenName) ?? null;
   }
 
   /**
-   * Reads every token record in the datastore, keyed by name. Records that
-   * are deleted, renamed, do not parse, or that the datastore could not
-   * materialise are skipped. Other read failures propagate.
+   * skips records that are deleted, renamed, unparsable or that the datastore
+   * could not materialise; other read failures propagate
    */
   #scanTokenRecords(): Promise<Map<string, EnrollmentToken>> {
     return observeDiagnosticPhase(
@@ -1530,8 +1396,8 @@ export class WorkerGateway {
         tally.add("content_reads");
         if (content) tally.add("bytes_read", content.length);
       } catch (error) {
-        // One record the datastore could not materialise is left out
-        // rather than failing every enrollment (swamp-club#3617).
+        // one record the datastore could not materialise is left out rather
+        // than failing every enrollment
         if (!isUnreadableContentError(error)) throw error;
         tally.add("unreadable");
         logger.warn(
@@ -1582,8 +1448,8 @@ export class WorkerGateway {
     const libCtx = createLibSwampContext({
       openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
     });
-    // Control-plane bookkeeping (enrollment tokens): never held to a run's
-    // vault scope (swamp-club#2676).
+    // control-plane bookkeeping (enrollment tokens) is never held to a run's
+    // vault scope
     for await (
       const event of runGeneratorWithoutVaultAccess(() =>
         modelMethodRun(libCtx, deps, {

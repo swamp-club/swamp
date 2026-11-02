@@ -230,8 +230,6 @@ Deno.test("ActiveRunRegistry: allows registration after deregister frees a slot"
   assertEquals(reg.size, 1);
 });
 
-// ── Per-principal accounting ────────────────────────────────────────────
-
 Deno.test("ActiveRunRegistry: per-principal limit rejects when one principal fills their quota", () => {
   const reg = new ActiveRunRegistry({ maxPerPrincipal: 2 });
   reg.register(makeRun("r1", { principalId: "user:alice" }));
@@ -292,8 +290,6 @@ Deno.test("ActiveRunRegistry: global cap still enforced alongside per-principal"
   );
 });
 
-// ── Typed error classification ──────────────────────────────────────────
-
 Deno.test("ActiveRunRegistry: duplicate registration throws already_registered", () => {
   const reg = new ActiveRunRegistry();
   reg.register(makeRun("r1"));
@@ -332,8 +328,6 @@ Deno.test("ActiveRunRegistry: per-principal cap throws principal_cap", () => {
     assertEquals((err as RegistryCapacityError).code, "principal_cap");
   }
 });
-
-// ── cancelAll ───────────────────────────────────────────────────────────
 
 Deno.test("ActiveRunRegistry: cancelAll aborts all runs", () => {
   const reg = new ActiveRunRegistry();
@@ -382,8 +376,6 @@ Deno.test("ActiveRunRegistry: cancelAll returns zero for empty registry", () => 
   assertEquals(reg.cancelAll(), 0);
 });
 
-// ── Max run duration ────────────────────────────────────────────────────
-
 Deno.test("ActiveRunRegistry: max duration aborts run after timeout", async () => {
   const reg = new ActiveRunRegistry({ maxRunDurationMs: 100 });
   const d = deferred();
@@ -423,8 +415,6 @@ Deno.test("ActiveRunRegistry: max duration timer rekeyed with run", async () => 
   d.resolve();
   reg.deregister("r2");
 });
-
-// ── Deferred completion pattern ─────────────────────────────────────────
 
 Deno.test("ActiveRunRegistry: completion settles and drainAll returns even when cleanup throws", async () => {
   const reg = new ActiveRunRegistry();
@@ -483,10 +473,6 @@ Deno.test("ActiveRunRegistry: drainAll blocks when completion never settles", as
   assertEquals(elapsed < 500, true);
 });
 
-// ── Handler-pattern integration tests ───────────────────────────────────
-// These simulate the exact deferred-promise pattern used in the three
-// handler sites to prove the properties at the wiring level.
-
 Deno.test("handler pattern: rejected registration never starts work", () => {
   const reg = new ActiveRunRegistry({ maxConcurrent: 1 });
   reg.register(makeRun("r1"));
@@ -511,12 +497,10 @@ Deno.test("handler pattern: rejected registration never starts work", () => {
   } catch (err) {
     assertEquals(err instanceof RegistryCapacityError, true);
     resolveCompletion();
-    // Work IIFE would start here in the handler — but we returned early
     assertEquals(workStarted, false);
     return;
   }
 
-  // If we get here, registration should have failed
   workStarted = true;
   resolveCompletion();
   throw new Error("registration should have been rejected");
@@ -543,7 +527,6 @@ Deno.test("handler pattern: successful registration produces events through buff
     principalId: "user:alice",
   });
 
-  // Simulate work IIFE
   (async () => {
     try {
       await Promise.resolve();
@@ -556,7 +539,6 @@ Deno.test("handler pattern: successful registration produces events through buff
     }
   })().catch(() => {});
 
-  // Simulate subscribeUntilDetach — read events via callback subscriber
   const events: Array<Record<string, unknown>> = [];
   const { promise: subscribeDone, resolve: subscribeDoneResolve } = deferred();
   buffer.subscribe({
@@ -588,7 +570,6 @@ Deno.test("handler pattern: completion settles on every exit path", async () => 
     throw new Error(msg);
   };
 
-  // Path 1: normal completion
   {
     let resolve!: () => void;
     const completion = new Promise<void>((r) => {
@@ -608,7 +589,6 @@ Deno.test("handler pattern: completion settles on every exit path", async () => 
     })().catch(() => {});
   }
 
-  // Path 2: work throws
   {
     let resolve!: () => void;
     const completion = new Promise<void>((r) => {
@@ -628,7 +608,6 @@ Deno.test("handler pattern: completion settles on every exit path", async () => 
     })().catch(() => {});
   }
 
-  // Path 3: cleanup throws before deregister
   {
     let resolve!: () => void;
     const completion = new Promise<void>((r) => {
@@ -654,7 +633,6 @@ Deno.test("handler pattern: completion settles on every exit path", async () => 
     })().catch(() => {});
   }
 
-  // Path 4: abort signal
   {
     let resolve!: () => void;
     const completion = new Promise<void>((r) => {
@@ -678,7 +656,6 @@ Deno.test("handler pattern: completion settles on every exit path", async () => 
     })().catch(() => {});
   }
 
-  // All four should settle immediately
   const start = Date.now();
   await reg.drainAll(5_000);
   const elapsed = Date.now() - start;
@@ -703,7 +680,6 @@ Deno.test("handler pattern: concurrent duplicate resume — winner survives", ()
     resolve2 = r;
   });
 
-  // First resume registers successfully
   reg.register({
     runId: "resume-123",
     kind: "workflow-resume",
@@ -715,7 +691,6 @@ Deno.test("handler pattern: concurrent duplicate resume — winner survives", ()
     principalId: "user:alice",
   });
 
-  // Second resume with same ID fails
   try {
     reg.register({
       runId: "resume-123",
@@ -734,7 +709,6 @@ Deno.test("handler pattern: concurrent duplicate resume — winner survives", ()
     resolve2();
   }
 
-  // Winner is still intact, running, and cancellable
   const winner = reg.get("resume-123");
   assertEquals(winner !== undefined, true);
   assertEquals(winner!.controller.signal.aborted, false);
@@ -742,15 +716,12 @@ Deno.test("handler pattern: concurrent duplicate resume — winner survives", ()
   assertEquals(reg.cancel("resume-123"), true);
   assertEquals(controller1.signal.aborted, true);
 
-  // Loser's controller is untouched
   assertEquals(controller2.signal.aborted, false);
 
   reg.deregister("resume-123");
   resolve1();
   assertEquals(reg.size, 0);
 });
-
-// ── Error message disclosure tests ──────────────────────────────────────
 
 Deno.test("RegistryCapacityError: global_cap message contains numeric limit (server-only)", () => {
   const reg = new ActiveRunRegistry({ maxConcurrent: 42 });

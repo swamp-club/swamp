@@ -80,7 +80,6 @@ Deno.test("recordUnpushedInterrupts: records run ids and merges with the ids alr
         { runId: "c" },
       ],
     });
-    // Only the marker is left: the atomic write's temp file is renamed.
     const names = [];
     for await (const entry of Deno.readDir(dir)) names.push(entry.name);
     assertEquals(names, [UNPUSHED_INTERRUPTS_FILE]);
@@ -228,7 +227,6 @@ Deno.test("markedRunsStillRunning: reads each marked run by id and keeps those s
       runs: [
         { runId: running.id, workflowId: wf.id },
         { runId: done.id, workflowId: wf.id },
-        // No workflow id, or one that is not a UUID: never read.
         { runId: crypto.randomUUID() },
         { runId: crypto.randomUUID(), workflowId: "../escape" },
       ],

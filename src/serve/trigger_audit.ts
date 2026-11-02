@@ -42,7 +42,6 @@ import type {
 
 const logger = getSwampLogger(["serve", "trigger-audit"]);
 
-/** Source address recorded for runs serve starts itself (cron fires). */
 export const LOCAL_SOURCE_IP = "127.0.0.1";
 
 export interface TriggerAuditContext {
@@ -50,14 +49,12 @@ export interface TriggerAuditContext {
   readonly instanceId?: string;
 }
 
-/** One scheduled or webhook trigger event, attributed to a service principal. */
 export interface TriggerAudit {
   readonly principal: Principal;
   readonly action: string;
   readonly outcome: AuditOutcome;
   readonly workflowName: string;
   readonly sourceIp: string;
-  /** key=value pairs, rendered in order. Undefined values are dropped. */
   readonly detail: Readonly<
     Record<string, string | number | boolean | undefined>
   >;
@@ -71,8 +68,8 @@ function renderDetail(detail: TriggerAudit["detail"]): string {
 }
 
 /**
- * Emits a trigger event in the execution category. Audit must never break a
- * run or a webhook response, so an emitter failure is logged and dropped.
+ * audit must never break a run or a webhook response, so an emitter failure is
+ * logged and dropped
  */
 export function emitTriggerAuditEvent(
   ctx: TriggerAuditContext,
@@ -103,10 +100,6 @@ export function emitTriggerAuditEvent(
   }
 }
 
-/**
- * Emits the access denial for a refused trigger run, shaped like the
- * WebSocket path's denials (category access, action run, with the decision).
- */
 export function emitTriggerDenial(
   ctx: TriggerAuditContext,
   principal: Principal,
@@ -147,12 +140,9 @@ export function emitTriggerDenial(
 }
 
 /**
- * Maps scheduler events to audit events: a run that starts is a
- * `workflow.schedule.fire`, a fire that does not run is a
- * `workflow.schedule.skipped`. An overlap skip is a failure (the fire was
- * lost); a dedup skip is a success (another instance ran it), and so is a
- * paused skip (the schedule was paused on purpose). Refusals are
- * audited by the authorizer, which holds the decision.
+ * an overlap skip is a failure (the fire was lost); a dedup skip (another
+ * instance ran it) and a paused skip (on purpose) are successes. Refusals are
+ * audited by the authorizer
  */
 export function auditScheduledEvent(
   ctx: TriggerAuditContext,
@@ -199,10 +189,6 @@ export function auditScheduledEvent(
   }
 }
 
-/**
- * The scheduler's authorizer: decides as the scheduler principal and audits
- * each refusal with its decision.
- */
 export function createScheduledRunAuthorizer(
   authorize: TriggerAuthorizer,
   ctx: TriggerAuditContext,
@@ -229,10 +215,8 @@ export function createScheduledRunAuthorizer(
 }
 
 /**
- * Maps webhook events to audit events: a run that starts is a
- * `workflow.webhook.fire`, a delivery refused before queueing is a
- * `workflow.webhook.rejected`, coalesced so unauthenticated traffic cannot
- * flood the audit log. Refusals are audited by the authorizer.
+ * rejections are coalesced so unauthenticated traffic cannot flood the audit
+ * log; refusals are audited by the authorizer
  */
 export function auditWebhookEvent(
   ctx: TriggerAuditContext,
@@ -274,10 +258,6 @@ export function auditWebhookEvent(
   }
 }
 
-/**
- * The webhook service's authorizer: decides as the webhook principal and
- * audits each refusal with its decision.
- */
 export function createWebhookRunAuthorizer(
   authorize: TriggerAuthorizer,
   ctx: TriggerAuditContext,

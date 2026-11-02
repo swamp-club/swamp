@@ -18,31 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The model and workflow-run locks serve holds on behalf of the CLI's serve
- * upstream (swamp-club#3985). Two checkouts on different machines write one
- * datastore through serve, and each picks a model's next data version from
- * its own copy, so their per-model locks must be one lock: serve's own.
- * A lease is serve's per-model (or workflow-run) lock, taken with the same
- * factory serve's handlers take it with, held for the caller until it is
- * released or its TTL passes without a renewal. Client work and serve's own
- * runs therefore exclude each other.
- *
- * A lease the caller asks to be fenced (swamp-club#4121) carries a fence:
- * a number above every lease fence its partition has seen and every fence
- * this process issued for the key. Serve stamps it, as a lease op, on each
- * commit the holder forwards under the lease, and refuses a commit to the
- * partition a live fenced lease covers unless it names that lease.
- *
- * An explicit lease (swamp-club#4195) is also kept in the leader's shared
- * control plane ({@link PersistedLeaseStore}), so a new leader adopts it
- * ({@link DatastoreLockLeases.adopt}) and honours it until it expires.
- * Shutdown never touches those records: a deposed leader's shutdown must
- * not end the leases its successor keeps.
- *
- * See "Model locks" under "Team mode: the CLI's serve upstream" in
- * `design/enablers/datastores.md`.
- *
- * @module
+ * checkouts share serve's own per-model lock, so client work and serve's runs
+ * exclude each other; a covered partition refuses commits not naming its fenced
+ * lease; shutdown never touches kept leases
  */
 
 import type { DataNameMarks } from "../domain/datastore_v3/commit_store.ts";
@@ -59,50 +37,34 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "datastore-locks"]);
 
-/** The shortest lease a caller may ask for. */
 export const MIN_LOCK_TTL_MS = 5_000;
-/** The longest lease a caller may ask for. */
 export const MAX_LOCK_TTL_MS = 120_000;
-/** The lease a caller gets when it names no TTL. */
 export const DEFAULT_LOCK_TTL_MS = 30_000;
-/** The longest one acquire request waits at serve for a held lock. */
 export const MAX_LOCK_WAIT_MS = 10_000;
 /**
- * The longest an explicit lease (`swamp behavior lease acquire --for`) is
- * held between renewals (swamp-club#4121): a day, so a member can check one
- * out before working offline (swamp-club#4195). Such a lease keeps serve's
- * own runs off the behavior until it ends, so an admin can end one its
- * holder abandoned (`swamp datastore lock release --force --behavior`).
+ * a day, so a member can check one out before working offline; such a lease
+ * keeps serve's own runs off the behavior until it ends, so an admin can end an
+ * abandoned one
  */
 export const MAX_HOLD_MS = 86_400_000;
-/** The most leases one principal holds at once. */
 export const MAX_LEASES_PER_PRINCIPAL = 256;
-/** The longest wait between two tries of an adoption that keeps failing. */
 export const MAX_ADOPT_RETRY_MS = 30_000;
-/** How often removing an ended lease's kept record is tried. */
 const RECORD_REMOVE_ATTEMPTS = 3;
-/** The first wait before a failed adoption is tried again. */
 const ADOPT_RETRY_MS = 1_000;
-/** How often a waiting acquire tries the lock again. */
 const RETRY_INTERVAL_MS = 100;
 
-/** What a lock key names, parsed and canonical. */
 export type LockTarget =
   | {
     readonly kind: "model";
-    /** The normalized behavior type. */
     readonly modelType: string;
-    /** A lowercase UUID. */
     readonly modelId: string;
   }
   | {
     readonly kind: "workflow-run";
-    /** A lowercase UUID. */
     readonly runId: string;
   };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Characters a type never holds that a path could act on. */
 const UNSAFE_TYPE_CHARS = new Set([
   "\\",
   ":",
@@ -115,7 +77,6 @@ const UNSAFE_TYPE_CHARS = new Set([
   "%",
 ]);
 
-/** Whether `type` holds a control character or one a path could act on. */
 function unsafeType(type: string): boolean {
   for (const char of type) {
     const code = char.charCodeAt(0);
@@ -125,15 +86,11 @@ function unsafeType(type: string): boolean {
   }
   return false;
 }
-/** The longest lock key accepted. */
 const MAX_LOCK_KEY_LENGTH = 512;
 
 /**
- * Parses a lock key in the form `modelLockKey` and `workflowRunLockKey`
- * build it without a namespace (`data/{type}/{id}/.lock`,
- * `workflow-run-claims/{runId}/.lock`) into its canonical target: the type
- * normalized, ids lowercased. Anything else, including any key a path could
- * escape the lock directory with, is undefined.
+ * anything but the canonical key forms, including any key a path could escape
+ * the lock directory with, is undefined
  */
 export function parseLockKey(raw: unknown): LockTarget | undefined {
   if (
@@ -192,28 +149,17 @@ export function lockTargetOfPartition(
   return undefined;
 }
 
-/** The canonical lock key of `target`, without a namespace. */
 export function lockKeyOf(target: LockTarget): string {
   return target.kind === "model"
     ? `data/${target.modelType}/${target.modelId}/.lock`
     : `workflow-run-claims/${target.runId}/.lock`;
 }
 
-/**
- * The lock serve takes for a target: serve's own per-model or workflow-run
- * lock. `tryAcquire` takes it without waiting, as `FileLock` does.
- */
 export interface TryLock {
   tryAcquire(): Promise<boolean>;
   release(): Promise<void>;
 }
 
-/**
- * `lock` as a {@link TryLock}. Serve's v3 datastore takes its locks as file
- * locks (`lockingConfigOf`), which take one without waiting.
- *
- * @throws Error for a lock that cannot be tried without waiting
- */
 export function asTryLock(lock: object): TryLock {
   const candidate = lock as Partial<TryLock>;
   if (
@@ -227,54 +173,32 @@ export function asTryLock(lock: object): TryLock {
   return lock as TryLock;
 }
 
-/** A lease, as the API reports it. */
 export interface LeaseView {
   readonly leaseId: string;
   readonly lockKey: string;
   readonly ttlMs: number;
-  /** ISO time the lease ends unless renewed. */
   readonly expiresAt: string;
-  /** A fenced lease's fence (swamp-club#4121); absent for an unfenced one. */
   readonly fence?: number;
-  /**
-   * An explicit lease's hold (swamp-club#4121): each renewal extends it by
-   * this long. Absent for a command's lease.
-   */
   readonly holdMs?: number;
 }
 
-/**
- * What a fenced lease's fence and floor start from, read once the lock is
- * taken: the partition's lease fence and its data names' version marks.
- * Undefined fields for a partition serve does not hold yet.
- */
 export interface LeaseBase {
   readonly leaseFence: number | undefined;
   readonly names: readonly DataNameMarks[];
 }
 
-/** A lease as acquire returns it: a fenced model lease adds its floor. */
 export interface AcquiredLease extends LeaseView {
-  /**
-   * Each data name's version marks when the lease was taken: the holder
-   * allocates versions above them (swamp-club#4121). Names and numbers
-   * only.
-   */
   readonly floor?: readonly DataNameMarks[];
 }
 
-/** A live lease, as serve's listing reads it (swamp-club#4121). */
 export interface LiveLease {
   readonly lockKey: string;
   readonly target: LockTarget;
   readonly principal: string;
-  /** ISO time the lease ends unless renewed. */
   readonly expiresAt: string;
-  /** Whether it is an explicit lease (swamp-club#4195). */
   readonly explicit: boolean;
 }
 
-/** A live fenced lease, as a commit check reads it. */
 export interface FencedLease {
   readonly leaseId: string;
   readonly principal: string;
@@ -282,9 +206,8 @@ export interface FencedLease {
 }
 
 /**
- * A forced release that ended the lease here but could not remove its kept
- * record (swamp-club#4195): the next leader would adopt it again. Forcing
- * the release again removes the record.
+ * ended the lease here but could not remove its kept record, so the next leader
+ * would adopt it again; forcing the release again removes it
  */
 export class LeaseRecordNotRemovedError extends Error {
   constructor(readonly lockKey: string, cause: unknown) {
@@ -298,31 +221,23 @@ export class LeaseRecordNotRemovedError extends Error {
   }
 }
 
-/** Who holds a lock a caller could not take, as far as it may be told. */
 export type LockHolder = "caller" | "other" | "serve";
 
 export type AcquireOutcome =
   | { readonly kind: "acquired"; readonly lease: AcquiredLease }
   | { readonly kind: "held"; readonly heldBy: LockHolder }
   | { readonly kind: "too-many" }
-  // An explicit lease the leader could not record, so a takeover would end
-  // it: refused rather than granted (swamp-club#4195).
+  // an explicit lease the leader could not record, so a takeover would end it:
+  // refused rather than granted
   | { readonly kind: "not-kept" };
 
-/**
- * Where a leader keeps its explicit leases (swamp-club#4195), and the
- * writer-lease fence it leads at: undefined while it does not lead, when
- * nothing is recorded.
- */
 export interface LeasePersistence {
   readonly store: PersistedLeaseStore;
   readonly leaderFence: () => number | undefined;
-  /** The skew allowed between two leaders' clocks; defaults to the writer lease's. */
   readonly skewMs?: number;
 }
 
 export interface DatastoreLockLeasesOptions {
-  /** Serve's own lock for `target`: the one its handlers take. */
   readonly createLock: (target: LockTarget) => Promise<TryLock>;
   readonly now?: () => number;
   readonly minTtlMs?: number;
@@ -331,12 +246,7 @@ export interface DatastoreLockLeasesOptions {
   readonly maxLeasesPerPrincipal?: number;
   readonly maxHoldMs?: number;
   readonly retryIntervalMs?: number;
-  /** Where explicit leases are kept across a takeover; none when absent. */
   readonly persistence?: LeasePersistence;
-  /**
-   * The first wait before an adoption that failed is tried again; each
-   * retry doubles it, up to {@link MAX_ADOPT_RETRY_MS}.
-   */
   readonly adoptRetryMs?: number;
 }
 
@@ -354,10 +264,8 @@ interface Lease {
 }
 
 /**
- * The leases serve holds for callers of its datastore API: one per lock
- * key at most, since each holds serve's own lock for the key. A lease ends
- * on release, on its TTL passing without a renewal, or at shutdown
- * ({@link dispose}); every release it starts is awaited by `dispose`.
+ * one per lock key at most; ends on release, TTL passing without renewal, or
+ * shutdown; dispose awaits every release it starts
  */
 export class DatastoreLockLeases {
   readonly #createLock: (target: LockTarget) => Promise<TryLock>;
@@ -369,24 +277,19 @@ export class DatastoreLockLeases {
   readonly #maxHoldMs: number;
   readonly #retryIntervalMs: number;
   readonly #leases = new Map<string, Lease>();
-  /** Lease ids by lock key. */
   readonly #byKey = new Map<string, string>();
-  /** Releases under way: expiries, and leases taken for a caller gone. */
   readonly #releasing = new Set<Promise<void>>();
   /**
    * The highest fence issued per lock key by this process, so two leases
    * on one key never share a fence even before a commit records one.
    */
   readonly #issued = new Map<string, number>();
-  /** Aborted at shutdown: acquires still waiting give up. */
   readonly #lifetime = new AbortController();
-  /** Acquires in flight, so shutdown waits for them to settle. */
   readonly #acquiring = new Set<Promise<unknown>>();
   readonly #persistence: LeasePersistence | undefined;
   /**
-   * Set while kept leases are being adopted: until then no lease may be
-   * taken, renewed, released or judged, or a caller could take a key an
-   * adopted lease holds (swamp-club#4195).
+   * until adopted, no lease may be taken, renewed, released or judged, or a
+   * caller could take a key an adopted lease holds
    */
   #adopting = false;
   /**
@@ -395,13 +298,8 @@ export class DatastoreLockLeases {
    * them ({@link whenAdopted}).
    */
   #pendingAdoption: ReadonlySet<string> | "all" = new Set();
-  /** The ids of the kept leases whose keys {@link #pendingAdoption} lists. */
   #pendingLeaseIds: ReadonlySet<string> = new Set();
   readonly #adoptRetryMs: number;
-  /**
-   * An adoption that failed being tried again, with lease requests still
-   * waiting; awaited at shutdown.
-   */
   #adoptRetry: Promise<void> | undefined;
   /**
    * Each lock key's last record write or removal: writes for one key run
@@ -428,18 +326,14 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Whether kept leases are still being adopted. The API answers the lease
-   * listing with serve_not_leader until they are, and each write to a key
-   * still pending ({@link adoptionPendingFor}, {@link leaseAdoptionPending}).
+   * until kept leases are adopted the API answers the lease listing, and each
+   * write to a still-pending key, with serve_not_leader
    */
   get adopting(): boolean {
     return this.#adopting;
   }
 
-  /**
-   * Whether serve's own lock for `lockKey` must not be taken yet: a kept
-   * lease on it, or possibly on it, is not adopted (swamp-club#4195).
-   */
+  /** a kept lease on the key, or possibly on it, is not adopted yet */
   adoptionPending(lockKey: string): boolean {
     if (!this.#adopting) return false;
     const pending = this.#pendingAdoption;
@@ -447,10 +341,9 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Whether a write to `target` must wait for kept leases to be adopted
-   * (swamp-club#4258): its key's kept lease is not adopted yet, or the kept
-   * leases could not be read, so any key may hold one. A target no lease
-   * covers (undefined) waits only in that second case.
+   * its key's kept lease is not adopted yet, or kept leases could not be read
+   * so any key may hold one; a target no lease covers waits only in the second
+   * case
    */
   adoptionPendingFor(target: LockTarget | undefined): boolean {
     if (!this.#adopting) return false;
@@ -459,10 +352,8 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Whether a renewal or release of `leaseId` must wait for kept leases to
-   * be adopted (swamp-club#4258): it is a kept lease not adopted yet, or
-   * the kept leases could not be read, so it may be one. Any other lease
-   * not live here is answered as lost.
+   * it is a kept lease not adopted yet, or kept leases could not be read so it
+   * may be one; any other lease not live here is answered as lost
    */
   leaseAdoptionPending(leaseId: string): boolean {
     if (!this.#adopting) return false;
@@ -471,12 +362,9 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Resolves once serve's own run may take its lock for `lockKey`: no kept
-   * lease on it is still being adopted (swamp-club#4195). Serve's runs take
-   * their locks apart from the lease API, so without this a run could take
-   * the lock of a behavior whose holder still holds its kept lease.
-   *
-   * @throws LockTimeoutError when it is still pending after `maxWaitMs`
+   * serve's runs take their locks apart from the lease API, so without this a
+   * run could take the lock of a behavior whose holder still holds its kept
+   * lease
    */
   async whenAdopted(lockKey: string, maxWaitMs: number): Promise<void> {
     const started = this.#now();
@@ -493,26 +381,21 @@ export class DatastoreLockLeases {
     }
   }
 
-  /** The TTL bounds, for the API's validation and its messages. */
   get ttlBounds(): { readonly min: number; readonly max: number } {
     return { min: this.#minTtlMs, max: this.#maxTtlMs };
   }
 
-  /** The longest one acquire waits. */
   get maxWaitMs(): number {
     return this.#maxWaitMs;
   }
 
-  /** How many leases are held now. */
   get size(): number {
     return this.#leases.size;
   }
 
   /**
-   * Takes serve's lock for `target` for `principal`, waiting up to `waitMs`
-   * (capped at the maximum wait) while another holder has it. `ttlMs` must
-   * already be within {@link ttlBounds}. A lock taken after `signal`
-   * aborted (the caller hung up) is released again.
+   * a lock taken after the signal aborted (the caller hung up) is released
+   * again; ttlMs must already be within the TTL bounds
    */
   async acquire(request: {
     readonly principal: string;
@@ -520,12 +403,7 @@ export class DatastoreLockLeases {
     readonly ttlMs: number;
     readonly waitMs: number;
     readonly signal: AbortSignal;
-    /**
-     * For a fenced lease: reads the partition's lease fence and version
-     * marks once the lock is taken. Absent for an unfenced lease.
-     */
     readonly fenced?: () => Promise<LeaseBase>;
-    /** An explicit lease's hold; `ttlMs` must equal it. */
     readonly holdMs?: number;
   }): Promise<AcquireOutcome> {
     if (this.#disposed) return { kind: "held", heldBy: "serve" };
@@ -544,12 +422,7 @@ export class DatastoreLockLeases {
     readonly ttlMs: number;
     readonly waitMs: number;
     readonly signal: AbortSignal;
-    /**
-     * For a fenced lease: reads the partition's lease fence and version
-     * marks once the lock is taken. Absent for an unfenced lease.
-     */
     readonly fenced?: () => Promise<LeaseBase>;
-    /** An explicit lease's hold; `ttlMs` must equal it. */
     readonly holdMs?: number;
   }): Promise<AcquireOutcome> {
     const { principal, target, ttlMs } = request;
@@ -645,10 +518,6 @@ export class DatastoreLockLeases {
     };
   }
 
-  /**
-   * The lease `leaseId` names when `principal` holds it; undefined for an
-   * unknown, ended or another principal's lease.
-   */
   lease(
     principal: string,
     leaseId: string,
@@ -658,16 +527,10 @@ export class DatastoreLockLeases {
     return { view: view(lease), target: lease.target };
   }
 
-  /** The shortest and longest hold an explicit lease may ask for. */
   get holdBounds(): { readonly min: number; readonly max: number } {
     return { min: this.#minTtlMs, max: this.#maxHoldMs };
   }
 
-  /**
-   * The live fenced lease on `target`, if one holds it: what a commit to
-   * the partition it covers is judged against (swamp-club#4121). An
-   * unfenced lease, or none, is undefined.
-   */
   fencedLeaseOn(target: LockTarget): FencedLease | undefined {
     const id = this.#byKey.get(lockKeyOf(target));
     const lease = id === undefined ? undefined : this.#leases.get(id);
@@ -679,10 +542,6 @@ export class DatastoreLockLeases {
     };
   }
 
-  /**
-   * Every live lease whose lock key starts with `prefix`, in key order:
-   * what `GET locks` filters by the caller's access (swamp-club#4121).
-   */
   list(prefix = ""): readonly LiveLease[] {
     return [...this.#leases.values()]
       .filter((lease) => lease.key.startsWith(prefix))
@@ -697,9 +556,8 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Extends `principal`'s lease `leaseId` by `ttlMs` from now; undefined
-   * when it holds no such lease (it was released or expired, or is
-   * another's), in which case the lock may already be someone else's.
+   * undefined when it holds no such lease, so the lock may already be someone
+   * else's
    */
   async renew(
     principal: string,
@@ -709,8 +567,6 @@ export class DatastoreLockLeases {
   ): Promise<LeaseView | undefined> {
     const lease = this.#leases.get(leaseId);
     if (lease === undefined || lease.principal !== principal) return undefined;
-    // A hold makes it an explicit lease, held that long between renewals
-    // from now on (swamp-club#4121); `ttlMs` must equal it.
     if (holdMs !== undefined) lease.holdMs = holdMs;
     lease.ttlMs = ttlMs;
     lease.expiresAt = this.#now() + ttlMs;
@@ -723,9 +579,8 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Releases `principal`'s lease `leaseId`. False when it holds no such
-   * lease: an expired or already released lease is not an error to the
-   * caller, which ends its hold either way.
+   * an expired or already released lease is not an error to the caller, which
+   * ends its hold either way
    */
   async release(principal: string, leaseId: string): Promise<boolean> {
     const lease = this.#leases.get(leaseId);
@@ -735,11 +590,9 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Ends the lease on `target` whoever holds it (swamp-club#4195): an
-   * admin's way to recover a lease its holder abandoned. Its kept record
-   * goes too. The holder's next commit naming it is refused as lost, and
-   * its queued work is later sent without it. Resolves with who held it,
-   * or undefined when no lease held the lock.
+   * an admin's way to recover an abandoned lease; its kept record goes too; the
+   * holder's next commit naming it is refused as lost and its queued work is
+   * later sent without it
    */
   async forceRelease(
     target: LockTarget,
@@ -765,15 +618,9 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Takes over the explicit leases the leader before this one kept
-   * (swamp-club#4195), once, when this node takes the lead: each still
-   * live is held again under its own id and fence, with serve's own lock
-   * for its key, until it expires. `leaseFenceOf` reads the fence its
-   * partition last recorded: a lease below it was superseded and is not
-   * adopted. Lease requests wait for it ({@link adopting}): an adoption
-   * that fails keeps them waiting and is tried again, with a growing wait,
-   * until it succeeds or serve shuts down. Opening with leases not adopted
-   * would let a caller take a key a live lease holds.
+   * adopts the previous leader's explicit leases on taking the lead; one below
+   * its partition's fence was superseded; lease requests wait, and a failed
+   * adoption is retried until it succeeds or shutdown
    */
   async adopt(options: {
     readonly leaseFenceOf?: (target: LockTarget) => Promise<number | undefined>;
@@ -797,7 +644,6 @@ export class DatastoreLockLeases {
     this.#adoptRetry = this.#retryAdopt(attempt);
   }
 
-  /** One adoption; false, logged, when it could not finish. */
   async #tryAdopt(
     persistence: LeasePersistence,
     leaderFence: number,
@@ -810,10 +656,9 @@ export class DatastoreLockLeases {
         signal: this.#lifetime.signal,
       });
       const skewMs = persistence.skewMs ?? WRITER_LEASE_CLOCK_SKEW_MS;
-      // Known now: only these keys may hold a kept lease. One this leader
-      // already holds under the record's own id (adopted by an earlier
-      // try, or granted while adopting) is not pending: a retry never holds
-      // back its writes (swamp-club#4258).
+      // known now: only these keys may hold a kept lease; one this leader
+      // already holds under the record's own id is not pending, so a retry
+      // never holds back its writes
       const waiting = kept.filter((record) =>
         this.#byKey.get(record.lockKey) !== record.leaseId
       );
@@ -860,11 +705,6 @@ export class DatastoreLockLeases {
     }
   }
 
-  /**
-   * Adopts `record`'s lease, or forgets a record no leader should adopt.
-   * False when it is still live but serve's own lock for its key could not
-   * be taken yet: the record stays, and the adoption is tried again.
-   */
   async #adoptOne(
     record: PersistedLease,
     leaderFence: number,
@@ -953,10 +793,8 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Ends every lease and waits for every release under way, and for
-   * acquires still waiting to give up. Serve calls it at shutdown. The
-   * kept records stay: a leader shuts down when it loses the lead, and its
-   * successor holds those leases (swamp-club#4195).
+   * the kept records stay: a leader shuts down when it loses the lead and its
+   * successor holds those leases
    */
   async dispose(): Promise<void> {
     this.#disposed = true;
@@ -972,12 +810,9 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Records an explicit lease where the next leader finds it: "kept" when
-   * it is recorded, or need not be; "failed" when the write failed;
-   * "ended" when the lease ended before it could be recorded, so nothing
-   * was written. A command's lease is never recorded. The write runs after
-   * any earlier write or removal for its key, and only while the lease is
-   * still live, so it never lands after its own removal.
+   * a command's lease is never recorded; the write runs after earlier writes
+   * and removals for its key and only while the lease is live, so it never
+   * lands after its own removal
    */
   async #keep(
     lease: Lease,
@@ -1019,10 +854,6 @@ export class DatastoreLockLeases {
     });
   }
 
-  /**
-   * Runs `fn` once every earlier record write or removal for `key` has
-   * settled; the next one waits for it in turn.
-   */
   async #serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const before = this.#recordWrites.get(key) ?? Promise.resolve();
     const run = before.then(fn);
@@ -1037,20 +868,11 @@ export class DatastoreLockLeases {
     }
   }
 
-  /**
-   * Removes an explicit lease's record, once it ended for good. Resolves
-   * with the last error when it could not be removed, else undefined.
-   */
   async #forget(lease: Lease): Promise<unknown> {
     if (lease.holdMs === undefined) return undefined;
     return await this.#removeRecord(lease.key);
   }
 
-  /**
-   * Removes `key`'s record from this leader's prefix, tried
-   * {@link RECORD_REMOVE_ATTEMPTS} times; resolves with the last error when
-   * every try failed. A missing record is no error.
-   */
   async #removeRecord(key: string): Promise<unknown> {
     const persistence = this.#persistence;
     if (persistence === undefined) return undefined;
@@ -1106,8 +928,8 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * Ends `lease` here. `forget` removes its kept record too: on release,
-   * expiry or a forced release, never at shutdown.
+   * forget removes the kept record too: on release, expiry or forced release,
+   * never at shutdown
    */
   async #end(lease: Lease, options: { forget: boolean }): Promise<unknown> {
     if (lease.timer !== undefined) {
@@ -1143,7 +965,6 @@ function view(lease: Lease): LeaseView {
   };
 }
 
-/** Waits `ms`, or resolves early once `signal` aborts. */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) {

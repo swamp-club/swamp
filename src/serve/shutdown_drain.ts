@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The drain-then-abort stage of `swamp serve` shutdown (swamp-club#2484).
- *
- * Webhook and cron runs used to be aborted before the active-run drain even
- * started. Every trigger source now stops taking new work and drains its
- * in-flight run alongside the active-run registry, all against one deadline;
- * only then is whatever is left aborted.
+ * every trigger source stops taking new work and drains in-flight runs
+ * alongside the active-run registry against one deadline; only then is what is
+ * left aborted
  */
 
 import type { ActiveRun } from "./active_run_registry.ts";
@@ -31,16 +28,13 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "shutdown"]);
 
-/** A trigger source (webhooks, cron) that can drain and then abort its runs. */
 export interface DrainableTriggerSource {
   drain(timeoutMs: number): Promise<void>;
   stop(): Promise<void>;
 }
 
-/** The slice of `ActiveRunRegistry` the shutdown drain uses. */
 export interface DrainableRunRegistry {
   readonly size: number;
-  /** Refuses every later registration. */
   beginDraining(): void;
   drainAll(timeoutMs: number): Promise<void>;
   list(): ReadonlyArray<ActiveRun>;
@@ -57,19 +51,11 @@ export interface ShutdownDrainDeps {
   readonly webhookService: DrainableTriggerSource | null;
   readonly scheduledExecution: DrainableTriggerSource | null;
   readonly activeRunRegistry: DrainableRunRegistry | null;
-  /** Shared drain deadline; 0 aborts in-flight runs without waiting. */
   readonly drainTimeoutMs: number;
-  /** How long aborted registry runs get to settle. */
   readonly abortGraceMs: number;
-  /** Called before undrained registry runs are aborted. */
   readonly onAborting?: (undrained: number) => void;
 }
 
-/**
- * Drains every trigger source and the active-run registry concurrently, then
- * aborts what did not finish. Returns the registry runs it aborted so the
- * caller can mark their workflow runs interrupted.
- */
 export async function runShutdownDrain(
   deps: ShutdownDrainDeps,
 ): Promise<ReadonlyArray<ActiveRun>> {

@@ -24,18 +24,15 @@ import {
 } from "../../infrastructure/persistence/safe_path.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
-/** Reads a log file's lines, as the history-logs operations do. */
 export type LogFileReader = (
   path: string,
   options?: { tail?: number },
 ) => Promise<{ lines: string[]; path: string }>;
 
 /**
- * Reads a run log only from the repo's own run-log directories: a method
- * run logs under outputs, a workflow step under its workflow run. The path
- * comes from the output record, which may have been written by another
- * datastore writer, so a path outside them is answered as a missing log
- * rather than read and sent to the client (swamp-club#3729).
+ * the path comes from the output record, which another datastore writer may
+ * have written, so a path outside the run-log directories is answered as a
+ * missing log rather than read and sent to the client
  */
 export function containedLogFileReader<R extends LogFileReader>(
   repoDir: string,

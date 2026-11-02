@@ -70,7 +70,6 @@ function memoryStore(initial?: Partial<GrantUsernamePins>) {
   };
 }
 
-/** A provider lookup answering from a mutable table, recording names asked. */
 function provider(table: Record<string, string>) {
   const asked: string[] = [];
   const lookup: GrantUsernameLookup = (username) => {
@@ -116,10 +115,8 @@ Deno.test("grant username pins: a new name is looked up and pinned", async () =>
 
 Deno.test("grant username pins: a pinned name is never looked up again, so it is never re-pointed", async () => {
   const mem = memoryStore({ pinned: { alice: "sub-original" } });
-  // The name now belongs to someone else on the provider.
   const p = provider({ alice: "sub-new-owner" });
   const resolver = resolverOver(mem.store, p.lookup);
-  // A new name alongside makes the resolve look things up at all.
   const answers = await resolver.resolve({
     names: ["alice", "bob"],
     complete: true,
@@ -144,7 +141,6 @@ Deno.test("grant username pins: a name first seen missing is recorded and never 
   );
   assertEquals({ ...mem.pins.missing }, { alcie: "2026-10-13T00:00:00.000Z" });
 
-  // Someone registers the typo; it must still not resolve.
   p.table.alcie = "sub-attacker";
   const second = await resolver.resolve({ names: ["alcie"], complete: true });
   assertEquals(second.get("alcie")?.status, "unresolved");
@@ -189,7 +185,6 @@ Deno.test("grant username pins: records are forgotten only on a complete resolve
     missing: { alcie: "2026-01-01T00:00:00.000Z" },
   });
   const resolver = resolverOver(mem.store, provider({}).lookup);
-  // A source is held back: its names keep their records.
   await resolver.resolve({ names: [], complete: false });
   assertEquals({ ...mem.pins.pinned }, { alice: "sub-alice" });
   assertEquals({ ...mem.pins.missing }, { alcie: "2026-01-01T00:00:00.000Z" });
@@ -350,7 +345,6 @@ Deno.test("parseGrantUsernamePins: round-trips and refuses other shapes", () => 
 
 Deno.test("grant username pins: a record a peer writes during a lookup is kept, not written over", async () => {
   const mem = memoryStore();
-  // While this instance looks bob up, a peer records alcie as missing.
   const lookup: GrantUsernameLookup = (name) => {
     mem.pins = {
       pinned: { ...mem.pins.pinned },

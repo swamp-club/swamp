@@ -47,7 +47,6 @@ import {
   withObservedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
 
-/** Yields to the event loop so a concurrent unit can make progress. */
 function tick(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
@@ -81,7 +80,6 @@ Deno.test("withSyncGate: releases the gate when the unit throws", async () => {
       assertEquals((error as Error).message, "boom");
     });
 
-  // A leaked permit would leave this pending forever.
   assertEquals(await withSyncGate(gate, () => Promise.resolve("ran")), "ran");
 });
 
@@ -229,7 +227,6 @@ Deno.test("pollerGateTiming: short intervals keep the window inside the interval
   assertGreater(windowMs, 0);
 });
 
-/** A delay that resolves at once and runs `onCall` with the call count. */
 function instantDelay(onCall: (calls: number) => void = () => {}) {
   let calls = 0;
   return {
@@ -289,7 +286,6 @@ Deno.test("gatedPull: a waiting poller never blocks a new shared acquirer", asyn
   let lateShared = false;
   const delay = instantDelay((calls) => {
     if (calls === 1) {
-      // A run push arriving while the poller retries is admitted at once.
       gate.acquireShared().then(() => {
         lateShared = true;
       });
@@ -336,8 +332,6 @@ Deno.test("gatedPull: escalates to a queued wait after consecutive skips", async
     return Promise.resolve();
   }, { state, timing: FAST_TIMING, delay: instantDelay().delay });
 
-  // Escalated: the poller holds a queue slot, so a run push arriving now
-  // waits behind it — the one bounded stall the policy allows.
   await waitFor(() => gate.waiters === 1, "poller queued for the gate");
   let lateShared = false;
   const late = gate.acquireShared().then(() => {
@@ -419,13 +413,6 @@ Deno.test("SYNC_GATED_REQUESTS: excludes the long-running run verbs", () => {
   assertGreater(SYNC_GATED_REQUESTS.size, 0);
 });
 
-/**
- * Datastore honouring the documented sync contract: `pushChanged` deletes the
- * remote object for a dirty path that is absent on disk and uploads one that
- * is present (`DatastoreSyncService.markDirty` rule 2). The pull reads the
- * remote index first and writes files afterwards, which is the window
- * swamp-club#2247 is about.
- */
 function createFakeDatastore() {
   const remote = new Set<string>(["data/item"]);
   const local = new Set<string>(["data/item"]);
@@ -433,7 +420,6 @@ function createFakeDatastore() {
 
   const syncService: DatastoreSyncService = {
     async pullChanged() {
-      // Read the remote index, then download — the window the gate closes.
       const indexSnapshot = [...remote];
       await tick(0);
       let pulled = 0;
@@ -488,9 +474,8 @@ Deno.test("sync gate: a pull cannot resurrect an item deleted under the gate", a
 });
 
 Deno.test("sync gate: the same interleaving resurrects the item without a gate", async () => {
-  // Teeth for the test above: this is swamp-club#2247 itself. The pull's
-  // download lands after the local removal, so the push sees the dirty path
-  // present on disk and re-uploads instead of deleting.
+  // the pull's download lands after the local removal, so the push sees the
+  // dirty path present on disk and re-uploads instead of deleting
   const datastore = createFakeDatastore();
 
   const pull = datastore.syncService.pullChanged({});
@@ -557,8 +542,6 @@ Deno.test("withRunSyncGate: a push that must run alone takes the gate exclusivel
   assertEquals(order, ["pull start", "pull end", "alone (exclusive=true)"]);
 });
 
-// Diagnostic phases of a gated pull in the access_poll area (swamp-club#4005).
-
 Deno.test("gatedPull: in the access_poll area the wait and the pull are sibling phases", async () => {
   await withObservedSpans(async (spans) => {
     const gate = createSyncGate();
@@ -615,7 +598,6 @@ Deno.test("gatedPull: a skipped cycle is a gate_wait that did not acquire, ok an
     const wait = findSpan(spans, "swamp.diagnostic.gate_wait");
     assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
     assertEquals(wait.attributes["swamp.outcome"], "ok");
-    // One try at 0, 1, ... 5ms of a 5ms window, every 1ms.
     assertEquals(wait.attributes["swamp.diagnostic.attempts"], 6);
     assertEquals(diagnosticPhases(spans, "remote_pull").length, 0);
     assertEquals(state.consecutiveSkips, 1);

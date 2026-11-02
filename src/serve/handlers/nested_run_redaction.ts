@@ -34,19 +34,15 @@ import type { SerializedEvent } from "../protocol.ts";
 import { CanonicalResources } from "./resource_resolution.ts";
 import { type ConnectionContext, resourceDecider } from "./shared.ts";
 
-/** A workflow a nested-run field names. */
 export interface NamedWorkflow {
   workflowId: string;
   workflowName: string;
 }
 
 /**
- * Decides, silently and per request, whether the principal may read a
- * workflow that a nested-run field names (swamp-club#2736). The fields that
- * link a run to its parent or to the nested runs it waits on are returned
- * only when this allows the workflow they name; the run's own row is
- * authorized as before. Child identity that a run already carried (a
- * succeeded nested step's output, forwarded child events) is unchanged.
+ * the fields linking a run to its parent or nested runs are returned only when
+ * this allows the workflow they name; child identity a run already carried
+ * (succeeded step output, forwarded child events) is unchanged
  */
 export function nestedRunReadDecider(
   ctx: ConnectionContext,
@@ -54,9 +50,9 @@ export function nestedRunReadDecider(
   principal: Principal | null,
 ): (workflow: NamedWorkflow) => Promise<boolean> {
   if (ctx.authConfig.mode === "none") return () => Promise.resolve(true);
-  // The live repository, not canonicalResources(ctx): a decider can last a
-  // whole run stream, and a per-request view would keep the extension
-  // workflows it first read for all of it (swamp-club#3779).
+  // the live repository, not canonicalResources(ctx): a decider can last a
+  // whole run stream, and a per-request view would keep the extension workflows
+  // it first read for all of it
   const canonical = new CanonicalResources(
     ctx.repoContext.definitionRepo,
     ctx.repoContext.workflowRepo,
@@ -78,10 +74,6 @@ export function nestedRunReadDecider(
   };
 }
 
-/**
- * Removes the parent link from a row whose parent workflow the principal
- * may not read, together with anything derived from it.
- */
 export async function redactParentRun<
   T extends {
     parentRun?: NamedWorkflow;
@@ -101,7 +93,6 @@ export async function redactParentRun<
   }
 }
 
-/** Keeps only the nested runs whose workflow the principal may read. */
 export async function readableNestedRuns<T extends { workflowName: string }>(
   runs: T[] | undefined,
   workflowIdOf: (run: T) => string | undefined,
@@ -122,18 +113,12 @@ export async function readableNestedRuns<T extends { workflowName: string }>(
 }
 
 /**
- * What a step whose nested run is hidden reports instead of its own error,
- * which names that run.
+ * what a step whose nested run is hidden reports instead of its own error,
+ * which names that run
  */
 const HIDDEN_NESTED_STEP_ERROR =
   "The step's nested workflow run is not shown: you may not read its workflow.";
 
-/**
- * Removes, from a run view sent to a client, the links to other runs whose
- * workflow the principal may not read (swamp-club#2736): the parent link,
- * the nested runs it waits on and each step's nested run link, with the
- * step's error, which names that run.
- */
 export async function redactRunViewLinks(
   view: WorkflowRunView,
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
@@ -157,16 +142,9 @@ export async function redactRunViewLinks(
 }
 
 /**
- * A run stream event as one client may see it: the links to other runs
- * whose workflow the principal may not read are removed, as from a run view
- * (swamp-club#2736), and a nested workflow step's failure that names a
- * hidden nested run reports {@link HIDDEN_NESTED_STEP_ERROR} instead. A
- * suspension names a nested run's open wait for a signal only to a reader of
- * the wait's workflow, and a step refused a key held by another wait names
- * that wait only to a reader of its workflow. A buffered event is shared by
- * every client attached to the run, so an event that needs a change is
- * copied first. A nested run's own events, forwarded into its parent's
- * stream, are left as they are.
+ * a buffered event is shared by every client attached to the run, so an event
+ * that needs a change is copied first; a nested run's own events forwarded into
+ * its parent's stream are left as they are
  */
 export async function redactStreamEvent(
   event: SerializedEvent,
@@ -184,10 +162,9 @@ export async function redactStreamEvent(
     return copy;
   }
   if (event.kind === "step_failed") {
-    // A wait_key_held failure names the wait holding the key, which can be
-    // in another workflow's run: only to a reader of that workflow
-    // (swamp-club#3214). Removing it builds a new object, so the shared
-    // buffered event is never changed.
+    // a wait_key_held failure names the wait holding the key, which can be in
+    // another workflow's run: only to a reader of that workflow. Removing it
+    // builds a new object, so the shared buffered event is never changed.
     let failed = event;
     if (
       "waitKeyHolder" in event &&
@@ -202,7 +179,7 @@ export async function redactStreamEvent(
       const { nestedRun: _hidden, ...rest } = failed;
       return { ...rest, error: HIDDEN_NESTED_STEP_ERROR };
     }
-    // A step failure carries no run view to redact.
+    // a step failure carries no run view to redact
     return failed;
   }
   if (!isRunView(event.run)) return event;
@@ -210,16 +187,16 @@ export async function redactStreamEvent(
     run: WorkflowRunView;
   };
   await redactRunViewLinks(copy.run, canRead);
-  // A suspension on a nested run names it beside the step that waits on
-  // it, and goes when that step's link went.
+  // a suspension on a nested run names it beside the step that waits on it, and
+  // goes when that step's link went
   if (copy.kind === "suspended" && copy.nested !== undefined) {
     const step = copy.run.jobs.find((j) => j.name === copy.jobId)?.steps
       .find((s) => s.name === copy.stepId);
     if (!step?.nestedRun) delete copy.nested;
   }
-  // A nested run's open wait is named only to a reader of the workflow the
-  // wait belongs to, which can be a grandchild's, in another workflow than
-  // the run the step waits on (swamp-club#3110).
+  // a nested run's open wait is named only to a reader of the workflow the wait
+  // belongs to, which can be a grandchild's in another workflow than the run
+  // the step waits on
   if (copy.kind === "suspended" && copy.nestedSignalWaits !== undefined) {
     const waits = Array.isArray(copy.nestedSignalWaits)
       ? await readableNestedRuns(
@@ -250,19 +227,14 @@ function isRunView(value: unknown): value is WorkflowRunView {
     Array.isArray((value as { jobs?: unknown }).jobs);
 }
 
-/**
- * The refusal to approve or reject a nested workflow step, naming the
- * nested run only to a reader of its workflow; `undefined` for any other
- * error.
- */
 export async function nestedGateRefusalForClient(
   error: SwampError,
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
 ): Promise<string | undefined> {
   const gate = nestedWaitGateOf(error);
   if (gate) return await canRead(gate) ? error.message : gate.genericMessage;
-  // A nested run that was not continued names the run above it only to a
-  // reader of that run's workflow (swamp-club#2867).
+  // a nested run that was not continued names the run above it only to a reader
+  // of that run's workflow
   const orphan = orphanedNestedRunOf(error);
   if (!orphan) return undefined;
   if (
@@ -279,11 +251,7 @@ export async function nestedGateRefusalForClient(
     : orphan.genericMessage;
 }
 
-/**
- * The refusal to resume a nested run that nothing waits on any more, naming
- * the run above it only to a reader of that run's workflow. Without a
- * decider it names none.
- */
+/** without a decider it names no parent */
 export async function orphanedRefusalForClient(
   error: OrphanedNestedRunError,
   canRead: ((workflow: NamedWorkflow) => Promise<boolean>) | undefined,
@@ -298,10 +266,6 @@ export async function orphanedRefusalForClient(
     : error.genericMessage;
 }
 
-/**
- * The nested runs a cancel or reject reports, each list keeping only the
- * runs of a workflow the caller may read (swamp-club#2736, #2867).
- */
 export async function readableNestedCascade(
   nested: Partial<NestedCascadeResult>,
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
@@ -329,11 +293,9 @@ export async function readableNestedCascade(
 }
 
 /**
- * The refusal to resume a run that waits on unfinished nested runs, naming
- * them only when the principal may read every run it names: each direct
- * child, and the innermost run that has to act, which can be a grandchild
- * in another workflow. Without a decider it names none. The refusal over a
- * nested run whose record cannot be read is treated the same way.
+ * names the runs only when the principal may read every run named: each direct
+ * child and the innermost run that has to act, which can be a grandchild in
+ * another workflow; without a decider it names none
  */
 export async function nestedPendingRefusalForClient(
   error: NestedRunPendingError | NestedRunUnreadableError,
@@ -359,11 +321,6 @@ export async function nestedPendingRefusalForClient(
   return error.message;
 }
 
-/**
- * The per-client transform for a run stream: each event as
- * {@link redactStreamEvent} leaves it for this principal. Without auth every
- * workflow is readable and events pass unchanged.
- */
 export function redactingFor(
   ctx: ConnectionContext,
   socket: WebSocket,

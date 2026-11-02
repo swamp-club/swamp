@@ -25,24 +25,9 @@ const logger = getSwampLogger(["serve", "active-run-tracker"]);
 
 export interface ActiveRunRecord {
   instanceId: string;
-  /** The canonical name of the model or workflow the run was authorized on. */
   resourceName: string;
-  /**
-   * The id of that model or workflow, when it resolved. Optional: records
-   * written by older instances carry only a name.
-   */
   resourceId?: string;
-  /**
-   * The method a method run executes. Absent for workflow runs and in records
-   * written by older instances, which cancel and attach then authorize
-   * without a method, as before.
-   */
   methodName?: string;
-  /**
-   * The normalized model type of a method run's model. Cancel and attach use
-   * it when the model is gone, so a control-plane run stays admin-only
-   * (swamp-club#2756). Absent for workflow runs and older records.
-   */
   resourceType?: string;
   runKind: RunKind;
   startedAt: string;
@@ -55,15 +40,9 @@ function activeRunKey(instanceId: string, runId: string): string {
 const encoder = new TextEncoder();
 
 /**
- * The tail of each instance's queue of active-run writes, per store.
- *
- * Every write, rekey and delete for an instance runs on one chain, in call
- * order. The callers fire and forget, so unordered they race. A rekey's
- * delete can land before the placeholder write it replaces, orphaning that
- * record. A run's final delete can overtake the rekey's write, leaving a
- * finished run recorded as active. And on the filesystem store a delete
- * removes the instance directory once it is empty, which can pull the
- * directory out from under a concurrent write into it.
+ * writes, rekeys and deletes per instance run in call order on one chain;
+ * unordered, a delete can orphan or overtake a write, or remove the directory
+ * under one
  */
 const pendingByStore = new WeakMap<
   ControlPlaneStore,
@@ -91,10 +70,6 @@ function enqueue(
   queue.set(instanceId, tail);
 }
 
-/**
- * Resolves once every active-run write already queued for the instance has
- * been applied or has failed and been logged.
- */
 export function activeRunWritesSettled(
   store: ControlPlaneStore,
   instanceId: string,
@@ -127,13 +102,8 @@ export function writeActiveRun(
 }
 
 /**
- * Writes the active-run records of `runs` back and waits up to `timeoutMs`
- * for every write queued for the instance to land. A stopping serve calls it
- * for the runs it could not push before it leaves a stopped heartbeat: a run
- * that ended during the abort grace deleted its own record, and a peer finds
- * the runs it must settle only through these records (swamp-club#3958).
- * Queued behind that delete, the write lands after it. Returns whether the
- * writes settled in time; a failed write is logged, as any write is.
+ * queued behind a run's own delete so the record lands after it; a peer finds
+ * the runs it must settle only through these records
  */
 export async function keepActiveRunRecords(
   store: ControlPlaneStore,
@@ -240,10 +210,6 @@ export async function findActiveRunByRunId(
   return null;
 }
 
-/**
- * The active-run records `instanceId` left, by run id. A record that cannot
- * be read or parsed is left out.
- */
 export async function listActiveRunsForInstance(
   store: ControlPlaneStore,
   instanceId: string,

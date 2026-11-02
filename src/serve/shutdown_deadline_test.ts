@@ -62,7 +62,6 @@ Deno.test("ShutdownDeadline.remaining: never goes below the floor once spent", (
   assertEquals(deadline.remaining(), SHUTDOWN_STAGE_FLOOR_MS);
   now = 60_000;
   assertEquals(deadline.remaining(5_000), SHUTDOWN_STAGE_FLOOR_MS);
-  // A cap below the floor is raised to it, as every stage gets one attempt.
   now = 0;
   assertEquals(deadline.remaining(100), SHUTDOWN_STAGE_FLOOR_MS);
 });

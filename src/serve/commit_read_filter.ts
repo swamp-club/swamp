@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which commits a caller may read, as serve's changes feed filters them
- * (swamp-club#4089), shared by `GET changes` and the `commits.subscribe`
- * WebSocket feed (swamp-club#4120). A whole commit is hidden when any of its
- * ops is one the caller may not read; a commit with no intent-bearing op
- * (a lease commit) is read as its partition is. Only commits of serve's own
- * namespace are ever shown.
- *
- * @module
+ * a whole commit is hidden when any op is unreadable to the caller; a commit
+ * with no intent-bearing op (a lease commit) is read as its partition; only
+ * serve's own namespace shows
  */
 
 import {
@@ -51,12 +46,9 @@ import {
 } from "./handlers/shared.ts";
 
 /**
- * `commit` as a reader is sent it: without its lease ops for a reader that
- * does not understand them (swamp-club#4121), over `GET commits`, `GET
- * changes` and the `commits.subscribe` feed (swamp-club#4168). A swamp from
- * before them judges a lease op's fence against the writer fence; without
- * it, the commit is exactly what that swamp's own rules accept. Serve stamps
- * a lease op only beside a client's ops, so no commit is left empty.
+ * drops lease ops for a reader that does not understand them: an older swamp
+ * judges a lease op's fence against the writer fence. Serve stamps lease ops
+ * only beside client ops, so no commit empties
  */
 export function commitJSONFor(
   commit: CommitChange["commit"],
@@ -68,7 +60,6 @@ export function commitJSONFor(
     : { ...json, ops: json.ops.filter((op) => op.kind !== "lease") };
 }
 
-/** What reading a commit to `partition` with `ops` requires. */
 export async function commitReadAccessOf(
   partition: PartitionKey,
   ops: readonly Op[],
@@ -92,11 +83,9 @@ export async function commitReadAccessOf(
 }
 
 /**
- * Decides which commits one caller may read, for one batch: its resolver
- * remembers aggregate lookups and its decisions are cached, so a long-lived
- * feed builds a fresh filter per batch, and a changed grant or a renamed
- * aggregate takes effect on the next one. A filter `unrestricted` (a team
- * peer's) skips the caller's grants but keeps the namespace.
+ * resolver lookups and decisions are cached, so a long-lived feed builds a
+ * fresh filter per batch and grant or rename changes take effect next batch;
+ * unrestricted skips grants but keeps the namespace
  */
 export class CommitReadFilter {
   readonly #v3: V3Datastore;
@@ -116,7 +105,6 @@ export class CommitReadFilter {
     this.#resolver = memoized(serveResolver(ctx, v3));
   }
 
-  /** Whether the caller may read `change`. */
   async readable(change: CommitChange): Promise<boolean> {
     if (change.commit.namespace !== this.#v3.namespace) return false;
     const access = this.#access;
@@ -138,9 +126,8 @@ export class CommitReadFilter {
 }
 
 /**
- * `resolver` with its aggregate lookups remembered for one request, so a
- * changes page costs one lookup per aggregate, not per op. Key owners and
- * restricted types are asked afresh.
+ * remembers aggregate lookups for one request so a page costs one lookup per
+ * aggregate, not per op; key owners and restricted types are asked afresh
  */
 export function memoized(
   resolver: AggregateResourceResolver,
@@ -180,7 +167,6 @@ export function memoized(
   };
 }
 
-/** The resolver serve's datastore API authorises against. */
 export function serveResolver(
   ctx: ConnectionContext,
   v3: V3Datastore,

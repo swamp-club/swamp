@@ -37,8 +37,6 @@ import {
 } from "../domain/models/access/server_token_model.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 
-// ── splitServerToken ────────────────────────────────────────────────────
-
 Deno.test("splitServerToken: splits valid name.secret", () => {
   const result = splitServerToken("adam-token.abc123def456");
   assertEquals(result, { name: "adam-token", secret: "abc123def456" });
@@ -65,8 +63,6 @@ Deno.test("splitServerToken: single-char name and secret", () => {
   const result = splitServerToken("a.b");
   assertEquals(result, { name: "a", secret: "b" });
 });
-
-// ── extractWebSocketToken ──────────────────────────────────────────────
 
 function makeReq(
   url: string,
@@ -212,8 +208,6 @@ Deno.test("extractWebSocketToken: ignores empty query param", () => {
   assertEquals(extractWebSocketToken(req), null);
 });
 
-// ── classifyRedeemError ────────────────────────────────────────────────
-
 Deno.test("classifyRedeemError: classifies expired token", () => {
   assertEquals(
     classifyRedeemError("Server token 'bot' has expired"),
@@ -268,8 +262,6 @@ Deno.test("classifyRedeemError: returns unknown for unrecognized errors", () => 
     "unknown",
   );
 });
-
-// ── authenticateServerToken ─────────────────────────────────────────────
 
 function activeToken(overrides: Partial<ServerToken> = {}): ServerToken {
   return {
@@ -353,8 +345,6 @@ Deno.test("authenticateServerToken: reports the createdAt of the mint that authe
   assertEquals(result.tokenName, "test-token");
   assertEquals(result.tokenCreatedAt, "2026-05-05T05:05:05.000Z");
 });
-
-// ── readServerTokenRecord ───────────────────────────────────────────────
 
 function fakeTokenRepoContext(
   definition: { id: string } | null,

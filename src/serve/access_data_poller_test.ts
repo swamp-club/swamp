@@ -374,9 +374,7 @@ Deno.test("AccessDataPoller: retries policy reload on next tick if load fails", 
   });
 
   poller.start();
-  // First tick: pull returns 2 (changes), load fails
   await waitFor(() => loadCallCount >= 1, "first load attempt");
-  // Second tick: pull returns 2 (still returning changes), load succeeds
   shouldFail = false;
   sync.pullResult = 0;
   await waitFor(() => loader.loadCalls >= 1, "successful reload after retry");
@@ -451,7 +449,6 @@ Deno.test("AccessDataPoller: pull holds the sync gate, so it cannot interleave a
     "pulls-during-mutation:0",
     "mutation:end",
   ]);
-  // gatedPull bounds the pull so a hung extension cannot hold the gate.
   assertEquals(typeof sync.pullCalls[0].signal, "object");
 });
 
@@ -747,8 +744,6 @@ Deno.test("createAccessDataPoller: a custom datastore without a sync service get
   assertEquals(poller, null);
 });
 
-// --- Unreadable records and repeated failures (swamp-club#3386) ---
-
 Deno.test("AccessDataPoller: reloads every cycle while the snapshot is missing records it could not read, then stops", async () => {
   // Nothing changes on the datastore; only the loader's state drives it.
   const sync = createMockSyncService({ pullResult: 0 });
@@ -773,12 +768,10 @@ Deno.test("AccessDataPoller: reloads every cycle while the snapshot is missing r
       () => sync.pullCalls.length >= whole + 3,
       "three cycles once whole",
     );
-    // At most the cycle already running when the snapshot became whole.
     assert(loader.loadCalls <= loadsWhenWhole + 1);
   } finally {
     await poller.stop();
   }
-  // Retrying a degraded snapshot is not a datastore change.
   assertEquals(state.catalogInvalidateCalls, 0);
 });
 
@@ -804,7 +797,6 @@ Deno.test("AccessDataPoller: does not retry a snapshot whose missing records are
   assertEquals(loader.loadCalls, 0);
 });
 
-/** Runs `fn` with the access data poller's logs captured. */
 async function capturingPollerLogs(
   fn: () => Promise<void>,
 ): Promise<Array<{ level: string; message: string }>> {
@@ -880,9 +872,6 @@ Deno.test("AccessDataPoller: repeated cycle failures escalate to error, and reco
   assertEquals(recovered[0].level, "info");
 });
 
-// Diagnostic phases of the access-data poll (swamp-club#4005).
-
-/** The finished poll_cycle phases, in the order they ended. */
 function cycles(spans: readonly ReadableSpan[]): ReadableSpan[] {
   return diagnosticPhases(spans, "poll_cycle");
 }
@@ -907,7 +896,6 @@ function cycleWhere(
   return cycle;
 }
 
-/** Every phase under `cycle`, the cycle included, carries `mode`. */
 function assertSourceMode(
   spans: readonly ReadableSpan[],
   cycle: ReadableSpan,
@@ -1090,7 +1078,6 @@ Deno.test("AccessDataPoller: a busy gate skips the cycle, and stop() during a qu
     });
     poller.start();
     try {
-      // After the skips, the poller queues for the gate.
       await waitFor(() => gate.waiters === 1, "poller queued for the gate");
     } finally {
       await poller.stop();
@@ -1185,7 +1172,6 @@ Deno.test("AccessDataPoller: a failed reload ends its cycle in error, and the ne
     assertEquals(retried.attributes["swamp.diagnostic.changed"], 0);
     assertEquals(retried.attributes["swamp.diagnostic.result"], "applied");
     assertEquals(retried.attributes["swamp.outcome"], "ok");
-    // No gate: the pull is exported, a wait is not.
     assertEquals(diagnosticPhases(spans, "gate_wait").length, 0);
     assertEquals(childPhases(spans, "remote_pull", failed).length, 1);
   });
@@ -1231,7 +1217,6 @@ Deno.test("AccessDataPoller: a cycle whose pull was skipped but whose pending re
           await gate.acquireShared();
           throw new Error("transient");
         }
-        // Stopped while the retry runs: the reload still applies.
         stopping = poller.stop();
         loader.loadCalls++;
       },

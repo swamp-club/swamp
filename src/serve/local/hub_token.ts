@@ -17,14 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How the local hub authenticates to a workspace's child process: a random
- * per-child token, handed over in the environment and sent on every request.
- * Kept apart so the hub never imports the child server's module graph.
- */
+/** kept apart so the hub never imports the child server's module graph */
 
-/** The environment variable the child reads its token from (then deletes). */
 export const HUB_TOKEN_ENV = "SWAMP_DASHBOARD_HUB_TOKEN";
 
-/** The header the hub sends its per-child token in. */
 export const HUB_TOKEN_HEADER = "x-swamp-hub-token";

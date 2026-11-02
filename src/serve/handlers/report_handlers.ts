@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Report-domain request handlers (report.* verbs).
- */
-
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   reportDescribe,
@@ -76,9 +72,9 @@ export async function handleReportGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // A report is data, so it is read as its owner's data: a named model or
-  // workflow is authorized first, and the report read — and any ambiguity it
-  // reports — covers only owners the caller may read (swamp-club#2675).
+  // a report is data, so it is read as its owner's data: a named model or
+  // workflow is authorized first, and the read and any ambiguity it reports
+  // cover only owners the caller may read
   if (
     !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
   ) return;
@@ -102,8 +98,8 @@ export async function handleReportGet(
   try {
     const libCtx = handlerLibSwampContext(ctx);
     const deps: ReportGetDeps = {
-      // The reads stop when the request is cancelled, so it gives up its
-      // place among the shared scan permits (swamp-club#4070, #4075).
+      // the reads stop when the request is cancelled, so it gives up its place
+      // among the shared scan permits
       findReportData: (owner) =>
         findLatestReportData(
           ctx.repoContext.dataQueryService,
@@ -179,7 +175,7 @@ export async function handleReportGet(
       payload: { data: result },
     });
   } catch (error) {
-    // A read stopped by the cancel answers as one that ran to the end does.
+    // a read stopped by the cancel answers as one that ran to the end does
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -197,9 +193,9 @@ export async function handleReportSearch(
   principal: Principal | null,
   payload?: ReportSearchPayload,
 ): Promise<void> {
-  // Reports are data: a named model or workflow is authorized first, so a
-  // search cannot tell a denied name from a missing one, and results are
-  // filtered to owners the caller may read (swamp-club#2675).
+  // a named model or workflow is authorized first, so a search cannot tell a
+  // denied name from a missing one, and results are filtered to owners the
+  // caller may read
   if (
     !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
   ) return;
@@ -219,8 +215,8 @@ export async function handleReportSearch(
     const libCtx = handlerLibSwampContext(ctx);
     await reportRegistry.ensureLoaded();
     const deps: ReportSearchDeps = {
-      // The reads stop when the request is cancelled, so it gives up its
-      // place among the shared scan permits (swamp-club#4070, #4075).
+      // the reads stop when the request is cancelled, so it gives up its place
+      // among the shared scan permits
       findReportData: (owner) =>
         findLatestReportData(
           ctx.repoContext.dataQueryService,
@@ -294,7 +290,7 @@ export async function handleReportSearch(
       payload: { data },
     });
   } catch (error) {
-    // A read stopped by the cancel answers as one that ran to the end does.
+    // a read stopped by the cancel answers as one that ran to the end does
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
@@ -312,7 +308,7 @@ export async function handleReportDescribe(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  // Report types only: a check on the kind, touching no model.
+  // report types only: a check on the kind, touching no model
   if (
     !authorizeOrReject(
       socket,
@@ -377,7 +373,7 @@ export async function handleReportTypeSearch(
   principal: Principal | null,
   payload?: ReportTypeSearchPayload,
 ): Promise<void> {
-  // Report types only: a check on the kind, touching no model.
+  // report types only: a check on the kind, touching no model
   if (
     !authorizeOrReject(
       socket,
@@ -430,10 +426,6 @@ export async function handleReportTypeSearch(
   }
 }
 
-/**
- * Authorizes the model (as `data`) or workflow a report read names, before
- * the read looks it up. Returns whether the request may proceed.
- */
 async function authorizeReportScope(
   socket: WebSocket,
   ctx: ConnectionContext,

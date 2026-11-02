@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * One workspace's dashboard server, a child of the local hub
- * (`swamp start` / `swamp dashboard`). It answers the serve WebSocket
- * protocol in-process for its repo with auth mode `none`, and takes requests
- * only from the hub, which holds its token. Nothing in `swamp serve` is
- * changed: this reuses `handleConnection` as it is.
+ * auth mode none, taking requests only from the hub, which holds the token;
+ * reuses handleConnection unchanged
  */
 
 import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
@@ -44,29 +41,20 @@ import { createHealthStreamResponse } from "../health_stream.ts";
 export interface LocalDashboardServerOptions {
   ctx: ConnectionContext;
   healthCollector: HealthCollector;
-  /**
-   * Every request must carry this token (header `x-swamp-hub-token`, or the
-   * `bearer.<token>` subprotocol on the WebSocket). Only the hub has it; the
-   * browser never talks to this server directly.
-   */
+  /** only the hub has the token; the browser never talks to this server directly */
   hubToken: string;
   /**
-   * Runs other swamp processes are executing in this repo right now (the
-   * CLI writes them to the run tracker). They join the health snapshot's
-   * active runs, so the dashboard refreshes when a CLI run starts or ends.
+   * runs other swamp processes execute in this repo join the active runs, so
+   * the dashboard refreshes when a CLI run starts or ends
    */
   trackedRuns?: () => HealthSnapshotRun[];
   /**
-   * True while this server runs something it started: the hub asks before
-   * stopping an idle child, since those runs would die with it.
+   * true while this server runs something it started; the hub asks before
+   * stopping an idle child since those runs would die with it
    */
   busy?: () => boolean;
 }
 
-/**
- * This server's own active runs plus the tracked ones it doesn't already
- * have, matched on run id.
- */
 export function mergeActiveRuns(
   own: readonly HealthSnapshotRun[],
   tracked: readonly HealthSnapshotRun[],
@@ -75,7 +63,6 @@ export function mergeActiveRuns(
   return [...own, ...tracked.filter((r) => !ids.has(r.runId))];
 }
 
-/** A tracker row for a running workflow, as a health snapshot run. */
 export function trackedWorkflowRuns(
   running: readonly {
     id: string;

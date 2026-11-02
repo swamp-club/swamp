@@ -22,14 +22,13 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "token-gc"]);
 
-export const DEFAULT_TOKEN_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-export const DEFAULT_TOKEN_GC_GRACE_PERIOD_MS = 60 * 60 * 1000; // 1 hour
+export const DEFAULT_TOKEN_GC_INTERVAL_MS = 60 * 60 * 1000;
+export const DEFAULT_TOKEN_GC_GRACE_PERIOD_MS = 60 * 60 * 1000;
 
 /**
- * The most tokens one sweep collects or fails to collect. Each collection
- * holds the sync gate for a remote push, so without a cap the first sweep
- * after an upgrade (every revoked or expired token ever minted) would hold
- * the gate for a long time. A larger backlog drains over later sweeps.
+ * caps a sweep because each collection holds the sync gate for a remote push;
+ * without it the first sweep after an upgrade would hold the gate long. A
+ * larger backlog drains over later sweeps.
  */
 export const MAX_TOKENS_PER_SWEEP = 100;
 
@@ -39,9 +38,7 @@ export interface TokenGcInfo {
   readonly state: "active" | "expired" | "revoked";
   readonly expiresAt: string;
   readonly revokedAt?: string;
-  /** Vault the token's `token-main` record says holds its secret. */
   readonly vaultName?: string;
-  /** Secret key the token's `token-main` record names. */
   readonly secretKey?: string;
 }
 
@@ -52,11 +49,9 @@ export interface ServerTokenGcDeps {
   listTokens(): Promise<TokenGcInfo[]>;
 
   /**
-   * Deletes one listed token: its secret, its OAuth access token, and its
-   * definition, data and outputs. The token is re-read first, and the result
-   * is "skipped" when it is gone or `isEligible` no longer holds for its
-   * current record — a mint or rotation may have landed since the listing.
-   * Throws, leaving the token for the next sweep, when a delete fails.
+   * re-reads the token first; skipped when gone or not eligible, since a mint
+   * or rotation may have landed since the listing; throws when a delete fails,
+   * leaving the token for the next sweep
    */
   collectToken(
     token: TokenGcInfo,
@@ -69,17 +64,12 @@ export class ServerTokenGcService {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #running = false;
   #disposed = false;
-  /** Definition ids of the tokens the last sweep failed to collect. */
   #failedLastSweep = new Set<string>();
 
   constructor(deps: ServerTokenGcDeps) {
     this.#deps = deps;
   }
 
-  /**
-   * Starts the sweep loop. The first sweep runs straight away, on a timer so
-   * it never delays the caller, then once every `intervalMs`.
-   */
   start(): void {
     if (this.#disposed) return;
     logger.info(

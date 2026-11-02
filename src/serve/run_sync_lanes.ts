@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** The two kinds of run sync the sync gate's shared mode admits. */
 export type RunSyncLane = "pull" | "push";
 
 interface Waiter {
@@ -26,40 +25,27 @@ interface Waiter {
 }
 
 /**
- * Keeps run pulls and run pushes apart inside the sync gate's shared mode
- * (swamp-club#3146). Any number of holders of one lane run together, so
- * fan-out pushes keep their parallel uploads and step-start pulls run side
- * by side, but a pull never overlaps a push. A step-start pull that read the
- * remote's older `latest` marker before another run's push committed would
- * otherwise write it over the local marker after that push verified it, and
- * the next upload of the marker would publish the older version again.
- *
- * Queued acquirers are granted in arrival order, a run of consecutive
- * same-lane waiters at once, so a steady stream of one lane cannot starve
- * the other. An acquirer that finds nobody queued and its own lane (or
- * nobody) active joins at once.
+ * a pull never overlaps a push: an older remote marker read before a push
+ * committed could overwrite the local one after the push verified it. Waiters
+ * are granted in arrival order, so no lane starves.
  */
 export class RunSyncLanes {
   #active: RunSyncLane | undefined;
   #holders = 0;
   readonly #queue: Waiter[] = [];
 
-  /** The lane currently held, if any. */
   get active(): RunSyncLane | undefined {
     return this.#active;
   }
 
-  /** Number of current holders of the active lane. */
   get holders(): number {
     return this.#holders;
   }
 
-  /** Number of queued acquirers. */
   get waiters(): number {
     return this.#queue.length;
   }
 
-  /** Enters `lane`, waiting while the other lane is held or queued ahead. */
   acquire(lane: RunSyncLane, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) {
       return Promise.reject(
@@ -95,7 +81,6 @@ export class RunSyncLanes {
     });
   }
 
-  /** Leaves the active lane. */
   release(): void {
     if (this.#holders === 0) {
       throw new Error("RunSyncLanes: release() without a holder");

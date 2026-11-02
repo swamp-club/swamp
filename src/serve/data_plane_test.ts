@@ -55,7 +55,6 @@ interface StoredEntry {
   data: Record<string, unknown>;
   version: number;
   lifetime?: string;
-  /** The saved record's metadata, for assertions on tags and policies. */
   saved?: Data;
 }
 
@@ -217,7 +216,6 @@ interface Harness {
   bundles: BundleRegistry;
   firstWrites: string[];
   tempDir: string;
-  /** The vault scope each repository save ran in. */
   scopesAtSave: (RunVaultAccess | undefined)[];
 }
 
@@ -230,7 +228,6 @@ async function withHarness(
     const { repo, stored } = createInMemoryRepo(tempDir);
     const markDirty = options.markDirty;
     if (markDirty !== undefined) {
-      // As the data repository signals each write before making it.
       const save = repo.save.bind(repo);
       repo.save = (async (...args: Parameters<typeof repo.save>) => {
         await signalChange(markDirty, { kind: "write", path: args[2].name });
@@ -458,7 +455,6 @@ Deno.test("DataPlane: control-plane record bytes read as missing, in any spellin
       );
       assertEquals(response?.status, 404, type);
       assertStringIncludes(await response!.text(), "No data 'grant' version 1");
-      // No ETag: the response is the same as for a record that is absent.
       assertEquals(response?.headers.get("etag"), null);
     }
   });
@@ -565,7 +561,6 @@ Deno.test("DataPlane: resource writes flow through declared-spec enforcement", a
       await undeclared!.text(),
       "Undeclared resource spec",
     );
-    // onFirstWrite fires once per dispatch, not per write.
     assertEquals(h.firstWrites, ["d-1"]);
   });
 });
@@ -587,9 +582,9 @@ Deno.test("DataPlane: resource write overrides from a worker land on the saved r
           overrides: {
             lifetime: "7d",
             garbageCollection: 3,
-            // Method tags rank below the auto-injected and workflow tags,
-            // exactly as for a local write. specName is reserved, so it is
-            // refused rather than outranked (swamp-club#3684).
+            // method tags rank below the auto-injected and workflow tags, as
+            // for a local write; specName is reserved, so it is refused rather
+            // than outranked
             tags: {
               provider: "claude",
               modelName: "forged",
@@ -668,7 +663,6 @@ Deno.test("DataPlane: malformed resource overrides are refused before anything i
       assertEquals(response?.status, 400);
       assertStringIncludes(await response!.text(), `Invalid ${field}`);
       assertEquals(h.stored.size, 0);
-      // The lease is not marked as having written.
       assertEquals(h.firstWrites, []);
     });
   }
@@ -871,7 +865,6 @@ Deno.test("DataPlane: writer sessions are scoped to their dispatch and worker", 
     );
     const { writerId } = await open!.json();
 
-    // Dispatch ends: sessions are released, late writes are refused.
     h.plane.releaseDispatch("d-1");
     assertEquals(h.plane.openWriterCount, 0);
     const late = await h.plane.handle(
@@ -975,8 +968,6 @@ Deno.test("DataPlane: DELETE /data/resource requires active dispatch", async () 
     assertEquals(resp?.status, 400);
   });
 });
-
-// ── declared-asset-files security tests (issue #1910) ─────────────────
 
 Deno.test("DataPlane: /bundle/{fp}/files lists only declared additionalFiles", async () => {
   await withHarness(async ({ plane, bundles }) => {
@@ -1224,7 +1215,6 @@ Deno.test("DataPlane: a dispatch's run repository keeps ephemeral writes out of 
     methods: {},
   };
   await withHarness(async (h) => {
-    // As a run hands its ephemeral-wrapped repository to a remote dispatch.
     const ephemeral = createEphemeralStore(h.repo.namespace);
     try {
       h.dispatches.register({
@@ -1313,8 +1303,6 @@ Deno.test("DataPlane: tagOverrides on dispatch are applied to written resources"
     assertEquals(handle.tags.step, "my-step");
   });
 });
-
-// ── trace context of data-plane work (swamp-club#2467) ──
 
 const DISPATCH_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
 const DISPATCH_SPAN_ID = "b7ad6b7169203331";
@@ -1431,7 +1419,6 @@ Deno.test("DataPlane: a resource write splits its lease wait from its persistenc
         isChildOf(findSpan(spans, "swamp.serve.data_plane.persist"), request),
       );
 
-      // The lease is marked once per dispatch: a second write only persists.
       const second = await h.plane.handle(writeRequest());
       assertEquals(second?.status, 200);
       assertEquals(
@@ -1586,8 +1573,8 @@ Deno.test("DataPlane: writtenVersions reports the versions a dispatch's writes f
         [MODEL_TYPE.normalized, "m-1", "log", 1],
       ],
     );
-    // A publish lock tells each write from another clone's of the same
-    // number by its data id (swamp-club#3934).
+    // a publish lock tells each write from another clone's of the same number
+    // by its data id
     assert(
       versions.every((v) => typeof v.dataId === "string" && v.dataId !== ""),
     );

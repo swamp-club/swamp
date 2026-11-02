@@ -24,7 +24,6 @@ import {
   FOLLOWER_READY_WAIT_MS,
 } from "./follower_ready.ts";
 
-/** A clock that moves only when the wait pauses. */
 function clock() {
   let at = 0;
   const pauses: number[] = [];

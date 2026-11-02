@@ -459,8 +459,6 @@ Deno.test("sweepStaleRecords: skips records with missing worker name attribute",
   assertEquals(h.saves.length, 0);
 });
 
-// ── replayPendingRuns tests ──────────────────────────────────────────
-
 interface ReplayedWebhook {
   pendingRunId: string;
   workflowIdOrName: string;
@@ -503,8 +501,6 @@ function createReplayHarness(
     } as unknown as ReplayPendingRunsDeps["scheduledExecution"]
     : undefined;
 
-  // Default to permissive sets that accept anything — individual tests
-  // override when they need to exercise the filter logic.
   const configuredWebhookWorkflows = opts.configuredWebhookWorkflows ??
     new Set(
       pending.filter((e) => e.source === "webhook").map((e) =>
@@ -803,8 +799,6 @@ Deno.test("sweepStaleRecords: sweeps all three model types together", async () =
   assertEquals(h.saves.length, 3);
 });
 
-// ── replayPendingRuns remote merge tests ──────────────────────────────
-
 const encoder2 = new TextEncoder();
 
 function createInMemoryControlPlaneStore(
@@ -875,7 +869,6 @@ Deno.test("replayPendingRuns: deduplicates local and remote entries by id", asyn
   const controlPlaneStore = createInMemoryControlPlaneStore({
     "pending-runs/dup-1": sharedEntry,
   });
-  // Local also has the same entry
   const h = createReplayHarness([sharedEntry], {
     configuredCronWorkflows: new Set(["shared-flow"]),
   });
@@ -889,7 +882,7 @@ Deno.test("replayPendingRuns: deduplicates local and remote entries by id", asyn
 
 Deno.test("replayPendingRuns: discards invalid remote entries", async () => {
   const controlPlaneStore = createInMemoryControlPlaneStore({
-    "pending-runs/bad-1": { id: "bad-1" }, // missing source and workflowIdOrName
+    "pending-runs/bad-1": { id: "bad-1" },
   });
   const h = createReplayHarness([]);
   h.deps.controlPlaneStore = controlPlaneStore;
@@ -899,8 +892,6 @@ Deno.test("replayPendingRuns: discards invalid remote entries", async () => {
   assertEquals(count, 0);
   assertEquals(controlPlaneStore.deleted, ["pending-runs/bad-1"]);
 });
-
-// ── reconcileRemoteInterruptedRuns tests ──────────────────────────────
 
 function makeHeartbeat(
   instanceId: string,
@@ -1013,7 +1004,6 @@ Deno.test("reconcileRemoteInterruptedRuns: reaps runs from stale instances", asy
 });
 
 Deno.test("reconcileRemoteInterruptedRuns: a peer the rule counts gone is reaped though its heartbeat is fresh (swamp-club#4096)", async () => {
-  // A demoted leader keeps heartbeating, but its commits are fenced.
   const run1 = makeActiveRunData({
     id: "run-1",
     instanceId: "demoted",
@@ -1037,13 +1027,10 @@ Deno.test("reconcileRemoteInterruptedRuns: a peer the rule counts gone is reaped
   assertEquals(reaped, 1);
   assertEquals(h.completed.map((c) => c.runId), ["run-1"]);
   assertEquals(judged.sort(), ["demoted", "follower"]);
-  // The follower's heartbeat is left alone.
   assertEquals(
     h.controlPlaneStore.deleted.includes("heartbeats/follower"),
     false,
   );
-  // The demoted leader keeps its instance id: its claim is released, so a
-  // later pass may claim it again.
   assertEquals(
     h.controlPlaneStore.deleted.includes("claims/reconcile-instance/demoted"),
     true,
@@ -1152,7 +1139,6 @@ Deno.test("reconcileRemoteInterruptedRuns: skips instance when claim fails", asy
     { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
     [run1],
   );
-  // Pre-populate a claim to simulate another instance having claimed it
   await h.controlPlaneStore.put(
     "claims/reconcile-instance/dead-inst",
     encoder2.encode(
@@ -1181,7 +1167,6 @@ Deno.test("reconcileRemoteInterruptedRuns: defers heartbeat deletion until after
   assertEquals(reaped, 1);
   assertEquals(h.completed.length, 1);
   assertEquals(h.completed[0].runId, "run-1");
-  // Heartbeat should be deleted after reaping
   assertEquals(
     h.controlPlaneStore.deleted.includes("heartbeats/dead-inst"),
     true,
@@ -1218,7 +1203,6 @@ Deno.test("reconcileRemoteInterruptedRuns: works without putIfAbsent (graceful d
   const storeEntries: Record<string, unknown> = {
     "heartbeats/dead-inst": makeHeartbeat("dead-inst", { stale: true }),
   };
-  // Create a store without putIfAbsent
   const store = new Map<string, Uint8Array>();
   for (const [key, value] of Object.entries(storeEntries)) {
     store.set(key, encoder2.encode(JSON.stringify(value)));
@@ -1350,11 +1334,10 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from st
     ];
 
   const reaped = await reconcileRemoteInterruptedRuns(h.deps);
-  assertEquals(reaped, 2); // 1 tracker + 1 YAML
+  assertEquals(reaped, 2);
   assertEquals(yamlInterrupted, ["remote_instance_dead"]);
   assertEquals(yamlSaved.length, 1);
   assertEquals(yamlSaved[0].workflowId, "wf-1");
-  // A run of any age: resumed long after it started, it is still orphaned.
   assertEquals(scanWindows, [undefined]);
 });
 
@@ -1394,7 +1377,7 @@ Deno.test("reconcileRemoteInterruptedRuns: skips YAML runs from non-stale instan
     ];
 
   const reaped = await reconcileRemoteInterruptedRuns(h.deps);
-  assertEquals(reaped, 1); // only the tracker run
+  assertEquals(reaped, 1);
   assertEquals(yamlSaved.length, 0);
 });
 
@@ -1408,7 +1391,6 @@ Deno.test("reconcileRemoteInterruptedRuns: works without workflowRunRepo (existi
     { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
     [run1],
   );
-  // No workflowRunRepo set — should work as before
   const reaped = await reconcileRemoteInterruptedRuns(h.deps);
   assertEquals(reaped, 1);
   assertEquals(h.completed.length, 1);
@@ -1449,7 +1431,6 @@ const deadPidLiveness = {
 };
 
 Deno.test("reconcileRemoteInterruptedRuns: interrupts local runs of an instance a peer already reaped", async () => {
-  // The peer deleted the dead instance's heartbeat; only its own remains.
   const h = createReconcileHarness(
     { "peer": makeHeartbeat("peer", { stale: false }) },
     [makeActiveRunData({
@@ -1475,7 +1456,6 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts local runs of an instance 
     reason: "remote_instance_dead",
   }]);
   assertEquals(yaml.interrupted, ["yaml-old"]);
-  // Nothing was claimed, so the store is left as it was.
   assertEquals(h.controlPlaneStore.deleted, []);
   assertEquals(
     await h.controlPlaneStore.list("claims/"),
@@ -1513,7 +1493,6 @@ Deno.test("reconcileRemoteInterruptedRuns: leaves a heartbeat-less instance whos
 
   assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 0);
   assertEquals(h.completed.length, 0);
-  // With nothing claimed and nothing gone, the run records are not scanned.
   assertEquals(yaml.scans(), 0);
 });
 
@@ -1545,7 +1524,6 @@ Deno.test("reconcileRemoteInterruptedRuns: a small stale ttl does not shorten th
       heartbeatAt: new Date(Date.now() - ageMs).toISOString(),
     });
 
-  // Between two refreshes of a live owner's row.
   const live = createReconcileHarness({}, [row(45_000)]);
   live.deps.ownerLiveness = deadPidLiveness;
   live.deps.staleTtlMs = 2_000;
@@ -1558,7 +1536,6 @@ Deno.test("reconcileRemoteInterruptedRuns: a small stale ttl does not shorten th
 });
 
 Deno.test("reconcileRemoteInterruptedRuns: a previous instance's row carrying this process's pid is reaped only once it is stale", async () => {
-  // A restarted container and a live sibling container are both pid 7.
   const row = (ageMs: number) =>
     makeActiveRunData({
       id: "run-1",
@@ -1689,8 +1666,6 @@ Deno.test("reconcileRemoteInterruptedRuns: a method-run row with no running outp
   assertEquals(h.completed[0].reason, "remote_instance_dead");
 });
 
-// ── cleanupExpiredClaims tests ─────────────────────────────────────────
-
 Deno.test("cleanupExpiredClaims: deletes expired claims", async () => {
   const expiredClaim = {
     claimedBy: "inst-a",
@@ -1735,8 +1710,6 @@ Deno.test("cleanupExpiredClaims: no-op with empty claims list", async () => {
   const cleaned = await cleanupExpiredClaims({ controlPlaneStore: store });
   assertEquals(cleaned, 0);
 });
-
-// ── hydrateLocalCache tests ─────────────────────────────────────────
 
 function createHydrateDeps(
   opts: {
@@ -1845,7 +1818,6 @@ Deno.test("hydrateLocalCache: required hydration retries a failed pull with a fr
 });
 
 Deno.test("hydrateLocalCache: required hydration invalidates when a retry pulls nothing more", async () => {
-  // The failed attempt may have downloaded everything before it failed.
   const h = createRequiredHydrateDeps([new Error("S3 timeout"), 0]);
   const result = await hydrateLocalCache(h.deps);
 
@@ -1920,8 +1892,6 @@ Deno.test("hydrateLocalCache: does not invalidate catalog on failure", async () 
   await hydrateLocalCache(h.deps);
   assertEquals(h.invalidated.length, 0);
 });
-
-// ── Token Health Check Tests ─────────────────────────────────────────
 
 function createMockTokenSecretsProvider(opts: {
   keys?: string[];
@@ -2019,8 +1989,6 @@ Deno.test("checkTokenHealth: handles list failure gracefully", async () => {
   });
   assertEquals(result.totalSecrets, 0);
 });
-
-// ── Token Consistency Sweep Tests ────────────────────────────────────
 
 function createMockConsistencyDeps(opts: {
   secretKeys?: string[];
@@ -2218,8 +2186,6 @@ Deno.test("sweepTokenConsistency: missing-secret reported when no probe provided
   assertEquals(result.inconsistencies[0].mode, "missing-secret");
 });
 
-// ── Root control-plane isolation regression test ────────────────────
-
 Deno.test("hydrateLocalCache: separate root sync service prevents namespace mismatch", async () => {
   let mainBoundNamespace: string | undefined | null = null;
 
@@ -2281,9 +2247,6 @@ Deno.test("hydrateLocalCache: separate root sync service prevents namespace mism
   assertEquals(mainBoundNamespace, "my-namespace");
 });
 
-// --- Root units (swamp-club#3056) ---
-
-/** A recording mark hook, and the route-2 reports made while `fn` runs. */
 async function withHookAndReports(
   fn: (
     markDirty: (path?: string) => Promise<void>,
@@ -2365,10 +2328,6 @@ Deno.test("reconcileRemoteInterruptedRuns: the YAML run saves stage into a root 
   assertEquals(marks, ["yaml-run-1"]);
 });
 
-/**
- * A YAML run repository holding `cached` runs in its status index, and
- * `remote` runs that only become readable by id once refreshed.
- */
 function refreshableRunRepo(
   cached: Array<{ id: string; instanceId: string }>,
   remote: Array<{ id: string; instanceId: string; workflowId: string }>,
@@ -2459,7 +2418,6 @@ Deno.test("reconcileRemoteInterruptedRuns: refreshes a claimed instance's workfl
     `save ${workflowId} ${runId}`,
     "push",
   ]);
-  // The active-run records were read before the cleanup deleted them.
   assertEquals(
     h.controlPlaneStore.deleted.includes(
       `active-runs/dead-inst/${runId}`,
@@ -2580,7 +2538,6 @@ Deno.test("reconcileRemoteInterruptedRuns: a failed refresh leaves the instance 
   h.deps.workflowRunRepo = runs.repo;
   h.deps.refreshRunRecord = () => Promise.reject(new Error("S3 unreachable"));
 
-  // The cached run is still settled; the instance is not let go.
   assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
   assertEquals(runs.events, [
     `interrupt ${cached} remote_instance_dead`,
@@ -2596,7 +2553,6 @@ Deno.test("reconcileRemoteInterruptedRuns: a failed refresh leaves the instance 
     null,
   );
 
-  // The next pass claims it again, and this time the refresh lands.
   h.deps.refreshRunRecord = runs.refresh;
   await reconcileRemoteInterruptedRuns(h.deps);
   assertEquals(
@@ -2837,7 +2793,6 @@ Deno.test("teamModeRunLiveness: a peer the leader record names above this node's
     await stale.isPeerGone(makeHeartbeat("demoted", { stale: false })),
     true,
   );
-  // This node leads at the higher fence: the record is its own past.
   const leading = teamModeRunLiveness("me", store, undefined, () => 10);
   assertEquals(
     await leading.isPeerGone(makeHeartbeat("new-leader", { stale: false })),

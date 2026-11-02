@@ -26,12 +26,8 @@ export const OAUTH_CLIENT_SECRET_KEY = "oauth-client-secret";
 export const OAUTH_RESOLVED_ADMINS_KEY = "oauth-resolved-admins";
 export const OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY = "oauth-bootstrap-access-token";
 
-// Well-known bootstrap client ID for first-time OAuth registration.
-// This is a public client ID baked into the binary — the same pattern
-// used by GitHub CLI (client ID 178c6fc778ccc68e1d6a), Claude Code,
-// and other CLI tools that authenticate via OAuth device grant.
-// Security is in the device grant approval (user must approve in browser),
-// not in the client ID secrecy.
+// a public bootstrap client ID baked into the binary, as CLI tools do for
+// device grant; security is in the browser approval, not in the ID being secret
 export const BOOTSTRAP_CLIENT_ID = "swamp-serve-bootstrap";
 
 export interface OAuthClientCredentials {

@@ -45,10 +45,6 @@ const PROVIDER = "https://provider.test";
 const NOW = "2026-09-23T12:00:00.000Z";
 const EARLIER = "2026-09-01T00:00:00.000Z";
 
-/**
- * Fake provider: known names resolve to `sub-<name>`, names in `failing`
- * throw a transient error, everything else is not found. Records calls.
- */
 function fakeResolver(
   known: readonly string[],
   failing: readonly string[] = [],
@@ -88,8 +84,6 @@ function run(
     now: () => NOW,
   });
 }
-
-// ── chooseResolutionMode ───────────────────────────────────────────────
 
 Deno.test("chooseResolutionMode: full when a name is not cached at all", () => {
   assertEquals(
@@ -135,8 +129,6 @@ Deno.test("listUncachedNames: lists names with neither a sub nor a marker", () =
     ["carol", "allowed:dave"],
   );
 });
-
-// ── resolveAccessLists: full mode ──────────────────────────────────────
 
 Deno.test("resolveAccessLists: full mode rewrites admins and allowed-users", async () => {
   const { resolve } = fakeResolver(["alice", "bob"]);
@@ -259,8 +251,6 @@ Deno.test("resolveAccessLists: full mode looks up only names the cache does not 
 });
 
 Deno.test("resolveAccessLists: a credential that cannot look users up fails on the added name", async () => {
-  // swamp-club#3435: adding carol with a collective token that lacks
-  // oauth:manage must not look the cached alice up and blame her.
   const cache = { alice: "sub-alice", bob: "sub-bob" };
   const admins = ["alice", "bob", "carol"];
   const calls: string[] = [];
@@ -291,8 +281,6 @@ Deno.test("resolveAccessLists: a credential that cannot look users up fails on t
 });
 
 Deno.test("resolveAccessLists: a cached name is never looked up, so a 404 for it cannot drop it", async () => {
-  // A resolved name is pinned: adding carol must not look alice up, so
-  // neither a spurious 404 nor a re-registered name can change her grant.
   const cache = { alice: "sub-alice", "allowed:alice": "sub-alice" };
   const { resolve, calls } = fakeResolver(["carol"]);
   const result = await run({
@@ -323,9 +311,6 @@ Deno.test("resolveAccessLists: a cached name is never looked up, so a transient 
 });
 
 Deno.test("resolveAccessLists: full mode keeps a previously missing name skipped", async () => {
-  // Adding carol triggers full mode, but alic_e was recorded as not found:
-  // an unrelated edit must not look it up, or a squatted typo would be
-  // promoted.
   const { resolve, calls } = fakeResolver(["alice", "alic_e", "carol"]);
   const result = await run({
     admins: ["alice", "alic_e", "carol"],
@@ -359,8 +344,6 @@ Deno.test("resolveAccessLists: removing a skipped name drops its record", async 
 });
 
 Deno.test("resolveAccessLists: a name added back after removal is looked up fresh", async () => {
-  // The cache after removing bob no longer has his record, so adding him
-  // back is a new name and triggers a lookup.
   const cache = { alice: "sub-alice" };
   const admins = ["alice", "bob"];
   const { resolve, calls } = fakeResolver(["alice", "bob"]);
@@ -384,8 +367,6 @@ Deno.test("resolveAccessLists: names that shadow Object.prototype are not treate
   assertEquals(result.admins, ["user:sub-constructor"]);
   assertEquals(result.unresolved.map((u) => u.entry), ["toString"]);
 });
-
-// ── resolveAccessLists: entries that are not plain usernames ──────────
 
 for (
   const [label, admins] of [
@@ -491,8 +472,6 @@ for (const entry of ["collective:acme", "user:collective:acme"]) {
   });
 }
 
-// ── resolveAccessLists: cached mode ────────────────────────────────────
-
 Deno.test("resolveAccessLists: a restart never promotes a skipped name", async () => {
   // Even if the account now exists, an unchanged config must not turn a
   // skipped name into a grant: anyone who registered a typo'd admin name
@@ -543,8 +522,6 @@ Deno.test("resolveAccessLists: a resolver is required outside cached mode", asyn
     "A resolver is required in full mode",
   );
 });
-
-// ── assertAccessListsUsable ────────────────────────────────────────────
 
 Deno.test("assertAccessListsUsable: refuses when no admin resolved", async () => {
   const result = await run({
@@ -637,8 +614,6 @@ Deno.test("assertAccessListsUsable: allows a partial skip", async () => {
   assertAccessListsUsable(configured, result, PROVIDER);
   assertEquals(result.unresolved.length, 2);
 });
-
-// ── checkAccessLists ───────────────────────────────────────────────────
 
 Deno.test("checkAccessLists: reports each entry and that serve would start", async () => {
   const check = await checkAccessLists(

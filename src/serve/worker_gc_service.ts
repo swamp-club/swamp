@@ -32,14 +32,13 @@ import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 
 const logger = getSwampLogger(["serve", "worker-gc"]);
 
-export const DEFAULT_WORKER_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-export const DEFAULT_WORKER_GC_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const DEFAULT_WORKER_GC_INTERVAL_MS = 60 * 60 * 1000;
+export const DEFAULT_WORKER_GC_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The worker GC grace period for a repo's `garbageCollection` block: its
- * `bookkeeping` key when `automatic` is on (the shared `retention` never
- * applies), else {@link DEFAULT_WORKER_GC_GRACE_PERIOD_MS}. A retention set
- * only for manual gc never shortens how long serve keeps workers.
+ * bookkeeping key when automatic is on (shared retention never applies), else
+ * the default; a retention set only for manual gc never shortens how long serve
+ * keeps workers
  */
 export function bookkeepingGracePeriodMs(
   config: RetentionConfig | undefined,
@@ -51,7 +50,6 @@ export function bookkeepingGracePeriodMs(
 
 export interface WorkerGcDeps {
   readonly intervalMs: number;
-  /** Grace period used when `resolveGracePeriodMs` is absent or fails. */
   readonly gracePeriodMs: number;
   /**
    * Resolves the grace period at the start of each sweep, so a change to
@@ -60,18 +58,15 @@ export interface WorkerGcDeps {
    */
   resolveGracePeriodMs?(): Promise<number>;
   runPrune(gracePeriodMs: number): Promise<WorkerPruneResult>;
-  /** Reaps ended step leases and pending dispatches; gates its own batches. */
   reapBookkeeping?(
     gracePeriodMs: number,
     isStopping: () => boolean,
   ): Promise<BookkeepingReapResult>;
   readonly syncService?: Pick<DatastoreSyncService, "pushChanged">;
-  /** Datastore namespace passed to `pushChanged`. */
   readonly syncNamespace?: string;
   readonly syncGate?: SyncGate;
 }
 
-/** Outcome of one GC cycle; a part is null when it failed or is not wired. */
 export interface WorkerGcSweepResult {
   readonly workers: WorkerPruneResult | null;
   readonly bookkeeping: BookkeepingReapResult | null;
@@ -88,10 +83,8 @@ export function workerGcListPredicate(namespace: string): string {
 }
 
 /**
- * Prunes stale workers, then pushes. Must run inside the exclusive sync gate
- * (`withSyncGate`) so a poller pull cannot restore a deleted worker between
- * the delete and its push (swamp-club#2247) — the same unit the admin
- * `worker.prune` handler runs.
+ * must run inside the exclusive sync gate so a poller pull cannot restore a
+ * deleted worker between the delete and its push
  */
 async function pruneWorkersAndPush(
   deps: WorkerGcDeps,

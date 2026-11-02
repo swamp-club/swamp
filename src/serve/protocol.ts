@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Wire protocol types for the swamp WebSocket API.
- *
- * Clients send ServerRequest messages, the server streams back ServerMessage
- * events. Each request carries a client-assigned `id` that the server echoes
- * on every response, enabling multiplexed operations on a single socket.
- */
-
-// ── Inbound (client → server) ────────────────────────────────────────────
-
 export interface WorkflowRunPayload {
   workflowIdOrName: string;
   inputs?: Record<string, unknown>;
@@ -45,16 +35,14 @@ export interface WorkflowRunPayload {
   tracestate?: string;
   noSupersede?: boolean;
   /**
-   * The client's inherited held-lock list (`SWAMP_LOCK_HOLDER_TOKENS`), so a
-   * run requested by a step of this server's own run skips that step's lock.
+   * the client's inherited held-lock list, so a run requested by a step of this
+   * server's own run skips that step's lock
    */
   lockHolderTokens?: string;
 }
 
-/** `server.version` capability: the server honours `literalInputs`. */
 export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
 
-/** `server.version` capability: the server honours `fromJob` on a resume. */
 export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
 
 export interface ModelMethodRunPayload {
@@ -62,10 +50,9 @@ export interface ModelMethodRunPayload {
   methodName: string;
   inputs?: Record<string, unknown>;
   /**
-   * Treat `inputs` as data: expression text in them is never evaluated
-   * (swamp-club#3205). Only send to a server whose `server.version` reply
-   * lists {@link SERVE_CAPABILITY_LITERAL_INPUTS}; an older server ignores
-   * the field and evaluates.
+   * treat inputs as data, never evaluating expression text; send only to a
+   * server advertising the literal-inputs capability, as an older one ignores
+   * the field and evaluates
    */
   literalInputs?: boolean;
   lastEvaluated?: boolean;
@@ -83,8 +70,8 @@ export interface ModelMethodRunPayload {
   traceparent?: string;
   tracestate?: string;
   /**
-   * The client's inherited held-lock list (`SWAMP_LOCK_HOLDER_TOKENS`), so a
-   * run requested by a step of this server's own run skips that step's lock.
+   * the client's inherited held-lock list, so a run requested by a step of this
+   * server's own run skips that step's lock
    */
   lockHolderTokens?: string;
 }
@@ -126,8 +113,8 @@ export interface DataQueryPayload {
   limit?: number;
   select?: string;
   /**
-   * Orders the matches by `createdAt` or `tags.<key>`, compared as strings,
-   * with the item identity as the tie-break (swamp-club#4177).
+   * orders matches by createdAt or tags.<key>, compared as strings, with the
+   * item identity as tie-break
    */
   sort?: { field: string; direction: "asc" | "desc" };
   /**
@@ -156,9 +143,7 @@ export interface ModelMethodDescribePayload {
 
 export interface WorkflowSearchPayload {
   query?: string;
-  /** Page size; omitted returns every authorized workflow. */
   limit?: number;
-  /** Number of authorized workflows to skip before the page. */
   offset?: number;
 }
 
@@ -245,29 +230,20 @@ export interface AuditExportResponse {
   done?: boolean;
 }
 
-/**
- * `commits.subscribe`: the v3 commit feed from `cursor` on (swamp-club#4120),
- * filtered as `GET changes` filters it.
- */
 export interface CommitsSubscribePayload {
-  /** The feed position to read after, as `GET changes?cursor=` takes it. */
   cursor: number;
   /**
-   * What the subscriber's copy understands, as `GET changes` reads the
-   * `x-swamp-datastore-features` header: a commit's lease ops are sent only
-   * to a subscriber that names `lease-ops` (swamp-club#4168).
+   * what the subscriber's copy understands, as the x-swamp-datastore-features
+   * header; a commit's lease ops are sent only to a subscriber that names
+   * lease-ops
    */
   features?: string[];
 }
 
 /**
- * One frame of a `commits.subscribe` stream: the commits the caller may
- * read after the previous frame's `cursor`, up to this one's. `cursor` moves
- * past commits the caller may not read; a frame with no changes still says
- * the feed is live. `head` is the last cursor the feed may send now. The
- * stream ends with an error frame: `commits_compacted` (load the base from
- * `point` and subscribe again) or `commits_lagged` (subscribe again from the
- * last cursor).
+ * cursor moves past commits the caller may not read; head is the last cursor
+ * the feed may send now; the stream ends with commits_compacted (reload base
+ * from point) or commits_lagged (resubscribe from last cursor)
  */
 export interface CommitsSubscribeFrame {
   changes: { cursor: number; commit: Record<string, unknown> }[];
@@ -276,7 +252,6 @@ export interface CommitsSubscribeFrame {
   done: false;
 }
 
-/** `commits.head`: the last cursor the commit feed may send now. */
 export interface CommitsHeadResponse {
   cursor: number;
 }
@@ -361,8 +336,6 @@ export interface DataRenamePayload {
   newName: string;
 }
 
-// ── Model operations ─────────────────────────────────────────────────
-
 export interface ModelGetPayload {
   modelIdOrName: string;
 }
@@ -395,30 +368,15 @@ export interface ModelOutputLogsPayload {
 }
 
 export interface ModelUsageSummaryPayload {
-  /**
-   * Counts outputs started at or after this ISO 8601 instant, or this long
-   * ago by serve's clock for a duration like `7d`.
-   */
   since?: string;
-  /** Counts outputs started before this instant or duration ago (exclusive). */
   until?: string;
-  /** Outputs kept per model in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
 }
 
 export interface ModelOutputSearchPayload {
   query?: string;
-  /** Only outputs of this model, by exact name or id. */
   model?: string;
-  /**
-   * Only outputs started at or after this ISO 8601 instant, or this long
-   * ago by serve's clock for a duration like `7d`.
-   */
   since?: string;
-  /**
-   * Only outputs started before this ISO 8601 instant or duration ago
-   * (exclusive).
-   */
   until?: string;
   /**
    * At most this many results, most recent first, counted among the outputs
@@ -450,8 +408,6 @@ export interface ModelEvaluatePayload {
   modelIdOrName?: string;
 }
 
-// ── Workflow operations ──────────────────────────────────────────────
-
 export interface WorkflowGetPayload {
   workflowIdOrName: string;
 }
@@ -474,16 +430,12 @@ export interface WorkflowHistorySearchPayload {
 
 export interface WorkflowRunSearchPayload {
   query?: string;
-  /** Runs started at or after: a duration back from now (`7d`) or ISO time. */
   since?: string;
-  /** Runs started before (exclusive): a duration back or ISO time. */
   until?: string;
   status?: string;
-  /** One workflow's runs, by name ignoring case. */
   workflow?: string;
   /** Runs of any of these workflows, by exact name; empty filters nothing. */
   workflows?: string[];
-  /** Runs with this trigger source (`schedule`, `api`…), ignoring case. */
   triggerSource?: string;
   /** Runs with any of these statuses; with `status`, both must hold. */
   statuses?: string[];
@@ -491,9 +443,7 @@ export interface WorkflowRunSearchPayload {
   triggerSources?: string[];
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
-  /** Page size; the server applies a default of 500 when omitted. */
   limit?: number;
-  /** Number of authorized runs to skip before the page. */
   offset?: number;
 }
 
@@ -502,19 +452,12 @@ export interface WorkflowRunSearchPayload {
  * read. Every field is optional.
  */
 export interface WorkflowRunSummaryPayload {
-  /** Runs started at or after this ISO time (a duration back also works). */
   since?: string;
-  /** Runs started before this ISO time (exclusive). */
   until?: string;
-  /** Only runs of these workflows, by exact name. */
   workflows?: string[];
-  /** Only runs with this trigger source, ignoring case. */
   triggerSource?: string;
-  /** Only runs with any of these trigger sources, ignoring case. */
   triggerSources?: string[];
-  /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
-  /** Include hourly buckets. */
   timeline?: boolean;
 }
 
@@ -531,51 +474,39 @@ export interface WorkflowApprovePayload {
 }
 
 /**
- * A signal for a wait, named by its ID or by a workflow and a key one of its
- * `wait_for_signal` steps declares (swamp-club#3211). Exactly one of the two
- * addresses is sent. The payload is untrusted and checked by the wait.
+ * exactly one of the two addresses is sent; the payload is untrusted and
+ * checked by the wait
  */
 export type WorkflowSignalPayload =
   | {
     waitId: string;
     payload: unknown;
-    /** Names this signal across retries; see `isIdempotencyKey`. */
     idempotencyKey?: string;
   }
   | {
-    /** The workflow's name or ID. */
     workflow: string;
     key: string;
     payload: unknown;
     /**
-     * True from a client that reads a `pending` reply (swamp-club#3212). A
-     * client from before it reads `data` of every reply, so the server
-     * holds no signal for one that does not say this: it is refused
-     * `no_open_wait`, as it was before, and nothing is stored.
+     * true from a client that reads a pending reply; older clients read data of
+     * every reply, so without it the server holds nothing and refuses
+     * no_open_wait
      */
     acceptsPending?: boolean;
     /**
-     * True from a client that reads an `accepted` reply (swamp-club#3213). A
-     * caller who may signal the workflow and not read it gets that reply for
-     * a key whose step sets `acceptEarly`; one whose client does not say
-     * this is refused `upgrade_required`, and nothing is delivered or
-     * stored.
+     * true from a client that reads an accepted reply; a caller who may signal
+     * but not read gets it for an acceptEarly key, and without this is refused
+     * upgrade_required with nothing delivered or stored
      */
     acceptsReceipt?: boolean;
-    /** Names this signal across retries; see `isIdempotencyKey`. */
     idempotencyKey?: string;
   };
 
 export interface WorkflowWaitsPayload {
-  /**
-   * Also list the waits a signal has settled whose run has not been resumed
-   * yet, under `signalled`.
-   */
   includeSignalled?: boolean;
   /**
-   * Also list the signals by key held for the next wait of their key, under
-   * `pending`, each only to a caller who may read its workflow
-   * (swamp-club#3214).
+   * also list signals by key held for the next wait of their key, under
+   * pending, each only to a caller who may read its workflow
    */
   includePending?: boolean;
 }
@@ -599,20 +530,15 @@ export interface WorkflowResumePayload {
   runId?: string;
   from?: string;
   /**
-   * The job of the `from` step, when its name is used in more than one job
-   * (swamp-club#3815). Only send to a server whose `server.version` reply
-   * lists {@link SERVE_CAPABILITY_RESUME_FROM_JOB}; an older server ignores
-   * the field and resets the `from` step in every job that has it.
+   * send only to a server advertising the resume-from-job capability; an older
+   * one ignores the field and resets the from step in every job that has it
    */
   fromJob?: string;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
-  /** As on {@link WorkflowRunPayload}. */
   lockHolderTokens?: string;
 }
-
-// ── Vault operations ─────────────────────────────────────────────────
 
 export interface VaultDescribePayload {
   vaultNameOrId: string;
@@ -642,8 +568,6 @@ export interface VaultAnnotatePayload {
   clear?: boolean;
 }
 
-// ── Server admin ─────────────────────────────────────────────────────
-
 export interface WorkerListPayload {
   showAll?: boolean;
   /**
@@ -656,9 +580,7 @@ export interface WorkerListPayload {
 export type WorkerQueueListPayload = Record<string, never>;
 
 export interface WorkerLeaseListPayload {
-  /** Dispatch ids whose step leases to return (a lease is named by its dispatch id). */
   dispatchIds?: string[];
-  /** Also return leases written within this many milliseconds (recently ended). */
   endedWithinMs?: number;
 }
 
@@ -673,8 +595,6 @@ export interface WorkerPrunePayload {
 }
 
 export type DatastoreStatusPayload = Record<string, never>;
-
-// ── Extension operations ─────────────────────────────────────────────
 
 export type ExtensionListPayload = Record<string, never>;
 
@@ -713,12 +633,6 @@ export interface ExtensionUpdatePayload {
   checkOnly?: boolean;
 }
 
-// ── Datastore setup ─────────────────────────────────────────────────
-
-/**
- * `swamp datastore claim --server` (swamp-club#4063): makes this serve the
- * owner of its v3 datastore, for the address clients reach it at.
- */
 export interface DatastoreClaimPayload {
   address: string;
 }
@@ -732,15 +646,11 @@ export interface DatastoreSetupExtensionPayload {
   timeout?: number;
 }
 
-// ── Vault migrate ───────────────────────────────────────────────────
-
 export interface VaultMigratePayload {
   vaultName: string;
   targetType: string;
   targetConfig?: Record<string, unknown>;
 }
-
-// ── Access token operations ──────────────────────────────────────────
 
 export type AccessTokenListPayload = Record<string, never>;
 
@@ -761,8 +671,6 @@ export interface AccessTokenMintPayload {
   durationMs: number;
 }
 
-// ── Model edit / type operations ────────────────────────────────────
-
 export interface ModelEditPayload {
   modelIdOrName: string;
   content?: string;
@@ -780,8 +688,6 @@ export interface ModelTypeDescribePayload {
 export interface ModelTypeSearchPayload {
   query?: string;
 }
-
-// ── Workflow CRUD operations ────────────────────────────────────────
 
 export interface WorkflowCreatePayload {
   name: string;
@@ -810,8 +716,6 @@ export interface WorkflowEvaluatePayload {
   inputs?: Record<string, unknown>;
 }
 
-// ── Workflow trigger override operations ────────────────────────────
-
 export interface WorkflowTriggerSetPayload {
   workflowName: string;
   schedule: string;
@@ -826,11 +730,9 @@ export interface WorkflowTriggerRemovePayload {
   workflowName: string;
 }
 
-/** Pauses a workflow's schedule (swamp-club#3522). */
 export interface WorkflowSchedulePausePayload {
   workflowIdOrName: string;
   reason?: string;
-  /** An ISO-8601 time, or a duration from now such as 30m, 2h, 1d. */
   until?: string;
 }
 
@@ -838,7 +740,6 @@ export interface WorkflowScheduleResumePayload {
   workflowIdOrName: string;
 }
 
-/** Lists scheduled workflows with their pause state; takes no fields. */
 export type WorkflowScheduleListPayload = Record<string, never>;
 
 export interface EffectiveTrigger {
@@ -855,8 +756,6 @@ export interface WorkflowTriggerGetResult {
   } | null;
   readonly effective: EffectiveTrigger;
 }
-
-// ── Vault CRUD / audit operations ───────────────────────────────────
 
 export interface VaultCreatePayload {
   vaultType: string;
@@ -890,8 +789,6 @@ export interface VaultTypeSearchPayload {
   query?: string;
 }
 
-// ── Worker token operations ─────────────────────────────────────────
-
 export interface WorkerTokenCreatePayload {
   name: string;
   durationMs: number;
@@ -907,8 +804,6 @@ export interface WorkerTokenRevokePayload {
   name: string;
 }
 
-// ── Data / run housekeeping ─────────────────────────────────────────
-
 export interface DataGcPayload {
   dryRun?: boolean;
 }
@@ -923,25 +818,15 @@ export interface RunGcPayload {
   outputRetentionDays?: number;
 }
 
-// ── Cluster / serve config ─────────────────────────────────────────
-
 export type ClusterInstancesPayload = Record<string, never>;
 
 export type ServeConfigPayload = Record<string, never>;
 
-// ── Datastore namespace ─────────────────────────────────────────────
-
 export type DatastoreNamespaceListPayload = Record<string, never>;
-
-// ── Doctor operations ────────────────────────────────────────────────
 
 export type DoctorVaultsPayload = Record<string, never>;
 
 export interface DoctorDatastoresPayload {
-  /**
-   * Also scan storage for items older than each kind's retention
-   * (`swamp doctor datastores --retention`, swamp-club#3473).
-   */
   retention?: boolean;
 }
 
@@ -1288,15 +1173,11 @@ export type ServerRequest =
     payload?: ServeConfigPayload;
   };
 
-// ── Outbound (server → client) ───────────────────────────────────────────
-
-/** A JSON-safe event from a libswamp async generator. */
 export interface SerializedEvent {
   kind: string;
   [key: string]: unknown;
 }
 
-/** Error details sent to the client. */
 export interface SerializedError {
   code: string;
   message: string;
@@ -1323,21 +1204,17 @@ export interface AccessGroupIdpEntry {
 }
 
 /**
- * The run-time decision for a concrete `vault:<name>` (swamp-club#2676):
- * whether a serve run triggered by the principal may read or write the
- * vault, and whether its runs are vault-scoped.
+ * whether a serve run triggered by the principal may read or write the vault,
+ * and whether its runs are vault-scoped
  */
 export interface RunVaultAccessReport {
   vault: string;
   action: "read" | "write";
   allowed: boolean;
-  /** The principal's runs read only vaults a vault allow names. */
   restricted: boolean;
-  /** The rule that decided, e.g. `vault-scoped` or `no-vault-grants`. */
   rule: string;
   reason: string;
   grantId?: string;
-  /** Set for a trigger principal, whose scope covers all its runs. */
   triggerScope?: string;
 }
 
@@ -1350,11 +1227,8 @@ export interface AccessCheckResponse {
   decisions: Record<string, unknown>[];
   /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
-  /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
-  /** The server's tag policy; absent from servers that predate it. */
   tagRequiresExplicitGrant?: boolean;
-  /** For a concrete vault and read or write; absent otherwise. */
   runVaultAccess?: RunVaultAccessReport;
 }
 
@@ -1376,13 +1250,9 @@ export interface AccessCanIResponse {
   principal: string;
   method?: string;
   decisions: AccessCanIDecision[];
-  /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
-  /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
-  /** The server's tag policy; absent from servers that predate it. */
   tagRequiresExplicitGrant?: boolean;
-  /** For a concrete vault and read or write; absent otherwise. */
   runVaultAccess?: RunVaultAccessReport;
 }
 
@@ -1406,7 +1276,6 @@ export interface AccessReloadResponse {
 
 export interface ServeReloadResponse {
   success: boolean;
-  /** Local behavior sources could not be refreshed; other reload stages completed. */
   localRefreshFailed?: boolean;
   reloadedCount: number;
   triggerOverridesChanged?: number;
@@ -1479,7 +1348,6 @@ export interface ModelOutputSearchResponse {
   data: Record<string, unknown>;
 }
 
-/** One output in a model's `recent` list. */
 export interface ModelUsageSummaryRecentOutput {
   id: string;
   methodName: string;
@@ -1493,7 +1361,6 @@ export interface ModelUsageSummaryRecentOutput {
   stepName?: string;
 }
 
-/** Usage of one definition id under one type over the window. */
 export interface ModelUsageSummaryModel {
   definitionId: string;
   modelName: string;
@@ -1501,19 +1368,15 @@ export interface ModelUsageSummaryModel {
   executions: number;
   failed: number;
   lastStartedAt: string;
-  /** Distinct methods run, most recent first. */
   methods: string[];
-  /** The newest outputs, newest first, at most `recentLimit`. */
   recent: ModelUsageSummaryRecentOutput[];
 }
 
 export interface ModelUsageSummaryData {
-  /** The window as resolved, when bounded. */
   since?: string;
   until?: string;
   /** Every readable output, including those of definitions no longer named. */
   totals: { executions: number; failed: number };
-  /** Newest use first. */
   models: ModelUsageSummaryModel[];
 }
 
@@ -1559,15 +1422,11 @@ export interface WorkflowHistorySearchResponse {
 
 export interface WorkflowRunSearchResponse {
   data: Record<string, unknown>;
-  /** Authorized matches before `offset`/`limit` were applied. */
   total?: number;
-  /** The resolved `since` bound as ISO, when one was given. */
   since?: string;
-  /** With `since`: the start of the oldest of the `total` matches. */
   oldestStartedAt?: string;
 }
 
-/** One run in a workflow's `recent` list. */
 export interface WorkflowRunSummaryRecentRun {
   runId: string;
   status: string;
@@ -1590,16 +1449,12 @@ export interface WorkflowRunSummaryWorkflow {
   cancelled: number;
   running: number;
   suspended: number;
-  /** Total duration of the finished runs. */
   durationMs: number;
   lastStartedAt?: string;
-  /** The newest runs, newest first. */
   recent: WorkflowRunSummaryRecentRun[];
 }
 
-/** The runs started within one UTC hour. */
 export interface WorkflowRunSummaryBucket {
-  /** Top of the UTC hour, as an ISO timestamp. */
   start: string;
   runs: number;
   succeeded: number;
@@ -1607,12 +1462,10 @@ export interface WorkflowRunSummaryBucket {
   cancelled: number;
 }
 
-/** Run counts across the workflows the caller may read. */
 export interface WorkflowRunSummaryData {
   since?: string;
   until?: string;
   totals: {
-    /** Workflows with at least one counted run. */
     workflows: number;
     runs: number;
     succeeded: number;
@@ -1620,14 +1473,10 @@ export interface WorkflowRunSummaryData {
     cancelled: number;
     running: number;
     suspended: number;
-    /** Total duration of the finished runs. */
     durationMs: number;
   };
-  /** One entry per workflow with a counted run, ordered by name. */
   workflows: WorkflowRunSummaryWorkflow[];
-  /** Start of the oldest counted run; absent when none has a start. */
   oldestStartedAt?: string;
-  /** Hours with runs, ascending; only when asked for. */
   timeline?: WorkflowRunSummaryBucket[];
 }
 
@@ -1641,7 +1490,6 @@ export interface WorkflowSchemaResponse {
 
 export interface WorkflowSearchResponse {
   data: Record<string, unknown>;
-  /** Authorized matches before `offset`/`limit` were applied. */
   total?: number;
 }
 
@@ -1663,7 +1511,6 @@ export interface WorkflowRejectResponse {
  */
 export interface WorkflowSignalResponseData {
   waitId: string;
-  /** What swamp recorded about the signal. */
   signal: {
     id: string;
     waitId: string;
@@ -1676,7 +1523,6 @@ export interface WorkflowSignalResponseData {
    * received: `signal` is that one's receipt, and nothing was delivered.
    */
   duplicate?: true;
-  /** The key the wait holds, when its step declared one. */
   key?: string;
   workflowId?: string;
   workflowName?: string;
@@ -1694,33 +1540,26 @@ export interface WorkflowSignalResponseData {
 }
 
 /**
- * A signal by key held as the key's pending signal (swamp-club#3212): no
- * wait or run took it yet. The key and the workflow are present only for a
- * caller who may also read the workflow.
+ * a signal by key held as the key's pending signal because no wait or run took
+ * it yet; key and workflow are present only for a caller who may read the
+ * workflow
  */
 export interface WorkflowSignalPendingResponseData {
-  /** What swamp recorded about the signal. */
   signal: {
     id: string;
     receivedAt: string;
     submittedBy: string;
     idempotencyKey?: string;
   };
-  /** When the signal stops being taken by a wait that opens. */
   heldUntil: string;
-  /**
-   * True when the request carried the idempotency key of the signal that is
-   * held: `signal` is that one's receipt, and nothing more was stored.
-   */
   duplicate?: true;
   key?: string;
   workflowId?: string;
   workflowName?: string;
   /**
-   * The wait that last held the key, when its claim is still the key's
-   * highest record: how a sender that retries after a lost reply tells its
-   * first signal landed. The receipt is present only for a caller who may
-   * read the workflow.
+   * the wait that last held the key, when its claim is still the key's highest
+   * record, so a sender retrying after a lost reply can tell its first signal
+   * landed; the receipt needs read on the workflow
    */
   lastWait?: {
     waitId: string;
@@ -1731,31 +1570,19 @@ export interface WorkflowSignalPendingResponseData {
 }
 
 /**
- * A signal by key that was received, for a caller who may signal the
- * workflow and not read it, on a key whose step sets `acceptEarly`
- * (swamp-club#3213). It is the receipt and nothing else: the same reply
- * whether a wait took the signal or it is held as the key's pending signal,
- * so it does not say whether a run is waiting.
+ * the receipt and nothing else, the same reply whether a wait took the signal
+ * or it is held, so it does not reveal whether a run is waiting
  */
 export interface WorkflowSignalAcceptedResponseData {
-  /** What swamp recorded about the signal. */
   signal: {
     id: string;
     receivedAt: string;
     submittedBy: string;
     idempotencyKey?: string;
   };
-  /**
-   * True when the request carried the idempotency key of a signal already
-   * received: `signal` is that one's receipt, and nothing more was done.
-   */
   duplicate?: true;
 }
 
-/**
- * `data` for a delivered signal; `pending` for one that is held; `accepted`
- * for one whose sender is not told which of the two it was.
- */
 export type WorkflowSignalResponse =
   | {
     data: WorkflowSignalResponseData;
@@ -1913,7 +1740,6 @@ export interface DatastoreStatusResponse {
   data: Record<string, unknown>;
 }
 
-/** The claim serve wrote, or found already written (swamp-club#4063). */
 export interface DatastoreClaimResponse {
   data: {
     address: string;
@@ -1923,7 +1749,6 @@ export interface DatastoreClaimResponse {
   };
 }
 
-/** Whether serve removed a claim, and whose (swamp-club#4063). */
 export interface DatastoreReleaseResponse {
   data: { released: boolean; address?: string; claimedAt?: string };
 }
@@ -1949,9 +1774,8 @@ export interface ExtensionInfoResponse {
 }
 
 /**
- * How a --hot-reload serve reloaded itself after an extension pull, update,
- * install or rm it ran (swamp-club#3594). Absent when serve runs without
- * --hot-reload: the change then waits for a restart.
+ * absent when serve runs without --hot-reload: the change then waits for a
+ * restart
  */
 export interface ExtensionChangeServeReload {
   status: "ok" | "failed";
@@ -2083,7 +1907,6 @@ export interface WorkflowScheduleResumeResponse {
   data: { workflowId: string; workflowName: string; wasPaused: boolean };
 }
 
-/** One entry of `workflow.schedule.list`. */
 export interface WorkflowScheduleListEntry {
   workflowId: string;
   workflowName: string;
@@ -2217,7 +2040,6 @@ export type ServerMessage =
     payload: {
       version: string;
       gitSha: string;
-      /** Optional request features this server honours; absent on older servers. */
       capabilities?: string[];
     };
   }

@@ -26,22 +26,18 @@ import { FLEET_PROBE_MODEL_TYPE } from "../domain/models/worker/fleet_probe_mode
 import type { ActiveDispatch } from "./dispatch_registry.ts";
 
 /**
- * Control-plane types whose own dispatch may read their records from a
- * worker. The fleet probe runs on the worker it verifies and queries and
- * reads back its own `swamp/fleet-probe` records; no other control-plane
- * type is readable, even if it is later made dispatchable.
+ * only the fleet probe may read its own swamp/fleet-probe records from a
+ * worker; no other control-plane type is readable, even if later made
+ * dispatchable
  */
 const WORKER_READABLE_CONTROL_PLANE_TYPES: readonly string[] = [
   FLEET_PROBE_MODEL_TYPE.normalized,
 ];
 
 /**
- * Whether a worker's request for records of `type` must be answered as if
- * none exist. Every control-plane type is hidden, in any spelling the worker
- * sends, except an allowlisted type read by a dispatch of that same type.
- * `dispatch` is the server-resolved dispatch the request belongs to, or null
- * when none resolves; with no dispatch, every control-plane type is hidden
- * (swamp-club#3129).
+ * every control-plane type is hidden in any spelling, except an allowlisted
+ * type read by a dispatch of that same type; with no resolved dispatch all are
+ * hidden
  */
 export function isHiddenFromWorker(
   type: string,
@@ -57,11 +53,6 @@ export function isHiddenFromWorker(
   );
 }
 
-/**
- * The stored `type_normalized` values a worker query must exclude: both
- * stored forms of every control-plane type hidden from `dispatch`. Passed to
- * the data query as `excludeModelTypes`, which compares stored strings.
- */
 export function workerHiddenStoredTypes(
   dispatch: ActiveDispatch | null,
 ): string[] {

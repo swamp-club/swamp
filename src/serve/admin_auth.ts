@@ -62,12 +62,6 @@ export type AdminAuthResult =
   | { ok: true; authResult: AuthenticatedPrincipal }
   | { ok: false; response: Response };
 
-/**
- * The outcome of authenticating a request's server token, without any
- * authorization decision. `token` identifies the mint that authenticated, so a
- * long-lived response can be bound to it as a token session; it is null in
- * auth-mode none, which has no token.
- */
 export type TokenAuthResult =
   | {
     ok: true;
@@ -77,7 +71,6 @@ export type TokenAuthResult =
   }
   | { ok: false; response: Response };
 
-/** Cookie-session result with explicit invalidation semantics for callers. */
 export type DashboardSessionTokenAuthResult =
   | Extract<TokenAuthResult, { ok: true }>
   | { ok: false; response: Response; invalidateSession: boolean };
@@ -111,11 +104,6 @@ export function checkDashboardSessionIpBurst(
   return { ok: true, clientAddr };
 }
 
-/**
- * Authenticates a request's bearer token with the same rate limits as
- * `authenticateAdmin`, but grants any valid token: it answers only 401 or 429,
- * never 403.
- */
 export async function authenticateToken(
   req: Request,
   remoteAddr: string,
@@ -208,9 +196,8 @@ export async function authenticateToken(
 }
 
 /**
- * Authenticates an already origin-validated and burst-limited dashboard session
- * for the two dashboard health transports. Callers must never use this for
- * admin routes.
+ * for an origin-validated, burst-limited dashboard session on the health
+ * transports; never use for admin routes
  */
 export async function authenticateDashboardSessionToken(
   req: Request,
@@ -313,11 +300,9 @@ export async function authenticateAdmin(
 }
 
 /**
- * Read decisions for one authenticated request, with the rules
- * `filterByResources` applies over WebSocket: an explicit allow or deny
- * wins, and a resource no grant covers is readable only by an admin. Each call
- * consults the current policy snapshot, so a long-lived stream follows grant
- * changes.
+ * explicit allow or deny wins and a resource no grant covers is admin-only, as
+ * filterByResources; each call reads the current snapshot so streams follow
+ * grant changes
  */
 export interface ReadAuthorizer {
   isAdmin(): boolean;

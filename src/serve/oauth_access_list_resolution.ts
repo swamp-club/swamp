@@ -18,32 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resolves the usernames in `auth.admins` and `auth.allowed-users` to OAuth
- * subjects at `swamp serve` startup.
- *
- * Results are cached in the `oauth-resolved-admins` vault entry as a flat
- * map. Resolved names map to their sub (`<name>` for admins,
- * `allowed:<name>` for allowed-users). A name the provider reported as not
- * found maps to the time it was first seen missing (`unresolved:<name>`,
- * `unresolved:allowed:<name>`).
- *
- * A resolved name is pinned, as grant-file usernames are: it is never
- * looked up again, so a list edit cannot re-point it to whoever registers
- * the name after a rename or deletion, and a credential that cannot look
- * users up only matters for names being added. A name is skipped on a
- * definitive not-found. Any other lookup failure aborts startup.
- *
- * An entry must be a plain username. Admins, allowed-users and not-found
- * markers share one cache map, so an entry containing a colon could spell
- * another entry's key (`allowed:bob` is allowed-user bob's sub) and pick up
- * its sub. Such an entry is skipped without a lookup and records nothing:
- * provider usernames never contain a colon.
- *
- * A skipped name stays skipped: restarts and edits to other entries never
- * look it up again. Removing it from the list drops its record, so adding
- * it back later looks it up fresh. Any automatic re-check would promote the
- * name as soon as someone registered it, so a typo in `auth.admins` could
- * be claimed by someone else and become an admin.
+ * a resolved name is pinned and never looked up again, so an edit cannot
+ * re-point it to whoever registers the name later; skipped names stay skipped,
+ * since re-checking would let someone claim a typo'd admin name
  */
 
 import { UserError } from "../domain/errors.ts";
@@ -52,58 +29,33 @@ import {
   UsernameNotFoundError,
 } from "./oauth_client.ts";
 
-/** Which access list an entry came from. */
 export type AccessListKind = "admin" | "allowed-user";
 
-/**
- * How startup resolves the lists:
- * - `full`: some plain name has no record in the cache (it was added). Only
- *   those names are looked up; resolved names keep their cached sub and
- *   names recorded as not found stay skipped.
- * - `cached`: every plain name has a record. No lookups.
- */
 export type ResolutionMode = "full" | "cached";
 
-/** Looks up one username on the provider and returns its sub. */
 export type UsernameResolver = (username: string) => Promise<string>;
 
-/** A configured entry that could not be resolved and was left out. */
 export interface UnresolvedEntry {
   readonly kind: AccessListKind;
-  /** The entry exactly as configured, e.g. `user:alice`. */
   readonly entry: string;
   readonly username: string;
-  /**
-   * When the provider first reported the name as not found; absent for an
-   * entry that is not a plain username, which is never looked up.
-   */
   readonly notFoundSince?: string;
-  /**
-   * Why the entry was skipped; absent when a recorded not-found was used.
-   */
   readonly reason?: string;
 }
 
-/** A configured entry that resolved to a sub. */
 export interface ResolvedEntry {
   readonly kind: AccessListKind;
   readonly entry: string;
   readonly username: string;
   readonly sub: string;
-  /** True when the sub came from the cache rather than a lookup. */
   readonly fromCache: boolean;
 }
 
 export interface AccessListResolution {
-  /** Resolved admins as `user:<sub>`, in configured order. */
   readonly admins: string[];
-  /** Resolved allowed-users as `<sub>`, in configured order. */
   readonly allowedUsers: string[];
-  /** Resolved sub → configured username, for display. */
   readonly usernamesBySub: Record<string, string>;
-  /** The cache map to persist for the configured names. */
   readonly cache: Record<string, string>;
-  /** True when {@link cache} differs from the cache passed in. */
   readonly cacheChanged: boolean;
   readonly resolved: ResolvedEntry[];
   readonly unresolved: UnresolvedEntry[];
@@ -114,19 +66,15 @@ export interface ResolveAccessListsInput {
   readonly allowedUsers: readonly string[];
   readonly cache: Readonly<Record<string, string>>;
   readonly mode: ResolutionMode;
-  /** Required in `full` mode. */
   readonly resolve: UsernameResolver | null;
   readonly providerUrl: string;
-  /** Current time as an ISO string; injected for tests. */
   readonly now: () => string;
 }
 
-/** Strips the optional `user:` prefix from a configured entry. */
 export function usernameOf(entry: string): string {
   return entry.startsWith("user:") ? entry.slice("user:".length) : entry;
 }
 
-/** Cache key holding the sub of a resolved name. */
 export function resolvedCacheKey(
   kind: AccessListKind,
   username: string,
@@ -134,7 +82,6 @@ export function resolvedCacheKey(
   return kind === "admin" ? username : `allowed:${username}`;
 }
 
-/** Cache key marking a name the provider reported as not found. */
 export function unresolvedCacheKey(
   kind: AccessListKind,
   username: string,
@@ -143,9 +90,8 @@ export function unresolvedCacheKey(
 }
 
 /**
- * Why an entry cannot be a provider username, or `undefined` when it is a
- * plain username. Provider usernames never contain a colon, and one that
- * did could spell another entry's cache key.
+ * provider usernames never contain a colon, and one that did could spell
+ * another entry's cache key
  */
 function notPlainUsernameReason(username: string): string | undefined {
   if (!username.includes(":")) return undefined;
@@ -159,8 +105,8 @@ function notPlainUsernameReason(username: string): string | undefined {
 }
 
 /**
- * Reads a cache entry. The cache comes from `JSON.parse`, so a plain index
- * would find `Object.prototype` members for names like `constructor`.
+ * the cache comes from JSON.parse, so a plain index would find Object.prototype
+ * members for names like constructor
  */
 function cached(
   cache: Readonly<Record<string, string>>,
@@ -193,11 +139,6 @@ function configuredEntries(
   ];
 }
 
-/**
- * Configured names with neither a resolved entry nor a not-found marker in
- * the cache, formatted as `<name>` for admins and `allowed:<name>` for
- * allowed-users.
- */
 export function listUncachedNames(
   admins: readonly string[],
   allowedUsers: readonly string[],
@@ -212,7 +153,6 @@ export function listUncachedNames(
     .map(({ kind, username }) => resolvedCacheKey(kind, username));
 }
 
-/** Picks the resolution mode for the configured lists and cache. */
 export function chooseResolutionMode(
   admins: readonly string[],
   allowedUsers: readonly string[],
@@ -350,11 +290,9 @@ function quotedEntries(
 }
 
 /**
- * Fails closed when skipping names would break the OAuth-mode invariants
- * that `parseServeAuthConfig` enforces on the raw config: there must be at
- * least one admin, and admission must stay restricted. `checkAdmission`
- * admits every user when both allowed-users and allowed-collectives are
- * empty, so losing every allowed-user with no collectives must not start.
+ * fails closed: needs at least one admin and restricted admission, since
+ * checkAdmission admits every user when allowed-users and collectives are both
+ * empty
  */
 export function assertAccessListsUsable(
   configured: {
@@ -388,7 +326,6 @@ export function assertAccessListsUsable(
   }
 }
 
-/** One configured entry and what the provider said about it. */
 export interface AccessListCheckEntry {
   readonly kind: AccessListKind;
   readonly entry: string;
@@ -397,21 +334,12 @@ export interface AccessListCheckEntry {
   readonly sub?: string;
 }
 
-/** Result of checking the configured lists against the provider. */
 export interface AccessListCheck {
   readonly entries: AccessListCheckEntry[];
-  /** False when `swamp serve` would refuse to start with these lists. */
   readonly wouldStart: boolean;
-  /** Why serve would refuse to start; set when `wouldStart` is false. */
   readonly refusal?: string;
 }
 
-/**
- * Looks up every configured admin and allowed-user, the way `swamp serve`
- * does at startup without a cache, and reports which names the provider
- * does not know and whether serve would start. Nothing is persisted. A
- * lookup failure other than not-found throws, as it would at startup.
- */
 export async function checkAccessLists(
   configured: {
     readonly admins: readonly string[];
@@ -431,8 +359,6 @@ export async function checkAccessLists(
     now: () => new Date().toISOString(),
   });
 
-  // Report in configured order; the cache holds a sub only for names that
-  // resolved.
   const entries: AccessListCheckEntry[] = configuredEntries(
     configured.admins,
     configured.allowedUsers,

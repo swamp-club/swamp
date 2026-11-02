@@ -94,10 +94,8 @@ import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_
 const logger = getSwampLogger(["serve", "reload"]);
 
 /**
- * The extension directories `.swamp-sources.yaml` mounts, for the
- * reload's catalog saves (swamp-club#2563). A reload must not fail on a
- * sources file being edited, so an unreadable one logs a warning and
- * counts as no mounts, which is how these saves behaved before.
+ * an unreadable sources file logs a warning and counts as no mounts, so a
+ * reload does not fail on a sources file being edited
  */
 async function mountedSourceDirsForReload(
   repoDir: string,
@@ -122,9 +120,8 @@ export function isReloading(): boolean {
 let extensionMutationTail: Promise<void> = Promise.resolve();
 
 /**
- * Runs `fn` after every earlier caller's `fn` settled. A hot-reload and
- * the per-run refresh of local models both rebundle sources and swap
- * registry types, so they take turns rather than interleave.
+ * hot-reload and the per-run refresh of local models both rebundle sources and
+ * swap registry types, so they take turns
  */
 export function withExtensionMutation<T>(fn: () => Promise<T>): Promise<T> {
   const result = extensionMutationTail.then(fn, fn);
@@ -132,21 +129,12 @@ export function withExtensionMutation<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
-/**
- * The last pulled-type snapshot per pulled root, taken at serve boot and
- * after every reload. It is how a reload finds the types of an extension
- * whose catalog rows `extension rm` already deleted (swamp-club#2742).
- */
 const pulledTypeSnapshots = new Map<string, PulledTypeSnapshot>();
 
 /**
- * Records which types the installed pulled extensions register, so the
- * first reload after boot can unregister an extension removed since.
- * Serve calls it where it takes the config poller's lockfile baseline, and
- * again once the registries have loaded: on an extension-backed datastore
- * the startup catalog repair waits for that load, so a fresh checkout has
- * no rows yet at the baseline. Each call merges into the snapshot, keeping
- * an extension the earlier call recorded for the next reload to sweep.
+ * called at serve boot and again once registries load, since on an
+ * extension-backed datastore the catalog repair waits for that load; each call
+ * merges into the snapshot so removed extensions stay sweepable
  */
 export async function seedPulledTypeSnapshot(
   repoDir: string,
@@ -173,12 +161,6 @@ export async function seedPulledTypeSnapshot(
   }
 }
 
-/**
- * The pulled extensions this checkout still has installed: the lockfile's
- * entries, the transitional in-repo lockfile's, and, on an
- * extension-backed datastore, the datastore extensions found on disk.
- * The same set the startup reconcile never orphans.
- */
 async function installedPulledNames(
   repoDir: string,
   lockfile: LockfileRepository,
@@ -213,12 +195,10 @@ async function installedPulledNames(
   return names;
 }
 
-/** The canonical source-path prefix of one extension's pulled dir. */
 function pulledPrefix(pulledRoot: string, name: string): string {
   return canonicalizePath(join(pulledRoot, name) + "/");
 }
 
-/** True when the lockfile exists. A missing one reads as no entries. */
 async function lockfileExists(lockfilePath: string): Promise<boolean> {
   try {
     await Deno.stat(lockfilePath);
@@ -229,21 +209,11 @@ async function lockfileExists(lockfilePath: string): Promise<boolean> {
   }
 }
 
-/** What {@link sweepRemovedPulledExtensions} leaves for the next snapshot. */
 interface SweepResult {
-  /** The installed pulled extensions, when the sweep could read them. */
   installed?: ReadonlySet<string>;
-  /** Types of extensions that could not be swept, kept for a retry. */
   unswept: Map<string, readonly PulledTypeRef[]>;
 }
 
-/**
- * Unregisters the types of pulled extensions that are no longer installed,
- * and retires their catalog rows so the loader cannot register them again
- * (swamp-club#2742). A peer's `extension rm` leaves this checkout's rows
- * and files in place; the files stay until swamp-club#2612. Extensions that
- * could not be swept stay in the snapshot for the next reload to retry.
- */
 async function sweepRemovedPulledExtensions(args: {
   catalog: ExtensionCatalogStore;
   lockfile: LockfileRepository;
@@ -267,9 +237,9 @@ async function sweepRemovedPulledExtensions(args: {
   let installed: Set<string>;
   const candidates = new Set<string>();
   try {
-    // A missing lockfile reads as no entries, which would sweep every
-    // extension. Removing the last extension leaves an empty lockfile, so
-    // a missing one is a sync in progress: wait for the next poll.
+    // a missing lockfile reads as no entries and would sweep every extension;
+    // removing the last one leaves an empty file, so missing means a sync in
+    // progress: wait for the next poll
     if (!await lockfileExists(lockfilePath)) {
       logger.debug(
         "Hot-reload: extension lockfile {path} is missing, skipping the removed-extension sweep",
@@ -281,9 +251,9 @@ async function sweepRemovedPulledExtensions(args: {
     for (const name of previous?.keys() ?? []) {
       if (!installed.has(name)) candidates.add(name);
     }
-    // By location, not by origin: without the local manifest identity the
+    // by location, not origin: without the local manifest identity the
     // repository reports every name outside @local/ as pulled, including
-    // manifest-named locals and source mounts.
+    // manifest-named locals and source mounts
     for (const extension of repository.loadAll()) {
       if (installed.has(extension.name)) continue;
       const prefix = pulledPrefix(pulledRoot, extension.name);
@@ -317,8 +287,8 @@ async function sweepRemovedPulledExtensions(args: {
           lockfilePath,
         );
         if (nowInstalled.has(name)) return false;
-        // Only the rows under this extension's pulled dir: an aggregate of
-        // the same name can also own local or source-mounted sources.
+        // only rows under this extension's pulled dir: an aggregate of the same
+        // name can also own local or source-mounted sources
         refs = [
           ...refs,
           ...(capturePulledTypes(catalog, pulledRoot, [name]).get(name) ??
@@ -340,7 +310,7 @@ async function sweepRemovedPulledExtensions(args: {
         if (unregistered.has(key)) continue;
         // Another extension or a local source still provides this type.
         if (catalog.findAllByType(ref.type, ref.kind).length > 0) continue;
-        // A built-in type stays registered (swamp-club#2746).
+        // a built-in type stays registered
         if (!unregisterPulledType({ kind: ref.kind, type: ref.type })) {
           continue;
         }
@@ -372,8 +342,8 @@ async function sweepRemovedPulledExtensions(args: {
         );
       }
     } catch (err) {
-      // `refs` includes types read from rows this attempt already retired,
-      // so the retry can still find them.
+      // refs includes types read from rows this attempt already retired, so the
+      // retry can still find them
       unswept.set(name, refs);
       logger.warn(
         "Hot-reload: failed to unregister removed extension {extension}, retrying on the next reload: {error}",
@@ -388,12 +358,9 @@ async function sweepRemovedPulledExtensions(args: {
 }
 
 /**
- * Detaches the members a removed extension's add-ons attached to model
- * types it does not own (swamp-club#2745). A built-in or local base type
- * is never re-registered by the reload, so without this the members stay
- * until restart. The attach pass then runs for every extended type still
- * registered, even when nothing was detached this time, so a retry after
- * a failed pass still restores an add-on the removed one had displaced.
+ * a built-in or local base type is never re-registered by the reload, so detach
+ * the removed add-on's members; the attach pass still runs so a retry restores
+ * an add-on the removed one displaced
  */
 async function detachRemovedAddOns(args: {
   extendedTypes: ReadonlySet<string>;
@@ -413,15 +380,9 @@ async function detachRemovedAddOns(args: {
 }
 
 /**
- * Attaches pulled add-ons to the registered model types they extend
- * (swamp-club#2846). The reload loop re-registers only the types a pulled
- * extension defines; an add-on row extends a type it does not own, such as
- * a built-in, which the loop never touches. Without this, an add-on pulled
- * into a running serve stays missing until restart once its target type was
- * used. Lazy targets attach their add-ons when they load, and control-plane
- * types are never extended. Attaching is idempotent per source and
- * fingerprint, so add-ons already attached are skipped. Failures are logged,
- * never thrown: one bad add-on must not stop the reload.
+ * failures are logged, never thrown: one bad add-on must not stop the reload.
+ * Attaching is idempotent per source and fingerprint; lazy targets attach on
+ * load and control-plane types are never extended.
  */
 async function attachPulledAddOns(args: {
   catalog: ExtensionCatalogStore;
@@ -431,9 +392,9 @@ async function attachPulledAddOns(args: {
   names: readonly string[];
   denoRuntime?: DenoRuntime;
 }): Promise<void> {
-  // Rows carry the symlink-resolved source path, which differs from the
-  // configured root when the repo sits under a symlink (macOS /tmp), so look
-  // under both spellings, as the removed-extension sweep does.
+  // rows carry the symlink-resolved source path, which differs from the
+  // configured root when the repo sits under a symlink, so look under both
+  // spellings
   const roots = new Set([
     args.pulledRoot,
     realCanonicalPath(args.pulledRoot),
@@ -483,13 +444,7 @@ async function attachPulledAddOns(args: {
   }
 }
 
-/**
- * Catalogues lockfile entries that have no catalog rows, so the register
- * loop below picks their types up and later reloads hot-reload them.
- * Files reach a running serve without rows when a managed-config sync
- * copies them in (swamp-club#2355). Failures are logged, never thrown:
- * one bad extension must not stop the reload.
- */
+/** failures are logged, never thrown: one bad extension must not stop the reload */
 async function catalogueUncataloguedPulled(args: {
   catalog: ExtensionCatalogStore;
   lockfile: LockfileRepository;
@@ -512,10 +467,9 @@ async function catalogueUncataloguedPulled(args: {
   });
   let results: UncataloguedPulledResult[];
   try {
-    // The prefix check that chose `names` is a cheap pre-filter. The
-    // service's own criterion (no aggregate for the name) decides, so an
-    // extension whose rows live under another root is not re-sent to the
-    // reconcile on every reload.
+    // the prefix check is a cheap pre-filter; the service's own criterion
+    // decides, so an extension with rows under another root is not re-sent on
+    // every reload
     const names = reconciler.selectUncataloguedPulled(args.names);
     if (names.length === 0) return;
     results = await reconciler.reconcileUncataloguedPulled(names);
@@ -546,12 +500,6 @@ async function catalogueUncataloguedPulled(args: {
   }
 }
 
-/**
- * Re-registers every catalogued pulled type, after cataloguing lockfile
- * entries that have no rows yet and re-bundling changed sources.
- * `denoRuntimeOverride` lets tests supply a stub runtime; production
- * callers omit it and get an EmbeddedDenoRuntime created on first use.
- */
 export async function reloadPulledExtensions(
   repoDir: string,
   lockfilePath: string,
@@ -610,8 +558,8 @@ export async function reloadPulledExtensions(
           !row.source_path || !row.bundle_path ||
           rebundled.has(row.source_path)
         ) continue;
-        // A deleted source has nothing to re-bundle. Its row is dropped
-        // when the type is next loaded (swamp-club#2490).
+        // a deleted source has nothing to re-bundle; its row is dropped when
+        // the type is next loaded
         if (await sourceIsMissing(row.source_path)) continue;
         try {
           const kindDir = extensionKindToKindDir(
@@ -630,8 +578,7 @@ export async function reloadPulledExtensions(
           if (!denoPath) {
             denoPath = await denoRuntime.ensureDeno();
           }
-          // Pulled source never reads the consumer's Deno config
-          // (swamp-club#3970).
+          // pulled source never reads the consumer's Deno config
           const js = await bundleExtension(row.source_path, denoPath, {
             env: denoRuntime.getDenoEnv(),
             noConfig: true,
@@ -663,10 +610,9 @@ export async function reloadPulledExtensions(
       for (const row of rows) {
         if (!row.type_normalized) continue;
         try {
-          // A pulled type never replaces a built-in of the same name: the
-          // invalidate below would drop the built-in, and removing the
-          // extension later would leave nothing (swamp-club#2746). Inside
-          // the try, so a malformed row type fails only this row.
+          // a pulled type never replaces a built-in of the same name, or
+          // invalidating would drop the built-in; inside the try so a malformed
+          // row type fails only this row
           if (
             isPulledTypeKind(row.kind) &&
             isBuiltInType({ kind: row.kind, type: row.type_normalized })
@@ -755,8 +701,8 @@ export async function reloadPulledExtensions(
       denoRuntime,
     });
 
-    // Re-read: an extension installed while this reload ran must be in
-    // the snapshot, or an rm before the next reload would miss its types.
+    // re-read: an extension installed during this reload must be in the
+    // snapshot, or an rm before the next reload would miss its types
     const installedNow = await lockfile.refresh()
       .then(() => installedPulledNames(repoDir, lockfile, lockfilePath))
       .catch(() => swept.installed ?? new Set(Object.keys(entries)));
@@ -828,32 +774,18 @@ export interface ServeReloadOptions {
   webhookUpdater?: (
     configs: readonly WebhookConfigEntry[],
   ) => Promise<number>;
-  /**
-   * The serve config file to re-read trigger overrides and webhooks from:
-   * the resolved `--config` path. Undefined means `.swamp/serve.yaml`.
-   */
   configPath?: string;
 }
 
-/** The error {@link performServeReload} reports while another reload runs. */
 export const RELOAD_IN_PROGRESS_ERROR = "Reload already in progress";
 
-/**
- * The outcome of an extension reload as the config poller sees it: `busy`
- * when another reload was already running, so the change is still unapplied.
- */
 export type ExtensionReloadStatus = "ok" | "failed" | "busy";
 
-/**
- * What an extension reloader reports to the config poller. `errors` carries a
- * failed reload's messages so the poller decides how loudly to log them.
- */
 export interface ExtensionReloadResult {
   status: ExtensionReloadStatus;
   errors: readonly string[];
 }
 
-/** Maps a {@link performServeReload} result to an {@link ExtensionReloadStatus}. */
 export function serveReloadStatus(
   result: ServeReloadResponse,
 ): ExtensionReloadStatus {
@@ -861,24 +793,18 @@ export function serveReloadStatus(
   return result.errors.includes(RELOAD_IN_PROGRESS_ERROR) ? "busy" : "failed";
 }
 
-/** The reload {@link performServeReload} is running, if any. */
 let inFlightReload: Promise<ServeReloadResponse> | null = null;
 
 /**
- * The reload {@link reloadAfterExtensionChange} queued behind the one in
- * flight. It is cleared as soon as its turn comes, so a change made after
- * it started queues another reload rather than sharing one that may have
- * read the old files.
+ * cleared as soon as its turn comes, so a change made after it started queues
+ * another reload rather than sharing one that may have read the old files
  */
 let queuedReload: Promise<ServeReloadResponse> | null = null;
 
 /**
- * Reloads serve's extensions after an extension change this process made,
- * such as a `--server` pull (swamp-club#3594). Unlike
- * {@link performServeReload} it never answers busy: while a reload runs, it
- * waits for that one and then reloads again, because the running reload may
- * have read the files before the change. Callers that arrive while a reload
- * is queued share it.
+ * never answers busy: while a reload runs it waits, then reloads again since
+ * the running one may have read files before the change; callers arriving while
+ * one is queued share it
  */
 export function reloadAfterExtensionChange(
   repoDir: string,
@@ -938,8 +864,8 @@ async function runServeReload(
   let localRefreshFailed = false;
 
   try {
-    // A source reload must update local validators and dispatch bundles too,
-    // even when a separate CLI already indexed the new source into SQLite.
+    // a source reload must update local validators and dispatch bundles even
+    // when a separate CLI already indexed the new source into SQLite
     try {
       await modelRegistry.refreshSources(withExtensionMutation);
     } catch (err) {
@@ -1066,12 +992,8 @@ export interface ExtensionDiscoveryDeps {
 }
 
 /**
- * Returns the canonical source paths, under the given pulled extensions,
- * whose catalog row is of the adapter's kind and whose type is already
- * registered. reloadPulledExtensions has just re-registered exactly these,
- * so discovery can skip them before reading, bundling or importing
- * (swamp-club#2355). Model add-on (`extension` kind) rows are left out, so
- * those files keep the full load.
+ * reloadPulledExtensions just re-registered exactly these, so discovery skips
+ * them; model add-on rows are left out so those files keep the full load
  */
 export function collectRegisteredPulledSources(
   catalog: ExtensionCatalogStore,

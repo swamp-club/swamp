@@ -35,20 +35,16 @@ import type {
 export const RETENTION_HEALTH_TTL_MS = 60_000;
 
 export interface RetentionHealthProviderOptions {
-  /** Reads `.swamp.yaml`'s `garbageCollection` block. */
   readConfig: () => Promise<RetentionConfig | undefined>;
-  /** Absent where the datastore keeps no watermarks. */
   watermarks?: RetentionWatermarkRepository;
   ttlMs?: number;
-  /** Monotonic clock. Defaults to `performance.now`. */
   now?: () => number;
 }
 
 /**
- * The retention component of serve's health (swamp-club#3473): each kind's
- * configured retention and last pass, read from the watermarks — never a
- * storage scan — and reused for `ttlMs`. Callers asking at once share one
- * read, and a read that fails is not kept.
+ * each kind's configured retention and last pass, read from watermarks, never a
+ * storage scan, and reused for ttlMs. Concurrent callers share one read; a
+ * failed read is not kept.
  */
 export function createRetentionHealthProvider(
   options: RetentionHealthProviderOptions,

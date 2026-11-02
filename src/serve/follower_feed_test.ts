@@ -31,7 +31,6 @@ import type { LeaderLink } from "./leader_link.ts";
 
 await initializeLogging({});
 
-/** A socket the test drives: it opens at once and records what is sent. */
 class FakeSocket {
   readyState: number = WebSocket.CONNECTING;
   sent: string[] = [];
@@ -168,7 +167,6 @@ Deno.test("FollowerFeed: its subscribe names lease ops, so the leader sends them
   await t.feed.stop();
 });
 
-/** The ids of the `commits.head` frames `socket` sent. */
 function headAsks(socket: FakeSocket): string[] {
   return socket.sent.map((data) => JSON.parse(data))
     .filter((sent) => sent.type === "commits.head")
@@ -180,7 +178,6 @@ Deno.test("FollowerFeed.barrier: false while the feed is down, as a node just re
   assertEquals(await t.feed.barrier(), false);
   t.feed.follow(leader("a", 1));
   await waitFor(() => t.sockets.length === 1, "the socket");
-  // Opening, never opened: no frame yet, so not live.
   assertEquals(await t.feed.barrier(), false);
   assertEquals(headAsks(t.sockets[0]), []);
   await t.feed.stop();
@@ -247,8 +244,6 @@ Deno.test("FollowerFeed.caughtUp: a caller never shares a head asked before it a
   });
   assertEquals(await first, "caught-up");
   await waitFor(() => headAsks(socket).length === 2, "the second ask");
-  // The leader committed 2 between the asks: the copy is not caught up
-  // until it applies it.
   socket.deliver({
     type: "commits.head",
     id: headAsks(socket)[1],
@@ -263,15 +258,12 @@ Deno.test("FollowerFeed.caughtUp: a caller never shares a head asked before it a
 Deno.test("FollowerFeed.caughtUp: catching up while the feed was live lately, stuck once it has not been for the bound (swamp-club#4254)", async () => {
   let now = 1_000_000;
   const t = setup(() => now);
-  // Following no leader: it can never catch up.
   assertEquals(await t.feed.caughtUp(), "stuck");
   t.feed.follow(leader("a", 1));
   await waitFor(() => t.sockets.length === 1, "the socket");
-  // Never live yet, but only just began to follow.
   assertEquals(await t.feed.caughtUp(), "catching-up");
   now += FOLLOWER_FEED_STUCK_MS + 1;
   assertEquals(await t.feed.caughtUp(), "stuck");
-  // Live again, then silent: catching up until the bound passes again.
   t.sockets[0].open();
   t.sockets[0].deliver(frame([1]));
   await waitFor(() => t.fresh() === 1, "a frame");

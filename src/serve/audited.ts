@@ -43,7 +43,6 @@ export interface AuditedOptions {
   readonly requestId: string;
   readonly methodName?: string;
   readonly resolvedUserNames?: Record<string, string>;
-  /** The caller's username and email, when known (swamp-club#3076). */
   readonly actor?: ActorIdentity;
   readonly socket?: WebSocket;
 }
@@ -62,8 +61,8 @@ export function audited(
     })
     : "ghost";
 
-  // The resolved name a handler recorded, when it resolved one, replaces the
-  // identifier the client sent (swamp-club#2603).
+  // the resolved name a handler recorded replaces the identifier the client
+  // sent
   const resourceName = (): string =>
     (options.socket
       ? takeAuditedResource(

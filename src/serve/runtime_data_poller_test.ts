@@ -382,12 +382,10 @@ Deno.test("RuntimeDataPoller: pull holds the sync gate, so it cannot interleave 
 Deno.test("RuntimeDataPoller: each poll cycle is the root of its own trace", async () => {
   const sync = createMockSyncService();
   const pull = sync.pullChanged.bind(sync);
-  // Stands in for the datastore's own spans, which must nest under the cycle.
   sync.pullChanged = (options) =>
     withSpan("swamp.datastore.sync", {}, () => pull(options));
 
   await withCapturedSpans(async (spans) => {
-    // Started under an active span, as serve starts it under swamp.cli.
     await withSpan("swamp.cli", {}, async () => {
       const { catalogInvalidate } = createCallbackTrackers();
       const poller = new RuntimeDataPoller({

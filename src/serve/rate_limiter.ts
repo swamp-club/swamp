@@ -106,13 +106,10 @@ export function clearRateLimit(key: string): void {
   }
 }
 
-/** Sustained requests per minute one authenticated principal may make. */
 export const PRINCIPAL_RATE_PER_MINUTE = 600;
 
-/** Requests one authenticated principal may make in a burst. */
 export const PRINCIPAL_RATE_BURST = 200;
 
-/** Token buckets kept at most; the least recently used is evicted past it. */
 export const MAX_PRINCIPAL_RATE_BUCKETS = 10_000;
 
 const PRINCIPAL_RATE_PER_MS = PRINCIPAL_RATE_PER_MINUTE / 60_000;
@@ -133,13 +130,6 @@ function sweepIdleRateBuckets(now: number): void {
   }
 }
 
-/**
- * Throttles every request of an authenticated principal with a token bucket
- * of {@link PRINCIPAL_RATE_BURST} tokens refilled at
- * {@link PRINCIPAL_RATE_PER_MINUTE} per minute. Each allowed request takes
- * one token. The bucket map holds at most {@link MAX_PRINCIPAL_RATE_BUCKETS}:
- * idle (full) buckets go first, then the least recently used.
- */
 export function checkPrincipalRate(
   principalId: string,
   now: number = Date.now(),
@@ -178,7 +168,6 @@ export function checkPrincipalRate(
   };
 }
 
-/** The number of per-principal token buckets held (for tests and metrics). */
 export function principalRateBucketCount(): number {
   return principalRateBuckets.size;
 }

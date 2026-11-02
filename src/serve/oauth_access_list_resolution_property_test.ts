@@ -55,11 +55,6 @@ function usernameOfEntry(entry: string): string {
   return entry.startsWith("user:") ? entry.slice(5) : entry;
 }
 
-/**
- * A provider state (which names exist, which fail transiently), a config
- * that satisfies the raw OAuth-mode validation, and a prior cache built
- * from some earlier provider state.
- */
 const arbScenario = fc.record({
   existing: fc.subarray(NAMES),
   failing: fc.subarray(NAMES),
@@ -117,7 +112,6 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
           now: () => "2026-09-23T12:00:00.000Z",
         });
       } catch (err) {
-        // Only full mode looks anything up, so only it may abort.
         assert(err instanceof UserError);
         assert(mode === "full");
         assertLookupsWereNeeded(calls, s.cachedExisting);
@@ -156,15 +150,11 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
       for (const u of result.unresolved) {
         assert(!(`sub-${u.username}` in result.usernamesBySub));
       }
-      // A name recorded as not found is never promoted without being
-      // removed first, whatever the provider says now.
       for (const name of s.cachedMissing) {
         if (s.cachedExisting.includes(name)) continue;
         assert(!result.admins.includes(`user:sub-${name}`));
         assert(!result.allowedUsers.includes(`sub-${name}`));
       }
-      // A name that resolved before keeps its cached sub: it is pinned and
-      // never looked up again, so no answer can revoke or re-point it.
       for (const entry of s.admins) {
         const name = entry.startsWith("user:") ? entry.slice(5) : entry;
         if (s.cachedExisting.includes(name)) {
@@ -195,11 +185,6 @@ Deno.test("resolveAccessLists: never lets a skipped name through and never opens
   );
 });
 
-/**
- * Lookups go only to plain names the cache has no sub for: a pinned name
- * is never looked up again, and an entry that is not a plain username is
- * never looked up at all.
- */
 function assertLookupsWereNeeded(
   calls: readonly string[],
   cachedExisting: readonly string[],

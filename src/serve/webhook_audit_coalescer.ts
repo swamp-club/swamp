@@ -17,22 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** How long repeated rejections on one route and reason share one event. */
 export const DEFAULT_REJECTION_WINDOW_MS = 60_000;
 
 export interface RejectionAdmission {
-  /** Whether this rejection should be written to the audit log. */
   readonly emit: boolean;
-  /** Rejections dropped since the last one written for this key. */
   readonly suppressed: number;
 }
 
 /**
- * Bounds audit volume from unauthenticated webhook traffic. The first
- * rejection for a route and reason in each window is written with the count
- * dropped since the previous one; the rest of the window is counted, not
- * written. Keys are configured routes and a fixed set of reasons, so the map
- * stays bounded by configuration.
+ * bounds audit volume from unauthenticated traffic: the first rejection per
+ * route and reason in each window is written with the dropped count, the rest
+ * are counted; keys are bounded by configuration
  */
 export class WebhookRejectionCoalescer {
   readonly #windowMs: number;

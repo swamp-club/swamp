@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Which vault secrets serve hands to a dispatched step: the reserved vaults
- * and keys no dispatch may touch, and the resource claim that admits a
- * reference held by a sensitive field of the dispatch's own resource
- * (swamp-club#3529). The capability service's `resolveSecret` and the
- * protected data-plane load route (design/enablers/typed-secrets.md
- * Section 9) both decide through this module.
- */
-
 import { computeChecksum } from "../domain/models/checksum.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import {
@@ -53,10 +44,8 @@ const DENIED_SECRET_KEY_PREFIXES: readonly string[] = [
   "oauth-resolved-grant-usernames",
 ];
 
-/** How many verified resource claims a verifier remembers at once. */
 const CLAIM_CACHE_LIMIT = 256;
 
-/** Throws when `vaultName` is a vault no dispatched method may touch. */
 export function assertVaultNotDenied(vaultName: string, verb: string): void {
   if (DENIED_VAULT_NAMES.has(vaultName)) {
     throw new Error(
@@ -65,7 +54,6 @@ export function assertVaultNotDenied(vaultName: string, verb: string): void {
   }
 }
 
-/** Throws when `secretKey` names serve's own infrastructure secrets. */
 export function assertSecretKeyNotDenied(
   secretKey: string,
   verb: string,
@@ -78,7 +66,6 @@ export function assertSecretKeyNotDenied(
   }
 }
 
-/** A resource claim the stored record does not support. */
 export class ResourceClaimRefusedError extends Error {
   constructor(message: string, readonly reason: string) {
     super(message);
@@ -87,37 +74,21 @@ export class ResourceClaimRefusedError extends Error {
 }
 
 export interface ResourceClaimVerifierOptions {
-  /** Names the caller in refusal messages. */
   verb: string;
-  /** The repository holding the dispatch's records. */
   repoFor: (dispatch: ActiveDispatch) => UnifiedDataRepository;
 }
 
 /**
- * Admits a read the worker claims is for a sensitive field of the
- * dispatch's own resource, by checking the claim against the stored
- * record: the record is looked up under the dispatch's behavior type and
- * model id at the claimed version, so a resource of any other model is
- * not found, and the read is admitted only when the record's tagged
- * fields hold that exact reference (swamp-club#3529). A verified claim
- * supplements the argument allowlist; the denylists run before it and
- * the run's vault scope applies after it. The claim rests on the data
- * writer vaulting every present sensitive value and on the tag's reserved
- * prefix. The writer-version tag establishes that those guards applied
- * when this record was written; older tags alone cannot authorize a read.
- * As for typed-secrets accessors, own-namespace datastore records are
- * trusted server state. The version tag identifies the writer contract;
- * it is not authentication against direct tampering with that storage.
- * Workers cannot write raw metadata: their writes use createResourceWriter.
+ * a verified claim supplements the argument allowlist; denylists run before it,
+ * vault scope after; own-namespace records are trusted state, and the version
+ * tag is no defense against storage tampering
  */
 export class ResourceClaimVerifier {
   readonly #options: ResourceClaimVerifierOptions;
   /**
-   * The references a verified claim admits, by dispatch, resource and
-   * version, so a step's repeated reads of one record read and parse it
-   * once. A version's content never changes, and the key holds the
-   * dispatch, so an entry is never answered for another. Bounded: the
-   * oldest entry goes when it is full.
+   * references a verified claim admits, by dispatch, resource and version, so
+   * repeated reads parse the record once; a version never changes and the key
+   * holds the dispatch; bounded, oldest goes first
    */
   readonly #admitted = new Map<string, ReadonlySet<string>>();
 

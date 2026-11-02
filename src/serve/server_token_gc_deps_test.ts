@@ -92,22 +92,17 @@ const always = () => true;
 
 interface Harness {
   input: ServerTokenGcDepsInput;
-  /** Every mutation, in order: "secret:<vault>/<key>", "data:<id>/<name>", "definition:<id>", "push". */
   events: string[];
-  /** Replaces the stored token-main for TOKEN_DEF_ID, as a rotation would. */
   setStored(attrs: Record<string, unknown> | null): void;
 }
 
 function harness(opts: {
   records?: DataRecord[];
-  /** The stored token-main for TOKEN_DEF_ID; null for none. */
   stored?: Record<string, unknown> | null;
   deleteVaults?: string[];
   vaultDeleteError?: Error;
-  /** Keys each vault lists; a vault not named here lists none. */
   vaultKeys?: Record<string, string[]>;
   vaultListError?: Error;
-  /** The server-token definition that owns the name "ci"; null for none. */
   owner?: Definition | null;
 } = {}): Harness {
   const events: string[] = [];
@@ -195,11 +190,6 @@ function harness(opts: {
   };
 }
 
-/**
- * An in-process stand-in for the server token name lock: one holder per
- * name, the rest wait in order. `waiting` reports how many callers wait on
- * a name, so a test can see the GC blocked on it without sleeping.
- */
 class NameMutex {
   readonly #tails = new Map<string, Promise<void>>();
   readonly #waiting = new Map<string, number>();
@@ -230,8 +220,6 @@ class NameMutex {
     }
   }
 }
-
-// --- listTokens ---
 
 Deno.test("createServerTokenGcDeps: listTokens maps token-main records", async () => {
   const h = harness({ records: [tokenRecord("ci")] });
@@ -272,8 +260,6 @@ Deno.test("createServerTokenGcDeps: listTokens skips a record whose name differs
   assertEquals(tokens.map((t) => t.name), ["ok"]);
 });
 
-// --- collectToken: the normal path ---
-
 Deno.test("createServerTokenGcDeps: collectToken deletes the secret, then the OAuth token, then the records, then pushes", async () => {
   const h = harness();
   const deps = createServerTokenGcDeps(h.input);
@@ -291,15 +277,12 @@ Deno.test("createServerTokenGcDeps: collectToken deletes the secret, then the OA
 });
 
 Deno.test("createServerTokenGcDeps: collectToken never consults workflows or the cross-type lookup", async () => {
-  // Both would reject if called (see harness), and collection would fail.
   const h = harness();
   const deps = createServerTokenGcDeps(h.input);
 
   assertEquals(await deps.collectToken(listed(), always), "collected");
   assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
-
-// --- collectToken: re-reading the token ---
 
 Deno.test("createServerTokenGcDeps: collectToken skips a token whose record is already gone", async () => {
   const h = harness({ stored: null });
@@ -310,7 +293,6 @@ Deno.test("createServerTokenGcDeps: collectToken skips a token whose record is a
 });
 
 Deno.test("createServerTokenGcDeps: collectToken re-checks eligibility against the current record", async () => {
-  // Listed as revoked, but rotated back to active before collection.
   const h = harness({
     stored: tokenAttrs("ci", { state: "active", revokedAt: undefined }),
   });
@@ -326,8 +308,6 @@ Deno.test("createServerTokenGcDeps: collectToken re-checks eligibility against t
   assertEquals(seen, ["active"]);
   assertEquals(h.events, []);
 });
-
-// --- collectToken: records that outlived their definition ---
 
 Deno.test("createServerTokenGcDeps: collectToken leaves the name's secret alone when another definition owns the name", async () => {
   // An orphaned revoked record (TOKEN_DEF_ID) and a re-minted live token
@@ -365,7 +345,6 @@ Deno.test("createServerTokenGcDeps: collectToken's orphaned-data deletes stage i
     markDirty,
     modelDeleteDeps: {
       ...h.input.modelDeleteDeps,
-      // As the data repository signals before it deletes.
       deleteData: async (_type, id, name) => {
         await signalChange(markDirty, {
           kind: "remove",
@@ -391,8 +370,6 @@ Deno.test("createServerTokenGcDeps: collectToken's orphaned-data deletes stage i
   assertEquals(marks, [`${TOKEN_DEF_ID}/token-main`]);
   assertEquals(h.events, [`data:${TOKEN_DEF_ID}/token-main`, "push"]);
 });
-
-// --- collectToken: secrets ---
 
 Deno.test("createServerTokenGcDeps: collectToken never deletes a non-canonical key a record names", async () => {
   const h = harness({
@@ -458,7 +435,6 @@ Deno.test("createServerTokenGcDeps: a recorded vault is listed once per sweep (s
   await deps.collectToken(listed(), always);
   assertEquals(lists(), 1);
 
-  // The next sweep lists again.
   await deps.listTokens();
   await deps.collectToken(listed(), always);
   assertEquals(lists(), 2);
@@ -484,10 +460,8 @@ Deno.test("createServerTokenGcDeps: a failed listing is retried within the sweep
   });
 
   await deps.listTokens();
-  // The first collection cannot list the vault, so it leaves the key there.
   assertEquals(await deps.collectToken(listed(), always), "collected");
   assertEquals(h.events.includes("secret:legacy/server-token-ci"), false);
-  // The failure was not cached: the next one lists again and deletes it.
   assertEquals(await deps.collectToken(listed(), always), "collected");
   assertEquals(h.events.filter((e) => e === "list:legacy").length, 2);
   assertEquals(h.events.includes("secret:legacy/server-token-ci"), true);
@@ -585,8 +559,6 @@ Deno.test("createServerTokenGcDeps: collectToken still collects when the OAuth t
   assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
-// --- collectToken: pushing and the sync gate ---
-
 Deno.test("createServerTokenGcDeps: collectToken still pushes after a partial record delete failure", async () => {
   const h = harness();
   h.input = {
@@ -640,7 +612,6 @@ Deno.test("createServerTokenGcDeps: collectToken reads and deletes only while ho
     checked = true;
     return true;
   });
-  // Let the collection run as far as it can while the gate is held.
   await new Promise((r) => setTimeout(r, 0));
   assertEquals(checked, false);
   assertEquals(h.events, []);
@@ -651,12 +622,10 @@ Deno.test("createServerTokenGcDeps: collectToken reads and deletes only while ho
   assertEquals(h.events.at(-1), "push");
 });
 
-// --- the server token name lock (swamp-club#2534) ---
-
 Deno.test("createServerTokenGcDeps: collectToken waits for a rotation holding the name lock, then skips the rotated token (swamp-club#2534)", async () => {
   const h = harness();
   const mutex = new NameMutex();
-  // No sync gate: the filesystem-datastore deployment the issue reports.
+  // no sync gate, as on a filesystem datastore
   const deps = createServerTokenGcDeps({
     ...h.input,
     withTokenLock: (name, fn) => mutex.run(name, fn),
@@ -673,7 +642,6 @@ Deno.test("createServerTokenGcDeps: collectToken waits for a rotation holding th
   const rotation = mutex.run("ci", async () => {
     rotationEntered();
     await rotationMayFinish;
-    // The rotation writes a fresh, active record for the same name.
     h.setStored(
       tokenAttrs("ci", {
         state: "active",
@@ -785,14 +753,11 @@ Deno.test("createServerTokenGcDeps: collectToken pulls under the name lock and t
         return fn();
       }),
     pullChanged: () => {
-      // A gated request queued now runs only after the unit: the pull runs
-      // inside the gate.
       probe = withSyncGate(syncGate, () => {
         order.push("gated request");
         return Promise.resolve();
       });
       order.push("pull");
-      // The pull brings in the active record another replica wrote.
       h.setStored(
         tokenAttrs("ci", {
           state: "active",
@@ -809,7 +774,6 @@ Deno.test("createServerTokenGcDeps: collectToken pulls under the name lock and t
     "skipped",
   );
   await probe;
-  // The gated request queued during the pull runs only after the re-read.
   assertEquals(order, ["lock", "pull", "re-read", "gated request"]);
   assertEquals(h.events, []);
 });
@@ -828,8 +792,6 @@ Deno.test("createServerTokenGcDeps: collectToken deletes nothing when its pull f
   );
   assertEquals(h.events, []);
 });
-
-// --- createServerTokenGcRepos: owner lookup (swamp-club#2535) ---
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -882,7 +844,6 @@ for (const location of ["models", "auto-definitions"] as const) {
           await deps.collectToken(listed({ definitionId: owner.id }), always),
           "collected",
         );
-        // The owner was resolved, so the name's secret went too.
         assertEquals(
           h.events.includes(
             `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,

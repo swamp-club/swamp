@@ -27,8 +27,6 @@ import type {
   WorkflowRunPayload,
 } from "./protocol.ts";
 
-// ── WorkflowRunPayload ──────────────────────────────────────────────────
-
 Deno.test("WorkflowRunPayload - minimal payload", () => {
   const payload: WorkflowRunPayload = {
     workflowIdOrName: "deploy",
@@ -53,8 +51,6 @@ Deno.test("WorkflowRunPayload - full payload", () => {
   assertEquals(payload.runtimeTags, { region: "us-east-1" });
 });
 
-// ── ModelMethodRunPayload ───────────────────────────────────────────────
-
 Deno.test("ModelMethodRunPayload - minimal payload", () => {
   const payload: ModelMethodRunPayload = {
     modelIdOrName: "my-server",
@@ -75,8 +71,6 @@ Deno.test("ModelMethodRunPayload - full payload", () => {
   assertEquals(payload.inputs, { force: true });
   assertEquals(payload.runtimeTags, { tier: "staging" });
 });
-
-// ── ServerRequest discriminated union ───────────────────────────────────
 
 Deno.test("ServerRequest - workflow.run variant", () => {
   const req: ServerRequest = {
@@ -113,8 +107,6 @@ Deno.test("ServerRequest - cancel variant", () => {
   assertEquals(req.id, "req-3");
 });
 
-// ── SerializedEvent / SerializedError ───────────────────────────────────
-
 Deno.test("SerializedEvent - allows arbitrary extra properties", () => {
   const event: SerializedEvent = {
     kind: "step_completed",
@@ -139,8 +131,6 @@ Deno.test("SerializedError - with and without details", () => {
   };
   assertEquals(withoutDetails.details, undefined);
 });
-
-// ── ServerMessage discriminated union ───────────────────────────────────
 
 Deno.test("ServerMessage - event variant", () => {
   const msg: ServerMessage = {

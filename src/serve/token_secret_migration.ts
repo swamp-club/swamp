@@ -50,12 +50,10 @@ export interface TokenSecretMigrationDeps {
     currentAttrs: Record<string, unknown>,
   ) => Promise<void>;
   /**
-   * Runs `fn` holding the token's name lock, after bringing the local copy of
-   * the datastore up to date and before pushing what `fn` wrote. Build it
-   * with {@link createTokenMigrationLockDeps}.
+   * runs fn holding the token's name lock, after bringing the local copy up to
+   * date and before pushing what fn wrote
    */
   withTokenLock: <T>(tokenName: string, fn: () => Promise<T>) => Promise<T>;
-  /** The token's record as stored now, or null when it has none. */
   readTokenRecord: (
     tokenName: string,
   ) => Promise<Record<string, unknown> | null>;
@@ -145,10 +143,9 @@ export async function migrateTokenSecrets(
     }
 
     try {
-      // The record above was read before the lock, so a rotate or re-mint
-      // may have replaced it since. Writing it back would put an old record
-      // and secret over the new ones (swamp-club#2482), so read it again
-      // under the lock and migrate only what is there now.
+      // the record was read before the lock, so a rotate or re-mint may have
+      // replaced it; writing it back would put an old record and secret over
+      // the new, so re-read under the lock and migrate only what is there now
       const outcome = await deps.withTokenLock(
         queried.name,
         async (): Promise<"migrated" | "skipped"> => {
@@ -191,14 +188,9 @@ export async function migrateTokenSecrets(
 }
 
 /**
- * Moves one token's secrets and repoints its record. Runs under its lock.
- *
- * Only an OAuth login stores an access token, so its absence is normal. The
- * vault is listed to tell an absent key from one that failed to read: a listed
- * key that fails to copy throws before the record is repointed, so the token
- * stays on its vault and the next run retries (swamp-club#3136). Repointing it
- * anyway would leave the access token where the collective refresh no longer
- * looks.
+ * an absent access token is normal (only OAuth logins store one); a listed key
+ * that fails to copy throws before the record is repointed, since repointing
+ * would leave it where the collective refresh won't look
  */
 async function migrateOne(
   deps: TokenSecretMigrationDeps,
@@ -265,8 +257,8 @@ async function migrateOne(
 }
 
 /**
- * Recorded in `_token-secrets` once {@link recoverOAuthAccessTokens} has
- * finished, so later starts never list the user vault for it again.
+ * recorded once recovery has finished, so later starts never list the user
+ * vault again
  */
 export const OAUTH_ACCESS_TOKENS_RECOVERED_KEY =
   "oauth-access-tokens-recovered";
@@ -281,22 +273,13 @@ export type OAuthAccessTokenRecoveryDeps =
     | "readTokenRecord"
   >
   & {
-    /** The vault serves before swamp-club#1511 stored token secrets in. */
     userVaultName: string | undefined;
   };
 
 /**
- * Copies OAuth access tokens that an older migration left behind in the user
- * vault into `_token-secrets` (swamp-club#3136).
- *
- * That migration repointed a token at `_token-secrets` even when copying its
- * access token failed, and the collective refresh reads only `_token-secrets`
- * for such a record, so the token was never refreshed or revoked. Each active
- * record that names `_token-secrets` is checked against one listing of the
- * user vault, and a key `_token-secrets` lacks is copied under the token's
- * lock. Token names come from the records, never from the vault's keys. Once
- * the listing succeeded and every key moved, the marker is recorded and the
- * user vault is not listed again; otherwise the next start retries.
+ * repairs tokens an older migration repointed without copying their access
+ * token. Names come from the records, never the vault's keys; the marker is
+ * recorded only if the listing succeeded and every key moved
  */
 export async function recoverOAuthAccessTokens(
   deps: OAuthAccessTokenRecoveryDeps,

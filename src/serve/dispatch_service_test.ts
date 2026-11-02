@@ -117,7 +117,6 @@ type DispatchBehavior = (
 function createHarness(options?: {
   workers?: WorkerSnapshot[];
   queueTimeoutMs?: number;
-  /** Settles each transition when it settles; resolved at once when absent. */
   holdTransition?: (
     methodName: string,
     inputs: Record<string, unknown>,
@@ -164,7 +163,6 @@ function createHarness(options?: {
 
   const dispatches = new DispatchRegistry();
   const bundles = new BundleRegistry();
-  /** The vault scope each lease transition ran in. */
   const transitionScopes: (RunVaultAccess | undefined)[] = [];
   const service = new DispatchService({
     repoDir: "/tmp/unused",
@@ -228,12 +226,10 @@ Deno.test("DispatchService: dispatches a step and completes its lease", async ()
   assertEquals(result.outputs.length, 1);
   assertEquals(h.dispatchCalls.length, 1);
   assertEquals(h.dispatchCalls[0].name, "w1");
-  // Built-in model: sentinel fingerprint, no bundle registered.
   assertStringIncludes(
     h.dispatchCalls[0].params.bundleFingerprint,
     BUILTIN_BUNDLE_PREFIX,
   );
-  // The shipped environment snapshot is the captured one.
   assertEquals(
     h.dispatchCalls[0].params.environmentSnapshot,
     { SHIPPED: "yes" },
@@ -242,7 +238,6 @@ Deno.test("DispatchService: dispatches a step and completes its lease", async ()
     h.transitions.map((t) => t.methodName),
     ["acquire", "complete"],
   );
-  // The dispatch registry is empty again after completion.
   assertEquals(h.dispatches.forWorker("w1"), []);
 });
 
@@ -277,7 +272,6 @@ Deno.test("DispatchService: a burst of completions waits on no other lease (swam
   await withCapturedSpans(async (spans) => {
     const burst = 25;
     const h = createHarness({ workers: workerPool(burst) });
-    // Every worker returns at once, once all of them hold a dispatch.
     const release = Promise.withResolvers<void>();
     let arrived = 0;
     h.setBehavior(async () => {
@@ -330,7 +324,6 @@ Deno.test("DispatchService: a slow completion holds only its own lease (swamp-cl
         return result;
       }),
   );
-  // Every other step's acquire and complete land while one complete is held.
   await waitFor(() => finished === burst - 1, "every other step to finish");
   const transitionsOf = (methodName: string) =>
     h.transitions.filter((t) => t.methodName === methodName).length;
@@ -349,7 +342,6 @@ Deno.test("DispatchService: a held pending-dispatch record holds no lease (swamp
       methodName === "enqueue" ? heldEnqueue.promise : Promise.resolve(),
   });
   const controller = new AbortController();
-  // No worker carries the label, so this step queues and records it.
   const queued = h.service.executeRemote(stepRequest({
     placement: { labels: { gpu: "true" }, platform: "linux" },
     signal: controller.signal,
@@ -391,7 +383,6 @@ Deno.test("DispatchService: one lease's transitions stay in order when a cancel 
     () => h.transitions.some((t) => t.methodName === "mark_writes"),
     "the first write to be recorded",
   );
-  // A full turn, so a fail that skipped the queue would have run.
   await new Promise((r) => setTimeout(r, 0));
   assertEquals(
     h.transitions.map((t) => t.methodName),
@@ -512,7 +503,6 @@ Deno.test("DispatchService: remote method error fails the lease and rethrows", a
     h.transitions.map((t) => t.methodName),
     ["acquire", "fail"],
   );
-  // Nothing shipped, nothing to scrub: the message reaches the lease as is.
   assertEquals(h.transitions[1].inputs.error, "boom in method");
 });
 
@@ -700,7 +690,6 @@ Deno.test("DispatchService: queues while eligible workers are busy", async () =>
   await new Promise((r) => setTimeout(r, 10));
   assertEquals(firstStarted, true);
 
-  // Second step queues — its dispatch must not start while w1 is busy.
   h.setBehavior(() =>
     Promise.resolve({
       status: "success",
@@ -747,8 +736,6 @@ Deno.test("DispatchService: no-write drop re-dispatches; lease expires", async (
   h.setBehavior((name) => {
     attempts++;
     if (attempts === 1) {
-      // First attempt: socket drops; worker w1 then disappears (grace expiry
-      // is simulated by removing it from the pool).
       h.pool.delete(name);
       h.service.notifyGraceExpired(snapshot({ name }));
       return Promise.reject(new ChannelClosedError("control socket closed"));
@@ -774,7 +761,6 @@ Deno.test("DispatchService: no-write drop re-dispatches; lease expires", async (
 Deno.test("DispatchService: write-then-drop fails the run", async () => {
   const h = createHarness();
   h.setBehavior(async (name, params) => {
-    // The worker writes, then its socket drops.
     await h.service.recordFirstWrite({
       workerName: name,
       dispatchId: params.dispatchId,
@@ -925,7 +911,6 @@ Deno.test("DispatchService: settled waits for the queue records a step writes wi
 
   const order: string[] = [];
   const settling = h.service.settled().then(() => order.push("settled"));
-  // A full turn, so every microtask settled() could resolve on has run.
   await new Promise((r) => setTimeout(r, 0));
   assertEquals(order, []);
 
@@ -965,8 +950,6 @@ Deno.test("DispatchService: worker_busy desync re-queues instead of failing the 
   h.setBehavior(() => {
     attempts++;
     if (attempts === 1) {
-      // The worker still held its serial slot (e.g. a cancel grace period
-      // elapsed) — the gateway view said idle, the worker said busy.
       queueMicrotask(() =>
         h.service.notifyWorkerIdle(snapshot({ name: "w1" }))
       );
@@ -987,7 +970,6 @@ Deno.test("DispatchService: worker_busy desync re-queues instead of failing the 
   const result = await h.service.executeRemote(stepRequest());
   assertEquals(result.durationMs, 1);
   assertEquals(attempts, 2);
-  // The abandoned first attempt's lease ended (expire), not leaked active.
   assertEquals(
     h.transitions.map((t) => t.methodName),
     ["acquire", "expire", "acquire", "complete"],
@@ -1039,10 +1021,6 @@ Deno.test("DispatchService: forwards trace headers and reports the executing wor
   assertEquals(result.workerName, "w1");
 });
 
-/**
- * A step's lock hand-offs as `MethodExecutionService` would bind them: each
- * begun attempt is lent the current nonce, and ending one re-keys it.
- */
 function lockHandOffs(options: { failEnd?: Error } = {}) {
   let generation = 1;
   const log: string[] = [];
@@ -1140,8 +1118,8 @@ Deno.test("DispatchService: a cancelled dispatch ends its hand-off and stays can
     DOMException,
   );
   assertEquals(error.name, "AbortError");
-  // One attempt: a cancelled step is not dispatched again. Its end is given
-  // the step's signal, so the reclaim does not wait (swamp-club#3157).
+  // one attempt: a cancelled step is not dispatched again; its end is given the
+  // step's signal, so the reclaim does not wait
   assertEquals(log, ["begin nonce-1", "end nonce-1"]);
   assertEquals(h.dispatchCalls.length, 1);
   assertEquals(endSignals, [controller.signal]);
@@ -1156,7 +1134,6 @@ Deno.test("DispatchService: an attempt that succeeded still fails when its locks
     () =>
       Promise.resolve({
         lent: { pid: 4242, hostname: "host-a", lockIds: ["nonce-1"] },
-        // The user cancels while the reclaim is waiting, and it times out.
         end: (signal) => {
           endSignals.push(signal);
           controller.abort();
@@ -1191,7 +1168,6 @@ Deno.test("DispatchService: records the dispatch's trace headers for the data pl
   const h = createHarness();
   let recorded: Readonly<Record<string, string>> | undefined;
   h.setBehavior(() => {
-    // Read while the dispatch is active, as a data-plane request would.
     recorded = h.dispatches.forWorker("w1")[0]?.traceHeaders;
     return Promise.resolve({
       status: "success",
@@ -1397,8 +1373,6 @@ Deno.test("executeRemote: a listener that throws on console output does not fail
   assertEquals(h.transitions.at(-1)?.methodName, "complete");
 });
 
-// --- Worker affinity ---
-
 Deno.test("executeRemote: affinity pins subsequent steps to the same worker", async () => {
   const h = createHarness({
     workers: [
@@ -1508,7 +1482,6 @@ Deno.test("executeRemote: first affinity step re-dispatches when its worker is l
   assertEquals(callCount, 2);
   assertEquals(result.workerName !== lost[0].name, true);
 
-  // The group pins to the worker that completed the first step.
   await h.service.executeRemote(stepRequest({
     placement: { labels: {}, platform: "linux", affinityKey },
     stepName: "step-2",
@@ -1677,7 +1650,6 @@ Deno.test("executeRemote: a refused affinity step fails when its pinned worker h
   }));
   const pinned = h.dispatchCalls[0].name;
 
-  // Busy desync on a healthy pinned worker: the step waits and retries.
   let attempts = 0;
   h.setBehavior(() => {
     attempts++;
@@ -1697,7 +1669,6 @@ Deno.test("executeRemote: a refused affinity step fails when its pinned worker h
   assertEquals(retried.workerName, pinned);
   assertEquals(attempts, 2);
 
-  // The pinned worker left the pool before the dispatch was sent.
   h.setBehavior((name) => {
     h.pool.delete(name);
     return Promise.reject(new WorkerNotDispatchableError(name, "not_in_pool"));
@@ -1712,10 +1683,9 @@ Deno.test("executeRemote: a refused affinity step fails when its pinned worker h
   );
 });
 
-// A first affinity step that fails settles the steps waiting on it by why it
-// failed, never as a lost worker named 'unknown' (swamp-club#4113). w2 has
-// more free capacity, so an unbound step picks it; a step bound to the first
-// step's worker goes to w1.
+// a failed first affinity step settles waiting steps by why it failed, never as
+// a lost worker named 'unknown'; w2 has more free capacity so an unbound step
+// picks it, a bound one goes to w1
 function affinityFailureHarness(options?: { w1ProtocolVersion?: number }) {
   return createHarness({
     workers: [
@@ -1977,7 +1947,6 @@ Deno.test("executeRemote: an unbound first affinity step queues when the only wo
   assertEquals(h.dispatchCalls.length, 0);
 });
 
-/** Two workers that differ only by slot; a first step with slot=b pins w2. */
 function slotPool(): WorkerSnapshot[] {
   return [
     snapshot({ name: "w1", labels: { pool: "worker", slot: "a" } }),
@@ -2080,7 +2049,6 @@ Deno.test("executeRemote: a step waiting on its group's first dispatch fails whe
     return OK_RESULT;
   });
 
-  // `good` dispatches first and pins w2; `bad` waits on the pin.
   const good = h.service.executeRemote(stepRequest({
     placement: { labels: { pool: "worker", slot: "b" }, affinityKey },
     stepName: "good",
@@ -2140,8 +2108,6 @@ Deno.test("DispatchService: a worker that leaves the pool between scheduling and
   });
   h.setBehavior((name) => {
     if (h.dispatchCalls.length === 1) {
-      // What WorkerGateway.dispatch throws once a drained worker has closed
-      // its socket and been removed from the pool.
       h.pool.delete(name);
       return Promise.reject(
         new WorkerNotDispatchableError(name, "not_in_pool"),
@@ -2154,7 +2120,6 @@ Deno.test("DispatchService: a worker that leaves the pool between scheduling and
   assertEquals(h.dispatchCalls.length, 2);
   assertEquals(result.workerName, h.dispatchCalls[1].name);
   assertEquals(result.workerName !== h.dispatchCalls[0].name, true);
-  // The abandoned attempt's lease ends; the second attempt's completes.
   assertEquals(
     h.transitions.filter((t) => t.typeArg.includes("lease")).map((t) =>
       t.methodName
@@ -2200,7 +2165,6 @@ for (
       Error,
       "Timed out waiting for a worker",
     );
-    // The loop ended with the rejection: no dispatch follows it.
     const calls = h.dispatchCalls.length;
     assertEquals(calls >= 1, true);
     await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
@@ -2277,8 +2241,8 @@ Deno.test("executeRemote: concurrent affinity step rejects when first step fails
     h.service.executeRemote(stepRequest({
       placement: { labels: {}, platform: "linux", affinityKey },
       stepName: "step-a",
-      // A write-bearing first step fails on a drop; a no-write one would
-      // re-dispatch (swamp-club#3156).
+      // a write-bearing first step fails on a drop; a no-write one would
+      // re-dispatch
       declaredWrites: true,
     })),
     h.service.executeRemote(stepRequest({
@@ -2355,7 +2319,6 @@ Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the s
   });
   service.bindGateway(gateway);
 
-  // An in-process worker whose dispatch writes, then never returns.
   const workerChannel: RpcChannel = new RpcChannel({
     send: (data) => void Promise.resolve().then(() => attached.feed(data)),
   });
@@ -2513,8 +2476,6 @@ Deno.test("DispatchService: a step re-dispatched across versions sends each work
   let legacyCalls = 0;
   let legacy: Promise<LegacyStepDelivery> | undefined;
   h.setBehavior((name) => {
-    // The first two workers chosen leave the pool as they refuse, so the
-    // step reaches all three.
     if (h.dispatchCalls.length < 3) {
       h.pool.delete(name);
       return Promise.reject(new WorkerNotDispatchableError(name, "draining"));
@@ -2557,7 +2518,6 @@ Deno.test("DispatchService: a worker that re-enrolled at another version before 
   let legacyCalls = 0;
   h.setBehavior((name, params) => {
     if (params.execution.protocolVersion === 5) {
-      // A new process enrolled under the name at version 6 meanwhile.
       h.pool.set(name, snapshot({ name, protocolVersion: 6 }));
       return Promise.reject(
         new WorkerNotDispatchableError(name, "version_changed"),
@@ -2609,7 +2569,6 @@ Deno.test("DispatchService: a version 5 frame that cannot be built fails the ste
     0,
   );
   assertEquals(h.dispatches.forWorker("w1"), []);
-  // The worker is offered to the next step at once.
   await h.service.executeRemote(stepRequest());
   assertEquals(h.dispatchCalls.length, 1);
 });
@@ -2690,7 +2649,6 @@ Deno.test("DispatchService: a hook that fails after a version 6 worker validated
   assertEquals(result.workerName, "w1");
   assertEquals(hookCalls, 1);
   assertEquals(lines, ["created the bucket"]);
-  // The lease records the method's outcome, not the hook's.
   assertEquals(
     h.transitions.map((t) => t.methodName).filter((name) => name !== "acquire"),
     ["complete"],
@@ -2715,7 +2673,6 @@ Deno.test("DispatchService: a hook that fails after a version 6 worker validated
 Deno.test("DispatchService: a worker's output lines and console output reach the run through the dispatch's redactor, with the values served mid-dispatch, and an event's type, stream and level stay as sent (typed-secrets 5.2)", async () => {
   const h = createHarness();
   h.setBehavior((name, params, options) => {
-    // As the load route adds each value it serves to the registration.
     const registration = h.dispatches.forDispatch(name, params.dispatchId)!;
     (registration.redactor ??= new SecretRedactor()).addSecret("s3cret-loaded");
     // A value that is also text of the event's structure.
@@ -2789,21 +2746,18 @@ Deno.test("DispatchService: dispatch-env-allow limits the shipped snapshot (swam
 
   await service.executeRemote(stepRequest());
 
-  // The real process environment, with an empty allowlist: nothing ships.
   assertEquals(calls[0].environmentSnapshot, {});
 });
 
 /**
- * A one-worker pool whose fake gateway counts slots the way the real one
- * does: a dispatch is listed in `activeDispatchIds` from registration until
- * it settles, and one past capacity is refused. Each dispatch stays open
- * until the test settles its gate.
+ * a one-worker pool whose fake gateway counts slots like the real one: a
+ * dispatch is listed in activeDispatchIds from registration until it settles,
+ * and one past capacity is refused
  */
 function createSlotHarness(capacity: number) {
   const active: string[] = [];
   const calls: DispatchParams[] = [];
   const gates: PromiseWithResolvers<DispatchResult>[] = [];
-  /** Step names whose lease acquire rejects. */
   const failedAcquires = new Set<string>();
   const worker = (): WorkerSnapshot =>
     snapshot({
@@ -2849,7 +2803,6 @@ function createSlotHarness(capacity: number) {
     },
   });
 
-  /** Runs a step, recording whether it was ever queued. */
   const run = (stepName: string, overrides?: Partial<RemoteStepRequest>) => {
     const step = { queued: false, done: Promise.resolve() };
     step.done = service.executeRemote(stepRequest({
@@ -2886,7 +2839,6 @@ Deno.test("DispatchService: a step arriving mid-dispatch gets the worker's free 
   const first = h.run("one");
   await waitFor(() => h.calls.length === 1, "first dispatch registered");
 
-  // One of two slots is in use: the second step must not wait for it.
   const second = h.run("two");
   await waitFor(() => h.calls.length === 2, "second dispatch registered");
   assertEquals(second.queued, false);
@@ -2902,11 +2854,9 @@ Deno.test("DispatchService: steps arriving together never exceed the worker's ca
   const h = createSlotHarness(2);
   const steps = [h.run("one"), h.run("two"), h.run("three")];
   await waitFor(() => h.calls.length === 2, "two dispatches registered");
-  // The third was placed while the first two only held reservations.
   assertEquals(steps.map((s) => s.queued), [false, false, true]);
   assertEquals(h.active.length, 2);
 
-  // A slot frees up: the queued step takes it.
   h.succeed(0);
   await waitFor(() => h.calls.length === 3, "third dispatch registered");
   h.succeed(1);
@@ -2921,14 +2871,11 @@ Deno.test("DispatchService: a retried step holds one slot, not one per attempt (
   h.gates[0].reject(
     new RpcError({ code: "worker_busy", message: "Worker is at capacity" }),
   );
-  // The re-queued step waits for a pool change, as it would for the
-  // gateway's idle notification.
   await waitFor(() => {
     h.service.notifyWorkerIdle(h.worker());
     return h.calls.length === 2;
   }, "second attempt registered");
 
-  // Only the second attempt occupies a slot, so the other one is free.
   const other = h.run("two");
   await waitFor(() => h.calls.length === 3, "other step registered");
   assertEquals(other.queued, false);
@@ -2938,7 +2885,6 @@ Deno.test("DispatchService: a retried step holds one slot, not one per attempt (
   await retried.done;
   await other.done;
 
-  // Nothing is left reserved: both slots are available again.
   const pair = [h.run("three"), h.run("four")];
   await waitFor(() => h.calls.length === 5, "both later steps registered");
   assertEquals(pair.map((s) => s.queued), [false, false]);
@@ -2967,7 +2913,6 @@ Deno.test("DispatchService: an attempt that fails before reaching the gateway fr
 
 Deno.test("DispatchService: an unscheduled dispatch leaves another step's reservation alone (swamp-club#3293)", async () => {
   const h = createSlotHarness(2);
-  // Step one is placed on w1 but held before the gateway registers it.
   const handOff = Promise.withResolvers<void>();
   const reserved = h.run("one", {
     beginLockHandOff: async () => {
@@ -2984,7 +2929,6 @@ Deno.test("DispatchService: an unscheduled dispatch leaves another step's reserv
   h.succeed(0);
   await unscheduled.done;
 
-  // Step one's reservation still holds a slot, so only one more step fits.
   const second = h.run("two");
   await waitFor(() => h.calls.length === 2, "second dispatch registered");
   const third = h.run("three");
@@ -3079,7 +3023,6 @@ Deno.test("DispatchService: a two-slot worker runs a step that arrives while ano
   gateway.dispose();
 });
 
-/** A source of written versions for {@link DispatchService.setWrittenVersionsSource}. */
 function writtenVersionsSource(versions: Map<string, WrittenVersion[]>) {
   return (dispatchId: string) =>
     Promise.resolve(versions.get(dispatchId) ?? []);
@@ -3176,8 +3119,8 @@ Deno.test("DispatchService: a step skips a worker whose enrollment finished afte
     onWorkerIdle: (worker) => service.notifyWorkerIdle(worker),
     onWorkerEnrolled: (worker) => service.notifyWorkerEnrolled(worker),
     runModelMethod: async (input) => {
-      // Held while the worker is recorded: a socket closed during redeem
-      // stops the enrollment before it is recorded (swamp-club#3984).
+      // held while the worker is recorded: a socket closed during redeem stops
+      // the enrollment before it is recorded
       if (input.methodName === "enroll") {
         records++;
         if (recordGate !== null) await recordGate;
@@ -3228,7 +3171,6 @@ Deno.test("DispatchService: a step skips a worker whose enrollment finished afte
     labels: {},
   });
 
-  // "a-dead" sorts before "b-live", so the scheduler offers it first.
   recordGate = new Promise<void>((resolve) => {
     openRecord = () => {
       recordGate = null;
@@ -3366,7 +3308,6 @@ Deno.test("DispatchService: a refused placement fails the step before anything i
     "refused to place",
   );
   assertEquals(h.dispatchCalls, []);
-  // The frame is built before a lease is taken, so nothing is left held.
   assertEquals(h.transitions, []);
   assertEquals(h.dispatches.forWorker("w1"), []);
 });

@@ -68,7 +68,6 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
 
-/** Records every registration, so a test can see it after deregistration. */
 class RecordingRegistry extends ActiveRunRegistry {
   readonly registered: ActiveRun[] = [];
   override register(run: ActiveRun): void {
@@ -102,7 +101,6 @@ function makeWorkflow(
   });
 }
 
-/** A run whose only gate has been approved: suspended, awaiting resume. */
 function makeApprovedRun(workflow: Workflow): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -191,7 +189,6 @@ for (const from of ["deploy", undefined]) {
       from ? "--from" : "a retry"
     } on a workflow whose structure changed, without registering it`,
     async () => {
-      // The run failed at deploy; since then a step was added to its job.
       const run = WorkflowRun.create(makeWorkflow());
       run.start();
       const job = run.getJob("main")!;
@@ -414,7 +411,6 @@ Deno.test("autoResumeAfterApproval: audits a launch the registry refuses and rep
   registry.deregister(run.id);
 });
 
-/** A run whose deploy step failed after its gate was approved. */
 function makeFailedRun(workflow: Workflow): WorkflowRun {
   const run = makeApprovedRun(workflow);
   const job = run.getJob("main")!;
@@ -541,7 +537,6 @@ Deno.test("autoResumeAfterApproval: never retries a run that failed before launc
   assertEquals(audit.map((e) => e.action), ["workflow.auto_resume_failed"]);
 });
 
-/** The gated workflow with a step "verify" added to job main since the run. */
 function makeEditedWorkflow(opts: { autoResume?: boolean } = {}): Workflow {
   return Workflow.create({
     name: "gated",
@@ -565,10 +560,6 @@ function makeEditedWorkflow(opts: { autoResume?: boolean } = {}): Workflow {
   });
 }
 
-/**
- * The approved run of {@link makeApprovedRun}, started by a serve instance
- * as runs from the dashboard, `--server` and webhooks are.
- */
 function makeServeOwnedApprovedRun(workflow: Workflow): WorkflowRun {
   return WorkflowRun.fromData({
     ...makeApprovedRun(workflow).toData(),
@@ -638,8 +629,6 @@ Deno.test("autoResumeAfterApproval: audits a launch refused because the workflow
   assertEquals(run.status, "suspended");
 });
 
-// --- Parent auto-resume after a nested run (swamp-club#2736) -----------------
-
 function nestedWorkflows(autoResume: boolean): {
   parent: Workflow;
   child: Workflow;
@@ -673,7 +662,6 @@ function nestedWorkflows(autoResume: boolean): {
   return { parent, child };
 }
 
-/** A parent suspended on a child that has since succeeded. */
 function settledPair(parent: Workflow, child: Workflow): {
   parentRun: WorkflowRun;
   childRun: WorkflowRun;
@@ -788,7 +776,6 @@ Deno.test("autoResumeParentAfterChild: skips and audits when the parent's policy
 Deno.test("autoResumeParentAfterChild: leaves alone a parent another process may still drive, or one that no longer waits", async () => {
   const { parent, child } = nestedWorkflows(true);
 
-  // A sibling step of the parent is still running.
   const running = settledPair(parent, child);
   const sibling = running.parentRun.getJob("main")!;
   const extra = WorkflowRun.fromData({
@@ -812,7 +799,6 @@ Deno.test("autoResumeParentAfterChild: leaves alone a parent another process may
   );
   assertStringIncludes(h.audit[0].detail ?? "", "reason=parent_steps_running");
 
-  // The parent was cancelled since: nothing to resume, nothing audited.
   const ended = settledPair(parent, child);
   ended.parentRun.endAsCancelled("stop");
   h = nestedHarness([parent, child], [ended.parentRun, ended.childRun]);
@@ -857,9 +843,7 @@ Deno.test("autoResumeParentAfterChild: waits for a parent this instance still dr
     subject,
   );
   await waitFor(() => awaited, "the parent's driver awaited");
-  // Still driven here: nothing new is registered yet.
   assertEquals(registry.registered.length, 1);
-  // The parent's driver finishes and leaves the registry.
   registry.deregister(parentRun.id);
   driving.resolve();
 
@@ -980,8 +964,6 @@ Deno.test("startDetachedResume: a nested refusal names a grandchild only when ev
   assertEquals(registry.registered.length, 0);
 });
 
-// --- Continuation of a settled run (swamp-club#3108) --------------------------
-
 const WAIT_SCHEMA = {
   type: "object" as const,
   additionalProperties: false,
@@ -1007,7 +989,6 @@ function waitingWorkflow(autoResume: boolean | undefined = true): Workflow {
   });
 }
 
-/** A run suspended on one wait for a signal. */
 function makeWaitingRun(
   workflow: Workflow,
 ): { run: WorkflowRun; wait: SignalWait } {
@@ -1023,7 +1004,6 @@ function makeWaitingRun(
   return { run, wait };
 }
 
-/** A harness whose datastore holds wait outcomes and continuation claims. */
 function continuationHarness(
   workflows: Workflow[],
   runs: WorkflowRun[],
@@ -1070,7 +1050,6 @@ Deno.test("continueSettledRun: leaves a run alone until every wait has an outcom
   await registry.registered[0].completion;
 });
 
-/** Registers the run's wait as the executor does when the step starts waiting. */
 async function registerWait(
   waits: InMemorySignalWaitStore,
   run: WorkflowRun,
@@ -1182,8 +1161,6 @@ Deno.test("continueSettledRun: launches an approved run whose auto-resume launch
 
 Deno.test("continueSettledRun: a recovered run is left for the resume its recovery asked for", async () => {
   const workflow = makeWorkflow({ autoResume: true });
-  // Approved and resumed, then interrupted in the step after the gate and
-  // recovered: the gate's decision is still on the record.
   const run = makeApprovedRun(workflow);
   run.resumeFromSuspended({ pid: 1 });
   run.getJob("main")!.getStep("deploy")!.start();
@@ -1346,7 +1323,6 @@ Deno.test("autoResumeParentAfterChild: a parent that waits for a signal of its o
     ],
   });
   const { parentRun, childRun } = settledPair(parent, child);
-  // The parent waits on the finished child and on a signal of its own.
   const review = parentRun.getJob("main")!.getStep("review")!;
   review.start();
   const wait = SignalWait.open(WAIT_SCHEMA, 60, new Date());
@@ -1401,7 +1377,6 @@ Deno.test("autoResumeParentAfterChild: a parent whose own wait was cancelled is 
     parentRun,
     childRun,
   ]);
-  // What a peer's cancel of the parent leaves: this copy still suspended.
   await waits.settle(
     unsignalledOutcomeFor(wait, "cancelled", { runId: parentRun.id }),
   );
@@ -1427,7 +1402,6 @@ Deno.test("autoResumeParentAfterChild: after a signal the subject must hold sign
     "token",
   );
 
-  // No token binding, so no grant can be shown: refused and audited.
   assertEquals(
     await autoResumeParentAfterChild(
       ctx,
@@ -1525,9 +1499,7 @@ Deno.test("continueSettledRun: a claim a local command left behind is audited on
   for (
     const [claimedAt, takeover, audited] of [
       [minutesAgo(10), true, true],
-      // The command may be between its claim and its save.
       [minutesAgo(0), true, false],
-      // This copy of the run may be behind the command's resume.
       [minutesAgo(10), false, false],
     ] as const
   ) {
@@ -1568,10 +1540,8 @@ Deno.test("noteParkedParent: names the parent only of a finished run its parent 
   const { parentRun, childRun } = settledPair(parent, child);
   const { ctx } = continuationHarness([parent, child], [parentRun, childRun]);
   assertEquals(await noteParkedParent(ctx, childRun), true);
-  // A run with no parent.
   assertEquals(await noteParkedParent(ctx, parentRun), false);
 
-  // A child that suspended again has not ended.
   const again = settledPair(parent, child);
   const waiting = WorkflowRun.create(child);
   waiting.recordParentRun({
@@ -1602,7 +1572,6 @@ Deno.test("continueSettledRun: a resume that fails and leaves the run suspended 
   let clock = 0;
   const attempt = () =>
     continueSettledRun(ctx, target, { ...SWEEP, takeover: true }, () => clock);
-  // Waits until launch number `count` has failed and its backoff is set.
   const failedLaunches = async (count: number, wait: number) => {
     assertEquals(registry.registered.length, count);
     await waitFor(
@@ -1614,12 +1583,10 @@ Deno.test("continueSettledRun: a resume that fails and leaves the run suspended 
   assertEquals(await attempt(), true);
   await failedLaunches(1, CONTINUATION_BACKOFF_BASE_MS);
 
-  // Within the first backoff nothing is launched.
   clock = CONTINUATION_BACKOFF_BASE_MS - 1;
   assertEquals(await attempt(), false);
   assertEquals(registry.registered.length, 1);
 
-  // After it, one more attempt, and the wait doubles.
   clock = CONTINUATION_BACKOFF_BASE_MS;
   assertEquals(await attempt(), true);
   await failedLaunches(2, 2 * CONTINUATION_BACKOFF_BASE_MS);
@@ -1629,7 +1596,6 @@ Deno.test("continueSettledRun: a resume that fails and leaves the run suspended 
   assertEquals(await attempt(), true);
   await failedLaunches(3, 4 * CONTINUATION_BACKOFF_BASE_MS);
 
-  // The wait never passes its cap.
   for (let i = 0; i < 12; i++) {
     clock += CONTINUATION_BACKOFF_MAX_MS;
     assertEquals(await attempt(), true, `attempt ${i}`);
@@ -1646,7 +1612,6 @@ Deno.test("continueSettledRun: a resume that fails and leaves the run suspended 
     clock + CONTINUATION_BACKOFF_MAX_MS,
   );
 
-  // One launch event and one failure event, however many attempts.
   assertEquals(audit.map((a) => a.action), [
     "workflow.auto_resume",
     "workflow.auto_resume_failed",
@@ -1717,21 +1682,18 @@ Deno.test("continueSettledRun: a suspension found held by another is not read ag
 
   assertEquals(await pass(false), false);
   assertEquals(reads, 2);
-  // Later passes leave the datastore alone until the recheck is due.
   clock = HELD_ELSEWHERE_RECHECK_MS - 1;
   assertEquals(await pass(false), false);
   assertEquals(reads, 2);
   clock = HELD_ELSEWHERE_RECHECK_MS;
   assertEquals(await pass(false), false);
   assertEquals(reads, 4);
-  // A pass that may take a claim over always looks.
   assertEquals(await pass(true), false);
   assertEquals(reads, 6);
   assertEquals(registry.registered.length, 0);
   assertEquals(audit, []);
 });
 
-/** Gives the harness a datastore whose copy of every run reads as `answer`. */
 function withRunRecordCurrency(
   ctx: ConnectionContext,
   answer: () => Promise<boolean>,
@@ -1763,7 +1725,6 @@ Deno.test("continueSettledRun: a copy of a run that differs from the datastore's
   clock = HELD_ELSEWHERE_RECHECK_MS;
   assertEquals(await pass(false), false);
   assertEquals(remote.asked(), 2);
-  // The boot pass always compares.
   assertEquals(await pass(true), false);
   assertEquals(remote.asked(), 3);
   assertEquals(registry.registered.length, 0);
@@ -1786,7 +1747,6 @@ Deno.test("continueSettledRun: a datastore that cannot be read leaves the run su
       false,
     );
   }
-  // Tried again on every pass: the datastore may be back.
   assertEquals(remote.asked(), 3);
   assertEquals(registry.registered.length, 0);
   assertEquals(audit.map((a) => a.action), ["workflow.auto_resume_failed"]);
@@ -1821,8 +1781,8 @@ Deno.test("continueSettledRun: gives an open wait the pending signal of its key,
   const step = job.getStep("review")!;
   step.start();
   const opened = new Date();
-  // A keyed wait whose step set acceptEarly, open over a signal its step
-  // never read: the signaller stored it and stopped (swamp-club#3212).
+  // a keyed wait with acceptEarly open over a signal its step never read: the
+  // signaller stored it and stopped
   const wait = SignalWait.open(WAIT_SCHEMA, 60, opened, undefined, "verdict")
     .withEarly({
       generation: 1,
@@ -1838,7 +1798,6 @@ Deno.test("continueSettledRun: gives an open wait the pending signal of its key,
   const target = { workflowId: workflow.id, runId: run.id };
   const beforeDeadline = wait.deadline.getTime() - 1;
 
-  // Nothing pending: the wait is open and the run stays suspended.
   assertEquals(
     await continueSettledRun(ctx, target, SWEEP, () => beforeDeadline),
     false,

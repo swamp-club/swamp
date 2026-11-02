@@ -28,7 +28,6 @@ import {
 
 const logger = getSwampLogger(["serve", "oauth-migration"]);
 
-/** The vault calls the OAuth secret migration makes. */
 export type OAuthSecretMigrationVaults = Pick<
   VaultService,
   | "get"
@@ -48,22 +47,15 @@ const OAUTH_SECRET_KEYS = [
 ] as const;
 
 /**
- * Recorded in `_token-secrets` once the migration has finished. A key that is
- * legitimately absent (the bootstrap access token after an API-key
- * registration, say) would otherwise send every boot to the user vault.
+ * a key that is legitimately absent, such as the bootstrap access token after
+ * API-key registration, would otherwise send every boot to the user vault
  */
 export const OAUTH_SECRETS_MIGRATED_KEY = "oauth-secrets-migrated";
 
 /**
- * Moves the OAuth bootstrap secrets from the user's vault to
- * `_token-secrets`. These are fixed-name keys that were previously stored in
- * the user's vault during first-time OAuth setup.
- *
- * The user vault is listed once and only the keys it holds are read. The
- * migration is recorded only when the listing succeeded and every key moved,
- * so a vault that is unreachable at boot is retried on the next one. With no
- * user vault there is nothing to move and no marker is written, so such starts
- * only repeat the `_token-secrets` lookups.
+ * recorded only when the listing succeeded and every key moved, so an
+ * unreachable vault is retried next boot; with no user vault no marker is
+ * written
  */
 export async function migrateOAuthSecrets(
   vaultService: OAuthSecretMigrationVaults,
@@ -140,11 +132,9 @@ export async function migrateOAuthSecrets(
 }
 
 /**
- * Builds the read credential resolution uses for an OAuth bootstrap secret.
- * `_token-secrets` is read first. The user vault is a fallback only until the
- * migration has been recorded: after that it holds none of these keys, so a
- * key `_token-secrets` lacks is absent and reading the user vault for it can
- * only fail (swamp-club#3127). The marker is looked up once per reader.
+ * the user vault is a fallback only until the migration is recorded; after that
+ * a key _token-secrets lacks is absent and reading the user vault could only
+ * fail
  */
 export function createOAuthSecretReader(
   vaultService: Pick<

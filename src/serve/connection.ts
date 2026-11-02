@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Per-WebSocket connection handler. Dispatches incoming requests to libswamp
- * operations and streams serialized events back to the client.
- */
-
 import { z } from "zod";
 import {
   SERVE_CAPABILITY_LITERAL_INPUTS,
@@ -258,9 +253,7 @@ import {
 export type { ConnectionContext } from "./handlers/shared.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
-const MAX_SESSION_MS = 8 * 60 * 60 * 1000; // 8 hours
-
-// ── Zod schemas for incoming WebSocket messages ─────────────────────────
+const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
 
 const WorkflowRunRequestSchema = z.object({
   type: z.literal("workflow.run"),
@@ -689,8 +682,6 @@ const ReportTypeSearchRequestSchema = z.object({
   }).optional(),
 });
 
-// ── Model operation schemas ─────────────────────────────────────────
-
 const ModelGetRequestSchema = z.object({
   type: z.literal("model.get"),
   id: z.string().min(1).max(256),
@@ -812,8 +803,6 @@ const ModelEvaluateRequestSchema = z.object({
   }).optional(),
 });
 
-// ── Workflow operation schemas ───────────────────────────────────────
-
 const WorkflowGetRequestSchema = z.object({
   type: z.literal("workflow.get"),
   id: z.string().min(1).max(256),
@@ -917,20 +906,9 @@ const WorkflowRejectRequestSchema = z.object({
   }),
 });
 
-// A signal names its wait by ID, or by a workflow and a key (swamp-club#3211).
-// A wait ID, when present, is the address: the first form is tried first and
-// strips every other field, a `workflow` or `key` among them. A request that
-// carries both is therefore authorized and delivered as a signal by ID, as a
-// server from before the key form delivers it, and a client that sends extra
-// context beside a wait ID keeps working. Only a request with no wait ID is
-// read as a key address: the second form refuses a `waitId`, so one that is
-// not a UUID is malformed, as it always was, and never falls through to the
-// key. Only a UUID is accepted as a wait ID, so no other
-// client text reaches a store key or the audit log through it. It is judged
-// by normalizeWaitId, as the HTTP route and the CLI judge it, so all three
-// accept the same IDs. A workflow and a key are only bounded here: whether
-// they name anything is decided after the caller is authorized, and answered
-// as a wait that does not exist.
+// a wait ID, when present, is the address and strips other fields; only a UUID
+// is accepted, via normalizeWaitId as HTTP and CLI do. Without one, workflow
+// and key are the address, only bounded here
 const SignalIdempotencyKeySchema = z.string()
   .max(SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH)
   .refine(isIdempotencyKey, `must be ${IDEMPOTENCY_KEY_FORM}`)
@@ -1010,8 +988,6 @@ const WorkflowResumeRequestSchema = z.object({
   }),
 });
 
-// ── Vault operation schemas ─────────────────────────────────────────
-
 const VaultDescribeRequestSchema = z.object({
   type: z.literal("vault.describe"),
   id: z.string().min(1).max(256),
@@ -1059,8 +1035,6 @@ const VaultAnnotateRequestSchema = z.object({
     clear: z.boolean().optional(),
   }),
 });
-
-// ── Server admin schemas ────────────────────────────────────────────
 
 const WorkerListRequestSchema = z.object({
   type: z.literal("worker.list"),
@@ -1145,8 +1119,6 @@ const VaultMigrateRequestSchema = z.object({
   }),
 });
 
-// ── Extension operation schemas ─────────────────────────────────────
-
 const ExtensionListRequestSchema = z.object({
   type: z.literal("extension.list"),
   id: z.string().min(1).max(256),
@@ -1214,8 +1186,6 @@ const ExtensionUpdateRequestSchema = z.object({
     checkOnly: z.boolean().optional(),
   }).optional(),
 });
-
-// ── Doctor operation schemas ────────────────────────────────────────
 
 const DoctorVaultsRequestSchema = z.object({
   type: z.literal("doctor.vaults"),
@@ -1689,25 +1659,19 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
 ]);
 
 /**
- * The request shape the schemas above actually let through. zod strips
- * unknown keys, so any `ServerRequest` payload field missing from its schema
- * never reaches the handler; connection_schema_parity_test.ts compares this
- * type against `ServerRequest` to catch that drift at compile time.
+ * zod strips unknown keys, so a ServerRequest payload field missing from its
+ * schema never reaches the handler; connection_schema_parity_test.ts compares
+ * this type against ServerRequest
  */
 export type ValidatedServerRequest = z.infer<typeof ServerRequestSchema>;
 
-/**
- * Every request type's schema, for the fitness test that checks each record a
- * client can send is bounded (swamp-club#3862).
- */
 export function serverRequestSchemas(): readonly z.ZodType[] {
   return ServerRequestSchema.options;
 }
 
 /**
- * Each request type's payload field names, read from the schemas above. The
- * serve id-deny conformance test uses it to find every request that names a
- * resource, so a new one cannot ship without authorization coverage.
+ * used by the serve id-deny conformance test to find every request that names a
+ * resource, so a new one cannot ship without authorization coverage
  */
 export function serverRequestPayloadFields(): ReadonlyMap<
   string,
@@ -1728,11 +1692,8 @@ export function serverRequestPayloadFields(): ReadonlyMap<
 }
 
 /**
- * Validates a parsed JSON value against the ServerRequest schema.
- * Returns the validated request on success, or a human-readable error string on failure.
- * The message is any token holder's to provoke, so the parse stops at the
- * first failure in each container and the message names at most
- * {@link MAX_REPORTED_REQUEST_ISSUES} issues (swamp-club#3862).
+ * the message is any token holder's to provoke, so the parse stops at the first
+ * failure in each container and names a bounded number of issues
  */
 export function validateServerRequest(
   data: unknown,
@@ -1746,16 +1707,8 @@ export function validateServerRequest(
   }`;
 }
 
-/** Most schema issues an `invalid_request` error names. */
 export const MAX_REPORTED_REQUEST_ISSUES = 10;
 
-/**
- * Best-effort extraction of the request `id` from a parsed message
- * BEFORE schema validation. When validation fails, the validated
- * request object is unavailable, but the client still needs the id
- * echoed back so it can match the error to its pending request.
- * Falls back to `"unknown"` when the id is absent or not a string.
- */
 export function extractRequestId(data: unknown): string {
   if (
     typeof data === "object" && data !== null &&
@@ -1824,10 +1777,9 @@ export function handleConnection(
   setConnectionTeardown(socket, teardown);
 
   socket.onmessage = (event) => {
-    // Once the server has closed the session, nothing more is served on it.
     if (socket.readyState !== WebSocket.OPEN) return;
-    // A team peer's socket carries only the commit feed (swamp-club#4120):
-    // never a worker's frames, never a relay.
+    // a team peer's socket carries only the commit feed: never a worker's
+    // frames, never a relay
     if (isPeerSocket(socket)) {
       handleMessage(
         socket,
@@ -1840,9 +1792,8 @@ export function handleConnection(
       );
       return;
     }
-    // A worker's connection to a follower is relayed whole to the leader
-    // from its first RPC frame: the worker joins the leader's pool
-    // (swamp-club#4120).
+    // a worker's connection to a follower is relayed whole to the leader from
+    // its first RPC frame, so the worker joins the leader's pool
     const relayed = existingForwarder(socket);
     if (relayed?.relaying) {
       relayed.relayFrame(event.data);
@@ -1891,11 +1842,8 @@ export interface ConnectionTeardownState {
 }
 
 /**
- * Builds the idempotent teardown of a connection's work: aborts in-flight
- * requests, ends audit subscriptions and their re-auth timers, clears the
- * session cap and detaches a worker. It runs on a server-initiated close and
- * again on the close event; only the first call does anything.
- * Exported for unit testing.
+ * idempotent: runs on a server-initiated close and again on the close event,
+ * and only the first call does anything
  */
 export function createConnectionTeardown(
   state: ConnectionTeardownState,
@@ -1923,10 +1871,6 @@ export function createConnectionTeardown(
   };
 }
 
-/**
- * Parse, validate, and dispatch a single incoming WebSocket message.
- * Exported for unit testing.
- */
 export function handleMessage(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1954,9 +1898,8 @@ export function handleMessage(
 
   const request: ServerRequest = validated;
 
-  // A team peer authenticated by the peer key may read the commit feed and
-  // nothing else (swamp-club#4120): the key says the peer is a node of the
-  // team, never who any caller is.
+  // a peer authenticated by the peer key may read the commit feed and nothing
+  // else: the key says the peer is a team node, never who any caller is
   if (
     isPeerSocket(socket) && request.type !== "cancel" &&
     !PEER_REQUESTS.has(request.type)
@@ -1980,8 +1923,8 @@ export function handleMessage(
     if (isPeerSocket(socket)) return;
     const run = ctx.activeRunRegistry?.get(request.id);
     if (!run) {
-      // A follower runs nothing: a cancel for a run passes on to the
-      // leader, where the run is (swamp-club#4120).
+      // a follower runs nothing: a cancel for a run passes on to the leader,
+      // where the run is
       if (ctx.followerGate?.role === "follower") {
         forwarderFor(socket, ctx.leaderLink)?.cancel(event.data as string);
       }
@@ -2070,10 +2013,9 @@ export function handleMessage(
     }
   }
 
-  // A follower takes no write and runs nothing: it passes the request on to
-  // the leader with the caller's own credential (swamp-club#4120), or
-  // refuses it when no leader can be reached; before the handler runs, so
-  // no step's side effect happens here first (swamp-club#4096).
+  // a follower takes no write and runs nothing: it forwards with the caller's
+  // credential, or refuses when no leader is reachable; before the handler runs
+  // so no step's side effect happens first
   const notLeader = followerRefusal(request.type, ctx.followerGate);
   if (
     notLeader !== undefined && !notLeader.reads &&
@@ -2123,14 +2065,13 @@ export function handleMessage(
     };
   }
 
-  // Write requests answer once their commits are replicated
-  // (swamp-club#3489); see CONFIRMED_WRITE_REQUESTS.
+  // write requests answer once their commits are replicated; see
+  // CONFIRMED_WRITE_REQUESTS
   const confirmed = (handler: () => Promise<void>): Promise<void> =>
     confirmRequest(ctx, socket, request.id, handler);
 
-  // Dashboard reads run inside a swamp.serve.request span, so a slow one
-  // breaks down into its lookups and reads (swamp-club#3741). `start` must
-  // call the handler, so the handler begins inside the span.
+  // dashboard reads run inside a span so a slow one breaks down into its
+  // lookups; start must call the handler so it begins inside the span
   const traced = (start: () => Promise<void>): Promise<void> =>
     traceWebSocketRequest({
       type: request.type,
@@ -2725,8 +2666,8 @@ export function handleMessage(
       );
       break;
     case "commits.subscribe":
-      // Filtered per commit, as GET changes is: every caller may subscribe
-      // and sees only what it may read (swamp-club#4120).
+      // filtered per commit, as GET changes is: every caller may subscribe and
+      // sees only what it may read
       task = handleCommitsSubscribe(
         socket,
         ctx,
@@ -3432,10 +3373,9 @@ export function handleMessage(
       );
       break;
     case "workflow.signal":
-      // Not gated: a signal writes one control-plane record and pushes
-      // nothing. Audited under the wait ID, or the workflow a key address
-      // names, until the handler has authorized the caller on the wait's
-      // workflow.
+      // not gated: a signal writes one control-plane record and pushes nothing;
+      // audited under the wait ID or key-named workflow until the handler
+      // authorizes the caller
       task = audited(
         handleWorkflowSignal(
           socket,
@@ -3662,8 +3602,7 @@ export function handleMessage(
         auditOpts("admin", "datastore", "*"),
       );
       break;
-    // A claim is not a commit: its handler confirms it replicated itself
-    // (swamp-club#4063).
+    // a claim is not a commit: its handler confirms it replicated itself
     case "datastore.claim":
       task = audited(
         handleDatastoreClaim(
@@ -4479,8 +4418,6 @@ export function handleMessage(
     .finally(() => activeRequests.delete(request.id));
 }
 
-// ── Run attach handler ───────────────────────────────────────────────
-
 async function handleCancelRun(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -4497,11 +4434,8 @@ async function handleCancelRun(
     run.methodName,
     run.resourceType,
   );
-  // A refusal is silent, like a cancel of an unknown id, so the reply never
-  // confirms the run exists or names its resource (swamp-club#2649). The
-  // denial is still audited. Otherwise this authorizes as authorizeResolved
-  // does: a failed lookup is checked against the recorded name, and only an
-  // allowed caller is told the lookup failed.
+  // a refusal is silent, like a cancel of an unknown id, so the reply never
+  // confirms the run exists or names its resource; the denial is still audited
   const resource = resolution.status === "failed"
     ? goneRunResource(resourceKind, run.resourceName, run.resourceType)
     : resolution.resource;
@@ -4534,14 +4468,9 @@ async function handleCancelRun(
 }
 
 /**
- * The resource a run's cancel or attach is authorized on: the model or
- * workflow the run was started on, with its current canonical name and full
- * fields, as the run itself was authorized (swamp-club#2674). It is found by
- * the id recorded at registration when there is one, so a rename during the
- * run cannot point the check at another resource that took the old name.
- * Records without an id — from older instances — resolve their recorded
- * name. A run whose resource is gone is authorized on its recorded name; a
- * lookup that fails is reported as failed, never treated as gone.
+ * found by the id recorded at registration so a rename cannot point the check
+ * at a resource that took the old name; a gone resource uses its recorded name;
+ * a failed lookup is never treated as gone
  */
 async function resolveRunResource(
   ctx: ConnectionContext,
@@ -4558,8 +4487,8 @@ async function resolveRunResource(
     resourceId,
     resourceType,
   );
-  // A method run is judged with its method, as the run itself was, so a
-  // methods-scoped grant applies to its cancel and attach (swamp-club#2675).
+  // a method run is judged with its method, as the run was, so a methods-scoped
+  // grant applies to its cancel and attach
   if (!methodName || resolution.status === "failed") return resolution;
   return {
     ...resolution,
@@ -4594,9 +4523,8 @@ async function resolveRunTarget(
       resource: goneRunResource(resourceKind, resourceName, resourceType),
     };
   }
-  // A run recorded under a control-plane type stays admin-only whatever
-  // definition its id resolves to now, as data and outputs do
-  // (swamp-club#2756).
+  // a run recorded under a control-plane type stays admin-only whatever its id
+  // resolves to now, as data and outputs do
   if (
     resourceKind === "model" && resolution.status !== "failed" &&
     resourceType && isControlPlaneModelType(resourceType) &&
@@ -4613,9 +4541,8 @@ async function resolveRunTarget(
 }
 
 /**
- * The resource a run whose model or workflow is gone is judged on: its
- * recorded name, or — for a control-plane model — the access resource its
- * recorded type names, so the run stays admin-only (swamp-club#2756).
+ * judged on its recorded name, or for a control-plane model the access resource
+ * its recorded type names, so the run stays admin-only
  */
 function goneRunResource(
   resourceKind: "model" | "workflow",
@@ -4749,41 +4676,15 @@ async function handleRunAttach(
     requestId,
     controller,
     payload.afterSeq ?? 0,
-    // A workflow run or resume streams links to other runs (swamp-club#2736).
     run.kind === "method-run"
       ? undefined
       : redactingFor(ctx, socket, principal),
   );
 }
 
-// ── Data handlers ─────────────────────────────────────────────────────
-
-// ── Model handlers ────────────────────────────────────────────────────
-
-// ── Workflow handlers ─────────────────────────────────────────────────
-
-// ── Vault handlers ────────────────────────────────────────────────────
-
-// ── Audit / Summary handlers ──────────────────────────────────────────
-
-// ── Report handlers ───────────────────────────────────────────────────
-
-// ── Model operation handlers ─────────────────────────────────────────
-
-// ── Workflow operation handlers ──────────────────────────────────────
-
-// ── Vault operation handlers ─────────────────────────────────────────
-
-// ── Server admin handlers ────────────────────────────────────────────
-
-// ── Extension handlers ───────────────────────────────────────────────
-
-// ── Doctor handlers ──────────────────────────────────────────────────
-
 /**
- * The address a claim names, as its audit entry records it: normalized, so
- * no credential, query or fragment reaches the audit log, or `*` when it is
- * not a serve address (swamp-club#4063).
+ * normalized so no credential, query or fragment reaches the audit log, or `*`
+ * when it is not a serve address
  */
 function auditedAddress(address: string): string {
   try {
