@@ -31,6 +31,7 @@ import {
 } from "../../serve/origin.ts";
 import { Command } from "@cliffy/command";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -1614,6 +1615,15 @@ export function shouldWarnGroupRefreshIgnored(
   oauthReady: boolean,
 ): boolean {
   return raw !== undefined && intervalMs > 0 && !oauthReady;
+}
+
+// exactly true, as ensureManagedConfigBase decides whether managed config is on
+export function teamModeManagedConfigWarning(
+  engine: DatastoreEngine,
+  managedConfig: unknown,
+): string | undefined {
+  if (engine !== "v3" || managedConfig === true) return undefined;
+  return "Team mode needs managedConfig on this v3 datastore. Without it, behavior definitions stay in each checkout, and serve refuses a workflow run a member drives when its behaviors exist only in their checkout; runs serve starts itself (--server, triggers, schedules) are unaffected, so a serve no member writes through can ignore this. To keep definitions in the datastore, run `swamp datastore config migrate`";
 }
 
 export interface TokenGcSettings {
@@ -3317,6 +3327,13 @@ export const serveCommand = new Command()
       repoMarker = await markerRepo.read(RepoPath.create(resolvedRepoDir));
     } catch {
       // Not in a swamp repo or marker unreadable — resolveModelsDir(null) returns the default
+    }
+    const managedConfigWarning = teamModeManagedConfigWarning(
+      datastoreEngine,
+      repoMarker?.datastore?.managedConfig,
+    );
+    if (managedConfigWarning !== undefined) {
+      logger.warn(managedConfigWarning);
     }
     const extensionLockfilePath = managedLockfilePath;
 

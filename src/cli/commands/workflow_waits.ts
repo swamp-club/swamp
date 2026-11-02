@@ -41,6 +41,7 @@ import {
   signalWaitsOf,
 } from "../repo_context.ts";
 import {
+  DECIDED_ON_SERVE_OPTION_TEXTS,
   formatCommandTarget,
   requestNewerServerResponse,
   resolveServerTokenFromOptions,
@@ -258,7 +259,9 @@ export async function listServerWaits(
 export const workflowWaitsCommand = withRemoteOptions(
   new Command()
     .name("waits")
-    .description("List all workflow steps waiting for a signal")
+    .description(
+      "List all workflow steps waiting for a signal. In team mode it lists the waits serve holds, which are the only ones a team member's checkout can signal",
+    )
     .example("List open waits", "swamp workflow waits")
     .example(
       "List the open waits a server holds",
@@ -276,6 +279,7 @@ export const workflowWaitsCommand = withRemoteOptions(
       "--pending",
       "Also list signals sent by key that are held for the next wait of their key",
     ),
+  DECIDED_ON_SERVE_OPTION_TEXTS,
 )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [

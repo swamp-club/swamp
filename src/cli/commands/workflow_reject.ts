@@ -45,6 +45,7 @@ import {
 } from "./nested_run_hints.ts";
 import { localNestedCascade } from "../local_nested_cascade.ts";
 import {
+  DECIDED_ON_SERVE_OPTION_TEXTS,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -64,7 +65,9 @@ type AnyOptions = any;
 export const workflowRejectCommand = withRemoteOptions(
   new Command()
     .name("reject")
-    .description("Reject a manual approval step in a suspended workflow run")
+    .description(
+      "Reject a manual approval step in a suspended workflow run. In team mode the rejection is decided on serve",
+    )
     .example(
       "Reject a step",
       "swamp workflow reject deploy-with-gate verify-build",
@@ -80,6 +83,7 @@ export const workflowRejectCommand = withRemoteOptions(
     )
     .option("--reason <reason:string>", "Reason for rejection")
     .option("--run <run_id:string>", "Target a specific run ID"),
+  DECIDED_ON_SERVE_OPTION_TEXTS,
 ).action(
   async function (
     options: AnyOptions,

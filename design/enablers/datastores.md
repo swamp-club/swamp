@@ -6785,7 +6785,9 @@ to the same write. The checks the handlers share are one implementation
   4. Frozen: identity, log file; the triggering principal (only serve records
      one), parent, allowed vaults (a first record's stay within the workflow's
      list), initiator, plan and inherited expressions; what a waiting gate shows
-     its approver, and its child link.
+     its approver, and its child link. The gate's freeze holds within one
+     wait, not across a retry: a retry clears the decision and opens a new
+     wait, which shows what the member's record says then.
   5. A run snapshot's bytes are frozen once written. The same bytes land, so a
      retried or replayed commit is not refused.
   6. Step keys are unique (#4046), so a record has one reading.
@@ -7068,6 +7070,11 @@ token and no storage credentials. Everything above the datastore service is
 unchanged: commands, output, the projection with real file paths, the catalog,
 the outbox and the read model's catch-up.
 
+**Terms.** A team member's checkout, one that writes a v3 datastore through
+serve, is a **serve-mode checkout** in these design docs. User-facing text
+(help, errors, the skill and the manual) says **team mode** and never uses the
+design term.
+
 **When it applies.** `resolveDatastoreForRepo` (`src/cli/repo_context.ts`)
 picks serve mode when all three hold:
 
@@ -7097,8 +7104,11 @@ therefore install into the member's checkout, as without serve; the managed
 lockfile change goes through serve like any config write, but serve does not
 get the extension's files, so a step serve runs itself needs `extension pull
 --server` (swamp-club#4281). The control plane (`access`, `audit`, `doctor`,
-`datastore`, …) administers serve itself and keeps that routing. A v2 checkout
-is unchanged.
+`datastore`, …) administers serve itself and keeps that routing, and so do
+`workflow approve`, `reject`, `signal` and `waits` (`DECIDED_ON_SERVE`): a
+decision on a run is serve's to make. Their `--server` and `--token` help say
+so (`DECIDED_ON_SERVE_OPTION_TEXTS`), and `workflow cancel`'s `--server` help
+names the run it sends to serve without the flag. A v2 checkout is unchanged.
 
 **Tokens.** The token comes only from sources bound to the address:
 `servers.json`'s entry for it, `SWAMP_SERVER_TOKEN` when `SWAMP_SERVER_URL`
@@ -8108,16 +8118,24 @@ an admin": kept, never sent again.
 - Recovering an explicit lease from a member who never came back is an
   admin's forced release; nothing ends it sooner than its hold of up to
   24 h.
-- Without `managedConfig`, behavior definitions are repository files
-  (`models/`), not datastore records. Serve judges a forwarded run's step
-  outputs against its own checkout's definitions, so a workflow run on a
-  behavior defined only in the client is refused (`403`). The run serve
-  already recorded then stays `running` until serve's next start marks it
-  `interrupted`. Teams run with `managedConfig`, whose definitions,
+- Team mode requires `managedConfig`. Without it, behavior definitions are
+  repository files (`models/`), not datastore records. Serve judges a
+  forwarded run's step outputs against its own checkout's definitions, so a
+  workflow run on a behavior defined only in the member's checkout is refused
+  (`403`, "a step output names data of a behavior that does not exist"). The
+  run serve already recorded then stays `running` until serve's next start
+  marks it `interrupted`. Serve warns at start on a v3 datastore whose
+  `managedConfig` is not `true` (`teamModeManagedConfigWarning`,
+  `src/cli/commands/serve.ts`); runs serve starts itself use its own
+  definitions and are unaffected. It warns on every such serve, solo ones
+  too: no existing signal tells a team's serve from a solo one. A claim is
+  optional and serve takes members' forwarded writes unclaimed, every v3
+  serve holds a peer key, a single node needs no `--advertise-address`, and
+  a forwarded write is seen only after the first member's run. The warning
+  says a serve no member writes through can ignore it. With `managedConfig`, definitions,
   workflows, vault configs and lockfile are datastore records every member
   shares and whose edits are refused when stale (`config_edit_conflict`,
-  swamp-club#4097); without it, teams sync `models/` to serve's checkout
-  (git) first.
+  swamp-club#4097).
 - Per-file config is `p5-config`. The live feed is `commits.subscribe`
   ("Team mode: forwarding and the commit feed"): `workflow run` and
   `model method run` on a serve-mode checkout watch it while they run, and

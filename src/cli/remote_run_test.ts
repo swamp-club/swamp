@@ -30,6 +30,9 @@ import {
 } from "../presentation/output/error_output.ts";
 import {
   createTlsHttpClient,
+  DECIDED_ON_SERVE_OPTION_TEXTS,
+  DECIDED_ON_SERVE_SERVER_DESCRIPTION,
+  DECIDED_ON_SERVE_TOKEN_DESCRIPTION,
   describeStatuslessFailure,
   diagnoseTlsMessage,
   formatCommandTarget,
@@ -48,17 +51,21 @@ import {
   resumeWorkflowOverServer,
   runModelMethodOverServer,
   runWorkflowOverServer,
+  SERVER_DESCRIPTION,
   serverReloadCommand,
   ServerResponseError,
   setImplicitServeRouting,
   setMarkerServerAddress,
   setRemoteIndicatorMode,
   subscribeServerEvents,
+  TOKEN_DESCRIPTION,
   tokenFileBoundTo,
   toWebSocketUrl,
+  withRemoteOptions,
   writeRemoteIndicator,
 } from "./remote_run.ts";
 import { dirname, join } from "@std/path";
+import { Command } from "@cliffy/command";
 import { gzipSync } from "node:zlib";
 import type { ServerCredential } from "../domain/auth/server_credential.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
@@ -3613,4 +3620,39 @@ Deno.test("ServerResponseError: serve's inFlight refusal keeps inFlight in --jso
   );
   assertEquals(json.code, "serve_not_leader");
   assertEquals(json.inFlight, true);
+});
+
+function optionDescription(
+  command: Command,
+  flag: string,
+): string | undefined {
+  return command.getBaseOptions(true).find((option) =>
+    option.flags.includes(flag)
+  )?.description;
+}
+
+Deno.test("withRemoteOptions: without texts, --server and --token keep the run-through-serve text", () => {
+  const command = withRemoteOptions(new Command());
+  assertEquals(optionDescription(command, "--server"), SERVER_DESCRIPTION);
+  assertEquals(optionDescription(command, "--token"), TOKEN_DESCRIPTION);
+});
+
+Deno.test("withRemoteOptions: a command serve decides says a named serve and its token are used without --server", () => {
+  const command = withRemoteOptions(
+    new Command(),
+    DECIDED_ON_SERVE_OPTION_TEXTS,
+  );
+  const server = optionDescription(command, "--server");
+  assertEquals(server, DECIDED_ON_SERVE_SERVER_DESCRIPTION);
+  assertStringIncludes(server ?? "", "serverAddress in .swamp.yaml");
+  assertEquals(
+    optionDescription(command, "--token"),
+    DECIDED_ON_SERVE_TOKEN_DESCRIPTION,
+  );
+});
+
+Deno.test("withRemoteOptions: a server text alone keeps the default --token text", () => {
+  const command = withRemoteOptions(new Command(), { server: "elsewhere" });
+  assertEquals(optionDescription(command, "--server"), "elsewhere");
+  assertEquals(optionDescription(command, "--token"), TOKEN_DESCRIPTION);
 });

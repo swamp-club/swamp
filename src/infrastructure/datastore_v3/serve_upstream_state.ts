@@ -533,7 +533,7 @@ export class ServeUpstreamState {
   #assertOpen(): void {
     if (this.#closed) {
       throw markErrorPaths(
-        new Error(`The serve-mode state at ${this.path} is closed`),
+        new Error(`The team mode state file at ${this.path} is closed`),
         [this.path],
       );
     }
@@ -572,7 +572,7 @@ function migrate(db: DatabaseSync, path: string): void {
     if (version > SERVE_UPSTREAM_STATE_SCHEMA_VERSION) {
       throw markErrorPaths(
         new UserError(
-          `The serve-mode state at ${path} is at schema version ${version}, ` +
+          `The team mode state file at ${path} is at schema version ${version}, ` +
             `newer than this swamp's ${SERVE_UPSTREAM_STATE_SCHEMA_VERSION}: ` +
             `upgrade swamp.`,
           SERVE_UPSTREAM_STATE_SCHEMA_NEWER_CODE,

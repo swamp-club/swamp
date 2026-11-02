@@ -906,16 +906,36 @@ export const TOKEN_FILE_DESCRIPTION =
 export const CA_CERT_DESCRIPTION =
   "Path to PEM-encoded CA certificate to trust for TLS connections to the server (env: SWAMP_CA_CERT)";
 
-export function withRemoteOptions<T extends AnyCommand>(command: T): T {
+export const SERVER_DESCRIPTION =
+  "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL or SWAMP_SERVER_URL; in a checkout whose datastore is format 3, only this flag runs it on serve, and the env makes serve its datastore's upstream). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.";
+
+/** for commands serve decides, which go to a named serve without --server */
+export const DECIDED_ON_SERVE_SERVER_DESCRIPTION =
+  "The 'swamp serve' server (ws:// or http://) to send this to; no local repo required. Without it, this goes to the serve named by SWAMP_SERVE_URL, SWAMP_SERVER_URL or serverAddress in .swamp.yaml, which every checkout in team mode has, and runs locally when none is named. For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.";
+
+export const TOKEN_DESCRIPTION =
+  "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)";
+
+export const DECIDED_ON_SERVE_TOKEN_DESCRIPTION =
+  "Server token in <name>.<secret> format for the serve this command reaches, with or without --server (overrides stored credentials and SWAMP_SERVER_TOKEN)";
+
+export interface RemoteOptionTexts {
+  readonly server?: string;
+  readonly token?: string;
+}
+
+export const DECIDED_ON_SERVE_OPTION_TEXTS: RemoteOptionTexts = {
+  server: DECIDED_ON_SERVE_SERVER_DESCRIPTION,
+  token: DECIDED_ON_SERVE_TOKEN_DESCRIPTION,
+};
+
+export function withRemoteOptions<T extends AnyCommand>(
+  command: T,
+  texts: RemoteOptionTexts = {},
+): T {
   return command
-    .option(
-      "--server <url:string>",
-      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL or SWAMP_SERVER_URL; in a checkout whose datastore is format 3, only this flag runs it on serve, and the env makes serve its datastore's upstream). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.",
-    )
-    .option(
-      "--token <token:string>",
-      "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
-    )
+    .option("--server <url:string>", texts.server ?? SERVER_DESCRIPTION)
+    .option("--token <token:string>", texts.token ?? TOKEN_DESCRIPTION)
     .option(
       "--token-file <path:string>",
       TOKEN_FILE_DESCRIPTION,

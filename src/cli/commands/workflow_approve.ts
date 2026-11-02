@@ -39,6 +39,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import {
+  DECIDED_ON_SERVE_OPTION_TEXTS,
   formatCommandTarget,
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -116,7 +117,9 @@ export function renderApproveResult(
 export const workflowApproveCommand = withRemoteOptions(
   new Command()
     .name("approve")
-    .description("Approve a manual approval step in a suspended workflow run")
+    .description(
+      "Approve a manual approval step in a suspended workflow run. In team mode the approval is decided on serve",
+    )
     .example(
       "Approve by workflow name",
       "swamp workflow approve deploy-with-gate verify-build",
@@ -132,6 +135,7 @@ export const workflowApproveCommand = withRemoteOptions(
     )
     .option("--reason <reason:string>", "Reason for approval")
     .option("--run <run_id:string>", "Target a specific run ID"),
+  DECIDED_ON_SERVE_OPTION_TEXTS,
 ).action(
   async function (
     options: AnyOptions,

@@ -3,6 +3,9 @@
 Expose a swamp repo over the network with authentication, authorization, and
 grant-based access control.
 
+For a team writing one v3 datastore through serve (team mode), see
+[team-mode.md](team-mode.md).
+
 ## Auth Modes
 
 | Mode    | Flag                | Use case                                       |

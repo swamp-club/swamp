@@ -21,6 +21,10 @@ import "../src/domain/models/models.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { buildCommandTree, ROOT_DESCRIPTION } from "../src/cli/mod.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
+import {
+  DECIDED_ON_SERVE_SERVER_DESCRIPTION,
+  DECIDED_ON_SERVE_TOKEN_DESCRIPTION,
+} from "../src/cli/remote_run.ts";
 
 const root = buildCommandTree();
 
@@ -103,4 +107,48 @@ Deno.test("help wording: the root states the --json error envelope and shared ex
   for (const code of ["0 ", "1 ", "2 ", "75 ", "130 "]) {
     assertStringIncludes(ROOT_DESCRIPTION, `\n    ${code}`);
   }
+});
+
+Deno.test("help wording: help says team mode, never serve-mode", () => {
+  const stale: string[] = [];
+  for (const { path, command } of commands) {
+    const texts = [
+      command.getDescription(),
+      ...localOptions(command).map((option) => option.description),
+    ];
+    for (const text of texts) {
+      if (/serve-mode/i.test(text)) stale.push(`${path.join(" ")}: ${text}`);
+    }
+  }
+  assertEquals(stale, []);
+});
+
+Deno.test("help wording: commands serve decides say --server is not needed to reach a named serve", () => {
+  for (const name of ["approve", "reject", "signal", "waits"]) {
+    const found = commands.find((c) => c.path.join(" ") === `workflow ${name}`);
+    const server = localOptions(found!.command).find((option) =>
+      option.flags.includes("--server")
+    );
+    assertEquals(server?.description, DECIDED_ON_SERVE_SERVER_DESCRIPTION);
+    const token = localOptions(found!.command).find((option) =>
+      option.flags.includes("--token")
+    );
+    assertEquals(token?.description, DECIDED_ON_SERVE_TOKEN_DESCRIPTION);
+    assertEquals(
+      server?.description.includes("only this flag runs it on serve"),
+      false,
+    );
+    assertStringIncludes(found!.command.getDescription(), "In team mode");
+  }
+});
+
+Deno.test("help wording: workflow cancel's --server names the run it sends to serve in team mode", () => {
+  const cancel = commands.find((c) => c.path.join(" ") === "workflow cancel");
+  const server = localOptions(cancel!.command).find((option) =>
+    option.flags.includes("--server")
+  );
+  assertStringIncludes(
+    server?.description ?? "",
+    "in team mode a run this checkout did not start is cancelled on serve without it",
+  );
 });
