@@ -929,7 +929,30 @@ for (const { kind, source, setup } of EXTERNAL_SOURCES) {
     });
   });
 
-  Deno.test(`GrantsDirectoryPoller: reconcileNow without a running timer revokes an emptied ${kind} file at once, as no later poll would`, async () => {
+  Deno.test(`GrantsDirectoryPoller: a reconcile after stop still holds a first empty read of a ${kind} file, as a poll in flight at shutdown would`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+      ]);
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 3_600_000,
+      });
+      await poller.start();
+      await poller.stop();
+      await atomicWriteTextFile(path, "");
+      await poller.reconcileNow();
+      assertEquals(store.written.has("deny-1"), false);
+    });
+  });
+
+  Deno.test(`GrantsDirectoryPoller: reconcileNow on a poller never started revokes an emptied ${kind} file at once, as no later poll would`, async () => {
     await withTempDir(async (dir) => {
       const grantsDir = join(dir, "grants");
       await ensureDir(grantsDir);

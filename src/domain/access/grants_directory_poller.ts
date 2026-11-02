@@ -96,6 +96,8 @@ export class GrantsDirectoryPoller {
   #reconciling = false;
   /** External sources that read as empty on the last poll. */
   #sourcesSeenEmpty = new Set<string>();
+  /** Stays set after stop, so a poll in flight at shutdown still holds. */
+  #started = false;
 
   constructor(options: GrantsDirectoryPollerOptions) {
     this.#grantsDir = options.grantsDir;
@@ -114,6 +116,7 @@ export class GrantsDirectoryPoller {
 
   async start(): Promise<void> {
     if (this.#timer) return;
+    this.#started = true;
     this.#contentHash = await this.#computeContentHash();
     this.#timer = setInterval(() => {
       this.#poll();
@@ -261,9 +264,9 @@ export class GrantsDirectoryPoller {
       // A file being rewritten in place reads as empty between its truncate and
       // its write, so one empty read is not enough to revoke its grants, which
       // would fail open for a deny (swamp-club#4272). The next poll revokes
-      // them if it is still empty. Without a running timer there is no next
-      // poll, so a reconcileNow applies what it reads.
-      const heldEmpty = this.#timer === null
+      // them if it is still empty. A poller never started, in manual reload
+      // mode, has no next poll, so its reconcileNow applies what it reads.
+      const heldEmpty = !this.#started
         ? []
         : [...emptySources].filter((s) => !this.#sourcesSeenEmpty.has(s));
       this.#sourcesSeenEmpty = emptySources;
