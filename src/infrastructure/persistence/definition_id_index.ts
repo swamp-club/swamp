@@ -20,9 +20,10 @@
 import { getLogger } from "@logtape/logtape";
 import { basename, dirname, join } from "@std/path";
 import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
-import type {
-  Definition,
-  DefinitionId,
+import {
+  type Definition,
+  type DefinitionId,
+  isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
 import type {
   DefinitionOwner,
@@ -57,6 +58,10 @@ const logger = getLogger(["definition-repo"]);
  * file
  */
 const MAX_OPEN_FILES = 32;
+
+// bounds how long a change to a file kept across relists without a stat goes
+// unseen when no lookup by id misses
+const REVERIFY_INTERVAL_MS = 30_000;
 
 const BROKEN = Symbol("broken");
 
@@ -97,6 +102,7 @@ export interface LiveDefinitionFile {
 
 export interface DefinitionIdIndexOptions {
   racyWindowMs?: number;
+  reverifyIntervalMs?: number;
   now?: () => number;
   stat?: (path: string) => Promise<RecordFingerprint | undefined | null>;
   // null when the file is gone or a directory on its path no longer is one
@@ -117,6 +123,12 @@ interface IndexedFile {
    */
   fingerprint: RecordFingerprint | undefined;
   readonly isSymlink: boolean;
+  /**
+   * tickets ordering a relist that kept the file without a stat against the
+   * last stat of it; it is unverified while carriedAt is the later
+   */
+  carriedAt: number;
+  verifiedAt: number;
 }
 
 interface IndexedDir {
@@ -139,20 +151,31 @@ interface ValidationCounts {
   dirsJoined: number;
   filesParsed: number;
   filesJoined: number;
+  filesVerified: number;
   readonly joinedFrom: Map<string, Link>;
 }
+
+interface VerifyCounts {
+  verified: number;
+  reread: number;
+}
+
+type VerifyTrigger = "sweep" | "miss";
 
 const MAX_JOIN_LINKS = 8;
 
 /**
  * keeps each file's location and owner fields, answering a lookup by id from
- * them while the file's lstat holds; an in-place overwrite that changes a
- * declared id goes unseen until the directory's stat moves, which fails open
+ * them while the file's lstat holds; a regular <name>.yaml listed again is kept
+ * without a stat, so a change to it waits for a lookup by id that misses or for
+ * the reverify interval, and an in-place overwrite also for its directory's
+ * stat to move; until then it fails open
  */
 export class DefinitionIdIndex
   implements DefinitionOwnerIndex, DefinitionNameIndex, DefinitionIdLookup {
   readonly #source: DefinitionFileSource;
   readonly #racyWindowMs: number;
+  readonly #reverifyIntervalMs: number;
   readonly #now: () => number;
   readonly #stat: (
     path: string,
@@ -173,6 +196,12 @@ export class DefinitionIdIndex
     }
   >();
   #ticket = 0;
+  #sweptAt: number | undefined;
+  #lastCarry = 0;
+  #verifiedThrough = 0;
+  #verifying:
+    | { ticket: number; read: SharedIndexRead<VerifyCounts> }
+    | undefined;
 
   constructor(
     source: DefinitionFileSource,
@@ -180,6 +209,8 @@ export class DefinitionIdIndex
   ) {
     this.#source = source;
     this.#racyWindowMs = options.racyWindowMs ?? RUN_INDEX_RACY_WINDOW_MS;
+    this.#reverifyIntervalMs = options.reverifyIntervalMs ??
+      REVERIFY_INTERVAL_MS;
     this.#now = options.now ?? Date.now;
     this.#stat = options.stat ?? statRecord;
     this.#lstat = options.lstat ?? lstatDefinitionFile;
@@ -237,6 +268,7 @@ export class DefinitionIdIndex
         dirsJoined: 0,
         filesParsed: 0,
         filesJoined: 0,
+        filesVerified: 0,
         joinedFrom: new Map(),
       };
       try {
@@ -258,6 +290,7 @@ export class DefinitionIdIndex
                   );
                 }
               }
+              await this.#sweep(counts, signal);
               span.setAttributes({
                 "definition_index.definitions": this.#definitions,
                 "definition_index.dirs_checked": counts.dirsChecked,
@@ -265,6 +298,7 @@ export class DefinitionIdIndex
                 "definition_index.dirs_joined": counts.dirsJoined,
                 "definition_index.files_parsed": counts.filesParsed,
                 "definition_index.files_joined": counts.filesJoined,
+                "definition_index.files_verified": counts.filesVerified,
               });
             } finally {
               // a joined listing ran under the request that started it; the
@@ -288,6 +322,7 @@ export class DefinitionIdIndex
           "swamp.diagnostic.dirs_joined": counts.dirsJoined,
           "swamp.diagnostic.files_parsed": counts.filesParsed,
           "swamp.diagnostic.files_joined": counts.filesJoined,
+          "swamp.diagnostic.files_verified": counts.filesVerified,
         });
       }
     });
@@ -401,9 +436,16 @@ export class DefinitionIdIndex
     const files = new Map<string, IndexedFile>();
     const dirs: string[] = [];
     const yamlFiles: Deno.DirEntry[] = [];
+    const carried = new Set<string>();
     for (const entry of entries) {
       if ((entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")) {
-        yamlFiles.push(entry);
+        const known = previous?.files.get(entry.name);
+        if (entry.isFile && known && isNameDerived(entry.name, known)) {
+          files.set(entry.name, known);
+          carried.add(entry.name);
+        } else {
+          yamlFiles.push(entry);
+        }
       } else if (entry.isDirectory) {
         dirs.push(entry.name);
       }
@@ -427,7 +469,7 @@ export class DefinitionIdIndex
       }
     });
     signal.throwIfAborted();
-    this.#commit(path, { root, segments, stamp, ticket, files, dirs });
+    this.#commit(path, { root, segments, stamp, ticket, files, dirs }, carried);
     return parsed;
   }
 
@@ -448,6 +490,8 @@ export class DefinitionIdIndex
         owner: undefined,
         fingerprint: undefined,
         isSymlink: entry.isSymlink,
+        carriedAt: 0,
+        verifiedAt: 0,
       });
       return 0;
     }
@@ -463,6 +507,8 @@ export class DefinitionIdIndex
           owner: undefined,
           fingerprint: undefined,
           isSymlink: true,
+          carriedAt: 0,
+          verifiedAt: 0,
         });
       }
       return 0;
@@ -485,6 +531,8 @@ export class DefinitionIdIndex
       owner: found && !entry.isSymlink ? ownerOf(found) : undefined,
       fingerprint,
       isSymlink: entry.isSymlink,
+      carriedAt: 0,
+      verifiedAt: 0,
     });
     return 1;
   }
@@ -514,23 +562,162 @@ export class DefinitionIdIndex
       if (stat === BROKEN) continue;
       const fingerprint = this.#settled(stat, statAt);
       if (fingerprint === null) continue;
-      if (this.#trusted(file.fingerprint, fingerprint)) continue;
-      const found = await this.#source.readDefinitionFile(
+      const reread = await this.#refresh(
         filePath,
-        [...dir.segments],
+        dir.segments,
+        file,
+        fingerprint,
         file.isSymlink,
       );
-      parsed++;
-      if (!this.#isCurrent(filePath, file)) continue;
-      file.fingerprint = fingerprint;
-      this.#reassign(filePath, file, found);
+      if (reread) parsed++;
     }
     return parsed;
   }
 
+  /**
+   * re-reads a file whose stat moved, or that is a symlink now and was not when
+   * listed, and indexes it under what it declares; true when it read
+   */
+  async #refresh(
+    path: string,
+    segments: readonly string[],
+    file: IndexedFile,
+    fingerprint: RecordFingerprint | undefined,
+    isSymlink: boolean,
+  ): Promise<boolean> {
+    const swapped = isSymlink !== file.isSymlink;
+    if (!swapped && this.#trusted(file.fingerprint, fingerprint)) return false;
+    const found = await this.#source.readDefinitionFile(
+      path,
+      [...segments],
+      isSymlink,
+    );
+    if (!this.#isCurrent(path, file)) return true;
+    file.fingerprint = swapped ? undefined : fingerprint;
+    this.#reassign(path, file, found, isSymlink);
+    return true;
+  }
+
+  // the check's sweep clock starts at the first check, so a cold start does not
+  // sweep at once
+  async #sweep(
+    counts: ValidationCounts,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const now = this.#now();
+    if (this.#sweptAt === undefined) {
+      this.#sweptAt = now;
+      return;
+    }
+    if (now - this.#sweptAt < this.#reverifyIntervalMs) return;
+    if (this.#hasUnverified()) {
+      const verified = await this.#verify("sweep", signal);
+      counts.filesVerified += verified.verified;
+      counts.filesParsed += verified.reread;
+    }
+    this.#sweptAt = now;
+  }
+
+  #hasUnverified(): boolean {
+    return this.#lastCarry > this.#verifiedThrough;
+  }
+
+  // joins a running pass only if no relist kept a file since it began
+  async #verify(
+    trigger: VerifyTrigger,
+    signal: AbortSignal | undefined,
+  ): Promise<VerifyCounts> {
+    const running = this.#verifying;
+    if (
+      running && !running.read.signal.aborted &&
+      running.ticket > this.#lastCarry
+    ) {
+      return await running.read.get(signal);
+    }
+    const ticket = ++this.#ticket;
+    const read = new SharedIndexRead(
+      (sharedSignal) => this.#verifyKept(ticket, trigger, sharedSignal),
+      () => {
+        if (this.#verifying?.read === read) this.#verifying = undefined;
+      },
+    );
+    this.#verifying = { ticket, read };
+    return await read.get(signal);
+  }
+
+  /**
+   * lstat, not stat, so a file swapped for a symlink since it was listed is
+   * read as a symlink and its target must stay contained in the repo
+   */
+  async #verifyKept(
+    ticket: number,
+    trigger: VerifyTrigger,
+    signal: AbortSignal,
+  ): Promise<VerifyCounts> {
+    return await withSpan(
+      "swamp.serve.definition_index.verify",
+      { "definition_index.verify_trigger": trigger },
+      async (span) => {
+        const kept: { path: string; dir: IndexedDir; file: IndexedFile }[] = [];
+        for (const [dirPath, dir] of this.#dirs) {
+          for (const [name, file] of dir.files) {
+            if (file.carriedAt > file.verifiedAt) {
+              kept.push({ path: join(dirPath, name), dir, file });
+            }
+          }
+        }
+        const counts: VerifyCounts = { verified: 0, reread: 0 };
+        try {
+          await inBatches(kept, signal, async ({ path, dir, file }) => {
+            await this.#openFiles.acquire(signal);
+            try {
+              const statAt = this.#now();
+              const live = await this.#lstat(path);
+              counts.verified++;
+              // Gone: the directory's next listing drops it.
+              if (live !== null) {
+                const settled = this.#settled(live.fingerprint, statAt) ??
+                  undefined;
+                const reread = await this.#refresh(
+                  path,
+                  dir.segments,
+                  file,
+                  settled,
+                  live.isSymlink,
+                );
+                if (reread) counts.reread++;
+              }
+              file.verifiedAt = Math.max(file.verifiedAt, ticket);
+            } finally {
+              this.#openFiles.release();
+            }
+          });
+          signal.throwIfAborted();
+          this.#verifiedThrough = Math.max(this.#verifiedThrough, ticket);
+        } finally {
+          span.setAttributes({
+            "definition_index.files_verified": counts.verified,
+            "definition_index.files_reread": counts.reread,
+          });
+        }
+        return counts;
+      },
+    );
+  }
+
+  async #findAllById(
+    id: DefinitionId,
+    signal: AbortSignal | undefined,
+  ): Promise<DefinitionOwner[]> {
+    const found = await this.#ownersOf(id, signal);
+    if (found.length > 0 || !this.#hasUnverified()) return found;
+    await this.#verify("miss", signal);
+    return await this.#ownersOf(id, signal);
+  }
+
   // the stat is taken before the read, so a write during the read leaves a
   // stat the next lookup sees has moved
-  async #findAllById(
+  async #ownersOf(
     id: DefinitionId,
     signal: AbortSignal | undefined,
   ): Promise<DefinitionOwner[]> {
@@ -582,11 +769,28 @@ export class DefinitionIdIndex
     return found;
   }
 
+  // only a lookup by id verifies kept files on a miss: a kept file is named
+  // after the name it declares
+  async #readDeclaring(
+    key: { id: string; name?: undefined } | { id?: undefined; name: string },
+    firstOnly: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<NamedDefinitionMatch[]> {
+    const found = await this.#matching(key, firstOnly, signal);
+    if (
+      key.id === undefined || found.length > 0 || !this.#hasUnverified()
+    ) {
+      return found;
+    }
+    await this.#verify("miss", signal);
+    return await this.#matching(key, firstOnly, signal);
+  }
+
   /**
    * the files indexed under `key` that still declare it, in the order a scan
    * of every definition reads them; always read, since callers run it
    */
-  async #readDeclaring(
+  async #matching(
     key: { id: string; name?: undefined } | { id?: undefined; name: string },
     firstOnly: boolean,
     signal: AbortSignal | undefined,
@@ -624,6 +828,16 @@ export class DefinitionIdIndex
           segments: [...dir.segments],
           primary: dir.root === 0,
         });
+        // Its other key changed since it was indexed: catch the maps up, and
+        // stat it on the next check.
+        if (
+          (read.definition.id !== file.id ||
+            read.definition.name !== file.name) &&
+          this.#isCurrent(path, file)
+        ) {
+          file.fingerprint = undefined;
+          this.#reassign(path, file, read, live.isSymlink);
+        }
         if (firstOnly) break;
         continue;
       }
@@ -698,7 +912,15 @@ export class DefinitionIdIndex
       (current.ctimeMs === undefined || current.ctimeMs <= threshold);
   }
 
-  #commit(path: string, dir: IndexedDir): void {
+  /**
+   * an entry both listings hold as the same object stays indexed as it is:
+   * #reassign keeps the maps in step with a current entry's keys
+   */
+  #commit(
+    path: string,
+    dir: IndexedDir,
+    carried: ReadonlySet<string> = new Set(),
+  ): void {
     const previous = this.#dirs.get(path);
     if (previous && previous.ticket > dir.ticket) return;
     // A listing that ends after its parent's listing dropped it must not
@@ -709,15 +931,23 @@ export class DefinitionIdIndex
     }
     if (previous) {
       for (const [name, file] of previous.files) {
-        this.#unindex(file, join(path, name));
+        if (dir.files.get(name) !== file) this.#unindex(file, join(path, name));
       }
       for (const name of previous.dirs) {
         if (!dir.dirs.includes(name)) this.#drop(join(path, name));
       }
     }
+    // Taken at commit, after the listing's readdir, so a verification that
+    // began before it cannot mark a kept file verified.
+    const stamp = ++this.#ticket;
     for (const [name, file] of dir.files) {
-      this.#index(file, join(path, name));
+      if (carried.has(name)) file.carriedAt = stamp;
+      else file.verifiedAt = stamp;
+      if (previous?.files.get(name) !== file) {
+        this.#index(file, join(path, name));
+      }
     }
+    if (carried.size > 0) this.#lastCarry = stamp;
     this.#dirs.set(path, dir);
   }
 
@@ -800,6 +1030,16 @@ async function inBatches<T>(
     signal.throwIfAborted();
     await Promise.all(items.slice(i, i + MAX_OPEN_FILES).map(each));
   }
+}
+
+/**
+ * a file swamp saved under the name it declares: a save of another definition
+ * creates another file, so only its id can change under this file name
+ */
+function isNameDerived(fileName: string, file: IndexedFile): boolean {
+  return !file.isSymlink && file.id !== undefined &&
+    file.fingerprint !== undefined && file.name !== undefined &&
+    isFilenameSafeDefinitionName(file.name) && fileName === `${file.name}.yaml`;
 }
 
 function ownerOf({ definition, type }: FoundDefinition): DefinitionOwner {

@@ -162,7 +162,7 @@ file's size on disk when it holds invalid byte sequences.
   definitions directory changed, the check stats each directory and reads no
   file. It carries the same attributes as `owner_index` below (`cache`,
   `definitions`, `dirs_checked`, `dirs_relisted`, `dirs_joined`,
-  `files_parsed`, `files_joined`), and the
+  `files_parsed`, `files_joined`, `files_verified`), and the
   `swamp.serve.definition_index.validate` span nests under it.
 
 The lookup under the creation lock is the `definition_lookup` with
@@ -241,6 +241,18 @@ other attributes unchanged. Definition files the index check reads are counted
 in `owner_index`'s tally (`files_read`, `bytes_read`, `broken_files`,
 `read_work_ms`, `parse_work_ms`); the work is cumulative across up to 32
 parallel reads.
+
+A relist keeps a regular file named after the name it declares without a stat
+(lab #4307). `files_verified` counts the kept files the check's sweep stat'ed:
+at most once every 30 s, a check stats every file kept since the last pass, and
+a kept file whose stat moved is re-read and counted in `files_parsed` too, which
+makes the check `refreshed`. A pass, from a sweep or from a lookup by id that
+found nothing, exports a `swamp.serve.definition_index.verify` span with
+`definition_index.verify_trigger` (`sweep` or `miss`),
+`definition_index.files_verified` and `definition_index.files_reread`; a sweep's
+nests under the validate span, which also gains
+`definition_index.files_verified`. A miss pass runs after the check, so its
+counts are only on its span.
 
 Supported branches: serve with its definition index (every `swamp serve`), the
 full scan a `CanonicalResources` without an index falls back to (no

@@ -1302,3 +1302,447 @@ Deno.test("DefinitionIdIndex.findAllById: inside a diagnostic area a lookup's ch
     });
   });
 });
+
+function countingStats() {
+  const counts = new Map<string, number>();
+  const count = (path: string) => counts.set(path, (counts.get(path) ?? 0) + 1);
+  let held: { path: string; gate: Promise<void> } | undefined;
+  const options: DefinitionIdIndexOptions = {
+    stat: (path) => {
+      count(path);
+      return statRecord(path);
+    },
+    lstat: async (path) => {
+      count(path);
+      if (held?.path === path) await held.gate;
+      try {
+        const info = await Deno.lstat(path);
+        return { isSymlink: info.isSymlink, fingerprint: fingerprintOf(info) };
+      } catch (error) {
+        if (
+          error instanceof Deno.errors.NotFound ||
+          error instanceof Deno.errors.NotADirectory
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    },
+  };
+  return {
+    options,
+    of: (path: string) => counts.get(path) ?? 0,
+    hold: (path: string, gate: Promise<void>) => {
+      held = { path, gate };
+    },
+  };
+}
+
+// a save's write: a new file renamed over the old one, as atomicWriteTextFile
+async function replaceDefinition(
+  path: string,
+  id: string,
+  name: string,
+): Promise<void> {
+  const staged = `${path}.staged`;
+  await Deno.writeTextFile(staged, yamlOf(id, name));
+  await Deno.rename(staged, path);
+  await bump(path);
+  await bump(dirname(path));
+}
+
+function verifySpans<T extends { name: string }>(spans: readonly T[]): T[] {
+  return spans.filter((s) => s.name === "swamp.serve.definition_index.verify");
+}
+
+Deno.test("DefinitionIdIndex: a relist after a new file stats only that file, keeping every name-derived file it knew without a stat or a read", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    const { auto, counter, index } = fixture(dir, stats.options);
+    const typeDir = join(auto, "test", "a");
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      ids.push(crypto.randomUUID());
+      await writeDefinition(join(typeDir, `d${i}.yaml`), ids[i], `d${i}`);
+    }
+    await index.begin();
+    const reads = counter.reads;
+
+    await writeDefinition(
+      join(typeDir, "new.yaml"),
+      crypto.randomUUID(),
+      "new",
+    );
+    await index.begin();
+    await index.begin();
+
+    for (let i = 0; i < 20; i++) {
+      assertEquals(stats.of(join(typeDir, `d${i}.yaml`)), 1);
+    }
+    assertEquals(stats.of(join(typeDir, "new.yaml")), 1);
+    assertEquals(counter.reads - reads, 1);
+    assertEquals((await owners(index, ids[3])).map((o) => o.name), ["d3"]);
+    assertEquals<string | undefined>(
+      (await index.findByName("d5"))?.definition.id,
+      ids[5],
+    );
+  });
+});
+
+Deno.test("DefinitionIdIndex: checks while a directory's stat is too recent list it each time but stat only the new file", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    const now = Date.UTC(2030, 0, 1);
+    const { primary, index } = fixture(dir, {
+      ...stats.options,
+      now: () => now,
+    });
+    const typeDir = join(primary, "test", "a");
+    for (let i = 0; i < 5; i++) {
+      await writeDefinition(
+        join(typeDir, `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    await index.begin();
+
+    const added = join(typeDir, "added.yaml");
+    await Deno.writeTextFile(added, yamlOf(crypto.randomUUID(), "added"));
+    const recent = new Date(now - 500);
+    await Deno.utime(added, recent, recent);
+    await Deno.utime(typeDir, recent, recent);
+    const dirStats = stats.of(typeDir);
+    for (let i = 0; i < 3; i++) await index.begin();
+
+    assertEquals(stats.of(typeDir) - dirStats, 3);
+    assertEquals(stats.of(added), 3);
+    for (let i = 0; i < 5; i++) {
+      assertEquals(stats.of(join(typeDir, `d${i}.yaml`)), 1);
+    }
+  });
+});
+
+Deno.test("DefinitionIdIndex: a file removed beside kept ones is unindexed and no longer counted, and the kept ones still answer", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    const typeDir = join(primary, "test", "a");
+    const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    for (const [i, id] of ids.entries()) {
+      await writeDefinition(join(typeDir, `d${i}.yaml`), id, `d${i}`);
+    }
+    await index.begin();
+
+    await Deno.remove(join(typeDir, "d1.yaml"));
+    await bump(typeDir);
+    await withCapturedSpans(async (spans) => {
+      await index.begin();
+      const validate = findSpan(spans, "swamp.serve.definition_index.validate");
+      assertEquals(validate.attributes["definition_index.definitions"], 2);
+      assertEquals(validate.attributes["definition_index.files_parsed"], 0);
+    });
+    assertEquals(await owners(index, ids[1]), []);
+    assertEquals(await index.findByName("d1"), null);
+    assertEquals((await owners(index, ids[0])).map((o) => o.name), ["d0"]);
+    assertEquals<string | undefined>(
+      (await index.findByName("d2"))?.definition.id,
+      ids[2],
+    );
+  });
+});
+
+Deno.test("DefinitionIdIndex: a kept file a save replaced with a new id is found by that id after one pass over the kept files, and its old id answers nothing", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    const { auto, index } = fixture(dir, stats.options);
+    const path = join(auto, "test", "a", "same.yaml");
+    const first = crypto.randomUUID();
+    const second = crypto.randomUUID();
+    await writeDefinition(path, first, "same");
+    await index.begin();
+
+    await replaceDefinition(path, second, "same");
+    await withCapturedSpans(async (spans) => {
+      assertEquals((await owners(index, second)).map((o) => o.name), ["same"]);
+      const [verify] = verifySpans(spans);
+      assertEquals(verifySpans(spans).length, 1);
+      assertEquals(
+        verify.attributes,
+        {
+          "definition_index.verify_trigger": "miss",
+          "definition_index.files_verified": 1,
+          "definition_index.files_reread": 1,
+        },
+      );
+    });
+    assertEquals(
+      (await index.findAllById(second)).map((f) => f.definition.name),
+      ["same"],
+    );
+    assertEquals(await owners(index, first), []);
+    assertEquals(await index.findAllById(first), []);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a miss with no relist since the last pass stats no kept file", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    const { auto, index } = fixture(dir, stats.options);
+    const typeDir = join(auto, "test", "a");
+    await writeDefinition(join(typeDir, "a.yaml"), crypto.randomUUID(), "a");
+    await index.begin();
+    await writeDefinition(join(typeDir, "b.yaml"), crypto.randomUUID(), "b");
+    assertEquals(await owners(index, crypto.randomUUID()), []);
+    const kept = stats.of(join(typeDir, "a.yaml"));
+
+    await withCapturedSpans(async (spans) => {
+      assertEquals(await owners(index, crypto.randomUUID()), []);
+      assertEquals(await index.findAllById(crypto.randomUUID()), []);
+      assertEquals(verifySpans(spans).length, 0);
+    });
+    assertEquals(stats.of(join(typeDir, "a.yaml")), kept);
+  });
+});
+
+Deno.test("DefinitionIdIndex: concurrent misses share one pass over the kept files", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    const { auto, index } = fixture(dir, stats.options);
+    const typeDir = join(auto, "test", "a");
+    for (let i = 0; i < 5; i++) {
+      await writeDefinition(
+        join(typeDir, `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    await index.begin();
+    await writeDefinition(
+      join(typeDir, "new.yaml"),
+      crypto.randomUUID(),
+      "new",
+    );
+
+    await withCapturedSpans(async (spans) => {
+      const views = await Promise.all(
+        Array.from({ length: 5 }, () => index.begin()),
+      );
+      await Promise.all(
+        views.map((view) =>
+          view.findAllById(crypto.randomUUID() as DefinitionId)
+        ),
+      );
+      assertEquals(verifySpans(spans).length, 1);
+    });
+    for (let i = 0; i < 5; i++) {
+      // one stat when first listed, one by the pass
+      assertEquals(stats.of(join(typeDir, `d${i}.yaml`)), 2);
+    }
+  });
+});
+
+Deno.test("DefinitionIdIndex: a kept file replaced to declare an id another file declares is found by the first check after the reverify interval", async () => {
+  await withTempDir(async (dir) => {
+    let skew = 0;
+    const { auto, index } = fixture(dir, {
+      now: () => Date.now() + 60_000 + skew,
+    });
+    const typeDir = join(auto, "test", "a");
+    const shared = crypto.randomUUID();
+    await writeDefinition(join(typeDir, "a.yaml"), shared, "a");
+    await writeDefinition(join(typeDir, "b.yaml"), crypto.randomUUID(), "b");
+    await index.begin();
+
+    await replaceDefinition(join(typeDir, "b.yaml"), shared, "b");
+    assertEquals((await owners(index, shared)).map((o) => o.name), ["a"]);
+
+    skew += 30_000;
+    assertEquals((await owners(index, shared)).map((o) => o.name), ["a", "b"]);
+  });
+});
+
+Deno.test("DefinitionIdIndex: no sweep runs before the reverify interval, and a sweep stats only the files kept since the last pass", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    let skew = 0;
+    const { auto, index } = fixture(dir, {
+      ...stats.options,
+      now: () => Date.now() + 60_000 + skew,
+    });
+    const typeDir = join(auto, "test", "a");
+    for (let i = 0; i < 3; i++) {
+      await writeDefinition(
+        join(typeDir, `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    const check = () => withDiagnosticArea("step_outputs", () => index.begin());
+    await withObservedSpans(async (spans) => {
+      await check();
+      await writeDefinition(
+        join(typeDir, "new.yaml"),
+        crypto.randomUUID(),
+        "new",
+      );
+      skew += 29_000;
+      await check();
+      assertEquals(verifySpans(spans).length, 0);
+
+      skew += 1_000;
+      await check();
+      const verifies = verifySpans(spans);
+      assertEquals(verifies.length, 1);
+      const verify = verifies[0];
+      assertEquals(verify.attributes, {
+        "definition_index.verify_trigger": "sweep",
+        "definition_index.files_verified": 3,
+        "definition_index.files_reread": 0,
+      });
+      const validates = spans.filter((s) =>
+        s.name === "swamp.serve.definition_index.validate"
+      );
+      assert(isChildOf(verify, validates[2]));
+      assertEquals(
+        validates[2].attributes["definition_index.files_verified"],
+        3,
+      );
+
+      skew += 30_000;
+      await check();
+      assertEquals(verifySpans(spans).length, 1);
+      assertEquals(
+        diagnosticPhases(spans, "owner_index").map((p) => [
+          p.attributes["swamp.diagnostic.cache"],
+          p.attributes["swamp.diagnostic.files_verified"],
+        ]),
+        [["cold", 0], ["refreshed", 0], ["warm", 3], ["warm", 0]],
+      );
+    });
+    for (let i = 0; i < 3; i++) {
+      assertEquals(stats.of(join(typeDir, `d${i}.yaml`)), 2);
+    }
+    assertEquals(stats.of(join(typeDir, "new.yaml")), 1);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a pass that began before a relist kept a file again leaves it unverified, so the next miss stats it again", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    const { auto, index } = fixture(dir, stats.options);
+    const typeDir = join(auto, "test", "a");
+    const a = join(typeDir, "a.yaml");
+    const b = join(typeDir, "b.yaml");
+    await writeDefinition(a, crypto.randomUUID(), "a");
+    await writeDefinition(b, crypto.randomUUID(), "b");
+    await index.begin();
+    await writeDefinition(join(typeDir, "c.yaml"), crypto.randomUUID(), "c");
+    const view = await index.begin();
+
+    const gate = Promise.withResolvers<void>();
+    stats.hold(a, gate.promise);
+    const before = stats.of(a);
+    const missing = view.findAllById(crypto.randomUUID() as DefinitionId);
+    await waitFor(() => stats.of(a) > before, "the pass stats a.yaml");
+    await writeDefinition(join(typeDir, "d.yaml"), crypto.randomUUID(), "d");
+    await index.begin();
+    gate.resolve();
+    assertEquals(await missing, []);
+
+    const kept = stats.of(b);
+    await withCapturedSpans(async (spans) => {
+      assertEquals(await owners(index, crypto.randomUUID()), []);
+      assertEquals(verifySpans(spans).length, 1);
+    });
+    assertEquals(stats.of(b), kept + 1);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a legacy file named by its id that a save replaced to declare a new name is stat'ed on each relist and found by that name", async () => {
+  await withTempDir(async (dir) => {
+    const stats = countingStats();
+    const { auto, index } = fixture(dir, stats.options);
+    const typeDir = join(auto, "test", "a");
+    const id = crypto.randomUUID();
+    const legacy = join(typeDir, `${id}.yaml`);
+    await writeDefinition(legacy, id, "Has Space");
+    await writeDefinition(
+      join(typeDir, "kept.yaml"),
+      crypto.randomUUID(),
+      "kept",
+    );
+    await index.begin();
+
+    await replaceDefinition(legacy, id, "Other Space");
+    await index.begin();
+    assertEquals(stats.of(legacy), 2);
+    assertEquals(stats.of(join(typeDir, "kept.yaml")), 1);
+    assertEquals<string | undefined>(
+      (await index.findByName("Other Space"))?.definition.id,
+      id,
+    );
+    assertEquals(await index.findByName("Has Space"), null);
+  });
+});
+
+Deno.test("DefinitionIdIndex: symlinked, broken and unparsed definitions are stat'ed on every relist, unlike kept files", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (outside) => {
+      const stats = countingStats();
+      const { primary, index } = fixture(dir, stats.options);
+      const typeDir = join(primary, "test", "a");
+      await writeDefinition(
+        join(typeDir, "kept.yaml"),
+        crypto.randomUUID(),
+        "kept",
+      );
+      const target = join(typeDir, "target.yml");
+      await Deno.writeTextFile(target, yamlOf(crypto.randomUUID(), "linked"));
+      const linked = join(typeDir, "linked.yaml");
+      await Deno.symlink(target, linked, { type: "file" });
+      const unparsed = join(typeDir, "unparsed.yaml");
+      await Deno.writeTextFile(unparsed, "id: [unclosed\n");
+      await bump(unparsed);
+      const broken = join(typeDir, "broken.yaml");
+      await Deno.symlink(join(outside, "missing.yaml"), broken, {
+        type: "file",
+      });
+      await bump(typeDir);
+      await index.begin();
+      const before = [linked, unparsed, broken].map((p) => stats.of(p));
+
+      await writeDefinition(
+        join(typeDir, "new.yaml"),
+        crypto.randomUUID(),
+        "new",
+      );
+      await index.begin();
+      for (const [i, path] of [linked, unparsed, broken].entries()) {
+        assert(stats.of(path) > before[i], path);
+      }
+      assertEquals(stats.of(join(typeDir, "kept.yaml")), 1);
+    });
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: a kept file read at lookup that declares a new id is indexed under it, so a lookup of that id needs no pass", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, index } = fixture(dir);
+    const path = join(auto, "test", "a", "same.yaml");
+    const first = crypto.randomUUID();
+    const second = crypto.randomUUID();
+    await writeDefinition(path, first, "same");
+    await index.begin();
+
+    await replaceDefinition(path, second, "same");
+    assertEquals<string | undefined>(
+      (await index.findByName("same"))?.definition.id,
+      second,
+    );
+    await withCapturedSpans(async (spans) => {
+      assertEquals((await owners(index, second)).map((o) => o.name), ["same"]);
+      assertEquals(verifySpans(spans).length, 0);
+    });
+    assertEquals(await owners(index, first), []);
+  });
+});
