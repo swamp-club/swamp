@@ -67,3 +67,33 @@ Deno.test("ExecutionOutputNames.claim: distinct names do not clash", () => {
   names.claim("x-file", "file", "blob");
   names.claim("x", "resource", "meta");
 });
+
+Deno.test("ExecutionOutputNames.claim: a write that saved nothing frees its name", () => {
+  const names = new ExecutionOutputNames();
+  names.claim("x", "resource", "meta")(false);
+  names.claim("x", "file", "blob")(true);
+  assertThrows(
+    () => names.claim("x", "resource", "meta"),
+    UserError,
+    "already written as file 'blob'",
+  );
+});
+
+Deno.test("ExecutionOutputNames.claim: a failed write keeps a name another write of it still holds", () => {
+  const names = new ExecutionOutputNames();
+  const first = names.claim("x", "resource", "meta");
+  const second = names.claim("x", "resource", "meta");
+  first(false);
+  assertThrows(() => names.claim("x", "file", "blob"), UserError);
+  second(false);
+  names.claim("x", "file", "blob");
+});
+
+Deno.test("ExecutionOutputNames.claim: a saved write keeps its name after a later failure", () => {
+  const names = new ExecutionOutputNames();
+  names.claim("x", "resource", "meta")(true);
+  const settle = names.claim("x", "resource", "meta");
+  settle(false);
+  settle(false);
+  assertThrows(() => names.claim("x", "file", "blob"), UserError);
+});

@@ -6305,3 +6305,48 @@ Deno.test("createResourceWriter: a refused sensitive resource stores no vault se
   assertEquals(puts, []);
   assertEquals(writes, ["x"]);
 });
+
+Deno.test("createResourceWriter: a resource write that fails before saving frees its name for another kind", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const { writeResource, createFileWriter } = sharedWriters(
+    repo,
+    new ExecutionOutputNames(),
+    {
+      resources: {
+        item: {
+          schema: z.object({ value: z.string().meta({ sensitive: true }) }),
+          lifetime: "infinite",
+          garbageCollection: 10,
+        },
+      },
+    },
+  );
+
+  await assertRejects(
+    () => writeResource("item", "x", { value: "secret" }),
+    Error,
+    "no vault is configured",
+  );
+  await createFileWriter("log", "x").writeText("file body");
+  assertEquals(writes, ["x"]);
+});
+
+Deno.test("createFileWriterFactory: a file write that fails before saving frees its name for another kind", async () => {
+  const { repo, writes } = createNameRecordingRepo();
+  const failing: UnifiedDataRepository = {
+    ...repo,
+    allocateVersion: () => Promise.reject(new Error("disk full")),
+    save: () => Promise.reject(new Error("disk full")),
+  };
+  const outputNames = new ExecutionOutputNames();
+  const { createFileWriter } = sharedWriters(failing, outputNames);
+  const { writeResource } = sharedWriters(repo, outputNames);
+
+  await assertRejects(
+    () => createFileWriter("log", "x").writeText("file body"),
+    Error,
+    "disk full",
+  );
+  await writeResource("item", "x", { value: "resource" });
+  assertEquals(writes, ["x"]);
+});

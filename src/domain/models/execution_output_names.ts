@@ -21,26 +21,46 @@ import { UserError } from "../errors.ts";
 
 export type OutputKind = "file" | "resource";
 
+/** called once when the claimed write ends; a write that saved nothing frees the name */
+export type SettleClaim = (written: boolean) => void;
+
+interface Claim {
+  kind: OutputKind;
+  specName: string;
+  inFlight: number;
+  written: boolean;
+}
+
 /**
  * the data names one method execution has written, so a name cannot hold
  * versions of a different kind or spec within that execution
  */
 export class ExecutionOutputNames {
-  readonly #claims = new Map<string, { kind: OutputKind; specName: string }>();
+  readonly #claims = new Map<string, Claim>();
 
   /**
    * synchronous check-and-set: two concurrent writes of one name cannot both
    * pass, so call it before the writer's first await
    */
-  claim(name: string, kind: OutputKind, specName: string): void {
-    const held = this.#claims.get(name);
+  claim(name: string, kind: OutputKind, specName: string): SettleClaim {
+    let held = this.#claims.get(name);
     if (held === undefined) {
-      this.#claims.set(name, { kind, specName });
-      return;
+      held = { kind, specName, inFlight: 0, written: false };
+      this.#claims.set(name, held);
+    } else if (held.kind !== kind || held.specName !== specName) {
+      throw new UserError(
+        `Duplicate data instance name '${name}' (already written as ${held.kind} '${held.specName}' in this run)`,
+      );
     }
-    if (held.kind === kind && held.specName === specName) return;
-    throw new UserError(
-      `Duplicate data instance name '${name}' (already written as ${held.kind} '${held.specName}' in this run)`,
-    );
+    const claim = held;
+    claim.inFlight++;
+    let settled = false;
+    return (written) => {
+      if (settled) return;
+      settled = true;
+      claim.inFlight--;
+      if (written) claim.written = true;
+      if (!claim.written && claim.inFlight === 0) this.#claims.delete(name);
+    };
   }
 }

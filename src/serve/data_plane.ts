@@ -165,7 +165,7 @@ export class DataPlane {
    * hand them to its lock's push
    */
   readonly #writtenByDispatch = new Map<string, WrittenVersion[]>();
-  /** the data names each dispatch has written, shared by its writers */
+  /** shared by a dispatch's writers */
   readonly #outputNamesByDispatch = new Map<string, ExecutionOutputNames>();
   readonly #inFlight = new Map<
     string,
@@ -214,11 +214,18 @@ export class DataPlane {
     this.#outputNamesByDispatch.delete(dispatchId);
   }
 
-  #outputNames(dispatchId: string): ExecutionOutputNames {
-    let names = this.#outputNamesByDispatch.get(dispatchId);
-    if (names === undefined) {
-      names = new ExecutionOutputNames();
-      this.#outputNamesByDispatch.set(dispatchId, names);
+  #outputNames(dispatch: ActiveDispatch): ExecutionOutputNames {
+    const held = this.#outputNamesByDispatch.get(dispatch.dispatchId);
+    if (held !== undefined) return held;
+    const names = new ExecutionOutputNames();
+    // a dispatch released while this request awaited keeps no entry
+    if (
+      this.#options.dispatches.forDispatch(
+        dispatch.workerName,
+        dispatch.dispatchId,
+      ) !== null
+    ) {
+      this.#outputNamesByDispatch.set(dispatch.dispatchId, names);
     }
     return names;
   }
@@ -650,7 +657,7 @@ export class DataPlane {
       dispatch.redactor,
       false,
       Deno.build.os,
-      this.#outputNames(dispatch.dispatchId),
+      this.#outputNames(dispatch),
     );
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.
@@ -751,7 +758,7 @@ export class DataPlane {
       dispatch.definitionName,
       false,
       Deno.build.os,
-      this.#outputNames(dispatch.dispatchId),
+      this.#outputNames(dispatch),
     );
     // A refused open (an undeclared spec, a reserved name or tag) is the
     // worker's request at fault, reported as the resource path reports it.

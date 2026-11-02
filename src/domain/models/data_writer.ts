@@ -49,7 +49,10 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
 import { markErrorPaths } from "../errors.ts";
-import type { ExecutionOutputNames } from "./execution_output_names.ts";
+import type {
+  ExecutionOutputNames,
+  SettleClaim,
+} from "./execution_output_names.ts";
 import {
   type BehaviorWords,
   wordedError,
@@ -1084,6 +1087,20 @@ function checkDataNamePortability(
   }
 }
 
+async function settledBy(
+  settle: () => SettleClaim | undefined,
+  write: Promise<DataHandle>,
+): Promise<DataHandle> {
+  try {
+    const handle = await write;
+    settle()?.(true);
+    return handle;
+  } catch (error) {
+    settle()?.(false);
+    throw error;
+  }
+}
+
 export function createResourceWriter(
   repo: UnifiedDataRepository,
   modelType: ModelType,
@@ -1134,11 +1151,25 @@ export function createResourceWriter(
     ...(definitionName ? [definitionName] : []),
   ]);
 
-  const writeResource = async (
+  const writeResource = (
     specName: string,
     name: string,
     data: Record<string, unknown>,
     overrides?: ResourceWriteOverrides,
+  ): Promise<DataHandle> => {
+    const claimed: { settle?: SettleClaim } = {};
+    return settledBy(
+      () => claimed.settle,
+      writeClaimedResource(specName, name, data, overrides, claimed),
+    );
+  };
+
+  const writeClaimedResource = async (
+    specName: string,
+    name: string,
+    data: Record<string, unknown>,
+    overrides: ResourceWriteOverrides | undefined,
+    claimed: { settle?: SettleClaim },
   ): Promise<DataHandle> => {
     const spec = resources[specName];
     if (!spec) {
@@ -1250,7 +1281,7 @@ export function createResourceWriter(
     // Stamped after every override, so only the writer sets it.
     resolvedTags[RECORD_KIND_TAG] = "resource";
 
-    outputNames?.claim(instanceName, "resource", specName);
+    claimed.settle = outputNames?.claim(instanceName, "resource", specName);
 
     checkDataNamePortability(
       instanceName,
@@ -2415,8 +2446,6 @@ export function createFileWriterFactory(
 
     resolvedTags[RECORD_KIND_TAG] = "file";
 
-    outputNames?.claim(instanceName, "file", specName);
-
     checkDataNamePortability(
       instanceName,
       modelType,
@@ -2452,6 +2481,7 @@ export function createFileWriterFactory(
       },
     };
 
+    const settle = outputNames?.claim(instanceName, "file", specName);
     const writer = new DefaultDataWriter(
       repo,
       modelType,
@@ -2469,7 +2499,7 @@ export function createFileWriterFactory(
     // to writeAll and writeStream delegates to finalize, so wrapping those too
     // would record each handle twice.
     writer.writeAll = async (content: Uint8Array) => {
-      const handle = await originalWriteAll(content);
+      const handle = await settledBy(() => settle, originalWriteAll(content));
       handles.push(handle);
       const receipt = writer.getDeferredReceipt();
       if (receipt) {
@@ -2479,7 +2509,7 @@ export function createFileWriterFactory(
     };
 
     writer.finalize = async () => {
-      const handle = await originalFinalize();
+      const handle = await settledBy(() => settle, originalFinalize());
       handles.push(handle);
       const receipt = writer.getDeferredReceipt();
       if (receipt) {

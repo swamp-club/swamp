@@ -198,11 +198,12 @@ component, so `writeResource("summary", "bixu", ...)` and
   `Duplicate data instance name 'bixu' (already written as resource 'summary' in this run)`
   and writes nothing. The first write stays committed unless the method sets
   `rollbackOnFailure: true`.
-- **Same spec twice**: both writes commit as consecutive versions, and the
-  method fails with
-  `Data output validation failed: Duplicate data instance
-  name` after it
-  returns, if it returns both handles.
+- **Same spec twice**: both writes commit as consecutive versions. If the method
+  returns both handles, it then fails with this error:
+
+  ```
+  Data output validation failed: Duplicate data instance name 'bixu'
+  ```
 
 **Fix:** Use unique instance names across all specs within a method. Prefix with
 the spec name or another distinguishing value:
