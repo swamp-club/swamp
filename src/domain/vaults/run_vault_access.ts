@@ -28,6 +28,20 @@ import { UserError } from "../errors.ts";
 
 export type VaultAction = "read" | "write";
 
+// the vault verbs a run's vault operations are judged as, so a grant's
+// methods list scopes runs as it scopes vault requests
+export const RUN_VAULT_METHODS = [
+  "get",
+  "list-keys",
+  "describe",
+  "put",
+  "delete",
+  "annotate",
+  "edit",
+] as const;
+
+export type RunVaultMethod = typeof RUN_VAULT_METHODS[number];
+
 export interface VaultAccessDecision {
   allowed: boolean;
   grantId?: string;
@@ -81,6 +95,7 @@ export interface VaultPrincipalPolicy {
   decide(
     vaultName: string,
     action: VaultAction,
+    method: RunVaultMethod,
     secretKey?: string,
     options?: VaultDecideOptions,
   ): VaultAccessDecision | Promise<VaultAccessDecision>;
@@ -185,6 +200,7 @@ export class RunVaultAccess {
   async decide(
     vaultName: string,
     action: VaultAction,
+    method: RunVaultMethod,
     secretKey?: string,
     options?: VaultDecideOptions,
   ): Promise<
@@ -210,6 +226,7 @@ export class RunVaultAccess {
       const decision = await policy.decide(
         vaultName,
         action,
+        method,
         secretKey,
         options,
       );
@@ -244,16 +261,23 @@ export class RunVaultAccess {
   async check(
     vaultName: string,
     action: VaultAction,
+    method: RunVaultMethod,
     secretKey?: string,
     options?: VaultDecideOptions,
   ): Promise<void> {
-    const result = await this.decide(vaultName, action, secretKey, options);
+    const result = await this.decide(
+      vaultName,
+      action,
+      method,
+      secretKey,
+      options,
+    );
     if (result.allowed || "undetermined" in result) return;
     const denial: VaultAccessDenial = {
       ...result.denial,
       ...(secretKey !== undefined ? { secretKey } : {}),
     };
-    const dedupeKey = `${vaultName}\0${secretKey ?? ""}\0${action}`;
+    const dedupeKey = `${vaultName}\0${secretKey ?? ""}\0${action}\0${method}`;
     for (const entry of this.deniedHooks) {
       if (entry.seen.has(dedupeKey)) continue;
       entry.seen.add(dedupeKey);

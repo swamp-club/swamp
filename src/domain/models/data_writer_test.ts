@@ -2269,7 +2269,7 @@ Deno.test("createResourceWriter: a vary write is decided with the suffixed key i
     RunVaultAccess.create({
       policy: {
         principal: "user:bot",
-        decide: (_vault, _action, secretKey) => {
+        decide: (_vault, _action, _method, secretKey) => {
           decided.push(secretKey);
           return { allowed: true, reason: "granted" };
         },
@@ -2909,7 +2909,7 @@ Deno.test("processSensitiveResourceData: decides each target with the key the pu
     RunVaultAccess.create({
       policy: {
         principal: "user:bot",
-        decide: (_vault, _action, secretKey) => {
+        decide: (_vault, _action, _method, secretKey) => {
           decided.push(secretKey);
           return secretKey?.endsWith("-generated")
             ? { allowed: false, reason: "denied by grant g-key" }

@@ -41,6 +41,7 @@ import { resourceSelectorMatches } from "../domain/access/resource_selector.ts";
 import {
   type RunTriggeringPrincipal,
   RunVaultAccess,
+  type RunVaultMethod,
   type VaultAccessDecision,
   type VaultAccessDenial,
   type VaultAction,
@@ -135,6 +136,7 @@ export function decideRunVaultAccess(
   principal: AccessPrincipal | null,
   vaultName: string,
   action: VaultAction,
+  method: RunVaultMethod | undefined,
   secretKey?: string,
   options?: VaultDecideOptions,
 ): RunVaultDecision {
@@ -143,6 +145,7 @@ export function decideRunVaultAccess(
     principal,
     vaultName,
     action,
+    method,
     secretKey,
   );
   if (
@@ -167,6 +170,7 @@ function decideKnownKey(
   principal: AccessPrincipal | null,
   vaultName: string,
   action: VaultAction,
+  method: RunVaultMethod | undefined,
   secretKey?: string,
 ): RunVaultDecision {
   const admin = principal !== null && isAccessAdmin(service, principal);
@@ -199,7 +203,7 @@ function decideKnownKey(
   const decision = service.decide(
     principal,
     action,
-    vaultKindResource(vaultName, secretKey),
+    vaultKindResource(vaultName, secretKey, method),
   );
   if (decision?.effect === "deny") {
     return {
@@ -321,6 +325,7 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
   async decide(
     vaultName: string,
     action: VaultAction,
+    method: RunVaultMethod,
     secretKey?: string,
     options?: VaultDecideOptions,
   ): Promise<VaultAccessDecision> {
@@ -334,6 +339,7 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
       principal,
       vaultName,
       action,
+      method,
       secretKey,
       options,
     );

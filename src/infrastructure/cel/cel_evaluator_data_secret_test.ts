@@ -473,7 +473,7 @@ Deno.test("CelEvaluator data secrets: a set read authorizes every returned recor
   const access = RunVaultAccess.create({
     policy: {
       principal: "user:tester",
-      decide: (_vault, _action, key) => ({
+      decide: (_vault, _action, _method, key) => ({
         allowed: key !== "B",
         reason: key === "B" ? "key B is withheld" : "granted",
       }),

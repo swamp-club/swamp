@@ -81,6 +81,7 @@ Deno.test("decideRunVaultAccess (property): with no vault grant every non-reserv
           BOT,
           vault,
           action,
+          action === "read" ? "get" : "put",
         );
         assertEquals(decision.allowed, !isReservedVaultName(vault));
       },
@@ -103,6 +104,7 @@ Deno.test("decideRunVaultAccess (property): deny-only vault grants refuse exactl
           BOT,
           vault,
           action,
+          action === "read" ? "get" : "put",
         );
         const denied = forBot(grants, "deny", action).some((g) =>
           resourceSelectorMatches(g.resource, vault)
@@ -130,6 +132,7 @@ Deno.test("decideRunVaultAccess (property): any vault allow makes every action d
           BOT,
           vault,
           action,
+          action === "read" ? "get" : "put",
         );
         const allowed = forBot(grants, "allow", action).some((g) =>
           resourceSelectorMatches(g.resource, vault)
@@ -155,6 +158,7 @@ Deno.test("decideRunVaultAccess (property): a reserved vault is always refused t
           BOT,
           "_token-secrets",
           action,
+          action === "read" ? "get" : "put",
         );
         assertEquals(decision.allowed, false);
         assertEquals(decision.rule, "reserved");
