@@ -18,44 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Recovers a checkout whose v3 writer ended without tearing down
- * (swamp-club#3299): the Phase 3 answer to an interrupted run.
- *
- * A writer's repositories write the checkout's files before the unit that
- * stages them commits. A SIGKILL, a crash or a second signal's forced exit
- * ends the process with units that never commit, so the checkout keeps files
- * and catalog rows no commit names, and no other checkout ever sees them.
- *
- * - **Marker.** The first writing context of a process writes `writer.json`
- *   in the checkout's read-model state directory, durably, before it writes
- *   anything else (swamp-club#3617); teardown removes it once every unit has
- *   ended. A marker that outlives its process means the process ended
- *   without teardown. One a crash left unreadable names no process: it is
- *   recovered as a writer this process cannot judge, from its file's
- *   modification time, and never written over first.
- * - **Liveness.** A marker names its process by a token, its pid and its
- *   process identity (swamp-club#3564), since a restarted container reuses
- *   both hostname and pid, and a container sharing the hostname has pids of
- *   its own. A marker written on this kernel is interrupted once its process
- *   is gone (absent, a zombie, or started at another time), or is this
- *   process's pid under another token, whatever the writer lock's TTL says,
- *   so a live writer whose heartbeat stalled is never mistaken for a dead
- *   one. A marker this process cannot judge (another host, namespace or
- *   boot, or a swamp from before identities) is left to the lease: its
- *   writer writes only while it holds the lease, so it is interrupted once
- *   the lease is free, expired by its TTL and skew, or held by this process.
- * - **Recovery** holds the writer lock: a writing command recovers under the
- *   lock it has just taken, a read-only command only when it can take the
- *   lock without waiting. The read model then empties the catalog, replays
- *   every commit and removes the files no commit owns that the dead writer
- *   may have written. The marker is removed last, so a recovery that fails
- *   midway runs again in full on the next command.
- *
- * The commit outbox (swamp-club#3490, `commit_outbox_recovery.ts`) lands a
- * commit that was being appended when the writer died before this runs, so
- * its files are kept; this recovery removes what is left.
- *
- * @module
+ * writer.json is written before the first file and removed at teardown; one
+ * outliving its process triggers a replay and removal of files no commit owns;
+ * it goes last, so a failed recovery reruns
  */
 
 import { join } from "@std/path";
@@ -82,14 +47,12 @@ import {
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
-/** Where a recovery says it is running; nowhere by default. */
 let recoveryProgress: ((message: string) => void) | undefined;
 
 /**
- * Has each recovery of an interrupted writer say on `write`, as it starts,
- * that it is running (swamp-club#3893): on a populated checkout it takes
- * seconds, and a command silent that long looks hung. The CLI writes it to
- * stderr, so `--json` stdout stays clean. Undefined says nothing.
+ * says a recovery is running as it starts: on a populated checkout it takes
+ * seconds and a silent command looks hung; the CLI writes to stderr so --json
+ * stdout stays clean
  */
 export function setV3RecoveryProgress(
   write: ((message: string) => void) | undefined,
@@ -97,7 +60,6 @@ export function setV3RecoveryProgress(
   recoveryProgress = write;
 }
 
-/** The marker's file in the checkout's read-model state directory. */
 export const WRITER_MARKER_FILE = "writer.json";
 
 /**
@@ -107,15 +69,10 @@ export const WRITER_MARKER_FILE = "writer.json";
  */
 const MARKER_SLACK_MS = 2_000;
 
-/**
- * The time a recovery sweeps from for writes made at or after `at` (epoch
- * milliseconds): the second it falls in, less {@link MARKER_SLACK_MS}.
- */
 export function recoverySince(at: number): number {
   return Math.floor(at / 1000) * 1000 - MARKER_SLACK_MS;
 }
 
-/** Which process last wrote a checkout, and since when. */
 export interface WriterMarker {
   readonly hostname: string;
   readonly pid: number;
@@ -126,33 +83,27 @@ export interface WriterMarker {
    */
   readonly instance?: string;
   /**
-   * The writer's process identity. Undefined in a marker from a swamp before
-   * swamp-club#3564, which is left to the lease.
+   * the writer's process identity; undefined in a marker from an older swamp,
+   * which is left to the lease
    */
   readonly process?: ProcessIdentity;
-  /** Epoch milliseconds, floored to the second less a slack. */
   readonly since: number;
 }
 
-/** This process's token in the markers it writes. */
 const PROCESS_INSTANCE = crypto.randomUUID();
 
-/** The marker's path for the checkout at `repoDir`. */
 export function writerMarkerPath(repoDir: string): string {
   return join(readModelStateDir(repoDir), WRITER_MARKER_FILE);
 }
 
-/** Options for {@link writeWriterMarker}. */
 export interface WriteWriterMarkerOptions
   extends Pick<DurableWriteBatchOptions, "syncFile" | "syncDirectory"> {
   readonly signal?: AbortSignal;
 }
 
 /**
- * Records that this process writes the checkout at `repoDir` from now on.
- * The marker is durable when this returns (swamp-club#3617): a power cut
- * after the writer's first file must not leave the marker empty, or
- * missing with its directory.
+ * the marker is durable when this returns: a power cut after the writer's first
+ * file must not leave it empty, or missing with its directory
  */
 export async function writeWriterMarker(
   repoDir: string,
@@ -174,7 +125,6 @@ export async function writeWriterMarker(
   );
 }
 
-/** Removes the checkout's marker when this process wrote it. */
 export async function removeOwnWriterMarker(repoDir: string): Promise<void> {
   const marker = await readWriterMarker(repoDir);
   if (marker === undefined || !isOwn(marker)) return;
@@ -186,21 +136,15 @@ export async function removeOwnWriterMarker(repoDir: string): Promise<void> {
 }
 
 /**
- * What a checkout's marker file holds (swamp-club#3617): no file
- * (`absent`), a marker, or a file that is not one (`unreadable`: empty,
- * truncated, hand-edited or of the wrong shape), which names no process
- * and is dated by its file's modification time instead, or 0 when the
- * filesystem keeps none.
+ * an unreadable file (empty, truncated, hand-edited, wrong shape) names no
+ * process and is dated by its modification time, or 0 when the filesystem keeps
+ * none
  */
 export type WriterMarkerFile =
   | { readonly kind: "absent" }
   | { readonly kind: "marker"; readonly marker: WriterMarker }
   | { readonly kind: "unreadable"; readonly since: number };
 
-/**
- * Reads the checkout's marker file. Read errors other than a missing file
- * are thrown.
- */
 export async function readWriterMarkerFile(
   repoDir: string,
 ): Promise<WriterMarkerFile> {
@@ -223,9 +167,8 @@ export async function readWriterMarkerFile(
 }
 
 /**
- * The checkout's marker, or undefined when there is none. A marker that is
- * not a marker (hand-edited, truncated) is logged and read as none: it names
- * no process to judge.
+ * a marker that is not a marker is logged and read as none: it names no process
+ * to judge
  */
 export async function readWriterMarker(
   repoDir: string,
@@ -240,7 +183,6 @@ export async function readWriterMarker(
   return file.kind === "marker" ? file.marker : undefined;
 }
 
-/** The marker `text` holds, or undefined when it holds none. */
 function parseWriterMarker(text: string): WriterMarker | undefined {
   try {
     const value = JSON.parse(text);
@@ -265,11 +207,6 @@ function parseWriterMarker(text: string): WriterMarker | undefined {
   return undefined;
 }
 
-/**
- * What a marker says about its writer: this process (`own`), a live process
- * on this kernel (`live`), one on this kernel that is gone (`interrupted`),
- * or one this process cannot judge (`unknown`), which the lease decides.
- */
 export function writerMarkerState(
   marker: WriterMarker,
   local: LocalProcess,
@@ -291,7 +228,6 @@ export function writerMarkerState(
     : "unknown";
 }
 
-/** Options for {@link recoverInterruptedWriter}. */
 export interface RecoverInterruptedWriterOptions {
   /**
    * This process holds the datastore's writer lock (a writing command).
@@ -303,11 +239,9 @@ export interface RecoverInterruptedWriterOptions {
 }
 
 /**
- * Recovers the checkout at `repoDir` when its marker names a writer that is
- * gone, or one this process cannot judge whose lease no live process holds.
- * An unreadable marker (swamp-club#3617) is one this process cannot judge,
- * recovered from its file's modification time. Resolves with the record
- * keys of the files removed, or undefined when nothing was recovered.
+ * recovers when the marker names a gone writer, or one this process cannot
+ * judge whose lease no live process holds; an unreadable marker is unjudgeable,
+ * dated by its file's modification time
  */
 export async function recoverInterruptedWriter(
   handle: V3Datastore,
@@ -336,8 +270,7 @@ export async function recoverInterruptedWriter(
   }
   let release: (() => Promise<void>) | undefined;
   try {
-    // Through the handle, which records the fence in the outbox's chain too
-    // (swamp-club#3490).
+    // through the handle, which records the fence in the outbox's chain too
     release = await tryAcquireV3WriterLock(handle.datastorePath, {
       fenceStore: handle,
     });
@@ -358,7 +291,6 @@ export async function recoverInterruptedWriter(
   }
 }
 
-/** Whether two reads of a marker file found the same marker. */
 function sameMarkerFile(
   current: WriterMarkerFile,
   read: WriterMarkerFile & { readonly kind: "marker" | "unreadable" },
@@ -376,7 +308,6 @@ function sameMarkerFile(
     current.since === read.since;
 }
 
-/** The marker file, for a log line. */
 function describeMarker(
   file: WriterMarkerFile & { readonly kind: "marker" | "unreadable" },
 ): string {
@@ -413,8 +344,8 @@ async function recover(
     await removeStaleRunIndexes(repoDir);
     await removeStaleOutputSummaries(repoDir);
   }
-  // The writer is named in the template's text, where a string
-  // interpolated as a value would be quoted (swamp-club#3893).
+  // the writer is named in the template's text, where an interpolated string
+  // would be quoted
   const pid = file.kind === "marker" ? file.marker.pid : undefined;
   if (removed.length > 0 && pid !== undefined) {
     logger
@@ -434,10 +365,9 @@ async function recover(
 }
 
 /**
- * Whether the writer lock is held by a process that may still be writing:
- * one judged alive, whatever its TTL, so the try-acquire, which would take
- * over a stale-looking lease, never runs against it; otherwise while the
- * lease keeps writers out by its TTL and skew (swamp-club#3564).
+ * true for a holder judged alive whatever its TTL, so the try-acquire that
+ * would take over a stale-looking lease never runs against it; otherwise true
+ * while the lease keeps writers out by TTL and skew
  */
 async function lockHeldByLiveProcess(datastorePath: string): Promise<boolean> {
   const holder = await v3WriterLeaseHolder(datastorePath);

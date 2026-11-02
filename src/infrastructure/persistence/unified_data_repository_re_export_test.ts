@@ -21,11 +21,8 @@ import { assert, assertStrictEquals } from "@std/assert";
 import { OwnershipValidationError as DomainOwnershipValidationError } from "../../domain/data/repositories.ts";
 import { OwnershipValidationError as InfraOwnershipValidationError } from "./unified_data_repository.ts";
 
-// Locks the value re-export contract. UnifiedDataRepository's canonical home is
-// the domain layer; the infra module re-exports the symbols so existing
-// importers keep working. A future regression that converts this to a type-only
-// re-export, or duplicates the class definition, would silently break
-// `instanceof` checks across the two import paths — these tests catch that.
+// locks the value re-export: a type-only re-export or a duplicated class would
+// silently break instanceof across the two import paths
 
 Deno.test("OwnershipValidationError class identity is preserved across the re-export", () => {
   assertStrictEquals(

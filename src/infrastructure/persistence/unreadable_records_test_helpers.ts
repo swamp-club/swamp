@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Test doubles for the loud-read lookup's listing (swamp-club#3617).
- *
- * @module
- */
-
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { relative, resolve, SEPARATOR } from "@std/path";
 import type {
@@ -33,13 +27,8 @@ import { UNREADABLE_CONTENT_CODE } from "../../domain/datastore/unreadable_conte
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../logging/logger.ts";
 
-/** The advice every record of {@link fakeUnreadableLookup} carries. */
 export const FAKE_ADVICE = "Write the record again.";
 
-/**
- * A lookup that holds the records at `paths` as unreadable, answering both
- * a single path and a directory listing, and counting the listings.
- */
 export function fakeUnreadableLookup(paths: readonly string[]) {
   const errors = new Map(
     paths.map((path) => [
@@ -74,10 +63,6 @@ export function fakeUnreadableLookup(paths: readonly string[]) {
   return { lookup, errors, stats };
 }
 
-/**
- * Runs `fn` and returns the warnings it logged under `category`, by default
- * the unreadable-record warnings.
- */
 export async function captureUnreadableWarnings(
   fn: () => Promise<void>,
   category: string[] = ["swamp", "persistence", "unreadable-records"],

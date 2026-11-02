@@ -20,27 +20,22 @@
 import type { FolderPicker } from "../../domain/start/folder_picker.ts";
 import { defaultCommandResolver } from "./resolve_command.ts";
 
-/** What running a chooser produced. */
 export interface PickerRun {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
 }
 
-/** Dependencies of {@link SystemFolderPicker}, injected for testing. */
 export interface FolderPickerDeps {
   readonly os: typeof Deno.build.os;
   readonly env: (name: string) => string | undefined;
-  /** Resolves an executable on PATH to its absolute path. */
   readonly resolve: (name: string) => Promise<string | null>;
-  /** Runs a command to completion, capturing its output. */
   readonly run: (
     command: string,
     args: readonly string[],
   ) => Promise<PickerRun>;
 }
 
-/** One chooser invocation: the command and its arguments. */
 export interface PickerCommand {
   readonly command: string;
   readonly args: readonly string[];
@@ -56,11 +51,6 @@ function scriptString(value: string, quote: '"' | "'"): string {
     : `'${value.replace(/'/g, "''")}'`;
 }
 
-/**
- * Opens the OS folder chooser: `osascript` on macOS, a Windows Forms dialog
- * through PowerShell on Windows, `zenity` or `kdialog` on Linux. Over SSH,
- * without a display, or with none of those installed, it is unavailable.
- */
 export class SystemFolderPicker implements FolderPicker {
   constructor(private readonly deps: FolderPickerDeps) {}
 
@@ -87,7 +77,6 @@ export class SystemFolderPicker implements FolderPicker {
     return path === "" ? null : trimTrailingSeparator(path);
   }
 
-  /** The chooser command for this machine, or null when there is none. */
   async command(prompt: string): Promise<PickerCommand | null> {
     const { os, env } = this.deps;
     if (env("SSH_CONNECTION")) return null;
@@ -155,13 +144,11 @@ function cancelled(os: string, result: PickerRun): boolean {
   return result.code === 1 && result.stdout.trim() === "";
 }
 
-/** Drops a trailing separator, keeping a root such as `/` or `C:\`. */
 function trimTrailingSeparator(path: string): string {
   if (path === "/" || /^[A-Za-z]:[\\/]$/.test(path)) return path;
   return path.replace(/[\\/]+$/, "");
 }
 
-/** The real chooser for this machine. */
 export function createSystemFolderPicker(): SystemFolderPicker {
   const resolver = defaultCommandResolver();
   return new SystemFolderPicker({

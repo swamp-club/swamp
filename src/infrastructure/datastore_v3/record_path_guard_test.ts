@@ -31,7 +31,6 @@ import {
   REPO_LOCAL_STREAM_SUBDIRS,
 } from "./record_path_guard.ts";
 
-// Paths are only resolved lexically: nothing here touches the filesystem.
 const REPO = resolve("guard-repo");
 const ROOT = swampPath(REPO);
 const STATE = readModelStateDir(REPO);
@@ -206,8 +205,6 @@ Deno.test("isCheckoutLocalKey: dot-named data, methods and other dot files are r
   for (const key of committed) {
     assertEquals(isCheckoutLocalKey(key.split("/")), false, key);
   }
-  // A directory segment is judged on its own, as the recovery sweep asks
-  // before it descends: a dot-named data directory is walked.
   assertEquals(isCheckoutLocalKey(["data", "t", "m", ".kubeconfig"]), false);
   assertEquals(
     isCheckoutLocalKey(["auto-definitions", ".auto-definition-create"]),

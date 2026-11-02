@@ -83,10 +83,8 @@ Deno.test("LockfileRepository.create: existing lockfile populates cache", async 
 });
 
 Deno.test("LockfileRepository: cross-instance snapshot regression — repoA caches old, repoB sees new", async () => {
-  // Load-bearing test for ADV-1 (W2 prequel snapshot semantics). Mutates
-  // disk via a SIBLING LockfileRepository, NOT repoA.writeEntry, so the
-  // test exercises CROSS-INSTANCE staleness (the W1b race-window contract)
-  // rather than within-instance coherence (which writeEntry guarantees).
+  // mutates disk through a sibling repository, not repoA.writeEntry, to test
+  // cross-instance staleness rather than within-instance coherence
   await withTempDir(async (dir) => {
     const path = join(dir, "upstream_extensions.json");
     const initial = {
@@ -100,14 +98,11 @@ Deno.test("LockfileRepository: cross-instance snapshot regression — repoA cach
     const repoA = await LockfileRepository.create(path);
     assertEquals(repoA.getLockedVersion("@scope/foo"), "2026.01.01.1");
 
-    // Out-of-band write via a SIBLING instance. repoA's cache is now stale.
     const sibling = await LockfileRepository.create(path);
     await sibling.writeEntry("@scope/foo", "2026.05.05.1", []);
 
-    // repoA still serves the OLD value from its construction-time cache.
     assertEquals(repoA.getLockedVersion("@scope/foo"), "2026.01.01.1");
 
-    // A freshly-constructed repoB sees the NEW value.
     const repoB = await LockfileRepository.create(path);
     assertEquals(repoB.getLockedVersion("@scope/foo"), "2026.05.05.1");
   });
@@ -122,11 +117,9 @@ Deno.test("LockfileRepository.writeEntry: creates file and updates own cache", a
       checksum: "abc123",
     });
 
-    // Cache reflects the write immediately.
     assertEquals(repo.getEntry("@scope/foo")?.version, "2026.05.05.1");
     assertEquals(repo.getEntry("@scope/foo")?.checksum, "abc123");
 
-    // Disk reflects the write.
     const onDisk = JSON.parse(await Deno.readTextFile(path));
     assertEquals(onDisk["@scope/foo"].version, "2026.05.05.1");
     assertEquals(onDisk["@scope/foo"].files, ["models/foo.ts"]);
@@ -180,15 +173,11 @@ Deno.test("LockfileRepository.writeEntry: re-reads disk under lock to avoid clob
   await withTempDir(async (dir) => {
     const path = join(dir, "upstream_extensions.json");
 
-    // Construct repoA with empty cache.
     const repoA = await LockfileRepository.create(path);
 
-    // Sibling writes entry B to disk while repoA's cache is still empty.
     const sibling = await LockfileRepository.create(path);
     await sibling.writeEntry("@scope/sibling", "1.0.0", []);
 
-    // repoA writes entry A. The re-read-under-lock step picks up the
-    // sibling's entry B; both survive.
     await repoA.writeEntry("@scope/a", "2.0.0", []);
 
     const onDisk = JSON.parse(await Deno.readTextFile(path));
@@ -221,10 +210,8 @@ Deno.test("LockfileRepository.removeEntry: creates parent dir (symmetric with wr
     const path = join(dir, "nested", "subdir", "upstream_extensions.json");
     const repo = new LockfileRepository(path, {});
 
-    // Should not throw.
     await repo.removeEntry("@scope/never-existed");
 
-    // The empty lockfile is now persisted and the parent dir exists.
     const onDisk = JSON.parse(await Deno.readTextFile(path));
     assertEquals(Object.keys(onDisk).length, 0);
   });
@@ -236,7 +223,6 @@ Deno.test("LockfileRepository.removeEntry: missing key is a no-op", async () => 
     const repo = await LockfileRepository.create(path);
     await repo.writeEntry("@scope/keep", "1.0.0", []);
 
-    // Should not throw.
     await repo.removeEntry("@scope/never-existed");
 
     assertEquals(repo.getEntry("@scope/keep")?.version, "1.0.0");
@@ -253,7 +239,6 @@ Deno.test("LockfileRepository: getAllEntries returns a defensive deep copy", asy
 
     const map = repo.getAllEntries();
 
-    // Top-level key deletion must not affect the cache.
     delete map["@scope/foo"];
     assertNotEquals(repo.getEntry("@scope/foo"), null);
 
@@ -273,8 +258,6 @@ Deno.test("LockfileRepository: concurrent writers all complete via acquireLock r
     const path = join(dir, "upstream_extensions.json");
     const N = 5;
 
-    // Each writer constructs its own repo (mirrors how lifecycle services
-    // would behave under concurrency) and writes a unique entry.
     const writers = Array.from({ length: N }, (_, i) =>
       (async () => {
         const repo = await LockfileRepository.create(path);
@@ -283,8 +266,6 @@ Deno.test("LockfileRepository: concurrent writers all complete via acquireLock r
 
     await Promise.all(writers);
 
-    // Final on-disk state has all N entries — count assertion, not
-    // elapsed-time assertion (CI-flake-prone).
     const onDisk = JSON.parse(await Deno.readTextFile(path));
     assertEquals(Object.keys(onDisk).length, N);
     for (let i = 0; i < N; i++) {
@@ -298,8 +279,6 @@ Deno.test("LockfileRepository: lock-acquisition exhaustion throws UserError (cle
     const path = join(dir, "upstream_extensions.json");
     const lockPath = `${path}.lock`;
 
-    // Pre-create the lock file so every retry sees AlreadyExists.
-    // 10 retries × 100ms = ~1s before the writer gives up.
     await Deno.writeTextFile(lockPath, "");
 
     const repo = await LockfileRepository.create(path);
@@ -324,7 +303,6 @@ Deno.test("LockfileRepository: cleans up .lock file on success path", async () =
 
     await repo.writeEntry("@scope/foo", "1.0.0", []);
 
-    // .lock file should not exist after success.
     let lockExists = true;
     try {
       await Deno.stat(`${path}.lock`);
@@ -355,7 +333,6 @@ Deno.test("LockfileRepository.refresh: observes an entry written by another inst
     const repoB = await LockfileRepository.create(path);
 
     await repoB.writeEntry("@scope/new", "2026.01.01.1", ["models/new.ts"]);
-    // The snapshot is unchanged until refresh() is called.
     assertEquals(repoA.getEntry("@scope/new"), null);
 
     await repoA.refresh();
@@ -466,8 +443,8 @@ Deno.test("LockfileRepository: a managed lockfile locks a sibling .lock file tha
     const path = join(configBase, "upstream_extensions.json");
     registerManagedConfig(repoDir, true, configBase);
     try {
-      // A <lockfile>.lock another checkout uploaded is ignored: it no
-      // longer blocks writes.
+      // a <lockfile>.lock another checkout uploaded is ignored and does not
+      // block writes
       await Deno.mkdir(configBase, { recursive: true });
       await Deno.writeTextFile(`${path}.lock`, "");
       const repo = await LockfileRepository.create(path);
@@ -601,8 +578,8 @@ Deno.test("LockfileRepository.writeEntry: records publishedChannel next to chann
 });
 
 /**
- * A lockfile entry as a Windows checkout writes it, sorted there
- * (swamp-club#3569): a backslash sorts after "A", a slash before it.
+ * a lockfile entry as a Windows checkout writes it, sorted there: a backslash
+ * sorts after "A", a slash before it
  */
 const WINDOWS_ENTRY = {
   version: "1.0.0",

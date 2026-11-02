@@ -67,9 +67,7 @@ Deno.test("resolveModelsDir: SWAMP_BEHAVIORS_DIR names the models directory like
     { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: "env/behaviors" },
     () => {
       assertEquals(resolveModelsDir(null), "env/behaviors");
-      // It wins over .swamp.yaml, as SWAMP_MODELS_DIR does.
       assertEquals(resolveModelsDir(marker("src/models")), "env/behaviors");
-      // A moved models directory has no behaviors sibling.
       assertEquals(resolveBehaviorsDir(null), undefined);
     },
   );

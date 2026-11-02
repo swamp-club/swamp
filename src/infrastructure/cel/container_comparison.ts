@@ -18,16 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The static half of the container rule (design/enablers/typed-secrets.md
- * Section 4.3 item 5). cel-js answers `in` and list or map equality without
- * calling any handler (fact 2), so no refusing overload sees a secret there.
- * An expression that has a container comparison and reads a secret is
- * refused as a whole.
+ * cel-js answers in and list or map equality without calling any handler, so no
+ * refusing overload sees a secret there; an expression with a container
+ * comparison that reads a secret is refused whole
  */
 
 import type { ASTNode } from "cel-js";
 
-/** A node of a parsed expression: an operator and its arguments. */
 interface Node {
   readonly op: string;
   readonly args: unknown;
@@ -38,11 +35,6 @@ function isNode(value: unknown): value is Node {
     typeof (value as { op?: unknown }).op === "string";
 }
 
-/**
- * A scalar literal: a `value` node (string, int, uint, double, bytes, bool
- * or `null`), or unary minus over one, since `-1` parses as minus over `1`.
- * A call such as `uint(1)` is not a literal.
- */
 function isScalarLiteral(node: unknown): boolean {
   if (!isNode(node)) return false;
   if (node.op === "value") return true;
@@ -50,12 +42,8 @@ function isScalarLiteral(node: unknown): boolean {
 }
 
 /**
- * Whether the expression holds a container comparison: an `in`, or an `==`
- * or `!=` with no operand that is a scalar literal or `null`. A scalar
- * compared with a container is `false` today and after, so it needs no
- * rule. Every node is visited, whatever shape its arguments take: a unary
- * operator holds one node, a map literal holds key and value pairs, and a
- * call nests its argument list.
+ * a scalar compared with a container is false today and after, so it needs no
+ * rule; every node is visited whatever shape its arguments take
  */
 export function hasContainerComparison(ast: ASTNode): boolean {
   return visit(ast);

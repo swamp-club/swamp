@@ -23,15 +23,6 @@ import type {
 } from "../../domain/telemetry/telemetry_sender.ts";
 import type { TelemetryEntry } from "../../domain/telemetry/telemetry_entry.ts";
 
-/**
- * HTTP adapter implementing TelemetrySender.
- * Sends telemetry events to a remote /ingest endpoint.
- *
- * `userAgent` (e.g. `swamp-cli/<version>`) is optional so unit tests can
- * construct the sender without it; the composition root passes it so the
- * telemetry endpoint can attribute traffic by client version, matching
- * the swamp-club API clients.
- */
 export class HttpTelemetrySender implements TelemetrySender {
   constructor(
     private readonly endpointUrl: string,
@@ -45,14 +36,9 @@ export class HttpTelemetrySender implements TelemetrySender {
     authToken?: string,
     signal?: AbortSignal,
   ): Promise<TelemetryFlushResult> {
-    // `insert_id` is the ingest queue's idempotency key: it carries a unique
-    // index, so a re-POST of an entry that was already accepted (a retry after
-    // a lost 202, or a flush that raced another flusher) is deduplicated
-    // instead of becoming a second queue doc. Without it the server generates
-    // one per POST and the same invocation is counted twice in the downstream
-    // rollups. The entry id is already a stable per-invocation UUID, which is
-    // exactly the key we want.
-    // `endpoint` is local routing state for the spool, not event data.
+    // insert_id is the ingest idempotency key, so a re-POST is deduplicated
+    // rather than counted twice; endpoint is local spool routing, not event
+    // data
     const events = entries.map((entry) => {
       const { endpoint: _endpoint, ...data } = entry.toData();
       return {
@@ -77,7 +63,6 @@ export class HttpTelemetrySender implements TelemetrySender {
         ...(this.userAgent ? { "User-Agent": this.userAgent } : {}),
       };
 
-      // Combine caller's signal with a hard 5-second ceiling
       const fetchSignal = signal
         ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
         : AbortSignal.timeout(5000);
@@ -88,7 +73,6 @@ export class HttpTelemetrySender implements TelemetrySender {
         body,
         signal: fetchSignal,
       });
-      // Consume the response body to prevent resource leaks
       await response.body?.cancel();
       if (response.status === 202) {
         return { ok: true };

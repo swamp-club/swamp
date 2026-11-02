@@ -20,18 +20,10 @@
 import { join } from "@std/path";
 import { getSwampDataDir } from "../persistence/paths.ts";
 
-/**
- * Get the swamp source directory path.
- * Located at `<swampDataDir>/source/`.
- */
 export function getSwampSourceDir(): string {
   return join(getSwampDataDir(), "source");
 }
 
-/**
- * Get the path to the source metadata file.
- * Located at ~/.swamp/source/.swamp-source-meta.json
- */
 export function getSourceMetaPath(): string {
   return join(getSwampSourceDir(), ".swamp-source-meta.json");
 }

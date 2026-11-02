@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins for custom operator registration (design/enablers/typed-secrets.md
-// Section 4.2, fact 4: "`==` creates derived `!=` and mirrored mixed-type
-// equality, so register `==` only. A `Secret == dyn` overload overlaps its own
-// mirror when both operands are secrets. Addition is not mirrored, so each
-// operand order needs its own registration. The `map` type alias is valid in
-// custom signatures, but a parameterized type spelled with a comma is not.
-// Overlapping built-in list and map registrations are not a reliable override.
-// A custom binary overload marks every use of its operator maybe-async, and so
-// does a function registered without `{ async: false }`.").
-
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { type Environment, EvaluationError } from "cel-js";
 import {
@@ -173,7 +163,6 @@ Deno.test(pin("registering only != leaves == as identity"), () => {
   );
   assertEquals(env.evaluate("s != t", { s, t }), false);
   assertEquals(calls, 1);
-  // s and t hold the same value but are different objects.
   assertEquals(env.evaluate("s == t", { s, t }), false);
   assertEquals(env.evaluate("s == s", { s }), true);
   assertEquals(calls, 1);
@@ -237,7 +226,6 @@ Deno.test(
       () => dynOperands.evaluate("s in [t]", { s, t }),
       "Operator overload 'V in list<V>: bool' overlaps with 'Secret in list<Secret>: bool'.",
     );
-    // With static types the custom overload is the only candidate and runs.
     const typed = secretEnvironment()
       .registerOperator("Secret in list<Secret>", handler)
       .registerVariable("s", "Secret")
@@ -280,7 +268,6 @@ Deno.test(
         `Operator overload invalid: ${signature}`,
       );
     }
-    // A function signature accepts the same parameter type.
     secretEnvironment().registerFunction(
       "Secret.f(map<string, Secret>): bool",
       () => true,
@@ -313,8 +300,8 @@ Deno.test(
   },
 );
 
-// ast.maybeAsync is internal evaluator state, read after a run because the
-// flag is only settled once overload candidates are resolved.
+// ast.maybeAsync is internal evaluator state that settles only once overload
+// candidates are resolved, so read it after a run
 function maybeAsyncAfterRun(env: Environment, expression: string): boolean {
   const program = env.parse(expression);
   program({});

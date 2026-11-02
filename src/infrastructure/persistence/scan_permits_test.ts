@@ -29,7 +29,6 @@ import {
   withScanPermit,
 } from "./scan_permits.ts";
 
-/** An acquire whose grant a test can observe without awaiting it. */
 function track(permits: ScanPermits, kind: ScanKind, signal?: AbortSignal) {
   const state: { release?: ReleaseScanPermit; promise: Promise<void> } = {
     promise: Promise.resolve(),
@@ -40,7 +39,6 @@ function track(permits: ScanPermits, kind: ScanKind, signal?: AbortSignal) {
   return state;
 }
 
-/** Lets settled acquires' continuations run. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
@@ -85,7 +83,6 @@ Deno.test("ScanPermits: lookups may hold every permit, and never more", async ()
 
   lookups[0].release!();
   await settle();
-  // The lookup asked before the search gets the freed permit.
   assertEquals(lookups[4].release !== undefined, true);
   assertEquals(search.release, undefined);
 
@@ -147,7 +144,6 @@ Deno.test("ScanPermits: a waiter whose signal aborts rejects with the reason and
 
   holder();
   await settle();
-  // The search behind it gets the permit the aborted one would have.
   assertEquals(behind.release !== undefined, true);
 });
 

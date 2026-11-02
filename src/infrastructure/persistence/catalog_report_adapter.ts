@@ -35,27 +35,15 @@ import {
 const logger = getLogger(["swamp", "persistence", "catalog-reports"]);
 
 export interface FindLatestReportDataOptions {
-  /** The one owner whose reports to return; omitted, every owner's. */
   owner?: StoredReportOwner;
   /** A serve request's; once it aborts, no further read starts. */
   signal?: AbortSignal;
 }
 
 /**
- * The latest version of every stored report markdown in this repository's
- * namespace, or of one owner's (swamp-club#4075). Candidates come from the
- * catalog by tag, so only report items' metadata is read, through the search
- * share of the process-wide scan permits; the cost grows with reports, not
- * with all data. A missing catalog is backfilled first, and one being rebuilt
- * is waited for.
- *
- * Callers keep their own report-markdown check: the catalog narrows the
- * candidates, the read metadata decides. A rename marker is skipped, since the
- * name it points to has its own row, and each data name is returned once, as
- * the full walk does. A row whose version is not on disk, or whose read fails
- * (empty, unparsable, outside the model's directory), is left out with a
- * warning naming the report and its owner rather than failing the search,
- * unless `signal` has aborted, whose reason is then raised.
+ * the catalog narrows candidates by tag and callers keep their own report
+ * check; rename markers are skipped; an unreadable row is left out with a
+ * warning rather than failing, unless signal aborted
  */
 export async function findLatestReportData(
   dataQueryService: Pick<DataQueryService, "ensurePopulated">,

@@ -36,25 +36,20 @@ import {
 
 const logger = getLogger(["swamp", "extensions", "probe"]);
 
-/** How long one bundle's import may take before it is given up on. */
 export const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
 
 /**
- * How long the host may take to say it is ready to import. Starting it
- * and loading the kind adapter is swamp's own work, so running out of this
- * is never held against the bundle.
+ * starting the host and loading the kind adapter is swamp's own work, so
+ * running out of this is never held against the bundle
  */
 export const DEFAULT_PROBE_STARTUP_TIMEOUT_MS = 60_000;
 
-/** The command line that starts a probe host. */
 export interface ProbeHostCommand {
   readonly command: string;
   readonly args: readonly string[];
-  /** Variables to set on top of this process's environment. */
   readonly env?: Readonly<Record<string, string>>;
 }
 
-/** A `deno run` of the host entry by the deno at `denoPath`, from source. */
 export function sourceProbeHostCommand(
   denoPath: string = Deno.execPath(),
 ): ProbeHostCommand {
@@ -68,43 +63,31 @@ export function sourceProbeHostCommand(
   };
 }
 
-/**
- * How a process running as `execPath` starts a probe host: from source,
- * where `execPath` is deno, a `deno run` of the host entry; otherwise the
- * swamp binary itself with the host marker.
- */
 export function probeHostCommandFor(execPath: string): ProbeHostCommand {
   return /[\\/]deno(\.exe)?$/i.test(execPath)
     ? sourceProbeHostCommand(execPath)
     : { command: execPath, args: [BUNDLE_PROBE_HOST_MARKER] };
 }
 
-/** How this process starts a probe host. */
 export function hostProbeHostCommand(): ProbeHostCommand {
   return probeHostCommandFor(Deno.execPath());
 }
 
-/** What a probe in flight hears from its host. */
 interface HostListener {
   reply(reply: BundleProbeHostReply): void;
-  /** The host is gone: it exited, crashed or was killed. */
   gone(message: string): void;
 }
 
-/** A running probe host process. */
 interface ProbeHost {
   send(request: BundleProbeRequest): Promise<void>;
   listen(listener: HostListener | undefined): void;
-  /** Kills the host and waits until its process and output have ended. */
   stop(): Promise<void>;
 }
 
 const encoder = new TextEncoder();
 
-/** How long a host's last output is read for after it ends. */
 const OUTPUT_GRACE_MS = 500;
 
-/** Lists a process's children; {@link findChildPids} by default. */
 export type ChildLister = (pid: number) => Promise<number[]>;
 
 function startProbeHost(
@@ -125,7 +108,6 @@ function startProbeHost(
   const writer = child.stdin.getWriter();
   let listener: HostListener | undefined;
   let goneMessage: string | undefined;
-  /** Set once the host has exited, after which its pid may be reused. */
   let exited = false;
 
   // Both pipes are read as long as the host lives, so a bundle that prints
@@ -176,9 +158,8 @@ function startProbeHost(
   const finished = (async () => {
     const status = await child.status;
     exited = true;
-    // A process a bundle started holds the pipes open after the host ends,
-    // so they may never close: what the host wrote before it ended is read
-    // within a grace period, then reading stops (swamp-club#3494).
+    // a process a bundle started holds the pipes open after the host ends, so
+    // what the host wrote is read within a grace period, then reading stops
     let grace: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       reading,
@@ -208,14 +189,9 @@ function startProbeHost(
     },
     async stop() {
       listener = undefined;
-      // Processes a bundle started end with the host, as they ended with a
-      // terminated worker. Listed before the kill, which reparents them; on
-      // Windows the job ends them.
-      // Only while the host runs: once it has exited and been reaped, its
-      // pid may belong to an unrelated process whose children are not ours.
-      // The host is reaped before child.status settles, so one gone from the
-      // process table has exited too (swamp-club#3524). Not on Windows, where
-      // Deno.kill(pid, 0) is no liveness check.
+      // list a bundle's child processes before the kill reparents them, and
+      // only while the host runs, since a reaped pid may be reused; skipped on
+      // Windows, where its job ends them and kill(pid, 0) is no liveness check
       const reaped = Deno.build.os !== "windows" && !isProcessAlive(child.pid);
       const started = job || exited || reaped
         ? []
@@ -244,21 +220,9 @@ function startProbeHost(
 }
 
 /**
- * Probes bundles in a probe host process (`bundle_probe_host.ts`). The host
- * is started by the first probe, so a pass with nothing to probe costs
- * nothing, and is reused for later probes until one of them hangs, exits
- * or crashes it. Unlike a worker, a host can always be stopped: a bundle
- * that spins in synchronous code at import is killed with it, not left
- * running for the life of the process (swamp-club#3494).
- *
- * Only the bundle's own import is timed: the timeout starts when the host
- * reports it is ready to import. A host that never gets that far, or is
- * released under a probe, answers `import-failed`, which is retried, and
- * never `timed-out`, which is pinned to the source.
- *
- * The host shares swamp's permissions, environment and filesystem: it keeps
- * a misbehaving import from ending, stalling or printing into a command,
- * and is not a sandbox for untrusted code.
+ * the host starts on first probe and is reused until one hangs, exits or
+ * crashes it; only the import is timed, and a host never ready answers
+ * import-failed (retried), never timed-out. Not a sandbox.
  */
 export class ProcessBundleProber implements BundleProber {
   private readonly timeoutMs: number;
@@ -267,9 +231,7 @@ export class ProcessBundleProber implements BundleProber {
   private readonly listChildren: ChildLister;
   private host: ProbeHost | undefined;
   private queue: Promise<unknown> = Promise.resolve();
-  /** Settles the probe in flight, if any, without an answer from it. */
   private abandon: ((message: string) => void) | undefined;
-  /** Stops of hosts that died between probes, which release waits for. */
   private dropped: Promise<void> = Promise.resolve();
   /**
    * Why hosts refuse this swamp, once one said it is another build: every
@@ -300,9 +262,8 @@ export class ProcessBundleProber implements BundleProber {
   }
 
   /**
-   * Stops the host. A probe still in flight is answered at once as a
-   * failed import, not left to run out its timeout against a host that is
-   * gone.
+   * a probe still in flight is answered at once as a failed import rather than
+   * left to run out its timeout against a gone host
    */
   async release(): Promise<void> {
     const host = this.host;

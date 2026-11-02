@@ -39,8 +39,6 @@ Deno.test("datastoreWriterLeaseStore: returns the provider's writable datastore-
 });
 
 Deno.test("datastoreWriterLeaseStore: refuses a writable datastore-wide store without the datastoreWideLease declaration", () => {
-  // The store has every method the lease uses, but nothing says a
-  // namespaced push leaves _control/writer/ at the root (swamp-club#3414).
   const remote = createInMemoryRemote({ controlPlane: true });
   assertThrows(
     () =>

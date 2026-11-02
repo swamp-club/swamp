@@ -30,10 +30,8 @@ import { getSwampConfigDir } from "./paths.ts";
 const SERVERS_FILE = "servers.json";
 
 /**
- * Normalizes SWAMP_SERVER_URL for comparison with the lookup key. An
- * unparseable value or unsupported scheme matches no server: it warns
- * without echoing the value, which can carry a credential, and returns
- * `undefined`.
+ * an unparseable value or unsupported scheme matches no server and warns
+ * without echoing the value, which can carry a credential
  */
 function normalizeEnvServerUrl(envUrl: string): string | undefined {
   try {
@@ -46,34 +44,13 @@ function normalizeEnvServerUrl(envUrl: string): string | undefined {
   }
 }
 
-/**
- * Optional overrides for `FileServerCredentialRepository`. Used by tests to
- * bypass the shared `Deno.env` global, which races across files when
- * `deno test --parallel` runs multiple test files concurrently.
- */
 export interface FileServerCredentialRepositoryOptions {
-  /** Override the config dir; default is `getSwampConfigDir()`. */
   configDir?: string;
-  /**
-   * Override the SWAMP_SERVER_TOKEN lookup; default reads
-   * `Deno.env.get("SWAMP_SERVER_TOKEN")` lazily at call time.
-   */
   getServerToken?: () => string | undefined;
-  /**
-   * Override the SWAMP_SERVER_URL lookup used with the token env var;
-   * default reads `Deno.env.get("SWAMP_SERVER_URL")` lazily at call time.
-   */
   getServerUrl?: () => string | undefined;
 }
 
-/**
- * File-based implementation of ServerCredentialRepository.
- * Stores credentials at ~/.config/swamp/servers.json
- * (or $XDG_CONFIG_HOME/swamp/servers.json) as a JSON object
- * keyed by normalized server URL.
- *
- * Precedence: SWAMP_SERVER_TOKEN env var > servers.json file.
- */
+/** the SWAMP_SERVER_TOKEN env var takes precedence over servers.json */
 export class FileServerCredentialRepository
   implements ServerCredentialRepository {
   private readonly getConfigDir: () => string;

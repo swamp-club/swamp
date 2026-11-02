@@ -27,7 +27,6 @@ import {
   vaultReferenceSecret,
 } from "./secret_value.ts";
 
-/** A secret or text operand of a concatenation. */
 const operand: fc.Arbitrary<Secret | string> = fc.oneof(
   fc.string(),
   fc.record({ vaultName: fc.string(), key: fc.string() }).map((reference) =>
@@ -35,21 +34,18 @@ const operand: fc.Arbitrary<Secret | string> = fc.oneof(
   ),
 );
 
-/** `+` as CEL dispatches it: text with text is the built-in, else composition. */
 function concat(a: Secret | string, b: Secret | string): Secret | string {
   return typeof a === "string" && typeof b === "string"
     ? a + b
     : composeSecrets(a, b);
 }
 
-/** The parts an operand stands for, as a flat list of text and references. */
 function flatten(values: readonly (Secret | string)[]): SecretPart[] {
   return values.flatMap((value) =>
     typeof value === "string" ? [value] : [...secretParts(value)!]
   );
 }
 
-/** Adjacent text joined and empty text dropped, as a Secret keeps parts. */
 function normalize(parts: readonly SecretPart[]): SecretPart[] {
   const out: SecretPart[] = [];
   for (const part of parts) {
@@ -71,7 +67,6 @@ Deno.test("composeSecrets: any concatenation holds the operands' parts in order,
       (rest, first) => {
         const operands = [first, ...rest];
         if (operands.every((value) => typeof value === "string")) return;
-        // Left to right, and right to left: concatenation is associative.
         const left = operands.reduce(concat);
         const right = operands.reduceRight((b, a) => concat(a, b));
         const expected = normalize(flatten(operands));

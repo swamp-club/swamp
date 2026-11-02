@@ -89,7 +89,6 @@ const XML_ENTITIES: Record<string, string> = {
   apos: "'",
 };
 
-/** Reverses {@link escapeXml}; a single pass so `&amp;lt;` stays `&lt;`. */
 export function unescapeXml(s: string): string {
   return s.replace(
     /&(amp|lt|gt|quot|apos);/g,
@@ -97,10 +96,6 @@ export function unescapeXml(s: string): string {
   );
 }
 
-/**
- * Reads the binary path and interval back out of a plist written by
- * {@link buildPlist}. Returns null when the plist does not have that shape.
- */
 export function parsePlistJob(
   content: string,
 ): { binaryPath: string; interval: number } | null {
@@ -118,18 +113,9 @@ export function parsePlistJob(
 }
 
 /**
- * Parses the job-level fields of `launchctl print <domain>/<label>`. The
- * format is undocumented, so anything unrecognised reads as null (unknown)
- * rather than as a problem. Only lines indented by a single tab belong to
- * the job itself; nested blocks repeat keys like `state`.
- *
- * `has LWCR` in the properties means launchd holds a lightweight code
- * requirement for the job's executable — for an ad-hoc signed binary, its
- * exact cdhash, so a replaced binary will be refused. With `has LWCR`,
- * `needs LWCR update` means it already has been: the state an ad-hoc signed
- * binary is left in after it replaces itself. Without it, the job was just
- * registered again and launchd will compute a fresh requirement from the
- * binary on disk at its next launch.
+ * the launchctl print format is undocumented, so unrecognised reads as null;
+ * only single-tab-indented lines are job-level since nested blocks repeat keys
+ * like state
  */
 export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
   const state = text.match(/^\tstate = (.+)$/m);
@@ -147,19 +133,17 @@ export function parseLaunchctlPrint(text: string): SchedulerRuntime | null {
   return {
     running: state[1].trim() === "running",
     lastExitCode,
-    // `needs LWCR update` alone is the normal state of a freshly registered
-    // job awaiting its first launch; it is only stuck while launchd still
-    // holds the old requirement, or once it has refused a launch.
+    // needs LWCR update alone is normal for a freshly registered job; it is
+    // stuck only while launchd holds the old requirement or after it refused a
+    // launch
     needsRepair: lastExitCode === SCHEDULER_EX_CONFIG ||
       (pinnedToBinary && properties.includes("needs LWCR update")),
     pinnedToBinary,
   };
 }
 
-/** How long refresh() waits for launchd to finish booting the job out. */
 const BOOTOUT_POLL_ATTEMPTS = 20;
 const BOOTOUT_POLL_INTERVAL_MS = 250;
-/** launchd can briefly refuse a bootstrap straight after a bootout. */
 const BOOTSTRAP_RETRY_DELAY_MS = 1000;
 
 export function autoupdateLogDir(mode: LaunchdMode = "agent"): string {
@@ -269,9 +253,8 @@ export class LaunchdScheduler implements AutoupdateScheduler {
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
     await this.remove();
 
-    // When switching modes, also remove the other scheduler type.
-    // Under sudo, $HOME is /var/root — resolve the original user's
-    // home via $SUDO_USER to find their agent plist.
+    // under sudo $HOME is /var/root, so resolve the original user's home via
+    // $SUDO_USER to find their agent plist
     if (this.mode === "daemon") {
       await this.removeAgentPlistForOriginalUser();
     } else {
@@ -338,18 +321,9 @@ export class LaunchdScheduler implements AutoupdateScheduler {
   }
 
   /**
-   * Registers the job with launchd again (bootout, then bootstrap), keeping
-   * the binary path and interval it already has. launchd can pin a job to
-   * the code signature of the binary it last started; swamp's binaries are
-   * ad-hoc signed, so after an update launchd refuses to start the new one
-   * (exit 78, `EX_CONFIG`) until the job is registered again. The plist is
-   * rewritten first so Background Task Management sees a changed item.
-   *
-   * Leaves the job alone when it is running (a scheduled update may be
-   * mid-way through writing its log entry), when its state cannot be read
-   * (`unknown`, which includes a launchd domain that does not exist, as over
-   * SSH with nobody logged in to the desktop), and when it is healthy and
-   * not pinned to a binary, or not loaded at all (unless `loadIfNotLoaded`).
+   * ad-hoc signed binaries make launchd refuse the new one after an update
+   * (exit 78) until the job is re-registered; leaves it alone when running,
+   * unreadable, or healthy and unpinned
    */
   async refresh(
     options: SchedulerRefreshOptions = {},
@@ -373,12 +347,9 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     const target = `${domain}/${LABEL}`;
     const printed = await launchctl(["print", target]);
     if (printed.code !== 0) {
-      // No domain at all, as over SSH with nobody logged in to the desktop,
-      // reads as unknown. A domain without the job means it is not loaded —
-      // for example turned off in Login Items — so launchd holds no stale
-      // requirement for it and there is nothing to repair.
-      // An earlier failed refresh may have booted the job out without
-      // loading it again, so that case loads it.
+      // no domain (e.g. over SSH with no desktop login) reads as unknown; a
+      // domain without the job means not loaded, so nothing to repair unless
+      // loadIfNotLoaded
       if ((await launchctl(["print", domain])).code !== 0) return "unknown";
       if (!options.loadIfNotLoaded) return "not_needed";
       return await this.bootstrap(domain, path, true);
@@ -412,8 +383,8 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       await new Promise((r) => setTimeout(r, this.bootoutPollIntervalMs));
     }
     if (!unloaded) {
-      // bootout was issued, so launchd may still finish unloading the job
-      // after we stop waiting: report it as possibly left unloaded.
+      // launchd may still finish unloading after we stop waiting, so report the
+      // job as possibly left unloaded
       const reason = bootout.stderr.trim();
       throw new SchedulerRefreshError(
         `launchctl bootout did not unload ${target} in time` +
@@ -425,10 +396,6 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     return await this.bootstrap(domain, path, true);
   }
 
-  /**
-   * Loads the job, trying a second time after a short pause before reporting
-   * launchd's reason.
-   */
   private async bootstrap(
     domain: string,
     path: string,
@@ -464,12 +431,10 @@ export class LaunchdScheduler implements AutoupdateScheduler {
   private async removeAgentPlistForOriginalUser(): Promise<void> {
     const paths: string[] = [];
 
-    // Check the agent path from current $HOME (may be /var/root under sudo)
     try {
       paths.push(agentPlistPath());
     } catch { /* homeDirectory() may throw */ }
 
-    // Also check the original user's home via $SUDO_USER
     const realHome = await sudoUserHome();
     if (realHome) {
       paths.push(agentPlistPathForHome(realHome));
@@ -511,13 +476,11 @@ export async function detectInstalledLaunchdMode(): Promise<
     return "daemon";
   } catch { /* not found */ }
 
-  // Check agent plist at current $HOME
   try {
     await Deno.stat(agentPlistPath());
     return "agent";
   } catch { /* not found */ }
 
-  // Under sudo, $HOME is /var/root — also check the original user's home
   const realHome = await sudoUserHome();
   if (realHome) {
     try {

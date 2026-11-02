@@ -49,7 +49,6 @@ import {
 import { adaptDataRecord } from "./sensitive_record_adapter.ts";
 import type { NamespaceReader } from "../../domain/data/namespace.ts";
 
-/** The solo reader, whose own records are those of the solo namespace. */
 const SOLO_READER: NamespaceReader = {
   namespace: "",
   readsSoloNamespace: false,
@@ -62,7 +61,6 @@ function issuingBag(): { bag: VaultSecretBag; sentinel: string } {
   return { bag, sentinel: bag.addSecret(reference, "inputs.password") };
 }
 
-/** A sentinel-shaped string under a prefix no bag of the run drew. */
 const FOREIGN = "__SWAMP_VSEC_00000000000000000000000000000000_0__";
 
 Deno.test("SecretBoundary.bind: an exact sentinel the run issued reads as a Secret holding its reference", () => {
@@ -128,13 +126,11 @@ Deno.test("SecretBoundary.bind: views keep the shape cel-js reads, null prototyp
   assertEquals(Object.getPrototypeOf(viewed), null);
   assert(isSecret(viewed.token));
   assert(isSecret((bindings.frozen as Record<string, unknown>).token));
-  // A Map's values bypass getters, and a class instance is not a container.
+  // a Map's values bypass getters, and a class instance is not a container
   assertStrictEquals(bindings.map, original.map);
   assertStrictEquals(bindings.when, original.when);
-  // The original is untouched.
   assertEquals(original.record.password, sentinel);
   assertEquals(original.list[0], sentinel);
-  // Aliased paths read the same view.
   assertStrictEquals(bindings.record, bindings.record);
 });
 
@@ -282,8 +278,8 @@ Deno.test("detachForDestination: copies containers with their prototype, and ref
     "a plain value, not a getter",
   );
   runInFaultScope((scope) => {
-    // An Optional in a binding is not a container cel-js reads through a
-    // view, so the sentinel text in it stays text and passes.
+    // an Optional in a binding is not a container cel-js reads through a view,
+    // so the sentinel text in it stays text and passes
     detachForDestination(bindings.nested, "the inputs");
     const secret = vaultReferenceSecret(reference, "loc");
     assertThrows(
@@ -425,7 +421,6 @@ Deno.test("SecretBoundary: a JSON-value data reference leaves CEL as a marked en
     jsonValue: true,
   }]);
   assertEquals(boundary.release(bindings.port), sentinel);
-  // An unmarked data reference stays unmarked.
   const plain = boundary.release(
     dataReferenceSecret(reference, `${location}x`),
   ) as string;

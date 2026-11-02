@@ -37,10 +37,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * A control socket that hands every connection to `answer`: what it writes
- * back, or undefined to accept and never answer (a frozen sidecar).
- */
 async function withServer(
   answer: (request: string) => string | undefined,
   fn: (socket: string) => Promise<void>,
@@ -106,7 +102,7 @@ Deno.test({
     });
     const body = JSON.parse(seen.slice(seen.indexOf("\r\n\r\n") + 4));
     // Litestream's wait outlasts the client's 5 s deadline, so a slow upload
-    // ends as a client timeout, never as Litestream's own error answer.
+    // ends as a client timeout, never as Litestream's own error answer
     assertEquals(body, {
       path: "/db/commits.db",
       wait: true,
@@ -251,7 +247,6 @@ Deno.test({
     const reason = new Error("the datastore's storage could not be reached");
     await withServer(
       () => {
-        // The request reached the sidecar, which never answers.
         controller.abort(reason);
         return undefined;
       },

@@ -18,26 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A checkout's copy of a replicated v3 datastore's `commits.db`
- * (swamp-club#3482, Phase 4 D2): kept current from the published lineage,
- * and the lineage its writer replicates published for every other copy.
- *
- * - {@link makeV3CopyCurrent}, before a command's first read or write:
- *   restores the copy when it is missing, behind, or holds another
- *   lineage. A current copy costs one control-plane listing and no
- *   download.
- * - {@link prepareV3WriterLineage}, once a writer holds the lease and its
- *   copy is current: continues its lineage only while no other writer can
- *   have written since, and otherwise starts a new one and claims it.
- * - {@link publishV3Head}, after a sync confirmed under the lease: the
- *   lineage's first confirmation, its head, and the garbage collection of
- *   the lineages it replaced.
- *
- * Nothing here runs unless the datastore replicates: a v3 datastore on a
- * bucket always does (swamp-club#3534), a filesystem one only while the
- * internal replica setting names a replica.
- *
- * @module
+ * nothing here runs unless the datastore replicates (a bucket always does, a
+ * filesystem one only when the internal replica setting names one); a current
+ * copy costs one listing and no download
  */
 
 import { DatabaseSync } from "node:sqlite";
@@ -128,24 +111,19 @@ import {
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
-/** How long one listing or removal of a bucket replica's paths may take. */
 const REPLICA_PATH_TIMEOUT_MS = 60_000;
 
-/** How long a restore may take: about 4.5 s per GB, plus round trips. */
 export const DEFAULT_RESTORE_DEADLINE_MS = 30 * 60 * 1000;
 
 let restoreDeadlineMs = DEFAULT_RESTORE_DEADLINE_MS;
 
-/** Test seam: the restore deadline, or undefined for the default. */
 export function setV3RestoreDeadlineForTesting(ms: number | undefined): void {
   restoreDeadlineMs = ms ?? DEFAULT_RESTORE_DEADLINE_MS;
 }
 
 /**
- * A writer at `fence` would start a lineage below one another writer
- * already started (swamp-club#3565): a lease newer than this writer's was
- * taken, so its copy may lack that writer's commits, and readers follow the
- * newer lineage. Nothing is started.
+ * a lease newer than this writer's was taken, so its copy may lack that
+ * writer's commits and readers follow the newer lineage; nothing is started
  */
 export class V3LineageOutrankedError extends Error {
   constructor(readonly fence: number, readonly newest: number) {
@@ -157,19 +135,12 @@ export class V3LineageOutrankedError extends Error {
   }
 }
 
-/** A checkout's copy of a datastore's `commits.db`. */
 export interface V3Copy {
   readonly datastorePath: string;
   readonly repoDir: string;
-  /** `v3CommitsDbPath(datastorePath, repoDir)`. */
   readonly commitsDb: string;
 }
 
-/**
- * The registry of the datastore's published lineages, in its datastore-wide
- * control plane: the filesystem datastore's own `_control/`, or a bucket
- * datastore's provider's (swamp-club#3534).
- */
 export function lineageRegistryFor(datastorePath: string): LineageRegistry {
   return new LineageRegistry(v3ControlPlaneAt(datastorePath));
 }
@@ -200,14 +171,12 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** What {@link makeV3CopyCurrent} did. */
 export interface V3CopyRefresh {
   /**
-   * The restore, when one ran, or the seed from the datastore's shared
-   * `commits.db` when replication was first turned on (swamp-club#3491).
+   * the restore, when one ran, or the seed from the datastore's shared
+   * commits.db when replication was first turned on
    */
   readonly restored?: V3RestoreResult & {
-    /** The lineage restored; undefined for a seed. */
     readonly lineageFence?: number;
     /**
      * The commit at the read model's cursor changed: the checkout must be
@@ -218,18 +187,8 @@ export interface V3CopyRefresh {
 }
 
 /**
- * Makes `copy` current before a command reads or writes it: restores the
- * current lineage over it when it is missing, behind, or holds another
- * lineage. `openStore` is this process's open store on the copy, which a
- * restore updates in place; without one an existing copy is updated
- * through a store opened for the restore, and a missing one is hard-linked
- * into place, never over a file another process created meanwhile.
- *
- * Restores of one copy are serialized by `restore.lock` beside it, and the
- * copy's sidecar is stopped for the restore. A read-only command whose
- * restore cannot take the locks within `lockWaitMs`, or fails, reads a copy
- * that was restored before as it is, with a warning; a writer, or a reader
- * of a copy that never was, fails (swamp-club#3642).
+ * makes the copy current before a command reads or writes it: restores the
+ * current lineage when it is missing, behind, or holds another lineage
  */
 export function makeV3CopyCurrent(
   copy: V3Copy,
@@ -271,8 +230,7 @@ async function makeV3CopyCurrentNow(
 ): Promise<V3CopyRefresh> {
   const replica = v3ReplicaFor(copy.datastorePath);
   if (replica === undefined) return {};
-  // Before the copy's first read of the bucket: the datastore is known to
-  // be v3 (swamp-club#3534).
+  // before the copy's first read of the bucket: the datastore is known to be v3
   const binding = v3BucketBindingAt(copy.datastorePath);
   if (binding !== undefined) {
     await withSpan(
@@ -349,8 +307,8 @@ async function makeV3CopyCurrentNow(
       : async (temp: string) => {
         if (!await installByLink(temp, target)) await intoExisting(temp);
       };
-    // The copy's commits the restored lineage lacks are lost: its own,
-    // never confirmed, when another checkout wrote first (swamp-club#3565).
+    // the copy's commits the restored lineage lacks are lost: its own, never
+    // confirmed, when another checkout wrote first
     let dropped = 0;
     const install = async (temp: string) => {
       // Only a warning depends on it: a copy that cannot be read (an empty
@@ -363,8 +321,8 @@ async function makeV3CopyCurrentNow(
       }
       await replace(temp);
     };
-    // The first-clone cost, visible (swamp-club#3534): a restore downloads
-    // the whole lineage before the command runs.
+    // makes the first-clone cost visible: a restore downloads the whole lineage
+    // before the command runs
     logger
       .info`Restoring this checkout's copy of the v3 datastore at ${copy.datastorePath} from replication lineage ${
       padFence(decision.lineage.fence)
@@ -392,9 +350,9 @@ async function makeV3CopyCurrentNow(
             }),
         ));
     } catch (error) {
-      // A replica that cannot be listed is the storage cut off: the read
-      // fails with its code, and the next command restores (swamp-club#3893),
-      // whether the watch stopped the restore or Litestream gave up first.
+      // a replica that cannot be listed is the storage cut off: the read fails
+      // with its code and the next command restores, whether the watch stopped
+      // the restore or Litestream gave up first
       if (error instanceof V3ReplicaUnreachableError) throw error;
       const unreachable = await replicaUnreachableAfterFailure(
         watched,
@@ -415,12 +373,9 @@ async function makeV3CopyCurrentNow(
       }
       throw error;
     }
-    // The commit the read model last applied is still where it was, or
-    // the restore moved it (swamp-club#3482): one from another lineage, or
-    // one that dropped commits never acknowledged. Then the checkout is
-    // rebuilt, and the files of dropped commits removed.
-    // A cursor whose commit the copy no longer stores (compacted locally,
-    // or never there) cannot be matched, so it counts as moved.
+    // if the restore moved the last applied commit (another lineage, or dropped
+    // unacknowledged commits) the checkout is rebuilt and their files removed;
+    // a cursor whose commit the copy lacks counts as moved
     const readModelMoved = cursor > 0 &&
       (before === undefined || txnAt(target, cursor) !== before);
     await writeCopyState(paths, {
@@ -453,10 +408,9 @@ async function makeV3CopyCurrentNow(
 }
 
 /**
- * Reports and discards the commits left in the shared `commits.db`'s outbox
- * (swamp-club#3490) once replication is on: nothing raises a fence on the
- * shared store any more, so no recovery can judge them, and a copy seeded
- * from it never lands them. Runs under the writer lease.
+ * reports and discards the commits left in the shared commits.db's outbox once
+ * replication is on: nothing raises a fence there any more, so no recovery can
+ * judge them. Runs under the writer lease
  */
 async function dropSharedOutboxEntries(sharedCommitsDb: string): Promise<void> {
   const outbox = new SqliteCommitOutbox(v3OutboxPath(sharedCommitsDb));
@@ -480,18 +434,9 @@ async function dropSharedOutboxEntries(sharedCommitsDb: string): Promise<void> {
 }
 
 /**
- * Seeds a writer's copy from the datastore's shared `commits.db` when
- * replication is turned on over a datastore that already has commits
- * (swamp-club#3491): no lineage was ever confirmed, under any replica root,
- * and the copy is new (no lineage or copy record, no commits). The writer
- * then restarts its lineage at its fence, so its first sync publishes the
- * shared commits as the first lineage and every other copy restores them.
- *
- * Runs under the writer lease, which the caller holds, and `restore.lock`.
- * Nothing writes the shared database once replication is on, and lineages
- * a writer started but never confirmed do not count, so a writer that
- * seeded and failed before its first confirmation, on any checkout, leaves
- * the next writer the same commits to seed.
+ * seeds only when no lineage was ever confirmed and the copy is new; the first
+ * sync publishes the shared commits as the first lineage, so a seed that failed
+ * before confirmation leaves them for the next writer
  */
 async function seedFromSharedDatabase(
   copy: V3Copy,
@@ -562,9 +507,8 @@ async function seedFromSharedDatabase(
 }
 
 /**
- * How many commits the database at `path` holds: 0 when it is missing or
- * has no commits table yet. Any other failure (busy, damaged, unreadable)
- * is thrown, so a seed is never skipped silently.
+ * any failure other than a missing file or no commits table is thrown, so a
+ * seed is never skipped silently
  */
 function commitsIn(path: string): number {
   try {
@@ -595,19 +539,11 @@ function commitsIn(path: string): number {
   }
 }
 
-/** What a copy's sidecar last found about the lineage the copy replicates. */
 export interface V3ReplicaCheck {
-  /** The lineage the copy replicates. */
   readonly lineageFence: number;
-  /** The last verdict recorded beside the copy, on any lineage. */
   readonly verdict: ReplicaVerification | undefined;
 }
 
-/**
- * Reads what the copy's sidecar last found about its lineage
- * (swamp-club#3935), changing nothing: undefined when the copy has never
- * replicated.
- */
 export async function v3ReplicaCheckOf(
   copy: V3Copy,
 ): Promise<V3ReplicaCheck | undefined> {
@@ -626,12 +562,9 @@ export async function v3ReplicaCheckOf(
 }
 
 /**
- * Whether a writer restarts the lineage it would continue because its
- * sidecar found the lineage cannot be restored (swamp-club#3935). The new
- * lineage is a full snapshot of the copy, so the copy must pass SQLite's
- * quick check first: from a damaged copy the restart would only replace one
- * broken replica with another, so the lineage is kept, and `doctor
- * datastores` reports both. Exported for tests.
+ * the new lineage is a full snapshot, so the copy must pass SQLite's quick
+ * check first: from a damaged copy the restart would only replace one broken
+ * replica with another, so the lineage is kept
  */
 export async function restartsBrokenLineage(
   paths: ReplicationPaths,
@@ -656,7 +589,6 @@ export async function restartsBrokenLineage(
   return true;
 }
 
-/** SQLite's quick check of the database at `path`: "ok", or what it found. */
 export function quickCheck(path: string): string {
   let db: DatabaseSync | undefined;
   try {
@@ -674,11 +606,8 @@ export function quickCheck(path: string): string {
 }
 
 /**
- * Refuses a datastore whose newest lineage another replica root started
- * (swamp-club#3801): reading past it would show an empty datastore, and
- * writing would start a lineage beside it.
- *
- * @throws V3ReplicaRootMismatchError
+ * reading past a lineage another replica root started would show an empty
+ * datastore, and writing would start a lineage beside it
  */
 function refuseForeignLineage(
   copy: V3Copy,
@@ -696,9 +625,9 @@ function refuseForeignLineage(
 }
 
 /**
- * Fails a writer, or a reader of a copy that was never restored, which
- * would read as an empty datastore (swamp-club#3642). Otherwise the reader
- * reads the copy as this checkout last restored it, with a warning.
+ * fails a writer, or a reader of a never-restored copy, which would read as an
+ * empty datastore; otherwise the reader reads the copy as last restored, with a
+ * warning
  */
 function refuseOrSkip(
   mode: "read" | "write",
@@ -744,7 +673,6 @@ async function pollLock(file: Deno.FsFile, waitMs: number): Promise<boolean> {
   return true;
 }
 
-/** The commit the read model last applied: its store-wide cursor. */
 function readModelCursor(repoDir: string): number {
   const path = join(readModelStateDir(repoDir), READ_MODEL_STATE_FILE);
   try {
@@ -761,10 +689,9 @@ function readModelCursor(repoDir: string): number {
 }
 
 /**
- * How many commits of the copy at `before` the restored copy at `after`
- * lacks: those above the last cursor both hold the same commit at, walking
- * down from the copy's newest. Cursors below the restored copy's oldest
- * (compacted away there) count as shared. Zero when there is no copy.
+ * counts the copy's commits the restored copy lacks: those above the last
+ * cursor both hold the same commit at; cursors below the restored copy's oldest
+ * count as shared
  */
 function droppedCommits(before: string, after: string): number {
   try {
@@ -811,7 +738,6 @@ function droppedCommits(before: string, after: string): number {
   }
 }
 
-/** The txnId of the commit at `cursor`, or undefined when none is stored. */
 function txnAt(path: string, cursor: number): string | undefined {
   try {
     Deno.statSync(path);
@@ -839,14 +765,12 @@ function holderName(): string {
   return `${user}@${Deno.hostname()}`;
 }
 
-/** Each copy's lineage decisions in this process, one at a time. */
 const lineageQueues = new Map<string, Promise<void>>();
 
 /**
- * Runs `fn` after every lineage decision this process started on `copy`
- * (swamp-club#3491). A writer lease is exclusive and each hold takes its own
- * fence, so the only decisions that can race on one copy are this
- * process's own: serve's retake beside a writer's hold at the same fence.
+ * a writer lease is exclusive and each hold takes its own fence, so the only
+ * decisions that can race on one copy are this process's own: serve's retake
+ * beside a writer's hold at the same fence
  */
 async function oneAtATime<T>(copy: V3Copy, fn: () => Promise<T>): Promise<T> {
   const key = resolve(copy.commitsDb);
@@ -861,16 +785,9 @@ async function oneAtATime<T>(copy: V3Copy, fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Decides and records the lineage of the writer that took the lease at
- * `fence` on `copy`, which is current: continues it while no other writer
- * can have written since (its lineage is published and nothing started
- * after it) and nothing was restored, otherwise starts a new lineage at
- * `fence` and claims it. A lineage this hold already started at `fence` is
- * kept: another context in this process, or serve's retake beside a hold,
- * decided it first. Decisions on one copy run one at a time.
- *
- * @throws V3ReplicationError when the lineage cannot be recorded or claimed,
- *   or when `fence` went back to one this copy already began a lineage at
+ * continues the lineage only while no other writer can have written and nothing
+ * was restored, else starts a new one at fence; one this hold already started
+ * is kept, another context decided it first
  */
 export async function prepareV3WriterLineage(
   copy: V3Copy,
@@ -885,9 +802,8 @@ export async function prepareV3WriterLineage(
       const paths = await copyPaths(copy);
       const registry = lineageRegistryFor(copy.datastorePath);
       const previous = await readLineage(paths);
-      // The start names the current lineage the copy was made current to,
-      // which this one continues (swamp-club#3801): collection then knows
-      // its chain from a fork a swamp before matching left.
+      // the start names the current lineage the copy was made current to, which
+      // this one continues: collection then knows its chain from a fork
       const claim = async (published: readonly PublishedLineage[]) => {
         const follows = currentLineage(published, root)?.fence;
         if (
@@ -953,9 +869,8 @@ export async function prepareV3WriterLineage(
             `Nothing was written`,
         );
       }
-      // Never below a lineage a newer lease started: readers would follow
-      // that one, and this writer's commits would reach none of them. Nor
-      // beside one another replica root started (swamp-club#3801).
+      // never below a lineage a newer lease started, which readers would
+      // follow, nor beside one another replica root started
       lineages ??= await registry.read(root);
       refuseForeignLineage(copy, lineages, root);
       const newest = newestStartedFence(lineages, root);
@@ -977,10 +892,9 @@ export async function prepareV3WriterLineage(
 }
 
 /**
- * Records a lease this process took at `fence` outside a writer's hold (a
- * read-only command's recovery, serve's retake) as a continuation of the
- * copy's lineage, when it may continue. Anything else is left for the next
- * writer, which restarts. Best effort.
+ * records a lease taken outside a writer's hold (a read-only command's
+ * recovery, serve's retake) as a continuation of the lineage when it may;
+ * anything else is left for the next writer, which restarts
  */
 export async function recordV3LeaseFence(
   copy: V3Copy,
@@ -1016,13 +930,9 @@ export async function recordV3LeaseFence(
 }
 
 /**
- * Publishes what a sync Litestream confirmed covers, before the writer
- * checks its lease (swamp-club#3482): the lineage's head, then its first
- * confirmation, then records that the copy holds it. Resolves true when
- * this was the lineage's first confirmation; the caller collects the
- * lineages it replaced once the lease check passed.
- *
- * @throws V3ReplicationError when it could not be published
+ * publishes the head, then the first confirmation, then records the copy holds
+ * it, before the writer checks its lease; resolves true on the first
+ * confirmation, after which the caller collects replaced lineages
  */
 export async function publishV3Head(
   copy: V3Copy,
@@ -1073,16 +983,12 @@ export async function publishV3Head(
   }
 }
 
-/** How many writer fences pass between two prunes of a lineage's heads. */
 export const V3_HEAD_PRUNE_EVERY = 16;
 
 /**
- * Prunes the heads of `lineageFence` that writers below `writerFence`
- * published (swamp-club#3803), on every {@link V3_HEAD_PRUNE_EVERY}th writer
- * fence only, so a writing command pays a list and its deletes once in that
- * many. Called once the sync that published `writerFence`'s head passed its
- * lease check. Best-effort: a failure is logged, and a later writer prunes
- * what is left.
+ * prunes on every Nth writer fence only, so a writing command pays a list and
+ * its deletes once in that many; best-effort: a failure is logged and a later
+ * writer prunes what is left
  */
 export async function pruneV3Heads(
   copy: V3Copy,
@@ -1117,13 +1023,9 @@ export async function pruneV3Heads(
 }
 
 /**
- * Refuses chunk collection on `copy` while another copy may still restore
- * a lineage whose commits name chunks this one does not (swamp-club#3491):
- * a restore's truncation, or an older lineage's head, can leave chunks only
- * another lineage names. Starts the collection rules need but the read did
- * not fetch are read here. Does nothing while replication is off.
- *
- * @throws V3ChunkCollectionDeferredError when collection must wait
+ * refuses chunk collection while another copy may still restore a lineage
+ * naming chunks this one does not: a restore's truncation or an older head can
+ * leave chunks only another lineage names
  */
 export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
   const replica = v3ReplicaFor(copy.datastorePath);
@@ -1150,8 +1052,8 @@ export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
     root,
   );
   if (decision.kind === "defer") {
-    // Kept lineages wait for an operator, not for a later lineage: said on
-    // every deferral, with what to do (swamp-club#3801).
+    // kept lineages wait for an operator, not for a later lineage: said on
+    // every deferral, with what to do
     const kept = await v3KeptLineages(copy.datastorePath);
     if (kept.length > 0) {
       throw new V3ChunkCollectionDeferredError(
@@ -1170,7 +1072,6 @@ export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
   }
 }
 
-/** A replication lineage collection keeps for an operator (swamp-club#3801). */
 export interface V3KeptLineage {
   readonly fence: number;
   readonly replicaRoot: string;
@@ -1178,11 +1079,6 @@ export interface V3KeptLineage {
   readonly startedAt: string;
 }
 
-/**
- * The lineages collection keeps because they may hold commits the current
- * lineage lacks, lowest fence first: those `lineage/<fence>/kept.json`
- * records whose lineage still has its start. Read-only.
- */
 export async function v3KeptLineages(
   datastorePath: string,
 ): Promise<V3KeptLineage[]> {
@@ -1202,17 +1098,9 @@ export async function v3KeptLineages(
 }
 
 /**
- * Removes the replica paths and records of the lineages the confirmed
- * lineage `current` replaced (swamp-club#3482). Only under the current
- * replica root, with every path derived from the root and a fence, never
- * read from a record. Best effort: a failure is logged, and the next
- * first confirmation tries again.
- *
- * A bucket replica's paths are removed through `replicaPaths`, the
- * provider's store (swamp-club#3531), used only when it is bound to this
- * replica's root; without it they stay, and so do their records. With it,
- * the paths of fences below `current` that no lineage key names (a fenced
- * writer's late upload after its lineage was collected) are removed too.
+ * paths are derived from the root and a fence, never read from a record; a
+ * bucket replica's are removed only through a provider store bound to this
+ * root, else they and their records stay
  */
 export async function collectV3Lineages(
   copy: V3Copy,
@@ -1261,9 +1149,9 @@ export async function collectV3Lineages(
       if (started !== undefined) starts.set(fence, started);
       candidates.push(fence);
     }
-    // The current lineage's chain, so lineages it may lack are kept, never
-    // collected over (lineagesKeptForFork). A lineage a swamp before
-    // swamp-club#3801 started continues one below it already read.
+    // the current lineage's chain, so lineages it may lack are kept, never
+    // collected over; a lineage an older swamp started continues one below it
+    // already read
     for (
       let at: number | undefined = current;
       at !== undefined && !starts.has(at);
@@ -1333,9 +1221,8 @@ export async function collectV3Lineages(
 }
 
 /**
- * Removes the bucket replica paths of fences below `current` that no
- * lineage key names. Every path is rebuilt from a parsed fence, so a name
- * the provider listed never reaches `removePath` as given.
+ * every path is rebuilt from a parsed fence, so a name the provider listed
+ * never reaches removePath as given
  */
 async function collectUnrecordedPaths(
   copy: V3Copy,
@@ -1368,10 +1255,9 @@ async function collectUnrecordedPaths(
 }
 
 /**
- * Removes the replica path of the lineage at `fence`. A file replica's
- * path must resolve under the replica's `_litestream/` directory. A bucket
- * replica's path is removed through the provider's `replicaPaths`, and is
- * kept (false) without it.
+ * a file replica's path must resolve under the replica's _litestream/
+ * directory; a bucket replica's is removed through the provider's store and
+ * kept (false) without it
  */
 async function removeReplicaPath(
   replica: V3ReplicaSetting,
@@ -1417,11 +1303,6 @@ async function removeReplicaPath(
   }
 }
 
-/**
- * The replica paths a restore of the bucket datastore at `datastorePath`
- * is watched through: the provider's, when bound to the replica's `root`.
- * Undefined, and the restore unwatched, otherwise.
- */
 function watchedReplicaPaths(
   datastorePath: string,
   root: ReplicaRoot,
@@ -1438,7 +1319,6 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Why `error` refused, as a clause {@link refuseOrSkip} embeds. */
 function reasonOf(error: unknown): string {
   return error instanceof V3ReplicationUnavailableError
     ? error.reason

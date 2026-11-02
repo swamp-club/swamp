@@ -18,22 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The coercion of CEL results to the plain values the rest of the codebase
- * expects. It runs after the boundary conversion (design/enablers/
- * typed-secrets.md Section 3.2), so an evaluator's result holds no `Secret`
- * when it is walked; the query view (Section 6.2) walks a projection that
- * still holds Secrets and adapted record views, and names them through
- * `keep` so they return to the calling expression as they are.
+ * runs after the boundary conversion, so an evaluator result holds no Secret;
+ * the query view walks a projection that still holds Secrets and names them
+ * through keep so they return as they are
  */
 
 import { Environment, Optional } from "cel-js";
 
-/** The shape of cel-js's `uint` value. */
 interface CelUnsignedInt {
   readonly value: bigint;
 }
 
-/** The shape of cel-js's `google.protobuf.Duration` value. */
 interface CelDuration {
   readonly seconds: bigint;
   readonly nanos: number;
@@ -54,10 +49,6 @@ function durationNanos(duration: CelDuration): bigint {
   return duration.seconds * NANOS_PER_SECOND + BigInt(duration.nanos);
 }
 
-/**
- * Builds a duration from its total in nanoseconds, with `seconds` and `nanos`
- * sharing the sign of the total — the form cel-js gives a parsed duration.
- */
 function durationFromNanos(total: bigint): CelDuration {
   return new (DurationType as DurationConstructor)(
     total / NANOS_PER_SECOND,
@@ -65,15 +56,9 @@ function durationFromNanos(total: bigint): CelDuration {
   );
 }
 
-// cel-js 7.6.1 (and 8.0.0) adds and subtracts durations assuming `nanos` is
-// never negative, but a negative duration it parses keeps a negative `nanos`,
-// so `duration('-1.5s') + duration('-0.6s')` came out as -3.1s. Its `==`
-// compares the stored fields, so it also needs every duration in one form.
-// Replace both methods on the shared prototype with versions that work from
-// the total; this module is loaded by cel_evaluator.ts before any CEL is
-// evaluated, so every Environment in the process gets them (swamp-club#3714).
-// Remove once cel-js ships a fix; cel_js_duration_pin_test.ts pins what this
-// relies on.
+// cel-js adds and subtracts durations assuming nanos is never negative, and ==
+// compares stored fields; replace both on the shared prototype with total-based
+// versions. Remove once cel-js fixes it
 if (
   typeof DurationType.prototype.addDuration === "function" &&
   typeof DurationType.prototype.subtractDuration === "function"
@@ -88,10 +73,7 @@ if (
   });
 }
 
-/**
- * Formats a duration in CEL's string form (`90s`, `1.5s`, `-1.5s`). cel-js's
- * own `toString()` misprints negative durations, so this works from the total.
- */
+/** cel-js's own toString misprints negative durations, so format from the total */
 function formatDuration(duration: CelDuration): string {
   const total = durationNanos(duration);
   const sign = total < 0n ? "-" : "";
@@ -111,20 +93,9 @@ function coerceInt(value: bigint): number | bigint {
 }
 
 /**
- * Recursively converts CEL result values to the plain values the rest of
- * the codebase expects, following CEL's JSON mapping:
- * - int and uint become numbers; values outside Number.MAX_SAFE_INTEGER are
- *   left as bigint to avoid silent precision loss
- * - timestamp becomes its ISO 8601 string, duration its CEL string (`90s`)
- *   and bytes a base64 string
- * - optionals unwrap to their value, or null when empty
- *
- * An object `keep` answers true for is returned as it is, decided before any
- * other object branch so nothing is read through it: the query view keeps a
- * `Secret`, whose traps refuse a walk, and an adapted record view, whose
- * leaves hold no CEL value, so both reach the calling expression by
- * identity (typed-secrets Section 6.2). Without `keep` every object is
- * walked, as an evaluator's released result is.
+ * ints beyond MAX_SAFE_INTEGER stay bigint; an object keep answers true for is
+ * returned as is, decided first, so a Secret or adapted record view reaches the
+ * expression by identity
  */
 export function coerceBigInts(
   value: unknown,

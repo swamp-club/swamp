@@ -23,10 +23,8 @@ import {
 } from "../extension_install_transaction.ts";
 
 /**
- * Thrown by a test's ops step to model the process dying at that step.
- * Ops built with {@link crashAware} report it through
- * `InstallFsOps.isSimulatedCrash`, so the transaction neither undoes nor
- * settles and the journal is left as a real crash would leave it.
+ * reported through InstallFsOps.isSimulatedCrash so the transaction neither
+ * undoes nor settles and the journal is left as a real crash would leave it
  */
 export class SimulatedInstallCrash extends Error {
   constructor(step: string) {
@@ -35,7 +33,6 @@ export class SimulatedInstallCrash extends Error {
   }
 }
 
-/** `ops` (the real filesystem by default) that recognise simulated crashes. */
 export function crashAware(
   ops: Partial<InstallFsOps> = {},
 ): InstallFsOps {

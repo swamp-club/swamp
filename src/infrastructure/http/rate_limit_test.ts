@@ -74,7 +74,6 @@ function tooManyRequests(
   return new Response(body, { status: 429, headers });
 }
 
-/** Serves `responses` in order, recording how many were requested. */
 function scriptedAttempts(responses: (() => Response)[]) {
   let calls = 0;
   return {

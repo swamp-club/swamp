@@ -19,18 +19,9 @@
 import { hostname } from "node:os";
 
 /**
- * Identifies where this process's pids live, for judging whether a pid
- * another process recorded on the same machine is still running: the
- * hostname, plus on Linux the pid namespace. Containers that share a hostname
- * (host networking) but not a pid namespace get different identities, so one
- * never reads the other's live pid as dead. It does not tell machines apart
- * beyond their hostname: every Linux host's root pid namespace has the same
- * id. Callers rely on what it judges being local, as the data catalog is.
- * Falls back to the hostname alone when the namespace cannot be read.
- *
- * The namespace is read through libc over FFI: Deno only lets a process read
- * /proc with --allow-all, which the compiled binary does not have, while
- * --allow-ffi it does.
+ * hostname plus, on Linux, the pid namespace, so containers sharing a hostname
+ * but not pids never read each other's live pid as dead; read via libc FFI, as
+ * Deno refuses /proc without --allow-all
  */
 export function processHostIdentity(): string {
   if (cachedHostIdentity === undefined) {
@@ -47,20 +38,9 @@ export function processHostIdentity(): string {
 let cachedHostIdentity: string | undefined;
 
 /**
- * Whether the process with `pid` is no longer running, without resuming or
- * otherwise disturbing it: every pid swamp probes is read from persisted
- * data (a lock, a tracker row, a writer record) and may since have been
- * reused, or stopped by its user (swamp-club#3564). POSIX hosts send SIGURG, whose default action is to ignore
- * it; unlike SIGCONT it does not resume a stopped process, and a process of
- * another user is not signalled at all (permission denied reads as alive).
- * Linux first checks `/proc/<pid>`, which sends nothing, and only probes
- * with SIGURG when the entry is missing, since `/proc` mounted with
- * `hidepid` hides other users' live processes. The check goes through libc
- * over FFI, as Deno refuses `/proc` without --allow-all; when libc cannot be
- * loaded the SIGURG probe decides alone. A pid reused as a thread id also
- * resolves under `/proc` and reads as alive, which errs on the safe side.
- * Windows uses `tasklist`. Returns `false` (not dead) on any unexpected
- * error.
+ * probes with SIGURG, which unlike SIGCONT does not resume a stopped process;
+ * Linux checks /proc/<pid> via libc first; permission denied and unexpected
+ * errors read as alive
  */
 export function isProcessGone(pid: number): boolean {
   if (Deno.build.os === "windows") {
@@ -86,10 +66,8 @@ const LINUX_LIBC_SYMBOLS = {
 type LinuxLibc = Deno.DynamicLibrary<typeof LINUX_LIBC_SYMBOLS>;
 
 const F_OK = 0;
-/** Ample for a namespace link, which reads like `pid:[4026531836]`. */
 const NAMESPACE_LINK_MAXSIZE = 256;
 
-/** Runs `use` against libc, or returns undefined when it cannot be loaded. */
 function withLinuxLibc<T>(use: (lib: LinuxLibc) => T): T | undefined {
   let lib: LinuxLibc;
   try {
@@ -110,14 +88,12 @@ function cString(value: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(`${value}\0`);
 }
 
-/** Whether `/proc/<pid>` exists; false as well when libc is unavailable. */
 function linuxProcEntryExists(pid: number): boolean {
   return withLinuxLibc((lib) =>
     lib.symbols.access(cString(`/proc/${pid}`), F_OK) === 0
   ) ?? false;
 }
 
-/** This process's pid namespace, or undefined when it cannot be read. */
 function linuxPidNamespace(): string | undefined {
   return withLinuxLibc((lib) => {
     const buffer = new Uint8Array(NAMESPACE_LINK_MAXSIZE);
@@ -136,13 +112,6 @@ function linuxPidNamespace(): string | undefined {
 
 const MIN_RECOMMENDED_NOFILE = 8192;
 
-/**
- * Returns the soft open-file limit for this process, or `null` when the
- * value cannot be determined (Windows, unexpected format, etc.).
- *
- * Linux: parses `/proc/self/limits`.
- * macOS: runs `sh -c "ulimit -n"`.
- */
 export function getOpenFileSoftLimit(): number | null {
   if (Deno.build.os === "windows") {
     return null;
@@ -187,7 +156,6 @@ function getOpenFileSoftLimitPosix(): number | null {
   }
 }
 
-// RLIMIT_NOFILE constant differs by platform.
 const RLIMIT_NOFILE = Deno.build.os === "linux" ? 7 : 8;
 
 export type RaiseLimitResult =
@@ -195,13 +163,8 @@ export type RaiseLimitResult =
   | { raised: false; reason: string };
 
 /**
- * Attempts to raise the open-file soft limit to `MIN_RECOMMENDED_NOFILE`
- * via libc setrlimit. Returns whether the raise succeeded.
- *
- * This is the same pattern used by Redis, HAProxy, and Nginx at startup.
- * The hard limit (set by the administrator via ulimit -Hn / LimitNOFILE)
- * is the security boundary — raising the soft limit within it is a
- * normal, unprivileged POSIX operation.
+ * raising the soft limit within the administrator-set hard limit is an ordinary
+ * unprivileged POSIX operation; the hard limit is the security boundary
  */
 export function tryRaiseOpenFileLimit(): RaiseLimitResult {
   if (Deno.build.os === "windows") {
@@ -219,7 +182,6 @@ export function tryRaiseOpenFileLimit(): RaiseLimitResult {
     });
 
     try {
-      // struct rlimit { rlim_t rlim_cur; rlim_t rlim_max; } — two uint64 fields
       const rlimit = new BigUint64Array(2);
       const buf = new Uint8Array(rlimit.buffer);
 
@@ -234,7 +196,6 @@ export function tryRaiseOpenFileLimit(): RaiseLimitResult {
         return { raised: false, reason: "already sufficient" };
       }
 
-      // RLIM_INFINITY is 0xFFFFFFFFFFFFFFFF on both platforms
       const RLIM_INFINITY = 0xFFFFFFFFFFFFFFFFn;
       const effectiveHard = rlimit[1] === RLIM_INFINITY
         ? Number.MAX_SAFE_INTEGER
@@ -246,7 +207,6 @@ export function tryRaiseOpenFileLimit(): RaiseLimitResult {
 
       const target = Math.min(effectiveHard, MIN_RECOMMENDED_NOFILE);
       rlimit[0] = BigInt(target);
-      // rlimit[1] (hard limit) stays unchanged
 
       if (lib.symbols.setrlimit(RLIMIT_NOFILE, buf) !== 0) {
         return { raised: false, reason: "setrlimit failed" };
@@ -261,11 +221,6 @@ export function tryRaiseOpenFileLimit(): RaiseLimitResult {
   }
 }
 
-/**
- * Checks the open-file soft limit and returns a warning message if it is
- * below `MIN_RECOMMENDED_NOFILE`.  Returns `null` when the limit is
- * acceptable or cannot be determined.
- */
 export function checkOpenFileLimit(): {
   softLimit: number;
   recommended: number;
@@ -294,13 +249,9 @@ function isProcessDeadWindows(pid: number): boolean {
       return false;
     }
     const stdout = new TextDecoder().decode(result.stdout);
-    // tasklist always exits 0 — alive vs dead is signalled by output content.
-    // The CSV row (with /NH) always quotes the PID in the second column:
-    //   "swamp.exe","1234","Console","1","123,456 K"
-    // The "no match" message is localized on non-English Windows
-    // (`INFO:` / `信息:` / `情報:` / `INFORMATIONEN:` …) but never
-    // contains a bare-quoted PID, so substring-matching `"<pid>"` is
-    // locale-agnostic.
+    // tasklist always exits 0; alive is signalled by output: the CSV row always
+    // quotes the PID and the localized no-match message never does, so matching
+    // the quoted pid is locale-agnostic
     return !stdout.includes(`"${pid}"`);
   } catch {
     return false;

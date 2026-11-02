@@ -66,7 +66,7 @@ function latestKey(
   return `${typeNormalized}${SEP}${modelId}${SEP}${dataName}`;
 }
 
-export const DEFAULT_EPHEMERAL_MAX_BYTES = 512 * 1024 * 1024; // 512 MB
+export const DEFAULT_EPHEMERAL_MAX_BYTES = 512 * 1024 * 1024;
 
 export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
   private readonly dataMap = new Map<string, Data>();
@@ -188,7 +188,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     return Math.max(fromLatest, fromMap) + 1;
   }
 
-  /** Whether a stored version of `dataName` is a restatement (swamp-club#4195). */
   private restatesIn(
     type: ModelType,
     modelId: string,
@@ -236,8 +235,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
   }
-
-  // --- Write Operations ---
 
   async save(
     type: ModelType,
@@ -473,7 +470,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     this.dataMap.set(key, dataToSave);
     this.contentMap.set(key, content);
     this.totalBytes += content.length;
-    // Do NOT update latestVersionMap — deferred
+    // latestVersionMap is not updated here: the version is deferred until
+    // promoted
 
     return { type, modelId, dataName: data.name, version: newVersion };
   }
@@ -522,7 +520,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     this.dataMap.set(key, dataToSave);
     this.contentMap.set(key, content);
     this.totalBytes += content.length;
-    // Do NOT update latestVersionMap — deferred
+    // latestVersionMap is not updated here: the version is deferred until
+    // promoted
 
     return {
       receipt: { type, modelId, dataName: data.name, version },
@@ -598,7 +597,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     return Promise.resolve();
   }
 
-  /** Drops the temp file of a version a writer allocated and never finalized. */
   private releaseAllocation(receipt: DeferredWriteReceipt): void {
     for (const [path, alloc] of this.allocatedPaths) {
       if (
@@ -616,8 +614,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       }
     }
   }
-
-  // --- Read Operations ---
 
   findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
@@ -757,8 +753,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       yield content;
     }
   }
-
-  // --- Delete Operations ---
 
   delete(
     type: ModelType,
@@ -950,8 +944,6 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     });
   }
 
-  // --- Path Operations ---
-
   getPath(
     type: ModelType,
     modelId: string,
@@ -970,13 +962,9 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     return `ephemeral://${type.normalized}/${modelId}/${dataName}/${version}/raw`;
   }
 
-  // --- Identity ---
-
   nextId(): DataId {
     return generateDataId();
   }
-
-  // --- Sync Read Methods (for CEL) ---
 
   getLatestVersionSync(
     type: ModelType,
@@ -1122,8 +1110,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
     this.ensureNotDisposed();
-    // Reads latest versions directly: findAllGlobalSync drops deletion
-    // markers, which this lookup returns (swamp-club#3698).
+    // reads latest versions directly because findAllGlobalSync drops deletion
+    // markers, which this lookup returns
     const results: Array<
       { data: Data; modelType: ModelType; modelId: string }
     > = [];

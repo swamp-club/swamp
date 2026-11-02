@@ -209,7 +209,6 @@ Deno.test("RunTrackerStore: findStaleRuns finds stale runs by TTL", () => {
   using tempDb = makeTempDb();
   const store = new RunTrackerStore(tempDb.path);
   try {
-    // Insert a "stale" run with old heartbeat via raw fromData
     const staleRun = ActiveRun.fromData({
       id: "stale-1",
       runKind: "model_method",
@@ -224,7 +223,6 @@ Deno.test("RunTrackerStore: findStaleRuns finds stale runs by TTL", () => {
     });
     store.register(staleRun);
 
-    // Insert a fresh run
     store.register(makeRun({ id: "fresh-1" }));
 
     const stale = store.findStaleRuns(90_000);
@@ -245,7 +243,7 @@ Deno.test("RunTrackerStore: reapStaleRuns marks stale runs as interrupted", () =
       modelType: "@test/model",
       methodName: "start",
       workflowName: null,
-      pid: 2147483647, // Non-existent PID
+      pid: 2147483647,
       hostname: "test-host",
       startedAt: new Date(Date.now() - 120_000).toISOString(),
       heartbeatAt: new Date(Date.now() - 120_000).toISOString(),
@@ -255,7 +253,6 @@ Deno.test("RunTrackerStore: reapStaleRuns marks stale runs as interrupted", () =
 
     const reaped = store.reapStaleRuns(90_000);
 
-    // Cross-host stale runs are reaped by TTL alone
     assertEquals(reaped.length, 1);
     assertEquals(reaped[0].id, "stale-1");
 
@@ -287,7 +284,6 @@ Deno.test("RunTrackerStore: reapStaleRuns is idempotent", () => {
     const first = store.reapStaleRuns(90_000);
     assertEquals(first.length, 1);
 
-    // Second reap finds nothing — already reaped
     const second = store.reapStaleRuns(90_000);
     assertEquals(second.length, 0);
   } finally {
@@ -317,7 +313,6 @@ Deno.test("RunTrackerStore: heartbeat is no-op for completed runs", () => {
     store.register(makeRun({ id: "run-1" }));
     store.complete("run-1", "completed");
 
-    // Should not throw, just log a debug message
     store.heartbeat("run-1");
     assertEquals(store.findById("run-1")?.status, "completed");
   } finally {
@@ -341,8 +336,6 @@ Deno.test("RunTrackerStore: concurrent stores on same DB file", () => {
     store2.close();
   }
 });
-
-// ── pending_runs tests ──────────────────────────────────────────────
 
 function makePendingRun(
   overrides: Partial<PendingRunEntry> = {},
@@ -549,12 +542,10 @@ Deno.test("RunTrackerStore: cron pending run has no payload or route", () => {
 Deno.test("RunTrackerStore: schema v2 migration adds pending_runs to existing DB", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
-  // Create a v1 store (existing schema without pending_runs)
   const store1 = new RunTrackerStore(dbPath);
   store1.register(makeRun({ id: "existing-run" }));
   store1.close();
 
-  // Reopen — migration should add pending_runs table
   const store2 = new RunTrackerStore(dbPath);
   try {
     store2.enqueuePendingRun(makePendingRun({ id: "pr-1" }));
@@ -564,8 +555,6 @@ Deno.test("RunTrackerStore: schema v2 migration adds pending_runs to existing DB
     store2.close();
   }
 });
-
-// ── reapDeadProcessRuns tests ──────────────────────────────────────
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns marks dead-PID runs as interrupted", () => {
   using tempDb = makeTempDb();
@@ -675,8 +664,6 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns skips completed runs", () => {
     store.close();
   }
 });
-
-// ── instanceId-aware reaping tests ────────────────────────────────
 
 Deno.test("RunTrackerStore: reapStaleRuns with instanceId skips rows from different instance on same hostname", () => {
   using tempDb = makeTempDb();
@@ -962,8 +949,6 @@ Deno.test("RunTrackerStore: register stores null initiatedBy for ghost runs", ()
   }
 });
 
-// ── scrubPendingRunHeaders tests ─────────────────────────────────────
-
 Deno.test("scrubPendingRunHeaders: strips sensitive headers from pending run payloads", () => {
   using tempDb = makeTempDb();
   const store = new RunTrackerStore(tempDb.path);
@@ -1214,8 +1199,6 @@ Deno.test("RunTrackerStore: complete after reactivate records the final status",
   }
 });
 
-// ── findDeadProcessRuns tests ──────────────────────────────────────
-
 Deno.test("RunTrackerStore: findDeadProcessRuns lists local dead-PID runs with a fresh heartbeat and changes nothing", () => {
   using tempDb = makeTempDb();
   const store = new RunTrackerStore(tempDb.path);
@@ -1246,8 +1229,6 @@ Deno.test("RunTrackerStore: findDeadProcessRuns lists local dead-PID runs with a
   }
 });
 
-// ── retention of unsettled interrupted workflow and method rows ────
-
 function workflowRow(id: string, kind: "workflow" | "model_method") {
   return ActiveRun.fromData({
     id,
@@ -1263,7 +1244,6 @@ function workflowRow(id: string, kind: "workflow" | "model_method") {
   });
 }
 
-/** Backdates every terminal row past retention, then reopens the store. */
 function reopenAfterRetention(dbPath: string, days = 30): RunTrackerStore {
   const db = new DatabaseSync(dbPath);
   try {
@@ -1455,7 +1435,6 @@ Deno.test("RunTrackerStore: register stores the definition id", () => {
 Deno.test("RunTrackerStore: schema v5 migration adds definition_id to a v4 database", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
-  // A v4 tracker as an older swamp left it: no definition_id column.
   const db = new DatabaseSync(dbPath);
   db.exec(`
     CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

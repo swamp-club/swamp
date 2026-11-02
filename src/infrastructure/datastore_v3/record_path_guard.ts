@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Which record keys the v3 read model may materialise (swamp-club#3239), and
- * where its own state lives.
- *
- * Record keys come from commits, which in team mode other principals write,
- * and serve does not yet bind a key to its aggregate's paths
- * (`design/enablers/datastores.md`, "Authorisation requirements"). In solo
- * layout the cache root is `.swamp/` itself, which also holds repo-local
- * files. So the read model writes or removes a key only when its first
- * segment is a datastore-synced subdirectory other than a repo-local stream
- * directory, it names no catalog database, and it does not land in the read
- * model's own state directory.
- *
- * @module
+ * keys come from commits other principals write in team mode, so the read model
+ * touches a key only under a synced, non-repo-local first segment, naming no
+ * catalog database and outside its own state directory
  */
 
 import { join, resolve, SEPARATOR } from "@std/path";
@@ -62,22 +52,12 @@ export function readModelStateDir(repoDir: string): string {
   return swampPath(repoDir, READ_MODEL_STATE_DIR);
 }
 
-/** The v3 catalog's file in the state directory. */
 export const CATALOG_V3_FILE = "_catalog_v3.db";
 
-/**
- * Where a checkout keeps the v3 catalog: its read model's state directory
- * (swamp-club#3279). `catalogDbPath` returns it on a v3 datastore.
- */
 export function v3CatalogPath(repoDir: string): string {
   return join(readModelStateDir(repoDir), CATALOG_V3_FILE);
 }
 
-/**
- * The repo-local stream directories (swamp-club#3278), defined beside the
- * datastore directories so datastore setup leaves them in place too
- * (swamp-club#3281).
- */
 export { REPO_LOCAL_STREAM_SUBDIRS };
 
 /**
@@ -93,31 +73,17 @@ export const MATERIALISED_SUBDIRS: ReadonlySet<string> = new Set(
   ),
 );
 
-/**
- * The temporary file an atomic write renames over its target
- * (`.<uuid>.tmp`), written beside the target at any depth.
- */
 const ATOMIC_WRITE_TEMP =
   /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
 
 /**
- * Whether a file under the materialised subdirectories is the checkout's own
- * and never committed, so recovering an interrupted writer must leave it
- * (swamp-club#3299): an atomic write's temporary file, a `.lock` file (per
- * model under `data/`, the managed lockfile's under `config/`), a workflow's
- * run index, the auto-definition creation locks, macOS's `.DS_Store`, a
- * run log, or pulled extension sources and their install staging under
- * managed config.
- * `segments` is the key's path from the cache root.
- *
- * Each rule names the artefact exactly, never "any dot segment": data names
- * and method names may start with a dot (`.kubeconfig`, `.probe`), and those
- * are committed records the recovery sweep must reach (swamp-club#3736).
+ * checkout-local files recovery must leave. Each rule names the artefact
+ * exactly, never any dot segment: data and method names may start with a dot
+ * and are committed records the sweep must reach
  */
 export function isCheckoutLocalKey(segments: readonly string[]): boolean {
   const name = segments.at(-1) ?? "";
   if (ATOMIC_WRITE_TEMP.test(name) || name === ".lock") return true;
-  // Finder writes one wherever a directory is browsed; it is never a record.
   if (name === ".DS_Store") return true;
   if (segments[0] === "workflow-runs" && name === ".runs-index.json") {
     return true;
@@ -132,10 +98,6 @@ export function isCheckoutLocalKey(segments: readonly string[]): boolean {
   return segments[0] === "config" && segments[1] === PULLED_EXTENSIONS_SUBDIR;
 }
 
-/**
- * Why the read model must not write or remove `key` under `root`, or
- * undefined when it may. `stateDir` is the read model's state directory.
- */
 export function refusedKeyReason(
   key: RecordKey,
   root: string,
@@ -144,11 +106,8 @@ export function refusedKeyReason(
   const lexical = lexicalRefusal(key.toString(), MATERIALISED_SUBDIRS);
   if (lexical !== undefined) return lexical;
   const segments = key.toString().split("/");
-  // With the state directory at `.swamp/_read_model_v3` the first-segment
-  // check already refuses it; this one still holds if a caller passes a
-  // state directory inside a synced one. Compared without case, so a
-  // case-insensitive filesystem cannot alias it; on a case-sensitive one
-  // that only refuses more, never less, so keep it.
+  // compared without case so a case-insensitive filesystem cannot alias the
+  // state directory; on a case-sensitive one this only refuses more, so keep it
   const path = resolve(join(root, ...segments)).toLowerCase();
   const state = resolve(stateDir).toLowerCase();
   if (path === state || path.startsWith(state + SEPARATOR)) {
@@ -158,12 +117,9 @@ export function refusedKeyReason(
 }
 
 /**
- * Whether the read model leaves every record of commit namespace
- * `namespace` unmaterialised and uncatalogued (swamp-club#3691): a
- * namespace named after one of swamp's own `.swamp/` directories, whose
- * cache root `.swamp/<name>` is that directory. Its records stay in the
- * read model's index, so history and chunk collection stay whole; every
- * checkout skips them, so none of them ever reaches such a directory.
+ * a namespace named after one of swamp's own .swamp directories is left
+ * unmaterialised; its records stay in the index so history and chunk collection
+ * stay whole
  */
 export function isUnprojectedNamespace(namespace: string): boolean {
   return namespace !== "" && isReservedNamespaceName(namespace);

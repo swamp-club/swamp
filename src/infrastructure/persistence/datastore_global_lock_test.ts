@@ -56,7 +56,6 @@ Deno.test("datastoreGlobalLock: takes the datastore's .datastore.lock on acquire
     await lock.release();
     assertEquals(await exists(lockFile), false);
 
-    // Each acquire takes a fresh lock; a release with none held is a no-op.
     await lock.acquire();
     await lock.release();
     await lock.release();

@@ -124,7 +124,6 @@ Deno.test("bindV3BucketDatastore: binds a local root under the checkout's copies
     assert((await Deno.stat(location.path)).isDirectory);
     assertEquals(location.namespace, "team-a");
     assertEquals(boundV3BucketLocation(config), location);
-    // Bound once per config object.
     assertEquals(
       bindV3BucketDatastore(repoDir, config, provider, { platform: LINUX }),
       location,
@@ -135,7 +134,6 @@ Deno.test("bindV3BucketDatastore: binds a local root under the checkout's copies
     assert(v3ReplicatesAt(location.path), "a bucket datastore replicates");
     assertEquals(v3ReplicaFor(location.path)?.type, "s3");
     assertEquals(binding.replicaPaths?.root, "s3::team-bucket:");
-    // Its locks are file locks at the same root.
     const locking = lockingConfigOf(config);
     assert(!isCustomDatastoreConfig(locking));
     assertEquals(locking.path, location.path);
@@ -327,7 +325,6 @@ Deno.test("confirmV3BucketMarker: passes a format-3 marker and refuses a missing
     UnreachableDatastoreFormatMarkerError,
     "reset",
   );
-  // Only ever confirmed under a format-3 config (swamp-club#3644).
   assertEquals(unreachable.message.includes("as format 2"), false);
 });
 
@@ -348,7 +345,6 @@ Deno.test("V3BucketBinding.confirmMarker: reads once while it passes, and again 
     );
     await binding.confirmMarker();
     await remote.datastoreControlPlaneStore!().delete("datastore-format");
-    // Confirmed once for the process: not read again.
     await binding.confirmMarker();
   });
 });

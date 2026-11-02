@@ -23,13 +23,6 @@ import type {
   DatastoreVerifier,
 } from "../../domain/datastore/datastore_health.ts";
 
-/**
- * Verifies a filesystem datastore is accessible and writable.
- *
- * Checks:
- * 1. Directory exists
- * 2. Directory is writable (writes and deletes a temp file)
- */
 export class FilesystemDatastoreVerifier implements DatastoreVerifier {
   constructor(private readonly path: string) {}
 
@@ -37,7 +30,6 @@ export class FilesystemDatastoreVerifier implements DatastoreVerifier {
     const start = performance.now();
 
     try {
-      // Check directory exists
       const stat = await Deno.stat(this.path);
       if (!stat.isDirectory) {
         return {
@@ -49,7 +41,6 @@ export class FilesystemDatastoreVerifier implements DatastoreVerifier {
         };
       }
 
-      // Check writability by writing and deleting a temp file
       const tempFile = join(
         this.path,
         `.swamp-health-check-${crypto.randomUUID()}`,

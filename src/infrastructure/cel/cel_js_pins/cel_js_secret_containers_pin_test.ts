@@ -17,23 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Phase 1.2 pins for the container rule (design/enablers/typed-secrets.md
-// Section 4.3 item 5, and the Phase 1.2 list in Section 11: "The container
-// rule in Section 4.3 refuses every case the fact 2 pins answer by identity.
-// cel-js reads a record field, a list element and a map value through
-// ordinary property access, so a getter records the secret on selection and
-// on container traversal. Selecting another field records nothing. Map key
-// membership, `has()` and `.?` read the value and record it.").
-//
-// Map key membership on a plain object reads the value because cel-js tells
-// an absent key from an undefined one by reading it, and deep type inference
-// reads a container's first entry. The rule therefore records a little more
-// than its first draft said, and over-refuses accordingly.
-//
-// The recording helpers put each secret behind an enumerable getter, the way
-// the boundary conversion's views do (secret_boundary.ts) and the accessor
-// adapter will (Section 6.1). A `Map` instance cannot carry a getter, so the
-// adapter builds plain objects.
+// recording helpers put each secret behind an enumerable getter, as the
+// boundary views do; a Map cannot carry a getter, so plain objects are used
 import {
   assert,
   assertEquals,
@@ -82,7 +67,6 @@ interface Observation {
   readonly faults: Fault[];
 }
 
-/** Evaluate once and report what was read and what was refused. */
 function observe(env: Environment, expression: string): Observation {
   reads.length = 0;
   return withFaultContext((faults) => {
@@ -109,7 +93,6 @@ Deno.test(
       assertEquals(seen.reads, expected, expression);
       assertEquals(seen.faults, [], expression);
     }
-    // Selecting another field reads that field and nothing else.
     const other = observe(env, "rec.other");
     assertEquals(other, { result: "o", reads: ["rec.other"], faults: [] });
     const optional = observe(env, "rec.?password");
@@ -216,8 +199,6 @@ Deno.test(
   ),
   () => {
     const env = environment();
-    // Comparison with null and a scalar literal: no container comparison, so
-    // the recorded secret alone refuses nothing.
     const allowed = "rec.password != null && rec.other == 'o'";
     assertEquals(hasContainerComparison(env.parse(allowed).ast), false);
     assertEquals(observe(env, allowed), {
@@ -225,7 +206,6 @@ Deno.test(
       reads: ["rec.password", "rec.other"],
       faults: [],
     });
-    // A container comparison with no secret read: refuses nothing.
     const unrelated = "rec.other in ['o']";
     assertEquals(hasContainerComparison(env.parse(unrelated).ast), true);
     assertEquals(observe(env, unrelated), {
@@ -233,16 +213,12 @@ Deno.test(
       reads: ["rec.other"],
       faults: [],
     });
-    // Both halves hold although the secret never reaches the comparison:
-    // the over-refusal Section 4.3 accepts.
     const overRefused = "rec.password != null && rec.other in ['o']";
     assertEquals(hasContainerComparison(env.parse(overRefused).ast), true);
     assertEquals(observe(env, overRefused).reads, [
       "rec.password",
       "rec.other",
     ]);
-    // The wider case the key-membership read adds: a presence check on a
-    // map whose first entry is a secret records it.
     const presence = "'z' in mp || rec.other in ['o']";
     assertEquals(hasContainerComparison(env.parse(presence).ast), true);
     assertEquals(observe(env, presence).reads, ["mp.k", "rec.other"]);

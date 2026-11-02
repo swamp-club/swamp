@@ -20,16 +20,9 @@
 import { dirname } from "@std/path";
 
 /**
- * Creates `dir` and any missing directory above it, one level at a time, as
- * a recursive mkdir would. With `syncDirectory`, the parent of each
- * directory created here is synced before this resolves, so its entry is
- * durable (swamp-club#4017): a directory sync makes the directory's own
- * entries durable, not its entry in its parent. A directory a concurrent
- * writer created is left to that writer.
- *
- * A parent that exists but is not a usable directory (a dangling symlink,
- * or a file on Windows) rejects, as a recursive mkdir does, rather than
- * being retried forever.
+ * creates missing parents one level at a time; with syncDirectory each created
+ * dir's parent is synced so its entry is durable. A dangling or non-directory
+ * parent rejects instead of retrying
  */
 export async function makeDirectories(
   dir: string,

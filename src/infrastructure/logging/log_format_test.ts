@@ -27,11 +27,8 @@ import {
   TIMESTAMP_FORMAT,
 } from "./log_format.ts";
 
-// A fixed instant so timestamp assertions are deterministic:
-// 2026-07-15T10:18:15.912Z.
 const FIXED_TS = Date.UTC(2026, 6, 15, 10, 18, 15, 912);
 
-// Matches an RFC3339 UTC timestamp with millisecond precision and a `Z`.
 const RFC3339 = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/;
 
 // Any ANSI SGR escape sequence. The ESC byte is built via String.fromCharCode
@@ -64,7 +61,6 @@ Deno.test("textFormatter: renders an RFC3339 timestamp and bracketed level", () 
 });
 
 Deno.test("textFormatter: emits no ANSI escape codes", () => {
-  // Non-interactive output must stay clean for piping/redirection.
   const line = textFormatter()(
     makeRecord(["model", "method", "run"], "acquiring lock", "warning"),
   );
@@ -112,7 +108,6 @@ function interactive(
   return (record: LogRecord) => fmt(record).replace(ANSI, "");
 }
 
-/** A record whose message interpolates `values`, as a tagged template does. */
 function templateRecord(
   level: LogRecord["level"],
   parts: readonly string[],

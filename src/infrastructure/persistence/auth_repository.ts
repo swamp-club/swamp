@@ -30,45 +30,25 @@ import {
 
 const AUTH_FILE = "auth.json";
 
-/** Server URL compared without trailing slashes, with the legacy domain mapped to the current one. */
 function canonicalServerUrl(url: string): string {
   const trimmed = url.replace(/\/+$/, "");
   return trimmed === LEGACY_SWAMP_CLUB_URL ? DEFAULT_SWAMP_CLUB_URL : trimmed;
 }
 
 /**
- * Optional overrides for `AuthRepository`. Used by tests to bypass the
- * shared `Deno.env` global, which races across files when
- * `deno test --parallel` runs multiple auth-touching test files at
- * once. Production callers pass nothing and get env-reading defaults.
+ * tests bypass the shared Deno.env global, which races across files under
+ * parallel tests; production passes nothing
  */
 export interface AuthRepositoryOptions {
-  /** Override the config dir; default is `getSwampConfigDir()`. */
   configDir?: string;
-  /**
-   * Override the collective API key lookup; default calls `resolveApiKey()`
-   * lazily at call time (`--club-api-key-file`, SWAMP_API_KEY_FILE, then
-   * SWAMP_API_KEY).
-   */
   getApiKey?: () => string | undefined;
-  /**
-   * Override the SWAMP_CLUB_URL lookup; default reads
-   * `Deno.env.get("SWAMP_CLUB_URL")` lazily at call time.
-   */
   getServerUrl?: () => string | undefined;
 }
 
 /**
- * Repository for managing swamp-club authentication credentials.
- * Stores API key and server info at ~/.config/swamp/auth.json
- * (or $XDG_CONFIG_HOME/swamp/auth.json).
- *
- * Precedence: collective API key (`--club-api-key-file`,
- * SWAMP_API_KEY_FILE or SWAMP_API_KEY) > auth.json file.
- *
- * auth.json holds only the `swamp auth login` credential. Identity resolved
- * for a collective API key is cached in env_identity_cache.json, so a run
- * with a key source never creates or changes a login record.
+ * a collective API key takes precedence over auth.json; auth.json holds only
+ * the login credential, and API key identity is cached in
+ * env_identity_cache.json so a keyed run never touches a login record
  */
 export class AuthRepository {
   private readonly getConfigDir: () => string;
@@ -84,21 +64,14 @@ export class AuthRepository {
       (() => Deno.env.get("SWAMP_CLUB_URL"));
   }
 
-  /** Path of the stored credentials file. */
   getAuthPath(): string {
     return join(this.getConfigDir(), AUTH_FILE);
   }
 
   /**
-   * Read auth credentials. Checks the collective API key first
-   * (`--club-api-key-file`, SWAMP_API_KEY_FILE or SWAMP_API_KEY), then
-   * falls back to auth.json file. Returns null if neither exists.
-   *
-   * When a collective API key is set, cached identity (username, collectives)
-   * is merged from env_identity_cache.json if the server URL and key
-   * fingerprint match. This gives API-key users the same identity resolution
-   * as login users. Identity is never read from auth.json, which older
-   * versions could leave holding another key's identity.
+   * with an API key set, cached identity merges in if server URL and key
+   * fingerprint match; identity is never read from auth.json, which older
+   * versions could leave holding another key's identity
    */
   async load(): Promise<AuthCredentials | null> {
     const envApiKey = this.getApiKey();
@@ -121,10 +94,8 @@ export class AuthRepository {
     try {
       const content = await Deno.readTextFile(this.getAuthPath());
       const parsed = JSON.parse(content) as AuthCredentials;
-      // Domain migration: rewrite the legacy swamp.club URL to the new
-      // domain in-place so subsequent loads see the new value. Scoped to
-      // the exact legacy literal — custom servers and the new default
-      // are left alone.
+      // domain migration: rewrite the exact legacy URL in place so later loads
+      // see the new one; custom servers and the new default are left alone
       if (parsed.serverUrl === LEGACY_SWAMP_CLUB_URL) {
         parsed.serverUrl = DEFAULT_SWAMP_CLUB_URL;
         await this.save(parsed);
@@ -138,7 +109,6 @@ export class AuthRepository {
     }
   }
 
-  /** Write auth credentials to disk. Creates directory if needed. */
   async save(credentials: AuthCredentials): Promise<void> {
     await Deno.mkdir(this.getConfigDir(), { recursive: true });
     await atomicWriteTextFile(
@@ -149,12 +119,9 @@ export class AuthRepository {
   }
 
   /**
-   * Cache the identity resolved for a collective API key (username,
-   * collectives, scopes, fingerprint) in env_identity_cache.json.
-   *
    * auth.json is never touched: writing there created a login record with an
-   * empty key when no login existed, and over a login it replaced the login's
-   * username and collectives with the API key's.
+   * empty key, and over a login replaced its username and collectives with the
+   * API key's
    */
   async saveIdentityCache(
     serverUrl: string,
@@ -182,7 +149,6 @@ export class AuthRepository {
     return join(this.getConfigDir(), "env_identity_cache.json");
   }
 
-  /** Identity cached for a collective API key on this server. */
   private async loadEnvIdentityCache(
     serverUrl: string,
     fingerprint: string,
@@ -206,7 +172,7 @@ export class AuthRepository {
     return join(this.getConfigDir(), "scope_cache.json");
   }
 
-  static readonly SCOPE_CACHE_TTL_MS = 3_600_000; // 1 hour
+  static readonly SCOPE_CACHE_TTL_MS = 3_600_000;
 
   async saveScopeCache(
     fingerprint: string,
@@ -245,7 +211,6 @@ export class AuthRepository {
     return undefined;
   }
 
-  /** Delete stored auth credentials and the scope and identity caches. */
   async delete(): Promise<void> {
     await this.removeIfPresent([
       this.getAuthPath(),

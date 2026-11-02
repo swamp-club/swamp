@@ -18,105 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The commit-log unit of work: datastore rework Phase 3 (swamp-club#3240).
- *
- * A unit stages typed changes and, when it commits, turns them into one
- * commit per partition. Dormant: nothing outside the v3 directories imports
- * it (`integration/datastore_v3_rules_test.ts`); tests open it through
- * `runInCommitLogRoot` until the v3 opt-in wires it in.
- *
- * **Commit order and failure (decisions 4, 6 and 7 of "v3 domain model",
- * `design/enablers/datastores.md`).** Each partition commits on its own, in
- * the order its first change was staged, with workflow-run partitions last,
- * so a run record never names data that has not landed. For each partition
- * the unit stores the content that needs storing (chunks before the commit
- * that names them), then appends one commit through the {@link CommitSink}.
- * There is no atomicity across partitions: when a partition fails, the
- * partitions before it stay committed and the ones after it are not tried;
- * a refusal is the exception (below).
- *
- * - A partition whose commit failed stays **pending** with its txnId and
- *   ops. The next `checkpoint` of the same unit, or its `commit`, rebuilds
- *   its commit at the partition's current head with the same txnId, so a
- *   commit that did land the first time is reported `duplicate` by the store
- *   and lands once. `commit` ends the unit whether or not it succeeds (the
- *   `UnitOfWork` contract), so what is still pending when the unit's own
- *   commit fails is reported failed and dropped with it. A caller that must
- *   retry checkpoints first. A retry older than `OUTBOX_RETRY_BOUND_MS` is
- *   refused (`retry-expired`) rather than appended.
- * - A refusal (`CommitRejectedError`) drops the refused partition's
- *   changes: they can never land as they are, and keeping them would block
- *   every partition staged after them. The flush goes on to the other
- *   partitions, then throws one {@link PartitionsRefusedError} carrying each
- *   refusal (swamp-club#3257). A `seq-gap` is not a refusal: another append
- *   moved the head first, so the append is rebuilt at the new head once more
- *   in the same flush, and if that also meets a gap the partition stays
- *   pending and the flush stops.
- * - `abandon` discards staged and pending changes. A checkpoint already in
- *   progress finishes first, so what it commits stays committed. Chunks
- *   already stored stay unreferenced until chunk garbage collection
- *   reclaims them.
- * - Run partitions commit after the others of the same flush, and a run
- *   record never names data whose partition was refused (decision 7,
- *   swamp-club#3257): once a non-run partition is refused, every run
- *   partition stays pending, never dropped, for the rest of the unit's life,
- *   since a run's record is rewritten whole on each save and a later save
- *   still names what an earlier flush refused. `acknowledgeRefusals`
- *   releases them after the caller saved each affected run again; that save
- *   supersedes the held record, and the run's snapshot commits with it. A
- *   root that ends without acknowledging throws the refusal again, and its
- *   held run records are lost with it.
- *
- * **Batches, splits and elision (swamp-club#3250).** `stageOps` records a
- * batch all or nothing, and a child hands its batches to its ancestor one by
- * one. When a flush forms groups, a partition holding more than
- * `MAX_COMMIT_OPS` changes splits into several groups, each one commit,
- * between batches, so one batch always lands in one commit; a single batch
- * over the limit is refused when it is staged. A refused split drops the
- * splits of its partition formed in the same flush, which were staged after
- * it; a batch staged later forms its own group. Before a stream put is read,
- * the unit drops it when a later put or tombstone of its key with no
- * `expect` supersedes it, among the unflushed batches and the pending
- * groups not being appended whose put is not stored yet; a group emptied so
- * is dropped. A stored put's op is kept, so a retry never reads the stream
- * again. The exceptions are repair after a chunk GC race: a retry that
- * reuses a kept op refreshes its chunks first, and every landed commit runs
- * the post-commit check ({@link restoreMissingChunks}); each reads the source
- * again only when one of the commit's chunks is actually missing; a kept
- * op whose put was superseded since is skipped instead, as an unstored one
- * is. A superseded put that was dropped never commits, so it needs no check.
- *
- * **The outbox (swamp-club#3490).** The unit appends through a
- * {@link CommitSink}. A sink with an {@link SinkOutbox} (a v3 datastore's)
- * makes each commit durable across a crash: under the partition's lock,
- * the unit prepares the commit with the head it was built on, then appends
- * it, checks its chunks and settles the entry. A process that dies in
- * between leaves the entry for the next writer to land
- * (`commit_outbox_recovery.ts`). A refusal gives up the refused entry and
- * every run entry of the unit (decision 7); a unit that ends with a commit
- * still failing gives up its entries, since the failure was reported. Giving
- * up marks an entry abandoned, then discards it; a unit that can write
- * neither fails with `MayLandLaterError` (swamp-club#3586). An append that
- * fails is checked against the store: a commit a writer that took over
- * landed counts as appended, and once an append returns, a failing check
- * after it is a warning. A sink without an outbox, the bare `CommitStore`
- * tests pass, prepares nothing. Before preparing, and after, the unit reads
- * the sweep state; when a chunk sweep may have overlapped
- * (`sweepMayOverlap`) it waits for the sweep's batch in flight, then checks
- * its chunks before the append too, so no landed commit names a chunk a
- * sweep deleted even when the writer dies before its post-commit check.
- *
- * **Root and child units.** A unit opened with an open commit-log unit for
- * the same hook as `parent` is its child. A child keeps its changes to
- * itself: its `commit` hands them, in order, to its nearest open ancestor,
- * and its `abandon` discards them. A change staged after the child committed
- * goes to that ancestor; one staged after it was abandoned is refused. Only
- * a root commits to the log, and
- * `checkpoint` on a child throws. A root's checkpoint commits what has been
- * handed to it so far; a child still open keeps its changes until it ends,
- * or until {@link checkpointFrom} hands them over (swamp-club#3587).
- *
- * @module
+ * each partition commits on its own, workflow-run partitions last, so a run
+ * record never names unlanded data; no atomicity across partitions: earlier
+ * ones stay committed, later ones are not tried
  */
 
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -188,40 +92,32 @@ import { isNetworkFailure } from "./network_failure.ts";
 const logger = getSwampLogger(["datastore", "v3"]);
 
 /**
- * Where a commit-log unit appends its commits: the outbox seam. A bare
- * `CommitStore` appends directly; a v3 datastore's sink also carries the
- * outbox. `head` gives the seq the next commit takes.
+ * a bare CommitStore appends directly; a v3 datastore's sink also carries the
+ * outbox
  */
 export type CommitSink = Pick<CommitStore, "append" | "head"> & {
-  /** A data name's high-water mark in its partition (swamp-club#3532). */
   readonly dataHighWater?: (
     namespace: string,
     partition: PartitionKey,
     name: string,
   ) => Promise<number>;
-  /** Makes each commit durable until it has landed (swamp-club#3490). */
   readonly outbox?: SinkOutbox;
   /**
-   * How many times one flush tries a partition's append through seq gaps;
-   * 2 when absent. Serve's sink catches up and retries a stale seq, which
-   * other writers can move more than once (swamp-club#3985).
+   * 2 when absent; serve's sink catches up and retries a stale seq, which other
+   * writers can move more than once
    */
   readonly seqGapAttempts?: number;
   /**
-   * Whether a commit to `partition` would be queued offline rather than
-   * sent (swamp-club#4195): its entry is then prepared already marked
-   * `offline`, so a process that dies before the queue's mark still leaves
-   * an entry no drop rule takes.
+   * a commit queued offline is prepared already marked offline, so a process
+   * that dies before the queue's mark still leaves an entry no drop rule takes
    */
   readonly queuesOffline?: (partition: PartitionKey) => Promise<boolean>;
 };
 
 /**
- * The greatest version each data name was given in this process, by sink,
- * then namespace, partition and name (swamp-club#3532). It covers versions
- * staged but not committed yet, which the commit store cannot see: in the
- * same unit, a sibling unit, or a deferred write. One number per name a
- * process writes, so it is never evicted.
+ * covers versions staged but not committed yet, which the commit store cannot
+ * see (same unit, sibling unit, deferred write); one number per name, so never
+ * evicted
  */
 const claimedVersions = new WeakMap<CommitSink, Map<string, number>>();
 
@@ -259,9 +155,7 @@ function floorSourceFor(
   };
 }
 
-/** What a {@link CommitSink} offers a unit to keep its commits durable. */
 export interface SinkOutbox {
-  /** The partition's head and the txnId of its head commit. */
   headIdentity(
     namespace: string,
     partition: PartitionKey,
@@ -276,13 +170,13 @@ export interface SinkOutbox {
   /** Removes entries the unit gave up; fsynced, since the failure was reported. */
   discard(keys: readonly OutboxKey[]): Promise<void>;
   /**
-   * Marks entries the unit gave up, fsynced, before they are discarded
-   * (swamp-club#3586): recovery never lands a marked entry.
+   * marks entries the unit gave up, fsynced, before they are discarded:
+   * recovery never lands a marked entry
    */
   abandon?(keys: readonly OutboxKey[]): Promise<void>;
   /**
-   * Marks entries queued while serve was unreachable (swamp-club#4195),
-   * fsynced: they are kept until a later command lands them.
+   * marks entries queued while serve was unreachable, fsynced: they are kept
+   * until a later command lands them
    */
   queue?(keys: readonly OutboxKey[]): Promise<void>;
   /**
@@ -294,7 +188,6 @@ export interface SinkOutbox {
     partition: PartitionKey,
     txnId: string,
   ): Promise<number | undefined>;
-  /** The chunk sweep's state now. */
   sweepState(): Promise<SweepState>;
   /**
    * Resolves once the chunk sweep batch this process is running, if any,
@@ -303,12 +196,9 @@ export interface SinkOutbox {
   sweepBatch?(): Promise<void>;
 }
 
-/** What a commit-log unit needs to commit. */
 export interface CommitLogUnitOptions {
   readonly sink: CommitSink;
-  /** Stores content too large to inline. */
   readonly chunkStore: ChunkStore;
-  /** The datastore namespace; empty for an unnamespaced datastore. */
   readonly namespace: Namespace;
   readonly writer: CommitWriter;
   /** The writer's fence (its writer lease's or leader lease's), if any. */
@@ -319,7 +209,6 @@ export interface CommitLogUnitOptions {
    * in progress.
    */
   readonly signal: AbortSignal;
-  /** The clock a commit's `at` is read from; the system clock by default. */
   readonly clock?: () => Date;
   /**
    * The unit that was ambient when this one opened. The new unit is its
@@ -328,57 +217,42 @@ export interface CommitLogUnitOptions {
    */
   readonly parent?: UnitOfWork;
   /**
-   * Whether a change to a record key belongs to the datastore: false for a
-   * key the repository's configured `directories` leave out or its
-   * `exclude` patterns match, which stays in the checkout and is never
-   * committed (swamp-club#3279). Every key belongs when absent.
+   * false for a key the configured directories leave out or exclude patterns
+   * match, which stays in the checkout and is never committed; every key
+   * belongs when absent
    */
   readonly admits?: (key: string) => boolean;
   /**
-   * Told when the unit opens and ends, and when it drops work a repository
-   * may already have written to the checkout (swamp-club#3553).
+   * told when the unit opens and ends, and when it drops work a repository may
+   * already have written to the checkout
    */
   readonly tracker?: UnitTracker;
   /**
-   * The versions of managed-config records the user started from
-   * (swamp-club#4097): inside a user's edit, an edited definition expects
-   * its base rather than the version the repository read when it saved.
-   * Told each record this unit commits.
+   * inside a user's edit, an edited definition expects its base rather than the
+   * version the repository read when it saved; told each record this unit
+   * commits
    */
   readonly configEditBases?: ConfigEditBases;
-  /**
-   * Who last changed a record and when, for a refused expectation's
-   * message (swamp-club#4097); the refusal names neither when absent.
-   */
+  /** for a refused expectation's message; the refusal names neither when absent */
   readonly lastChangeOf?: (
     partition: PartitionKey,
     key: string,
   ) => Promise<RecordLastChange>;
   /**
-   * Serve's clock minus this one, as a serve-mode checkout last measured it
-   * (swamp-club#4195); undefined when never measured. When this option is
-   * given, each commit records when it ran (`executedAt`) and the offset,
-   * so a commit queued offline is judged on reconnect by when it ran.
+   * undefined when never measured; when given, each commit records when it ran
+   * and the offset, so a commit queued offline is judged on reconnect by when
+   * it ran
    */
   readonly clockOffsetMs?: () => number | undefined;
 }
 
-/**
- * What the v3 handle learns from each unit it opens (swamp-club#3553): its
- * open units, and the dropped work its checkout may still hold.
- */
 export interface UnitTracker {
   opened(): void;
   ended(): void;
   /**
-   * A unit a repository wrote into dropped work: a refused commit, an
-   * abandon, a failed end, or a write refused after its files were written.
-   * `openedAt` is its root's open time, epoch milliseconds: nothing it
-   * wrote is older. `versionDirs` are the keys of the data version
-   * directories it created (swamp-club#3736): whatever is left in them is
-   * its work, however old the files' mtimes. `sentTxnIds` are the txnIds of
-   * the commits it handed to its sink, landed or not (swamp-club#4257): the
-   * checkout's files may hold its later, dropped writes over them.
+   * openedAt is its root's open time in epoch ms: nothing it wrote is older;
+   * sentTxnIds are the commits handed to its sink, landed or not, which the
+   * checkout's later dropped writes may overlay
    */
   dropped(
     openedAt: number,
@@ -387,7 +261,6 @@ export interface UnitTracker {
   ): void;
 }
 
-/** A path-only change staged into a commit-log unit, which takes typed ones. */
 export class PathOnlyChangeRefusedError extends Error {
   constructor(readonly change: StagedChange) {
     const target = change.kind === "bulk" ? change.reason : change.path;
@@ -400,12 +273,10 @@ export class PathOnlyChangeRefusedError extends Error {
   }
 }
 
-/** One partition's changes on their way to a single commit. */
 interface Group {
   readonly partition: PartitionKey;
   /** Fixed when the group forms, so a retry of its commit lands once. */
   readonly txnId: string;
-  /** When it formed, epoch milliseconds: a retry past the bound is refused. */
   readonly formedAt: number;
   readonly changes: readonly TypedChange[];
   /**
@@ -415,46 +286,32 @@ interface Group {
    */
   readonly formation: number;
   /**
-   * A forwarded commit's (swamp-club#3915): the head its client built on.
-   * The commit is refused rather than rebuilt when the head has moved.
+   * the head its client built on; the commit is refused rather than rebuilt
+   * when the head has moved
    */
   readonly expectedSeq?: number;
-  /** A forwarded commit's caller, stamped by serve. */
   readonly principal?: string;
 }
 
-/** What a commit-log unit exposes to its children. Adapter-private. */
 interface CommitLogState {
   readonly hook: MarkDirtyHook;
   isOpen(): boolean;
   readonly parent: UnitOfWork | undefined;
-  /** When the unit's root opened, epoch milliseconds. */
   readonly openedAt: number;
-  /** Takes a committed child's batches, in order and batch by batch. */
   adopt(
     batches: readonly (readonly TypedChange[])[],
     versionDirs?: readonly string[],
   ): void;
   /**
-   * Hands what the unit has staged so far to its nearest open ancestor and
-   * stays open (swamp-club#3587); a no-op on an ended unit.
+   * hands what the unit has staged to its nearest open ancestor and stays open;
+   * a no-op on an ended unit
    */
   promote(): void;
-  /**
-   * Skips this unit's queued stream puts that `change`, staged in a
-   * descendant that promoted, supersedes; see {@link checkpointFrom}.
-   */
   skipSuperseded(change: TypedChange): void;
 }
 
 const states = new WeakMap<UnitOfWork, CommitLogState>();
 
-/**
- * The open commit-log unit a new unit over `markDirty` rolls up into, given
- * the ambient unit `candidate`: `candidate` when it is an open commit-log
- * unit for that hook, otherwise its nearest open ancestor; undefined when
- * there is none, so the new unit is a root.
- */
 export function commitLogParentFor(
   markDirty: MarkDirtyHook,
   candidate: UnitOfWork | undefined,
@@ -479,19 +336,9 @@ function nearestOpenAncestor(
 }
 
 /**
- * Commits, mid-operation, what `unit` and each open ancestor have staged so
- * far (swamp-club#3587): each open unit from `unit` up hands its batches to
- * its nearest open ancestor and stays open, then the root checkpoints. An
- * ended unit has nothing left to hand over, so the walk goes on from its
- * nearest open ancestor. Resolves false, committing nothing, when `unit` is
- * not a commit-log unit or its root has ended.
- *
- * What is handed over belongs to the root from then on: a later abandon of
- * the unit discards only what it staged after. A put or tombstone the unit
- * stages afterwards still supersedes a handed-over stream put that has not
- * been read, which is skipped rather than read from a file that may have
- * changed; should the unit then be abandoned, neither version of that key
- * lands, as a crash then would leave neither.
+ * handed-over changes belong to the root; a later abandon discards only later
+ * staging; a later put or tombstone supersedes an unread handed-over stream
+ * put, which is skipped, not read from a changed file
  */
 export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
   let current: UnitOfWork | undefined = unit;
@@ -511,11 +358,6 @@ export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
   return false;
 }
 
-/**
- * Builds a commit-log unit over `markDirty`, the hook of the v3 repository
- * context it serves, and binds it to that hook. See the module doc for what
- * commit, checkpoint and abandon do.
- */
 export function createCommitLogUnitOfWork(
   markDirty: MarkDirtyHook,
   options: CommitLogUnitOptions,
@@ -526,20 +368,15 @@ export function createCommitLogUnitOfWork(
     ? clock().getTime()
     : states.get(parent)!.openedAt;
   /**
-   * Whether a repository wrote into this unit: a write signal, or any
-   * change it recorded, a committed child's included. Only such a unit's
-   * dropped work can be in the checkout (swamp-club#3553).
+   * whether a repository wrote into this unit (a write signal or any recorded
+   * change, a committed child's included); only such a unit's dropped work can
+   * be in the checkout
    */
   let touched = false;
-  /**
-   * The data version directories this unit created, and those of the
-   * children that committed into it (swamp-club#3736).
-   */
   let versionDirs: string[] = [];
   /**
-   * Reports the unit's work dropped. A refusal that drops only some
-   * partitions names them: the commits the unit sent to the others still
-   * hold work it goes on to commit (swamp-club#4257).
+   * a refusal that drops only some partitions names them: the commits the unit
+   * sent to the others still hold work it goes on to commit
    */
   const dropWork = (partitions?: readonly PartitionKey[]): void => {
     if (!touched) return;
@@ -554,33 +391,23 @@ export function createCommitLogUnitOfWork(
         .warn`Recording the work a v3 unit of work dropped failed: ${error}`;
     }
   };
-  /** Every change staged, for `stagedOps`. */
   const all: TypedChange[] = [];
   /**
    * Batches not yet formed into groups, in staging order. A batch is the
    * changes one `stageOps` call recorded; groups split only between them.
    */
   let staged: TypedChange[][] = [];
-  /** Groups formed but not yet confirmed by the sink, in commit order. */
   let pending: Group[] = [];
-  /**
-   * The partitions whose commits landed over the unit's life, checkpoints'
-   * included, so a failed end can say what was committed (swamp-club#3802).
-   */
+  /** so a failed end can say what was committed */
   const landed: PartitionKey[] = [];
-  /** The group whose commit is being built or appended, if any. */
   let inFlight: Group | undefined;
-  /** Each pending put's op once its content is stored, for retries. */
   const stored = new WeakMap<PendingPut, PutOp>();
   /**
-   * Stream puts of pending groups that a later change superseded but that
-   * stay in their group: unstored ones of the group being appended, which
-   * cannot change under its append, and stored ones, whose op is kept. A
-   * group skips an unstored one when it reaches it, and a stored one when a
-   * retry finds its chunks missing, instead of reading its source again.
+   * superseded stream puts that stay in their group (unstored ones in the group
+   * being appended, and stored ones): skipped when reached, or when a retry
+   * finds chunks missing, instead of reading the source again
    */
   const supersededInFlight = new WeakSet<PendingPut>();
-  /** The unflushed stream puts by partition and key, where they sit. */
   const streamPuts = new Map<
     string,
     { readonly batch: TypedChange[]; readonly change: TypedChange }
@@ -588,20 +415,18 @@ export function createCommitLogUnitOfWork(
   let formations = 0;
   let ended: "committed" | "abandoned" | undefined;
   /**
-   * The non-run partitions refused since the last acknowledgement: while
-   * any is, run partitions stay pending (decision 7).
+   * non-run partitions refused since the last acknowledgement: while any is,
+   * run partitions stay pending
    */
   let refusals: PartitionRefusal[] = [];
-  /** Serializes this unit's commits and checkpoints. */
   let flushing: Promise<void> = Promise.resolve();
   /**
-   * A refusal whose entries could be neither discarded nor marked abandoned
-   * (swamp-club#3586): the unit's end says its changes may still land.
+   * a refusal whose entries could be neither discarded nor marked abandoned:
+   * the unit's end says its changes may still land
    */
   let unconfirmed:
     | { readonly cause: unknown; readonly reason: unknown }
     | undefined;
-  /** The unit's outbox entries not yet settled, by txnId. */
   const outbox: UnitOutbox = {
     unitId: crypto.randomUUID(),
     prepared: new Map(),
@@ -609,11 +434,9 @@ export function createCommitLogUnitOfWork(
   };
 
   /**
-   * Drops a stream put that `change` supersedes before its stream is read:
    * a later put or tombstone of the same key leaves the same record, and the
-   * file behind the stream may be gone by commit (a prune, a delete or an
-   * in-place append after a save). Covers the unflushed batches and the
-   * pending groups not in flight whose put is not stored yet.
+   * file behind the stream may be gone by commit (prune, delete, in-place
+   * append); covers unflushed batches and pending groups not in flight
    */
   const elideSupersededBy = (change: TypedChange): void => {
     const slot = supersedingSlot(change);
@@ -647,10 +470,9 @@ export function createCommitLogUnitOfWork(
   };
 
   /**
-   * Marks the queued stream puts `change` supersedes to be skipped when
-   * their group is appended, without removing them: `change` is still a
-   * descendant's, which may yet be abandoned. Unformed batches need nothing,
-   * since the next flush promotes `change` first and elides them then.
+   * marks queued stream puts to be skipped when their group is appended,
+   * without removing them, since change is still a descendant's and may be
+   * abandoned; unformed batches are elided by the next flush
    */
   const skipSuperseded = (change: TypedChange): void => {
     const slot = supersedingSlot(change);
@@ -670,7 +492,6 @@ export function createCommitLogUnitOfWork(
    */
   let promoted = false;
 
-  /** Records one batch: refused whole when a partition passes the limit. */
   const record = (changes: readonly TypedChange[]): void => {
     requireBatchWithinLimit(changes);
     if (changes.length === 0) return;
@@ -751,9 +572,8 @@ export function createCommitLogUnitOfWork(
               other.partition.equals(group.partition))
           );
           pending = pending.filter((other) => !dropped.includes(other));
-          // Decision 7 across a crash: with the refused entries go the
-          // unit's run entries, so a recovery never lands a run record that
-          // names what was refused.
+          // with the refused entries go the unit's run entries, so a recovery
+          // never lands a run record that names what was refused
           const lost = await discardEntries(
             options,
             outbox,
@@ -792,11 +612,6 @@ export function createCommitLogUnitOfWork(
     return run;
   };
 
-  /**
-   * The refusal a flush throws: every unacknowledged non-run refusal (this
-   * flush's and earlier ones, which `acknowledgeRefusals` clears together),
-   * this flush's run refusals, and the run partitions held back.
-   */
   const refusedError = (
     refusedNow: readonly PartitionRefusal[],
     cause?: unknown,
@@ -844,8 +659,8 @@ export function createCommitLogUnitOfWork(
   const end = async (as: "committed" | "abandoned"): Promise<void> => {
     if (ended !== undefined) throw new Error(`unit of work already ${ended}`);
     ended = as;
-    // Told only once the final flush and its discards are done: a recovery
-    // of dropped work waits for every open unit (swamp-club#3586).
+    // told only once the final flush and its discards are done: a recovery of
+    // dropped work waits for every open unit
     try {
       await finish(as);
     } finally {
@@ -853,7 +668,6 @@ export function createCommitLogUnitOfWork(
     }
   };
 
-  /** A refusal's lost discard, as the unit's end reports it. */
   const throwUnconfirmed = (): void => {
     if (unconfirmed !== undefined) {
       throw new MayLandLaterError(unconfirmed.cause, unconfirmed.reason);
@@ -903,22 +717,21 @@ export function createCommitLogUnitOfWork(
         ...pending.map((group) => group.partition),
         ...staged.flat().map((change) => change.partition),
       ];
-      // The unit ends with these commits failed, and the caller is told so:
-      // a later recovery must not land them. When that cannot be recorded,
-      // the caller is told they may land (swamp-club#3586).
+      // the unit ends with these commits failed and the caller is told so, so a
+      // later recovery must not land them; when that cannot be recorded the
+      // caller is told they may land
       dropWork();
-      // A commit that may have reached serve keeps its entry, so the next
-      // recovery settles or sends it, as the serve sink's module says: the
-      // caller is told it may land (swamp-club#4195).
+      // a commit that may have reached serve keeps its entry so the next
+      // recovery settles or sends it; the caller is told it may land
       const lost = error instanceof MayLandLaterError
         ? unconfirmed
         : await discardEntries(options, outbox, pending) ?? unconfirmed;
       if (lost !== undefined && !(error instanceof MayLandLaterError)) {
         throw new MayLandLaterError(error, lost.reason);
       }
-      // Given up, so nothing of it can land: a commit that never reached
-      // the storage says so, and a retry is safe (swamp-club#3759). A run
-      // whose checkpoint landed is left running instead (swamp-club#3802).
+      // given up, so nothing of it can land: a commit that never reached the
+      // storage says so and a retry is safe; a run whose checkpoint landed is
+      // left running instead
       if (lost === undefined && failedReachingStorage(error)) {
         // A run whose record landed earlier and whose latest save did not
         // is left running; one whose saves all landed is not.
@@ -1031,7 +844,6 @@ export function createCommitLogUnitOfWork(
   return uow;
 }
 
-/** The record key a typed change writes, when it writes one. */
 function keyOfChange(change: TypedChange): string | undefined {
   if ("put" in change) return change.put.key.toString();
   const op = change.op;
@@ -1039,9 +851,9 @@ function keyOfChange(change: TypedChange): string | undefined {
 }
 
 /**
- * Inside a user's edit (swamp-club#4097), an edit of a managed-config
- * definition another writer replaced in this process expects the version
- * the user started from; any other change is left as it was staged.
+ * inside a user's edit, an edit of a managed-config definition another writer
+ * replaced in this process expects the version the user started from; other
+ * changes are left as staged
  */
 function rebased(
   change: TypedChange,
@@ -1092,10 +904,6 @@ function rebased(
   });
 }
 
-/**
- * The record a refused expectation names, and who changed it last and
- * when: as serve's refusal reported them, else from the unit's history.
- */
 async function refusedRecord(
   error: CommitRejectedError,
   partition: PartitionKey,
@@ -1130,10 +938,8 @@ async function refusedRecord(
 }
 
 /**
- * The tombstone intents of a user's edit that expect its base: a delete, a
- * rename's old name, and a move's old key (which carries the move's edit or
- * create intent; a key with no base, as a legacy key has none, keeps its
- * expectation).
+ * tombstone intents of a user's edit that expect its base; a key with no base,
+ * as a legacy key has none, keeps its expectation
  */
 const REBASED_REMOVALS: ReadonlySet<string> = new Set([
   "definition.delete",
@@ -1143,10 +949,8 @@ const REBASED_REMOVALS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Tells the bases each managed-config record a user's edit committed: the
- * user's own version stands from then on. A system rewrite of the record
- * (a type upgrade, a migration) leaves the base, which the user never saw
- * past.
+ * a system rewrite (type upgrade, migration) leaves the base, which the user
+ * never saw past
  */
 function noteCommitted(group: Group, options: CommitLogUnitOptions): void {
   const bases = options.configEditBases;
@@ -1240,8 +1044,8 @@ function requireSamePartition(target: PartitionKey, partition: PartitionKey) {
 }
 
 /**
- * Refuses a batch holding more than MAX_COMMIT_OPS changes for one
- * partition: a batch never splits, so it could never commit.
+ * a batch never splits, so more than MAX_COMMIT_OPS changes for one partition
+ * could never commit
  */
 function requireBatchWithinLimit(changes: readonly TypedChange[]): void {
   const counts = new Map<string, number>();
@@ -1258,11 +1062,6 @@ function requireBatchWithinLimit(changes: readonly TypedChange[]): void {
   }
 }
 
-/**
- * Groups batches by partition, in the order each was first touched. A
- * partition's group splits before a batch that would take it past
- * MAX_COMMIT_OPS, so each split is one commit and no batch spans two.
- */
 function formGroups(
   batches: readonly (readonly TypedChange[])[],
   formation: number,
@@ -1305,9 +1104,8 @@ function formGroups(
 }
 
 /**
- * The partition and key a change writes when it can supersede an earlier
- * stream put: a put or tombstone carrying no `expect` (an `expect` may rely
- * on the earlier put).
+ * only a put or tombstone with no `expect` can supersede an earlier stream put;
+ * an `expect` may rely on the earlier put
  */
 function supersedingSlot(change: TypedChange): string | undefined {
   if ("put" in change) {
@@ -1320,7 +1118,6 @@ function supersedingSlot(change: TypedChange): string | undefined {
   return op.expect === undefined ? slotOf(change.partition, op.key) : undefined;
 }
 
-/** The slot of a pending put whose content is a stream, with no `expect`. */
 function streamPutSlot(change: TypedChange): string | undefined {
   if (
     !("put" in change) || typeof change.put.content !== "function" ||
@@ -1335,7 +1132,6 @@ function slotOf(partition: PartitionKey, key: RecordKey): string {
   return `${partition}\u0000${key}`;
 }
 
-/** The data versions a group's `data-version` ops record. */
 function recordedVersions(
   group: Group,
 ): { readonly dataId: string; readonly version: number }[] {
@@ -1351,18 +1147,9 @@ function runRank(group: Group): number {
 }
 
 /**
- * Stores the group's content, then appends its commit at the partition's
- * current head. The head read and the append run under the partition's
- * lock, so two units in one process never take the same seq. Once the
- * commit has landed, any of its chunks that chunk garbage collection
- * deleted meanwhile are stored again (see {@link restoreMissingChunks}).
- *
- * The chunk barrier (swamp-club#3617): the group's content goes into one
- * {@link ChunkBatch}, committed before the commit is prepared or appended.
- * Its new chunks are synced together, then renamed into place, and every
- * chunk the commit names, stored now or found present, has its name made
- * durable, so a power loss never leaves a commit naming a chunk whose bytes
- * or rename were lost. Chunks stored again later get a batch of their own.
+ * head read and append run under the partition's lock; content is committed in
+ * one chunk batch before the commit is prepared, so a power loss never leaves a
+ * commit naming a lost chunk
  */
 async function appendGroup(
   group: Group,
@@ -1398,10 +1185,7 @@ async function appendGroup(
       ops,
       stored,
     );
-    // Every op was a superseded put: nothing to commit.
     if (ops.length === 0) return;
-    // A failed barrier fails the group as a failed store does: nothing is
-    // prepared or appended.
     await chunks.commit(options.signal);
   } catch (error) {
     throw storagePhase(error);
@@ -1462,10 +1246,9 @@ async function appendGroup(
             ...(offline ? { queuedOffline: true } : {}),
           });
           if (sweepMayOverlap(sweepBefore, await outbox.sweepState())) {
-            // A batch in flight may have judged a chunk unreferenced before
-            // the prepare and delete it after this check: once it has
-            // re-checked, with the entry present, the check holds
-            // (swamp-club#3586). A batch that starts later sees the entry.
+            // a batch in flight may have judged a chunk unreferenced before the
+            // prepare and delete it after this check; once re-checked with the
+            // entry present, the check holds
             await outbox.sweepBatch?.();
             try {
               await restoreMissingChunks(stored, options);
@@ -1479,9 +1262,9 @@ async function appendGroup(
           await options.sink.append(commit);
           return;
         } catch (error) {
-          // Queued in the outbox while serve is unreachable (swamp-club#4195):
-          // the entry stays, marked, for the next command to land, and the
-          // unit goes on as if it had landed.
+          // queued in the outbox while serve is unreachable: the entry stays,
+          // marked, for the next command to land, and the unit goes on as if it
+          // had landed
           if (
             error instanceof CommitQueuedOfflineError && outbox?.queue &&
             unitOutbox.prepared.has(group.txnId)
@@ -1504,10 +1287,9 @@ async function appendGroup(
       }
     },
   );
-  // Queued, not landed: its entry stays for the flush (swamp-club#4195).
   if (queued) return;
-  // The commit has landed: a failing check is a warning, never a failure
-  // that would drop landed work (swamp-club#3586).
+  // the commit has landed: a failing check is a warning, never a failure that
+  // would drop landed work
   try {
     await restoreMissingChunks(stored, options);
   } catch (error) {
@@ -1529,10 +1311,8 @@ async function appendGroup(
 }
 
 /**
- * Stores the group's content into `chunks` and collects its ops in `ops`,
- * and the blobs they name in `stored`. A retry reuses the content stored
- * the first time, so it never reads a stream twice or reopens a file
- * removed since.
+ * a retry reuses the content stored the first time, so it never reads a stream
+ * twice or reopens a file removed since
  */
 async function storeGroup(
   group: Group,
@@ -1561,9 +1341,8 @@ async function storeGroup(
       }
       storedOps.set(change.put, op);
     } else if ("blob" in op.content) {
-      // A retry refreshes what it stored the first time, and stores again
-      // what a sweep deleted, or a failed barrier never stored, before it
-      // prepares (swamp-club#3586).
+      // a retry refreshes what it stored the first time, and stores again what
+      // a sweep deleted or a failed barrier never stored, before it prepares
       const missing = await options.chunkStore.refresh(
         options.namespace,
         op.content.blob,
@@ -1593,12 +1372,6 @@ async function storeGroup(
   }
 }
 
-/**
- * A commit the serve sink queued in the outbox instead of sending
- * (swamp-club#4195): the checkout is offline, and the rules allow the
- * commit's partition to queue. The unit keeps the entry, marked, and goes
- * on; the next command that reaches serve lands it.
- */
 export class CommitQueuedOfflineError extends Error {
   constructor(readonly partition: PartitionKey) {
     super(
@@ -1608,10 +1381,6 @@ export class CommitQueuedOfflineError extends Error {
   }
 }
 
-/**
- * When a group's commit ran, and serve's clock offset then, for a unit that
- * records them (swamp-club#4195).
- */
 function executionOf(
   options: CommitLogUnitOptions,
   group: Group,
@@ -1626,17 +1395,11 @@ function executionOf(
   };
 }
 
-/** A unit's outbox bookkeeping. */
-/**
- * A forwarded commit built on a head that has moved (swamp-club#3915): its
- * client catches up and builds it again.
- */
 export class StaleSeqError extends Error {
   readonly code = "stale_seq";
   constructor(
     readonly partition: PartitionKey,
     readonly expectedSeq: number,
-    /** The partition's head now. */
     readonly seq: number,
   ) {
     super(
@@ -1646,28 +1409,17 @@ export class StaleSeqError extends Error {
   }
 }
 
-/** A commit a client built, for serve to append (swamp-club#3915). */
 export interface ForwardedCommit {
   readonly partition: PartitionKey;
-  /** The client's id for the commit; a retry carries the same one. */
   readonly txnId: string;
-  /** The head the client built on: the commit lands at the next seq. */
   readonly expectedSeq: number;
-  /** The authenticated caller. */
   readonly principal: string;
   readonly ops: readonly Op[];
 }
 
 /**
- * Appends a forwarded commit through the same path a unit's commits take:
- * the partition's lock, the outbox prepare, the append and its settle, with
- * the writer, fence and namespace of `options`, never the client's. The
- * head is checked against `expectedSeq` under the lock. Its content must
- * already be stored. Resolves once the commit has landed; a commit refused
- * or stale is discarded from the outbox.
- *
- * @throws StaleSeqError when the partition's head is not `expectedSeq`
- * @throws CommitRejectedError when the partition refuses the commit
+ * the head is checked against `expectedSeq` under the lock and the content must
+ * already be stored; a refused or stale commit is discarded from the outbox
  */
 export async function appendForwardedCommit(
   options: CommitLogUnitOptions,
@@ -1716,12 +1468,10 @@ export async function appendForwardedCommit(
 
 interface UnitOutbox {
   readonly unitId: string;
-  /** Entries prepared and not settled, by the group's txnId. */
   readonly prepared: Map<string, OutboxKey>;
   /**
-   * The partition of each commit handed to the sink, by txnId
-   * (swamp-club#4257). Noted before the append, since one that fails may
-   * still have landed; a dropped unit reports them.
+   * noted before the append, since one that fails may still have landed; a
+   * dropped unit reports them
    */
   readonly sent: Map<string, string>;
 }
@@ -1738,12 +1488,8 @@ function outboxKeyOfGroup(
 }
 
 /**
- * Whether the group's commit landed although its append failed
- * (swamp-club#3586): a writer that took over may have landed the prepared
- * entry, or the append may have failed after its commit. Only a prepared
- * group can have; a landing that cannot be read may have happened.
- *
- * @throws MayLandLaterError when the store cannot say
+ * a writer that took over may have landed the prepared entry; only a prepared
+ * group can have, and a landing that cannot be read may have happened
  */
 async function landedDespite(
   error: unknown,
@@ -1769,12 +1515,11 @@ async function landedDespite(
 }
 
 /**
- * The errors a commit met storing or checking its content before its append
- * (swamp-club#3759): only one of these can say the storage was unreachable.
+ * errors met storing or checking content before the append: only one of these
+ * can say the storage was unreachable
  */
 const storagePhaseErrors = new WeakSet<object>();
 
-/** Records that `error` came from storing a commit's content; returns it. */
 function storagePhase(error: unknown): unknown {
   if (typeof error === "object" && error !== null) {
     storagePhaseErrors.add(error);
@@ -1782,21 +1527,15 @@ function storagePhase(error: unknown): unknown {
   return error;
 }
 
-/**
- * Whether a commit failed because it could not reach the storage before its
- * append: a storage call that met a network failure.
- */
 export function failedReachingStorage(error: unknown): boolean {
   return typeof error === "object" && error !== null &&
     storagePhaseErrors.has(error) && isNetworkFailure(error);
 }
 
 /**
- * Gives up the outbox entries of `groups` that the unit prepared: a refusal,
- * an abandon or a failed end (swamp-club#3586). Each is marked abandoned,
- * fsynced, then removed; a removal that fails is retried when the datastore
- * closes, and recovery drops a marked entry meanwhile. Resolves with the
- * reason when neither could be written: then a recovery may land them.
+ * each entry is marked abandoned, fsynced, then removed; a failed removal is
+ * retried at close and recovery drops a marked entry meanwhile; resolves with
+ * the reason when neither could be written
  */
 async function discardEntries(
   options: CommitLogUnitOptions,
@@ -1838,29 +1577,15 @@ async function discardEntries(
   }
 }
 
-/** Content a landed commit names as chunks, and where it came from. */
 interface StoredContent {
   readonly source: ContentSource;
   readonly blob: BlobRef;
 }
 
 /**
- * The writer's half of closing chunk garbage collection's race
- * (swamp-club#3249). A sweep can delete a chunk this unit found present
- * and refreshed before its commit landed; the sweep re-checks references
- * after deleting and restores what a commit landed on meanwhile, so what is
- * left is a commit landing after that re-check. Checked here, after the
- * commit has landed (appended or a duplicate), any chunk of it missing is
- * stored again from the put's content source, which stays readable until
- * the unit ends. Content stored again must give the same reference; a
- * source that changed cannot repair the commit, and the caller reports it
- * as a warning, since the commit has landed (swamp-club#3586). What is
- * stored again goes into one {@link ChunkBatch}, committed before this
- * returns: the chunk barrier (swamp-club#3617). One blob that cannot be
- * stored again does not cost the others: the batch still commits what was
- * staged, then the first failure is thrown (an `AggregateError` for more
- * than one). An abort of `options.signal` ends the check and is thrown as
- * itself, never wrapped as one blob's failure.
+ * a sweep can delete a chunk after its commit landed; any missing chunk is
+ * stored again from the put's source, which must give the same reference. One
+ * blob's failure does not cost the others
  */
 async function restoreMissingChunks(
   stored: readonly StoredContent[],
@@ -1919,10 +1644,6 @@ async function restoreMissingChunks(
   }
 }
 
-/**
- * Stores `blob`'s content again from `source`, of which `missing` chunks are
- * gone. Content stored again must give the same reference.
- */
 async function storeAgain(
   source: ContentSource,
   blob: BlobRef,
@@ -1946,10 +1667,8 @@ async function storeAgain(
   }
 }
 
-/** How many times one flush tries a partition's append through seq gaps. */
 const SEQ_GAP_ATTEMPTS = 2;
 
-/** Builds a pending put's op, storing its content inline or as chunks. */
 async function storePut(
   put: PendingPut,
   options: CommitLogUnitOptions,
@@ -1965,12 +1684,6 @@ async function storePut(
   });
 }
 
-/**
- * Inlines content of at most {@link MAX_INLINE_BYTES}, and stores anything
- * longer through the chunk store, into `chunks`. A stream source is read, a
- * piece at a time, until it ends or holds more than the inline limit; what
- * was read is then handed to the chunk store ahead of the rest.
- */
 async function storeContent(
   source: ContentSource,
   options: CommitLogUnitOptions,
@@ -2044,7 +1757,6 @@ function concat(pieces: readonly Uint8Array[], length: number): Uint8Array {
   return joined;
 }
 
-/** Canonical base64, as `putOp` requires of inline content. */
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -2057,10 +1769,6 @@ function toBase64(bytes: Uint8Array): string {
  */
 const partitionLocks = new WeakMap<CommitSink, Map<string, Promise<void>>>();
 
-/**
- * Runs `fn` after every earlier append to the same partition of the same
- * sink has settled. The lock is released whether `fn` resolves or throws.
- */
 async function withPartitionLock(
   sink: CommitSink,
   namespace: string,
@@ -2084,7 +1792,6 @@ async function withPartitionLock(
   }
 }
 
-/** How many partitions of a sink have an append queued or running; for tests. */
 export function partitionLockCountForTesting(sink: CommitSink): number {
   return partitionLocks.get(sink)?.size ?? 0;
 }

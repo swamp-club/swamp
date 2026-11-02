@@ -19,7 +19,6 @@
 
 export type OtlpSignal = "traces" | "logs" | "metrics";
 
-/** Resolves the complete OTLP/HTTP endpoint for a signal. */
 export function resolveOtlpEndpoint(
   signal: OtlpSignal,
   config?: { genericEndpoint?: string; signalEndpoint?: string },
@@ -41,10 +40,6 @@ export function resolveOtlpEndpoint(
   return url.toString();
 }
 
-/**
- * Parses the signal-specific or generic OTLP headers (`key=val,key=val`) into a
- * record. Signal-specific headers replace generic headers when set.
- */
 export function parseOtlpHeaders(
   signal: OtlpSignal,
   envGet: (key: string) => string | undefined = Deno.env.get.bind(Deno.env),

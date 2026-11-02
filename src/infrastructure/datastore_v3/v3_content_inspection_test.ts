@@ -67,7 +67,6 @@ function filesystem(path: string): DatastoreConfig {
   return { type: "filesystem", path };
 }
 
-/** Every file under `dir` with its size and mtime, by relative path. */
 async function snapshot(dir: string): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   const walk = async (at: string) => {
@@ -85,7 +84,6 @@ async function snapshot(dir: string): Promise<Record<string, string>> {
   return files;
 }
 
-/** Creates the checkout's read model state at the current schema. */
 function createState(repoDir: string): DatabaseSync {
   const stateDir = readModelStateDir(repoDir);
   Deno.mkdirSync(stateDir, { recursive: true });
@@ -121,7 +119,6 @@ Deno.test("inspectV3Content: a checkout with no read model state, or state from 
       "nothing is created",
     );
 
-    // An older schema: none of the tables this check reads.
     const stateDir = readModelStateDir(repoDir);
     await Deno.mkdir(stateDir, { recursive: true });
     const db = new DatabaseSync(join(stateDir, READ_MODEL_STATE_FILE));
@@ -152,7 +149,6 @@ Deno.test("inspectV3Content: reports unreadable records, at-risk copies and torn
     const torn = await put("_default", "torn by a power cut");
     const tornPart = await put("acme", "second part, torn");
     const firstPart = await put("acme", "first part");
-    // A crash left two chunks short.
     for (
       const [ns, sha256] of [["_default", torn.sha256], [
         "acme",
@@ -169,7 +165,6 @@ Deno.test("inspectV3Content: reports unreadable records, at-risk copies and torn
     try {
       liveBlob(db, "", "data/m/good/1/raw", good);
       liveBlob(db, "", "data/m/torn/1/raw", torn);
-      // Absent: a lagging checkout may name a chunk compaction released.
       liveBlob(db, "", "data/m/absent/1/raw", {
         sha256: "f".repeat(64),
         size: 10,
@@ -239,7 +234,6 @@ Deno.test("inspectV3Content: reports unreadable records, at-risk copies and torn
     );
     assertEquals(found.torn[0].expectedSize, torn.size);
 
-    // A bucket's chunks cannot tear, and are not stat'ed.
     const bucket = await inspectV3Content({
       repoDir,
       datastoreConfig: {
@@ -321,7 +315,6 @@ Deno.test({
       const config = filesystem(datastorePath);
       const inspect = () =>
         inspectV3ReplicaRestorable({ repoDir, datastoreConfig: config });
-      // Not replicating: no finding.
       await withMockedEnv({ [V3_REPLICA_ENV]: undefined }, async () => {
         assertEquals(await inspect(), undefined);
       });
@@ -335,7 +328,6 @@ Deno.test({
         async () => {
           const commitsDb = v3CommitsDbPath(datastorePath, repoDir);
           await Deno.mkdir(dirname(commitsDb), { recursive: true });
-          // Never replicated: no lineage yet.
           assertEquals(await inspect(), { status: "unverified" });
           const store = SqliteCommitStore.open(commitsDb);
           await store.close();
@@ -357,7 +349,6 @@ Deno.test({
             checkedAt: "2026-10-25T12:00:00.000Z",
             ok: true,
           };
-          // A verdict on another lineage says nothing about this one.
           await writeReplicaVerification(paths, {
             ...verdict,
             lineageFence: 3,

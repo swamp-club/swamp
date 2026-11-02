@@ -23,7 +23,6 @@ import { z } from "zod";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { refuseSymlinks, startDir } from "./start_session_file_repository.ts";
 
-/** Where a running `swamp start` server can be reached. */
 export interface StartServerRecord {
   readonly pid: number;
   readonly port: number;
@@ -38,17 +37,13 @@ const RecordSchema = z.object({
   startedAt: z.string(),
 });
 
-/**
- * The folder of records, one per `swamp start` process that has the
- * workspace open. Several processes may have one workspace open at once.
- */
 function recordsDir(workspacePath: string): string {
   return join(startDir(workspacePath), "servers");
 }
 
 /**
- * The folders a record lives under. Records hold the page token, so none of
- * them may be a link planted by an imported workspace.
+ * records hold the page token, so none of these folders may be a link planted
+ * by an imported workspace
  */
 function recordFolders(workspacePath: string): string[] {
   return [
@@ -62,7 +57,6 @@ function recordPath(workspacePath: string, pid: number): string {
   return join(recordsDir(workspacePath), `${pid}.json`);
 }
 
-/** Every readable record for the workspace; unreadable ones are skipped. */
 export async function readStartServerRecords(
   workspacePath: string,
 ): Promise<StartServerRecord[]> {
@@ -97,7 +91,6 @@ export async function readStartServerRecords(
   return records;
 }
 
-/** Writes this process's record, mode 0600. */
 export async function writeStartServerRecord(
   workspacePath: string,
   record: StartServerRecord,
@@ -111,7 +104,6 @@ export async function writeStartServerRecord(
   );
 }
 
-/** Deletes one process's record; a missing file is fine. */
 export async function removeStartServerRecord(
   workspacePath: string,
   pid: number,

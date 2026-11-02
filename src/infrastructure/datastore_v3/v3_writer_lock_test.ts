@@ -63,7 +63,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A `commits.db` writer fence kept in memory. */
 function memoryFenceStore(initial?: number): V3WriterFenceStore & {
   raised: number[];
 } {
@@ -83,7 +82,6 @@ function memoryFenceStore(initial?: number): V3WriterFenceStore & {
   };
 }
 
-/** A fence record as another process left it. */
 async function plantFence(
   dir: string,
   fence: number,
@@ -101,7 +99,6 @@ async function plantFence(
       fence,
       holder: "other",
       hostname: host,
-      // No process here has this pid.
       pid: 2147483647,
       ...(process !== null ? { process } : {}),
       nonce: crypto.randomUUID(),
@@ -128,7 +125,6 @@ Deno.test("acquireV3WriterLock: one hold per process, released by the last calle
     assertEquals(holdsV3WriterLock(dir), false);
     assertEquals(v3WriterFence(dir), undefined);
     assertEquals(await handle.inspect(), null, "released");
-    // A release is idempotent.
     await second();
   });
 });
@@ -170,8 +166,6 @@ Deno.test("acquireV3WriterLock: a fence commits.db refuses releases the lease an
     assertEquals(holdsV3WriterLock(dir), false);
     assertEquals(v3WriterFence(dir), undefined);
     assertEquals(await v3WriterLockHandle(dir).inspect(), null);
-    // Nothing in the process joins the failed hold: the next caller takes a
-    // fresh fence.
     const release = await acquireV3WriterLock(dir);
     try {
       assertEquals(v3WriterFence(dir), 2);
@@ -192,7 +186,6 @@ Deno.test("acquireV3WriterLock: another process's hold refuses with its holder n
     assert(error.message.includes("(other, pid 2147483647)"));
     assertEquals(holdsV3WriterLock(dir), false);
 
-    // Once the other process lets go, this one takes the next fence.
     await new FileSystemControlPlaneStore(dir).putIfAbsent(
       releasedKey(1),
       new TextEncoder().encode("{}"),
@@ -267,7 +260,6 @@ Deno.test("acquireV3WriterLock: a record from a swamp before identities is judge
 
 Deno.test("acquireV3WriterLock: a fence record naming this process's own pid is alive, not a predecessor's", async () => {
   await withTempDir(async (dir) => {
-    // As another hold this process took (a read-only recovery's) names it.
     await plantV3WriterLease(dir, { pid: Deno.pid });
     await assertRejects(
       () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
@@ -298,7 +290,6 @@ Deno.test("acquireV3WriterLock: a live Phase 3 writer lock refuses the lease", a
         V3WriterBusyError,
       );
       assert(error.message.includes(`pid ${Deno.pid}`));
-      // Status shows the old lock while it is the one held.
       assertEquals((await v3WriterLockHandle(dir).inspect())?.pid, Deno.pid);
     } finally {
       await legacy.release();
@@ -339,7 +330,6 @@ Deno.test("v3WriterLockHandle: force release marks the lease released, and its h
       assert(await handle.forceRelease(info!.nonce!));
       assertEquals(await handle.inspect(), null);
 
-      // The next writer takes fence 2; the old holder's next check fails.
       const other = await tryAcquireV3WriterLockElsewhere(dir);
       assertEquals(other, 2);
       await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
@@ -350,10 +340,6 @@ Deno.test("v3WriterLockHandle: force release marks the lease released, and its h
   });
 });
 
-/**
- * Takes the next fence as another process would, by creating its record
- * directly, and returns it.
- */
 async function tryAcquireV3WriterLockElsewhere(dir: string): Promise<number> {
   const store = new FileSystemControlPlaneStore(dir);
   const keys = await store.list("writer/");
@@ -385,22 +371,18 @@ Deno.test("tryAcquireV3WriterLock: takes the lease without waiting, or resolves 
 
 Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquire waits for the other writer and takes a higher fence", async () => {
   await withTempDir(async (dir) => {
-    // serve's lifetime hold.
     const lifetime = await acquireV3WriterLock(dir, { retakeLost: true });
     try {
       assertEquals(v3WriterFence(dir), 1);
       const other = await plantV3WriterLease(dir, { pid: Deno.pid });
       await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
 
-      // While the other writer holds it, a new acquire is refused as busy.
       await assertRejects(
         () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
         V3WriterBusyError,
       );
       assertThrows(() => assertV3WriterCurrent(dir), WriterFencedError);
 
-      // Once it is done, the process takes a fresh lease, and the lifetime
-      // hold carries on under it.
       await other.release();
       const next = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
       assertEquals(v3WriterFence(dir), other.fence + 1);
@@ -421,8 +403,6 @@ Deno.test("acquireV3WriterLock: a retake that fails after every other caller rel
     const other = await plantV3WriterLease(dir, { pid: Deno.pid });
     await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
     try {
-      // A second caller waits to take the lost hold again; the first
-      // releases meanwhile; the wait runs out.
       const second = acquireV3WriterLock(dir, { maxWaitMs: 200 });
       await first();
       await assertRejects(() => second, V3WriterBusyError);
@@ -447,8 +427,6 @@ Deno.test("acquireV3WriterLock: a caller that waits is not refused by an attempt
     const other = await plantV3WriterLease(dir, { pid: Deno.pid });
     try {
       await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
-      // The first caller's attempt does not wait, as the renewal timer's
-      // does not; the second joins it, but is willing to wait.
       const quick = acquireV3WriterLock(dir, { maxWaitMs: 0 });
       const patient = acquireV3WriterLock(dir, { maxWaitMs: 5_000 });
       await assertRejects(() => quick, V3WriterBusyError);
@@ -465,15 +443,14 @@ Deno.test("acquireV3WriterLock: a caller that waits is not refused by an attempt
 
 Deno.test("acquireV3WriterLock: a one-shot command's lost hold is not taken again, so it fails as a whole", async () => {
   await withTempDir(async (dir) => {
-    // A CLI write command's hold.
     const command = await acquireV3WriterLock(dir);
     const other = await plantV3WriterLease(dir, { pid: Deno.pid });
     try {
       await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
       await other.release();
-      // Free again, yet the command does not take it back, and nothing in
-      // it joins the lost hold (swamp-club#3564): every later commit and
-      // join is refused, as its error says.
+      // free again, yet the command does not take it back and nothing in it
+      // joins the lost hold: every later commit and join is refused, as its
+      // error says
       await assertRejects(
         () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
         WriterFencedError,
@@ -491,8 +468,6 @@ Deno.test("acquireV3WriterLock: a join finds a loss its renewal has not noticed 
   await withTempDir(async (dir) => {
     const command = await acquireV3WriterLock(dir);
     try {
-      // `lock release --force`, then another writer's fence: the hold's
-      // renewal has not run since.
       await new FileSystemControlPlaneStore(dir).putIfAbsent(
         releasedKey(1),
         new TextEncoder().encode(JSON.stringify({ fence: 1, by: "force" })),
@@ -535,7 +510,6 @@ Deno.test("tryAcquireV3WriterLock: the recovery's hold is renewed until it is re
     assert(release !== undefined);
     const heartbeat = join(dir, V3_WRITER_LEASE_DIR, "heartbeat-000000000001");
     try {
-      // Taking the lease writes the first heartbeat; a renewal rewrites it.
       const first = await Deno.readTextFile(heartbeat);
       await waitFor(
         () => Deno.readTextFile(heartbeat).then((now) => now !== first),
@@ -544,7 +518,6 @@ Deno.test("tryAcquireV3WriterLock: the recovery's hold is renewed until it is re
     } finally {
       await release();
     }
-    // Released, and renewing no more.
     await assertRejects(() => Deno.stat(heartbeat), Deno.errors.NotFound);
     assertEquals(await v3WriterLockHandle(dir).inspect(), null);
   });
@@ -624,7 +597,6 @@ Deno.test("advanceV3WriterLease: moves the process's hold to the next fence and 
       await release();
     }
     assertEquals(await v3WriterLockHandle(dir).inspect(), null);
-    // Without a hold there is nothing to move.
     assertEquals(await advanceV3WriterLease(dir), undefined);
   });
 });

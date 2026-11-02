@@ -262,8 +262,6 @@ Deno.test("FileServerCredentialRepository.save: sets restrictive file permission
   }
 });
 
-// ── SWAMP_SERVER_TOKEN override tests ─────────────────────────────────
-
 Deno.test("FileServerCredentialRepository.get: returns env var credential when SWAMP_SERVER_TOKEN matches URL", async () => {
   const repo = new FileServerCredentialRepository({
     getServerToken: () => "env_token_123",

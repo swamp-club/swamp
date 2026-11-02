@@ -80,7 +80,6 @@ Deno.test("version extraction from redirect URL works with parseVersionFromRedir
     "../../domain/update/update_service.ts"
   );
 
-  // Simulate a redirect URL that the artifact server would return
   const redirectUrl =
     "https://artifacts.swamp-club.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const version = parseVersionFromRedirectUrl(redirectUrl);
@@ -92,7 +91,6 @@ Deno.test("version extraction handles various CalVer formats", async () => {
     "../../domain/update/update_service.ts"
   );
 
-  // Standard release version
   assertEquals(
     parseVersionFromRedirectUrl(
       "https://artifacts.swamp-club.com/swamp/20260101.000000.0-sha.12345678/binary/linux/x86_64/swamp-stable-binary-linux-x86_64.tar.gz",
@@ -100,7 +98,6 @@ Deno.test("version extraction handles various CalVer formats", async () => {
     "20260101.000000.0-sha.12345678",
   );
 
-  // Dev version with empty sha
   assertEquals(
     parseVersionFromRedirectUrl(
       "https://artifacts.swamp-club.com/swamp/20260206.200442.0-sha./binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz",
@@ -109,15 +106,9 @@ Deno.test("version extraction handles various CalVer formats", async () => {
   );
 });
 
-// --- Stream-0 regression net: extract → chmod → xattr removal ---
-
 /**
- * Creates a tarball containing a fake `swamp` binary and returns its bytes
- * (as an ArrayBuffer suitable for `new Response`) plus the SHA-256 checksum
- * the HttpUpdateChecker will need to verify.
- *
- * Built entirely in-process with TarStream + CompressionStream — no external
- * `tar` binary required, which eliminates flaky spawn failures on CI.
+ * builds the tarball in-process with TarStream and CompressionStream, so no
+ * external tar binary is needed and CI has no flaky spawn failures
  */
 async function buildFakeSwampTarball(): Promise<{
   body: ArrayBuffer;
@@ -173,7 +164,6 @@ Deno.test({
     try {
       const { body, checksum } = await buildFakeSwampTarball();
 
-      // Serve the tarball locally so we don't hit the real artifact CDN.
       const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
         return new Response(body, {
           headers: { "content-type": "application/gzip" },
@@ -188,7 +178,6 @@ Deno.test({
         const checker = new HttpUpdateChecker({ tempRoot: tempDir });
         await checker.downloadAndInstall(url, binaryPath, checksum);
 
-        // Binary must exist at the target path
         const stat = await Deno.stat(binaryPath);
         assertEquals(stat.isFile, true);
         // chmod 0o755 must be applied on POSIX — the install path
@@ -225,7 +214,6 @@ Deno.test({
       const { body, checksum } = await buildFakeSwampTarball();
       const binaryPath = join(tempDir, "swamp");
 
-      // Place an initial binary and record its inode
       await Deno.writeTextFile(binaryPath, "#!/bin/sh\necho original\n");
       await Deno.chmod(binaryPath, 0o755);
       const oldStat = await Deno.stat(binaryPath);
@@ -269,7 +257,6 @@ Deno.test({
       const { body, checksum } = await buildFakeSwampTarball();
       const binaryPath = join(tempDir, "swamp");
 
-      // Simulate a stale temp file from a previous crashed update
       const stalePath = join(tempDir, ".swamp.tmp.stale-uuid");
       await Deno.writeTextFile(stalePath, "stale");
       const staleTime = new Date(
@@ -290,7 +277,6 @@ Deno.test({
         const checker = new HttpUpdateChecker({ tempRoot: tempDir });
         await checker.downloadAndInstall(url, binaryPath, checksum);
 
-        // Stale temp file should be cleaned up
         let staleExists = true;
         try {
           await Deno.stat(stalePath);
@@ -323,7 +309,6 @@ Deno.test({
       const { body, checksum } = await buildFakeSwampTarball();
       const binaryPath = join(tempDir, "swamp");
 
-      // Simulate a temp file another update process is still copying
       const inFlightPath = join(tempDir, ".swamp.tmp.in-flight-uuid");
       await Deno.writeTextFile(inFlightPath, "in-flight");
 
@@ -410,8 +395,6 @@ Deno.test({
   },
 });
 
-// --- cleanupStaleBinary tests ---
-
 Deno.test("cleanupStaleBinary: removes .old file when it exists", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-cleanup-test-" });
   try {
@@ -439,16 +422,11 @@ Deno.test("cleanupStaleBinary: succeeds silently when no .old file exists", asyn
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-cleanup-test-" });
   try {
     const binaryPath = join(tempDir, "swamp");
-    // No .old file created — should not throw
     await cleanupStaleBinary(binaryPath);
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
   }
 });
-
-// ============================================================================
-// checkForUpdate retries (swamp-club#3428)
-// ============================================================================
 
 const RETRY_PLATFORM = Platform.from("linux", "x86_64");
 const VERSIONED_URL =
@@ -658,10 +636,6 @@ Deno.test("HttpUpdateChecker.checkForUpdate: a single-attempt 5xx keeps the orig
   assertEquals(error.message, "Failed to check for updates: HTTP 500");
 });
 
-// ============================================================================
-// Cancellation, checksum retries and temp cleanup (swamp-club#3447)
-// ============================================================================
-
 function abortError(): DOMException {
   return new DOMException("The operation was aborted", "AbortError");
 }
@@ -759,7 +733,6 @@ Deno.test("HttpUpdateChecker.fetchChecksum: a 404 is not retried and names the U
   );
 });
 
-/** The names of the update temp directories under `root`. */
 async function updateTempDirs(root: string): Promise<string[]> {
   const names: string[] = [];
   for await (const entry of Deno.readDir(root)) {
@@ -768,10 +741,6 @@ async function updateTempDirs(root: string): Promise<string[]> {
   return names;
 }
 
-/**
- * Runs `downloadAndInstall` against a local server that sends `body`, with
- * temp directories under `root/tmp` and an existing binary at `root/swamp`.
- */
 async function installFromLocalServer(
   root: string,
   body: ArrayBuffer | ReadableStream<Uint8Array>,
@@ -894,7 +863,6 @@ Deno.test({
   },
 });
 
-/** One file operation `replaceBinaryWindows` ran, as `op from -> to`. */
 type OpCall = {
   op: "rename" | "copyFile" | "remove";
   from: string;
@@ -961,10 +929,6 @@ function windowsLikeOps(
   return { ops, calls };
 }
 
-/**
- * Sets up a Windows-style update: the running `swamp.exe` (unless `fresh`)
- * in `<root>/install`, and the extracted new binary in `<root>/temp`.
- */
 async function windowsInstall(root: string, fresh = false) {
   const installDir = join(root, "install");
   const tempDir = join(root, "temp");
@@ -994,11 +958,6 @@ async function swampTempFiles(dir: string): Promise<string[]> {
   return names;
 }
 
-/**
- * Asserts swamp.exe is only absent between two renames inside the install
- * directory: nothing is copied onto it, and the operation after renaming it
- * aside renames a staged temp file from the install directory into place.
- */
 function assertStagedSwap(calls: OpCall[], targetPath: string) {
   const installDir = dirname(targetPath);
   for (const call of calls) {
@@ -1226,7 +1185,6 @@ Deno.test({
 Deno.test({
   name:
     "replaceBinary: permission denied on a rename into a writable directory says the binary is protected",
-  // The Windows strategy has its own tests above
   ignore: Deno.build.os === "windows",
   fn: async () => {
     const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });

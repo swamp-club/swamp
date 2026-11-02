@@ -26,10 +26,6 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 
 const CACHE_FILENAME = "extension-update-checks.json";
 
-/**
- * File-based implementation of ExtensionUpdateCheckRepository.
- * Reads/writes .swamp/extension-update-checks.json.
- */
 export class FileExtensionUpdateCheckRepository
   implements ExtensionUpdateCheckRepository {
   private readonly filePath: string;

@@ -22,27 +22,19 @@ import type { WrittenVersion } from "../../domain/datastore/datastore_sync_servi
 import { getSwampLogger } from "../logging/logger.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 
-/**
- * The data versions one read or list run wrote while another run held its
- * behavior's lock, so it left them for the next run that takes that lock on
- * this host to publish (swamp-club#3934).
- */
 export interface PendingPublish {
-  /** The record's file name, which {@link removePendingPublishes} takes. */
   readonly file: string;
   readonly versions: readonly WrittenVersion[];
 }
 
 /**
- * The directory holding a cache's pending publishes: beside the cache, never
- * in it, so no push walks it and no pull replaces it. One file per deferred
- * run, so two runs recording at once never write the same file.
+ * beside the cache, never in it, so no push walks it and no pull replaces it;
+ * one file per deferred run so concurrent runs never write the same file
  */
 export function pendingPublishDir(cachePath: string): string {
   return join(dirname(cachePath), `${basename(cachePath)}.pending-publish`);
 }
 
-/** Records `written` for the next run that locks their behavior to publish. */
 export async function recordPendingPublish(
   cachePath: string,
   written: readonly WrittenVersion[],
@@ -63,10 +55,7 @@ export async function recordPendingPublish(
   );
 }
 
-/**
- * The pending publishes holding a version of any of `models`. A record that
- * cannot be read or parsed is skipped and kept.
- */
+/** a record that cannot be read or parsed is skipped and kept */
 export async function readPendingPublishes(
   cachePath: string,
   models: ReadonlyArray<{ modelType: string; modelId: string }>,
@@ -100,7 +89,6 @@ export async function readPendingPublishes(
   return records;
 }
 
-/** Removes the pending publishes named `files`; one already gone is fine. */
 export async function removePendingPublishes(
   cachePath: string,
   files: readonly string[],

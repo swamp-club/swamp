@@ -25,49 +25,38 @@ import {
   type RecordFingerprint,
 } from "./workflow_run_index.ts";
 
-/** The most runs the cache holds across all workflows. */
 export const RUN_INDEX_CACHE_MAX_RUNS = 250_000;
 
 /**
- * How recent a file time may be before a cached snapshot built from it is
- * not trusted. A change landing within one tick of a coarse file clock, or
- * on a datastore whose clock runs ahead, could otherwise leave both stats
- * unchanged (the racy-git problem). It covers the index file's ctime too,
- * which Deno reports in whole seconds (swamp-club#3467): a ctime of second
- * S stands for a change anywhere in that second, so a stamp is trusted
- * only once S has passed, and any later change moves it to a later second.
+ * snapshots stamped this recently are not trusted: a change within one clock
+ * tick could leave both stats unchanged, and Deno reports ctime in whole
+ * seconds
  */
 export const RUN_INDEX_RACY_WINDOW_MS = 2_000;
 
 /**
- * What a cached snapshot was built from: the stat of the workflow's run
- * index file, and the mtime of its run records directory. Creating,
- * removing or renaming a record moves the directory's mtime, so an
- * unchanged one means an unchanged record count.
+ * creating, removing or renaming a record moves the directory's mtime, so an
+ * unchanged one means an unchanged record count
  */
 export interface RunIndexStamp {
-  /** The index file's stat, or null when there is no index file. */
   index: RecordFingerprint | null;
-  /** The records directory's mtime, or null when it does not exist. */
   dirMtimeMs: number | null;
 }
 
-/** A loaded snapshot, and whether it was built from the index. */
 export interface LoadedRunIndex {
   snapshot: RunIndexSnapshot;
   /**
-   * Whether it was built from an index file that lists exactly the
-   * workflow's run records. Any other snapshot — built from the records, or
-   * from entries repaired in memory that could not be written back — is
-   * never cached: nothing on disk would move when its records change.
+   * only a snapshot built from an index listing exactly the run records is
+   * cached; any other would leave nothing on disk to move when its records
+   * change
    */
   fromIndex: boolean;
 }
 
 export interface RunIndexCacheOptions {
   /**
-   * Stats the workflow's index file and records directory. Undefined when
-   * the platform gives no mtime to compare by: nothing is cached then.
+   * undefined when the platform gives no mtime to compare by, in which case
+   * nothing is cached
    */
   stamp(workflowId: string): Promise<RunIndexStamp | undefined>;
   maxRuns?: number;
@@ -87,14 +76,8 @@ function sameStamp(a: RunIndexStamp, b: RunIndexStamp): boolean {
 }
 
 /**
- * Run index snapshots kept in memory between reads (swamp-club#3443). A
- * snapshot is reused only while its stamp still matches a fresh stat, so
- * any writer — this process, another CLI process, a datastore pull — that
- * changes the index or adds or removes a record is seen on the next read.
- * Nothing needs to tell the cache about a write.
- *
- * Least recently used workflows are dropped once the cache holds more than
- * `maxRuns` runs.
+ * a snapshot is reused only while its stamp matches a fresh stat, so any writer
+ * is seen on the next read and nothing needs to tell the cache about a write
  */
 export class RunIndexCache {
   readonly #stamp: (workflowId: string) => Promise<RunIndexStamp | undefined>;
@@ -103,10 +86,6 @@ export class RunIndexCache {
   readonly #now: () => number;
   /** In least-recently-used order: the first entry goes first. */
   readonly #entries = new Map<string, CacheEntry>();
-  /**
-   * Loads in flight, by workflow, with the stamp each started from and the
-   * shared read that owns cancellation for all its callers.
-   */
   readonly #loading = new Map<
     string,
     {
@@ -123,29 +102,14 @@ export class RunIndexCache {
     this.#now = options.now ?? Date.now;
   }
 
-  /** Runs held across all cached snapshots. */
   get runs(): number {
     return this.#runs;
   }
 
   /**
-   * The workflow's snapshot: the cached one while its stamp still matches,
-   * else whatever `load` builds, cached when it is safe to reuse. A read
-   * that misses while a load of the same workflow from the same stamp is
-   * in flight waits for that load rather than starting another, so many
-   * readers after one write build the snapshot once. A load started from
-   * an older stamp is not shared: it may predate the write. Nor is one
-   * started from a stamp too recent to trust, which the cache would not
-   * keep either. Cancelling a caller does not cancel the load while another
-   * caller still needs it.
-   *
-   * `load` receives the shared read's signal and should stop when it aborts.
-   * Each caller rejects with its own signal's reason as soon as it aborts.
-   *
-   * A miss is traced as a `swamp.workflow_runs.index.load` span; a hit
-   * opens none. `run_index.joined_inflight` says whether the snapshot it
-   * returned came from a load another read started, and
-   * `workflow_runs.records` how many runs that snapshot holds.
+   * a miss joins an in-flight load from the same stamp; one from an older or
+   * too recent stamp is not shared, as it may predate a write; a load is not
+   * cancelled while another caller needs it
    */
   async get(
     workflowId: string,
@@ -178,7 +142,6 @@ export class RunIndexCache {
     );
   }
 
-  /** {@link get} once the cache has missed. */
   async #miss(
     workflowId: string,
     before: RunIndexStamp | undefined,
@@ -213,7 +176,6 @@ export class RunIndexCache {
     return await read.get(signal);
   }
 
-  /** Builds the workflow's snapshot, and keeps it when that is safe. */
   async #load(
     workflowId: string,
     before: RunIndexStamp | undefined,
@@ -242,7 +204,6 @@ export class RunIndexCache {
     return loaded.snapshot;
   }
 
-  /** Drops the workflow's snapshot. */
   delete(workflowId: string): void {
     const entry = this.#entries.get(workflowId);
     if (!entry) return;
@@ -251,10 +212,8 @@ export class RunIndexCache {
   }
 
   /**
-   * Whether a stamp's times are too recent to rule out a change within the
-   * same clock tick. A time in the future is never trusted. The index's
-   * ctime counts as well as its mtime: a rewrite in place that sets the
-   * mtime back moves only the ctime.
+   * a future time is never trusted; the index ctime counts too, since an
+   * in-place rewrite that sets mtime back moves only ctime
    */
   #racy(stamp: RunIndexStamp): boolean {
     const threshold = this.#now() - this.#racyWindowMs;

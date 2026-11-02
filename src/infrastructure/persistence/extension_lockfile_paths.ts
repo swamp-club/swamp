@@ -22,22 +22,11 @@ import { getManagedConfigBase, managedConfigLockfilePath } from "./paths.ts";
 import type { RepoMarkerData } from "./repo_marker_repository.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 
-/** The file name of every extension lockfile. */
 export const LOCKFILE_NAME = "upstream_extensions.json";
 
 /**
- * Every lockfile an extension install in this checkout can write:
- *
- * - the managed-config lockfile, at the registered config base (a custom
- *   datastore's cache tier) and at the in-repo `.swamp/config` fallback;
- * - the non-managed lockfile next to the models dir the marker (or
- *   `SWAMP_MODELS_DIR`) names;
- * - the default non-managed `extensions/models/upstream_extensions.json`.
- *
- * Covers what `resolveManagedConfigPaths` (cli) and `resolveLockfilePath`
- * (serve) can return for the same marker. Crash recovery accepts a
- * journal only when its lockfile path is one of these, so a planted
- * journal cannot steer recovery's lockfile read elsewhere.
+ * crash recovery accepts a journal only when its lockfile path is one of these,
+ * so a planted journal cannot steer recovery's lockfile read elsewhere
  */
 export function resolveExtensionLockfilePaths(
   repoDir: string,

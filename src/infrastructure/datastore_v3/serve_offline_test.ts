@@ -40,7 +40,6 @@ await initializeLogging({});
 Deno.test("recordServeClock: measures serve's clock against the midpoint of the exchange, from the Date header's second", () => {
   resetServeOfflineForTesting();
   const sentAt = Date.parse("2026-10-30T10:00:00.000Z");
-  // Serve answered in the second 10:05:00, the exchange took 200ms.
   recordServeClock(
     "https://serve.test",
     new Date("2026-10-30T10:05:00.000Z").toUTCString(),
@@ -52,7 +51,6 @@ Deno.test("recordServeClock: measures serve's clock against the midpoint of the 
     uncertaintyMs: 1_100,
     measuredAt: sentAt + 200,
   });
-  // No header, or one that does not parse, keeps the last measurement.
   recordServeClock("https://serve.test", null, sentAt, sentAt);
   recordServeClock("https://serve.test", "not a date", sentAt, sentAt);
   assertEquals(serveClockOf("https://serve.test")?.offsetMs, 300_400);
@@ -106,7 +104,6 @@ Deno.test("reportQueuedOffline: in json mode, says going offline and, once the c
     }, "refused");
     noteQueuedOffline("/tmp/root", "t-1");
     noteQueuedOffline("/tmp/root", "t-2");
-    // Nothing said per commit: the command's result comes first.
     assertEquals(notices.map((notice) => notice.notice), [
       "datastore_offline",
     ]);

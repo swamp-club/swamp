@@ -40,7 +40,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A handle that counts its rebuilds, failing the first `failures`. */
 function countingHandle(failures = 0): V3Datastore & { rebuilds: number } {
   const handle = {
     datastorePath: "/unused",
@@ -75,7 +74,6 @@ Deno.test("alignCheckoutView: a checkout with no view recorded keeps its solo pr
     await alignCheckoutView(repoDir, handle, SOLO, { holdsWriterLock: true });
     await alignCheckoutView(repoDir, handle, SOLO, { holdsWriterLock: true });
     assertEquals(handle.rebuilds, 0);
-    // Stamped: another view now rebuilds.
     await alignCheckoutView(repoDir, handle, SERVE, { holdsWriterLock: true });
     assertEquals(handle.rebuilds, 1);
   });
@@ -97,7 +95,6 @@ Deno.test("alignCheckoutView: another caller, root or datastore rebuilds; switch
       SERVE,
       { ...SERVE, caller: "b".repeat(64) },
       { ...SERVE, root: "/repo/.swamp/_datastore_v3_copies/serve-2" },
-      // The copy at that root moved aside and started afresh.
       {
         ...SERVE,
         root: "/repo/.swamp/_datastore_v3_copies/serve-2",
@@ -111,7 +108,6 @@ Deno.test("alignCheckoutView: another caller, root or datastore rebuilds; switch
       await alignCheckoutView(repoDir, handle, view, { holdsWriterLock: true });
     }
     assertEquals(handle.rebuilds, views.length);
-    // The serve address alone, which names no other root, is no change.
     await alignCheckoutView(
       repoDir,
       handle,

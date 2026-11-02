@@ -29,9 +29,6 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 
-/**
- * In-memory WorkflowRepository for testing.
- */
 class InMemoryWorkflowRepository implements WorkflowRepository {
   private workflows: Map<string, Workflow> = new Map();
 
@@ -157,7 +154,6 @@ Deno.test("CompositeWorkflowRepository findAll deduplicates by name, primary win
   assertEquals(names.includes("shared-name"), true);
   assertEquals(names.includes("ext-unique"), true);
 
-  // The "shared-name" should be the primary one
   const sharedWorkflow = results.find((w) => w.name === "shared-name");
   assertEquals(sharedWorkflow?.id, primaryWorkflow.id);
 });
@@ -170,7 +166,6 @@ Deno.test("CompositeWorkflowRepository save delegates to primary", async () => {
   const workflow = createTestWorkflow("new-workflow");
   await composite.save(workflow);
 
-  // Should be findable in primary
   const found = await primary.findByName("new-workflow");
   assertEquals(found?.id, workflow.id);
 });
@@ -215,7 +210,6 @@ Deno.test("CompositeWorkflowRepository nextId delegates to primary", () => {
   const composite = new CompositeWorkflowRepository(primary, null);
 
   const id = composite.nextId();
-  // Should be a valid UUID-like string
   assertEquals(typeof id, "string");
   assertEquals(id.length > 0, true);
 });
@@ -289,7 +283,6 @@ Deno.test("CompositeWorkflowRepository findAllListings lists findAll, deduplicat
   );
 });
 
-/** An ExtensionWorkflowRepository that counts its full walks. */
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   walks = 0;
 

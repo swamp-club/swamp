@@ -20,7 +20,6 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { ReadWriteLock } from "./read_write_lock.ts";
 
-/** Records whether a pending acquisition has been granted. */
 function track(
   promise: Promise<void>,
 ): { granted: boolean; done: Promise<void> } {
@@ -133,7 +132,6 @@ Deno.test("ReadWriteLock: tryAcquire never queues and never jumps the queue", as
   await exclusive.done;
   lock.release();
 
-  // Idle again: nothing queued, so tryAcquire may take it.
   assertEquals(lock.tryAcquire(), true);
   lock.release();
 

@@ -50,7 +50,6 @@ Deno.test("warnUnreadableLeftOut: one warning names every unreadable record unde
   assertStringIncludes(warnings[0], b);
   assert(!warnings[0].includes(outside), warnings[0]);
   assertStringIncludes(warnings[0], FAKE_ADVICE);
-  // Each listing asks once, even when it has nothing new to say.
   assertEquals(stats.listings, 2);
 });
 

@@ -19,7 +19,6 @@
 
 import type { ReporterContext } from "../../domain/extensions/reporter_context.ts";
 
-/** Caller-supplied fields that the runtime cannot infer on its own. */
 export interface ReporterContextInputs {
   extensionName: string;
   extensionVersion: string;
@@ -27,13 +26,8 @@ export interface ReporterContextInputs {
 }
 
 /**
- * Populates the runtime half of a {@link ReporterContext} (os, arch,
- * shell, denoVersion) and stitches it to the caller-supplied extension
- * and swamp-version fields.
- *
- * The field list is hardcoded — this is the ONLY module allowed to
- * read runtime values into a ReporterContext, which keeps the trust
- * boundary auditable.
+ * the field list is hardcoded: this is the only module allowed to read runtime
+ * values into a ReporterContext, which keeps the trust boundary auditable
  */
 export function collectReporterContext(
   inputs: ReporterContextInputs,

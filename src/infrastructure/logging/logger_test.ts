@@ -38,7 +38,6 @@ import { SecretRedactor } from "../../domain/secrets/mod.ts";
 
 Deno.test("initializeLogging and getSwampLogger", async (t) => {
   await t.step("initializeLogging succeeds", async () => {
-    // Should complete without error
     await initializeLogging({});
   });
 
@@ -86,24 +85,19 @@ Deno.test("getRunLogger", async (t) => {
 });
 
 Deno.test("initializeLogging is idempotent", async () => {
-  // Calling initializeLogging multiple times should not throw an error
-  // LogTape can only be configured once, so subsequent calls are no-ops
   await initializeLogging({});
   await initializeLogging({ prettyOutput: true });
   await initializeLogging({});
 
-  // If we get here without errors, the test passes
   assertEquals(true, true);
 });
 
 Deno.test("initializeLogging accepts prettyOutput option", async () => {
-  // prettyOutput should be accepted without error (idempotent, first call wins)
   await initializeLogging({ prettyOutput: true });
   assertEquals(true, true);
 });
 
 Deno.test("initializeLogging accepts showProperties option", async () => {
-  // showProperties should be accepted without error (idempotent, first call wins)
   await initializeLogging({
     prettyOutput: true,
     showProperties: true,
@@ -112,7 +106,6 @@ Deno.test("initializeLogging accepts showProperties option", async () => {
 });
 
 Deno.test("initializeLogging accepts logLevel option", async () => {
-  // logLevel should be accepted without error (idempotent, first call wins)
   await initializeLogging({ logLevel: "warning" });
   assertEquals(true, true);
 });
@@ -194,13 +187,6 @@ Deno.test("getWorkflowRunLogger", async (t) => {
   });
 });
 
-/**
- * Replaces every console method the console sink can write through with a
- * capturing stub. initializeLogging builds its console sink over the global
- * console, so this injects a capturing sink at the parent-sink boundary:
- * anything the run/model category loggers would emit through the root
- * logger's console sink lands in `lines`.
- */
 function captureConsoleSink(): { lines: string[]; restore: () => void } {
   const original = {
     debug: console.debug,
@@ -317,8 +303,6 @@ Deno.test("initializeLogging: default log mode severs run category console inher
       .info`plain run record must not print`;
     getWorkflowRunLogger("plain-log-wf")
       .info`plain workflow record must not print`;
-    // A non-run category still reaches the console sink — the severed
-    // inheritance is scoped to the run/model categories only.
     getSwampLogger(["plain-log-general"]).info`general record does print`;
 
     assertEquals(
@@ -367,15 +351,9 @@ Deno.test("initializeLogging: quiet mode keeps run file sink at info level", asy
 });
 
 /**
- * Captures the two streams separately, which is the whole point here — the
- * shared `captureConsoleSink()` above funnels every console method into one
- * array, so it cannot tell "reached stderr" from "reached stdout".
- *
- * Both halves matter. LogTape's console sink dispatches by level
- * (debug → console.debug, info → console.info), so a capture that stubbed only
- * console.log would record nothing and pass whether or not the routing works.
- * And the stderr sink writes through Deno.stderr.writeSync rather than any
- * console method, so it has to be stubbed too.
+ * captures stdout and stderr separately; console methods are stubbed by level
+ * and the stderr sink writes via Deno.stderr.writeSync, so a partial stub would
+ * pass without the routing working
  */
 function captureStreams() {
   const stdout: string[] = [];
@@ -431,11 +409,9 @@ Deno.test("initializeLogging: stderrOnly keeps records off stdout in pretty mode
     getSwampLogger(["invite", "link"]).debug`dbg-2254`;
     getSwampLogger(["invite", "link"]).info`inf-2254`;
 
-    // The bug this guards: `prettyOutput` is `!noColor && isStdinTty()`, and
-    // redirecting stdout does not change stdin — so `swamp invite link -v |
-    // pbcopy` from a terminal takes the pretty sink, not the console sink.
-    // Routing only the console sink leaves the pipe corrupted
-    // (swamp-club#2254).
+    // prettyOutput depends on stdin being a tty, so piping stdout from a
+    // terminal still takes the pretty sink; routing only the console sink would
+    // corrupt the pipe
     assertEquals(capture.stdout, []);
     assertStringIncludes(
       capture.stderr.join(""),
@@ -462,9 +438,6 @@ Deno.test("initializeLogging: pretty mode without stderrOnly still writes to std
 
     getSwampLogger(["version"]).info`stdout-2254`;
 
-    // The other ~53 renderers that print through the logger must keep their
-    // output on stdout — `swamp version` among them. Only the commands in
-    // stdout_contract.ts move.
     assertStringIncludes(
       capture.stdout.join(""),
       "stdout-2254",
@@ -518,10 +491,8 @@ Deno.test("initializeLogging: stderrOnly writes one newline per record, not two"
 
       getSwampLogger(["dispatch"]).info`newline check`;
 
-      // Asserted on exact bytes, not a substring: the bug was the sink
-      // appending "\n" to formatter output that already ended with one, and a
-      // substring assertion cannot see a trailing blank line. Both formatters
-      // end with exactly one newline, so the sink must add none.
+      // asserts exact bytes: the sink must add no newline to formatter output
+      // that already ends with one, which a substring check cannot see
       assertEquals(capture.stderr.length, 1);
       const written = capture.stderr[0];
       assertEquals(written.endsWith("\n"), true);
@@ -532,7 +503,6 @@ Deno.test("initializeLogging: stderrOnly writes one newline per record, not two"
   }
 });
 
-/** A record whose message interpolates `value`, as `info("value {v}", { v })` does. */
 function recordHolding(value: string) {
   return {
     category: ["runner"],

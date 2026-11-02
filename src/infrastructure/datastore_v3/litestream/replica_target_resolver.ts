@@ -18,19 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Turns a datastore provider's replica target into the replica its
- * Litestream sidecar replicates to (swamp-club#3507).
- *
- * Also hands lineage collection the provider's replica paths
- * (swamp-club#3531), through {@link resolveV3ReplicaPaths}.
- *
- * Dormant: nothing in production calls it yet. The sidecar still takes its
- * replica from `v3ReplicaSetting()` alone; Phase 4E switches those call
- * sites to {@link resolveV3ReplicaSetting}, and passes
- * {@link resolveV3ReplicaPaths} to lineage collection. Fitness rules in
- * `integration/datastore_v3_rules_test.ts` pin all of it.
- *
- * @module
+ * not called in production yet: the sidecar still takes its replica from
+ * v3ReplicaSetting() alone
  */
 
 import type { DatastoreProvider } from "../../../domain/datastore/datastore_provider.ts";
@@ -49,7 +38,6 @@ import {
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
-/** The replica Litestream replicates to for `target`. */
 export function replicaSettingFromTarget(
   target: V3ReplicaTarget,
 ): V3ReplicaSetting {
@@ -69,12 +57,8 @@ export function replicaSettingFromTarget(
 }
 
 /**
- * The replica a v3 writer of the `datastoreType` datastore replicates to:
- * the internal replica setting (`v3ReplicaSetting()`) when it is set, which
- * tests use, and otherwise the provider's own replica target.
- *
- * @throws UserError when the provider has no `replicaTarget()`, refuses
- * in it, or returns a target swamp cannot use
+ * the internal replica setting wins when set, which tests use; otherwise the
+ * provider's own replica target
  */
 export function resolveV3ReplicaSetting(
   provider: Pick<DatastoreProvider, "replicaTarget">,
@@ -86,14 +70,9 @@ export function resolveV3ReplicaSetting(
 }
 
 /**
- * The replica the provider's own replica target names, whatever the
- * internal replica setting says: what a v3 bucket datastore replicates to
- * in production, and the root its local copy is keyed by
- * (swamp-club#3534). Setup calls it so the provider's refusals surface as
- * they are, in tests too.
- *
- * @throws UserError when the provider has no `replicaTarget()`, refuses
- * in it, or returns a target swamp cannot use
+ * ignores the internal setting: what a v3 bucket datastore replicates to in
+ * production, and the root its local copy is keyed by; setup calls it so the
+ * provider's refusals surface as they are
  */
 export function resolveV3ProviderReplica(
   provider: Pick<DatastoreProvider, "replicaTarget">,
@@ -123,24 +102,18 @@ export function resolveV3ProviderReplica(
 }
 
 /**
- * A provider's replica paths and the replica root they are under: the root
- * of the provider's own replica target. Lineage collection uses the store
- * only for that root, so a replica set elsewhere (the internal setting
- * tests use) never has paths removed from the provider's bucket.
+ * lineage collection uses the store only for the provider's own root, so a
+ * replica set elsewhere (the internal setting) never has paths removed from the
+ * provider's bucket
  */
 export interface V3ReplicaPaths {
-  /** `replicaRootOf` the provider's replica target. */
   readonly root: string;
   readonly store: ReplicaPathStore;
 }
 
 /**
- * The provider's replica paths, which lineage collection removes a
- * replaced lineage's bucket path through, or undefined when the provider
- * has none, or no usable replica target to bind them to. A provider that
- * throws is logged and treated as having none: collection then keeps the
- * paths and records, as it does without the capability, and never fails
- * a command.
+ * a provider that throws is logged and treated as having none: collection then
+ * keeps the paths and records, and never fails a command
  */
 export function resolveV3ReplicaPaths(
   provider: Pick<DatastoreProvider, "replicaPaths" | "replicaTarget">,

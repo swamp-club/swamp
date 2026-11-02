@@ -74,7 +74,6 @@ Deno.test("removeOwnWriterMarker: removes this process's marker and leaves anoth
     await removeOwnWriterMarker(dir);
     assertEquals(await readWriterMarker(dir), undefined);
 
-    // This pid and host under another token: a predecessor's marker.
     const predecessor = {
       hostname: Deno.hostname(),
       pid: Deno.pid,
@@ -90,7 +89,6 @@ Deno.test("removeOwnWriterMarker: removes this process's marker and leaves anoth
     await removeOwnWriterMarker(dir);
     assertEquals(await readWriterMarker(dir), other);
 
-    // No marker at all is not an error.
     await Deno.remove(writerMarkerPath(dir));
     await removeOwnWriterMarker(dir);
   });
@@ -136,7 +134,6 @@ Deno.test("writerMarkerState: knows this process by its token, judges a process 
     assert(own !== undefined && own.instance !== undefined);
     assertEquals(own.process, (await localProcess()).identity);
     assertEquals(writerMarkerState(own, alive), "own");
-    // A restarted container: same host and pid, another process's token.
     assertEquals(
       writerMarkerState(
         { ...own, instance: crypto.randomUUID(), process: kernel },
@@ -161,13 +158,12 @@ Deno.test("writerMarkerState: knows this process by its token, judges a process 
   );
   assertEquals(writerMarkerState(marker(kernel), gone), "interrupted");
   assertEquals(writerMarkerState(marker(kernel), alive), "live");
-  // A pid reused by a process started later (swamp-club#3564).
   assertEquals(
     writerMarkerState(marker({ ...kernel, startTime: "t0" }), alive),
     "interrupted",
   );
-  // Another pid namespace with the same hostname, or a marker from a swamp
-  // before identities: the lease decides, whatever the pid here.
+  // another pid namespace with the same hostname, or a marker from before
+  // identities: the lease decides, whatever the pid here
   assertEquals(
     writerMarkerState(marker({ ...kernel, host: "host#pid:[2]" }), gone),
     "unknown",
@@ -175,9 +171,6 @@ Deno.test("writerMarkerState: knows this process by its token, judges a process 
   assertEquals(writerMarkerState(marker(), gone), "unknown");
 });
 
-// --- swamp-club#3617: a marker a crash left unreadable ---
-
-/** Every marker file readWriterMarker reads as none. */
 const UNREADABLE_MARKERS = [
   "",
   "\0".repeat(80),
@@ -235,15 +228,12 @@ Deno.test("writeWriterMarker: syncs the marker, its directory and the directorie
     });
     assertEquals(files, ["synced"]);
     const stateDir = dirname(writerMarkerPath(dir));
-    // The state directory and every directory created on the way to it
-    // are synced in their parents, up to the temp directory that existed.
     assert(dirs.includes(stateDir), dirs.join(", "));
     assert(dirs.includes(dir), dirs.join(", "));
     assertEquals((await readWriterMarker(dir))?.pid, Deno.pid);
   });
 });
 
-/** A handle that records the recovery it is asked for, and nothing else. */
 function recordingHandle(dir: string, calls: number[]): V3Datastore {
   return {
     datastorePath: dir,
@@ -318,8 +308,6 @@ Deno.test("recoverInterruptedWriter: a marker file that changed by the time the 
       const handle = {
         datastorePath: join(dir, "datastore"),
         writerFence: () => undefined,
-        // The lease is taken: another command recovers and a new writer
-        // writes its marker before this one reads the file again.
         raiseWriterFence: async () => {
           raised++;
           await Deno.writeTextFile(path, after);

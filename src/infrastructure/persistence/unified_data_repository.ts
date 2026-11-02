@@ -114,14 +114,13 @@ import {
 } from "../../domain/data/unreadable_data_version.ts";
 
 /**
- * The latest marker's value when a data name has versions on disk but none
- * promoted, only in-flight deferred writes. Versions start at 1, so no write
- * is ever allocated it and reads through the marker find nothing.
+ * versions start at 1, so no write is ever allocated 0 and reads through the
+ * marker find nothing
  */
 const NO_PROMOTED_VERSION = 0;
 
-// Re-export domain repository types so existing infra-path importers keep working.
-// New domain code should import directly from src/domain/data/repositories.ts.
+// re-exported so importers of the infra path keep working; new domain code
+// imports from domain/data/repositories.ts
 export {
   type GarbageCollectionResult,
   OwnershipValidationError,
@@ -130,13 +129,8 @@ export {
 
 const logger = getSwampLogger(["data", "repository"]);
 
-/** The files of a data version, each its own record key on v3. */
 const DATA_VERSION_FILES: readonly DataVersionFile[] = ["metadata.yaml", "raw"];
 
-/**
- * The data version a write publishes, which decides whether it is synced
- * (swamp-club#4019).
- */
 interface DurableRecord {
   readonly type: ModelType;
   readonly modelId: string;
@@ -145,24 +139,19 @@ interface DurableRecord {
 }
 
 /**
- * Version directories this process has warned cannot be read
- * (swamp-club#3955), so a command that reads one twice, or serve's repeated
- * sweeps, warn about it once.
+ * warned once per process, so a command reading a version twice, or serve's
+ * repeated sweeps, does not repeat the warning
  */
 const warnedUnreadableVersions = new Set<string>();
 
-/** A data name on disk: the key of one versioned record. */
 export interface DataNameKey {
   type: ModelType;
   modelId: string;
   dataName: string;
 }
 
-/** What {@link FileSystemUnifiedDataRepository.inspectVersion} found. */
 export interface VersionInspection {
-  /** Why the version cannot be read; undefined when it can. */
   reason?: UnreadableVersionReason;
-  /** The model name its metadata records, when it records one. */
   modelName?: string;
 }
 
@@ -173,17 +162,9 @@ function looksLikeModelId(name: string): boolean {
 }
 
 /**
- * A purely numeric directory name is ambiguous: it is the version directory of
- * a data item, but it is equally a legitimate *data name* — models that key
- * resources by an external numeric id (a TMDB id, an issue number) produce
- * `{model-id}/{207333}/{2}/`. Depth alone cannot tell the two apart, so the
- * tree walk has to confirm that a numeric directory actually holds a version's
- * `metadata.yaml` before treating its grandparent as a model-id directory.
- *
- * Without this check the walk mistakes the *type* directory for a model-id
- * directory, derives an invalid ModelType from the truncated path, and silently
- * drops every data item under that model — which the catalog backfill then
- * treats as "this model has no data" and deletes from the catalog.
+ * a numeric directory is either a version or a numeric data name, so confirm it
+ * holds metadata.yaml; otherwise the walk mistakes the type dir for a model-id
+ * dir and drops data, which backfill then deletes
  */
 async function hasVersionMetadata(versionDir: string): Promise<boolean> {
   try {
@@ -195,15 +176,9 @@ async function hasVersionMetadata(versionDir: string): Promise<boolean> {
 }
 
 /**
- * Names of the directory entries that are directories, sorted by UTF-16
- * code unit (the default string sort, which no locale can change).
- *
- * Every walk in {@link FileSystemUnifiedDataRepository} visits a level in
- * this order so the same repository walks identically on every filesystem.
- * readdir order is sorted on APFS and NTFS but hash order on ext4, and the
- * catalog backfill inserts rows in walk order, so without the sort a
- * limited `data query` page came back in a different order per machine
- * (swamp-club#3066).
+ * walks visit a level in this order so every filesystem walks identically:
+ * readdir order is sorted on APFS and NTFS but hash order on ext4, and backfill
+ * inserts rows in walk order
  */
 export function sortedSubdirectoryNames(
   entries: Iterable<Pick<Deno.DirEntry, "name" | "isDirectory">>,
@@ -215,28 +190,23 @@ export function sortedSubdirectoryNames(
   return names.sort();
 }
 
-/** {@link sortedSubdirectoryNames} of `dir`; NotFound propagates. */
 async function listSubdirectories(dir: string): Promise<string[]> {
   const entries: Deno.DirEntry[] = [];
   for await (const entry of Deno.readDir(dir)) entries.push(entry);
   return sortedSubdirectoryNames(entries);
 }
 
-/** Sync twin of {@link listSubdirectories}. */
 function listSubdirectoriesSync(dir: string): string[] {
   return sortedSubdirectoryNames(Deno.readDirSync(dir));
 }
 
 /**
- * How long a content file found short against its metadata, even after
- * downloading it again, is used as it is before the next read downloads it
- * again. The remote's copy is short too while another host's push has
- * uploaded the metadata but not yet the content; once that lands, a read
- * after this window picks it up.
+ * the remote's copy is short too while another host has pushed metadata but not
+ * yet content, so a short file is used as is for this window before the next
+ * read downloads it again
  */
 export const ACCEPTED_SHORT_CONTENT_TTL_MS = 30_000;
 
-/** The size of the file at `path`, or null when there is none. */
 async function fileSize(path: string): Promise<number | null> {
   try {
     return (await Deno.stat(path)).size;
@@ -246,7 +216,6 @@ async function fileSize(path: string): Promise<number | null> {
   }
 }
 
-/** Sync twin of {@link fileSize}. */
 function fileSizeSync(path: string): number | null {
   try {
     return Deno.statSync(path).size;
@@ -265,22 +234,8 @@ function hasVersionMetadataSync(versionDir: string): boolean {
 }
 
 /**
- * File system implementation of UnifiedDataRepository.
- *
- * Storage layout:
- * .swamp/data/{normalized-type}/{model-id}/{data-name}/
- *   1/
- *     raw              # Content (binary or text)
- *     metadata.yaml    # Metadata
- *   2/
- *     raw
- *     metadata.yaml
- *   latest             # Text file containing current version (e.g. "2")
- */
-
-/**
- * Suffix of the file beside a data name's directory that holds its version
- * floor (swamp-club#3473). `..` never occurs in a data name.
+ * holds a data name's version floor beside its directory; .. never occurs in a
+ * data name, so it cannot collide
  */
 export const VERSION_FLOOR_SUFFIX = "..version-floor";
 
@@ -294,65 +249,41 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     private readonly markDirty?: MarkDirtyHook,
     private readonly hydrateFile?: HydrateFileHook,
     /**
-     * The namespace this repository writes as (giga-swamp Phase 2). All catalog
-     * rows written here are stamped with this namespace. Defaults to
-     * SOLO_NAMESPACE ('') — the correct value for solo mode and for the ~15
-     * direct construction sites that do not yet resolve a configured namespace.
-     *
-     * PHASE 3 DEPENDENCY: those direct construction sites (libswamp/models/*,
-     * libswamp/data/*, libswamp/workflows/evaluate, domain/workflows/
-     * execution_service, etc.) must thread the configured namespace through in
-     * lockstep with the path resolver prefixing storage paths. Until then they
-     * intentionally default to SOLO_NAMESPACE and write to an un-namespaced
-     * filesystem layout. This is a tracked dependency, not an oversight.
+     * direct construction sites default to SOLO_NAMESPACE and an un-namespaced
+     * layout until they thread the configured namespace through in lockstep
+     * with the path resolver
      */
     public readonly namespace: Namespace = SOLO_NAMESPACE,
     private readonly enableWriteGc: boolean = false,
-    /** Clock for {@link ACCEPTED_SHORT_CONTENT_TTL_MS}; tests inject one. */
     private readonly now: () => number = Date.now,
     public readonly fetchForeignContent?: ForeignContentFetcher,
     /**
-     * Tells content the datastore could not materialise from content that
-     * is absent (swamp-club#3617); consulted only when a content read finds
-     * no file.
+     * content the datastore could not materialise from absent content;
+     * consulted only when a content read finds no file
      */
     public readonly unreadableContent?: UnreadableContentLookup,
     /**
-     * Whether v2 writes are synced to disk before they are published
-     * (swamp-club#4017): the datastore's `durable` setting, off unless the
-     * datastore config or `SWAMP_DATASTORE_DURABLE` turns it on
-     * (`resolveDurableWrites`). Off, a write is atomic but not synced.
+     * off unless the datastore config or SWAMP_DATASTORE_DURABLE turns it on;
+     * off, a write is atomic but not synced
      */
     private readonly durable: boolean = false,
-    /**
-     * How v2 writes are synced (swamp-club#4017); the defaults in
-     * production, recording hooks in tests.
-     */
     private readonly durableWriteHooks: AtomicWriteSync = {},
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
 
   /**
-   * How this repository syncs a durable v2 write (swamp-club#4032): the
-   * full sync, or the macOS ordering barrier where the repository context
-   * chose it (`selectDurableWriteSync`). The workflow service hands it to
-   * the repositories it builds, so they sync the same way.
+   * the workflow service hands it to the repositories it builds, so they sync
+   * the same way
    */
   get writeSync(): AtomicWriteSync {
     return this.durableWriteHooks;
   }
 
   /**
-   * The sync option of a write to `record`, or undefined with durable
-   * writes off or when a v3 commit replays it (swamp-club#4017). On v2 a
-   * version's files, and the directory entries that reach them, are synced
-   * before anything publishes it: the latest marker moving to it, a
-   * non-pending catalog row, or a settled one. On v3 a record whose keys
-   * the unit commits stays unsynced: its commits are durable and replay
-   * rewrites the checkout (swamp-club#3617). A record whose keys the
-   * checkout's datastore filter keeps local is never committed, so it is
-   * synced as on v2 (swamp-club#4019).
+   * on v3 a record the unit commits stays unsynced, as commits are durable and
+   * replay rewrites the checkout; a record kept local by the datastore filter
+   * is never committed, so it syncs as on v2
    */
   private durableSync(record: DurableRecord): AtomicWriteSync | undefined {
     if (!this.durable) return undefined;
@@ -362,11 +293,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Whether the bound v3 unit commits every key that publishes `record`
-   * (swamp-club#4019): the name's latest marker and the version's
-   * `metadata.yaml` and `raw`. One key kept local is enough to sync the
-   * whole version: replay rewrites the others, but not that one, nor the
-   * directory entries that reach it.
+   * one key kept local is enough to sync the whole version: replay rewrites the
+   * others, but not that one nor the directory entries reaching it
    */
   private replayed(record: DurableRecord): boolean {
     const changes = new ModelChanges(record.type, record.modelId);
@@ -384,12 +312,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Syncs the directories that reach a version's directory: the data-name
-   * directory, which holds the version directory's entry, and the model
-   * directory, which holds the data-name directory's. The model directory
-   * is synced on every write, by whichever writer, so a data-name directory
-   * that GC removed and a later save recreated is durable before either
-   * writer publishes under it.
+   * syncs the data-name and model directories, so a data-name directory that GC
+   * removed and a save recreated is durable before either writer publishes
+   * under it
    */
   private async syncVersionReach(
     sync: AtomicWriteSync,
@@ -403,11 +328,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     ]);
   }
 
-  /**
-   * Syncs raw a writer streamed in, on v2, unless the writer synced it on
-   * its own handle: content a subprocess wrote through `getFilePath`, or
-   * lines `writeLine` appended through a handle per line.
-   */
   private async syncWrittenContent(
     sync: AtomicWriteSync | undefined,
     contentPath: string,
@@ -417,12 +337,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await syncExistingFile(contentPath, sync);
   }
 
-  /**
-   * Writes a version's metadata.yaml and raw. On v2 both are written and
-   * synced concurrently, then the version directory once, then the reach,
-   * so the version is durable when this returns; on v3 they are written as
-   * before.
-   */
   private async writeVersionFiles(
     sync: AtomicWriteSync | undefined,
     type: ModelType,
@@ -450,53 +364,23 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await this.syncVersionReach(sync, type, modelId, dataName);
   }
 
-  /**
-   * Content files still short against their metadata after a fresh
-   * download, keyed by content path and recorded size, with the time until
-   * which that copy is used without downloading it again.
-   */
   private readonly acceptedShort = new Map<string, number>();
 
-  /**
-   * Stages a typed change for the configured sync service: the cache has
-   * uncommitted work at `change.path`.
-   *
-   * Called directly only where a write has already landed (see
-   * {@link reassertLatestVersion}); every other mutation goes through
-   * {@link staged}, which signals before and after the write.
-   */
   private async stage(change: StagedChange): Promise<void> {
-    // Every write this repository makes stages its typed changes after it
-    // (swamp-club#3250), so a v3 unit takes no path change from it.
     await signalChange(this.markDirty, change, { typed: true });
   }
 
   /**
-   * Runs a mutation that writes into (or removes from) the cache directory
-   * with its changes signalled before it and, on v2, again once it has
-   * settled (swamp-club#2421): a push that ran while the write was in
-   * flight cannot have cleared the mark for good. A `write` names a file or
-   * directory that exists after the operation; a `remove` names one that is
-   * gone after it. The path is absolute; the wiring layer converts it to a
-   * cache-relative form before forwarding to the sync service. The changes
-   * go into the ambient unit of work bound to this repository's hook, or
-   * straight to the hook, which is a no-op when no sync service is wired.
-   * See `design/enablers/datastores.md` for the contract.
+   * signals before the write and, on v2, again after it, so a push that ran
+   * while the write was in flight cannot have cleared the mark for good
    */
   private staged<T>(
     changes: StagedChange | readonly StagedChange[],
     write: () => Promise<T>,
   ): Promise<T> {
-    // Every write this repository makes stages its typed changes after it
-    // (swamp-club#3250), so a v3 unit takes no path change from it.
     return withChangeSignalled(this.markDirty, changes, { typed: true }, write);
   }
 
-  /**
-   * Stages one batch of typed changes after a write, on v3 only
-   * (swamp-club#3250): on v2 `build` never runs, so nothing here reads a
-   * file. A batch always lands in one commit.
-   */
   private async stageTypedChanges(
     type: ModelType,
     modelId: string,
@@ -508,11 +392,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /**
-   * A version's files as they are on disk, as typed changes. Called only
-   * after this repository wrote, finalized, appended to or promoted the
-   * version, so its content is local and current: no ensuring step.
-   */
   private async writtenVersionChanges(
     changes: ModelChanges,
     why: DataWrite,
@@ -542,13 +421,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * A content file as a put's source: its bytes when they inline, otherwise
-   * a stream that opens the file at commit, so large content is never held
-   * in memory until then. The stream is checked against the file's size
-   * now, and against the metadata's checksum when it has one for this size
-   * (an append drops it), so a file changed before the commit is never
-   * committed under metadata that does not describe it (swamp-club#3564).
-   * With it, the file's access as the same stat shows it (swamp-club#3693).
+   * the stream is checked against the file's size and checksum, so a file
+   * changed before the commit is never committed under metadata that does not
+   * describe it
    */
   private async rawSource(
     contentPath: string,
@@ -578,7 +453,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /** The latest marker's bytes, or undefined when there is none. */
   private async readLatestMarkerBytes(
     type: ModelType,
     modelId: string,
@@ -594,7 +468,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /** The marker's put after a write, when the marker now names `version`. */
   private async latestAfterWrite(
     changes: ModelChanges,
     why: DataWrite,
@@ -613,10 +486,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return [changes.latestPut(why, dataName, version, bytes)];
   }
 
-  /**
-   * The marker as a removal left it: a put of what it holds now (a lowered
-   * latest, or NO_PROMOTED_VERSION), or a tombstone when it is gone.
-   */
   private async latestAfterRemoval(
     changes: ModelChanges,
     why: DataRemoval,
@@ -636,7 +505,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     ];
   }
 
-  /** Stages a removed version as its own batch. */
   private async stageRemovedVersion(
     why: DataRemoval,
     type: ModelType,
@@ -652,7 +520,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /** Stages the latest marker as a removal left it, as its own batch. */
   private async stageLatestAfterRemoval(
     why: DataRemoval,
     type: ModelType,
@@ -667,11 +534,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /**
-   * Stages a promoted deferred version: its files and, when the marker moved
-   * to it, the marker. A version whose metadata is gone records no version,
-   * as its catalog row is dropped.
-   */
   private async stagePromotedVersion(
     type: ModelType,
     modelId: string,
@@ -698,7 +560,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           version,
         );
       } else if (existsSync(contentPath)) {
-        // No metadata: checked against its size alone.
         const raw = await this.rawSource(contentPath, undefined);
         files = [
           changes.writeContent(
@@ -724,16 +585,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     });
   }
 
-  /**
-   * Records `data` as the latest version for (type, modelId, data.name) in
-   * the catalog. {@link CatalogStore.upsertNewVersion} sets both latest
-   * flags by version order and demotes lower rows inside a single SQLite
-   * transaction.
-   *
-   * Every production write path that mutates a data item (save, append,
-   * rename, restore, delete-specific-version) calls this exactly once with
-   * the row that should become authoritative afterwards.
-   */
   private catalogUpsert(type: ModelType, modelId: string, data: Data): void {
     this.catalogStore.upsertNewVersion({
       namespace: this.namespace,
@@ -777,8 +628,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       modelId,
       dataName,
     );
-    // A name that leaves the catalog no longer forwards anywhere: a deleted
-    // or expired name reads as not found, as `data get` reads it.
     this.catalogStore.removeRename(
       this.namespace,
       type.normalized,
@@ -789,9 +638,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Records that `dataName` forwards to `renamedTo`. The files are already
-   * authoritative and the catalog is a projection the next backfill rebuilds,
-   * so a failed write only logs.
+   * files are authoritative and the catalog is a projection the next backfill
+   * rebuilds, so a failed write only logs
    */
   private recordRenameForward(
     type: ModelType,
@@ -814,11 +662,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Every model's data, walked in name order at each level: type path
-   * segments, then model id, then data name (see
-   * {@link sortedSubdirectoryNames}). The catalog backfill relies on this
-   * order so a freshly backfilled catalog has the same rowid order on every
-   * filesystem.
+   * walked in name order at each level so a freshly backfilled catalog has the
+   * same rowid order on every filesystem
    */
   async findAllGlobal(options?: FindAllGlobalOptions): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
@@ -839,7 +684,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  /** One type's data, model ids in name order; see {@link findAllGlobal}. */
   async findAllForType(
     type: ModelTypeInput,
     options?: FindAllForTypeOptions,
@@ -855,9 +699,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       for (const modelId of await listSubdirectories(typeDir)) {
         try {
-          // A caller collecting what it skips learns of each data name that
-          // failed, empty metadata included, which otherwise reads as the
-          // data not being there, and still gets the model's other data.
           const unreadable = options?.unreadable;
           const dataItems = unreadable
             ? await this.collectModelData(
@@ -872,7 +713,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             results.push({ data, modelType, modelId });
           }
         } catch (error) {
-          // Skip invalid model directories, telling a caller that asks.
           options?.unreadable?.push({ modelType, modelId, error });
         }
       }
@@ -887,14 +727,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Finds all data items whose `createdAt` is at or after the cutoff using a
-   * two-stage filter (mtime pre-filter, then parse-and-verify) on each
-   * version's metadata.yaml. Old version files are skipped without parse.
-   *
-   * The `_catalog.db` SQLite catalog does not track `createdAt`, so the only
-   * source of truth for time-bounded filtering is the metadata YAML — hence
-   * the same walk shape as `findAllGlobal`, plus a stat per file before
-   * parse.
+   * the catalog does not track createdAt, so metadata.yaml is the source for
+   * time-bounded filtering; an mtime pre-filter skips old files unparsed
    */
   async findAllGlobalSince(
     cutoff: Date,
@@ -909,14 +743,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  /**
-   * Recursively collects all data from the directory tree.
-   * Walks .swamp/data/{type-segments...}/{model-id}/{data-name}/ structure.
-   *
-   * When a directory contains a subdirectory with numeric version directories
-   * (or a "latest" marker file), we've reached a data-name level. The path segments
-   * before the model-id form the model type.
-   */
   private async collectAllData(
     currentDir: string,
     pathSegments: string[],
@@ -927,18 +753,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       const entries = await listSubdirectories(currentDir);
 
-      // Check if we're at a model-id level by seeing if any child directories
-      // contain data-name directories (which contain version subdirectories)
       for (const name of entries) {
         const childPath = join(currentDir, name);
         const childSegments = [...pathSegments, name];
 
-        // Try to determine if this is a model-id directory by checking if
-        // its children look like data-name directories (containing version dirs)
         const isModelIdDir = await this.isModelIdDirectory(childPath);
 
         if (isModelIdDir && childSegments.length >= 2) {
-          // pathSegments = type segments, name = model ID
           const typeSegments = pathSegments;
           const modelId = name;
           const typeStr = typeSegments.join("/");
@@ -952,15 +773,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               results.push({ data, modelType, modelId });
             }
           } catch {
-            // Not a valid model type — every data item below this directory is
-            // dropped from the walk. Logged because a silent drop here reads
-            // downstream as "this model has no data", which the catalog
-            // backfill then commits by deleting the model's rows.
+            // an invalid model type drops every item below it from the walk;
+            // logged because a silent drop reads as no data and the catalog
+            // backfill then deletes the model's rows
             logger
               .debug`Skipping ${childPath} during walk: ${typeStr} is not a valid model type. If data is missing from data query, run swamp doctor datastores --repair.`;
           }
         } else {
-          // Keep recursing deeper into type directories
           await this.collectAllData(
             childPath,
             childSegments,
@@ -977,12 +796,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /**
-   * Every data name on disk, found by the same walk as
-   * {@link collectAllData} and in the same order, without reading any
-   * version. For `swamp doctor datastores`, which checks each name's
-   * published versions itself (swamp-club#3955).
-   */
   iterateDataNames(): AsyncIterable<DataNameKey> {
     return this.walkDataNames(this.getBaseDir(), []);
   }
@@ -1008,7 +821,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         try {
           type = ModelType.create(pathSegments.join("/"));
         } catch {
-          // Not a valid model type: the walk skips it, as collectAllData does.
           continue;
         }
         let dataNames: string[];
@@ -1027,11 +839,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /**
-   * Like `findAllForModel`, but only returns data items whose latest-version
-   * `createdAt` is at or after the cutoff. Stats the metadata file first
-   * (Stage A) so old data is skipped without parsing.
-   */
   private async findAllForModelSince(
     type: ModelType,
     modelId: string,
@@ -1058,7 +865,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           latestVersion,
         );
 
-        // Stage A: mtime pre-filter
         try {
           const stat = await Deno.stat(metadataPath);
           const mtimeMs = stat.mtime?.getTime();
@@ -1068,7 +874,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           throw error;
         }
 
-        // Stage B: parse and verify
         const data = await this.findByName(type, modelId, dataName);
         if (!data) continue;
         if (data.createdAt.getTime() < cutoffMs) continue;
@@ -1087,20 +892,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  /**
-   * Checks if a directory looks like a model-id directory by examining
-   * if its children contain version subdirectories or a "latest" marker file.
-   */
   private async isModelIdDirectory(dir: string): Promise<boolean> {
     try {
       for await (const entry of Deno.readDir(dir)) {
         if (!entry.isDirectory && !entry.isSymlink) continue;
 
-        // Check if this child is a data-name directory by looking for
-        // numeric version subdirectories (1/, 2/, 3/, ...).
-        // We intentionally skip checking for "latest" here because a data
-        // item could be literally named "latest", which would cause a
-        // type directory to be misidentified as a model-ID directory.
+        // latest is not checked here: a data item can be named latest, which
+        // would make a type directory look like a model-id directory
         const childPath = join(dir, entry.name);
         try {
           for await (const subEntry of Deno.readDir(childPath)) {
@@ -1135,9 +933,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * With `strict`, a metadata file that parses to nothing (an empty or
-   * truncated `metadata.yaml`) throws SyntaxError, and one missing from a
-   * version that exists throws NotFound, instead of reading as no data.
+   * with strict, a metadata file that parses to nothing throws SyntaxError and
+   * one missing from an existing version throws NotFound, instead of reading as
+   * no data
    */
   private async findByNameWithDepth(
     type: ModelType,
@@ -1170,7 +968,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             `metadata.yaml of ${dataName} version ${versionToRead} is empty`,
           );
         }
-        // Reads as not found; a published version says so (swamp-club#3955).
         this.warnUnreadableVersion(
           type,
           modelId,
@@ -1182,7 +979,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
       const data = Data.fromData(metadata);
 
-      // Follow forward references for latest lookups (not explicit version requests)
       if (version === undefined && data.isRenamed && data.renamedTo) {
         if (depth >= 5) {
           logger
@@ -1219,7 +1015,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataId: DataId,
     version?: number,
   ): Promise<Data | null> {
-    // We need to scan all data directories to find the one with this ID
     const dataDir = this.getModelDataDir(type, modelId);
     try {
       for await (const entry of Deno.readDir(dataDir)) {
@@ -1268,7 +1063,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return versions.sort((a, b) => a - b);
   }
 
-  /** One model's data, in data-name order; see {@link findAllGlobal}. */
   async findAllForModel(
     type: ModelTypeInput,
     modelId: string,
@@ -1280,10 +1074,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return await this.collectModelData(coerceModelType(type), modelId);
   }
 
-  /**
-   * One model's data, a data name at a time; see {@link findAllForModel}.
-   * Each name is read only when the consumer asks for the next item.
-   */
   async *iterateForModel(
     type: ModelTypeInput,
     modelId: string,
@@ -1312,15 +1102,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /**
-   * The latest data of each name under a model, following rename forwards.
-   * Each rename marker followed is pushed to `renames` when given.
-   *
-   * With `skipped`, a data name that cannot be read, or whose metadata is
-   * empty or missing (see {@link findByNameWithDepth}), is passed to it and
-   * the other names are still read; without it, any such name fails the
-   * whole model, and missing or empty metadata reads as no data.
-   */
   private async collectModelData(
     type: ModelType,
     modelId: string,
@@ -1359,12 +1140,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  /**
-   * Adds one data name's latest data to `results`, unless `seen` already
-   * holds its name: its own latest version, then a rename marker followed
-   * from depth 1 — the same reads as an unversioned findByName, with the
-   * marker visible on the way.
-   */
   private async collectDataName(
     type: ModelType,
     modelId: string,
@@ -1415,11 +1190,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     });
   }
 
-  /**
-   * Saves a new version. `stageAs` is the write its typed changes stage as;
-   * rename passes undefined and stages the version itself, with its own
-   * intent, in the rename's batch.
-   */
   private async saveVersion(
     type: ModelType,
     modelId: string,
@@ -1427,23 +1197,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     content: Uint8Array,
     stageAs: DataWrite | undefined,
   ): Promise<{ version: number; checksum?: string }> {
-    // Reject reserved data names that collide with internal markers
     if (isReservedDataName(data.name)) {
       throw new Error(
         `Data name '${data.name}' is reserved for internal use. Use a different name.`,
       );
     }
 
-    // Pre-write notify with the data-name directory: version not yet
-    // allocated, so the truthful signal is "this subtree is changing."
     return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
     }, async () => {
-      // Check if data with this name already exists
       const existing = await this.findByName(type, modelId, data.name);
       if (existing) {
-        // Validate ownership
         if (!existing.isOwnedBy(data.ownerDefinition)) {
           throw new OwnershipValidationError(
             data.name,
@@ -1453,7 +1218,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
 
-      // Atomically allocate a new version directory
       const { version: newVersion, priorVersions } = await this
         .atomicAllocateVersionDir(
           type,
@@ -1461,7 +1225,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           data.name,
         );
 
-      // Create the data with updated version and size
       const checksum = await this.computeChecksum(content);
       const dataToSave = data.withNewVersion({
         version: newVersion,
@@ -1469,9 +1232,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         checksum,
       });
 
-      // Save metadata and content, durable on v2 before the marker moves
       const metadata = dataToSave.toData();
-      // Remove undefined values
       const cleanData = JSON.parse(JSON.stringify(metadata));
       const metadataContent = stringifyYaml(
         cleanData as Record<string, unknown>,
@@ -1491,7 +1252,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         content,
       );
 
-      // Update latest marker
       await this.advanceLatestMarker(
         type,
         modelId,
@@ -1500,8 +1260,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         () => this.catalogUpsert(type, modelId, dataToSave),
       );
 
-      // Staged before the prune below, so a failed prune never leaves the
-      // version local-only.
+      // staged before the prune below, so a failed prune never leaves the
+      // version local-only
       if (stageAs !== undefined) {
         await this.stageTypedChanges(type, modelId, async (changes) => [
           ...await this.writtenVersionChanges(
@@ -1535,8 +1295,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
       }
 
-      // Reported only on v3, where a run record keeps it (swamp-club#3279);
-      // nothing about a v2 save changes.
       return typedStagingActive(this.markDirty)
         ? { version: newVersion, checksum }
         : { version: newVersion };
@@ -1583,8 +1341,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         checksum,
       });
       try {
-        // Register the write as pending before any of its files reach disk, so
-        // delete and GC never mistake the new version for a promoted one.
+        // registered as pending before any file reaches disk, so delete and GC
+        // never mistake the new version for a promoted one
         this.upsertPendingRow(type, modelId, dataToSave);
 
         const metadata = dataToSave.toData();
@@ -1592,8 +1350,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         const metadataContent = stringifyYaml(
           cleanData as Record<string, unknown>,
         );
-        // Durable on v2 before the receipt returns, so promotion only ever
-        // settles a synced version; a failed sync rolls back below.
+        // durable on v2 before the receipt returns, so promotion only settles a
+        // synced version
         await this.writeVersionFiles(
           this.durableSync({
             type,
@@ -1609,8 +1367,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           content,
         );
       } catch (error) {
-        // No receipt reaches the caller, so nothing else would roll this
-        // version back; its pending row would stay under this live process.
+        // no receipt reaches the caller, so nothing else would roll this
+        // version back
         await this.rollbackKeepingError([
           { type, modelId, dataName: data.name, version: newVersion },
         ]);
@@ -1650,9 +1408,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         throw new Error(`Data "${dataName}" is not configured for streaming`);
       }
 
-      // Appending to a missing or stale content file would write new bytes
+      // appending to a missing or stale content file would write new bytes
       // after a truncated prefix, record that size, and push the corrupt file
-      // (swamp-club#3178).
       const availability = await this.ensureContentFile(
         type,
         modelId,
@@ -1678,10 +1435,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         latestVersion,
       );
       await assertSafePath(contentPath, this.baseDir);
-      // On v3 the append edits the version it was loaded from: its metadata
-      // put expects the digest it replaces, so a version another writer
-      // recorded under this number refuses it rather than being overwritten.
-      // Read only on v3, before the rewrite destroys it.
+      // on v3 the metadata put expects the digest it replaces, so a version
+      // another writer recorded under this number refuses it; read before the
+      // rewrite destroys it
       const priorMetadata = typedStagingActive(this.markDirty)
         ? await this.computeChecksum(
           await Deno.readFile(
@@ -1698,8 +1454,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const file = await Deno.open(contentPath, { append: true });
       try {
         await file.write(content);
-        // On v2 the appended bytes are synced on the handle that wrote
-        // them, before the metadata and catalog record the new size.
+        // on v2 the appended bytes are synced on the handle that wrote them,
+        // before the metadata and catalog record the new size
         if (sync !== undefined) {
           await syncWrittenFile(
             file,
@@ -1711,7 +1467,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         file.close();
       }
 
-      // Update metadata with new size (O(1) via stat, no file read)
       const stat = await Deno.stat(contentPath);
       const metadataPath = this.getMetadataPath(
         type,
@@ -1721,8 +1476,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
       const metadata = data.toData();
       metadata.size = stat.size;
-      // Remove stale checksum — content has changed and recomputing
-      // would require reading the entire file into memory
+      // stale checksum dropped: the content changed and recomputing it would
+      // read the whole file into memory
       delete metadata.checksum;
       const cleanData = JSON.parse(JSON.stringify(metadata));
       await atomicWriteTextFile(
@@ -1731,11 +1486,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         sync === undefined ? undefined : { sync },
       );
 
-      // Update catalog with new size
       const updatedData = Data.fromData(metadata);
       this.catalogUpsert(type, modelId, updatedData);
 
-      // The append re-records the live version it extended.
       await this.stageTypedChanges(
         type,
         modelId,
@@ -1769,9 +1522,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
       versionToRead,
     );
-    // Without this a file that was never pulled streamed as empty, and one
-    // left stale by a metadata-only pull streamed its old bytes
-    // (swamp-club#3178).
+    // ensures content first, so a never-pulled file does not stream as empty
+    // and a stale one does not stream its old bytes
     await this.ensureContentFile(type, modelId, dataName, versionToRead);
 
     try {
@@ -1835,11 +1587,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /**
-   * Throws when the datastore recorded the missing content at `contentPath`
-   * as unreadable (swamp-club#3617), so the read fails loudly instead of
-   * reading as absent. Content that is simply absent returns.
-   */
   private async throwIfUnreadable(contentPath: string): Promise<void> {
     const error = await this.unreadableContent?.(contentPath);
     if (error !== undefined) throw error;
@@ -1857,10 +1604,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const versionToRead = version ??
       await this.getLatestVersion(modelType, modelId, dataName);
     if (!this.hydrateFile) {
-      // Nothing could replace the file, but the synchronous readers that
-      // ensure content first must fail loudly on a record the datastore
-      // could not materialise rather than read it as empty
-      // (swamp-club#3617). Only an absent file is looked up.
+      // synchronous readers must fail loudly on a record the datastore could
+      // not materialise rather than read it as empty; only an absent file is
+      // looked up
       if (versionToRead !== null) {
         const contentPath = this.getContentPath(
           modelType,
@@ -1892,8 +1638,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     size: number,
   ): boolean {
     if (!this.hydrateFile) {
-      // Nothing could replace the file, so it is read as it is; a published
-      // version stored short says so (swamp-club#3955).
       this.warnShortContent(type, modelId, dataName, version, size);
       return true;
     }
@@ -1905,18 +1649,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The content-ensuring step every read of a content file goes through
-   * (swamp-club#3178). With a hydrate hook, a missing file is downloaded,
-   * and so is one shorter than the size its metadata records: a
-   * metadata-only pull brings the new size of a version another host
-   * appended to but leaves the old bytes. A local write never leaves a file
-   * short: append writes the content before the metadata, and save writes
-   * the metadata first while the content file is still absent. A file
-   * still short after the download is the remote's copy; it is used as it
-   * is for {@link ACCEPTED_SHORT_CONTENT_TTL_MS}.
-   *
-   * Without a hydrate hook nothing could replace the file, so it is
-   * `current` without being looked at, and callers read it as before.
+   * with a hydrate hook a missing or short file is downloaded; one still short
+   * after is the remote's copy and is used for the accepted-short TTL. Without
+   * a hook the file is current unlooked-at.
    */
   private async ensureContentFile(
     type: ModelType,
@@ -1928,10 +1663,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const hydrate = this.hydrateFile;
     if (!hydrate) return "current";
     const contentPath = this.getContentPath(type, modelId, dataName, version);
-    // The recorded size is read before the file is: a local append writes
-    // raw before metadata.yaml, so a size read first can never exceed the
-    // file's. Read after, it could be the size of an append that landed in
-    // between, and the current file would look stale and be replaced.
+    // recorded size is read before the file: a local append writes raw before
+    // metadata, so this order never sees a size larger than the file's and
+    // replaces a current file
     const recordedSize = knownSize ??
       await this.readRecordedSize(type, modelId, dataName, version);
     let localSize = await fileSize(contentPath);
@@ -1963,11 +1697,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return "acceptedShort";
   }
 
-  /**
-   * Whether a refresh within {@link ACCEPTED_SHORT_CONTENT_TTL_MS} found
-   * the content at `contentPath` short of `recordedSize`. An expired entry
-   * is deleted, so a long-lived repository does not accumulate them.
-   */
   private isAcceptedShort(contentPath: string, recordedSize: number): boolean {
     const key = `${contentPath}\0${recordedSize}`;
     const until = this.acceptedShort.get(key);
@@ -1977,7 +1706,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return false;
   }
 
-  /** The size a version's metadata records, if it records one. */
   private async readRecordedSize(
     type: ModelType,
     modelId: string,
@@ -1995,8 +1723,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (error instanceof Deno.errors.NotFound) return undefined;
       throw error;
     }
-    // A metadata file that does not parse records no size; the read goes
-    // ahead as it did before the size check.
     let metadata: { size?: unknown } | null;
     try {
       metadata = parseYaml(text) as { size?: unknown } | null;
@@ -2012,12 +1738,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Promise<void> {
-    // File removal, catalog rows, latest-marker upkeep and change staging
-    // are measured apart into the running diagnostic phase, if any. Staging
-    // wraps the removal it signals; the nested measurement is exclusive.
     const tally = currentDiagnosticTally();
     if (version !== undefined) {
-      // Delete specific version
       const versionDir = this.getPath(type, modelId, dataName, version);
       let removed = false;
       await tally.measure("change_stage", () =>
@@ -2037,9 +1759,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           })));
       tally.add("versions_removed", removed ? 1 : 0);
 
-      // Drop the deleted version's catalog row before touching the latest
-      // marker — leaves the catalog in a valid state even if the follow-up
-      // latest update fails.
+      // drop the catalog row before touching the latest marker, so the catalog
+      // stays valid even if the marker update fails
       tally.measureSync("catalog_update", () => {
         this.catalogStore.removeVersion(
           this.namespace,
@@ -2052,7 +1773,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         this.catalogStore.recordLocalWrite();
       });
 
-      // Update latest marker if needed
       await tally.measure("latest_update", async () => {
         const { onDisk, promoted } = await this.listPromotedVersions(
           type,
@@ -2063,7 +1783,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         const newLatest = maxOf(promoted);
         if (newLatest !== undefined) {
           await this.updateLatestMarker(type, modelId, dataName, newLatest);
-          // Update catalog to reflect new latest version
           const latestData = await this.findByName(
             type,
             modelId,
@@ -2071,8 +1790,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             newLatest,
           );
           if (latestData?.isRenamed && latestData.renamedTo) {
-            // The rename marker stays latest: the name still forwards, and a
-            // marker is not a catalog row.
+            // the rename marker stays latest: the name still forwards, and a
+            // marker is not a catalog row
             const forwardTo = latestData.renamedTo;
             tally.measureSync("catalog_update", () => {
               this.catalogRemove(type, modelId, dataName);
@@ -2085,10 +1804,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             );
           }
         } else if (onDisk.length > 0) {
-          // Only in-flight deferred writes are left. Point the marker at
-          // NO_PROMOTED_VERSION, which no write is ever allocated, so reads
-          // find nothing instead of falling back to the highest version on
-          // disk; the write's promotion moves the marker forward again.
+          // only in-flight deferred writes remain: point at NO_PROMOTED_VERSION
+          // so reads find nothing instead of the highest version on disk;
+          // promotion moves the marker forward again
           await this.updateLatestMarker(
             type,
             modelId,
@@ -2096,10 +1814,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             NO_PROMOTED_VERSION,
           );
         } else {
-          // No versions left, remove the data name directory. The latest
-          // marker goes with it, so its removal is staged too: unstaged, a
-          // synced datastore kept a remote `latest` naming a version no
-          // longer there (swamp-club#3473).
+          // the latest marker goes with the directory, so its removal is staged
+          // too; unstaged, a synced datastore keeps a remote latest naming a
+          // version that is gone
           const dataNameDir = this.getDataNameDir(type, modelId, dataName);
           await tally.measure("change_stage", () =>
             this.staged(
@@ -2135,11 +1852,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
       });
     } else {
-      // Delete all versions. Emit per-version-directory signals so the
-      // sync service sees individual absent paths it can match against
-      // its index — a single data-name-directory signal does not map to
-      // any individual index entry and the extension skips deletion.
-      // Matches the collectGarbage pattern (swamp-club#2277).
+      // emit per-version-directory removals so the sync service sees individual
+      // absent paths it can match against its index; one data-name directory
+      // signal maps to no index entry
       const dataNameDir = this.getDataNameDir(type, modelId, dataName);
       let versions: number[] = [];
       let removals: StagedChange[];
@@ -2154,8 +1869,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }));
         removals.push({ kind: "remove", path: join(dataNameDir, "latest") });
       } catch {
-        // Enumeration failed (directory absent, lazy hydration) — fall
-        // back to the data-name directory signal.
         removals = [{ kind: "remove", path: dataNameDir }];
       }
       await tally.measure(
@@ -2177,9 +1890,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         "catalog_update",
         () => this.catalogRemove(type, modelId, dataName),
       );
-      // Each version seen is its own versioned tombstone, so a version
-      // written concurrently survives; one batch each, so a name with many
-      // versions splits across commits.
+      // each version seen is its own versioned tombstone so a concurrently
+      // written version survives; one batch each, so a name with many versions
+      // splits across commits
       await tally.measure("change_stage", async () => {
         for (const v of versions) {
           await this.stageRemovedVersion(
@@ -2200,10 +1913,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  /**
-   * Removes the latest marker for expired data (soft delete).
-   * Version directories remain on disk but data becomes inaccessible.
-   */
   async removeLatestMarker(
     type: ModelType,
     modelId: string,
@@ -2219,11 +1928,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
         }
-        // Marker already missing is OK
       }
 
       this.catalogRemove(type, modelId, dataName);
-      // Expiry: a version-less data.gc of the marker; the versions stay.
       await this.stageTypedChanges(
         type,
         modelId,
@@ -2246,13 +1953,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       newVersion: number;
     }
   > {
-    // Old-name directory covers tombstone, content, and latest-marker
-    // writes. The inner save() emits its own per-path signal for newName.
     return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, oldName),
     }, async () => {
-      // Read the latest version of old data
       const oldData = await this.findByName(type, modelId, oldName);
       if (!oldData) {
         throw new Error(`Data "${oldName}" not found`);
@@ -2261,13 +1965,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         throw new Error(`Data "${oldName}" is already deleted or renamed`);
       }
 
-      // Verify new name doesn't already have active data
       const existingNew = await this.findByName(type, modelId, newName);
       if (existingNew && !existingNew.isDeleted) {
         throw new Error(`Data "${newName}" already exists`);
       }
 
-      // Read the content to copy
       const content = await this.getContent(
         type,
         modelId,
@@ -2280,7 +1982,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
       }
 
-      // Create new data under the new name with a fresh ID
       const newData = Data.create({
         name: newName,
         contentType: oldData.contentType,
@@ -2291,8 +1992,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         ownerDefinition: { ...oldData.ownerDefinition },
       });
 
-      // Save under the new name. Its typed changes stage below, in the
-      // rename's own batch with the rename intent.
       const { version: newVersion } = await this.saveVersion(
         type,
         modelId,
@@ -2302,9 +2001,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
       let tombstoneVersion = 0;
 
-      // Write a tombstone with forward reference on the old name.
-      // If this fails, roll back the newly saved data to avoid an inconsistent
-      // state where both old and new names have valid active data.
+      // if the tombstone write fails, roll back the new data so old and new
+      // names never both hold active data
       try {
         const versions = await this.listVersions(type, modelId, oldName);
         const nextTombstoneVersion = (maxOf(versions) ?? 0) + 1;
@@ -2313,7 +2011,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           renamedTo: newName,
         });
 
-        // Save tombstone metadata and content
         ({ version: tombstoneVersion } = await this.atomicAllocateVersionDir(
           type,
           modelId,
@@ -2350,10 +2047,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           tombstoneContent,
         );
 
-        // Update latest marker to point to tombstone
         await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
       } catch (tombstoneError) {
-        // Roll back: remove the newly created data under the new name
         logger
           .warn`Tombstone write failed during rename ${oldName} -> ${newName}. Rolling back new data.`;
         try {
@@ -2364,9 +2059,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             newVersion,
           );
           await Deno.remove(newVersionDir, { recursive: true });
-          // If this was the only version, clean up the data name directory.
-          // Otherwise, reset the latest marker to the highest remaining version
-          // to avoid a corrupted marker pointing to the deleted version.
+          // only version: remove the data name directory; otherwise reset
+          // latest to the highest remaining version so the marker never points
+          // at the deleted one
           const remaining = await this.listVersions(type, modelId, newName);
           const maxRemaining = maxOf(remaining);
           if (maxRemaining === undefined) {
@@ -2381,8 +2076,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             String(rollbackError)
           }. Manual cleanup may be needed.`;
         }
-        // The new version was never staged; stage the new name's marker as
-        // the rollback left it. A staging error must not hide the rename's.
+        // the new version was never staged, so stage the new name's marker as
+        // the rollback left it; a staging error must not hide the rename's
         try {
           await this.stageLatestAfterRemoval(
             "data.delete",
@@ -2397,9 +2092,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         throw tombstoneError;
       }
 
-      // One batch, so the rename lands in one commit: the new name's version
-      // and the old name's marker version, both with the rename intent, and
-      // each name's latest marker.
+      // one batch so the rename lands in one commit: the new name's version,
+      // the old name's marker version, and each name's latest marker
       const why: DataWrite = {
         kind: "data.rename",
         from: oldName,
@@ -2440,10 +2134,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         ),
       ]);
 
-      // The old name is now a tombstone: drop its rows and record the forward
-      // so data query can follow it. Outside the rollback above: the files are
-      // authoritative and the catalog is a projection the next backfill
-      // rebuilds, so a failed catalog write must never undo the rename.
+      // outside the rollback above: files are authoritative and the catalog is
+      // a projection the next backfill rebuilds, so a failed catalog write must
+      // never undo the rename
       try {
         this.catalogRemove(type, modelId, oldName);
       } catch (error) {
@@ -2475,20 +2168,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       syncContent?: (file: Deno.FsFile) => Promise<void>;
     }
   > {
-    // Reject reserved data names that collide with internal markers
     if (isReservedDataName(data.name)) {
       throw new Error(
         `Data name '${data.name}' is reserved for internal use. Use a different name.`,
       );
     }
 
-    // Pre-write notify with the data-name directory: version not yet
-    // allocated. Same granularity as save/append.
     return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
     }, async () => {
-      // Validate ownership if data with this name already exists
       const existing = await this.findByName(type, modelId, data.name);
       if (existing) {
         if (!existing.isOwnedBy(data.ownerDefinition)) {
@@ -2500,7 +2189,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
 
-      // Atomically allocate a new version directory
       const { version: newVersion, priorVersions } = await this
         .atomicAllocateVersionDir(
           type,
@@ -2508,8 +2196,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           data.name,
         );
 
-      // A deferred write is registered as pending before its content is
-      // streamed in; finalizeVersionDeferred completes the row.
       if (options?.deferred) {
         try {
           this.upsertPendingRow(
@@ -2518,8 +2204,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             data.withNewVersion({ version: newVersion, size: 0 }),
           );
         } catch (error) {
-          // The writer never gets the allocation, so nothing else would roll
-          // the empty version directory back.
+          // the writer never gets the allocation, so nothing else would roll
+          // the empty version directory back
           await this.rollbackKeepingError([
             { type, modelId, dataName: data.name, version: newVersion },
           ]);
@@ -2534,9 +2220,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         newVersion,
       );
 
-      // On v2 the writer syncs what it streams in (swamp-club#4017),
-      // through this repository's sync policy (swamp-club#4032). The hook
-      // is called bare: the writer names the path in its own error.
+      // on v2 the writer syncs what it streams in through this repository's
+      // sync policy; the hook is called bare because the writer names the path
+      // in its own error
       const sync = this.durableSync({
         type,
         modelId,
@@ -2565,8 +2251,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     priorVersions?: number[],
     options?: { contentSynced?: boolean },
   ): Promise<{ size: number; checksum: string }> {
-    // Version is known here (allocateVersion has already run); pass the
-    // version directory as the per-call signal.
     return await this.staged({
       kind: "write",
       path: this.getPath(type, modelId, data.name, version),
@@ -2578,7 +2262,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         version,
       );
 
-      // Read content to compute size and checksum
       const content = await Deno.readFile(contentPath);
       const size = content.length;
       const checksum = await this.computeChecksum(content);
@@ -2590,14 +2273,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       });
       await this.syncWrittenContent(sync, contentPath, options);
 
-      // Create the data with updated version, size, and checksum
       const dataToSave = data.withNewVersion({
         version,
         size,
         checksum,
       });
 
-      // Save metadata
       const metadataPath = this.getMetadataPath(
         type,
         modelId,
@@ -2609,7 +2290,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const metadataContent = stringifyYaml(
         cleanData as Record<string, unknown>,
       );
-      // On v2 the metadata's directory sync also covers raw's entry.
       await atomicWriteTextFile(
         metadataPath,
         metadataContent,
@@ -2619,7 +2299,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         await this.syncVersionReach(sync, type, modelId, data.name);
       }
 
-      // Update latest marker
       await this.advanceLatestMarker(
         type,
         modelId,
@@ -2628,7 +2307,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         () => this.catalogUpsert(type, modelId, dataToSave),
       );
 
-      // The content was streamed in by the writer; it stages from the file.
       const why: DataWrite = { kind: "data.save" };
       await this.stageTypedChanges(type, modelId, async (changes) => [
         ...await this.writtenVersionChanges(
@@ -2744,10 +2422,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.dataName,
           receipt.version,
         );
-        // A writer that never finalized left raw that nothing synced. On v2
-        // it, the version directory holding its entry and the reach are
-        // synced before the row settles or the marker names it, since
-        // content reads go through the marker without the metadata.
+        // a writer that never finalized left raw nothing synced; on v2 sync it,
+        // its version directory and the reach before the row settles or the
+        // marker names it, since content reads skip metadata
         const sync = this.durableSync({
           type: receipt.type,
           modelId: receipt.modelId,
@@ -2780,11 +2457,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             receipt.dataName,
           );
         }
-        // Settle the pending row before the marker moves, so a failure or
-        // crash between the two never leaves a version the marker names
-        // looking like an orphan GC may reclaim. A version without metadata
-        // (a writer that never finalized) had no row before deferred writes
-        // were registered early, and gets none.
+        // settle the pending row before the marker moves, so a crash between
+        // the two never leaves a marker-named version looking like an orphan GC
+        // may reclaim
         this.catalogStore.settlePending(
           this.namespace,
           receipt.type.normalized,
@@ -2822,9 +2497,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         logger
           .warn`Failed to advance latest marker for ${receipt.dataName} v${receipt.version}: ${error}`;
       }
-      // A deferred version reaches v3 when it is promoted. Outside the catch
-      // above, so a v3 staging error is never only logged; collected, so
-      // the receipts after it are still promoted.
+      // outside the catch above so a v3 staging error is never only logged;
+      // collected so the receipts after it are still promoted
       if (promoted !== undefined) {
         try {
           await this.stagePromotedVersion(
@@ -2843,14 +2517,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Enforces a version cap once a deferred write is promoted, as `save`
-   * does for a direct write. A deferred write is not pruned when it is
-   * written, since it may yet be rolled back (swamp-club#3251).
-   *
-   * The promoted version need not be the newest — newer writes may have
-   * been promoted first — so it is counted with the rest and the newest
-   * `cap` are kept, which may drop the promoted version itself.
-   * `pruneExcessVersions` leaves room for one more version, hence `cap + 1`.
+   * the promoted version need not be the newest, so it is counted with the rest
+   * and the newest cap are kept; pruneExcessVersions leaves room for one more,
+   * hence cap + 1
    */
   private async prunePromotedVersion(
     receipt: DeferredWriteReceipt,
@@ -2908,8 +2577,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         logger
           .warn`Failed to rollback version ${receipt.dataName} v${receipt.version}: ${error}`;
       }
-      // An unpromoted version was never staged, so its tombstones are
-      // harmless; they keep v3 right should a rollback follow a promotion.
+      // an unpromoted version was never staged, so its tombstones are harmless
+      // and keep v3 right should a rollback follow a promotion
       if (rolledBack) {
         try {
           await this.stageRemovedVersion(
@@ -2934,11 +2603,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Rolls back a failed write's version on the way to rethrowing the
-   * write's error. On v3 an error of the rollback (its typed staging) is
-   * logged, so it never replaces the error that caused it. On v2 the
-   * rollback runs exactly as it always has, and its error reaches the
-   * caller as before.
+   * on v3 an error of the rollback is logged so it never replaces the write
+   * error that caused it; on v2 it reaches the caller
    */
   private async rollbackKeepingError(
     receipts: DeferredWriteReceipt[],
@@ -2979,8 +2645,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return join(this.getPath(type, modelId, dataName, version), "raw");
   }
 
-  // --- Sync read methods ---
-
   getLatestVersionSync(
     type: ModelType,
     modelId: string,
@@ -2991,7 +2655,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       "latest",
     );
     try {
-      // Try reading as text file first (new format)
       const content = Deno.readTextFileSync(latestPath);
       const version = parseInt(content.trim(), 10);
       if (!isNaN(version)) return version;
@@ -2999,14 +2662,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Not a text file or not found
     }
     try {
-      // Backward compat: try reading as symlink (old format)
       const linkTarget = Deno.readLinkSync(latestPath);
       const version = parseInt(linkTarget.replace(/\/$/, ""), 10);
       if (!isNaN(version)) return version;
     } catch {
       // Not a symlink either
     }
-    // Final fallback: scan version directories
     const versions = this.listVersionsSync(type, modelId, dataName);
     return maxOf(versions) ?? null;
   }
@@ -3043,7 +2704,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (!metadata) return null;
       const data = Data.fromData(metadata);
 
-      // Follow forward references for latest lookups (not explicit version requests)
       if (version === undefined && data.isRenamed && data.renamedTo) {
         if (depth >= 5) {
           logger
@@ -3131,7 +2791,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return this.collectModelDataSync(type, modelId);
   }
 
-  /** Sync twin of {@link collectModelData}. */
   private collectModelDataSync(
     type: ModelType,
     modelId: string,
@@ -3177,7 +2836,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  /** Sync twin of {@link findAllGlobal}, in the same name order. */
   findAllGlobalSync(options?: FindAllGlobalOptions): Array<
     { data: Data; modelType: ModelType; modelId: string }
   > {
@@ -3215,7 +2873,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         const childPath = join(currentDir, name);
 
         if (looksLikeModelId(name)) {
-          // Model-id directory — probe for the target dataName only.
           if (pathSegments.length < 1) continue;
           const dataNameDir = join(childPath, targetDataName);
           try {
@@ -3243,7 +2900,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             // Skip invalid model types or read errors
           }
         } else {
-          // Type directory — recurse.
           await this.collectByTaggedName(
             childPath,
             [...pathSegments, name],
@@ -3291,7 +2947,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               results.push({ data, modelType, modelId });
             }
           } catch {
-            // See collectAllData — a silent drop here becomes a catalog delete.
+            // a silent drop here becomes a catalog delete
             logger
               .debug`Skipping ${childPath} during walk: ${typeStr} is not a valid model type. If data is missing from data query, run swamp doctor datastores --repair.`;
           }
@@ -3361,7 +3017,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       let versionsToRemove: number[] = [];
 
       if (typeof gc === "number") {
-        // Keep the N most recent observations; restatements don't count.
         if (versions.length > gc) {
           versionsToRemove = await versionsBeyondKeep(
             versions,
@@ -3370,7 +3025,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           );
         }
       } else {
-        // Keep versions within duration
         const duration = parseDataDuration(gc);
         const cutoff = Date.now() - duration;
         const latestVersion = maxOf(versions);
@@ -3383,7 +3037,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             version,
           );
           if (versionData && versionData.createdAt.getTime() < cutoff) {
-            // Don't remove if it's the only/latest version
             if (version !== latestVersion) {
               versionsToRemove.push(version);
             }
@@ -3391,7 +3044,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
 
-      // Build removal tasks upfront
       const removalTasks = versionsToRemove.map((version) => ({
         version,
         contentPath: this.getContentPath(type, modelId, data.name, version),
@@ -3399,8 +3051,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }));
       const removed: number[] = [];
 
-      // Execute in parallel batches. For dry-run we still stat each path to
-      // accumulate bytesReclaimed but skip the actual remove.
       const GC_BATCH_CONCURRENCY = 20;
       for (let i = 0; i < removalTasks.length; i += GC_BATCH_CONCURRENCY) {
         const batch = removalTasks.slice(i, i + GC_BATCH_CONCURRENCY);
@@ -3439,8 +3089,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           }
         }
       }
-      // Staged after the parallel removals, outside allSettled, so a v3
-      // staging error surfaces; one batch per version.
+      // staged after the parallel removals, outside allSettled, so a v3 staging
+      // error surfaces; one batch per version
       for (const version of removed) {
         await this.stageRemovedVersion(
           "data.gc",
@@ -3451,10 +3101,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
       }
 
-      // Re-scan actual versions after parallel deletions to avoid stale marker.
-      // Skip for dry-run — nothing was actually removed.
+      // re-scan actual versions after the parallel deletions to avoid a stale
+      // marker
       if (!dryRun && versionsToRemove.length > 0) {
-        // Drop catalog rows for all removed versions in one transaction.
         this.catalogStore.bulkRemoveVersions(
           this.namespace,
           type.normalized,
@@ -3478,7 +3127,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             data.name,
             latestVersion,
           );
-          // Update catalog with the surviving latest version
           const latestData = await this.findByName(
             type,
             modelId,
@@ -3489,7 +3137,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             this.catalogUpsert(type, modelId, latestData);
           }
         } else if (onDisk.length > 0) {
-          // Only in-flight deferred writes are left: as delete does.
           await this.updateLatestMarker(
             type,
             modelId,
@@ -3527,10 +3174,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Record reads used for resource claims must stay in the requested model.
-   * Resolve the configured datastore root, then append the model identity
-   * lexically: resolving the model boundary itself would trust a symlink
-   * that redirects the entire model directory into another model.
+   * append the model identity lexically to the resolved datastore root:
+   * resolving the model boundary would trust a symlink that redirects the model
+   * directory into another model
    */
   private async assertModelReadPath(
     path: string,
@@ -3559,13 +3205,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * A data name's version floor (swamp-club#3473): the highest version it
-   * had when its newest versions were deleted, so a later write never reuses
-   * a number another clone may still hold for different content. One small
-   * file per name beside the name's directory, named with `..` (which no
-   * data name contains) so it can never be a data name, and holding only
-   * the number, so two clones raising different names' floors never
-   * overwrite each other.
+   * highest version a name had when its newest were deleted, so a write never
+   * reuses a number another clone may hold; named with .. so it is never a data
+   * name, and holds only the number
    */
   private getVersionFloorPath(
     type: ModelType,
@@ -3591,16 +3233,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
       return Number.isSafeInteger(value) && value > 0 ? value : 0;
     } catch {
-      // Absent or unreadable: no floor, as before the record existed.
       return 0;
     }
   }
 
   /**
-   * Raises a name's version floor to `version`, before retention deletes
-   * its newest versions, so later writes continue above it. v2 only: a v3
-   * partition keeps its own high-water mark, and a plain file is not one of
-   * the changes a v3 unit commits.
+   * v2 only: a v3 partition keeps its own high-water mark, and a plain file is
+   * not one of the changes a v3 unit commits
    */
   async raiseVersionFloor(
     type: ModelType,
@@ -3620,13 +3259,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Creates the data-name directory and any missing directory above it, one
-   * level at a time. On v2, and on v3 for a `record` the unit does not
-   * commit (swamp-club#4019), the parent of each directory created here is
-   * synced before this returns, so its entry is durable before any version
-   * under it is published (swamp-club#4017). The model lock creates the
-   * model directory and those above it first, and syncs them the same way
-   * (`createModelLock`).
+   * the parent of each directory created here is synced before returning, so
+   * its entry is durable before any version under it is published
    */
   private async makeDataNameDir(
     dataNameDir: string,
@@ -3639,10 +3273,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /**
-   * Atomically allocates a new version directory using mkdir as a claim mechanism.
-   * On collision (AlreadyExists), increments the version and retries.
-   */
   private async atomicAllocateVersionDir(
     type: ModelType,
     modelId: string,
@@ -3652,16 +3282,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await assertSafePath(dataNameDir, this.baseDir);
 
     const versions = await this.listVersions(type, modelId, dataName);
-    // Never below the version floor: a number deleted versions used is not
-    // given to new content. v2 keeps it in a file (swamp-club#3473); on v3 it
-    // is the partition's high-water mark, with the versions this process
-    // staged but has not committed yet (swamp-club#3532). The partition key
-    // is built only on v3: it needs a UUID model id, and v2 does not.
-    // v3 still reads the version directories: the mkdir below is what keeps
-    // two units of this process apart before either commits. A dropped
-    // version's directory does not outlive its command (swamp-club#3553),
-    // except in a running serve, where it can skip a number until serve
-    // stops; a number is skipped, never reused.
+    // never below the version floor, so a number deleted versions used is not
+    // given to new content; v3 still reads version directories because the
+    // mkdir below keeps this process's units apart
     const floor = await this.readVersionFloor(type, modelId, dataName);
     const v3Floors = versionFloorSource(this.markDirty);
     const changes = v3Floors === undefined
@@ -3672,8 +3295,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       ? 0
       : await v3Floors.floor(partition, dataName);
     let nextVersion = Math.max(maxOf(versions) ?? 0, floor, v3Floor) + 1;
-    // Made once the first version to try is known, so on v3 the sync
-    // decision covers that version's own keys (swamp-club#4019).
+    // made once the first version to try is known, so on v3 the sync decision
+    // covers that version's own keys
     await this.makeDataNameDir(dataNameDir, {
       type,
       modelId,
@@ -3716,7 +3339,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     priorVersions: number[],
     cap: number,
   ): Promise<void> {
-    // An in-flight deferred write is neither counted nor pruned, as in GC.
     const pending = this.catalogStore.pendingVersions(
       this.namespace,
       type.normalized,
@@ -3765,10 +3387,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Whether a version of `dataName` is a restatement (swamp-club#4195), read
-   * from its metadata's tags alone. A version that cannot be read (missing,
-   * empty or malformed metadata) counts as an observation, silently: a
-   * write or a collection never fails, nor warns again, over it.
+   * a version that cannot be read counts as an observation, silently: a write
+   * or a collection never fails or warns over it
    */
   private restatesIn(
     type: ModelType,
@@ -3831,7 +3451,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       "latest",
     );
     try {
-      // Try reading as a text file first (new format)
       const content = await Deno.readTextFile(latestPath);
       const version = parseInt(content.trim(), 10);
       if (!isNaN(version)) return version;
@@ -3839,33 +3458,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Not a text file or not found
     }
     try {
-      // Backward compat: try reading as a symlink (old format)
       const linkTarget = await Deno.readLink(latestPath);
       const version = parseInt(linkTarget.replace(/\/$/, ""), 10);
       if (!isNaN(version)) return version;
     } catch {
       // Not a symlink either
     }
-    // Final fallback: scan version directories
     const versions = await this.listVersions(type, modelId, dataName);
     return maxOf(versions) ?? null;
   }
 
   /**
-   * Moves the latest marker to `version` unless it already names a higher
-   * version, so the marker follows version order like the catalog's
-   * `is_latest` (`CatalogStore.upsertNewVersion`) when parallel writers of
-   * one name finish out of order (swamp-club#2520). The read, compare and
-   * write run synchronously so writers in this process cannot interleave
-   * between them; writers in other processes are serialized by the model
-   * lock. A marker naming a version that is gone from disk (a delete or GC
-   * that stopped before rewriting it) is replaced. Paths that lower the
-   * marker on purpose — delete, rename, GC — use {@link updateLatestMarker}.
-   *
-   * On v2 the data-name directory is synced after the rename. If that sync
-   * fails the marker already names the version, so `published` runs before
-   * the failure is rethrown: the caller publishes the version's catalog row
-   * there, keeping the catalog in step with the marker (swamp-club#4017).
+   * moves the marker only forward; the read-compare-write is synchronous
+   * against same-process writers and the model lock covers others. On a failed
+   * v2 sync, published runs before the rethrow.
    */
   private async advanceLatestMarker(
     type: ModelType,
@@ -3877,8 +3483,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await assertSafePath(dataNameDir, this.baseDir);
     const latestPath = join(dataNameDir, "latest");
-    // On v2 the new marker is written and synced before the synchronous
-    // section below (swamp-club#4017), so no fsync runs inside it.
+    // on v2 the new marker is written and synced before the synchronous section
+    // below, so no fsync runs inside it
     const sync = this.durableSync({ type, modelId, dataName, version });
     const syncedTmp = sync === undefined
       ? undefined
@@ -3932,17 +3538,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Moves the latest marker of `dataName` forward to `version` again when a
-   * datastore pull replaced it with an older marker before this process
-   * pushed it (swamp-club#3146). For the lock flush, about a version this
-   * process wrote under the model's lock.
-   *
-   * Changes nothing and returns undefined when the version's metadata is
-   * gone: a delete, garbage collection or rollback removed it on purpose.
-   * Otherwise stages the version directory and the latest marker again,
-   * after the write, so a push that cleared the marks made before the write
-   * cannot have dropped them, and returns both paths. Never lowers the
-   * marker.
+   * re-stages the version directory and marker after the write when a pull
+   * replaced the marker with an older one; does nothing if the metadata is
+   * gone, and never lowers the marker
    */
   async reassertLatestVersion(
     type: ModelType,
@@ -3975,9 +3573,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The version the latest marker names, or null when there is no marker.
-   * Unlike {@link getLatestVersion} it never falls back to scanning the
-   * version directories.
+   * unlike getLatestVersion, never falls back to scanning the version
+   * directories
    */
   private async readLatestMarker(
     type: ModelType,
@@ -4010,11 +3607,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * What the latest marker of `dataName` holds (swamp-club#3955): no
-   * marker, one that names no version (empty, or not a number), or the
-   * version it names. Read as {@link readLatestMarker} reads it, so it never
-   * falls back to the highest version directory, which could be a write in
-   * flight. NO_PROMOTED_VERSION reads as a version; it names none on disk.
+   * read as readLatestMarker reads it, never falling back to the highest
+   * version directory, which could be a write in flight
    */
   async latestMarkerState(
     type: ModelType,
@@ -4036,12 +3630,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Whether a published version of `dataName` can be read, and the model
-   * name its metadata records (swamp-club#3955). A version cannot be read
-   * when its directory is gone, its `metadata.yaml` is missing, empty or
-   * does not parse as a data version's metadata, its `raw` is missing, or
-   * `raw` is shorter than the size the metadata records. Only for a version
-   * that is published: a write in flight looks the same.
+   * only meaningful for a published version: a write in flight looks the same
+   * as an unreadable one
    */
   async inspectVersion(
     type: ModelType,
@@ -4087,7 +3677,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return found;
   }
 
-  /** The size of a version's content file, or null when it has none. */
   private async contentFileSize(
     type: ModelType,
     modelId: string,
@@ -4100,11 +3689,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The highest version of `dataName` that was published (swamp-club#3955):
-   * the highest of its non-pending catalog rows and the version the latest
-   * marker names, or undefined when neither names one. A save that crashed
-   * before it was published is the newest version allocated, so it is
-   * always above this ceiling.
+   * a save that crashed before it was published is the newest version
+   * allocated, so it is always above this ceiling
    */
   private async publishedCeiling(
     type: ModelType,
@@ -4124,12 +3710,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The highest promoted version of `dataName` that can be read, at or
-   * below the highest version that was published (swamp-club#3955), or
-   * null when none can. A pending deferred write is not promoted, and a
-   * save that crashed before it was published is above the ceiling, so
-   * neither is ever chosen. `ceiling` defaults to the published ceiling
-   * now; a rollback passes the one it measured before it removed anything.
+   * a pending deferred write is not promoted and a crashed unpublished save is
+   * above the ceiling, so neither is ever chosen; a rollback passes the ceiling
+   * it measured before removing anything
    */
   async highestReadableVersion(
     type: ModelType,
@@ -4159,14 +3742,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Points the latest marker of `dataName` at its highest readable version
-   * at or below `ceiling` (see {@link highestReadableVersion}), for `swamp
-   * doctor datastores --repair` (swamp-club#3955), and gives that version a
-   * catalog row when it has none, so the catalog and the marker agree.
-   * Returns the version, or null when none can be read, and the marker is
-   * left as it is. Run under the model's lock. The marker is written
-   * durably when the datastore's `durable` setting is on, as every marker
-   * write is.
+   * run under the model's lock; leaves the marker as it is when no version can
+   * be read
    */
   async resetLatestMarkerToReadable(
     type: ModelType,
@@ -4202,26 +3779,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Rolls `dataName` back to its last readable version, for `swamp doctor
-   * datastores --repair` (swamp-club#3955): removes the `unreadable`
-   * published versions, highest first, through the single-version
-   * {@link delete}, then points the marker at the highest readable promoted
-   * version. Run under the model's lock.
-   *
-   * `delete` makes the highest version left on disk latest and writes a
-   * catalog row for it. That can be a save that crashed before it was
-   * published (metadata written, no raw, no row), so any row the deletes
-   * added is dropped again and the latest flags recomputed. The new
-   * latest is chosen at or below the highest version that was published
-   * before the rollback, so a complete crashed save is never chosen
-   * either; the catalog and the marker then agree on the readable version.
-   * When only unpublished versions are left, the marker is pointed at
-   * NO_PROMOTED_VERSION, so the name reads as absent, as `delete` leaves a
-   * name with only in-flight writes. With no `unreadable` versions this
-   * only resets the marker.
-   *
-   * Resolves with the version left latest (null when none can be read),
-   * and whether the data name is gone from disk.
+   * delete makes the highest version on disk latest, possibly a crashed
+   * unpublished save, so its added rows are dropped and the new latest is
+   * chosen at or below the pre-rollback published ceiling
    */
   async rollBackToReadable(
     type: ModelType,
@@ -4282,10 +3842,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Whether reads check for unreadable versions (swamp-club#3955): only on
-   * a v2 datastore whose files are all local. With a hydrate hook a missing
-   * or short file is downloaded, and a v3 checkout replays its records
-   * from the commit log and reports what it cannot.
+   * only a v2 datastore with all files local: a hydrate hook downloads missing
+   * or short files, and a v3 checkout replays records from the commit log
    */
   private checksUnreadableVersions(): boolean {
     return this.hydrateFile === undefined &&
@@ -4294,10 +3852,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Whether a version is published: it has a catalog row that is not
-   * pending, or the latest marker names it (no fallback to the highest
-   * version directory). A save in flight and a pending deferred write are
-   * not. The same definition the doctor scan uses (swamp-club#3955).
+   * published means a non-pending catalog row or a latest marker naming it; a
+   * save in flight and a pending deferred write are not
    */
   private isPublishedVersionSync(
     type: ModelType,
@@ -4322,11 +3878,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Warns, once per version per process, that a read reached a published
-   * version that cannot be read and served it as empty or not found
-   * (swamp-club#3955). The read's answer is unchanged. A version that is
-   * not published (a write in flight) is passed over silently, and a check
-   * that fails is only logged at debug, so a read never fails over it.
+   * an unpublished version is passed over silently and a failed check only logs
+   * at debug, so a read never fails over it
    */
   private warnUnreadableVersion(
     type: ModelType,
@@ -4355,9 +3908,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Warns when a read found no content file for a version whose metadata
-   * is there. A version whose metadata is missing too is not warned about:
-   * a first write in flight looks the same.
+   * a version whose metadata is missing too is not warned about: a first write
+   * in flight looks the same
    */
   private warnMissingContent(
     type: ModelType,
@@ -4380,13 +3932,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /**
-   * Warns when a read found a version's content file empty while its
-   * catalog row records content: the zero-byte file an unclean shutdown
-   * leaves. Only an empty read looks the row up, so other reads cost
-   * nothing; a short read the catalog's size reveals is warned about by
-   * {@link warnShortContent}.
-   */
+  /** only an empty read looks the catalog row up, so other reads cost nothing */
   private warnEmptyContent(
     type: ModelType,
     modelId: string,
@@ -4416,11 +3962,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /**
-   * Records that `swamp doctor datastores` reported a version as
-   * unreadable (swamp-club#3955), so a read later in the same process does
-   * not warn about it again.
-   */
   noteUnreadableVersionReported(
     type: ModelType,
     modelId: string,
@@ -4432,7 +3973,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
-  /** Warns when a version's local content is shorter than `size`. */
   private warnShortContent(
     type: ModelType,
     modelId: string,
@@ -4455,11 +3995,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Removes a data name that has no versions left but still has a latest
-   * marker. Deleting the last promoted version while a deferred write is in
-   * flight leaves the marker at NO_PROMOTED_VERSION; once that write is
-   * rolled back too, nothing is left to read. A name without a marker (a
-   * first deferred write rolled back) is left as it is.
+   * a name without a marker (a first deferred write rolled back) is left as it
+   * is
    */
   private async removeNameLeftWithDanglingMarker(
     type: ModelType,
@@ -4481,10 +4018,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Writes the catalog row of a deferred write that is not promoted yet: both
-   * latest flags 0, so latest-based queries do not see it, and marked pending
-   * with this process's pid and host identity, so delete and GC leave it alone
-   * while it is in flight and GC can reclaim it if this process dies.
+   * both latest flags 0 and marked pending with this process's pid and host
+   * identity, so delete and GC leave it alone in flight and GC can reclaim it
+   * if this process dies
    */
   private upsertPendingRow(type: ModelType, modelId: string, data: Data): void {
     this.catalogStore.upsert({
@@ -4567,12 +4103,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * The versions on disk, and those of them that are promoted. An in-flight
-   * deferred write (a pending catalog row) is on disk before it is promoted,
-   * so delete and GC must not make it latest, count it as the latest to keep,
-   * or prune it until it is promoted or rolled back. A backfill keeps the
-   * pending rows it finds; only a catalog rebuilt from an empty table (a
-   * schema change) treats every version on disk as promoted.
+   * an in-flight deferred write is on disk before promotion, so delete and GC
+   * must not make it latest, count it or prune it; only a catalog rebuilt from
+   * empty treats every version as promoted
    */
   private async listPromotedVersions(
     type: ModelType,
@@ -4590,14 +4123,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
-   * Rolls back deferred writes whose process died before promoting or
-   * rolling them back. Their pending rows would otherwise keep the versions
-   * out of GC and the version cap until a catalog rebuild. A row counts as
-   * orphaned only when it was written under this process's host identity
-   * (hostname, plus pid namespace on Linux) and its pid is dead; a row from
-   * another host or container, this process, or a live pid is left in
-   * flight. A data name left with no versions is removed, as GC removes an
-   * emptied name.
+   * an orphan is a pending row written under this host identity whose pid is
+   * dead; rows from another host or container, this process or a live pid stay
+   * in flight
    */
   private async reclaimOrphanedDeferredWrites(
     type: ModelType,
@@ -4615,9 +4143,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     let bytesReclaimed = 0;
     const names = new Set<string>();
     for (const row of orphans) {
-      // Promotion settles the pending row before moving the marker, so a
-      // marker naming this version means it was promoted all the same:
-      // finish settling it instead of reclaiming it.
+      // promotion settles the pending row before moving the marker, so a marker
+      // naming this version means it was promoted: finish settling instead of
+      // reclaiming
       if (
         await this.readLatestMarker(type, modelId, row.data_name) ===
           row.version
@@ -4638,8 +4166,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
         this.catalogStore.recordLocalWrite();
         if (data) this.catalogUpsert(type, modelId, data);
-        // Promoted by a process that died before it could commit: stage it
-        // now, or v3 never gets it.
+        // promoted by a process that died before it could commit: stage it now,
+        // or v3 never gets it
         await this.stagePromotedVersion(
           type,
           modelId,
@@ -4715,8 +4243,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await assertSafePath(dataNameDir, this.baseDir);
     const latestPath = join(dataNameDir, "latest");
 
-    // Remove a legacy symlink. A plain marker is replaced by the rename
-    // below, so a crash never leaves the name without one (swamp-club#4017).
+    // a plain marker is replaced by the rename below, so a crash never leaves
+    // the name without one
     try {
       if ((await Deno.lstat(latestPath)).isSymlink) {
         await Deno.remove(latestPath);
@@ -4725,7 +4253,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Ignore if not found
     }
 
-    // Write version number as plain text, durably on v2
     const sync = this.durableSync({ type, modelId, dataName, version });
     await atomicWriteTextFile(
       latestPath,
@@ -4745,10 +4272,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 }
 
-/**
- * Throws the v3 staging errors a loop over receipts collected, after every
- * receipt was handled: the one error, or all of them.
- */
 function throwStagingErrors(errors: readonly unknown[]): void {
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) {
@@ -4757,8 +4280,8 @@ function throwStagingErrors(errors: readonly unknown[]): void {
 }
 
 /**
- * Waits for every write or sync to settle, then rethrows the first failure:
- * a rollback after it never races a write still in flight.
+ * waits for every write or sync to settle before rethrowing the first failure,
+ * so a rollback never races a write still in flight
  */
 async function settleAll(work: readonly Promise<void>[]): Promise<void> {
   for (const result of await Promise.allSettled(work)) {
@@ -4766,9 +4289,6 @@ async function settleAll(work: readonly Promise<void>[]): Promise<void> {
   }
 }
 
-/**
- * Creates an OwnerDefinition for a model method.
- */
 export function createModelMethodOwner(
   modelType: string,
   methodName: string,
@@ -4783,9 +4303,6 @@ export function createModelMethodOwner(
   };
 }
 
-/**
- * Creates an OwnerDefinition for a workflow step.
- */
 export function createWorkflowStepOwner(
   workflowId: string,
   jobName: string,
@@ -4800,9 +4317,6 @@ export function createWorkflowStepOwner(
   };
 }
 
-/**
- * Creates an OwnerDefinition for manual data creation.
- */
 export function createManualOwner(
   description: string,
 ): OwnerDefinition {

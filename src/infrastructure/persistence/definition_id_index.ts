@@ -47,41 +47,28 @@ import {
 const logger = getLogger(["definition-repo"]);
 
 /**
- * How many files an index's listings stat or read at once, together: right
- * after a write, overlapping requests may each list the same directory, and
- * must not open a descriptor per file each.
+ * bounds files stat'ed or read at once: overlapping requests right after a
+ * write may list the same directory and must not each open a descriptor per
+ * file
  */
 const MAX_OPEN_FILES = 32;
 
-/** A file whose stat failed for a reason other than being gone or I/O. */
 const BROKEN = Symbol("broken");
 
 type FoundDefinition = { definition: Definition; type: ModelType };
 
-/** A definition found by name, with where its file is. */
 export interface NamedDefinitionMatch {
   definition: Definition;
   type: ModelType;
   path: string;
-  /** Its directory's path below its root, as a scan reports it. */
   segments: string[];
-  /** Whether it is in the first root, the definitions directory. */
   primary: boolean;
 }
 
-/**
- * Finds the definition a global lookup by name finds: the first file, in the
- * order a scan of every definition reads them, that declares the name.
- */
 export interface DefinitionNameIndex {
   findByName(name: string): Promise<NamedDefinitionMatch | null>;
 }
 
-/**
- * The definition files an index reads: a {@link YamlDefinitionRepository}.
- * Reading goes through it so a file is parsed, typed and contained exactly
- * as a scan of every definition does it.
- */
 export interface DefinitionFileSource {
   definitionRoots(): string[];
   readDefinitionFile(
@@ -95,36 +82,26 @@ export interface DefinitionFileSource {
 export interface DefinitionIdIndexOptions {
   racyWindowMs?: number;
   now?: () => number;
-  /**
-   * Stats a directory or file, following symlinks: null when it is gone,
-   * undefined when the platform gives no mtime. Defaults to `statRecord`.
-   */
   stat?: (path: string) => Promise<RecordFingerprint | undefined | null>;
 }
 
-/** A definition file as last listed. */
 interface IndexedFile {
-  /** The id it declared when last read; undefined when it did not parse. */
   id: string | undefined;
-  /** The name it declared when last read; undefined when it did not parse. */
   name: string | undefined;
   /**
-   * Its stat when read, kept only when old enough to rule out a change
-   * within the same clock tick. Undefined when there was none to keep, or a
-   * lookup found it rewritten: such a file is stat'ed on every check.
+   * kept only when old enough to rule out a change within the same clock tick;
+   * otherwise undefined and the file is stat'ed on every check
    */
   fingerprint: RecordFingerprint | undefined;
   readonly isSymlink: boolean;
 }
 
-/** A directory under a root as last listed. */
 interface IndexedDir {
   readonly root: number;
-  /** Its path below its root: the type of a file in it that declares none. */
   readonly segments: readonly string[];
   /**
-   * Its stat when listed, kept only when old enough to rule out a change
-   * within the same clock tick; undefined otherwise, so it is listed again.
+   * kept only when old enough to rule out a change within the same clock tick;
+   * undefined otherwise, so the directory is listed again
    */
   readonly stamp: RecordFingerprint | undefined;
   /** The listing's ticket: a listing never replaces a later one. */
@@ -136,55 +113,18 @@ interface IndexedDir {
 interface ValidationCounts {
   dirsChecked: number;
   dirsRelisted: number;
-  /** Of those relisted, listings another request had started. */
   dirsJoined: number;
   filesParsed: number;
-  /** Of those parsed, files the joined listings read. */
   filesJoined: number;
-  /** The spans that started the joined listings, one per span. */
   readonly joinedFrom: Map<string, Link>;
 }
 
-/** At most this many links from one check to the listings it joined. */
 const MAX_JOIN_LINKS = 8;
 
 /**
- * Which file declares which definition id and name, kept between requests by
- * `swamp serve` so authorizing what a request reads does not parse every
- * definition each time (swamp-club#3968), and neither does a global lookup
- * of a definition name that has no definition yet (swamp-club#4037).
- *
- * Only locations are kept, never definitions: a lookup reads each file that
- * declared the id or name now, so what it returns is current, and moves a
- * file that no longer declares it. {@link begin} checks every directory's stat,
- * as {@link RunIndexCache} does a run index: a directory whose stat moved,
- * or was too recent when it was listed to rule out a change within the same
- * clock tick, is listed again, and of its files only those whose own stat
- * moved, or was too recent when read, are read again.
- * Creating, removing or renaming a file moves its directory's stat, so any
- * writer — this process, a CLI, a datastore pull — is seen by the next
- * request. A file that failed to parse, a file a lookup found rewritten,
- * and a symlink (whose target may sit in another directory) are stat'ed on
- * every check, so a change to them made in place is seen as well.
- *
- * One change is not seen until its directory next changes, or a lookup of
- * the id it declared reads it: a regular file that declares an id,
- * overwritten in place to declare another. Until then the file does not
- * count as an owner of its new id, which fails open: a deny that this copy
- * would bring, by its name or its tags, does not apply. Writing it needs
- * write access to the definitions, which can change any owner's file
- * itself, so it grants nothing that access does not already give.
- * Likewise a regular file overwritten in place to declare another name is
- * not found by that name until then, so a direct-type run of the name can
- * create a second definition of it. Git, `save()` and editors that save
- * through a temporary file replace a file by renaming one over it, which
- * moves the directory's stat; an editor that writes the file in place does
- * not.
- *
- * Listing a directory is shared by the requests that may share it, and
- * stops once every one of them has been cancelled. A listing replaces the
- * directory's entries only once it has read the whole directory, so one
- * that fails or is cancelled leaves the index as it was.
+ * keeps file locations only and re-reads files per lookup; an in-place
+ * overwrite that changes a declared id or name goes unseen until the
+ * directory's stat moves, which fails open
  */
 export class DefinitionIdIndex implements DefinitionOwnerIndex {
   readonly #source: DefinitionFileSource;
@@ -202,10 +142,8 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     string,
     {
       ticket: number;
-      /** The stat it lists from, when it was settled as it was taken. */
       stamp: RecordFingerprint | undefined;
       read: SharedIndexRead<number>;
-      /** The span of the check that started it, for checks that join it. */
       owner: Link | undefined;
     }
   >();
@@ -221,25 +159,17 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     this.#stat = options.stat ?? statRecord;
   }
 
-  /**
-   * Checks the index against the definitions stored now, traced as a
-   * `swamp.serve.definition_index.validate` span, and returns a view that
-   * reads each id's files when it is looked up.
-   */
   async begin(signal?: AbortSignal): Promise<DefinitionOwnerView> {
     signal?.throwIfAborted();
-    // Inside a diagnostic area that lists it, the check is its owner_index
-    // phase, so definition files it reads are counted apart from the
-    // request's other work (design/enablers/serve-phase-telemetry.md).
+    // the check is the owner_index phase so definition files it reads are
+    // counted apart from the request's other work
     await this.#check("owner_index", {}, signal);
     return { findAllById: (id) => this.#findAllById(id, signal) };
   }
 
   /**
-   * Checks the index against the definitions stored now, as {@link begin}
-   * does, and returns the first file in scan order that declares `name`,
-   * read now: definitions before auto-definitions, so a definition shadows
-   * an auto-definition of the same name, as a scan of every definition does.
+   * definitions come before auto-definitions so a definition shadows an
+   * auto-definition of the same name, as a scan of every definition does
    */
   async findByName(
     name: string,
@@ -279,9 +209,8 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
               for (const [root, path] of roots.entries()) {
                 const relisted = counts.dirsRelisted;
                 await this.#validateDir(path, root, [], counts, signal);
-                // A scan of every definition names the auto-definitions the
-                // datastore could not materialise (swamp-club#3617); so does
-                // a listing of them.
+                // a scan names the auto-definitions the datastore could not
+                // materialise, so a listing of them does too
                 if (root > 0 && counts.dirsRelisted > relisted) {
                   await warnUnreadableLeftOut(
                     this.#source.unreadableContent,
@@ -298,8 +227,8 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
                 "definition_index.files_joined": counts.filesJoined,
               });
             } finally {
-              // A joined listing ran under the request that started it;
-              // the link names that request without reparenting its work.
+              // a joined listing ran under the request that started it; the
+              // link names that request without reparenting its work
               if (counts.joinedFrom.size > 0) {
                 span.addLinks([...counts.joinedFrom.values()]);
               }
@@ -372,9 +301,8 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 
   /**
-   * Lists the directory again, or waits for a listing in flight that is as
-   * recent: one started after this check began, or from the same stat when
-   * that stat is not too recent to trust.
+   * waits only on a listing started after this check began, or from the same
+   * stat when that stat is old enough to trust
    */
   async #relist(
     path: string,
@@ -412,7 +340,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     return await read.get(signal);
   }
 
-  /** Reads the directory's entries and replaces them once all are read. */
   async #list(
     path: string,
     root: number,
@@ -464,7 +391,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     return parsed;
   }
 
-  /** Lists one file of a directory into `files`; 1 when it was read. */
   async #listFile(
     path: string,
     entry: Deno.DirEntry,
@@ -521,9 +447,9 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 
   /**
-   * Reads again each file whose listing cannot vouch for it, once its stat
-   * has moved: one that did not parse, one a lookup found rewritten, and a
-   * symlink, whose target can change without its directory's stat moving.
+   * symlink targets can change without the directory's stat moving, so
+   * symlinks, unparsed files and files a lookup found rewritten are stat'ed on
+   * each check
    */
   async #rereadUnsettled(
     path: string,
@@ -567,11 +493,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     return found.map(({ definition, type }) => ({ definition, type }));
   }
 
-  /**
-   * Reads each file indexed under `key` now, in the order a scan of every
-   * definition reads them, and returns those that still declare it: only
-   * the first with `firstOnly`.
-   */
   async #readDeclaring(
     key: { id: string; name?: undefined } | { id?: undefined; name: string },
     firstOnly: boolean,
@@ -630,11 +551,9 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 
   /**
-   * Stats a definition file as a scan reads one: an I/O error (EACCES,
-   * EMFILE, …) is raised, and any other failure — a symlink loop, a path
-   * through a regular file — makes it {@link BROKEN}: it owns nothing and
-   * is stat'ed again on each check, as a scan skips it with a warning.
-   * `warn` logs that warning, once per listing rather than per check.
+   * I/O errors are raised; any other stat failure (symlink loop, path through a
+   * regular file) marks the file BROKEN: it owns nothing and is stat'ed each
+   * check, as a scan skips it with a warning
    */
   async #statFile(
     path: string,
@@ -653,13 +572,9 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 
   /**
-   * `stat` when it was old enough, as it was taken at `statAt`, to rule out
-   * a change within the same clock tick, else undefined; null (gone) as is.
-   * Deciding when a stat is taken, not when it is compared, is what keeps a
-   * change made in the tick after a listing from hiding behind a stat that
-   * only later looks old (the racy-git problem). A time in the future is
-   * never settled. The ctime counts as well as the mtime: a rewrite that sets
-   * the mtime back moves only the ctime.
+   * settle at take time, not compare time, so a change in the next tick cannot
+   * hide behind a stat that later looks old; ctime counts too, as a rewrite
+   * that resets mtime moves only it
    */
   #settled(
     stat: RecordFingerprint | undefined | null,
@@ -673,11 +588,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       : undefined;
   }
 
-  /**
-   * Whether a stored stat, settled when it was taken, still describes what
-   * `current` describes, and is old enough to rule out a change within the
-   * same clock tick.
-   */
   #trusted(
     stored: RecordFingerprint | undefined,
     current: RecordFingerprint | undefined,
@@ -713,7 +623,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     this.#dirs.set(path, dir);
   }
 
-  /** Forgets a directory that is gone, with everything below it. */
   #drop(path: string): void {
     const dir = this.#dirs.get(path);
     if (!dir) return;
@@ -724,7 +633,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     for (const name of dir.dirs) this.#drop(join(path, name));
   }
 
-  /** Whether `file` is still the entry the index keeps for `path`. */
   #isCurrent(path: string, file: IndexedFile): boolean {
     return this.#dirs.get(dirname(path))?.files.get(basename(path)) === file;
   }
@@ -757,7 +665,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 }
 
-/** Adds `path` under `key`; whether it was not there already. */
 function addPath(
   paths: Map<string, Set<string>>,
   key: string | undefined,
@@ -771,7 +678,6 @@ function addPath(
   return true;
 }
 
-/** Removes `path` from under `key`; whether it was there. */
 function removePath(
   paths: Map<string, Set<string>>,
   key: string | undefined,
@@ -784,10 +690,6 @@ function removePath(
   return true;
 }
 
-/**
- * Runs `each` over `items`, {@link MAX_OPEN_FILES} at a time, so a listing
- * that fails stops starting reads at the next batch.
- */
 async function inBatches<T>(
   items: readonly T[],
   signal: AbortSignal,
@@ -799,10 +701,6 @@ async function inBatches<T>(
   }
 }
 
-/**
- * Whether `path` is a symlink now; null when it is gone, or a directory on
- * its path is no longer one.
- */
 async function liveSymlink(path: string): Promise<boolean | null> {
   try {
     return (await Deno.lstat(path)).isSymlink;

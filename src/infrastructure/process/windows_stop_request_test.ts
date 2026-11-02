@@ -46,11 +46,6 @@ function decodeWide(name: BufferSource): string {
   return String.fromCharCode(...units.subarray(0, units.length - 1));
 }
 
-/**
- * A fake kernel32 holding named auto-reset events, as Windows does: a
- * create of an existing name opens it, an event lives until its last handle
- * closes. `fail` names calls that fail.
- */
 function fakeKernel32(fail: ReadonlySet<string> = new Set()) {
   const calls: string[] = [];
   const events = new Map<string, { signalled: boolean; handles: number }>();
@@ -107,7 +102,6 @@ function fakeKernel32(fail: ReadonlySet<string> = new Set()) {
   return { kernel32, calls, events };
 }
 
-/** A scheduler whose polls run only when the test ticks it. */
 function manualScheduler() {
   let poll: (() => void) | undefined;
   const scheduler: PollScheduler = {
@@ -391,10 +385,8 @@ Deno.test("createStopRequestListener: a handler that throws does not keep the re
 Deno.test({
   name:
     "stop requests: sendGracefulStop reaches a listener through kernel32 (Windows)",
-  // The real event, created and set by name: what the run's owner and
-  // workflow cancel each do (swamp-club#3267). Test files run in parallel in
-  // one process, so they share Deno.pid; the event is named for a pid no
-  // process has, so this test never reaches another file's listener.
+  // test files run in parallel in one process and share Deno.pid, so the event
+  // is named for a pid no process has and never reaches another file's listener
   ignore: Deno.build.os !== "windows",
   fn: async () => {
     const pid = 2 ** 32 + parseInt(crypto.randomUUID().slice(0, 8), 16);

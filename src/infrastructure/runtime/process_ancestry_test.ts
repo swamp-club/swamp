@@ -55,9 +55,6 @@ Deno.test("parseProcStatParentPid: rejects malformed text", () => {
 });
 
 Deno.test("parseProcStatStartTicks: reads field 22, past a tricky name", () => {
-  // Fields 3..22 after "(name)": state ppid pgrp session tty tpgid flags
-  // minflt cminflt majflt cmajflt utime stime cutime cstime priority nice
-  // num_threads itrealvalue starttime
   const stat = "9 (a) b (c)) S 1 9 9 0 -1 4194560 10 0 0 0 1 2 0 0 20 0 1 0 " +
     "123456 1000 50";
   assertEquals(parseProcStatStartTicks(stat), 123456);

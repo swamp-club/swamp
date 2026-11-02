@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Watches a v3 copy's restore through its replica's lineage paths
- * (swamp-club#3893), so a replica the storage cannot list stops the restore
- * within seconds instead of after Litestream's own retries.
- *
- * @module
+ * a replica the storage cannot list stops the restore within seconds instead of
+ * after Litestream's own retries
  */
 
 import type { ReplicaPathStore } from "../../../domain/datastore/replica_path_store.ts";
@@ -37,11 +34,9 @@ import {
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
 /**
- * How a restore's replica is watched (swamp-club#3893): once the restore
- * has run `graceMs`, swamp lists the replica's lineage paths itself, each
- * listing bounded by `probeMs` and the next `intervalMs` after it, whether
- * it answered or failed (swamp-club#4092). Litestream retries a listing the storage drops for about two minutes on
- * S3; the watch tells that apart from a long, healthy download.
+ * once the restore has run graceMs, swamp lists the replica's lineage paths
+ * itself, each listing bounded by probeMs and the next intervalMs after it;
+ * this tells a dropped listing from a long healthy download
  */
 export interface V3RestoreWatchTiming {
   readonly graceMs: number;
@@ -56,28 +51,20 @@ const DEFAULT_RESTORE_WATCH: V3RestoreWatchTiming = {
 };
 
 /**
- * Sets each listing's bound, in milliseconds (swamp-club#4092), for a
- * replica whose first listing takes longer than the default 4 s: a far
- * region, a slow S3-compatible store, a cold bucket.
+ * sets each listing's bound in milliseconds, for a replica whose first listing
+ * is slow: a far region, a slow S3-compatible store, a cold bucket
  */
 export const RESTORE_PROBE_ENV_VAR = "SWAMP_V3_RESTORE_PROBE_MS";
 
 /**
- * Listings that must fail in a row before a restore is stopped, an
- * interval apart: one dropped request never cuts a healthy restore short.
- * With the default timing a replica that cannot be listed stops the
- * restore within about 12 s: the grace, two bounded listings and the
- * interval between them.
+ * listings that must fail in a row before a restore is stopped: one dropped
+ * request never cuts a healthy restore short
  */
 const RESTORE_WATCH_FAILURES = 2;
 
 let timingOverride: V3RestoreWatchTiming | undefined;
 let storeOverride: ReplicaPathStore | undefined;
 
-/**
- * The listing bound {@link RESTORE_PROBE_ENV_VAR} sets (a positive integer
- * of milliseconds), else the default 4 s.
- */
 export function restoreProbeMs(): number {
   const env = Deno.env.get(RESTORE_PROBE_ENV_VAR);
   if (env !== undefined) {
@@ -87,18 +74,15 @@ export function restoreProbeMs(): number {
   return DEFAULT_RESTORE_WATCH.probeMs;
 }
 
-/** The timing a restore is watched with, read when the watch starts. */
 function restoreWatchTiming(): V3RestoreWatchTiming {
   return timingOverride ??
     { ...DEFAULT_RESTORE_WATCH, probeMs: restoreProbeMs() };
 }
 
 /**
- * Test seam: the restore watch's timing, and the store every restore is
- * watched through instead of its provider's, or undefined for the
- * defaults: a file replica, which tests replicate to, has no provider
- * store bound to its root. A timing set here wins over
- * {@link RESTORE_PROBE_ENV_VAR}.
+ * test seam: the watch's timing, and the store every restore is watched through
+ * instead of its provider's, since a file replica has no provider store; a
+ * timing set here wins over the env var
  */
 export function setV3RestoreWatchForTesting(
   options: {
@@ -110,18 +94,14 @@ export function setV3RestoreWatchForTesting(
   storeOverride = options?.replicaPaths;
 }
 
-/** The store {@link setV3RestoreWatchForTesting} set, if any. */
 export function restoreWatchStoreOverride(): ReplicaPathStore | undefined {
   return storeOverride;
 }
 
 /**
- * A restore stopped because its replica could not be listed
- * (swamp-club#3893): the storage is unreachable. Its cause is the network
- * failure, so it is classified as one: a reader fails with
- * `datastore_v3_catch_up_unreachable` instead of reading on after
- * Litestream's own retries, and a writer with the storage-unreachable
- * error.
+ * the replica could not be listed, so the storage is unreachable: a reader
+ * fails with datastore_v3_catch_up_unreachable instead of reading on, and a
+ * writer with the storage-unreachable error
  */
 export class V3ReplicaUnreachableError extends Error {
   constructor(cause: unknown) {
@@ -134,11 +114,9 @@ export class V3ReplicaUnreachableError extends Error {
 }
 
 /**
- * Runs `restore` while its replica is watched through `store`
- * ({@link V3RestoreWatchTiming}): when {@link RESTORE_WATCH_FAILURES}
- * listings in a row fail on the network, `restore`'s signal is aborted and
- * a {@link V3ReplicaUnreachableError} thrown. Without a store the restore
- * runs unwatched.
+ * when consecutive listings fail on the network, restore's signal is aborted
+ * and V3ReplicaUnreachableError thrown; without a store the restore runs
+ * unwatched
  */
 export async function restoreWhileWatched<T>(
   store: ReplicaPathStore | undefined,
@@ -162,13 +140,9 @@ export async function restoreWhileWatched<T>(
 }
 
 /**
- * After a restore failed with `failure`, whether `store` can be listed: the
- * error to fail with when one bounded listing fails on the network,
- * undefined otherwise (swamp-club#3893). A restore can fail fast on a
- * listing the storage drops (GCS answers it within seconds, before the
- * watch lists), and a reader would then read its old copy with no word of
- * it in `--json`. A failure that is not about reaching storage lists
- * nothing and stays the error (swamp-club#4092).
+ * a restore can fail fast on a listing the storage drops, before the watch
+ * lists, and a reader would then read its old copy silently; a failure not
+ * about reaching storage stays the error
  */
 export async function replicaUnreachableAfterFailure(
   store: ReplicaPathStore | undefined,
@@ -189,18 +163,15 @@ export async function replicaUnreachableAfterFailure(
 }
 
 /**
- * Whether a restore failure could be the storage being cut off. Litestream
- * failing to download is a `V3RestoreError` whatever stopped it, so it may
- * be; a refusal of what it downloaded (a newer schema, a lineage mismatch,
- * a corrupt copy) is not, nor is any other `UserError` (a refused config, a
- * refused Litestream binary).
+ * a Litestream download failure is a V3RestoreError whatever stopped it, so it
+ * may be storage; a refusal of what it downloaded, or any other UserError, is
+ * not
  */
 function mayBeStorage(failure: unknown): boolean {
   if (failure instanceof V3RestoredDatabaseRefusedError) return false;
   return !(failure instanceof UserError) || failure instanceof V3RestoreError;
 }
 
-/** Lists `store` until `stop`, aborting `cut` when it cannot be reached. */
 async function watchReplica(
   store: ReplicaPathStore,
   stop: AbortSignal,
@@ -240,15 +211,13 @@ async function watchReplica(
         cut.abort(new V3ReplicaUnreachableError(error));
         return;
       }
-      // The next listing waits the interval, so the failures that stop a
+      // the next listing waits the interval, so the failures that stop a
       // restore are spread over time, not one blip seen twice
-      // (swamp-club#4092).
       wait = timing.intervalMs;
     }
   }
 }
 
-/** Whether `error` is a listing's bound running out. */
 function isTimeout(error: unknown): boolean {
   return error instanceof Error && error.name === "TimeoutError";
 }
@@ -277,7 +246,6 @@ async function listOrAbort(
   }
 }
 
-/** Waits `ms`; resolves false, at once, when `stop` aborts. */
 function sleepUnless(ms: number, stop: AbortSignal): Promise<boolean> {
   if (stop.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {

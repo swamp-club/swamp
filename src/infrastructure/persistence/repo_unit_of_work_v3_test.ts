@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Roots and units on a v3 repository context go through its commit-log
- * engine (swamp-club#3279), found by the context or by its hook alone; the
- * flush still runs once the root has ended.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
@@ -37,7 +31,6 @@ import { createRepositoryContext } from "./repository_factory.ts";
 import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
 import { createLegacyUnitOfWork } from "./legacy_unit_of_work.ts";
 
-/** A commit-log engine that records what it was asked to do. */
 function fakeEngine() {
   const calls: string[] = [];
   let open = 0;
@@ -170,13 +163,11 @@ Deno.test("createRepositoryContext: a v3 context gets a hook of its own, marked 
     assert(unitOfWorkBinding.requiresUnit(context.markDirty));
     assertEquals(context.commitLog, engine);
     assertEquals(runRepoOf!(), context.workflowRunRepo);
-    // A second context never shares the hook.
     const other = createRepositoryContext({
       repoDir: dir,
       commitLog: () => fakeEngine(),
     });
     assert(other.markDirty !== context.markDirty);
-    // A v2 context is unchanged: no hook of its own, no engine.
     const v2 = createRepositoryContext({ repoDir: dir });
     assertEquals(v2.markDirty, undefined);
     assertEquals(v2.commitLog, undefined);

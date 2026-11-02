@@ -33,31 +33,16 @@ import {
 
 const TRACER_NAME = "swamp";
 
-/**
- * Re-export SpanStatusCode so consumers don't need a direct
- * `@opentelemetry/api` dependency.
- */
 export { SpanStatusCode };
 export type { Link, Span };
 
-/**
- * Returns the swamp tracer from the global tracer provider.
- * Returns a no-op tracer when tracing is not initialized.
- */
 export function getTracer(): Tracer {
   return trace.getTracer(TRACER_NAME);
 }
 
 /**
- * Wraps an async generator with a span. The span is set as the active
- * context so that child spans created during iteration are properly
- * parented.
- *
- * Events with `kind: "error"` are detected and recorded on the span.
- *
- * When the consumer stops early, `return()` is forwarded to the inner
- * iterator (inside the span context) before the span ends, so the inner
- * generator's `finally` blocks still run.
+ * on early stop, return() is forwarded to the inner iterator inside the span
+ * context before the span ends so its finally blocks still run
  */
 export async function* withGeneratorSpan<T extends { kind: string }>(
   name: string,
@@ -71,13 +56,11 @@ export async function* withGeneratorSpan<T extends { kind: string }>(
   let hasError = false;
   let done = false;
   try {
-    // Bind each iteration to the span's context so child spans are parented
     while (true) {
       let result: IteratorResult<T>;
       try {
         result = await context.with(ctx, () => iterator.next());
       } catch (error) {
-        // The inner iterator threw, so it has already finished.
         done = true;
         throw error;
       }
@@ -107,10 +90,6 @@ export async function* withGeneratorSpan<T extends { kind: string }>(
   }
 }
 
-/**
- * Forwards `return()` to an unfinished iterator inside `ctx`, recording an
- * error thrown by its `finally` blocks on `span` before rethrowing it.
- */
 async function returnInSpan(
   span: Span,
   ctx: Context,
@@ -139,15 +118,8 @@ function recordSpanError(span: Span, error: unknown): void {
 }
 
 /**
- * Runs an async generator with `span` as the active context, so spans created
- * while it runs are children of `span`.
- *
- * Unlike {@link withGeneratorSpan}, this does not start, end, or set status on
- * the span — the caller owns its lifecycle. Use it when the generator ends the
- * span itself (for example on early-exit paths with custom attributes).
- *
- * When the consumer stops early, `return()` is forwarded to the inner
- * generator (inside the span context) so its `finally` blocks still run.
+ * does not start, end or set status on the span; the caller owns its lifecycle.
+ * return() is forwarded inside the span context so finally blocks still run
  */
 export async function* bindGeneratorToSpan<T, TReturn>(
   span: Span,
@@ -161,7 +133,6 @@ export async function* bindGeneratorToSpan<T, TReturn>(
       try {
         result = await context.with(ctx, () => generator.next());
       } catch (error) {
-        // The inner generator threw, so it has already finished.
         done = true;
         throw error;
       }
@@ -178,55 +149,24 @@ export async function* bindGeneratorToSpan<T, TReturn>(
   }
 }
 
-/**
- * Runs `fn` with `span` as the active context, so spans started while it runs
- * are children of `span`.
- *
- * Like {@link bindGeneratorToSpan}, this does not start, end, or set status on
- * the span — the caller owns its lifecycle. Use it when a span covers more
- * than one callback, such as a phase whose locals outlive a single closure.
- */
 export function withActiveSpan<T>(span: Span, fn: () => T): T {
   return context.with(trace.setSpan(context.active(), span), fn);
 }
 
-/**
- * Sets `attributes` on the active span, and does nothing when no span is
- * active.
- *
- * Use it inside a {@link withGeneratorSpan} body for values known only after
- * the span starts, such as the definition an edit resolved.
- */
 export function setActiveSpanAttributes(attributes: Attributes): void {
   trace.getActiveSpan()?.setAttributes(attributes);
 }
 
-/**
- * A link to the active span, for a span that waits on work this one started
- * (a shared read another request joined), or undefined when none is
- * recording.
- */
 export function activeSpanLink(): Link | undefined {
   const span = trace.getActiveSpan();
   return span?.isRecording() ? { context: span.spanContext() } : undefined;
 }
 
-/**
- * Returns a setter for the span active now, for values known only later when
- * another span (such as a diagnostic phase) has become the active one.
- */
 export function activeSpanAttributeSetter(): (attributes: Attributes) => void {
   const span = trace.getActiveSpan();
   return (attributes) => span?.setAttributes(attributes);
 }
 
-/**
- * Marks the active span ERROR with `message`, and does nothing when no span
- * is active.
- *
- * Use it where a failure is answered rather than thrown, such as an error
- * frame a serve handler sends.
- */
 export function markActiveSpanError(message: string): void {
   trace.getActiveSpan()?.setStatus({ code: SpanStatusCode.ERROR, message });
 }
@@ -240,11 +180,8 @@ export function withSpan<T>(
 }
 
 /**
- * Like {@link withSpan}, but the span is always the root of a new trace.
- *
- * Use it for a unit of work a long-running process starts on its own, such
- * as one poll cycle or one scheduled fire. `swamp serve` runs inside the
- * `swamp.cli` span, which never ends, so that work must not inherit it.
+ * serve runs inside the never-ending swamp.cli span, so work a long-running
+ * process starts on its own, such as a poll cycle, must root a new trace
  */
 export function withRootSpan<T>(
   name: string,
@@ -254,14 +191,6 @@ export function withRootSpan<T>(
   return runInSpan(name, { root: true, attributes }, fn);
 }
 
-/**
- * Runs one cycle of a `swamp serve` background poller as the root of its own
- * trace: a `swamp.serve.poll` span whose `swamp.serve.poller` attribute names
- * the poller. Every span the cycle starts nests under it. A poller's gated
- * pull has no span of its own, except the access-data poller's, whose gate
- * wait and pull are diagnostic phases
- * (design/enablers/serve-phase-telemetry.md).
- */
 export function withPollCycleSpan<T>(
   poller: string,
   fn: () => Promise<T>,
@@ -274,13 +203,8 @@ export function withPollCycleSpan<T>(
 }
 
 /**
- * Runs `fn` with no active span, so spans it starts — directly, or from
- * timers and promises it schedules — begin their own traces instead of
- * joining the caller's.
- *
- * The active context is captured when a timer is armed, so arm a
- * long-running process's background timers inside this, not just their
- * callbacks.
+ * the active context is captured when a timer is armed, so arm a long-running
+ * process's background timers inside this, not just their callbacks
  */
 export function runDetached<T>(fn: () => T): T {
   return context.with(ROOT_CONTEXT, fn);
@@ -319,15 +243,9 @@ function runInSpan<T>(
 }
 
 /**
- * Runs `fn` inside a new active SERVER-kind span for one inbound request.
- *
- * The span is always the root of its own trace: `swamp serve` runs inside the
- * `swamp.cli` span, which never ends, so a request must not inherit it. Inbound
- * `traceparent` headers are deliberately ignored — unauthenticated callers must
- * not choose the trace a server span joins.
- *
- * Unlike {@link withSpan}, success leaves the status unset: the caller maps the
- * response to a status. A thrown error is recorded as ERROR and rethrown.
+ * always a new trace root, as serve runs inside the never-ending swamp.cli
+ * span; inbound traceparent is ignored so unauthenticated callers cannot choose
+ * the trace joined
  */
 export function withServerSpan<T>(
   name: string,

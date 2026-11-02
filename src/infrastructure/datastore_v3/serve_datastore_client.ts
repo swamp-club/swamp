@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The client of serve's datastore API (swamp-club#3985): what a team's
- * laptops and CI write a v3 datastore through when serve holds its writer
- * lease. One method per route under `/api/v1/datastore/{namespace}/`; see
- * "Team mode: serve's datastore API" in `design/enablers/datastores.md` and
- * `src/serve/datastore_api.ts` for the server.
- *
- * Every request runs under the caller's `AbortSignal` and a per-attempt
- * timeout. A 429 with a `Retry-After` is retried a bounded number of times;
- * every other refusal is thrown as the error
- * {@link serveErrorFromReply} maps it to. A request that got no reply is
- * thrown as a {@link ServeUnreachableError}, which says whether the request
- * may have reached serve.
- *
- * @module
+ * a 429 with Retry-After is retried a bounded number of times; other refusals
+ * are thrown as mapped by serveErrorFromReply, and no reply is
+ * ServeUnreachableError, saying whether the request may have reached serve
  */
 
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
@@ -63,113 +52,65 @@ import {
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
 
-/** The most hashes serve answers in one `chunks/has` request. */
 export const MAX_HAS_HASHES = 1024;
 
-/** The request timeout when neither the caller nor the environment sets one. */
 export const DEFAULT_SERVE_TIMEOUT_MS = 30_000;
 
-/** How many times a request is sent when serve keeps answering 429. */
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
-/** The longest a 429's `Retry-After` is waited for. */
 export const DEFAULT_MAX_RETRY_DELAY_MS = 10_000;
 
 /**
- * The most bytes of an error reply's body the client reads
- * (swamp-club#4062). Past it the refusal is mapped from its status alone.
+ * the most bytes of an error reply's body read; past it the refusal is mapped
+ * from its status alone
  */
 export const SERVE_ERROR_BODY_MAX_BYTES = 64 * 1024;
 
-/**
- * The most bytes the client reads of a small JSON reply: `chunks/has`,
- * a chunk upload, a commit and a lease renewal. `chunks/has`, the largest,
- * answers at most {@link MAX_HAS_HASHES} hashes, about 70 KiB.
- */
 export const SERVE_REPLY_MAX_BYTES = 1024 * 1024;
 
-/** The most bytes the client reads of a page of more than one commit. */
 export const SERVE_PAGE_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
- * The most bytes the client reads of a granted lease (swamp-club#4166): a
- * fenced behavior lease carries its floor, every data name's marks, so it
- * gets the page cap the compacted base reads the same names under.
+ * a fenced behavior lease carries its floor, every data name's marks, so it
+ * gets the page cap the compacted base reads the same names under
  */
 export const SERVE_LEASE_REPLY_MAX_BYTES = SERVE_PAGE_MAX_BYTES;
 
-/** The most UTF-8 bytes one UTF-16 unit of text JSON does not escape takes. */
 const UTF8_BYTES_PER_UNIT = 3;
 
-/**
- * The most strings a put's intent carries: `data.rename`'s model type and
- * id, name and new name.
- */
 const MAX_INTENT_STRINGS = 4;
 
-/** A put's kind, expect, access, and JSON's own quotes and separators. */
 const PUT_OP_SYNTAX_ALLOWANCE = 1024;
 
-/**
- * The largest JSON one put op with inline content takes: the longest base64
- * of {@link MAX_INLINE_BYTES}, a key of {@link MAX_RECORD_KEY_LENGTH}
- * UTF-16 units, and an intent of {@link MAX_INTENT_STRINGS} strings of the
- * longest an intent accepts.
- */
 export const MAX_PUT_OP_REPLY_BYTES = Math.ceil(MAX_INLINE_BYTES / 3) * 4 +
   MAX_RECORD_KEY_LENGTH * UTF8_BYTES_PER_UNIT +
   MAX_INTENT_STRINGS * MAX_INTENT_FIELD_LENGTH * UTF8_BYTES_PER_UNIT +
   PUT_OP_SYNTAX_ALLOWANCE;
 
-/**
- * The bytes a page's and a commit's own fields take around its ops: its
- * namespace, txnId, writer and principal of at most 1024 units each.
- */
 const COMMIT_REPLY_HEADER_ALLOWANCE = 32 * 1024;
 
 /**
- * The most bytes the client reads of a page of one commit: the largest
- * commit serve writes. Serve's own runs commit through the commit-log unit
- * of work, which splits a partition's changes only at
- * {@link MAX_COMMIT_OPS}, so that commit is larger than any a client can
- * post (an envelope of at most 4 MiB). About 350 MiB.
+ * the largest commit serve writes: its own runs split a partition only at
+ * MAX_COMMIT_OPS, so it exceeds any a client can post
  */
 export const MAX_WRITTEN_COMMIT_REPLY_BYTES =
   MAX_COMMIT_OPS * MAX_PUT_OP_REPLY_BYTES + COMMIT_REPLY_HEADER_ALLOWANCE;
 
-/** The media type of a framed commit body. */
 export const COMMIT_CONTENT_TYPE = "application/vnd.swamp.commit+v1";
 
-/**
- * The header every datastore API reply to an authenticated caller carries
- * with the id of the commit log serve serves (swamp-club#4049).
- */
 export const SERVE_DATASTORE_LOG_HEADER = "x-swamp-datastore-log";
 
-/**
- * The header every datastore API reply to an authenticated caller carries
- * with a fingerprint of what that caller may read (swamp-club#4089): a
- * checkout's copy is rebuilt when it changes.
- */
 export const SERVE_DATASTORE_ACCESS_HEADER = "x-swamp-datastore-access";
 
 /**
- * The header every datastore API request carries naming what this client's
- * copy understands (swamp-club#4121). `lease-ops`: the commits it reads may
- * hold the lease ops serve stamps. Serve leaves them out of the commits it
- * sends a client that does not name it: a swamp from before #4121 judges a
- * lease op's fence against the writer fence and would refuse the commit.
+ * names what this client's copy understands; serve leaves lease ops out of
+ * commits for a client that does not name `lease-ops`, which an older swamp
+ * would refuse by judging their fence against the writer fence
  */
 export const SERVE_DATASTORE_FEATURES_HEADER = "x-swamp-datastore-features";
 
-/** The {@link SERVE_DATASTORE_FEATURES_HEADER} value for lease ops. */
 export const LEASE_OPS_FEATURE = "lease-ops";
 
-/**
- * The per-request timeout `SWAMP_SERVE_TIMEOUT_MS` sets (a positive
- * integer of milliseconds), as the remote-run client reads it, else
- * {@link DEFAULT_SERVE_TIMEOUT_MS}.
- */
 export function serveRequestTimeoutMs(): number {
   const env = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
   if (env !== undefined) {
@@ -179,161 +120,112 @@ export function serveRequestTimeoutMs(): number {
   return DEFAULT_SERVE_TIMEOUT_MS;
 }
 
-/** How a {@link ServeDatastoreClient} reaches serve. */
 export interface ServeDatastoreClientOptions {
-  /** Serve's `http(s)` origin; normalized, trailing slashes dropped. */
   readonly baseUrl: string;
-  /**
-   * The datastore's storage namespace, as `storageNamespaceOf` names it;
-   * `_default` when empty or omitted.
-   */
   readonly namespace?: string;
-  /** Serve token, sent as a bearer token; no header without one. */
   readonly token?: string;
   /**
    * Makes the HTTP client requests go through (a private CA, say). Called
    * once, on the first request, never at construction.
    */
   readonly httpClient?: () => Deno.HttpClient;
-  /** Per-attempt timeout; {@link serveRequestTimeoutMs} by default. */
   readonly timeoutMs?: number;
-  /** Headers sent with every request (an auth proxy's, say). */
   readonly extraHeaders?: Readonly<Record<string, string>>;
-  /** Replaces the global `fetch`, for tests. */
   readonly fetch?: typeof fetch;
-  /** Attempts per request while serve answers 429; at least 1. */
   readonly maxAttempts?: number;
-  /** Cap on a single `Retry-After` wait. */
   readonly maxRetryDelayMs?: number;
 }
 
-/** A chunk a commit request carries. */
 export interface CommitChunk {
-  /** Lowercase 64-hex SHA-256 of `bytes`. */
   readonly sha256: string;
   readonly bytes: Uint8Array;
 }
 
-/**
- * A commit's envelope, as serve takes it. The `chunks` it lists are the
- * ones {@link ServeDatastoreClient.postCommit} carries, so they are not
- * given here.
- */
 export interface CommitEnvelope {
-  /** The partition head the commit was built on. */
   readonly expectedSeq: number;
-  /** Lowercase UUID; a retry of the commit carries the same one. */
   readonly txnId: string;
   readonly fence?: number;
   /**
-   * The fenced model lease the commit is made under (swamp-club#4121): its
-   * id only. Serve stamps the lease op from its own record of the lease.
+   * the fenced model lease the commit is made under: its id only; serve stamps
+   * the lease op from its own record of the lease
    */
   readonly lease?: string;
-  /** The commit's ops, as `opToJSON` writes them. */
   readonly ops: readonly unknown[];
 }
 
-/** What serve answered a commit with. */
 export interface CommitReply {
   readonly seq: number;
-  /** The txnId had landed already: this is that commit's seq. */
   readonly duplicate: boolean;
-  /** Serve committed, and something after the commit needs attention. */
   readonly warning?: string;
 }
 
-/** A page of a partition's commits. */
 export interface PartitionCommitsPage {
-  /** The partition's head at serve. */
   readonly head: number;
-  /** Commit JSON, for `Commit.fromJSON`. */
   readonly commits: readonly unknown[];
 }
 
-/** One commit of the changes feed. */
 export interface ChangeEntry {
   readonly cursor: number;
-  /** Commit JSON, for `Commit.fromJSON`. */
   readonly commit: unknown;
 }
 
-/** A page of the changes feed. */
 export interface ChangesPage {
   readonly changes: readonly ChangeEntry[];
-  /** The cursor to read the next page from. */
   readonly cursor: number;
-  /** Whether serve has more past `cursor`. */
   readonly more: boolean;
 }
 
-/** An inclusive byte range of a chunk; `end` omitted reads to its end. */
 export interface ChunkRange {
   readonly start: number;
   readonly end?: number;
 }
 
-/** A lease on one of serve's locks, as serve granted or renewed it. */
 export interface LockLease {
   readonly leaseId: string;
-  /** The canonical lock key serve holds. */
   readonly lockKey: string;
   readonly ttlMs: number;
-  /** When the lease ends unless renewed, by serve's clock. */
-  readonly expiresAt: string;
   /**
-   * A fenced lease's fence (swamp-club#4121). Absent when serve does not
-   * fence leases (an older serve): the lease is then unfenced.
+   * a fenced lease's fence; absent when serve does not fence leases (an older
+   * serve), so the lease is unfenced
    */
+  readonly expiresAt: string;
   readonly fence?: number;
   /**
-   * A fenced model lease's data-version floor when it was taken: each data
-   * name's marks. The holder allocates versions above them.
+   * a fenced model lease's data-version floor when taken: each data name's
+   * marks, which the holder allocates versions above
    */
   readonly floor?: readonly DataNameMarks[];
-  /** An explicit lease's hold: each renewal extends it by this long. */
   readonly holdMs?: number;
 }
 
-/** One lease serve holds, as its listing names it (swamp-club#4121). */
 export interface ServeLeaseEntry {
   readonly lockKey: string;
-  /** Who holds it, as far as the caller may be told. */
   readonly heldBy: "caller" | "other";
-  /** When it ends unless renewed, by serve's clock. */
   readonly expiresAt: string;
 }
 
-/** Serve's lease listing. */
 export interface ServeLeaseListing {
   readonly leases: readonly ServeLeaseEntry[];
-  /** Serve listed only the first of more. */
   readonly truncated: boolean;
 }
 
-/** What serve answered a lock request with. */
 export type LockAcquireReply =
   | { readonly acquired: true; readonly lease: LockLease }
   | {
     readonly acquired: false;
-    /** Who holds it, as far as serve tells: this caller, another, or serve. */
     readonly heldBy: string;
     readonly message: string;
   };
 
-/** A request, as the client sends it. */
 interface RequestSpec {
   readonly method: "GET" | "POST" | "PUT" | "DELETE";
-  /** Path below `/api/v1/datastore/{namespace}/`, already encoded. */
   readonly path: string;
   readonly query?: Readonly<Record<string, string>>;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: Uint8Array<ArrayBuffer> | string;
 }
 
-/** The client of serve's datastore API. Holds no state but its HTTP client. */
 export class ServeDatastoreClient {
-  /** Serve's normalized origin. */
   readonly baseUrl: string;
   readonly namespace: string;
   readonly #token: string | undefined;
@@ -367,16 +259,11 @@ export class ServeDatastoreClient {
       DEFAULT_MAX_RETRY_DELAY_MS;
   }
 
-  /** Closes the HTTP client, if one was made. */
   close(): void {
     this.#httpClient?.close();
     this.#httpClient = undefined;
   }
 
-  /**
-   * The hashes of `hashes` serve holds and the caller may reference, asked
-   * {@link MAX_HAS_HASHES} at a time.
-   */
   async hasChunks(
     hashes: readonly string[],
     signal: AbortSignal,
@@ -426,11 +313,6 @@ export class ServeDatastoreClient {
     return { sha256: body.sha256, size: body.size };
   }
 
-  /**
-   * A chunk's bytes, or the inclusive `range` of them; null when serve has
-   * no such chunk the caller may read. A whole chunk is checked against
-   * its hash.
-   */
   async getChunk(
     sha256: string,
     signal: AbortSignal,
@@ -473,10 +355,6 @@ export class ServeDatastoreClient {
     );
   }
 
-  /**
-   * Sends one commit with the chunks it carries, framed as serve reads it.
-   * The envelope's `chunks` are `chunks`' `{sha256, size}`, in order.
-   */
   async postCommit(
     partition: PartitionKey,
     envelope: CommitEnvelope,
@@ -509,11 +387,9 @@ export class ServeDatastoreClient {
   }
 
   /**
-   * A partition's commits after seq `after`, at most `limit` of them. With
-   * `held`, the seq the copy holds in the partition: a follower behind it
-   * refuses as behind instead of answering with a head that reads as a
-   * rewind (swamp-club#4254). A serve that does not read it answers as
-   * before.
+   * with `held`, the seq the copy holds, a follower behind it refuses as behind
+   * instead of answering with a head that reads as a rewind; a serve that does
+   * not read it answers as before
    */
   async partitionCommits(
     partition: PartitionKey,
@@ -541,7 +417,6 @@ export class ServeDatastoreClient {
     return { head: body.head, commits: body.commits };
   }
 
-  /** The commits the caller may read since `cursor`, at most `limit`. */
   async changes(
     cursor: number,
     signal: AbortSignal,
@@ -579,11 +454,8 @@ export class ServeDatastoreClient {
   }
 
   /**
-   * One page of serve's compacted base after `after` (undefined to start),
-   * at most `limit` entries the caller may read with their partitions'
-   * (swamp-club#4006). The reply is read under the page byte limit, and
-   * every entry is checked: one of another shape, or outside `namespace`,
-   * refuses the whole page.
+   * the reply is read under the page byte limit and every entry is checked: one
+   * of another shape or outside `namespace` refuses the whole page
    */
   async compactedBase(
     after: string | undefined,
@@ -632,10 +504,8 @@ export class ServeDatastoreClient {
   }
 
   /**
-   * Asks serve for its lock `lockKey` (`data/{type}/{id}/.lock` or
-   * `workflow-run-claims/{runId}/.lock`, with no namespace), for `ttlMs`,
-   * serve waiting up to `waitMs` while another holder has it. A lock still
-   * held after that is `acquired: false`, not an error.
+   * a lock still held after serve waited `waitMs` is `acquired: false`, not an
+   * error
    */
   async acquireLock(
     lockKey: string,
@@ -649,9 +519,8 @@ export class ServeDatastoreClient {
         method: "POST",
         path: "locks",
         headers: { "content-type": "application/json" },
-        // An older serve ignores `fenced` and grants an unfenced lease. An
+        // an older serve ignores `fenced` and grants an unfenced lease; an
         // explicit lease is held for `holdMs` between renewals
-        // (swamp-club#4121).
         body: JSON.stringify(
           options.holdMs === undefined
             ? { lockKey, ttlMs, waitMs, fenced: true }
@@ -692,10 +561,6 @@ export class ServeDatastoreClient {
     );
   }
 
-  /**
-   * Extends the lease `leaseId` by `ttlMs`; undefined when serve holds no
-   * such lease for the caller any more (it expired or was released).
-   */
   async renewLock(
     leaseId: string,
     ttlMs: number,
@@ -708,7 +573,6 @@ export class ServeDatastoreClient {
         path: `locks/${encodeURIComponent(leaseId)}`,
         headers: { "content-type": "application/json" },
         // `holdMs` makes the lease explicit, or changes its hold
-        // (swamp-club#4121).
         body: JSON.stringify(
           options.holdMs === undefined
             ? { ttlMs }
@@ -735,10 +599,6 @@ export class ServeDatastoreClient {
     );
   }
 
-  /**
-   * Releases the lease `leaseId`: true once released, false when serve
-   * held no such lease (it expired, or was released already).
-   */
   async releaseLock(leaseId: string, signal: AbortSignal): Promise<boolean> {
     return await this.#exchange(
       { method: "DELETE", path: `locks/${encodeURIComponent(leaseId)}` },
@@ -758,13 +618,9 @@ export class ServeDatastoreClient {
   }
 
   /**
-   * Ends the lease serve holds on `lockKey`, whoever holds it
-   * (swamp-club#4195): admin only. Resolves with `released` false when no
-   * lease held the lock, and with who held it when one did.
-   *
-   * @throws ServeUpstreamError for any reply that is not a success: a
-   * caller who is not an admin, or an older serve, which has no such route
-   * and answers 405.
+   * ends the lease on `lockKey` whoever holds it; admin only. An older serve
+   * has no such route and answers 405, thrown as ServeUpstreamError like any
+   * non-success
    */
   async forceReleaseLock(
     lockKey: string,
@@ -798,11 +654,6 @@ export class ServeDatastoreClient {
     );
   }
 
-  /**
-   * Hands serve a change it refused because this caller lacks a grant it
-   * needs, for an admin to accept (swamp-club#4195): the commit as built,
-   * the head it was built on and every chunk it names.
-   */
   async depositQuarantine(
     deposit: {
       readonly commit: unknown;
@@ -824,11 +675,6 @@ export class ServeDatastoreClient {
     return { duplicate: body.duplicate === true };
   }
 
-  /**
-   * Lands the change serve keeps under `txnId`, as its author
-   * (swamp-club#4195): admin only. Resolves with serve's reply: the kept
-   * record, now accepted, and what the rebase renumbered.
-   */
   async acceptQuarantine(
     txnId: string,
     signal: AbortSignal,
@@ -839,11 +685,6 @@ export class ServeDatastoreClient {
     }, signal);
   }
 
-  /**
-   * What serve did with the change this caller deposited under `txnId`
-   * (swamp-club#4195): still `held`, `accepted` or `discarded`; undefined
-   * when serve holds none, or is an older serve without the route.
-   */
   async quarantineState(
     txnId: string,
     signal: AbortSignal,
@@ -876,11 +717,6 @@ export class ServeDatastoreClient {
     );
   }
 
-  /**
-   * Discards the change serve keeps under `txnId`, so it never lands
-   * (swamp-club#4195): admin only. Resolves with serve's reply: the kept
-   * record, now discarded.
-   */
   async discardQuarantine(
     txnId: string,
     signal: AbortSignal,
@@ -891,11 +727,6 @@ export class ServeDatastoreClient {
     }, signal);
   }
 
-  /**
-   * The leases serve holds on locks this caller could take (swamp-club#4121),
-   * whose keys start with `prefix`. Undefined from an older serve, which
-   * does not list them.
-   */
   async listLocks(
     prefix: string,
     signal: AbortSignal,
@@ -920,37 +751,28 @@ export class ServeDatastoreClient {
     );
   }
 
-  /** The per-attempt timeout every request runs under. */
   get timeoutMs(): number {
     return this.#timeoutMs;
   }
 
   /**
-   * Has every reply checked by `check` before it is read
-   * (swamp-club#4049): with the log id the reply names, or undefined for a
-   * success that names none. A refusal that names none (one serve's
-   * datastore API did not answer) is not checked. A throw refuses the
-   * reply.
+   * every reply is checked before it is read, with the log id it names or
+   * undefined; a refusal naming none is not checked, and a throw refuses the
+   * reply
    */
   checkLog(check: (logId: string | undefined) => void): void {
     this.#logCheck = check;
   }
 
   /**
-   * Has every reply that names the caller's read access
-   * ({@link SERVE_DATASTORE_ACCESS_HEADER}) reported to `check`, once the
-   * log check passed (swamp-club#4089). A reply that names none (a serve
-   * too old to send it) is not reported. It never refuses a reply: serve
-   * filters every reply under the caller's current access.
+   * replies naming the caller's read access are reported to `check` once the
+   * log check passed; a reply naming none is not reported. It never refuses a
+   * reply, since serve filters under current access
    */
   checkAccess(check: (fingerprint: string) => void): void {
     this.#accessCheck = check;
   }
 
-  /**
-   * A request whose success is a JSON object of at most `maxBytes`
-   * ({@link SERVE_REPLY_MAX_BYTES} by default).
-   */
   async #json(
     spec: RequestSpec,
     signal: AbortSignal,
@@ -970,11 +792,6 @@ export class ServeDatastoreClient {
     });
   }
 
-  /**
-   * Sends `spec`, retrying a 429 that carries a `Retry-After`, and hands
-   * the reply to `read` under the same timeout. A failure with no reply is
-   * a {@link ServeUnreachableError}; the caller's abort is rethrown as it.
-   */
   async #exchange<T>(
     spec: RequestSpec,
     signal: AbortSignal,
@@ -1001,9 +818,9 @@ export class ServeDatastoreClient {
       } catch (error) {
         throw this.#unreachable(error, signal, sentOf(error), true);
       }
-      // Serve's clock, which judges a lease's expiry and corrects an offline
-      // write's time while serve is unreachable (swamp-club#4195). Read
-      // before the 429 retry on purpose: a throttled reply's Date is valid.
+      // serve's clock, which judges a lease's expiry and corrects an offline
+      // write's time while serve is unreachable; read before the 429 retry on
+      // purpose: a throttled reply's Date is valid
       recordServeClock(
         this.baseUrl,
         response.headers.get("date"),
@@ -1044,10 +861,6 @@ export class ServeDatastoreClient {
     }
   }
 
-  /**
-   * The error a reply that is not a success maps to. A body past
-   * {@link SERVE_ERROR_BODY_MAX_BYTES} is not read: the status alone maps.
-   */
   async #refusal(response: Response, route: string): Promise<Error> {
     let body: unknown;
     try {
@@ -1064,11 +877,6 @@ export class ServeDatastoreClient {
     );
   }
 
-  /**
-   * `error` as thrown to the caller: the caller's own abort as it is, a
-   * network failure as a {@link ServeUnreachableError}, anything else (a
-   * refusal, a bug) unchanged.
-   */
   #unreachable(
     error: unknown,
     signal: AbortSignal,
@@ -1194,16 +1002,10 @@ function invalidReply(route: string, wanted: string): ServeUpstreamError {
   );
 }
 
-/**
- * The most bytes read of a page of `limit` commits: one commit's largest
- * at limit 1, else {@link SERVE_PAGE_MAX_BYTES}. A caller that names no
- * limit gets serve's page of up to 1000.
- */
 function pageMaxBytes(limit: number | undefined): number {
   return limit === 1 ? MAX_WRITTEN_COMMIT_REPLY_BYTES : SERVE_PAGE_MAX_BYTES;
 }
 
-/** The bytes a 206 for `range` holds at most. */
 function rangeBytes(range: ChunkRange): number {
   return range.end === undefined
     ? Math.max(0, CHUNK_BYTES - range.start)
@@ -1244,7 +1046,6 @@ async function readBounded(
   return bytes;
 }
 
-/** A reply's body as JSON, read through {@link readBounded}. */
 async function readBoundedJson(
   response: Response,
   route: string,
@@ -1267,13 +1068,11 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** `Retry-After` as whole seconds, when it is delay-seconds. */
 function retryAfterSeconds(header: string | null): number | undefined {
   if (header === null || !/^\s*\d{1,9}\s*$/.test(header)) return undefined;
   return Number(header.trim());
 }
 
-/** `Retry-After` (delay-seconds or an HTTP date) as milliseconds. */
 function retryAfterMs(header: string | null): number | undefined {
   const seconds = retryAfterSeconds(header);
   if (seconds !== undefined) return seconds * 1000;
@@ -1282,7 +1081,6 @@ function retryAfterMs(header: string | null): number | undefined {
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
-/** Waits `ms`, or rejects with the signal's reason once it aborts. */
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -1301,7 +1099,6 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Node-style codes of a connection that was never made. */
 const NEVER_SENT_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
   "ENOTFOUND",
@@ -1312,7 +1109,6 @@ const NEVER_SENT_CODES: ReadonlySet<string> = new Set([
   "ENETDOWN",
 ]);
 
-/** How far {@link sentOf} follows `cause` links. */
 const MAX_CAUSE_DEPTH = 8;
 
 /**

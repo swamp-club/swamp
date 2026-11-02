@@ -1,19 +1,4 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 Elder Swamp Club, Inc.
-//
-// This file is part of Swamp.
-//
-// Swamp is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License version 3
-// as published by the Free Software Foundation, with the Swamp
-// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
-// file).
-//
-// Swamp is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -115,7 +100,6 @@ Deno.test("removeAbandonedTempFiles: tolerates a missing directory", async () =>
 const DIR_PREFIX = "swamp-update-";
 const OLD = ABANDONED_TEMP_DIR_MAX_AGE_MS + 60_000;
 
-/** Makes a prefixed directory holding one file, both aged `ageMs`. */
 async function makeAgedDir(parent: string, ageMs: number): Promise<string> {
   const path = join(parent, `${DIR_PREFIX}${crypto.randomUUID()}`);
   await Deno.mkdir(path);
@@ -151,7 +135,6 @@ Deno.test("removeAbandonedTempDirs: keeps a directory a live download is still w
 
 Deno.test("removeAbandonedTempDirs: keeps a directory a paused download has not touched for an hour", async () => {
   await withTempDir(async (dir) => {
-    // Older than the file threshold, as after a laptop slept mid-download.
     const paused = await makeAgedDir(dir, 60 * 60 * 1000);
 
     await removeAbandonedTempDirs(dir, DIR_PREFIX);

@@ -19,22 +19,6 @@
 
 import { AsyncQueue } from "./async_queue.ts";
 
-/**
- * Bridges a Promise-returning function that needs to emit events
- * into an AsyncGenerator that yields those events.
- *
- * The callback receives a `push` function to emit events.
- * Events are yielded as they arrive. When the promise settles,
- * the generator completes (or throws).
- *
- * Usage:
- * ```typescript
- * const result = yield* withEventBridge<MyEvent, MyResult>((push) => {
- *   push({ type: "progress", value: 50 });
- *   return doWork();
- * });
- * ```
- */
 export async function* withEventBridge<TEvent, TResult>(
   fn: (push: (event: TEvent) => void) => Promise<TResult>,
 ): AsyncGenerator<TEvent, TResult> {
@@ -54,9 +38,8 @@ export async function* withEventBridge<TEvent, TResult>(
     await promise;
     return result;
   } finally {
-    // When the generator is returned early (abort/cancellation), the yield
-    // exits without reaching `await promise`. Close the queue so the executor
-    // sees the signal, and absorb any rejection so it doesn't become unhandled.
+    // an early return skips `await promise`, so close the queue to signal the
+    // executor and absorb any rejection to avoid an unhandled one
     queue.close();
     await promise.catch(() => {});
   }

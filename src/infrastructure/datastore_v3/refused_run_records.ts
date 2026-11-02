@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Closes decision 7's rule that a run record never names data whose
- * partition was refused (swamp-club#3257): the `onRefused` a workflow run's
- * commit-log root passes. Dormant until the v3 opt-in wires a run root.
- *
- * @module
- */
-
 import type { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import {
@@ -33,12 +25,9 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 
 /**
- * Saves each run `error` held back again, with every step that wrote a
- * refused data version failed (`WorkflowRun.failStepsNamingRefusedData`), so
- * the record the root then commits names no refused data as a success. The
- * save runs in the root, so it supersedes the held record. A held run that
- * names no refused version is left as it is: its held record is already
- * right, and the root commits it once the refusal is acknowledged.
+ * re-saves each held run with steps that wrote a refused data version failed,
+ * so the committed record never names refused data as a success; a run naming
+ * none is left as held
  */
 export async function reconcileRefusedRuns(
   runRepo: WorkflowRunRepository,

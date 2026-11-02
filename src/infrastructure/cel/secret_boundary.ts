@@ -18,25 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The boundary conversion of the CEL adapter
- * (design/enablers/typed-secrets.md Section 3.2). Outside CEL a secret is a
- * sentinel in text; inside CEL it is a `Secret`.
- *
- * - Bindings: a string bound into CEL that holds sentinels the run's
- *   registry issued becomes a `Secret`. Text with any other prefix stays
- *   text. Containers are read through views: new objects whose properties
- *   are getters over the original, so the original is never wrapped or
- *   mutated, and none of its getters fires unless CEL reads that key (the
- *   lazy `model.*.resource` loaders stay lazy). A read that yields a `Secret`
- *   counts toward the container rule (Section 4.3 item 5).
- * - Results: a `Secret` becomes its sentinel, issued into the run's
- *   registry (a vault reference as a vault entry, a sensitive-field
- *   reference the accessor adapter read as a value-less data-origin entry),
- *   and a composition becomes its text with a sentinel for each reference.
- *   Views become new plain objects. This runs before the adapter's own
- *   post-processing, after recording stops.
- *
- * No `Secret` and no view leaves the adapter.
+ * containers are read through views whose properties are getters over the
+ * original, so it is never wrapped or mutated and no getter fires unless CEL
+ * reads that key; no Secret and no view leaves the adapter
  */
 
 import { Optional } from "cel-js";
@@ -63,7 +47,6 @@ import {
   type SecretReferencePart,
 } from "./secret_value.ts";
 
-/** The prefix every sentinel starts with, checked before a full scan. */
 const SENTINEL_MARK = "__SWAMP_VSEC_";
 
 /**
@@ -88,38 +71,22 @@ function defineValue(target: object, key: string, value: unknown): void {
   });
 }
 
-/**
- * The conversion for one evaluation: the run's bag to issue into, the views
- * built so far, and the sentinels issued so far.
- */
 export class SecretBoundary {
   private readonly registry: SecretBagRegistry;
-  /** Each viewed original's view, so aliased paths keep their identity. */
   private readonly views = new WeakMap<object, object>();
-  /** Each reference part's issued sentinel, so a part is issued once. */
   private readonly issued = new WeakMap<SecretReferencePart, string>();
 
   constructor(
-    /** The run's issuing bag: a delivery view cannot issue. */
     private readonly bag: VaultSecretBag,
   ) {
     this.registry = bag.registry;
   }
 
-  /**
-   * The bindings `context` with every sentinel the run issued read as a
-   * `Secret`. The context itself is returned when the run issued none.
-   */
   bind(context: Record<string, unknown>): Record<string, unknown> {
     if (this.registry.isEmpty) return context;
     return this.viewOfMap(context);
   }
 
-  /**
-   * `value` with every `Secret` turned into its sentinel text and every
-   * container rebuilt as a plain one, ready for the adapter's
-   * post-processing.
-   */
   release(value: unknown): unknown {
     if (isSecret(value)) return this.sentinelText(value);
     if (value instanceof Optional) {
@@ -178,10 +145,6 @@ export class SecretBoundary {
     return view;
   }
 
-  /**
-   * A getter that reads the original once, converts what it read, and
-   * counts every read that yields a `Secret`.
-   */
   private defineConverting(
     view: object,
     key: string,
@@ -203,11 +166,6 @@ export class SecretBoundary {
     });
   }
 
-  /**
-   * `text` as a `Secret` when it holds a sentinel the run issued: an exact
-   * sentinel is one reference, mixed text a composition. Text that holds no
-   * sentinel of the run stays text.
-   */
   private fromText(text: string): string | Secret {
     if (!text.includes(SENTINEL_MARK)) return text;
     const parts: SecretPart[] = [];
@@ -269,10 +227,6 @@ export class SecretBoundary {
   }
 }
 
-/**
- * Refuse a `Secret` in a result that has no run's bag to issue into, which
- * is a destination that cannot hold one.
- */
 export function refuseUnboundSecrets(value: unknown, expression: string): void {
   if (containsSecret(value)) {
     throw new SecretRefusedError(
@@ -284,13 +238,9 @@ export function refuseUnboundSecrets(value: unknown, expression: string): void {
 }
 
 /**
- * Reads `value` as {@link SecretBoundary.release} would, firing the getters of
- * every view in it, so that a record the expression returned without
- * selecting into it is adapted, and its references recorded, before release.
- * Reads the whole value: a `Secret` met first, such as a sentinel bound from
- * the context, decides nothing about the records behind it, and one left
- * unread here would be adapted by release, which issues its references
- * after the check.
+ * reads the whole value: a Secret met first decides nothing about records
+ * behind it, and one left unread would be adapted by release, which issues its
+ * references after the check
  */
 export function readResult(value: unknown): void {
   if (value instanceof Optional) {
@@ -318,10 +268,8 @@ function containsSecret(value: unknown): boolean {
 }
 
 /**
- * `value` for a destination that takes no secret: a plain copy with every
- * view and container rebuilt, after refusing any `Secret` in it, at any
- * depth, with `secret_destination_refused`, recorded first. Containers keep
- * their prototype, so the destination sees the shape it sees today.
+ * containers keep their prototype, so the destination sees the shape it sees
+ * today
  */
 export function detachForDestination(
   value: unknown,

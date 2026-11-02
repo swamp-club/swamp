@@ -36,7 +36,6 @@ import {
 
 await initializeLogging({});
 
-/** A sync service that records each push's options. */
 function recordingService(
   result: () => Promise<number> = () => Promise.resolve(2),
 ) {
@@ -54,7 +53,6 @@ function recordingService(
   };
 }
 
-/** A lock that counts its releases. */
 function countingLock(): DistributedLock & { releases: () => number } {
   let releases = 0;
   return {

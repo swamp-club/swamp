@@ -21,29 +21,20 @@ import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["process", "init"]);
 
-/** The facts about this process that decide whether it is an unreaping init. */
 export interface ProcessIdentity {
   os: typeof Deno.build.os;
   pid: number;
 }
 
 /**
- * Whether this process is PID 1 on Linux, where the kernel re-parents every
- * orphaned process to it. Deno only waits on children it spawned through
- * `Deno.Command`, so a swamp running as PID 1 (a container without an init)
- * never reaps the processes steps leave behind. `pid` is read inside the
- * process's own PID namespace, so it is 1 for a container's entrypoint.
+ * Deno only waits on children it spawned, so a swamp running as PID 1 never
+ * reaps orphans the kernel re-parents to it; pid is read in the process's own
+ * PID namespace
  */
 export function isPidOneOnLinux(identity: ProcessIdentity): boolean {
   return identity.os === "linux" && identity.pid === 1;
 }
 
-/**
- * Warns when this process is an init that will not reap orphans. Called by
- * the long-running processes that adopt them: `swamp serve` and
- * `swamp worker connect`. `identity` defaults to this process; tests pass
- * their own.
- */
 export function warnIfRunningAsInit(
   identity: ProcessIdentity = { os: Deno.build.os, pid: Deno.pid },
 ): void {

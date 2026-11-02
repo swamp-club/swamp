@@ -24,12 +24,10 @@ import {
 } from "./resolve_command.ts";
 
 Deno.test("defaultCommandResolver: resolves a binary that exists (deno)", async () => {
-  // `deno` is on PATH on every CI runner — POSIX or Windows.
   const resolver = defaultCommandResolver();
   const path = await resolver.resolve("deno");
   assert(path !== null, "expected deno to resolve to a path");
   assert(path.length > 0, "expected non-empty path");
-  // Whatever the platform, the resolved path should contain "deno".
   assert(
     path.toLowerCase().includes("deno"),
     `expected resolved path to contain "deno"; got ${path}`,
@@ -43,8 +41,6 @@ Deno.test("defaultCommandResolver: returns null for a binary that does not exist
 });
 
 Deno.test("defaultCommandResolver: returns first non-empty line of multi-line output", async () => {
-  // Stream-0 deferred check: when `which`/`where` reports multiple matches
-  // (one per line), only the first line is returned.
   const fakeRunner: CommandLookupRunner = (_tool, _name) =>
     Promise.resolve({
       success: true,
@@ -112,7 +108,6 @@ Deno.test("defaultCommandResolver: uses the platform-appropriate lookup tool", a
 });
 
 Deno.test("defaultCommandResolver: trims trailing CR on Windows-style line endings", async () => {
-  // `where` on Windows emits CRLF line terminators.
   const fakeRunner: CommandLookupRunner = (_tool, _name) =>
     Promise.resolve({
       success: true,

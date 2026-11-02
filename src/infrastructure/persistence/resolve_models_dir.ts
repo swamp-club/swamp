@@ -27,36 +27,26 @@ import {
 } from "../../domain/terminology/behavior_aliases.ts";
 
 /**
- * Resolves the models directory path.
- * Priority: SWAMP_MODELS_DIR env var > SWAMP_BEHAVIORS_DIR env var (its
- * behavior spelling, swamp-club#3410) > .swamp.yaml config > default
- * "extensions/models". An empty variable counts as unset.
+ * order: SWAMP_MODELS_DIR, SWAMP_BEHAVIORS_DIR, .swamp.yaml, then
+ * extensions/models; an empty variable counts as unset
  */
 export function resolveModelsDir(marker: RepoMarkerData | null): string {
-  // Environment variable takes highest priority
   const envModelsDir = Deno.env.get(MODELS_DIR_ENV_VAR) ||
     Deno.env.get(BEHAVIORS_DIR_ENV_VAR);
   if (envModelsDir) {
     return envModelsDir;
   }
 
-  // Then .swamp.yaml config
   if (marker?.modelsDir) {
     return marker.modelsDir;
   }
 
-  // Default
   return DEFAULT_MODELS_DIR;
 }
 
 /**
- * Resolves the behaviors directory, the behavior-spelled sibling of the
- * models directory (swamp-club#3338): `extensions/behaviors` while the
- * models directory is the default `extensions/models`, and undefined once
- * `SWAMP_MODELS_DIR`, `SWAMP_BEHAVIORS_DIR` or `.swamp.yaml` moves the
- * models directory, so a
- * repo that configured where its models live never gains a second,
- * unconfigured directory.
+ * undefined once the models directory is moved, so a repo that configured where
+ * its models live never gains a second, unconfigured directory
  */
 export function resolveBehaviorsDir(
   marker: RepoMarkerData | null,
@@ -66,12 +56,7 @@ export function resolveBehaviorsDir(
     : undefined;
 }
 
-/**
- * The absolute behaviors directory under `extBase` (swamp-club#3338), or
- * undefined when the models directory is configured or no behaviors
- * directory exists there. A symlinked directory counts, as a symlinked
- * models directory does.
- */
+/** a symlinked behaviors directory counts, as a symlinked models directory does */
 export async function existingBehaviorsDir(
   extBase: string,
   marker: RepoMarkerData | null,
@@ -87,12 +72,8 @@ export async function existingBehaviorsDir(
 }
 
 /**
- * The startup refusal for a models directory named two ways
- * (swamp-club#3410): `SWAMP_MODELS_DIR` and `SWAMP_BEHAVIORS_DIR` both set,
- * to different non-empty values. Undefined when at most one is set or both
- * name the same directory. resolveModelsDir never refuses — it prefers
- * `SWAMP_MODELS_DIR` — because some callers swallow its errors; the CLI
- * checks this once at startup instead.
+ * resolveModelsDir never refuses, preferring SWAMP_MODELS_DIR, because some
+ * callers swallow its errors; the CLI checks this once at startup instead
  */
 export function modelsDirEnvConflict(): string | undefined {
   const modelsDir = Deno.env.get(MODELS_DIR_ENV_VAR);

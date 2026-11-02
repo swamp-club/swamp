@@ -52,11 +52,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * A repository in `dir`, a source that counts file reads, and an index whose
- * clock runs a minute ahead, so every stat the test sets is old enough to
- * trust and only a stat that moved makes it list or read again.
- */
 function fixture(dir: string, stat?: typeof statRecord) {
   const primary = join(dir, "models");
   const auto = join(dir, ".swamp", "auto-definitions");
@@ -64,7 +59,6 @@ function fixture(dir: string, stat?: typeof statRecord) {
   const counter = {
     reads: 0,
     failOn: undefined as string | undefined,
-    /** While set, a read starts and waits for this before it finishes. */
     hold: undefined as Promise<void> | undefined,
   };
   const source: DefinitionFileSource = {
@@ -91,7 +85,6 @@ function fixture(dir: string, stat?: typeof statRecord) {
 
 let clock = Date.UTC(2020, 0, 1);
 
-/** Gives `path` an mtime no earlier change has used. */
 async function bump(path: string): Promise<void> {
   clock += 1_000;
   await Deno.utime(path, new Date(clock), new Date(clock));
@@ -103,7 +96,6 @@ function yamlOf(id: string, name: string, tags: Record<string, string> = {}) {
     (tagLines.length > 0 ? `tags:\n${tagLines.join("")}` : "");
 }
 
-/** Writes a definition file as another writer would, moving its stats. */
 async function writeDefinition(
   path: string,
   id: string,
@@ -215,7 +207,6 @@ Deno.test("DefinitionIdIndex: sees definitions another writer adds, removes and 
     assertEquals(await owners(index, id), [
       { name: "added", type: "test/a", tags: {} },
     ]);
-    // The new file, then the owner read at lookup.
     assertEquals(counter.reads - before, 2);
 
     await Deno.rename(join(typeDir, "added.yaml"), join(typeDir, "moved.yaml"));
@@ -260,7 +251,6 @@ Deno.test("DefinitionIdIndex: an owner's tags rewritten in place are read at loo
     await writeDefinition(path, id, "tagged", { env: "dev" });
     assertEquals((await owners(index, id))[0].tags, { env: "dev" });
 
-    // In place: the directory's stat does not move.
     await Deno.writeTextFile(path, yamlOf(id, "tagged", { env: "prod" }));
     assertEquals((await owners(index, id))[0].tags, { env: "prod" });
   });
@@ -320,7 +310,6 @@ Deno.test("DefinitionIdIndex: a symlinked definition whose target in another dir
     await bump(typeDir);
     assertEquals((await owners(index, first)).map((o) => o.name), ["linked"]);
 
-    /** Replaces the target by renaming a new file over it, in its own directory. */
     const replaceTarget = async (id: string) => {
       await Deno.writeTextFile(
         `${target}.tmp`,
@@ -352,7 +341,6 @@ Deno.test("DefinitionIdIndex: a symlinked definition listed before its target ex
     await bump(typeDir);
     assertEquals(await owners(index, id), []);
 
-    // The link's own directory does not change.
     await writeDefinition(target, id, "prod", { env: "prod" });
     assertEquals(await owners(index, id), [
       { name: "prod", type: "test/a", tags: { env: "prod" } },
@@ -404,7 +392,6 @@ Deno.test("DefinitionIdIndex: a directory whose stat is too recent to trust is l
       join(typeDir, "d.yaml"),
       yamlOf(crypto.randomUUID(), "d"),
     );
-    // Every stat within the window before the index's clock.
     const recent = new Date(now - 500);
     await Deno.utime(join(typeDir, "d.yaml"), recent, recent);
     await Deno.utime(typeDir, recent, recent);
@@ -414,7 +401,6 @@ Deno.test("DefinitionIdIndex: a directory whose stat is too recent to trust is l
     await index.begin();
     assertEquals(counter.reads, 2);
 
-    // Once the window has passed, the same stats are trusted.
     now += 60_000;
     await index.begin();
     const settled = counter.reads;
@@ -467,7 +453,6 @@ Deno.test("DefinitionIdIndex: a symlink that loops is skipped as a scan skips it
       (await repo.findAllIncludingAutoGlobal()).map((f) => f.definition.name),
       ["good"],
     );
-    // Still checked on each request, without failing it.
     assertEquals((await owners(index, id)).map((o) => o.name), ["good"]);
   });
 });
@@ -617,7 +602,6 @@ Deno.test("DefinitionIdIndex: inside the step_outputs area a check is an owner_i
         ]),
         [["cold", 3, 3, 0], ["warm", 0, 3, 0], ["refreshed", 1, 4, 0]],
       );
-      // The validate span keeps what it exported before, and adds to it.
       assertEquals(validates[0].attributes["definition_index.files_parsed"], 3);
       assertEquals(validates[0].attributes["definition_index.files_joined"], 0);
     });
@@ -687,7 +671,6 @@ Deno.test("DefinitionIdIndex: a check that joins another's listing counts it as 
       assertEquals(validates.length, 2);
       const num = (s: (typeof validates)[number], key: string) =>
         s.attributes[`definition_index.${key}`] as number;
-      // Every file was parsed once: what one check joined, the other read.
       assertEquals(
         validates.reduce(
           (sum, s) => sum + num(s, "files_parsed") - num(s, "files_joined"),
@@ -742,7 +725,6 @@ Deno.test("DefinitionIdIndex: a cancelled check ends its owner_index phase cance
   });
 });
 
-/** What a lookup by name found, as a global scan by name reports it. */
 async function named(index: DefinitionIdIndex, name: string) {
   const found = await index.findByName(name);
   return found && {
@@ -755,7 +737,6 @@ async function named(index: DefinitionIdIndex, name: string) {
 Deno.test("DefinitionIdIndex.findByName: finds what a scan by name finds, a definition shadowing an auto-definition and the first file in scan order winning", async () => {
   await withTempDir(async (dir) => {
     const { primary, auto, repo, index } = fixture(dir);
-    // The same name in both roots, twice in one root, and across types.
     await writeDefinition(
       join(auto, "test", "a", "shared.yaml"),
       crypto.randomUUID(),
@@ -843,10 +824,8 @@ Deno.test("DefinitionIdIndex.findByName: a miss once the index is warm reads no 
       "new",
     );
     assertEquals((await named(index, "new"))?.type, "test/a");
-    // The new file when listed, then again when found.
     assertEquals(counter.reads, 7);
 
-    // A definition added later under models/ shadows the auto-definition.
     await writeDefinition(
       join(primary, "test", "a", "new.yaml"),
       crypto.randomUUID(),
@@ -876,7 +855,6 @@ Deno.test("DefinitionIdIndex.findByName: sees a definition another writer remove
       join(typeDir, "moved.yaml"),
     );
 
-    // Rewritten through a rename, as editors and save() write.
     const staged = join(auto, "staged.yaml");
     await Deno.writeTextFile(staged, yamlOf(crypto.randomUUID(), "two"));
     await Deno.rename(staged, join(typeDir, "moved.yaml"));
@@ -898,7 +876,6 @@ Deno.test("DefinitionIdIndex.findByName: a file found rewritten in place at look
     await writeDefinition(path, crypto.randomUUID(), "before");
     assertEquals((await named(index, "before"))?.name, "before");
 
-    // Overwritten in place: the directory's stat does not move.
     await Deno.writeTextFile(path, yamlOf(crypto.randomUUID(), "after"));
     await bump(path);
     assertEquals(await index.findByName("before"), null);

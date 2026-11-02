@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The scope of a user's own edit or delete of a managed-config definition
- * (swamp-club#4097). Inside it, a v3 unit of work expects the version the
- * user started from ({@link ConfigEditBases}) for an edited or deleted
- * definition; outside it, the version a repository read when it saved.
- * Only the CLI's edit and delete commands open it: a system rewrite (a type
- * upgrade, a migration, an adoption) has no version a user started from,
- * and serve's own files are always the head.
+ * inside it, a unit of work expects the version the user started from for an
+ * edited or deleted definition; outside it, the version a repository read when
+ * it saved. Only the CLI's edit and delete open it
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -34,11 +30,8 @@ import { anyServeOffline } from "./serve_offline.ts";
 const userConfigEdit = new AsyncLocalStorage<true>();
 
 /**
- * Runs `fn` as a user's edit or delete of managed config. Refused while the
- * command works offline (swamp-club#4195): whether an edit is stale is
- * serve's to decide.
- *
- * @throws OfflineConfigEditError when a checkout of this command is offline
+ * refused while the command works offline: whether an edit is stale is serve's
+ * to decide
  */
 export function runAsUserConfigEdit<T>(
   fn: () => Promise<T>,
@@ -51,7 +44,6 @@ export function runAsUserConfigEdit<T>(
   return userConfigEdit.run(true, fn);
 }
 
-/** True inside {@link runAsUserConfigEdit}. */
 export function inUserConfigEdit(): boolean {
   return userConfigEdit.getStore() === true;
 }

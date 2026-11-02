@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The store's behaviour on a real commits.db is tested in
-// integration/sqlite_commit_store_test.ts; these cover what it refuses before
-// it touches the filesystem, and truncation to a published high-water mark
-// (swamp-club#3482) on a temp commits.db.
-
 import {
   assert,
   assertEquals,
@@ -68,7 +63,6 @@ import {
   type SqliteCommitStoreOptions,
 } from "./sqlite_commit_store.ts";
 
-/** A path that is never created: open refuses before opening it. */
 const NEVER_OPENED = join("never", "created", "commits.db");
 
 Deno.test("SqliteCommitStore.open: refuses a cache size that is not a positive integer", () => {
@@ -108,7 +102,6 @@ async function withTempDir(
   }
 }
 
-/** Runs `fn` with a store on a fresh `commits.db`, closing it after. */
 async function withStore(
   fn: (store: SqliteCommitStore, path: string) => Promise<void>,
   options: SqliteCommitStoreOptions = {},
@@ -124,7 +117,6 @@ async function withStore(
   });
 }
 
-/** Commit `seq` of the fixture model: saves version `seq` of data `a`. */
 async function save(seq: number, namespace = ""): Promise<Commit> {
   return modelCommit(
     seq,
@@ -133,7 +125,6 @@ async function save(seq: number, namespace = ""): Promise<Commit> {
   );
 }
 
-/** Another model's partition, which only lease ops are written to here. */
 function otherPartition(): PartitionKey {
   return partitionOf({
     kind: "model",
@@ -142,7 +133,6 @@ function otherPartition(): PartitionKey {
   });
 }
 
-/** A lease-only commit raising the other partition's fence to `fence`. */
 function leaseCommit(seq: number, fence: number): Commit {
   return modelCommit(seq, [leaseOp({ holder: "serve", fence })], {
     partition: otherPartition(),
@@ -151,14 +141,11 @@ function leaseCommit(seq: number, fence: number): Commit {
   });
 }
 
-/** A 64-hex digest made of one repeated character. */
 function hash(char: string): string {
   return char.repeat(64);
 }
 
-/** Content stored as one chunk, keyed by its own digest. */
 const ONE_CHUNK = BlobRef.create({ sha256: hash("a"), size: 10 });
-/** Content stored as two chunks, sharing chunk `d` with {@link OTHER_TWO}. */
 const TWO_CHUNKS = BlobRef.create({
   sha256: hash("b"),
   size: 3,
@@ -170,7 +157,6 @@ const OTHER_TWO = BlobRef.create({
   parts: [{ sha256: hash("d"), size: 2 }, { sha256: hash("e"), size: 1 }],
 });
 
-/** Rows of `table`, read behind the store's back. */
 function rawRows(path: string, sql: string): Record<string, unknown>[] {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
@@ -208,7 +194,6 @@ Deno.test("SqliteCommitStore.highWaterMark: names the last stored commit", async
         txnId: "txn-2",
       },
     });
-    // A refused append rolls back its insert; the mark does not move.
     await assertRejects(() => save(5).then((c) => store.append(c)));
     assertEquals(store.highWaterMark().cursor, 3);
   });
@@ -282,7 +267,6 @@ Deno.test("SqliteCommitStore.checkMark: a mismatch when the commit at the cursor
       store.checkMark({ cursor: 2, commit: { ...commit, namespace: "acme" } }),
       "mismatch",
     );
-    // The store misses an acknowledged commit.
     assertEquals(store.checkMark({ cursor: 4 }), "mismatch");
     assertEquals(store.checkMark({ cursor: 0, commit }), "mismatch");
   });
@@ -306,7 +290,6 @@ Deno.test("SqliteCommitStore.checkMark: compacted-past when compaction passed th
       "mismatch",
     );
     await store.compactHistory(4);
-    // Every commit compacted: the point is the store's position.
     assertEquals(store.checkMark({ cursor: 4 }), "match");
     assertEquals(store.checkMark({ cursor: 5 }), "mismatch");
   });
@@ -369,7 +352,6 @@ Deno.test("SqliteCommitStore.truncateAfter: removes the commits past the mark an
         (await store.changesSince(0, 100)).map((c) => c.commit.txnId),
         ["txn-1", "lease-1", "txn-2"],
       );
-      // Chunks only the removed commits named are released.
       assertEquals(
         rawRows(
           truncated,
@@ -410,9 +392,7 @@ Deno.test("SqliteCommitStore.truncateAfter: later appends continue each partitio
     const mark = store.highWaterMark();
     await store.append(await save(3));
     await store.append(await save(4));
-    // The cached partition is at seq 4; truncation drops it.
     await store.truncateAfter(mark);
-    // Seq 3 again, with a version the removed commits never used.
     assertEquals(
       await store.append(
         modelCommit(3, [await savePut("a", 5), versionOp("a", 5)], {
@@ -424,7 +404,6 @@ Deno.test("SqliteCommitStore.truncateAfter: later appends continue each partitio
     const changes = await store.changesSince(0, 100);
     assertEquals(changes.map((c) => c.cursor), [1, 2, 5]);
     assertGreater(store.highWaterMark().cursor, 4);
-    // A removed commit is gone: its txnId is new again.
     assertEquals(
       (await store.readPartition("", modelPartition(), 3, 10)).length,
       1,
@@ -481,7 +460,6 @@ Deno.test("SqliteCommitStore.truncateAfter: refuses a mark compaction passed, or
       assertEquals(error.reason, reason);
     }
     assertEquals(rawRows(path, "SELECT cursor, body FROM commits"), before);
-    // The queue is not wedged by a refusal.
     assertEquals(await store.truncateAfter({ cursor: 3 }), { removed: 1 });
   });
 });
@@ -491,8 +469,6 @@ Deno.test("SqliteCommitStore.truncateAfter: compacted-past when a compacted part
     for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
     await store.compactHistory(1);
     const mark = store.highWaterMark();
-    // Seq 4 writes the partition's only snapshot past the mark; its state at
-    // seq 3 cannot be rebuilt without the compacted seq 1.
     await store.append(await save(4));
     assertEquals(store.checkMark(mark), "compacted-past");
     const error = await assertRejects(
@@ -521,7 +497,6 @@ Deno.test("SqliteCommitStore.truncateAfter: puts back the snapshot an append wou
     try {
       for (let seq = 1; seq <= 3; seq++) await store.append(await save(seq));
       const mark = store.highWaterMark();
-      // No data version, so nothing outlives the truncation.
       await store.append(await unversioned(4));
       assertEquals(rawRows(truncated, "SELECT seq FROM partition_snapshots"), [
         { seq: 4 },
@@ -573,7 +548,6 @@ Deno.test("SqliteCommitStore.truncateAfter: keeps the versions it removes from b
       await store.append(await save(4));
       await store.truncateAfter(mark);
 
-      // A writer that lost its lease may have shared versions 3 and 4.
       assertEquals(
         await store.dataHighWater("", modelPartition(), "a"),
         4,
@@ -590,7 +564,6 @@ Deno.test("SqliteCommitStore.truncateAfter: keeps the versions it removes from b
       await store.close();
     }
 
-    // A rebuild from the file keeps them too.
     const reopened = SqliteCommitStore.open(path);
     try {
       assertEquals(
@@ -627,12 +600,10 @@ Deno.test("SqliteCommitStore.truncateAfter: a second truncation below the first'
     const first = store.highWaterMark();
     await store.append(await save(3));
     await store.append(await save(4));
-    // Versions 3 and 4 survive only in the snapshot at seq 2.
     await store.truncateAfter(first);
 
     await store.append(await versioned(3, 5));
     const second = store.highWaterMark();
-    // Seq 4 replaces the snapshot at seq 2 with one past the next mark.
     await store.append(await versioned(4, 6));
     await store.truncateAfter(second);
 
@@ -676,7 +647,6 @@ Deno.test("SqliteCommitStore.dataHighWater: reads a partition another connection
       assertEquals(await reader.dataHighWater("", modelPartition(), "a"), 1);
       await writer.append(await save(2));
       await writer.append(await save(3));
-      // The reader's cached partition is at seq 1; the file is at seq 3.
       assertEquals(await reader.dataHighWater("", modelPartition(), "a"), 3);
       assertEquals(await reader.dataHighWater("", modelPartition(), "b"), 0);
     } finally {
@@ -702,7 +672,6 @@ Deno.test("SqliteCommitStore.recordSha256: reads a record's digest as the file h
         undefined,
       );
       await writer.append(await save(2));
-      // The reader's cached partition is at seq 1; the file is at seq 2.
       assertEquals(
         await reader.recordSha256("", modelPartition(), dataKey("a", 2)),
         (await savePut("a", 2)).sha256,
@@ -725,8 +694,8 @@ Deno.test("SqliteCommitStore: a stored reuse from before version-reused still re
     } finally {
       await store.close();
     }
-    // Write the reuse a store accepted before swamp-club#3532: seq 3
-    // re-records the removed version 1.
+    // write a reuse an earlier store accepted: seq 3 re-records the removed
+    // version 1
     const reuse = modelCommit(3, [await savePut("a", 1), versionOp("a", 1)], {
       fence: 1,
     });
@@ -759,12 +728,10 @@ Deno.test("SqliteCommitStore: a stored reuse from before version-reused still re
   });
 });
 
-/** A commit at `seq` that writes a record but records no data version. */
 async function unversioned(seq: number): Promise<Commit> {
   return modelCommit(seq, [await savePut("a", seq)], { fence: 1 });
 }
 
-/** Every table's rows, for comparing two stores' files. */
 function allTables(path: string): Record<string, unknown> {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
@@ -781,7 +748,6 @@ function allTables(path: string): Record<string, unknown> {
   }
 }
 
-/** The source of a replacement: commits, chunks, compaction, a snapshot and a fence. */
 async function writeSource(path: string): Promise<void> {
   const source = SqliteCommitStore.open(path, { snapshotInterval: 2 });
   try {
@@ -797,7 +763,6 @@ async function writeSource(path: string): Promise<void> {
     await source.append(leaseCommit(1, 4));
     await source.compactHistory(1, { fence: 4 });
     await source.raiseWriterFence(4);
-    // Truncated past cursor 4: sqlite_sequence is ahead of the commits.
     await source.append(
       modelCommit(1, [await savePut("a", 1)], { namespace: "acme", fence: 4 }),
     );
@@ -856,8 +821,6 @@ Deno.test("SqliteCommitStore.replaceContentFrom: the store holds exactly the res
         await expected.close();
       }
 
-      // The cache of the old content is gone: the next append continues the
-      // source's partition, at a cursor past every one the source assigned.
       assertEquals(
         await target.append(
           modelCommit(4, [await blobPut("n4", 1, ONE_CHUNK)], {
@@ -883,7 +846,6 @@ Deno.test("SqliteCommitStore.replaceContentFrom: another connection to the file 
     const other = SqliteCommitStore.open(targetPath);
     try {
       for (let seq = 1; seq <= 5; seq++) await other.append(await save(seq));
-      // `other` has the partition cached at seq 5.
       await target.replaceContentFrom(sourcePath);
       assertEquals(await other.head("", modelPartition()), {
         seq: 3,
@@ -934,7 +896,6 @@ Deno.test("SqliteCommitStore.replaceContentFrom: refuses a newer-schema file and
         "newer",
       );
       assertEquals(allTables(targetPath), before);
-      // Not wedged, and nothing left attached.
       assertEquals(await target.append(await save(4)), {
         kind: "appended",
         seq: 4,
@@ -975,9 +936,6 @@ Deno.test("SqliteCommitStore.replaceContentFrom: an empty restored file empties 
   });
 });
 
-// Which partitions name each chunk (swamp-club#3915).
-
-/** A put on the other partition's model of content stored as `blob`. */
 function otherBlobPut(name: string, blob: BlobRef) {
   const id = "1e2d3c4b-5a69-4878-9a6b-5c4d3e2f1a0b";
   return putOp({
@@ -1028,20 +986,16 @@ Deno.test("SqliteCommitStore.partitionsReferencing: an append indexes the partit
         fence: 1,
       }),
     );
-    // A chunk's own digest is not a chunk once the content has parts.
     assertEquals(await referencing(store, hash("b")), []);
     assertEquals(await referencing(store, hash("c")), [model]);
-    // Shared by both partitions, listed in key order.
     assertEquals(
       await referencing(store, hash("d")),
       [model, other].sort(),
     );
     assertEquals(await referencing(store, hash("e")), [other]);
-    // Namespaces are isolated.
     assertEquals(await referencing(store, hash("a")), []);
     assertEquals(await referencing(store, hash("a"), "acme"), [model]);
     assertEquals(await referencing(store, hash("d"), "acme"), []);
-    // The limit bounds the answer.
     assertEquals(
       (await store.partitionsReferencing("", hash("d"), 1)).length,
       1,
@@ -1057,8 +1011,6 @@ Deno.test("SqliteCommitStore.partitionsReferencing: an append indexes the partit
 Deno.test("SqliteCommitStore.partitionsReferencing: compaction keeps a partition while a stored commit or base record names the chunk, and drops it after", async () => {
   await withStore(async (store, path) => {
     const model = modelPartition().toString();
-    // Two commits of one partition name chunk a; the base record x then
-    // holds TWO_CHUNKS.
     await store.append(
       modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)], { fence: 1 }),
     );
@@ -1073,14 +1025,11 @@ Deno.test("SqliteCommitStore.partitionsReferencing: compaction keeps a partition
       [{ namespace: "", sha256: hash("a"), partition: model, refs: 2 }],
     );
 
-    // Folding commit 1: its base record x names a, and commit 2 still does.
     await store.compactHistory(1);
     assertEquals(await referencing(store, hash("a")), [model]);
-    // Folding everything: x now holds TWO_CHUNKS, but w still names a.
     await store.compactHistory(3);
     assertEquals(await referencing(store, hash("a")), [model]);
     assertEquals(await referencing(store, hash("c")), [model]);
-    // Deleting w's content drops the last reference to a.
     await store.append(
       modelCommit(4, [deleteVersion("w", 1)], { fence: 1 }),
     );
@@ -1093,7 +1042,6 @@ Deno.test("SqliteCommitStore.partitionsReferencing: compaction keeps a partition
         { namespace: "", sha256: hash("d"), partition: model, refs: 1 },
       ],
     );
-    // The namespace-wide count agrees.
     assertEquals(
       chunkRefs(path).map((row) => row.sha256),
       [hash("c"), hash("d")],
@@ -1261,7 +1209,6 @@ Deno.test("SqliteCommitStore: migrating a schema-7 store backfills the chunk par
           fence: 1,
         }),
       );
-      // Fold the first two commits, so the base holds records too.
       await store.compactHistory(2);
     } finally {
       await store.close();
@@ -1269,7 +1216,6 @@ Deno.test("SqliteCommitStore: migrating a schema-7 store backfills the chunk par
     const built = chunkPartitions(path);
     assertGreater(built.length, 0);
 
-    // Take the file back to schema 7, as a swamp before the index left it.
     const db = new DatabaseSync(path);
     try {
       db.exec("DROP TABLE chunk_partitions; PRAGMA user_version=7");
@@ -1308,14 +1254,12 @@ Deno.test("SqliteCommitStore.logId: minted once per log, kept across a reopen an
     assertEquals(reopened.logId(), id);
     await reopened.close();
 
-    // A restored or replicated copy of the file is the same log.
     const copy = join(dir, "restored.db");
     await Deno.copyFile(path, copy);
     const restored = SqliteCommitStore.open(copy);
     assertEquals(restored.logId(), id);
     await restored.close();
 
-    // A fresh log is another.
     const fresh = SqliteCommitStore.open(join(dir, "fresh.db"));
     assert(fresh.logId() !== id);
     await fresh.close();
@@ -1326,7 +1270,6 @@ Deno.test("SqliteCommitStore.logId: a store from before log ids gets one when it
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     await (SqliteCommitStore.open(path)).close();
-    // Take the file back to schema 8, as a swamp before log ids left it.
     const db = new DatabaseSync(path);
     try {
       db.exec("DROP TABLE log_identity; PRAGMA user_version=8");
@@ -1345,8 +1288,6 @@ Deno.test("SqliteCommitStore.logId: a store from before log ids gets one when it
     assertGreater(COMMIT_STORE_SCHEMA_VERSION, 8);
   });
 });
-
-// The datastore's owner (swamp-club#4063).
 
 function owner(address = "https://swamp.example.com"): DatastoreOwner {
   return DatastoreOwner.create({
@@ -1372,13 +1313,11 @@ Deno.test("SqliteCommitStore.claimOwner: a claim is read back from the file by a
       await other.close();
     }
 
-    // A second claim replaces the first.
     await store.claimOwner(2, owner("https://other.example.com"));
     assertEquals(store.owner()?.address, "https://other.example.com");
 
     await store.releaseOwner(2);
     assertEquals(store.owner(), undefined);
-    // Releasing an unclaimed store is not an error.
     await store.releaseOwner(2);
   });
 });
@@ -1414,7 +1353,6 @@ Deno.test("SqliteCommitStore.owner: a store from before owners migrates with non
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     await (SqliteCommitStore.open(path)).close();
-    // Take the file back to schema 9, as a swamp before owners left it.
     const db = new DatabaseSync(path);
     try {
       db.exec("DROP TABLE datastore_owner; PRAGMA user_version=9");
@@ -1476,8 +1414,6 @@ Deno.test("SqliteCommitStore: a store from schema 11 migrates to a schema a sche
   });
 });
 
-// Bounded txnIds in a cached partition (swamp-club#3915).
-
 Deno.test("SqliteCommitStore: a long-cached partition holds at most a snapshot interval of txnIds and still detects older duplicates", async () => {
   await withStore(async (store) => {
     const key = modelPartition();
@@ -1489,10 +1425,7 @@ Deno.test("SqliteCommitStore: a long-cached partition holds at most a snapshot i
       const count = store.cachedTxnIdCount("", key);
       assert(count !== undefined && count <= 5, `seq ${seq}: ${count}`);
     }
-    // Restored at seq 20: three txnIds since.
     assertEquals(store.cachedTxnIdCount("", key), 3);
-    // Retries of commits from below the snapshot, and from before the one
-    // before it, are still duplicates.
     assertEquals(await store.append(await save(2)), {
       kind: "duplicate",
       seq: 2,
@@ -1519,9 +1452,6 @@ Deno.test("SqliteCommitStore: without the bound a cached partition keeps every t
   }, { snapshotInterval: 5, boundTxnIds: false });
 });
 
-// Group commit (swamp-club#3915); the equivalence property is in
-// sqlite_commit_store_group_commit_property_test.ts.
-
 Deno.test("SqliteCommitStore.append: a solo append is one transaction, and a burst shares them", async () => {
   await withStore(async (store) => {
     await store.append(await save(1));
@@ -1533,7 +1463,6 @@ Deno.test("SqliteCommitStore.append: a solo append is one transaction, and a bur
       commits.map((commit) => store.append(commit)),
     );
     assertEquals(burst.map((result) => result.seq), [2, 3, 4, 5, 6]);
-    // The first of the burst starts alone; the rest queue behind it.
     assert(store.appendTransactions < 6, `${store.appendTransactions}`);
   });
 });
@@ -1570,7 +1499,6 @@ Deno.test("SqliteCommitStore.append: a burst whose partition another connection 
     try {
       await grouped.append(await save(1));
       await other.append(await save(2));
-      // The grouped store's partition is at seq 1; the file is at seq 2.
       const commits = [
         leaseCommit(1, 1),
         await save(3),
@@ -1597,10 +1525,6 @@ Deno.test("SqliteCommitStore.append: a burst whose partition another connection 
   });
 });
 
-// Follower mode (swamp-club#3985): a checkout's copy of serve's log, where
-// serve left out commits the caller may not read.
-
-/** The fixture model's seqs a follower saw, with holes. */
 const GAPPED = [2, 5, 9, 10, 14];
 
 Deno.test("SqliteCommitStore follower: appends gapped seqs and keeps the head at the highest one (swamp-club#3985)", async () => {
@@ -1684,8 +1608,6 @@ Deno.test("SqliteCommitStore follower: snapshots on crossing each interval, and 
     const store = SqliteCommitStore.open(path, options);
     try {
       for (const seq of GAPPED) await store.append(await save(seq));
-      // 2 crosses nothing; 5 crosses 3; 9 lands on 9; 10 crosses nothing;
-      // 14 crosses 12. The one row is the latest.
       assertEquals(
         rawRows(path, "SELECT seq FROM partition_snapshots"),
         [{ seq: 14 }],
@@ -1694,8 +1616,6 @@ Deno.test("SqliteCommitStore follower: snapshots on crossing each interval, and 
       await store.close();
     }
 
-    // The bounded txnIds came from the snapshot: earlier retries are still
-    // duplicates after a reopen, and a later gapped seq appends.
     const reopened = SqliteCommitStore.open(path, options);
     try {
       assertEquals(await reopened.append(await save(9)), {
@@ -1715,7 +1635,6 @@ Deno.test("SqliteCommitStore follower: snapshots on crossing each interval, and 
       await reopened.close();
     }
 
-    // A rebuild from a snapshot below gapped commits replays them.
     const fresh = SqliteCommitStore.open(path, {
       follower: true,
       snapshotInterval: 1000,
@@ -1728,7 +1647,6 @@ Deno.test("SqliteCommitStore follower: snapshots on crossing each interval, and 
     } finally {
       await fresh.close();
     }
-    // A solo store refuses to rebuild the follower's file.
     const solo = SqliteCommitStore.open(path, { snapshotInterval: 1000 });
     try {
       await assertRejects(
@@ -1755,8 +1673,6 @@ Deno.test("SqliteCommitStore follower: truncateAfter takes a partition back to t
     );
     assertEquals(await store.truncateAfter(mark), { removed: 2 });
     assertEquals((await store.head("", modelPartition())).seq, 5);
-    // The snapshot past the new head went; the one put back is at a seq
-    // the follower holds.
     assertEquals(
       rawRows(path, "SELECT seq FROM partition_snapshots"),
       [{ seq: 5 }],
@@ -1814,8 +1730,6 @@ Deno.test("SqliteCommitStore follower: a snapshot truncateAfter puts back is at 
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
     const options = { follower: true, snapshotInterval: 4 };
-    // Puts alone record no data versions, so the truncation retains none
-    // and puts back the snapshot below the new head.
     const put = async (seq: number) =>
       modelCommit(seq, [await savePut("b", seq)], { fence: 1 });
     const store = SqliteCommitStore.open(path, options);
@@ -1831,8 +1745,6 @@ Deno.test("SqliteCommitStore follower: a snapshot truncateAfter puts back is at 
       );
       assertEquals(await store.truncateAfter(mark), { removed: 1 });
       assertEquals((await store.head("", modelPartition())).seq, 6);
-      // The last multiple at or below 6 is 4, which the follower never
-      // held: the snapshot is at 2, the seq it holds there.
       const rows = rawRows(path, "SELECT seq, body FROM partition_snapshots");
       assertEquals(rows.map((row) => row.seq), [2]);
       assertEquals(JSON.parse(String(rows[0].body)).seq, 2);
@@ -1855,7 +1767,6 @@ Deno.test("SqliteCommitStore follower: a snapshot truncateAfter puts back is at 
   });
 });
 
-/** A staged base of the fixture model at compacted seq `seq`. */
 async function stageBase(
   dir: string,
   seq: number,
@@ -1901,8 +1812,6 @@ Deno.test("SqliteCommitStore.installObservedBase: a follower takes serve's base 
         [3, 4],
       );
       try {
-        // Serve's point is below the copy's own cursors: the local point is
-        // past every cursor the copy handed out.
         await store.installObservedBase(staging, 1);
       } finally {
         staging.close();
@@ -1915,7 +1824,6 @@ Deno.test("SqliteCommitStore.installObservedBase: a follower takes serve's base 
         () => store.readPartition("", modelPartition(), 7, 10),
         CommitsCompactedError,
       );
-      // Serve's marks hold, and a version live in the base is not removed.
       assertEquals(await store.dataHighWater("", modelPartition(), "a"), 9);
       const base = await store.readCompactedBase(undefined, 100);
       assertEquals(base.point, 3);
@@ -1924,8 +1832,6 @@ Deno.test("SqliteCommitStore.installObservedBase: a follower takes serve's base 
         ["partition", "record", "version", "version"],
       );
 
-      // The next commit serve sends appends past the compacted seq, at a
-      // cursor past the point.
       assertEquals(await store.append(await save(9)), {
         kind: "appended",
         seq: 9,
@@ -1937,8 +1843,6 @@ Deno.test("SqliteCommitStore.installObservedBase: a follower takes serve's base 
     } finally {
       await store.close();
     }
-    // A reopened store rebuilds the partition from the snapshot the base
-    // left at its compacted seq.
     const reopened = SqliteCommitStore.open(path, { follower: true });
     try {
       assertEquals(

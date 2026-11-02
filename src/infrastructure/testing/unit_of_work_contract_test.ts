@@ -30,8 +30,6 @@ import type {
 import { assertUnitOfWorkContract } from "./unit_of_work_contract.ts";
 
 Deno.test("assertUnitOfWorkContract: names the failing case and keeps the original error as the cause", async () => {
-  // Forwards a path only the first time it is staged, which the contract
-  // forbids.
   const deduplicating = () => {
     const changes: StagedChange[] = [];
     const forwarded: (string | undefined)[] = [];

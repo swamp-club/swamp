@@ -26,21 +26,14 @@ import { metrics } from "@opentelemetry/api";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface FetchOtlpExporterConfig {
-  /** Full URL to the OTLP traces endpoint (e.g. "https://api.honeycomb.io/v1/traces"). */
   url: string;
-  /** Additional headers (e.g. auth tokens). */
   headers?: Record<string, string>;
-  /** Request timeout in milliseconds. Defaults to 10 000. */
   timeoutMs?: number;
 }
 
 /**
- * OTLP span exporter that uses the native `fetch` API instead of Node.js
- * `http`/`https` modules. This avoids Deno compiled-binary TLS issues with
- * the Node.js compatibility layer.
- *
- * All export errors are silently swallowed — tracing should never interfere
- * with the CLI.
+ * uses native fetch to avoid Deno compiled-binary TLS issues with Node http;
+ * export errors are swallowed so tracing never interferes with the CLI
  */
 export class FetchOtlpExporter implements SpanExporter {
   readonly #url: string;
@@ -82,9 +75,8 @@ export class FetchOtlpExporter implements SpanExporter {
         resultCallback({ code: ExportResultCode.FAILED });
       },
     );
-    // Track the in-flight send so forceFlush()/shutdown() can drain it, and
-    // remove it once settled to bound the set's size. `pending` rejects only
-    // if resultCallback throws; tracing must never surface that.
+    // track the in-flight send so forceFlush and shutdown can drain it; the
+    // callback may throw, which tracing must never surface
     const tracked = pending.catch(() => {}).finally(() => {
       this.#inFlight.delete(tracked);
     });
@@ -92,18 +84,14 @@ export class FetchOtlpExporter implements SpanExporter {
   }
 
   /**
-   * Drains in-flight sends before resolving. SimpleSpanProcessor does not
-   * track the exports it starts, so without this the last span a process
-   * ends — its `swamp.cli` root — is cut mid-send by `Deno.exit`
-   * (swamp-club#2467). `swamp` relies on the path
-   * TracerProvider.shutdown -> processor.shutdown -> here.
+   * drains in-flight sends: SimpleSpanProcessor does not track its exports, so
+   * without this Deno.exit cuts the last span mid-send
    */
   async shutdown(): Promise<void> {
     this.#shutdown = true;
     await this.forceFlush();
   }
 
-  /** Awaits every in-flight send so no spans are lost on flush. */
   forceFlush(): Promise<void> {
     return Promise.all([...this.#inFlight]).then(() => {});
   }

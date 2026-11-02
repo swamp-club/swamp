@@ -17,26 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Phase 1.2 pins for the refusing overload set (design/enablers/
-// typed-secrets.md Section 4.3 item 1, and the Phase 1.2 list in Section 11:
-// "The refusing overload set covers every built-in and every swamp
-// registration a `Secret` can reach, including `==` between two secrets, as
-// the full cross product over each signature's refusal positions. The `==`
-// overloads name every type cel-js accepts in a signature and answer a
-// comparison with `null` in both operand orders. Adding `Secret == Secret`
-// beside `Secret == dyn` does not remove the overlap, so the enumerated set is
-// the only shape. `in`, `join` on a list holding a secret, and `type(S)` have
-// no registrable refusal." and
-// "Synchronous entry points still return synchronous results with the
-// `Secret` registrations in place, although every operator use is marked
-// maybe-async.").
-//
-// Four observations shaped the inventory: `in` overloads overlap the built-in
-// at evaluation, `type(Secret)` is registered by cel-js itself and cannot be
-// replaced, a `join` overload on a list receiver never intercepts a list that
-// holds a secret, and one refusal per parameter position leaves a call with
-// two secrets to a missing-overload error that records no fault, which is why
-// the inventory generates the full cross product.
 import {
   assertEquals,
   assertInstanceOf,
@@ -98,11 +78,6 @@ function secretEnvironment(): Environment {
   return registerSecretType(new Environment(secretEnvironmentOptions()));
 }
 
-/**
- * The internal environment's shape: the Secret type, swamp's namespace
- * types, stubs for swamp's own registrations (the `inputs` delivery returns
- * what it was given), the allowed set, then every refusal.
- */
 function internalEnvironment(): {
   env: Environment;
   registration: RefusalRegistration;
@@ -150,15 +125,15 @@ Deno.test(
     "the whole inventory registers beside swamp's own signatures without an overlap, and its size is pinned",
   ),
   () => {
-    // The counts are pins on cel-js 7.6.1 plus the inventory's swamp lists.
-    // When one changes, run this test: the failure prints the new number, and
-    // the change is a decision to record, not a number to copy.
+    // the counts pin the cel-js version plus the inventory lists; when one
+    // changes the failure prints the new number, which is a decision to record,
+    // not a number to copy
     const plain = secretEnvironment();
     assertEquals(plain.getDefinitions().functions.length, 108);
     const builtins = secretCapableBuiltins(plain).map((fn) => fn.signature);
     assertEquals(builtins.length, 57);
-    // The equality type list is exactly the set of type names cel-js uses
-    // in its own definitions, so a type a dependency bump adds fails here.
+    // the equality type list is exactly the type names cel-js uses in its
+    // definitions, so a type a dependency bump adds fails here
     assertEquals(typeNamesInDefinitions(plain), [...equalityTypes([])].sort());
     assertEquals(functionRefusalSignatures(builtins).length, 56);
     assertEquals(
@@ -260,8 +235,6 @@ Deno.test(
       );
       assertEquals(faults, []);
     });
-    // Without the overload, list membership answers by identity with no
-    // fault, and map membership refuses through the key coercion trap.
     const { env: internal } = internalEnvironment();
     withFaultContext((faults) => {
       assertEquals(internal.evaluate("s in [1]", { s }), false);
@@ -303,7 +276,6 @@ Deno.test(
       );
       assertEquals(faults, [], "the built-in's element check runs first");
     });
-    // The overload is reachable only by a list no string overload matches.
     assertRefused(
       env,
       "[1, 2].join(',')",
@@ -589,8 +561,6 @@ Deno.test(
     assertInstanceOf(composed, Object);
     const program = env.parse("s != null && 1 == 1");
     assertEquals(program({ s }), true);
-    // The custom binary overloads mark every use of their operator maybe-async
-    // (fact 4); the result is still synchronous because every handler is.
     assertEquals(readMaybeAsync(program), true);
     const sizeProgram = env.parse("size('abc')");
     sizeProgram({});

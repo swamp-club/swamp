@@ -23,11 +23,8 @@ import { registerShutdownHandler } from "./shutdown_handlers.ts";
 Deno.test({
   name:
     "registerShutdownHandler: SIGINT delivery invokes handler and dispose cleans up (POSIX)",
-  // Self-signaling via Deno.kill(Deno.pid, "SIGINT") cannot run in-process
-  // here — it would also wake the parent test runner's own SIGINT
-  // listener and tear the suite down. We spawn a child Deno process that
-  // registers the handler, raises SIGINT to itself, and prints whether
-  // the handler fired before exiting cleanly.
+  // a child Deno process raises SIGINT to itself: signalling this process would
+  // also wake the test runner's own SIGINT listener and tear the suite down
   ignore: Deno.build.os === "windows",
   sanitizeOps: false,
   sanitizeResources: false,
@@ -103,9 +100,6 @@ Deno.test({
       0,
       `expected child to exit 0; got ${status.code}; stdout=${stdout}`,
     );
-    // The second handler prints { phase: "second", first: 1 } — proves
-    // (a) the original handler fired exactly once, and (b) dispose let
-    // the second handler take over.
     const lines = stdout.split("\n").filter((l) => l.trim().length > 0);
     const last = lines[lines.length - 1];
     assertEquals(
@@ -128,13 +122,10 @@ Deno.test({
       handler: () => {},
       includePosixSignals: true,
     });
-    // If we got here without throwing, the helper correctly skipped
-    // SIGTERM/SIGHUP registration. Dispose must also not throw.
     handle.dispose();
   },
 });
 
-/** A stop-request listener that records what registerShutdownHandler does. */
 function fakeStopRequests() {
   const handlers: (() => void)[] = [];
   let stopped = 0;
@@ -231,14 +222,10 @@ Deno.test("registerShutdownHandler: dispose is idempotent", () => {
     includePosixSignals: false,
   });
   handle.dispose();
-  // Second call must be a no-op, not a throw.
   handle.dispose();
 });
 
 Deno.test("registerShutdownHandler: SIGINT-only mode registers without throwing", () => {
-  // Pin the lock-release fast-path shape used by the datastore sync
-  // coordinator: SIGINT-only registration must succeed on every OS,
-  // including Windows where SIGTERM/SIGHUP are unsupported.
   const handle = registerShutdownHandler({
     handler: () => {},
     includePosixSignals: false,
@@ -307,8 +294,6 @@ Deno.test({
     );
     await child.stderr.cancel();
 
-    // Second SIGINT triggers Deno.exit(130) inside the handler —
-    // proves the escalation fires on repeat.
     assertEquals(
       status.code,
       130,

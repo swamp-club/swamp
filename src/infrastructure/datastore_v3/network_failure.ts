@@ -18,27 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Tells a storage call that never reached the datastore from one the
- * datastore answered (swamp-club#3759).
- *
- * The bucket datastore extensions wrap what their transport threw and keep it
- * as `cause`: S3 a Node-style error with a `code` (`ECONNREFUSED`,
- * `ETIMEDOUT`, `ENOTFOUND`, or an `AggregateError` of them for a host with
- * several addresses), GCS `fetch`'s `TypeError("fetch failed")` whose cause
- * reads "error sending request for url", and both a `TimeoutError` for a
- * request that ran past its timeout. An answered request (an HTTP status)
- * carries none of these. A connection lost while a response body was read
- * (Deno's "error reading a body from connection", swamp-club#3802) counts
- * too: the request reached the datastore, but nothing more can be read from
- * it, and on the commit path what it may have stored is content-addressed
- * chunk content, which a given-up commit never names. An `AbortError` is a
- * caller's cancel, not a failure to reach the datastore, and a bare
- * `TypeError` is what a bug throws, so neither counts.
- *
- * @module
+ * a lost connection while a body was read counts, since on the commit path what
+ * it stored is content-addressed chunks a given-up commit never names;
+ * AbortError (caller cancel) and a bare TypeError (a bug) do not
  */
 
-/** The Node-style error codes a connection that never completed carries. */
 const NETWORK_CODES: ReadonlySet<string> = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
@@ -53,7 +37,6 @@ const NETWORK_CODES: ReadonlySet<string> = new Set([
   "EPIPE",
 ]);
 
-/** Deno's own errors for a connection that never completed. */
 const NETWORK_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   Deno.errors.ConnectionRefused,
   Deno.errors.ConnectionReset,
@@ -63,15 +46,9 @@ const NETWORK_ERROR_CLASSES: readonly (new (...args: never[]) => Error)[] = [
   Deno.errors.AddrNotAvailable,
 ];
 
-/** How far {@link isNetworkFailure} follows `cause` links. */
 const MAX_DEPTH = 8;
 
-/**
- * Whether `error`, or an error it wraps, says the request never reached the
- * datastore: a connection that failed, a lookup that failed, or a request
- * that timed out. An `AggregateError` counts only when every error in it
- * does.
- */
+/** an AggregateError counts only when every error in it does */
 export function isNetworkFailure(error: unknown): boolean {
   let current = error;
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
@@ -86,7 +63,6 @@ export function isNetworkFailure(error: unknown): boolean {
   return false;
 }
 
-/** Whether `error` itself, not what it wraps, is a network failure. */
 function isNetworkError(error: Error): boolean {
   if (error.name === "TimeoutError") return true;
   const code = (error as { code?: unknown }).code;

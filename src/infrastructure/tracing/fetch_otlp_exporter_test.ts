@@ -23,7 +23,6 @@ import type { ExportResult } from "@opentelemetry/core";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { FetchOtlpExporter } from "./fetch_otlp_exporter.ts";
 
-/** Creates a minimal ReadableSpan stub for testing. */
 function makeSpan(name: string): ReadableSpan {
   return {
     name,
@@ -53,7 +52,6 @@ function makeSpan(name: string): ReadableSpan {
   } as unknown as ReadableSpan;
 }
 
-/** Helper to call export and await the result via callback. */
 function exportAndAwait(
   exporter: FetchOtlpExporter,
   spans: ReadableSpan[],
@@ -184,7 +182,6 @@ Deno.test("FetchOtlpExporter: respects timeout via AbortController", async () =>
     _input: string | URL | Request,
     init?: RequestInit,
   ) => {
-    // Simulate a request that hangs until aborted
     return await new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => {
         reject(new DOMException("The operation was aborted.", "AbortError"));
@@ -195,7 +192,7 @@ Deno.test("FetchOtlpExporter: respects timeout via AbortController", async () =>
   try {
     const exporter = new FetchOtlpExporter({
       url: "https://example.com/v1/traces",
-      timeoutMs: 50, // Very short timeout for test
+      timeoutMs: 50,
     });
 
     const result = await exportAndAwait(exporter, [makeSpan("timeout-span")]);

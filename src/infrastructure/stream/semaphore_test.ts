@@ -40,7 +40,6 @@ Deno.test("Semaphore: acquire beyond limit blocks until release", async () => {
     acquired = true;
   });
 
-  // Yield to let microtasks run — still blocked
   await Promise.resolve();
   assertEquals(acquired, false);
 
@@ -104,7 +103,6 @@ Deno.test("Semaphore: release after abort does not double-count", async () => {
 
   sem.release();
 
-  // Only one permit should be available now
   await sem.acquire();
   let acquired = false;
   const pending = sem.acquire().then(() => {

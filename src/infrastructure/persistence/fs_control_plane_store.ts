@@ -23,13 +23,6 @@ import { atomicWriteFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { assertContainedPath } from "./safe_path.ts";
 
-/**
- * Filesystem-backed {@link ControlPlaneStore} used as a fallback when the
- * datastore extension doesn't advertise `controlPlane`.
- *
- * Stores records at `{datastorePath}/_control/{key}` using atomic writes
- * to avoid partial reads.
- */
 export class FileSystemControlPlaneStore implements ControlPlaneStore {
   readonly #rootDir: string;
 

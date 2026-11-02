@@ -212,7 +212,6 @@ Deno.test("operatorRefusalSignatures: excludes the allowed set and adds custom e
   assertEquals(plain.includes("Secret + null"), true);
   assertEquals(plain.includes("null < Secret"), true);
   assertEquals(plain.includes("Secret == null"), false, "allowed set");
-  // A custom type adds one equality and both orders of the nine operators.
   const custom = operatorRefusalSignatures(["Ns", "Secret"]);
   assertEquals(custom.length, plain.length + 19);
   assertEquals(custom.includes("Secret == Ns"), true);

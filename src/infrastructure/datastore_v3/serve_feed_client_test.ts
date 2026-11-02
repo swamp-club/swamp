@@ -24,7 +24,6 @@ import { watchServeFeed } from "./serve_feed_client.ts";
 
 await initializeLogging({});
 
-/** A scripted serve: answers the head, then sends `frames` to the feed. */
 async function withServe(
   frames: unknown[],
   fn: (url: string, seen: { auth: string | null; sent: unknown[] }) => Promise<

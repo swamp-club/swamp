@@ -79,8 +79,6 @@ function provider(
   return () => Promise.resolve(p);
 }
 
-// ---- filesystem -----------------------------------------------------------
-
 Deno.test("readDatastoreFormatMarker: a filesystem datastore without a marker reads absent", async () => {
   await withTempDir(async (dir) => {
     assertEquals(
@@ -176,8 +174,6 @@ Deno.test("readDatastoreFormatMarker: an oversize filesystem marker is invalid w
   });
 });
 
-// ---- control plane --------------------------------------------------------
-
 Deno.test("readDatastoreFormatMarker: reads the datastore-wide control-plane record through a fresh service", async () => {
   const remote = createInMemoryRemote({ controlPlane: true });
   remote.seedControlPlane(DATASTORE_FORMAT_MARKER_KEY, encode('{"format":3}'));
@@ -197,7 +193,6 @@ Deno.test("readDatastoreFormatMarker: reads the datastore-wide control-plane rec
   if (read.kind !== "present") return;
   assertEquals(read.source, "_control/datastore-format on @test/store");
   assertEquals(new TextDecoder().decode(read.bytes), '{"format":3}');
-  // A read writes nothing.
   assertEquals(remote.ops(), []);
 });
 
@@ -370,7 +365,6 @@ Deno.test("readDatastoreFormatMarker: a provider that shares one sync service is
     },
   );
   assertEquals(read.kind, "unsupported");
-  // The command's own namespaced pull on that instance still works.
   await shared.pullChanged({ namespace: "infra" });
 });
 

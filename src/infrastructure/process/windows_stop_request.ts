@@ -22,23 +22,11 @@ import { getLogger } from "@logtape/logtape";
 const logger = getLogger(["process", "stop-request"]);
 
 /**
- * Stop requests: the SIGTERM one swamp process sends another on Windows
- * (swamp-club#3267). Deno turns every signal sent to another process into
- * `TerminateProcess` there, so without this a cancelled run's owner ends at
- * once, saves nothing, and runs no cleanup steps.
- *
- * A process that listens creates a named auto-reset event,
- * {@link stopRequestEventName}, and polls it; a sender opens the event by
- * name and sets it. The name is in the session namespace (`Local\`), so a
- * process in another logon session — a service in session 0 — cannot be
- * reached, and its sender falls back to `TerminateProcess`.
- *
- * Trust: the event has the default DACL. Any process that can open it, or
- * that creates the name first, can ask swamp to stop gracefully; such a
- * process already runs as a principal that could terminate swamp outright.
+ * Deno turns signals to other processes into TerminateProcess on Windows, so a
+ * stop is a session-local named event; the default DACL is acceptable as anyone
+ * who can open it could terminate swamp anyway
  */
 
-/** The kernel32 functions stop requests need. Handles are opaque pointers. */
 export interface Kernel32Events {
   CreateEventW(
     attributes: null,
@@ -67,29 +55,20 @@ const KERNEL32_SYMBOLS = {
   CloseHandle: { parameters: ["pointer"], result: "i32" },
 } as const;
 
-/** The access `SetEvent` needs. */
 export const EVENT_MODIFY_STATE = 0x0002;
-/** `WaitForSingleObject`'s result for a signalled object. */
 export const WAIT_OBJECT_0 = 0;
-/** How often a listening process checks for a stop request. */
 export const STOP_REQUEST_POLL_MS = 100;
 
-/** The name of the event that carries stop requests for `pid`. */
 export function stopRequestEventName(pid: number): string {
   return `Local\\swamp-stop-${pid}`;
 }
 
-/** `text` as the NUL-terminated UTF-16 string Win32 `W` functions take. */
 export function wideString(text: string): Uint16Array<ArrayBuffer> {
   const wide = new Uint16Array(text.length + 1);
   for (let i = 0; i < text.length; i++) wide[i] = text.charCodeAt(i);
   return wide;
 }
 
-/**
- * Sets the stop-request event of `pid`. Returns false when no process
- * listens for stop requests under that pid in this session.
- */
 export function sendStopRequest(
   kernel32: Kernel32Events,
   pid: number,
@@ -107,12 +86,10 @@ export function sendStopRequest(
   }
 }
 
-/** Runs `poll` repeatedly until the returned function stops it. */
 export interface PollScheduler {
   start(poll: () => void): () => void;
 }
 
-/** Polls on an unref'd interval, so listening never keeps swamp alive. */
 const intervalScheduler: PollScheduler = {
   start(poll) {
     const id = setInterval(poll, STOP_REQUEST_POLL_MS);
@@ -121,14 +98,7 @@ const intervalScheduler: PollScheduler = {
   },
 };
 
-/** Delivers the stop requests sent to one process to its subscribers. */
 export interface StopRequestListener {
-  /**
-   * Calls `handler` on each stop request, as a signal listener is called on
-   * each signal. Returns the function that ends this subscription, which is
-   * safe to call more than once, or undefined when the process cannot
-   * listen.
-   */
   subscribe(handler: () => void): (() => void) | undefined;
 }
 
@@ -163,7 +133,6 @@ export function createStopRequestListener(
     }
   }
 
-  /** Creates the event and starts polling it; false leaves nothing open. */
   function openEvent(): boolean {
     const kernel32 = load();
     if (kernel32 === null) return false;
@@ -215,7 +184,6 @@ export function createStopRequestListener(
 
 let kernel32Events: Kernel32Events | null | undefined;
 
-/** kernel32, or null where it cannot be loaded. Loaded once. */
 export function loadKernel32Events(): Kernel32Events | null {
   if (kernel32Events === undefined) {
     try {
@@ -232,17 +200,11 @@ export function loadKernel32Events(): Kernel32Events | null {
 
 let processListener: StopRequestListener | undefined;
 
-/** The listener for the stop requests sent to this process. */
 function processStopRequests(): StopRequestListener {
   processListener ??= createStopRequestListener(loadKernel32Events, Deno.pid);
   return processListener;
 }
 
-/**
- * Calls `handler` on each stop request sent to this process on Windows.
- * Returns the function that stops listening, or undefined elsewhere, where
- * SIGTERM does this job, and wherever the process cannot listen.
- */
 export function listenForStopRequests(
   handler: () => void,
   os: typeof Deno.build.os = Deno.build.os,
@@ -253,10 +215,8 @@ export function listenForStopRequests(
 }
 
 /**
- * Asks the swamp process `pid` to stop, as SIGTERM does on POSIX. Returns
- * true when the request reached a process listening for it; false on other
- * platforms, and when no such process could be reached, so the caller ends
- * it another way.
+ * false on other platforms and when no listening process could be reached, so
+ * the caller ends it another way
  */
 export function requestStop(
   pid: number,

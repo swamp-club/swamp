@@ -32,9 +32,9 @@ import { getSwampConfigDir } from "../persistence/paths.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 
 /**
- * `inbox/` held one file per fingerprint, shared by every server. Files here
- * are named per server and fingerprint, a breaking layout change, so older
- * swamps keep `inbox/` to themselves.
+ * inbox/ held one file per fingerprint for every server; files here are named
+ * per server and fingerprint, a breaking layout change, so older swamps keep
+ * inbox/ to themselves
  */
 const CACHE_DIR_NAME = "inbox-v2";
 
@@ -48,12 +48,10 @@ const LEGACY_CACHE_DIR_NAME = "inbox";
  */
 const FORMAT_VERSION = 1;
 
-/** Owner read and write only, as `auth.json` is. */
 const CACHE_FILE_MODE = 0o600;
 
 const MAX_FILE_BYTES = 4096;
 
-/** How many API keys keep state; the least recently saved is dropped. */
 const MAX_KEYS = 8;
 
 const FINGERPRINT_PATTERN = /^[0-9a-f]{16}$/;
@@ -73,7 +71,6 @@ async function cacheFileStem(key: InboxCacheKey): Promise<string> {
     .join("");
 }
 
-/** An ISO 8601 time exactly as `Date.prototype.toISOString` writes it. */
 const isoTime = z.string().refine((s) => {
   const ms = Date.parse(s);
   return Number.isFinite(ms) && new Date(ms).toISOString() === s;
@@ -165,17 +162,14 @@ function fromCacheFile(file: CacheFile): InboxState {
 }
 
 /**
- * Keeps each API key's inbox state per server in its own file,
- * `inbox-v2/<hash>.json` under the swamp config directory, so saving one key
- * never touches another. Neither the key nor the server's URL is stored, and
- * files are readable by their owner only. Whether this process may write the
- * config directory is the caller's decision.
+ * one file per API key per server so saving one key never touches another;
+ * neither the key nor the server URL is stored, and files are owner-readable
+ * only
  */
 export class InboxCacheFileRepository implements InboxCacheRepository {
   private readonly dir: string;
   private readonly legacyDir: string;
 
-  /** `configDir` defaults to the swamp config directory. */
   constructor(configDir?: string) {
     const base = configDir ?? getSwampConfigDir();
     this.dir = join(base, CACHE_DIR_NAME);
@@ -224,10 +218,6 @@ export class InboxCacheFileRepository implements InboxCacheRepository {
     await this.evictBeyondCap(basename(path));
   }
 
-  /**
-   * Removes the key's file, and the first layout's file for its
-   * fingerprint, which held the same key's state for every server.
-   */
   async delete(key: InboxCacheKey): Promise<void> {
     // Never a path built from anything but a fingerprint.
     if (!FINGERPRINT_PATTERN.test(key.fingerprint)) return;
@@ -245,9 +235,8 @@ export class InboxCacheFileRepository implements InboxCacheRepository {
   }
 
   /**
-   * Whether this process can write the cache: creates the directory if it
-   * is missing, then creates and removes a file there. The file's name never
-   * matches a cache file, so eviction never counts it. Never throws.
+   * the probe file's name never matches a cache file, so eviction never counts
+   * it; never throws
    */
   async canWrite(): Promise<boolean> {
     try {

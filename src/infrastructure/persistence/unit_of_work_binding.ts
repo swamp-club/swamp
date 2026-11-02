@@ -17,25 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The process-wide unit-of-work binding registry (swamp-club#3240).
- *
- * `signalChange` (`unit_of_work_scope.ts`) asks it whether the ambient unit
- * serves a repository's context, and whether that context refuses a write
- * outside every unit bound to it. The legacy adapter binds each unit it
- * builds over a hook; the v3 commit-log adapter binds its units and marks
- * its context's hook with `requireUnit`. Both keys are held weakly, so
- * nothing here outlives the units and hooks it describes.
- *
- * The commit-log adapter also registers each unit it builds as a typed
- * stager (swamp-club#3250): {@link typedStagers} is how `stageTyped` hands a
- * repository's typed changes to it, so persistence never imports the
- * dormant commit-log unit. It lives here, not in the domain port, so the
- * `datastore` context never depends on `datastore_v3`.
- *
- * @module
- */
-
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type {
   UnitOfWork,
@@ -46,7 +27,6 @@ import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_w
 const hooks = new WeakMap<UnitOfWork, MarkDirtyHook>();
 const required = new WeakSet<MarkDirtyHook>();
 
-/** The one registry every adapter binds through. */
 export const unitOfWorkBinding: UnitOfWorkBinding = {
   bind(uow, markDirty) {
     const bound = hooks.get(uow);
@@ -64,36 +44,24 @@ export const unitOfWorkBinding: UnitOfWorkBinding = {
   requiresUnit: (markDirty) => required.has(markDirty),
 };
 
-/** Records one batch of typed changes into the unit it was registered for. */
 export type TypedStager = (changes: readonly TypedChange[]) => Promise<void>;
 
 const stagers = new WeakMap<UnitOfWork, TypedStager>();
 
-/**
- * For each unit that takes typed changes, the open unit a write made in its
- * scope belongs to: itself while open, else its nearest open ancestor.
- */
 const openTargets = new WeakMap<UnitOfWork, () => UnitOfWork | undefined>();
 
-/**
- * Where a v3 unit reads the version a data name's next version must exceed
- * (swamp-club#3532), and records a version it handed out.
- */
 export interface VersionFloorSource {
   floor(partition: string, name: string): Promise<number>;
   claim(partition: string, name: string, version: number): void;
   /**
-   * Records a version directory the unit created, by its key from the
-   * cache root (`data/<type>/<model>/<name>/<version>`), so a recovery of
-   * the unit's dropped work sweeps whatever is left in it, however old its
-   * files' mtimes (swamp-club#3736).
+   * records a version directory the unit created, so a recovery of its dropped
+   * work sweeps whatever is left in it, however old its files' mtimes
    */
   allocated(dir: string): void;
 }
 
 const floors = new WeakMap<UnitOfWork, VersionFloorSource>();
 
-/** The version-floor source of each v3 unit that has one. */
 export const versionFloors = {
   register(uow: UnitOfWork, source: VersionFloorSource): void {
     floors.set(uow, source);
@@ -104,10 +72,9 @@ export const versionFloors = {
 const admissions = new WeakMap<UnitOfWork, (key: string) => boolean>();
 
 /**
- * Each v3 unit's checkout filter (swamp-club#4019): whether a change to a
- * record key belongs to the datastore. A unit drops a key its filter does
- * not admit, so no commit replays it, and the repository makes that write
- * durable itself. A unit with no filter admits every key.
+ * a unit drops a key its filter does not admit, so no commit replays it and the
+ * repository makes that write durable itself; a unit with no filter admits
+ * every key
  */
 export const unitAdmissions = {
   register(uow: UnitOfWork, admits: (key: string) => boolean): void {
@@ -119,22 +86,15 @@ export const unitAdmissions = {
 
 const writeSignals = new WeakMap<UnitOfWork, () => void>();
 
-/**
- * The units told when a repository writes into them: the v3 commit-log
- * adapter's, whose dropped work a write may have left in the checkout
- * (swamp-club#3553).
- */
 export const unitWrites = {
   register(uow: UnitOfWork, onWrite: () => void): void {
     writeSignals.set(uow, onWrite);
   },
-  /** Tells `uow` that a repository is writing into it. */
   signal(uow: UnitOfWork): void {
     writeSignals.get(uow)?.();
   },
 };
 
-/** The units that take typed changes: the v3 commit-log adapter's. */
 export const typedStagers = {
   register(
     uow: UnitOfWork,
@@ -145,10 +105,6 @@ export const typedStagers = {
     if (openTarget !== undefined) openTargets.set(uow, openTarget);
   },
   stagerOf: (uow: UnitOfWork): TypedStager | undefined => stagers.get(uow),
-  /**
-   * The open unit a write in `uow`'s scope belongs to (swamp-club#3279):
-   * `uow` while it is open, else its nearest open ancestor, else undefined.
-   */
   openTargetOf: (uow: UnitOfWork): UnitOfWork | undefined =>
     openTargets.get(uow)?.(),
 };

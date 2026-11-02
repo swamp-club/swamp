@@ -77,12 +77,10 @@ interface Checkout {
   readonly outbox: SqliteCommitOutbox;
   readonly serve: FakeServe;
   readonly catchUp: ServeCatchUp;
-  /** The checkout's chunk cache, serve behind it, as a checkout opens. */
   readonly cache: CachedServeStorage;
   readonly sink: OutboxCommitSink;
 }
 
-/** A serve-mode checkout over a fake serve, wired as a v3 handle wires it. */
 async function withCheckout(
   fn: (c: Checkout) => Promise<void>,
   leaseOf?: (partition: PartitionKey) => HeldServeLease | undefined,
@@ -135,7 +133,6 @@ function bytesOf(length: number, salt = 0): Uint8Array {
   return bytes;
 }
 
-/** A change a unit stages: content too large to inline, one chunk. */
 function blobChange(name: string, salt = 0) {
   return {
     partition: MODEL,
@@ -147,10 +144,6 @@ function blobChange(name: string, salt = 0) {
   };
 }
 
-/**
- * `count` chunks put into the checkout's cache, as a unit's commit group
- * puts them, and a commit at `seq` whose blob names them all.
- */
 async function chunkedCommit(
   cache: CachedServeStorage,
   count: number,
@@ -190,7 +183,6 @@ async function copyCommit(store: SqliteCommitStore, seq: number) {
   return change.commit;
 }
 
-/** Another caller's commit at serve's next seq. */
 async function otherWriter(serve: FakeServe, options = { hidden: false }) {
   const seq = serve.head(MODEL) + 1;
   serve.land(
@@ -243,7 +235,6 @@ Deno.test("createServeCommitSink: a second commit naming a chunk serve holds car
       contextHook(),
       unitOptions(sink, cache),
     );
-    // The same bytes under another name: the same chunk.
     await second.stageOp(blobChange("b"));
     await second.commit();
 
@@ -511,7 +502,6 @@ Deno.test("createServeCommitSink: a unit whose stale commit meets a serve behind
     await otherWriter(serve);
     await catchUp.catchUp(new AbortController().signal);
     assertEquals((await store.head("", MODEL)).seq, 2);
-    // Serve restored to an earlier point: its partition ends at seq 1.
     serve.logs.get(MODEL.toString())!.splice(1);
 
     const uow = createCommitLogUnitOfWork(
@@ -535,7 +525,6 @@ Deno.test("createServeCommitSink: a commit that lands on a serve without the cop
     await otherWriter(serve);
     await otherWriter(serve);
     await catchUp.catchUp(new AbortController().signal);
-    // Serve's commit at the copy's head is now another log's.
     const log = serve.logs.get(MODEL.toString())!;
     const swapped = serveStamped(2, [await savePut("b2", 1)], MODEL, "b-2");
     log[1] = { ...log[1], txnId: swapped.txnId, json: swapped.toJSON() };
@@ -568,8 +557,6 @@ Deno.test("createServeCommitSink: a commit that lands on a serve without the cop
   });
 });
 
-// Fenced model leases (swamp-club#4121).
-
 const LEASE: HeldServeLease = {
   leaseId: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a99",
   fence: 3,
@@ -598,7 +585,6 @@ Deno.test("createServeCommitSink: a commit to a partition no held lease covers n
   }, () => undefined);
 });
 
-// A lease registered from the checkout's record (swamp-club#4167).
 const UNCONFIRMED: HeldServeLease = { ...LEASE, unconfirmed: true };
 
 Deno.test("createServeCommitSink: a commit refused as lease-lost under an unconfirmed lease is sent again under no lease, and the lease is dropped", async () => {
@@ -613,7 +599,6 @@ Deno.test("createServeCommitSink: a commit refused as lease-lost under an unconf
         serve.posted.map((post) => post.envelope.lease),
         [LEASE.leaseId, undefined],
       );
-      // The resend is the same commit: same txnId and expected seq.
       assertEquals(serve.posted[1].envelope.txnId, commit.txnId);
       assertEquals(serve.posted[1].envelope.expectedSeq, commit.seq - 1);
       assertEquals(dropped, [[MODEL.toString(), LEASE.leaseId]]);

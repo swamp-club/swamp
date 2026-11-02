@@ -70,11 +70,9 @@ interface Checkout {
   readonly state: ServeUpstreamState;
   readonly serve: FakeServe;
   readonly catchUp: ServeCatchUp;
-  /** The seqs `append` was called with, in order. */
   readonly appends: number[];
 }
 
-/** A serve-mode checkout over a fake serve; `append` is recorded. */
 async function withCheckout(fn: (c: Checkout) => Promise<void>) {
   const dir = await Deno.makeTempDir({ prefix: "swamp-serve-catch-up-" });
   const store = SqliteCommitStore.open(join(dir, "commits.db"), {
@@ -110,7 +108,6 @@ async function withCheckout(fn: (c: Checkout) => Promise<void>) {
   }
 }
 
-/** Serve's commit at `seq` of `partition`, another caller's save. */
 async function other(seq: number, partition = MODEL): Promise<Commit> {
   const op = partition === MODEL
     ? await savePut(`m${seq}`, 1)
@@ -118,10 +115,6 @@ async function other(seq: number, partition = MODEL): Promise<Commit> {
   return serveStamped(seq, [op], partition);
 }
 
-/**
- * Another serve's commit at `seq` of `partition`: another log, so another
- * txnId at the same seq.
- */
 async function another(seq: number, partition = MODEL): Promise<Commit> {
   const op = partition === MODEL
     ? await savePut(`b${seq}`, 1)
@@ -129,7 +122,6 @@ async function another(seq: number, partition = MODEL): Promise<Commit> {
   return serveStamped(seq, [op], partition, `another-${seq}`);
 }
 
-/** A catch-up of the same copy through `serve`, as the address now answers. */
 function through(
   serve: FakeServe,
   { dir, store, state }: Pick<Checkout, "dir" | "store" | "state">,
@@ -144,19 +136,16 @@ function through(
   });
 }
 
-/** `commit` as serve would stamp it in namespace `namespace`. */
 async function inNamespace(commit: Commit, namespace: string) {
   return await Commit.fromJSON({ ...commit.toJSON(), namespace });
 }
 
-/** The halving a refused page goes through, from a full page down to one. */
 function halvings(): number[] {
   const limits = [SERVE_PARTITION_PAGE];
   while (limits.at(-1)! > 1) limits.push(Math.ceil(limits.at(-1)! / 2));
   return limits;
 }
 
-/** The seqs the copy holds of `partition`. */
 async function copySeqs(store: SqliteCommitStore, partition = MODEL) {
   return (await store.readPartition("", partition, 1, 10_000)).map((c) =>
     c.commit.seq
@@ -180,7 +169,6 @@ Deno.test("ServeCatchUp.catchUp: applies the feed in order across pages and move
     assertEquals(await copySeqs(store, OTHER), [1, 2]);
     assertEquals(state.feedCursor(), 5);
     assertEquals(serve.requests.changes, 3);
-    // The stored commit is serve's, as serve stamped it.
     const [first] = await store.readPartition("", MODEL, 1, 1);
     assertEquals(first.commit.principal, "bob@example.com");
     assertEquals(first.commit.writer.instance, "serve");
@@ -229,8 +217,6 @@ Deno.test("ServeCatchUp.catchUp: replaying pages already applied appends nothing
     }
     assertEquals(appends, [1, 2, 3]);
 
-    // A crash after the appends and before the cursor moved: the next
-    // catch-up reads the same pages again, from cursor 0.
     const fresh = ServeUpstreamState.open(join(dir, "fresh.db"));
     try {
       const report = await new ServeCatchUp({
@@ -260,8 +246,6 @@ Deno.test("ServeCatchUp.catchUp: a commit serve filters leaves a hole and later 
 
     assertEquals(await copySeqs(store), [1, 3]);
     assertEquals((await store.head("", MODEL)).seq, 3);
-    // The gap before seq 3 was read from the partition, up to seq 2 only,
-    // naming the seq the copy holds (swamp-club#4254).
     assertEquals(serve.partitionReads, [{
       after: 1,
       limit: SERVE_PARTITION_PAGE,
@@ -279,7 +263,6 @@ Deno.test("ServeCatchUp.catchUp: a commit past the head + 1 reads the partition 
     assertEquals(await copySeqs(store), [1]);
     assertEquals(state.feedCursor(), 2, "the feed passed the hidden commit");
 
-    // A grant now lets this caller read seq 2; the feed has moved past it.
     serve.hidden.clear();
     serve.land(await other(3));
     await catchUp.catchUp(signal());
@@ -342,7 +325,6 @@ Deno.test("ServeCatchUp.headOf: the higher of the copy's head and serve's last r
     for (let seq = 1; seq <= 7; seq++) serve.land(await other(seq));
     await catchUp.catchUp(signal());
     assertEquals(await catchUp.headOf("", MODEL), 7);
-    // A head reported lower never moves it back.
     catchUp.recordServeHead("", MODEL, 2);
     assertEquals(await catchUp.headOf("", MODEL), 7);
   });
@@ -402,7 +384,6 @@ Deno.test("ServeCatchUp.catchUp: a serve without the feed anchor is refused befo
     const anchor = state.feedAnchor();
     assertEquals(anchor?.seq, 3);
 
-    // The address now reaches another serve, with its own datastore.
     const swapped = new FakeServe();
     swapped.land(await another(1, OTHER));
     swapped.land(await another(2, OTHER));
@@ -453,7 +434,6 @@ Deno.test("ServeCatchUp.catchUp: the same serve passes the anchor check with one
     serve.land(await other(1, OTHER));
     assertEquals(await catchUp.catchUp(signal()), { applied: 1 });
 
-    // The read names the anchor the copy holds (swamp-club#4254).
     assertEquals(serve.partitionReads, [{ after: 2, limit: 1, held: 3 }]);
     assertEquals(await copySeqs(store, OTHER), [1]);
     assertEquals(state.feedAnchor(), {
@@ -479,7 +459,6 @@ Deno.test("ServeCatchUp.catchUp: an anchor serve withholds, may not show, or com
 
       assertEquals(await catchUp.catchUp(signal()), { applied: 1 }, hide);
       assertEquals(await copySeqs(store, OTHER), [1], hide);
-      // The page applied records an anchor that can be checked.
       assertEquals(state.feedAnchor()?.partition, OTHER.toString(), hide);
     });
   }
@@ -501,7 +480,6 @@ Deno.test("ServeCatchUp.catchUpPartition: a serve behind the copy's head is refu
     for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
     await catchUp.catchUp(signal());
 
-    // Restored to an earlier point: the same log, cut at seq 3.
     const restored = new FakeServe();
     for (let seq = 1; seq <= 3; seq++) restored.land(await other(seq));
     const error = await assertRejects(
@@ -585,7 +563,6 @@ Deno.test("ServeCatchUp.catchUpPartition: a copy head on a page boundary still r
     for (let seq = SERVE_PARTITION_PAGE; seq <= end; seq++) {
       serve.land(await other(seq));
     }
-    // The copy holds serve's commit at the boundary, as a feed page left it.
     await store.append(await other(SERVE_PARTITION_PAGE));
 
     assertEquals(await catchUp.catchUpPartition("", MODEL, signal()), end);
@@ -702,8 +679,6 @@ Deno.test("ServeCatchUp.catchUpPartition: a page retried at half the limit and f
     assertEquals(seqs.length, end - 600);
     assertEquals(seqs[0], 601);
     assertEquals(seqs.at(-1), end);
-    // The first retried page held only filtered commits: the next read
-    // starts half a page on, not a whole one, and keeps the half limit.
     assertEquals(serve.partitionReads, [
       { after: 0, limit: SERVE_PARTITION_PAGE },
       { after: 0, limit: half },
@@ -799,17 +774,12 @@ Deno.test("ServeCatchUp.catchUpPartition: a serve whose every page is too large 
   });
 });
 
-/** The staging files a base load left in `dir`. */
 function stagingFiles(dir: string): string[] {
   return [...Deno.readDirSync(dir)].map((entry) => entry.name).filter((name) =>
     name.startsWith(OBSERVED_BASE_STAGING_PREFIX)
   );
 }
 
-/**
- * Serve compacted through feed position `point`: the base of the commits
- * landed so far, each a save of `m{seq}` version 1, as serve sends it.
- */
 async function compactServe(serve: FakeServe, point: number) {
   const entries: ObservedBaseEntry[] = [];
   const seqs = new Map<string, number>();
@@ -848,7 +818,6 @@ async function compactServe(serve: FakeServe, point: number) {
   }
 }
 
-/** The copy's seqs of `partition` after `after`. */
 async function seqsAfter(
   store: SqliteCommitStore,
   after: number,
@@ -871,7 +840,6 @@ Deno.test("ServeCatchUp.catchUp: a fresh copy of a compacted serve loads the bas
     assertEquals(await seqsAfter(store, 3), [4]);
     assertEquals(state.feedCursor(), 4);
     assert((await store.compactionPoint()) >= 3);
-    // Serve's marks reach the copy, so it never hands out a used version.
     assertEquals(await store.dataHighWater("", MODEL, "m1"), 3);
     const base = await store.readCompactedBase(undefined, 100);
     assertEquals(
@@ -879,7 +847,6 @@ Deno.test("ServeCatchUp.catchUp: a fresh copy of a compacted serve loads the bas
       3,
     );
     assertEquals(state.serveHead("", MODEL.toString()), 3);
-    // The staging file is gone once the base is installed.
     assertEquals(stagingFiles(dir), []);
   });
 });
@@ -892,7 +859,6 @@ Deno.test("ServeCatchUp.catchUp: the base load starts again when serve's point m
     await compactServe(serve, 3);
     serve.basePageSize = 1;
     serve.beforeBasePage = (page) => {
-      // Serve compacts again while the copy reads its second page.
       if (page === 1) {
         serve.base = moved;
         serve.compactionPoint = 4;
@@ -900,7 +866,6 @@ Deno.test("ServeCatchUp.catchUp: the base load starts again when serve's point m
     };
 
     await catchUp.catchUp(signal());
-    // The first load read two pages of two points, and started again.
     assertEquals(serve.baseReads.map((read) => read.after).slice(0, 3), [
       undefined,
       "1",
@@ -984,7 +949,6 @@ Deno.test("ServeCatchUp.catchUp: a load cut off after the install reads as behin
     };
 
     await assertRejects(() => catchUp.catchUp(signal()), Error, "cut off");
-    // The base is in, but the cursor is still below the point.
     assert((await store.compactionPoint()) >= 3);
     assertEquals(state.feedCursor(), 0);
 
@@ -1000,7 +964,6 @@ Deno.test("ServeCatchUp.catchUp: a load cut off after the install reads as behin
 Deno.test("ServeCatchUp.catchUp: a partition the base held nothing of reads on from its compacted seq", async () => {
   await withCheckout(async ({ store, serve, catchUp }) => {
     for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
-    // OTHER's first two commits are compacted and were never this caller's.
     serve.land(await other(1, OTHER), { hidden: true });
     serve.land(await other(2, OTHER), { hidden: true });
     await compactServe(serve, 3);
@@ -1034,15 +997,12 @@ Deno.test("ServeCatchUp.catchUpPartition: a partition compacted past a copy with
 Deno.test("ServeCatchUp.catchUp: a gap in a partition compacted past a copy that never loaded a base loads the base, never skipping what was compacted", async () => {
   await withCheckout(async ({ store, state, serve, catchUp }) => {
     for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
-    // OTHER's first two commits are hidden from this caller: the copy's
-    // feed passes them, and its cursor is past them before serve compacts.
     serve.land(await other(1, OTHER), { hidden: true });
     serve.land(await other(2, OTHER), { hidden: true });
     await catchUp.catchUp(signal());
     assertEquals(state.feedCursor(), 5);
     await compactServe(serve, 5);
     assertEquals(serve.baseReads.length, 0);
-    // A grant widens: the base now holds OTHER's records for this caller.
     serve.hidden.clear();
     serve.land(await other(3, OTHER));
 
@@ -1053,7 +1013,6 @@ Deno.test("ServeCatchUp.catchUp: a gap in a partition compacted past a copy that
       (await store.readCompactedBase(undefined, 100)).entries.filter((e) =>
         e.kind === "record" && e.partition === OTHER.toString()
       ).length,
-      // Both hidden commits put the same run record.
       1,
     );
     assertEquals(await seqsAfter(store, 2, OTHER), [3]);
@@ -1067,7 +1026,6 @@ Deno.test("ServeCatchUp.catchUp: a load that finds another process loaded the ba
     for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
     await compactServe(serve, 3);
     serve.land(await other(4));
-    // Another process's handle on the same copy.
     const otherStore = SqliteCommitStore.open(join(dir, "commits.db"), {
       follower: true,
     });
@@ -1090,8 +1048,6 @@ Deno.test("ServeCatchUp.catchUp: a load that finds another process loaded the ba
         state,
         copyDir: dir,
         namespace: "",
-        // The other process holds the lease and loads the base: this one
-        // gets it once that load is done.
         lockCopy: async () => {
           locks++;
           await first.catchUp(signal());
@@ -1100,7 +1056,6 @@ Deno.test("ServeCatchUp.catchUp: a load that finds another process loaded the ba
       });
       await second.catchUp(signal());
       assertEquals(locks, 1);
-      // One load's pages only, and the copy whole.
       assertEquals(serve.baseReads.length, 1);
       assertEquals((await store.head("", MODEL)).seq, 4);
       assertEquals(state.feedCursor(), 4);
@@ -1161,7 +1116,6 @@ Deno.test("ServeCatchUp.catchUp: after a base load, the next page's anchor still
     await catchUp.catchUp(signal());
     assertEquals(state.feedAnchor()?.seq, 4);
 
-    // The same log restored to before commit 4, which then took another.
     const restored = new FakeServe();
     for (let seq = 1; seq <= 3; seq++) restored.land(await other(seq));
     await compactServe(restored, 3);
@@ -1204,11 +1158,9 @@ Deno.test("serveAccessCheck: records each access serve sends, warns once when it
         captured[0].message.map((part) => String(part)).join(""),
         "the next command rebuilds",
       );
-      // Not a fingerprint: ignored.
       check("Not A Fingerprint");
       check("x".repeat(129));
       assertEquals(state.access().seen, "b2");
-      // A state that cannot record is no reason to fail the reply.
       serveAccessCheck({
         access: () => ({}),
         recordAccessSeen: () => {
@@ -1244,12 +1196,10 @@ Deno.test("serveAccessCheck: warns only for a mismatch the reply records, and wi
       state.beginCallerReset();
       state.finishCallerReset("token-a", 1_000);
       state.recordAccessSeen("a1");
-      // Within the cooldown of that reset: the rebuild waits, and it says so.
       serveAccessCheck(state, SERVE_URL, () => 2_000)("b2");
       assertEquals(texts().length, 1);
       assertStringIncludes(texts()[0], "changed again within 10 minutes");
       assert(!texts()[0].includes("the next command rebuilds"));
-      // A later command whose binding found the mismatch says nothing more.
       serveAccessCheck(state, SERVE_URL, () => 3_000)("b2");
       serveAccessCheck(state, SERVE_URL, () => 3_000)("c3");
       assertEquals(texts().length, 1);
@@ -1263,8 +1213,6 @@ Deno.test("ServeCatchUp.catchUp: a reset of the copy by another command while th
   await withCheckout(async ({ state, serve, catchUp }) => {
     serve.feedPageSize = 2;
     for (let seq = 1; seq <= 5; seq++) serve.land(await other(seq));
-    // Another command resets the copy between this one's first and second
-    // pages, as an access change does.
     let reads = 0;
     serve.tooLarge = (route) => {
       if (route === "changes" && ++reads === 2) {

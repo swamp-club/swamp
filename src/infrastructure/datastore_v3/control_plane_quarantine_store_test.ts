@@ -24,7 +24,6 @@ import {
 } from "../../domain/datastore_v3/quarantine.ts";
 import { ControlPlaneQuarantineStore } from "./control_plane_quarantine_store.ts";
 
-/** A control-plane store in memory, recording the order of writes. */
 function memoryControlPlane() {
   const records = new Map<string, Uint8Array>();
   const writes: string[] = [];
@@ -100,7 +99,6 @@ Deno.test("ControlPlaneQuarantineStore.find: an accepted record wins over a held
   const store = new ControlPlaneQuarantineStore(shared);
   const held = record();
   await store.deposit(held, CONTENT);
-  // A crash after the accepted record, before the held one went.
   const accepted = { ...held, state: "accepted" as const, seq: 2 };
   const key = (await store.heldKeys())[0].replace(
     "quarantine/",

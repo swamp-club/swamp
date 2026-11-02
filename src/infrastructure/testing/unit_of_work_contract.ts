@@ -18,15 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The behaviour every path-forwarding {@link UnitOfWork} adapter must have,
- * as one reusable suite. The legacy adapter runs it. The Phase 3 commit-log
- * adapter (`src/infrastructure/datastore_v3/commit_log_unit_of_work.ts`)
- * does not: it refuses every path-only change these cases stage, and has its
- * own tests (swamp-club#3240).
- *
- * Test-only: production code must never import this module.
- *
- * @module
+ * test-only contract for path-forwarding UnitOfWork adapters; the commit-log
+ * adapter refuses path-only changes, so it does not run this suite
  */
 
 import {
@@ -40,41 +33,20 @@ import type {
   UnitOfWork,
 } from "../../domain/datastore/unit_of_work.ts";
 
-/** A fresh unit of work and a view of what it sent downstream. */
 export interface UnitOfWorkProbe {
   unit: UnitOfWork;
   /**
-   * The target of each change the unit forwarded downstream, in order: the
-   * path for `write` and `remove`, `undefined` for `bulk`.
-   *
-   * The legacy adapter forwards at `stage`. An adapter that defers sending
-   * until `commit` (a Phase 3 commit-log adapter may) must report here the
-   * changes it has accepted for commit, in order.
+   * the legacy adapter forwards at stage; an adapter that defers until commit
+   * must report the changes it has accepted for commit, in order
    */
   forwarded(): readonly (string | undefined)[];
-  /** Makes the next downstream forward reject with `error`. */
   failNext(error: Error): void;
-  /**
-   * Holds the next downstream forward open until the returned function is
-   * called.
-   */
   holdNext(): () => void;
-  /** How many forwards downstream have started but not yet completed. */
   pendingForwards(): number;
-  /**
-   * Runs `listener` each time the unit makes its changes durable downstream.
-   * A listener that rejects makes that commit reject with the same error.
-   */
   onCommit(listener: () => Promise<void>): void;
-  /**
-   * Runs `listener` each time the unit finishes abandoning downstream: the
-   * legacy adapter's flush, or a commit-log adapter's discard. A listener
-   * that rejects makes that abandon reject with the same error.
-   */
   onAbandon(listener: () => Promise<void>): void;
 }
 
-/** Builds a fresh probe for each contract case. */
 export type UnitOfWorkFactory = () =>
   | UnitOfWorkProbe
   | Promise<UnitOfWorkProbe>;
@@ -100,8 +72,6 @@ async function assertSpent(
 
 const CASES: readonly ContractCase[] = [
   {
-    // Reads forwarded() once stage resolves: legacy forward-at-stage timing,
-    // or "accepted for commit" for an adapter that defers (see forwarded).
     name: "stage order is preserved",
     run: async ({ unit, forwarded }) => {
       const changes = [WRITE_A, BULK, REMOVE_B, WRITE_A];
@@ -228,9 +198,8 @@ const CASES: readonly ContractCase[] = [
     },
   },
   {
-    // Assumes a downstream rejection surfaces at stage, as the legacy adapter
-    // forwards there. An adapter that defers sending must surface it where its
-    // design does, and adapt this case when it joins the suite.
+    // assumes a downstream rejection surfaces at stage, as the legacy adapter
+    // forwards there; a deferring adapter must adapt this case
     name: "a downstream error propagates",
     run: async ({ unit, forwarded, failNext }) => {
       const error = new Error("downstream failed");
@@ -244,11 +213,6 @@ const CASES: readonly ContractCase[] = [
   },
 ];
 
-/**
- * Runs every contract case against a fresh unit of work from `factory`,
- * throwing on the first failure with the case name. Call it inside a
- * `Deno.test`.
- */
 export async function assertUnitOfWorkContract(
   factory: UnitOfWorkFactory,
 ): Promise<void> {

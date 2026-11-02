@@ -70,32 +70,24 @@ import {
 const logger = getLogger(["workflow-repo"]);
 
 /**
- * How recent a workflow file's mtime may be before its listing is not kept:
- * an edit landing within one tick of a coarse file clock could otherwise
- * leave its stat unchanged.
+ * a listing for a file modified this recently is not kept: an edit within one
+ * tick of a coarse file clock could leave its stat unchanged
  */
 const LISTING_RACY_WINDOW_MS = 2_000;
 
-/** A workflow file's listing, and the stat of the file it was read from. */
 interface CachedListing {
   fingerprint: RecordFingerprint;
   listing: WorkflowListing;
 }
 
-/**
- * Reports whether a file in the workflows directory is one the repository
- * reads: `workflow-{name}.yaml` or the legacy `workflow-{uuid}.yaml`. Any
- * other file there is never loaded.
- */
 export function isPrimaryWorkflowFileName(name: string): boolean {
   return name.startsWith("workflow-") && name.endsWith(".yaml");
 }
 
 /**
- * Names the file in a schema failure met while reading `path`; any other
- * error is returned as it came. The message carries the file name only and
- * the full path rides on the error, because `swamp serve` withholds messages
- * that hold an absolute path from its clients (swamp-club#3062).
+ * the message carries the file name only and the full path rides on the error,
+ * because swamp serve withholds messages holding an absolute path from its
+ * clients
  */
 function namingWorkflowFile(error: unknown, path: string): unknown {
   return error instanceof WorkflowSchemaError
@@ -103,39 +95,19 @@ function namingWorkflowFile(error: unknown, path: string): unknown {
     : error;
 }
 
-/**
- * YAML-based implementation of WorkflowRepository.
- *
- * Stores workflows as YAML files in the directory structure:
- * {repoDir}/workflows/workflow-{name}.yaml   (new default for filename-safe names)
- * {repoDir}/workflows/workflow-{uuid}.yaml   (legacy, still discoverable)
- */
 export class YamlWorkflowRepository implements WorkflowRepository {
   private readonly baseDir: string;
-  // Tracks the actual on-disk path for each workflow ID, so getPath()
-  // returns the real location rather than guessing.
   private readonly idToActualPath = new Map<WorkflowId, string>();
   /**
-   * Name → file path hints, so a repeated lookup for a workflow whose file is
-   * not at its name-derived path (a legacy `{uuid}.yaml`, or a name that is not
-   * filename-safe) skips re-reading and re-parsing every workflow each time.
-   *
-   * Stores a PATH ONLY — never a parsed workflow, never a negative result. The
-   * file is re-read and its declared name re-checked on every hit, so a stale
-   * hint is self-correcting and external edits, renames, additions and
-   * deletions stay visible. That is why `save()` and `delete()` need no
-   * invalidation bookkeeping.
-   *
-   * If a cache-reset hook is ever added to this class, it must clear this
-   * alongside `idToActualPath` and `listingsByPath`.
+   * a path only, never a parsed workflow or negative result: the file is
+   * re-read and its name re-checked on every hit, so stale hints self-correct
+   * and save/delete need no invalidation
    */
   private readonly nameToActualPath = new Map<string, string>();
   /**
-   * Each workflow file's listing, by path, kept with the stat of the file it
-   * was read from (swamp-club#3443). A listing is reused only while a fresh
-   * stat still matches, so an edit, rename, addition or deletion by anyone
-   * is seen on the next listing. Never holds a parsed Workflow: the
-   * aggregate is mutable, and `findAll` builds a new one each time.
+   * reused only while a fresh stat matches, so outside edits are seen; never
+   * holds a parsed Workflow, since the aggregate is mutable and findAll builds
+   * a new one each time
    */
   private readonly listingsByPath = new Map<string, CachedListing>();
 
@@ -168,7 +140,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       }
     }
 
-    // Try name-based filename from cache
     const cachedPath = this.idToActualPath.get(id);
     if (cachedPath && cachedPath !== legacyPath) {
       try {
@@ -197,7 +168,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   async findByName(name: string): Promise<Workflow | null> {
-    // Fast path: try name-based filename directly
     if (isFilenameSafeName(name)) {
       const namePath = this.getNamePath(name);
       try {
@@ -219,10 +189,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       }
     }
 
-    // Hinted path: deliberately OUTSIDE the isFilenameSafeName guard above.
-    // The workflows that reach the slow path are exactly the ones that guard
-    // rejects, or whose name-derived file does not exist, so a hint check
-    // nested inside it would never fire for the cases that need it.
+    // the hint check is outside the isFilenameSafeName guard: slow-path
+    // workflows are those the guard rejects or whose name file is missing, so a
+    // nested check would never fire
     const hintedPath = this.nameToActualPath.get(name);
     if (hintedPath) {
       const hinted = await this.readWorkflowIfNamed(hintedPath, name);
@@ -245,25 +214,15 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     const workflows = await this.findAll();
     const found = workflows.find((w) => w.name === name);
     if (!found) return null;
-    // findAll records every file it parsed, so the path is already known.
     const foundPath = this.idToActualPath.get(found.id as WorkflowId);
     if (foundPath) this.nameToActualPath.set(name, foundPath);
     return found;
   }
 
   /**
-   * Reads a hinted file and returns its workflow only if the file still
-   * declares the expected name.
-   *
-   * Returns null on any failure — missing, unreadable, unparseable or renamed —
-   * so the caller falls back to its normal scan and the outcome is exactly what
-   * it would have been without a hint. In particular a broken workflow file
-   * must not throw from here, because `findAll` warns and skips it.
-   *
-   * A hinted path is rejected unless it is still a regular file. `findAll`
-   * discovers regular files only, so a hint can never legitimately point at a
-   * symlink; without this check, a file replaced by a symlink after discovery
-   * would be read through the hint when the scan would have ignored it.
+   * null on any failure so the caller falls back to its scan; a broken file
+   * must not throw, as findAll skips it; a hint that is not a regular file is
+   * rejected, since the scan ignores symlinks
    */
   private readWorkflowIfNamed(
     path: string,
@@ -272,10 +231,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     return this.readWorkflowIf(path, (workflow) => workflow.name === name);
   }
 
-  /**
-   * {@link readWorkflowIfNamed} for any test of the workflow the file holds.
-   * Records the file as the workflow's path when it passes.
-   */
   private async readWorkflowIf(
     path: string,
     wanted: (workflow: Workflow) => boolean,
@@ -298,19 +253,13 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     return this.readAll();
   }
 
-  /**
-   * The listing of every workflow {@link findAll} returns, in the same
-   * order, read only from files that changed since they were last listed.
-   */
   async findAllListings(): Promise<WorkflowListing[]> {
     return (await this.scanListings()).map((l) => l.listing);
   }
 
   /**
-   * Lists every workflow file as `readAll` reads them: the same files, in
-   * the same order, skipping the same broken ones with the same warning. A
-   * file whose stat matches the one its kept listing was read at is not
-   * read again.
+   * lists files as readAll does: same files, order and skipped broken ones; a
+   * file whose stat matches its kept listing is not read again
    */
   private async scanListings(): Promise<
     Array<{ path: string; listing: WorkflowListing }>
@@ -381,10 +330,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   /**
-   * Reads every file, as `findAll` does, and parses only those that can
-   * declare `id`, so the cost of the rest is one read each. A file is passed
-   * over only when its text holds neither the ID nor a backslash: without an
-   * escape sequence, a YAML scalar equal to the ID has the ID in the text.
+   * a file is passed over only when its text holds neither the ID nor a
+   * backslash: without an escape sequence, a YAML scalar equal to the ID has
+   * the ID in the text
    */
   async findAllById(id: WorkflowId): Promise<Workflow[]> {
     const found = await this.readAll((content) =>
@@ -393,11 +341,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     return found.filter((workflow) => workflow.id === id);
   }
 
-  /**
-   * Every workflow in the directory, or only those in files `mayMatch`
-   * accepts the text of. A file it refuses is not parsed, so nothing is
-   * said of whether it is broken.
-   */
   private async readAll(
     mayMatch?: (content: string) => boolean,
   ): Promise<Workflow[]> {
@@ -431,10 +374,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     return workflows;
   }
 
-  /**
-   * What a read of the workflow file at `path` that threw does: an I/O
-   * failure fails the read, anything else skips the file with a warning.
-   */
   private skipUnreadable(path: string, error: unknown): void {
     if (isIoError(error)) {
       throw markErrorPaths(
@@ -471,11 +410,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       async () => {
         const previousPath = this.idToActualPath.get(workflow.id);
 
-        // Check if this is a new workflow or an update
         const legacyPath = this.getLegacyPath(workflow.id);
-        // On v3 (swamp-club#3256), what each file held before this save replaces
-        // or removes it: its digest for an edit's precondition, and the name it
-        // declared, which tells a rename apart.
+        // on v3, what each file held before this save: its digest for an edit's
+        // precondition, and the name it declared, which tells a rename apart
         const priors = typedStagingActive(this.markDirtyHook)
           ? await readPriors([targetPath, previousPath, legacyPath])
           : new Map<string, PriorFile>();
@@ -484,14 +421,11 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           !(await this.exists(legacyPath));
 
         const data = workflow.toData();
-        // Remove undefined values since YAML can't stringify them
         const cleanData = JSON.parse(JSON.stringify(data));
         const content = stringifyYaml(cleanData as Record<string, unknown>);
         await atomicWriteTextFile(targetPath, content);
-        // The paths the cleanup below actually removed, for their v3 tombstones.
         const removed: string[] = [];
 
-        // Clean up old file if we wrote to a different path
         if (previousPath && previousPath !== targetPath) {
           try {
             await Deno.remove(previousPath);
@@ -508,7 +442,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           }
         }
 
-        // Also check the legacy UUID path if it wasn't the previousPath
         if (
           targetPath !== legacyPath && previousPath !== legacyPath &&
           await this.exists(legacyPath)
@@ -548,7 +481,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           await stageTyped(this.markDirtyHook, () => batch);
         }
 
-        // Emit event
         if (this.eventBus) {
           const event = isNew
             ? createWorkflowCreated(workflow.id, workflow.name)
@@ -559,9 +491,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     );
   }
 
-  /**
-   * Checks if a file exists.
-   */
   private async exists(path: string): Promise<boolean> {
     try {
       await Deno.stat(path);
@@ -575,16 +504,13 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   /**
-   * Deletes the workflow with this id. Ids are not guaranteed unique — a
-   * copied file keeps its id — so with `name` only a file declaring both is
-   * removed, never another workflow that shares the id.
+   * ids are not unique (a copied file keeps its id), so with name only a file
+   * declaring both is removed, never another workflow sharing the id
    */
   async delete(id: WorkflowId, name?: string): Promise<void> {
-    // Get the workflow before deleting for the event and to find the right file
     const workflow = await this.findById(id);
     const workflowName = name ?? workflow?.name;
 
-    // Try removing both possible file paths
     const pathsToTry = new Set([
       this.getLegacyPath(id),
       ...(workflowName && isFilenameSafeName(workflowName)
@@ -654,19 +580,12 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     );
   }
 
-  /**
-   * A managed-config workflow file's record key (swamp-club#3256); undefined
-   * for a git-tracked workflow, which stages nothing.
-   */
+  /** undefined for a git-tracked workflow, which stages nothing */
   private stagingTierOf(path: string) {
     const tier = stagingTierOf(this.repoDir, [], path);
     return tier?.tier === "config" ? tier : undefined;
   }
 
-  /**
-   * Whether `path` holds a readable workflow that declares an id not `id`,
-   * or — when `name` is given — a name not `name`.
-   */
   private async declaresOther(
     path: string,
     id: WorkflowId,
@@ -711,15 +630,10 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     return join(this.getWorkflowsDir(), `workflow-${id}.yaml`);
   }
 
-  /** The directory this repository reads workflow files from. */
   getWorkflowsDir(): string {
     return this.baseDir;
   }
 
-  /**
-   * Attempts to extract workflow name from a YAML file path.
-   * Falls back to the filename if parsing fails.
-   */
   private tryExtractName(path: string): string {
     try {
       const content = Deno.readTextFileSync(path);
@@ -730,7 +644,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     } catch {
       // Ignore - fall through to filename
     }
-    // Extract filename without extension as fallback
     const filename = basename(path);
     return filename.replace(/\.yaml$/, "");
   }

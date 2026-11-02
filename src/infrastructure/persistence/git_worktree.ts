@@ -19,31 +19,25 @@
 
 import { dirname, isAbsolute, join, relative, resolve } from "@std/path";
 
-/** Where relative `.swamp-sources.yaml` paths resolve. */
 export interface SourceBaseDirs {
   /** The swamp repository directory as it sits in the git main working
    * tree, so a linked worktree resolves the same sources as the main
    * checkout. */
   baseDir: string;
-  /** The git main working tree root, which every release from
-   * swamp-club#1174 until swamp-club#4027 used as the base. Set only when
-   * it differs from `baseDir` (a repository nested below the git root), so
-   * sources recorded relative to the git root in that window still
-   * resolve. */
+  /**
+   * the git main working tree root, set only when it differs from baseDir (a
+   * repository nested below the git root), so sources recorded relative to the
+   * git root by earlier releases still resolve
+   */
   legacyBaseDir?: string;
 }
 
 const cache = new Map<string, SourceBaseDirs>();
 
 /**
- * Resolves the base directories for relative extension source paths.
- *
- * Relative source paths are relative to the swamp repository. In a linked
- * worktree, `baseDir` is the repository's counterpart in the main checkout.
- * When the repository is the git root, `baseDir` is the main working tree
- * root exactly as git spells it, and there is no `legacyBaseDir`. Falls
- * back to `dir` when git is unavailable or `dir` is not inside a git
- * working tree.
+ * in a linked worktree baseDir is the repository's counterpart in the main
+ * checkout; falls back to dir when git is unavailable or dir is not in a git
+ * working tree
  */
 export async function resolveSourceBaseDirs(
   dir: string,
@@ -89,7 +83,6 @@ async function probeSourceBaseDirs(dir: string): Promise<SourceBaseDirs> {
   }
 }
 
-/** Clears the internal cache. Exposed for tests only. */
 export function clearGitWorktreeCache(): void {
   cache.clear();
 }

@@ -36,7 +36,6 @@ import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../logging/logger.ts";
 
-/** Runs fn with warnings from the sources logger captured, returning them. */
 async function captureSourceWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -118,7 +117,6 @@ Deno.test("removeSwampSources: deletes file", async () => {
 Deno.test("removeSwampSources: no-op when file does not exist", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
   try {
-    // Should not throw
     await removeSwampSources(tmpDir);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
@@ -181,8 +179,8 @@ Deno.test("expandSourcePaths: falls back to repoDir when sourceBaseDir not provi
   }
 });
 
-// swamp-club#4027: a swamp repo at <git>/ext/example, with relative sources
-// recorded against the git root by earlier releases.
+// a swamp repo at <git>/ext/example, with relative sources recorded against the
+// git root
 async function nestedRepoLayout(): Promise<
   { tmp: string; gitRoot: string; repo: string }
 > {
@@ -344,10 +342,8 @@ Deno.test("expandSourcePaths: leaves absolute paths alone with a legacy base", a
 Deno.test("expandSourcePaths: expands glob to matching directories", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
   try {
-    // Create some directories matching the glob
     await Deno.mkdir(join(tmpDir, "exts", "a"), { recursive: true });
     await Deno.mkdir(join(tmpDir, "exts", "b"), { recursive: true });
-    // Create a file (should not be included)
     await Deno.writeTextFile(join(tmpDir, "exts", "file.txt"), "");
 
     const result = await expandSourcePaths(
@@ -416,7 +412,6 @@ Deno.test("expandSourcePaths: inherits only filter from parent", async () => {
 Deno.test("resolveSourceExtensionDirs: finds extensions/models/ in source", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
   try {
-    // Create a source with standard extension layout
     const sourceDir = join(tmpDir, "my-ext");
     await Deno.mkdir(join(sourceDir, "extensions", "models"), {
       recursive: true,
@@ -556,21 +551,9 @@ Deno.test("collectDirsForKind: extracts dirs for specific kind", () => {
   assertEquals(datastores, []);
 });
 
-// -----------------------------------------------------------------
-// Snapshot tests for resolveSourceExtensionDirs.
-//
-// These pin load-time behaviour across the `readSourceMarker` extraction
-// added in the issue-139 fix. Each fixture covers a case that exercises
-// a distinct branch of the resolver: layout default, layout override via
-// marker, missing path, glob expansion, single `only` filter, multi-kind
-// roots, and per-kind dir existence checks.
-//
-// If any snapshot needs updating, verify the change is intentional and
-// propagate it to the parity test below.
-// -----------------------------------------------------------------
+// these snapshots pin load-time behaviour of resolveSourceExtensionDirs; if one
+// changes, verify it is intentional and update the parity test below
 
-/** Serialise a ResolvedSourceDirs array relative to a base tmp dir so
- * snapshots are stable across different test environments. */
 function snapshotResolved(
   results: ReadonlyArray<unknown>,
   base: string,
@@ -719,11 +702,8 @@ Deno.test("resolveSourceExtensionDirs snapshot: only filter narrows kinds", asyn
 });
 
 Deno.test("resolveSourceExtensionDirs snapshot: non-standard layout via content pre-scan", async () => {
-  // The reporter's scenario (issue #139): user passes an
-  // `extensions/models/` dir itself as the source path. Pre-fix this
-  // silently resolved to zero kinds; post-fix the content pre-scan sees
-  // the `export const model` declaration in the .ts file and treats the
-  // source path itself as the models dir.
+  // the source path is itself an extensions/models/ dir: the content pre-scan
+  // sees the model export and treats the source path as the models dir
   const tmp = await Deno.makeTempDir({ prefix: "swamp_snap_" });
   try {
     const src = join(tmp, "sister", "extensions", "models");
@@ -737,8 +717,6 @@ Deno.test("resolveSourceExtensionDirs snapshot: non-standard layout via content 
     }]);
     assertEquals(result.length, 1);
     assertEquals(result[0].sourcePath, src);
-    // Post-fix: pre-scan detects the model export and sets modelsDir to
-    // the source path itself (the loader will walk it and filter).
     assertEquals(result[0].modelsDir, src);
     assertEquals(result[0].vaultsDir, undefined);
     assertEquals(result[0].workflowsDir, undefined);
@@ -748,16 +726,12 @@ Deno.test("resolveSourceExtensionDirs snapshot: non-standard layout via content 
 });
 
 Deno.test("resolveSourceExtensionDirs: large YAML file is skipped during pre-scan (no OOM)", async () => {
-  // Guards the content pre-scan from OOM on source dirs that happen to
-  // hold large YAML data fixtures. Legitimate workflow YAML is small;
-  // anything over the 64 KiB cap is skipped without being read into
-  // memory or parsed.
+  // guards the content pre-scan from OOM on large YAML fixtures: anything over
+  // the 64 KiB cap is skipped without being read or parsed
   const tmp = await Deno.makeTempDir({ prefix: "swamp_yaml_cap_" });
   try {
     const src = join(tmp, "pipeline");
     await Deno.mkdir(src, { recursive: true });
-    // Build a 128 KiB YAML that WOULD parse as a workflow (has top-level
-    // jobs:) but should be skipped by the size guard.
     const padding = "x: ".repeat(30_000);
     await Deno.writeTextFile(
       join(src, "big-fixture.yaml"),
@@ -766,8 +740,6 @@ Deno.test("resolveSourceExtensionDirs: large YAML file is skipped during pre-sca
     const { resolved: result } = await resolveSourceExtensionDirs([{
       path: src,
     }]);
-    // Because the large YAML was skipped, the source contributes no
-    // kinds — no workflow detected.
     assertEquals(result[0].workflowsDir, undefined);
   } finally {
     await Deno.remove(tmp, { recursive: true });
@@ -800,14 +772,9 @@ Deno.test("resolveSourceExtensionDirs: detects export beyond 64 KiB in large .ts
   }
 });
 
-// -----------------------------------------------------------------
-// Parity test: resolveExtensionKindsForSource must agree with
-// resolveSourceExtensionDirs about which kinds a source contributes.
-// Drift between the two would split add-time validation from load-time
-// resolution — users would see add succeed then loads find nothing, or
-// vice versa. The pair below runs both functions against the same set
-// of fixtures and asserts equivalence.
-// -----------------------------------------------------------------
+// resolveExtensionKindsForSource must agree with resolveSourceExtensionDirs on
+// which kinds a source contributes, or add-time validation drifts from
+// load-time resolution
 
 const KIND_FIELDS: Array<
   [
@@ -994,7 +961,6 @@ Deno.test("resolveSourceExtensionDirs: standard layout wins over loose root file
     }]);
     assertEquals(result.length, 1);
     assertEquals(result[0].modelsDir, join(src, "extensions", "models"));
-    // Loose root file NOT surfaced — standard layout precedence.
     assertEquals(result[0].sourcePath, src);
   } finally {
     await Deno.remove(tmp, { recursive: true });
@@ -1045,7 +1011,6 @@ Deno.test("resolveMountedSourceDirs: resolves relative and absolute sources in o
       ],
     });
 
-    // Not a git checkout: relative paths resolve against the repo dir.
     const { result } = await withMockedCommand(
       [{ code: 128, stdout: "" }],
       () => resolveMountedSourceDirs(repoDir),
@@ -1071,8 +1036,6 @@ Deno.test("resolveMountedSourceDirs: rejects an invalid sources file", async () 
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
-
-// --- extensions/behaviors/, the behavior spelling (swamp-club#3338) -------
 
 Deno.test("resolveSourceExtensionDirs: a source's extensions/behaviors/ loads as models after its models dir", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
@@ -1109,9 +1072,9 @@ Deno.test("resolveSourceExtensionDirs: a source's extensions/behaviors/ loads as
 });
 
 Deno.test("resolveSourceExtensionDirs: a source with only extensions/behaviors/ keeps the content pre-scan and still finds its behaviors", async () => {
-  // Layout detection is unchanged, so a source that already had an
-  // extensions/behaviors/ folder resolves as before (content pre-scan of the
-  // whole source); the pre-scan now recognises export const behavior.
+  // layout detection is unchanged: a source with an extensions/behaviors/
+  // folder resolves via a content pre-scan of the whole source, which
+  // recognises export const behavior
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
   try {
     const sourceDir = join(tmpDir, "behaviors-only");
@@ -1191,9 +1154,9 @@ Deno.test("resolveSourceExtensionDirs: no behaviors dir once the source's marker
   }
 });
 
-// The pre-scan's helper and skip-dir exclusions apply only below the source
-// root. GitHub ARC runners check out under /actions-runner/_work/, so a
-// check against the absolute path found nothing (swamp-club#3780).
+// the pre-scan's helper and skip-dir exclusions apply only below the source
+// root, since a check on the absolute path can match runner checkout dirs like
+// /actions-runner/_work/
 async function writeModel(dir: string, file = "m.ts"): Promise<void> {
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(

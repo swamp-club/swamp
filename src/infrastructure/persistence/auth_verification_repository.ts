@@ -32,7 +32,6 @@ const FAIL_OPEN_FILE = "auth_fail_open.json";
 const TOKEN_CHECK_FILE = "auth_token_check.json";
 const REFRESH_ATTEMPT_FILE = "auth_refresh_attempt.json";
 
-/** A proof the gate may verify, and where it came from. */
 export interface ProofCandidate {
   readonly source: ProofSource;
   readonly verification: CachedVerification;
@@ -43,7 +42,6 @@ export interface AuthVerificationRepositoryOptions {
   getSigninToken?: () => string | undefined;
 }
 
-/** The CI signin token: a proof for the collective key, from the token page. */
 export const SIGNIN_TOKEN_ENV = "SWAMP_SIGNIN_TOKEN";
 
 export class AuthVerificationRepository {
@@ -66,20 +64,18 @@ export class AuthVerificationRepository {
   }
 
   /**
-   * Every proof on hand: the SWAMP_SIGNIN_TOKEN proof first, then the
-   * auth_verified.json proof. The gate verifies each against the active key
-   * and uses the one that matches, so a stale exported token never hides a
-   * valid file proof.
+   * the signin token proof comes first, then auth_verified.json; the gate
+   * verifies each against the active key and uses the match, so a stale
+   * exported token never hides a valid file proof
    */
   async loadCandidates(): Promise<ProofCandidate[]> {
     const candidates: ProofCandidate[] = [];
     const fromEnv = this.loadFromSigninToken();
     const fromFile = await this.loadFromFile();
     if (fromEnv) {
-      // A signin token carries no public key. Lend it the keys cached from
-      // the last whoami, which are trusted exactly as the file proof's are,
-      // so a token signed after a key rotation still verifies; the embedded
-      // key remains the fallback when none match.
+      // a signin token carries no public key, so lend it the keys cached from
+      // the last whoami, trusted like the file proof's, so a token signed after
+      // a rotation still verifies; the embedded key is the fallback
       candidates.push({
         source: "signin_token",
         verification: { ...fromEnv, publicKeys: fromFile?.publicKeys ?? [] },
@@ -179,7 +175,6 @@ export class AuthVerificationRepository {
       : undefined;
   }
 
-  /** Start a fail-open window at `now`, replacing any unusable stamp. */
   async markFailOpenSince(now: number): Promise<void> {
     await this.writeJson(FAIL_OPEN_FILE, { since: now });
   }
@@ -188,10 +183,6 @@ export class AuthVerificationRepository {
     await this.remove(FAIL_OPEN_FILE);
   }
 
-  /**
-   * When the signin token with fingerprint `fpr` last verified live (Unix
-   * seconds), or undefined when the remembered check is for another token.
-   */
   async readTokenCheck(fpr: string): Promise<number | undefined> {
     const data = await this.readJson(TOKEN_CHECK_FILE);
     if (data?.fpr !== fpr) return undefined;
@@ -209,7 +200,6 @@ export class AuthVerificationRepository {
     await this.remove(TOKEN_CHECK_FILE);
   }
 
-  /** When the weekly refresh was last attempted (Unix seconds), if known. */
   async readRefreshAttempt(): Promise<number | undefined> {
     const data = await this.readJson(REFRESH_ATTEMPT_FILE);
     return typeof data?.at === "number" && Number.isFinite(data.at)
@@ -221,7 +211,6 @@ export class AuthVerificationRepository {
     await this.writeJson(REFRESH_ATTEMPT_FILE, { at: now });
   }
 
-  /** Forget everything the gate keeps: the proof and every stamp. */
   async clearAll(): Promise<void> {
     await this.remove(VERIFICATION_FILE);
     await this.remove(FAIL_OPEN_FILE);

@@ -45,12 +45,6 @@ import {
 
 const logger = getLogger(["swamp", "sources"]);
 
-/**
- * Reads and parses `.swamp-sources.yaml` from the repository root.
- *
- * @returns The parsed config, or null if the file does not exist.
- * @throws UserError if the file exists but is invalid.
- */
 export async function readSwampSources(
   repoDir: string,
 ): Promise<SwampSourcesConfig | null> {
@@ -66,9 +60,6 @@ export async function readSwampSources(
   }
 }
 
-/**
- * Writes a sources config to `.swamp-sources.yaml`.
- */
 export async function writeSwampSources(
   repoDir: string,
   config: SwampSourcesConfig,
@@ -80,9 +71,6 @@ export async function writeSwampSources(
   await atomicWriteTextFile(sourcesPath, content);
 }
 
-/**
- * Removes the `.swamp-sources.yaml` file.
- */
 export async function removeSwampSources(repoDir: string): Promise<void> {
   const sourcesPath = swampSourcesPath(repoDir);
   try {
@@ -95,18 +83,9 @@ export async function removeSwampSources(repoDir: string): Promise<void> {
 }
 
 /**
- * Expands source paths: resolves env vars/tilde, expands globs, and returns
- * a flat list of concrete (non-glob) sources.
- *
- * Each expanded path inherits the `only` filter from its parent source entry.
- *
- * @param sourceBaseDir - Base directory for resolving relative paths.
- *   Defaults to `repoDir`. Pass `baseDir` from `resolveSourceBaseDirs` so
- *   a worktree resolves relative paths the same as the main checkout.
- * @param legacyBaseDir - `legacyBaseDir` from `resolveSourceBaseDirs`. A
- *   relative path that matches nothing under `sourceBaseDir` but does
- *   under this directory resolves there, with a warning, so sources
- *   recorded relative to the git root keep loading (swamp-club#4027).
+ * a relative path matching nothing under sourceBaseDir but found under
+ * legacyBaseDir resolves there with a warning, so sources recorded relative to
+ * the git root keep loading
  */
 export async function expandSourcePaths(
   sources: SwampSourcesConfig,
@@ -157,8 +136,10 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
-/** True only when nothing is at `path`: a path that cannot be read (for
- * example permission denied) is not treated as absent. */
+/**
+ * true only when nothing is at the path: an unreadable path (permission denied)
+ * is not treated as absent
+ */
 async function isMissing(path: string): Promise<boolean> {
   try {
     await Deno.stat(path);
@@ -168,7 +149,6 @@ async function isMissing(path: string): Promise<boolean> {
   }
 }
 
-/** Source paths already warned about, so each warns once per process. */
 const warnedLegacySources = new Set<string>();
 
 function warnLegacySource(path: string, gitRoot: string): void {
@@ -182,17 +162,9 @@ function warnLegacySource(path: string, gitRoot: string): void {
 }
 
 /**
- * Reads the source's own `.swamp.yaml` marker for directory overrides.
- *
- * The YAML is from an external repo, so we only extract fields we need
- * and validate they are strings before using them. Returns null when the
- * marker file is missing or unreadable — callers fall back to
- * `extensions/<kind>/` defaults in that case.
- *
- * Shared by `resolveSourceExtensionDirs` and
- * `resolveExtensionKindsForSource` so both agree on marker semantics.
- * A single pre-fix snapshot in swamp_sources_repository_test.ts pins the
- * behaviour of this extraction.
+ * the YAML is from an external repo, so extract only needed fields and validate
+ * they are strings; a missing or unreadable marker returns null and callers
+ * fall back to extension defaults
  */
 async function readSourceMarker(
   sourceDir: string,
@@ -230,16 +202,6 @@ async function readSourceMarker(
   }
 }
 
-/**
- * Probes the standard `<sourceDir>/extensions/<kind>/` layout for a single
- * source. Returns the kinds whose dir exists. Respects the marker's
- * `<kind>Dir` override and the caller's `only` filter. Does NOT perform
- * any content scanning — purely a directory-existence check.
- *
- * Returned in the `kindDirs` map using the ExtensionKind as key so callers
- * can read both "which kinds resolved" and "what absolute dir each maps
- * to" in one pass.
- */
 async function probeStandardLayout(
   sourceDir: string,
   marker: RepoMarkerData | null,
@@ -261,11 +223,6 @@ async function probeStandardLayout(
   return out;
 }
 
-/**
- * The source's `extensions/behaviors/` (swamp-club#3338) when `models` is
- * among the kinds it contributes, its marker leaves the models directory at
- * the default, and the directory exists; otherwise undefined.
- */
 async function probeBehaviorsDir(
   sourceDir: string,
   marker: RepoMarkerData | null,
@@ -289,8 +246,6 @@ async function probeBehaviorsDir(
   }
 }
 
-/** Directories skipped during the content pre-scan: test helpers and
- * unrelated package detritus that would never hold an extension file. */
 const PRE_SCAN_SKIP_DIRS = new Set([
   "node_modules",
   ".git",
@@ -314,11 +269,9 @@ const PRE_SCAN_TS_MAX_BYTES = 2 * 1024 * 1024;
 const PRE_SCAN_YAML_MAX_BYTES = 64 * 1024;
 
 /**
- * True when a file found under `sourceDir` lies in a helper or skipped
- * directory, or is itself a `_*` helper file. Only the segments below
- * `sourceDir` count: a source checked out under `/actions-runner/_work/`
- * or `~/build/` must still be scanned (swamp-club#3780). Splits on both
- * separators so the check holds on Windows.
+ * only segments below sourceDir count, so a source checked out under
+ * /actions-runner/_work/ or ~/build/ is still scanned; splits on both
+ * separators for Windows
  */
 function isPreScanExcluded(sourceDir: string, path: string): boolean {
   return relative(sourceDir, path).split(/[\\/]/).some((segment) =>
@@ -327,22 +280,9 @@ function isPreScanExcluded(sourceDir: string, path: string): boolean {
 }
 
 /**
- * Walks `sourceDir` looking for files that signal extension content.
- * Returns the set of kinds detected.
- *
- * For .ts files: reads the full file (skipping files larger than
- * PRE_SCAN_TS_MAX_BYTES) and runs `detectKindFromSource`, which uses
- * the same export-name regex the loaders use for their pre-bundle skip
- * check — so pre-scan detection equals loader acceptance.
- *
- * For workflow files (.yaml / .yml): parses the YAML and checks for a
- * top-level `jobs:` key. Regex shortcuts are unreliable because workflow
- * YAML often puts `jobs:` after `name:` / `description:` headers.
- *
- * Skips `_*` prefixed dirs and files (helper modules — matches loader
- * convention), node_modules / .git / .swamp / dist / build / target
- * (unrelated detritus), and `_test.ts` files. Bounded by
- * PRE_SCAN_MAX_DEPTH.
+ * ts files use the loaders' export-name regex so detection equals loader
+ * acceptance; workflow yaml is parsed for a top-level jobs key, as a regex is
+ * unreliable when headers come first
  */
 async function contentPreScan(
   sourceDir: string,
@@ -396,19 +336,9 @@ async function contentPreScan(
 }
 
 /**
- * Resolves extension directories for each expanded source.
- *
- * For each source path:
- * 1. Reads the source's own `.swamp.yaml` to find its extension directories
- * 2. Falls back to `extensions/<type>` defaults if no marker exists
- * 3. Filters by the `only` field if specified
- * 4. Validates that directories exist (warns but does not fail on missing)
- *
- * Since issue #139: when the standard `<path>/extensions/<kind>/` layout
- * yields zero known kinds for a source, a content pre-scan walks the path
- * and sets each detected kind's dir to the source path itself. Standard
- * layout always wins over pre-scan when both are present (prevents
- * double-loading in transitional repos).
+ * if the standard layout yields no known kinds, a content pre-scan sets each
+ * detected kind's dir to the source path; the standard layout always wins,
+ * preventing double-loading
  */
 export interface SourceResolutionResult {
   resolved: ResolvedSourceDirs[];
@@ -432,7 +362,6 @@ export async function resolveSourceExtensionDirs(
     const resolved: ResolvedSourceDirs = { sourcePath: sourceDir };
     const marker = await readSourceMarker(sourceDir);
 
-    // Check if source dir itself exists
     try {
       const stat = await Deno.stat(sourceDir);
       if (!stat.isDirectory) {
@@ -456,20 +385,18 @@ export async function resolveSourceExtensionDirs(
     const standard = await probeStandardLayout(sourceDir, marker, only);
     const behaviorsDir = await probeBehaviorsDir(sourceDir, marker, only);
 
-    // Layout detection is unchanged: a source is standard-layout only by
-    // the existing kind dirs, so a source that already had an
-    // extensions/behaviors/ folder loads as it did before. The behaviors
-    // dir is added on top of a standard layout (swamp-club#3338).
+    // layout detection stays by existing kind dirs, so a source with an
+    // extensions/behaviors/ folder loads as before; the behaviors dir is added
+    // on top of a standard layout
     if (standard.size > 0) {
       for (const [kind, dir] of standard) {
         setKindDir(resolved, kind, dir);
       }
       if (behaviorsDir !== undefined) resolved.behaviorsDir = behaviorsDir;
     } else {
-      // Standard layout yielded zero known kinds — fall back to content
-      // pre-scan. Each detected kind's dir becomes the source path itself
-      // so the loader walks the full path and filters by export at the
-      // pre-bundle step.
+      // falls back to content pre-scan: each detected kind's dir becomes the
+      // source path, so the loader walks it and filters by export at the
+      // pre-bundle step
       const detected = await contentPreScan(sourceDir);
       for (const kind of detected) {
         if (only.includes(kind)) {
@@ -485,10 +412,9 @@ export async function resolveSourceExtensionDirs(
 }
 
 /**
- * Flattens resolved sources into their per-kind extension directories,
- * in source order and then kind order. The order matters: the loader
- * registers sources in `.swamp-sources.yaml` order and skips a type that
- * is already registered, so an earlier directory wins a type conflict.
+ * order matters: the loader registers sources in .swamp-sources.yaml order and
+ * skips an already registered type, so an earlier directory wins a type
+ * conflict
  */
 export function flattenSourceKindDirs(
   resolved: readonly ResolvedSourceDirs[],
@@ -513,17 +439,8 @@ export function flattenSourceKindDirs(
 }
 
 /**
- * Resolves the extension directories `.swamp-sources.yaml` mounts into
- * the repo, the same way CLI startup does: relative paths resolve
- * against the git main working tree, globs expand, and the `only`
- * filter applies. Returns an empty list when the file does not exist.
- *
- * `ExtensionRepository` keeps catalog rows under these directories when
- * it prunes rows whose source is outside the repo root
- * (swamp-club#2563). Missing sources are not reported again here; CLI
- * startup already warns about them.
- *
- * @throws UserError if `.swamp-sources.yaml` exists but is invalid.
+ * missing sources are not reported again here; CLI startup already warns about
+ * them
  */
 export async function resolveMountedSourceDirs(
   repoDir: string,
@@ -544,24 +461,9 @@ export async function resolveMountedSourceDirs(
 }
 
 /**
- * Returns the extension kinds a single source actually contributes,
- * respecting globs, marker overrides, the `only` filter, and both
- * supported layouts (standard `extensions/<kind>/` and non-standard
- * content-detected). Sorted by EXTENSION_KINDS declaration order.
- *
- * Used by `sourceAdd` to fail fast when a concrete path contributes
- * nothing, and by `sourceList` to populate `resolvedKinds` per entry.
- *
- * Semantics:
- *   - A glob with zero expansions returns `[]` — add is allowed because
- *     the user may populate the path later.
- *   - A glob with ≥1 expansions unions kinds across expansions.
- *   - A concrete path with zero kinds from both layouts returns `[]` —
- *     callers reject it at add time.
- *
- * `legacyBaseDir` applies the git-root fallback of `expandSourcePaths`.
- * `sourceList` passes it so a legacy entry lists the kinds it loads with;
- * `sourceAdd` does not, so a new entry must resolve from the repository.
+ * a glob with no expansions returns [] so add is allowed; sourceList passes
+ * legacyBaseDir so a legacy entry lists the kinds it loads with, sourceAdd does
+ * not, so new entries resolve from the repository
  */
 export async function resolveExtensionKindsForSource(
   source: SwampSource,
@@ -607,10 +509,6 @@ export async function resolveExtensionKindsForSource(
   return EXTENSION_KINDS.filter((k) => union.has(k));
 }
 
-/**
- * Collects all resolved directories for a specific extension kind
- * from a list of resolved sources.
- */
 export function collectDirsForKind(
   resolvedSources: ResolvedSourceDirs[],
   kind: ExtensionKind,
@@ -621,8 +519,8 @@ export function collectDirsForKind(
     if (dir) {
       dirs.push(dir);
     }
-    // The behaviors directory loads as models, after the models directory
-    // so the source's own precedence matches the repo's (swamp-club#3338).
+    // the behaviors directory loads as models, after the models directory so
+    // the source's own precedence matches the repo's
     if (kind === "models" && source.behaviorsDir) {
       dirs.push(source.behaviorsDir);
     }
@@ -631,11 +529,8 @@ export function collectDirsForKind(
 }
 
 /**
- * Resolves the extension directory for a given kind from a source's marker.
- * Uses marker fields if set, otherwise falls back to `extensions/<type>`.
- *
- * Note: This intentionally does NOT check environment variables (SWAMP_*_DIR)
- * because those apply to the consumer's repo, not the source repo.
+ * does not check SWAMP_*_DIR env vars, which apply to the consumer's repo, not
+ * the source repo
  */
 function resolveKindDir(
   kind: ExtensionKind,

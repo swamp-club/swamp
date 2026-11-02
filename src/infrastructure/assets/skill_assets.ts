@@ -20,23 +20,13 @@
 import { join } from "@std/path";
 import { markErrorPaths } from "../../domain/errors.ts";
 
-/**
- * Represents a skill that can be bundled with swamp.
- */
 export interface SkillInfo {
-  /** Relative path from .claude/skills (e.g., "swamp/SKILL.md") */
   relativePath: string;
-  /** Skill name derived from directory (e.g., "swamp") */
   name: string;
 }
 
-/**
- * List of skills to bundle with the swamp binary.
- */
 const BUNDLED_SKILLS: SkillInfo[] = [
-  // Gateway skill
   { relativePath: "swamp/SKILL.md", name: "swamp" },
-  // data
   { relativePath: "swamp/references/data/guide.md", name: "swamp" },
   { relativePath: "swamp/references/data/reference.md", name: "swamp" },
   {
@@ -64,9 +54,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/data/references/troubleshooting.md",
     name: "swamp",
   },
-  // architecture
   { relativePath: "swamp/references/architecture/guide.md", name: "swamp" },
-  // behavior
   { relativePath: "swamp/references/behavior/guide.md", name: "swamp" },
   { relativePath: "swamp/references/behavior/reference.md", name: "swamp" },
   {
@@ -110,7 +98,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/behavior/references/troubleshooting.md",
     name: "swamp",
   },
-  // workflow
   { relativePath: "swamp/references/workflow/guide.md", name: "swamp" },
   { relativePath: "swamp/references/workflow/reference.md", name: "swamp" },
   {
@@ -142,7 +129,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/workflow/references/scenarios.md",
     name: "swamp",
   },
-  // repo
   { relativePath: "swamp/references/repo/guide.md", name: "swamp" },
   { relativePath: "swamp/references/repo/reference.md", name: "swamp" },
   {
@@ -161,7 +147,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/repo/references/troubleshooting.md",
     name: "swamp",
   },
-  // report
   { relativePath: "swamp/references/report/guide.md", name: "swamp" },
   { relativePath: "swamp/references/report/reference.md", name: "swamp" },
   {
@@ -180,7 +165,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/report/references/testing.md",
     name: "swamp",
   },
-  // extension
   { relativePath: "swamp/references/extension/guide.md", name: "swamp" },
   { relativePath: "swamp/references/extension/reference.md", name: "swamp" },
   {
@@ -288,7 +272,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
       "swamp/references/extension/references/vault/troubleshooting.md",
     name: "swamp",
   },
-  // extension-publish
   {
     relativePath: "swamp/references/extension-publish/guide.md",
     name: "swamp",
@@ -301,7 +284,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/extension-publish/references/publishing.md",
     name: "swamp",
   },
-  // vault
   { relativePath: "swamp/references/vault/guide.md", name: "swamp" },
   { relativePath: "swamp/references/vault/reference.md", name: "swamp" },
   {
@@ -320,7 +302,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/vault/references/user-defined-vaults.md",
     name: "swamp",
   },
-  // issue
   { relativePath: "swamp/references/issue/guide.md", name: "swamp" },
   { relativePath: "swamp/references/issue/reference.md", name: "swamp" },
   {
@@ -347,7 +328,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/issue/references/version_check.md",
     name: "swamp",
   },
-  // troubleshooting
   { relativePath: "swamp/references/troubleshooting/guide.md", name: "swamp" },
   {
     relativePath: "swamp/references/troubleshooting/reference.md",
@@ -381,9 +361,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
       "swamp/references/troubleshooting/references/version-check.md",
     name: "swamp",
   },
-  // serve
   { relativePath: "swamp/references/serve/guide.md", name: "swamp" },
-  // swamp share guide area
   {
     relativePath: "swamp/references/share/guide.md",
     name: "swamp",
@@ -400,7 +378,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp/references/share/references/troubleshooting.md",
     name: "swamp",
   },
-  // swamp-getting-started (standalone skill)
   {
     relativePath: "swamp-getting-started/SKILL.md",
     name: "swamp-getting-started",
@@ -411,51 +388,27 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
 ];
 
-/**
- * SkillAssets provides access to embedded skill files.
- *
- * When running from source, skills are read from the .claude/skills directory.
- * When running from a compiled binary, skills are embedded using Deno's --include flag.
- */
 export class SkillAssets {
   private readonly skillsDir: string;
 
   constructor() {
-    // import.meta.dirname gives the directory of this file
-    // Navigate up to repo root and then to .claude/skills
     const currentDir = import.meta.dirname ?? ".";
-    // From src/infrastructure/assets -> ../../.. -> repo root
     this.skillsDir = join(currentDir, "..", "..", "..", ".claude", "skills");
   }
 
-  /**
-   * Gets the base skills directory path.
-   */
   getSkillsDir(): string {
     return this.skillsDir;
   }
 
-  /**
-   * Lists all bundled skills.
-   */
   listSkills(): SkillInfo[] {
     return [...BUNDLED_SKILLS];
   }
 
-  /**
-   * Gets unique skill names (directories).
-   */
   getSkillNames(): string[] {
     const names = new Set(BUNDLED_SKILLS.map((s) => s.name));
     return Array.from(names);
   }
 
-  /**
-   * Reads a skill file by its relative path.
-   *
-   * @param relativePath - Path relative to .claude/skills (e.g., "swamp-model/SKILL.md")
-   * @returns The file content, or null if not found
-   */
   async readSkill(relativePath: string): Promise<string | null> {
     const path = join(this.skillsDir, relativePath);
     try {
@@ -468,22 +421,12 @@ export class SkillAssets {
     }
   }
 
-  /**
-   * Gets the full path for a skill file.
-   */
   getSkillPath(relativePath: string): string {
     return join(this.skillsDir, relativePath);
   }
 
-  /**
-   * Copies all bundled skills to a target directory.
-   *
-   * @param targetDir - The target .claude/skills directory
-   * @throws Error if a skill's relativePath attempts path traversal
-   */
   async copySkillsTo(targetDir: string): Promise<void> {
     for (const skill of BUNDLED_SKILLS) {
-      // Validate that relativePath doesn't contain path traversal
       if (skill.relativePath.includes("..")) {
         throw markErrorPaths(
           new Error(
@@ -496,14 +439,11 @@ export class SkillAssets {
       const sourcePath = join(this.skillsDir, skill.relativePath);
       const targetPath = join(targetDir, skill.relativePath);
 
-      // Read the source file
       const content = await Deno.readTextFile(sourcePath);
 
-      // Ensure target directory exists
       const targetParent = join(targetPath, "..");
       await Deno.mkdir(targetParent, { recursive: true });
 
-      // Write to target
       await Deno.writeTextFile(targetPath, content);
     }
   }

@@ -68,10 +68,9 @@ import {
   withObservedSpans,
 } from "../tracing/span_test_helpers.ts";
 
-// Import the models barrel so `modelRegistry.types()` returns real entries —
-// `findAllGlobalSince` and `findAll` both walk the registry, so tests that
-// exercise them need at least one registered type. The `command/shell` model
-// is the simplest entry the barrel registers.
+// import the models barrel so modelRegistry.types() returns real entries:
+// findAllGlobalSince and findAll walk the registry, and command/shell is the
+// simplest type it registers
 import "../../domain/models/models.ts";
 
 const registeredType = ModelType.create("command/shell");
@@ -146,7 +145,6 @@ Deno.test("YamlOutputRepository.save creates yaml file with correct path structu
     await repo.save(testType, "deploy", output);
 
     const path = repo.getPath(testType, "deploy", output);
-    // Path should be: outputs/{type}/{method}/{definition-id}-{timestamp}.yaml
     assertPathStringIncludes(path, "outputs");
     assertPathStringIncludes(path, testType.normalized);
     assertPathStringIncludes(path, "deploy");
@@ -326,7 +324,6 @@ Deno.test("YamlOutputRepository.delete is idempotent", async () => {
     const repo = new YamlOutputRepository(dir);
     const id = createModelOutputId("550e8400-e29b-41d4-a716-446655440001");
 
-    // Should not throw even if file doesn't exist
     await repo.delete(testType, "create", id);
   });
 });
@@ -415,7 +412,6 @@ Deno.test("YamlOutputRepository.getPath uses correct format", () => {
 
   const path = repo.getPath(testType, "create", output);
 
-  // Path should include: outputs/{type}/{method}/{definition-id}-{timestamp}.yaml
   assertPathStringIncludes(path, "outputs");
   assertPathStringIncludes(path, testType.normalized);
   assertPathStringIncludes(path, "create");
@@ -441,14 +437,12 @@ Deno.test("YamlOutputRepository invokes markDirty with relPath on mutations", as
 
     const expectedPath = repo.getPath(testType, "create", output);
 
-    // Each mutation marks before it and again after it (swamp-club#2421).
     await repo.save(testType, "create", output);
     assertEquals(calls, [expectedPath, expectedPath]);
 
     await repo.delete(testType, "create", output.id);
     assertEquals(calls.slice(2), [expectedPath, expectedPath]);
 
-    // Reads do not notify.
     await repo.findAll(testType);
     await repo.findById(testType, "create", output.id);
     assertEquals(calls.length, 4);
@@ -477,11 +471,9 @@ async function makeOutput(
 }
 
 /**
- * Configures the global model registry's extension loader to register one
- * lazy extension type, as the real catalog loader does, and runs `fn` with
- * that type. Nothing is loaded until something calls `ensureLoaded()`. The
- * type name is unique per run and the loaded flag is reset on both sides, so
- * every `--repeats` run goes through the loader again.
+ * registers one lazy extension type as the real catalog loader does; nothing
+ * loads until ensureLoaded(); the name is unique per run and the loaded flag
+ * reset on both sides so every repeat loads again
  */
 async function withLazyExtensionType(
   fn: (type: ModelType) => Promise<void>,
@@ -554,7 +546,6 @@ Deno.test("findAllGlobalSince: returns only in-window outputs", async () => {
     const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const old = await makeOutput(repo, oldDate);
 
-    // Backdate the file so its mtime falls before the cutoff.
     const oldPath = repo.getPath(registeredType, "run", old);
     await Deno.utime(oldPath, oldDate, oldDate);
 
@@ -577,9 +568,8 @@ Deno.test(
       const keep = await makeOutput(repo, new Date());
       const doomed = await makeOutput(repo, new Date());
 
-      // Simulate a concurrent deletion. Pre-fix behavior: NotFound from
-      // Deno.stat propagates to the model-type catch and continues past
-      // the entire current type, dropping `keep`.
+      // simulates a concurrent deletion: a NotFound from Deno.stat must not
+      // abort the whole current model type and drop `keep`
       await Deno.remove(repo.getPath(registeredType, "run", doomed));
 
       const cutoff = new Date(Date.now() - 60 * 60 * 1000);
@@ -610,16 +600,9 @@ Deno.test(
   },
 );
 
-// Wraps `Deno.readDir` so that a single chosen path yields a phantom
-// entry before its real entries. The phantom points to nothing on disk,
-// so when production code follows up with `Deno.readTextFile` or
-// `Deno.readDir` on it, the syscall throws `NotFound` naturally —
-// deterministically exercising the TOCTOU window. Returns a restore
-// function that must be called in `finally`. We monkey-patch the global
-// because the `find*`/`delete` walkers call `Deno.readDir` directly with
-// no injection point; the alternative ("remove file before call") only
-// triggers the race on platforms where readDir surfaces stale entries,
-// which isn't portable.
+// wraps Deno.readDir so one path yields a phantom entry pointing to nothing,
+// deterministically hitting the TOCTOU window; walkers call readDir directly,
+// so patch the global and restore it in finally
 function withPhantomReadDirEntry<T>(
   targetDir: string,
   phantom: Deno.DirEntry,
@@ -649,11 +632,6 @@ Deno.test(
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
 
-      // Seed one real output under method "run". We then inject a
-      // phantom method-dir entry into readDir(typeDir); production
-      // code calls readDir(phantomMethodDir) and gets NotFound.
-      // Pre-fix: NotFound escapes the inner for-await to the outer
-      // catch, returns [], discarding `keep`.
       const keep = await makeOutput(repo, new Date());
 
       const typeDir = join(
@@ -687,10 +665,6 @@ Deno.test(
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
 
-      // Same shape as above, against the per-model-type walker. Pre-fix:
-      // NotFound from readDir(phantomMethodDir) escapes to the per-type
-      // catch which `continue`s past the entire current model type,
-      // discarding results already pushed for it.
       const keep = await makeOutput(repo, new Date());
 
       const typeDir = join(
@@ -725,11 +699,6 @@ Deno.test(
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
 
-      // Seed the target. Inject a phantom .yaml entry into the method
-      // dir's readDir so production code reads it before reaching the
-      // real target file. Pre-fix: NotFound from readTextFile on the
-      // phantom escapes the outer catch and returns null even though
-      // the target exists.
       const target = await makeOutput(repo, new Date());
 
       const methodDir = join(
@@ -761,10 +730,6 @@ Deno.test(
   "delete: non-target file deleted mid-iteration still deletes target",
   async () => {
     await withTempDir(async (dir) => {
-      // Capture markDirty so we can assert notifyDirty fires for the
-      // target's path. Pre-fix, a NotFound on a non-target file aborts
-      // the search before the match is found — notifyDirty never fires
-      // and the target survives.
       const dirtyPaths: string[] = [];
       const markDirty = (path?: string): Promise<void> => {
         if (path) dirtyPaths.push(path);
@@ -775,7 +740,6 @@ Deno.test(
       const target = await makeOutput(repo, new Date());
       const targetPath = repo.getPath(registeredType, "run", target);
 
-      // Reset dirty log: makeOutput's save called markDirty already.
       dirtyPaths.length = 0;
 
       const methodDir = join(
@@ -798,14 +762,11 @@ Deno.test(
         () => repo.delete(registeredType, "run", target.id),
       );
 
-      // Target file must be gone.
       assertEquals(
         await repo.findById(registeredType, "run", target.id),
         null,
       );
 
-      // The mark must have fired with the target's path, before the
-      // removal and after it (swamp-club#2421).
       assertEquals(dirtyPaths, [targetPath, targetPath]);
     });
   },
@@ -887,10 +848,6 @@ Deno.test(
   },
 );
 
-/**
- * Rewrites a saved output so it finishes 835ms before it starts, as a record
- * written while the clock stepped backward mid-run does.
- */
 async function backdateCompletion(path: string): Promise<void> {
   const data = parseYaml(await Deno.readTextFile(path)) as ModelOutputData;
   data.completedAt = new Date(new Date(data.startedAt).getTime() - 835)
@@ -899,7 +856,6 @@ async function backdateCompletion(path: string): Promise<void> {
   await Deno.writeTextFile(path, stringifyYaml(data));
 }
 
-/** Seeds a record that fails validation and one that is not valid YAML. */
 async function seedUnreadableYaml(
   dir: string,
   type: ModelType,
@@ -1147,8 +1103,6 @@ Deno.test(
   },
 );
 
-// --- deleteByMethodLifetime ---
-
 async function makeOutputForMethod(
   repo: YamlOutputRepository,
   type: ModelType,
@@ -1173,7 +1127,6 @@ Deno.test(
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
 
-      // server-token redeem has outputLifetime: "1d"
       const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
       const old = await makeOutputForMethod(
         repo,
@@ -1184,7 +1137,6 @@ Deno.test(
       const oldPath = repo.getPath(SERVER_TOKEN_MODEL_TYPE, "redeem", old);
       await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
 
-      // Use a 30-day fallback — the 1d method lifetime should still clean up
       const fallback = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const result = await repo.deleteByMethodLifetime(fallback);
       assertEquals(result.deleted, 1);
@@ -1198,7 +1150,6 @@ Deno.test(
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
 
-      // command/shell has no outputLifetime
       const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
       const old = await makeOutputForMethod(
         repo,
@@ -1209,7 +1160,6 @@ Deno.test(
       const oldPath = repo.getPath(registeredType, "run", old);
       await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
 
-      // Fallback is 1 day — should delete the 2-day-old output
       const fallback = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
       const result = await repo.deleteByMethodLifetime(fallback);
       assertEquals(result.deleted, 1);
@@ -1266,8 +1216,6 @@ Deno.test(
   },
 );
 
-// --- run log removal (swamp-club#2475) ---
-
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -1291,14 +1239,6 @@ async function writeAgedLog(path: string, age: Date): Promise<void> {
   await Deno.utime(path, age, age);
 }
 
-/**
- * Saves a succeeded output with a run log, then ages both files to
- * startedAt. By default the log lives in the repo-local outputs root and is
- * named from a timestamp a few ms before startedAt, as createRunLog does.
- * `logPath` places the log elsewhere; `logFile` records a different value
- * than the log's path (as a hand-edited record would); `logWrittenAt` sets
- * the log's mtime instead of startedAt.
- */
 async function makeOutputWithRunLog(
   repo: YamlOutputRepository,
   repoDir: string,
@@ -1455,7 +1395,6 @@ Deno.test(
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
       const twoDaysAgo = new Date(Date.now() - 2 * DAY_MS);
-      // A relative logFile that climbs out of the method directory.
       const traversed = join(dir, "outside.log");
       await makeOutputWithRunLog(repo, dir, twoDaysAgo, {
         logPath: traversed,
@@ -1471,7 +1410,6 @@ Deno.test(
           "outside.log",
         ].join(SEPARATOR),
       });
-      // An absolute logFile somewhere else entirely.
       const absolute = join(dir, "elsewhere", "absolute.log");
       await makeOutputWithRunLog(repo, dir, twoDaysAgo, { logPath: absolute });
 
@@ -1590,7 +1528,6 @@ Deno.test(
   async () => {
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
-      // server-token redeem declares outputLifetime: "1d".
       const running = join(
         dir,
         ".swamp",
@@ -1615,7 +1552,6 @@ Deno.test(
       const repo = new YamlOutputRepository(dir);
       const orphan = join(localMethodDir(dir), "orphan-left-by-old-gc.log");
       await writeAgedLog(orphan, new Date(Date.now() - 10 * DAY_MS));
-      // A recent record gc would not delete, and cannot parse.
       await Deno.writeTextFile(
         join(localMethodDir(dir), "corrupt.yaml"),
         "id: [unclosed\n",
@@ -1792,7 +1728,6 @@ Deno.test(
       const gone = [];
       for (const { yamlPath, logPath } of made) {
         const exists = await pathExists(yamlPath);
-        // An output's own log goes with it, even in a batch.
         assertEquals(await pathExists(logPath), exists);
         if (!exists) gone.push(yamlPath);
       }
@@ -1850,7 +1785,6 @@ Deno.test(
       const oldPath = repo.getPath(registeredType, "run", old);
       await Deno.utime(oldPath, twoDaysAgo, twoDaysAgo);
 
-      // A retention too long for a date gives an invalid cutoff.
       const result = await repo.deleteByMethodLifetime(new Date(Number.NaN));
       assertEquals(result.deleted, 0);
       assertEquals(
@@ -1861,7 +1795,6 @@ Deno.test(
   },
 );
 
-/** An output of `definitionId` started at `startedAt`, not saved. */
 function outputAt(definitionId: string, startedAt: string): ModelOutput {
   return ModelOutput.create({
     definitionId: createDefinitionId(definitionId),
@@ -1871,7 +1804,6 @@ function outputAt(definitionId: string, startedAt: string): ModelOutput {
   });
 }
 
-/** A repository whose lookup holds the given outputs as unreadable. */
 function repoWithUnreadable(
   dir: string,
   unreadable: { type: ModelType; method: string; output: ModelOutput }[],
@@ -1893,7 +1825,6 @@ Deno.test("YamlOutputRepository.findLatestByDefinition: fails with the error of 
     const older = outputAt(defId, "2023-01-01T00:00:00Z");
     const readable = outputAt(defId, "2023-01-02T00:00:00Z");
     const newer = outputAt(defId, "2023-01-03T00:00:00Z");
-    // Another definition's later unreadable output does not count.
     const otherDefinition = outputAt(
       crypto.randomUUID(),
       "2023-01-04T00:00:00Z",
@@ -1909,7 +1840,6 @@ Deno.test("YamlOutputRepository.findLatestByDefinition: fails with the error of 
     );
     assertEquals(error, errors.get(paths[0]));
 
-    // Without the newer one, the readable output is the latest.
     const { repo: olderOnly } = repoWithUnreadable(dir, [
       { type: testType, method: "create", output: older },
     ]);
@@ -1920,7 +1850,6 @@ Deno.test("YamlOutputRepository.findLatestByDefinition: fails with the error of 
       ))?.id,
       readable.id,
     );
-    // With no readable output at all, an unreadable one is the latest.
     const lost = crypto.randomUUID();
     const { repo: none, errors: noneErrors, paths: nonePaths } =
       repoWithUnreadable(dir, [
@@ -1951,10 +1880,9 @@ Deno.test("YamlOutputRepository.findById: a miss where the method has unreadable
       (await repo.findById(testType, "create", kept.id))?.id,
       kept.id,
     );
-    // An output id is not in its file name, so the lookup cannot tell the
-    // unreadable output's own id from a mistyped one: both are not found,
-    // naming the record that may be it, and neither carries the
-    // unreadable-content code, since a mistyped id is no read of it.
+    // an output id is not in its file name, so an unreadable output's id and a
+    // mistyped one both read as not found, naming the record that may be it,
+    // with no unreadable-content code
     const mistyped = crypto.randomUUID();
     for (const id of [lost.id, mistyped]) {
       const error = await assertRejects(
@@ -1966,7 +1894,6 @@ Deno.test("YamlOutputRepository.findById: a miss where the method has unreadable
       assertStringIncludes(error.message, `${id} was not found`);
       assertStringIncludes(error.message, paths[0]);
     }
-    // Another method has none: its miss is a miss.
     assertEquals(await repo.findById(testType, "update", lost.id), null);
   });
 });
@@ -2000,7 +1927,6 @@ Deno.test("YamlOutputRepository: listings keep their readable outputs and warn n
         [readable.id],
       );
     });
-    // The definition's record was named already in this process.
     assertEquals(all.length, 1, all.join("\n"));
     assertStringIncludes(all[0], paths[1]);
     assertEquals(stats.listings, 2);
@@ -2028,15 +1954,11 @@ Deno.test("YamlOutputRepository.findAllGlobalSince: warns only about unreadable 
     assertEquals(warnings.length, 2, warnings.join("\n"));
     assertStringIncludes(warnings[0], paths[1]);
     assert(!warnings[0].includes(paths[0]), warnings[0]);
-    // The whole-repository listing names the older one too, once.
     assertStringIncludes(warnings[1], paths[0]);
     assertEquals(stats.listings, 2);
   });
 });
 
-// --- deleteByMethodLifetime phase telemetry (swamp-club#4004) ---
-
-/** Saves a `command/shell` output with the given status, aged as given. */
 async function saveRetentionFixture(
   repo: YamlOutputRepository,
   options: { startedAt: Date; mtime: Date; terminal: boolean },
@@ -2055,7 +1977,6 @@ async function saveRetentionFixture(
   return path;
 }
 
-/** Saves `count` expired outputs. */
 async function saveExpiredOutputs(
   repo: YamlOutputRepository,
   count: number,
@@ -2074,7 +1995,6 @@ async function saveExpiredOutputs(
   return paths;
 }
 
-/** The one finished `swamp.diagnostic.<phase>` span's attributes. */
 function phaseAttributes(
   spans: readonly ReadableSpan[],
   phase: string,
@@ -2101,7 +2021,6 @@ Deno.test(
           mtime: recent,
           terminal: true,
         });
-        // Touched long ago, but started inside the window.
         await saveRetentionFixture(repo, {
           startedAt: recent,
           mtime: old,
@@ -2146,7 +2065,6 @@ Deno.test(
           );
         }
         assertEquals(diagnosticPhases(spans, "orphan_log_sweep").length, 1);
-        // No phase carries a path.
         for (const span of spans) {
           for (const value of Object.values(span.attributes)) {
             assert(!String(value).includes(dir));
@@ -2175,7 +2093,6 @@ Deno.test(
         const scan = phaseAttributes(spans, "candidate_scan");
         assertEquals(scan["swamp.diagnostic.limit"], 1);
         assertEquals(scan["swamp.diagnostic.deleted"], 1);
-        // The output that stopped the batch is not counted as eligible.
         assertEquals(scan["swamp.diagnostic.eligible"], 1);
         assertEquals(scan["swamp.diagnostic.considered"], 2);
         assertEquals(scan["swamp.diagnostic.stopped_at_limit"], true);
@@ -2312,7 +2229,6 @@ Deno.test("YamlOutputRepository: discovery and delete count their reads and meas
     for (const [i, output] of outputs.entries()) {
       await repo.save(testType, methods[i], output);
     }
-    // Another definition's record of the same type is read too.
     await repo.save(
       testType,
       "create",
@@ -2350,7 +2266,6 @@ Deno.test("YamlOutputRepository: discovery and delete count their reads and meas
         );
       }
       const removal = findSpan(spans, "swamp.diagnostic.output_removal");
-      // The create directory holds this record and the other definition's.
       const searched = removal.attributes[
         "swamp.diagnostic.search_files_read"
       ] as number;
@@ -2384,12 +2299,6 @@ Deno.test("YamlOutputRepository: reads outside a diagnostic area export nothing"
   });
 });
 
-// --- Bounded history reads (swamp-club#4056) ---
-
-/**
- * Runs `fn` counting the files it stats and reads. Patches the globals as
- * {@link withPhantomReadDirEntry} does: the walkers call them directly.
- */
 async function countFileOps<T>(
   fn: () => Promise<T>,
 ): Promise<{ result: T; stats: string[]; reads: string[] }> {
@@ -2417,7 +2326,6 @@ async function countFileOps<T>(
   }
 }
 
-/** Writes `output`'s record under `name` in its method directory. */
 async function writeRecordAs(
   repo: YamlOutputRepository,
   output: ModelOutput,
@@ -2437,7 +2345,6 @@ Deno.test(
   async () => {
     await withTempDir(async (dir) => {
       const repo = new YamlOutputRepository(dir);
-      // Saved just now, so its mtime is fresh, as after a v3 replay.
       await makeOutput(repo, new Date(Date.now() - 7 * DAY_MS));
       const fresh = await makeOutput(repo, new Date());
 
@@ -2485,7 +2392,6 @@ Deno.test(
         });
       const oldMtime = await writeRecordAs(repo, record(old), "a.yaml");
       await Deno.utime(oldMtime, old, old);
-      // Fresh mtime, old startedAt: read, then left out.
       await writeRecordAs(repo, record(old), "b.yaml");
       const recent = record(new Date());
       await writeRecordAs(repo, recent, "c.yaml");
@@ -2657,14 +2563,12 @@ Deno.test(
         definitionId,
       );
 
-      // Deleting a model reads its outputs this way, so it still finds this.
       assertEquals(all.map((o) => o.id), [output.id]);
       assertEquals(history, []);
     });
   },
 );
 
-/** An output of `definitionId` started at `startedAt`, not saved. */
 function historyOutput(
   definitionId: DefinitionId,
   startedAt: Date,
@@ -2691,7 +2595,6 @@ Deno.test(
       );
       const atSince = historyOutput(definitionId, since);
       const recent = historyOutput(definitionId, new Date());
-      // Saved just now, so every mtime is fresh, as after a v3 replay.
       for (const output of [before, atSince, recent]) {
         await repo.save(registeredType, "run", output);
       }
@@ -2770,7 +2673,6 @@ Deno.test(
         "a.yaml",
       );
       await Deno.utime(oldMtime, old, old);
-      // Fresh mtime, old startedAt: read, then left out.
       await writeRecordAs(repo, historyOutput(definitionId, old), "b.yaml");
       const recent = historyOutput(definitionId, new Date());
       await writeRecordAs(repo, recent, "c.yaml");
@@ -2787,7 +2689,6 @@ Deno.test(
       assertEquals(withSince.result.map((o) => o.id), [recent.id]);
       assertEquals(withSince.stats.length, 3);
       assertEquals(withSince.reads.length, 2);
-      // An mtime says nothing about until: every such file is read.
       assertEquals(withUntil.result.length, 2);
       assertEquals(withUntil.stats, []);
       assertEquals(withUntil.reads.length, 3);
@@ -2869,7 +2770,6 @@ Deno.test(
   },
 );
 
-/** Runs `fn` tracking the most reads of `Deno.readTextFile` in flight at once. */
 async function trackReads<T>(
   fn: () => Promise<T>,
 ): Promise<{ result: T; maxInFlight: number }> {
@@ -2916,7 +2816,6 @@ Deno.test(
           await repo.save(registeredType, method, output);
         }
       }
-      // A sequential walk: methods, then file names, each sorted.
       const expected: string[] = [];
       for (const method of ["a", "b", "c"]) {
         const methodDir = join(
@@ -2941,7 +2840,6 @@ Deno.test(
       );
 
       assertEquals(result.map((r) => r.output.id), expected);
-      // Bounded, and concurrent: how many overlap depends on timing.
       assert(maxInFlight <= 16, `${maxInFlight} reads in flight`);
       assert(maxInFlight > 1, `${maxInFlight} reads in flight`);
     });
@@ -2963,7 +2861,6 @@ Deno.test(
         registeredType.normalized,
         "run",
       );
-      // The first file the walk reads.
       const failing = join(
         methodDir,
         [...Deno.readDirSync(methodDir)].map((e) => e.name).sort()[0],
@@ -2995,7 +2892,6 @@ Deno.test(
           "Permission denied",
         );
         assertEquals(inFlight, 0);
-        // The reads started with it, and none after it failed.
         assert(started <= 16, `${started} reads started`);
       } finally {
         (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
@@ -3026,7 +2922,6 @@ Deno.test(
           );
         }
       }
-      // A sequential walk: methods, then file names, each sorted.
       const expected: string[] = [];
       for (const method of ["a", "b", "c"]) {
         const methodDir = join(
@@ -3051,7 +2946,6 @@ Deno.test(
       );
 
       assertEquals(result.map((o) => o.id), expected);
-      // Bounded, and concurrent: how many overlap depends on timing.
       assert(maxInFlight <= 16, `${maxInFlight} reads in flight`);
       assert(maxInFlight > 1, `${maxInFlight} reads in flight`);
     });
@@ -3078,7 +2972,6 @@ Deno.test(
         registeredType.normalized,
         "run",
       );
-      // The first file the walk reads.
       const failing = join(
         methodDir,
         [...Deno.readDirSync(methodDir)].map((e) => e.name).sort()[0],
@@ -3120,7 +3013,6 @@ Deno.test(
           started = 0;
           await assertRejects(list, Error, "Permission denied");
           assertEquals(inFlight, 0, name);
-          // The reads started with it, and none after it failed.
           assert(started <= 16, `${name}: ${started} reads started`);
         }
       } finally {
@@ -3257,8 +3149,8 @@ Deno.test(
         (Deno as { readDir: typeof Deno.readDir }).readDir = readDir;
       }
       assertEquals(open, 0);
-      // Bounded across the scans, and concurrent: how many overlap depends
-      // on timing (192 were open at once with a bound per scan).
+      // bounded across the scans, and concurrent: how many overlap depends on
+      // timing
       assert(peak <= 16, `${peak} open at once`);
       assert(peak > 1, `${peak} open at once`);
     });
@@ -3360,14 +3252,12 @@ Deno.test(
         (Deno as { stat: typeof Deno.stat }).stat = stat;
       }
       assertEquals(open, 0);
-      // One bound shared by both repositories' scans.
       assert(peak <= 16, `${peak} open at once`);
       assert(peak > 1, `${peak} open at once`);
     });
   },
 );
 
-/** Saves `count` outputs of `definitionId`, a millisecond apart. */
 async function saveHistory(
   repo: YamlOutputRepository,
   definitionId: DefinitionId,
@@ -3383,27 +3273,14 @@ async function saveHistory(
   }
 }
 
-/** Reads of `Deno.readTextFile` that {@link withHeldReads} controls. */
 interface HeldReads {
-  /** Reads started so far, held or not. */
   readonly started: number;
-  /** Reads started and not yet settled. */
   readonly inFlight: number;
-  /** Reads started so far of a file under `dir`. */
   startedUnder(dir: string): number;
-  /** Holds every read started from now on until the next release. */
   hold(): void;
-  /** Settles every held read, and lets reads started after it through. */
   release(): void;
 }
 
-/**
- * Runs `fn` with `Deno.readTextFile` replaced by one that holds reads open
- * while told to, so a test decides which scans hold the shared scan permits
- * (swamp-club#4070). Reads pass through until `hold`. Every held read is
- * released, and the original restored, however `fn` ends, so no permit
- * outlives the test.
- */
 async function withHeldReads<T>(
   fn: (reads: HeldReads) => Promise<T>,
 ): Promise<T> {
@@ -3452,21 +3329,10 @@ async function withHeldReads<T>(
   }
 }
 
-/**
- * Resolves once the shared scans of the calls just made have started: a
- * shared scan starts on the microtask after the call that created it
- * (swamp-club#4074), and asks for its first listing's permit without
- * awaiting first.
- */
 async function sharedScansStarted(): Promise<void> {
   await Promise.resolve();
 }
 
-/**
- * Asserts every shared scan permit is free: a lookup of 16 records gets all
- * 16 of its reads in flight at once, and a search of 16 gets its share of
- * 12 (swamp-club#4073). A permit a scan kept would leave one of them short.
- */
 async function assertScanPermitsFree(reads: HeldReads): Promise<void> {
   await withTempDir(async (dir) => {
     const repo = new YamlOutputRepository(dir);
@@ -3518,7 +3384,6 @@ Deno.test(
           registeredType,
           holderId,
         );
-        // Searches hold their whole share, 12 of the 16 permits.
         await waitFor(() => reads.inFlight === 12, "the holder's 12 reads");
 
         const controller = new AbortController();
@@ -3533,7 +3398,6 @@ Deno.test(
           registeredType,
           behindId,
         );
-        // Each joins the permit queue once its shared scan starts.
         await sharedScansStarted();
         let settled = false;
         const abortedOutcome = assertRejects(() => abortedScan).finally(() => {
@@ -3587,8 +3451,6 @@ Deno.test(
             new Date(Date.now() - HOUR_MS),
             controller.signal,
           );
-          // Six of its reads hold the rest of the searches' share; the rest
-          // of its reads wait for one.
           await waitFor(() => reads.inFlight === 12, "the scan's 6 reads");
           const startedAtAbort = reads.started;
           controller.abort(reason);
@@ -3596,8 +3458,6 @@ Deno.test(
           reads.release();
           assertEquals(await assertRejects(() => scan), reason);
           assertEquals((await holding).length, 6);
-          // The aborted caller rejects at once (swamp-club#4074); the scan's
-          // own released reads settle after it.
           await waitFor(
             () => reads.inFlight === 0,
             "the aborted scan's reads to settle",
@@ -3633,8 +3493,6 @@ Deno.test(
           undefined,
           controller.signal,
         );
-        // The scan takes a free permit for its first listing as it starts,
-        // and the abort lands before that permit is used.
         await sharedScansStarted();
         controller.abort(reason);
         assertEquals(await assertRejects(() => scan), reason);
@@ -3667,20 +3525,11 @@ Deno.test(
   },
 );
 
-/** Listings of `Deno.readDir` that {@link withHeldListings} controls. */
 interface HeldListings {
-  /** Held listings started and not yet released. */
   readonly inFlight: number;
-  /** Settles every held listing, and lets listings started after it through. */
   release(): void;
 }
 
-/**
- * Runs `fn` with `Deno.readDir` replaced by one that holds a listing of a
- * directory `holds` accepts open, before its first entry, until released, as
- * a large directory's iteration holds its permit (swamp-club#4073). Every
- * held listing is released, and the original restored, however `fn` ends.
- */
 async function withHeldListings<T>(
   holds: (dir: string) => boolean,
   fn: (listings: HeldListings) => Promise<T>,
@@ -3718,10 +3567,6 @@ async function withHeldListings<T>(
   }
 }
 
-/**
- * Sixteen repositories under `dir`, each with one output, whose history
- * searches list a method directory {@link withHeldListings} can hold.
- */
 async function sixteenSearches(dir: string) {
   const searches: { repo: YamlOutputRepository; id: DefinitionId }[] = [];
   for (let i = 0; i < 16; i++) {
@@ -3756,7 +3601,6 @@ Deno.test(
 
       await withHeldListings(searches.holds, async (listings) => {
         const searching = searches.start();
-        // Searches hold their whole share of 12 permits; the other four wait.
         await waitFor(() => listings.inFlight === 12, "12 held listings");
 
         let done = 0;
@@ -3797,7 +3641,6 @@ Deno.test(
 
           reads.hold();
           const lookup = runner.findAll(registeredType);
-          // The four permits no search may hold, and no more.
           await waitFor(() => reads.inFlight === 4, "the lookup's 4 reads");
           assertEquals(listings.inFlight + reads.inFlight, 16);
           assertEquals(reads.startedUnder(runnerDir), 4);
@@ -3837,7 +3680,6 @@ Deno.test(
             ),
         );
         for (const outputs of found) assertEquals(outputs.length, 5);
-        // Each search gets its own array of the same outputs.
         assert(found[0] !== found[1]);
         assert(found[0][0] === found[1][0]);
 
@@ -3851,7 +3693,6 @@ Deno.test(
           );
         assertEquals(total("files_read"), 5);
         assertEquals(total("scans_joined"), 3);
-        // The search that started the scan counts its reads and no join.
         const started = scans.filter((span) =>
           span.attributes["swamp.diagnostic.scans_joined"] === undefined
         );
@@ -3894,7 +3735,6 @@ Deno.test(
         for (const outputs of await Promise.all(later)) {
           assertEquals(outputs.length, 4);
         }
-        // The first scan's three reads, then one shared scan of four.
         assertEquals(reads.started, 3 + 4);
       });
     });
@@ -3934,7 +3774,6 @@ Deno.test(
       const repo = new YamlOutputRepository(dir);
       const definitionId = createDefinitionId(crypto.randomUUID());
       const now = Date.now();
-      // Started 0, 1, ... 5 hours ago.
       for (let i = 0; i < 6; i++) {
         await repo.save(
           registeredType,
@@ -3959,7 +3798,6 @@ Deno.test(
         assertEquals(recent.length, 3);
         assertEquals(wider.length, 5);
         assertEquals(older.length, 3);
-        // One scan of the union: since 4.5 hours ago, no until.
         assertEquals(reads.started, 5);
       });
     });
@@ -4147,7 +3985,6 @@ Deno.test(
   },
 );
 
-/** A record of `definitionId`'s `method`, started at `startedAt`. */
 function keyedOutput(
   definitionId: DefinitionId,
   method = "run",
@@ -4162,7 +3999,6 @@ function keyedOutput(
   });
 }
 
-/** A selectReadable accepting the keys of `definitionIds`, and its calls. */
 function selectDefinitions(...definitionIds: string[]): {
   select: (keys: readonly OutputKey[]) => Promise<readonly boolean[]>;
   calls: (readonly OutputKey[])[];
@@ -4257,7 +4093,6 @@ Deno.test(
       await repo.save(registeredType, "run", kept);
       await repo.save(registeredType, "run", keyedOutput(hidden));
       await repo.save(registeredType, "other", keyedOutput(readable, "other"));
-      // Only the readable definition's run method is accepted.
       const select = (keys: readonly OutputKey[]) =>
         Promise.resolve(
           keys.map((key) =>
@@ -4482,7 +4317,6 @@ Deno.test(
           undefined,
           selectDefinitions(definitionId).select,
         );
-        // Its own reads start beside the held full read.
         await waitFor(() => reads.inFlight === 6, "the since search's reads");
         reads.release();
 
@@ -4521,9 +4355,6 @@ Deno.test(
   },
 );
 
-// --- findGlobalNewestFirst (swamp-club#4143) ---
-
-/** Every output `read` returns, a batch of `count` at a time. */
 async function readAllNewestFirst(
   read: { next(count: number): Promise<{ output: { id: string } }[]> },
   count = 2,
@@ -4551,7 +4382,6 @@ Deno.test(
       for (const output of [oldest, tiedSecond, tiedFirst, newest]) {
         await repo.save(registeredType, output.methodName, output);
       }
-      // Older than everything, but its name does not say so.
       const unnamed = keyedOutput(definitionId, "run", at(0));
       await writeRecordAs(repo, unnamed, "renamed.yaml");
 
@@ -4597,11 +4427,8 @@ Deno.test(
         );
         assertEquals(reads.started, 2);
         assertEquals(read.unread, 3);
-        // The newest unread output started at minute 3: strictly before
-        // minute 4, not before itself.
         assertEquals(read.unreadStartedBefore(at(4)), true);
         assertEquals(read.unreadStartedBefore(at(3)), false);
-        // An instant no name can be compared with decides nothing.
         assertEquals(
           read.unreadStartedBefore(new Date(Date.UTC(10000, 0, 1))),
           false,
@@ -4678,7 +4505,6 @@ Deno.test(
         assertEquals(ids, [inWindow.id]);
         const scan = phaseAttributes(spans, "candidate_scan");
         assertEquals(scan["swamp.diagnostic.files_read"], 1);
-        // One by the listing's since, one by the caller's until.
         assertEquals(scan["swamp.diagnostic.skipped_by_name"], 2);
       });
     });
@@ -4693,7 +4519,6 @@ Deno.test(
       const at = (minutes: number) =>
         new Date(Date.UTC(2026, 0, 1, 0, minutes));
       const readable = createDefinitionId(crypto.randomUUID());
-      // The oldest file is the only one the caller may read.
       const kept = keyedOutput(readable, "run", at(0));
       await repo.save(registeredType, "run", kept);
       for (let minutes = 1; minutes <= 8; minutes++) {
@@ -4717,7 +4542,6 @@ Deno.test(
       );
       assertEquals(calls.map((keys) => keys.length), [1, 2, 4, 2]);
 
-      // A caller who may read the newest files never asks about the rest.
       const newest = keyedOutput(
         createDefinitionId(crypto.randomUUID()),
         "run",
@@ -4754,7 +4578,6 @@ Deno.test(
         await repo.save(registeredType, "run", output);
       }
       const read = await repo.findGlobalNewestFirst({});
-      // The two newest go between the listing and their read.
       for (const output of outputs.slice(1)) {
         await Deno.remove(repo.getPath(registeredType, "run", output));
       }
@@ -4851,7 +4674,6 @@ Deno.test(
         for (const batch of await Promise.all(waiting)) {
           assertEquals(batch.length, 2);
         }
-        // Two callers joined the pending read: 2 files, read twice in all.
         assertEquals(reads.started, 4);
       });
     });
@@ -4890,7 +4712,6 @@ Deno.test(
                   reads.hold();
                   const runningBatch = running.next(1);
                   await waitFor(() => reads.inFlight === 1, "the running read");
-                  // The first to ask creates the pending read; the next joins.
                   const pendingBatch = pending.next(1);
                   const joiningBatch = joining.next(1);
                   await sharedScansStarted();
@@ -4976,8 +4797,6 @@ Deno.test("YamlOutputRepository.findGlobalNewestFirst: warns only about unreadab
   });
 });
 
-// --- findHistoryNewestFirst (swamp-club#4174) ---
-
 Deno.test(
   "findHistoryNewestFirst: reads a name not in the output form first, then newest first, with walk order breaking ties, and nothing of another definition",
   async () => {
@@ -4999,7 +4818,6 @@ Deno.test(
         "a-method",
         keyedOutput(other, "a-method", at(7)),
       );
-      // Older than everything, but its name does not say so.
       const unnamed = keyedOutput(definitionId, "run", at(0));
       await writeRecordAs(repo, unnamed, "renamed.yaml");
       await writeRecordAs(
@@ -5096,7 +4914,6 @@ Deno.test(
         {},
       );
 
-      // The first batch holds only the stranger, so next moves on.
       assertEquals(
         (await read.next(1)).map((found) => found.output.id),
         [kept.id],

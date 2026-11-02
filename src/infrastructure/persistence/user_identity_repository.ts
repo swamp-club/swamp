@@ -28,22 +28,13 @@ import { ownsDirectory } from "./config_dir_ownership.ts";
 
 const IDENTITY_FILE = "identity.json";
 
-/**
- * Repository for managing user-level identity.
- * Stores a persistent UUID at ~/.config/swamp/identity.json.
- * Lazy-creates the file and directory on first access.
- */
 export class UserIdentityRepository {
   readonly #configDir: string | undefined;
   readonly #ownsDir: (dir: string) => boolean;
 
   /**
-   * @param configDir Directory holding `identity.json`. Defaults to the
-   * environment-resolved swamp config dir; callers that own a directory
-   * (tests above all) pass it explicitly rather than repointing `HOME` or
-   * `XDG_CONFIG_HOME`, which are process-global and shared across the suite.
-   * @param options.ownsDir Whether this process owns a dir. Defaults to a
-   * uid check; tests inject it.
+   * callers that own a directory pass it explicitly rather than repointing HOME
+   * or XDG_CONFIG_HOME, which are process-global and shared across the suite
    */
   constructor(
     configDir?: string,
@@ -54,18 +45,15 @@ export class UserIdentityRepository {
   }
 
   /**
-   * Returns the user's persistent userId.
-   * Lazy-creates the identity file if it doesn't exist, unless the config dir
-   * belongs to another user (a system daemon running as root against the
-   * enabling user's dir), which would leave a root-owned file there.
-   * Returns null on any error (permissions, missing HOME, etc.).
+   * does not create the file when the config dir belongs to another user (a
+   * root daemon against the enabling user's dir), which would leave a
+   * root-owned file there
    */
   async getUserId(): Promise<string | null> {
     try {
       const configDir = this.#configDir ?? getSwampConfigDir();
       const identityPath = join(configDir, IDENTITY_FILE);
 
-      // Try to read existing identity
       try {
         const content = await Deno.readTextFile(identityPath);
         const data: UserIdentityData = JSON.parse(content);
@@ -78,7 +66,6 @@ export class UserIdentityRepository {
         }
       }
 
-      // Create new identity
       if (!this.#ownsDir(configDir)) return null;
       const identity = createUserIdentity();
       await Deno.mkdir(configDir, { recursive: true });

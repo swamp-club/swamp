@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Invariants of the accessor adapter (typed-secrets 3.3): over any record the
- * writer could store, the view keeps every non-secret value, turns every
- * tagged reference into a Secret, records every reference, mutates nothing,
- * and releases through the boundary as plain data with a sentinel for each
- * reference. The steps view (typed-secrets 4.2) merges such records as the
- * flat step outputs do.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import fc from "fast-check";
 import {
@@ -45,19 +36,15 @@ import {
   type NamespaceReader,
 } from "../../domain/data/namespace.ts";
 
-/** The solo reader, whose own records are those of the solo namespace. */
 const SOLO_READER: NamespaceReader = {
   namespace: "",
   readsSoloNamespace: false,
 };
 
-/** A field name the strict reader accepts as one path segment. */
 const key = fc.stringMatching(/^[a-z][a-z0-9_-]{0,6}$/);
 
-/** A vault name or key the writer puts inside a reference's quotes. */
 const quoted = fc.stringMatching(/^[A-Za-z0-9_./-]{1,12}$/);
 
-/** A plain JSON leaf that is not a stored reference. */
 const leaf = fc.oneof(
   fc.string().filter((text) => !text.includes("vault.get")),
   fc.integer(),
@@ -65,7 +52,6 @@ const leaf = fc.oneof(
   fc.constant(null),
 );
 
-/** A plain JSON tree, as parsed attributes are. */
 const tree = fc.letrec((tie) => ({
   node: fc.oneof(
     { depthSize: "small", maxDepth: 3 },
@@ -75,7 +61,6 @@ const tree = fc.letrec((tie) => ({
   ),
 })).node;
 
-/** Every path to a leaf of `value`, through objects only, as the writer walks. */
 function leafPaths(value: unknown, prefix: string[] = []): string[][] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return prefix.length === 0 ? [] : [prefix];
@@ -101,7 +86,6 @@ function getAt(root: unknown, path: string[]): unknown {
   return current;
 }
 
-/** A writer-shaped record: `tagged` leaf paths hold references. */
 const taggedRecord = fc.dictionary(key, tree, { maxKeys: 4 }).chain(
   (attributes) => {
     const paths = leafPaths(attributes).filter((path) =>
@@ -169,7 +153,6 @@ Deno.test("adaptDataRecord: the view keeps every untagged value, holds a Secret 
   );
 });
 
-/** A namespace a row or a reader can carry, the solo one among them. */
 const namespaceOf = fc.constantFrom("", "eng", "security");
 
 Deno.test("adaptDataRecord: a tagged record is adapted exactly when the data layer reads its namespace as the reader's own (swamp-club#3785)", () => {
@@ -204,7 +187,6 @@ Deno.test("adaptDataRecord: a released view is plain data with a value-less data
           attributes: Record<string, unknown>;
         };
       });
-      // Plain: cloneable, no getter anywhere.
       structuredClone(released);
       const taggedKeys = new Set(tagged.map((path) => path.join("\u0000")));
       for (const path of leafPaths(record.attributes)) {
@@ -294,7 +276,6 @@ Deno.test("stepsView: for any records, the merged view has the keys of mergeStep
         }
         assertEquals(scope.sensitiveReferences.size, references);
         for (const key of Object.keys(expected)) {
-          // The winner is the last record holding the key.
           let winner = -1;
           for (let index = 0; index < fieldSets.length; index++) {
             if (fieldSets[index].some((f) => f.key === key)) winner = index;

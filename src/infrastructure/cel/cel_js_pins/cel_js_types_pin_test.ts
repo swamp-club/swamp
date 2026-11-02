@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins for custom type registration and macro ranges over custom-typed
-// values (design/enablers/typed-secrets.md Section 4.2, fact 5: "cel-js decides
-// a value's type by exact constructor identity. `fields: {}` hides fields from
-// selection, indexing, `has()` and `.?`. Comprehension macros fall back to
-// `Object.keys`, so a dyn value whose state is private yields an empty range
-// instead of an error. A statically typed custom variable is not a
-// comprehension range.").
-
 import {
   assertEquals,
   assertInstanceOf,
@@ -46,7 +38,6 @@ class UnregisteredValue {
   constructor(readonly v: string) {}
 }
 
-/** A secret-like value with two public fields, for macro range tests. */
 class TwoFieldSecret {
   constructor(readonly v: string, readonly meta = { k: 1 }) {}
 }
@@ -268,7 +259,6 @@ Deno.test(
     assertEquals(env.evaluate("s.all(x, true)", { s }), true);
     assertEquals(env.evaluate("s.exists(x, x == 'v')", { s }), true);
     assertEquals(env.evaluate("s.exists_one(x, true)", { s }), false);
-    // The key names leak, but the values stay hidden behind fields: {}.
     assertCelError(
       () => env.evaluate("s.map(x, s[x])", { s }),
       EvaluationError,
@@ -286,7 +276,6 @@ Deno.test(
     const s = new TwoFieldSecret("hunter2");
     const values = env.evaluate("s.map(x, s[x])", { s }) as unknown[];
     assertEquals(values[0], "hunter2");
-    // Nested values come back as the original JS object, not a CEL copy.
     assertStrictEquals(values[1], s.meta);
   },
 );

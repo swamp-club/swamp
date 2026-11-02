@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Phase 1.2 pins for check-time refusal (design/enablers/typed-secrets.md
-// Section 4.3 item 4, and the Phase 1.2 list in Section 11: "`vault.get`,
-// with the static return type `Secret`, gives check-time errors in the
-// validation environment, except for the allowed set in Section 4.1 and
-// three escapes: a dyn operand, a map literal keyed by the result and `type()`
-// check as valid; `has()` on a call result fails as
-// `invalid_macro_argument`.").
-//
-// The validation environment registers the allowed set's overloads in place
-// of the refusing ones. A dyn operand and a map-literal key are refused at
-// run time instead; `type()` is never refused, it answers the type name and
-// reveals nothing; and the `has()` case fails for a reason of its own
-// although `has()` is in the allowed set.
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { Environment, TypeError as CelTypeError } from "cel-js";
 import {

@@ -18,26 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The v3 read model's own state (swamp-club#3239), in `_read_model_v3.db`:
- * the store-wide cursor, each partition's last applied seq, the live-record
- * index, each data name's live versions and which put each materialised file
- * shows. All of it is rebuilt from the
- * commits, so {@link ReadModelState.reset} can always start over. It also
- * keeps the records whose content could not be read, and the checkout files
- * moved aside into `at-risk/` (swamp-club#3617); a reset keeps the latter,
- * which are files rather than a cache of the commits.
- *
- * A commit's index and version changes land with its applied seq and the
- * cursor in one transaction, so the index is never ahead of, or behind, the
- * cursor. The cursor and every applied seq only move forward. A batch
- * (swamp-club#3337) holds a page of such transactions, each a savepoint, and
- * makes them durable together: the read model commits it only once the
- * page's files are durable.
- *
- * Opened like `commits.db`: WAL, `synchronous=FULL`, a busy timeout, schema
- * migrations in `PRAGMA user_version`, and SQLite's default auto-checkpoint.
- *
- * @module
+ * all state is rebuilt from the commits, so reset can start over, except
+ * at-risk checkout files, which are files, not a cache; a commit's index,
+ * versions, applied seq and cursor land in one transaction
  */
 
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -71,11 +54,10 @@ import {
 } from "./sqlite_migration.ts";
 
 /**
- * The schema migrations, in order: migration `i` takes `PRAGMA user_version`
- * `i` to `i + 1`. Append new ones; never edit one that has shipped.
+ * migration i takes user_version i to i + 1; append new ones and never edit one
+ * that has shipped
  */
 const MIGRATIONS: readonly SqliteMigration[] = [
-  // 0 → 1: cursor, partition progress, live records and live data versions.
   `
   CREATE TABLE meta (
     key TEXT PRIMARY KEY,
@@ -105,10 +87,9 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     PRIMARY KEY (namespace, partition, name, version)
   ) STRICT, WITHOUT ROWID;
   `,
-  // 1 → 2: which partition's put each materialised file shows
-  // (swamp-club#3256). Files applied under schema 1 have no ownership, so
-  // clearing meta drops the catalog generation and the next catch-up resets
-  // the state and replays every commit.
+  // files applied under schema 1 have no ownership, so clearing meta drops the
+  // catalog generation and the next catch-up resets the state and replays every
+  // commit
   `
   CREATE TABLE materialised_keys (
     namespace TEXT NOT NULL,
@@ -120,12 +101,9 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   ) STRICT, WITHOUT ROWID;
   DELETE FROM meta;
   `,
-  // 2 → 3: loading the compacted base (swamp-club#3258). A load stages the
-  // base here, then swaps it in with one transaction. The touched tables
-  // name the files and catalog names an unfinished load may have written;
-  // only a finished load clears them, so a retry against a newer base still
-  // reconciles them. IF NOT EXISTS: a file rolled back to an older schema
-  // by hand may still hold them.
+  // a load stages the base here, then swaps it in in one transaction; only a
+  // finished load clears the touched tables, so a retry against a newer base
+  // reconciles them. IF NOT EXISTS: a rolled-back file may hold them
   `
   CREATE TABLE IF NOT EXISTS load_records (
     namespace TEXT NOT NULL,
@@ -185,9 +163,6 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     PRIMARY KEY (namespace, partition, name)
   ) STRICT, WITHOUT ROWID;
   `,
-  // 3 → 4: the files a catch-up wrote or removed without syncing them, and
-  // the boot they were written in (swamp-club#3337). They are checked on
-  // the first open in a later boot. IF NOT EXISTS, as in 2 → 3.
   `
   CREATE TABLE IF NOT EXISTS unsynced_keys (
     namespace TEXT NOT NULL,
@@ -199,12 +174,9 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     boot TEXT NOT NULL
   ) STRICT;
   `,
-  // 4 → 5 (swamp-club#3617): records whose content a missing or damaged
-  // chunk kept from being materialised, checkout files moved aside because
-  // they held the only copy of chunks the storage refused, and the files the
-  // read model wrote with their blob and how they looked just after, so the
-  // checkout-copy guard need not hash a file still as written. IF NOT
-  // EXISTS, as in 2 → 3.
+  // records whose chunk was missing or damaged, checkout files moved aside as
+  // the only copy of refused chunks, and written-file stats so the copy guard
+  // need not hash a file still as written
   `
   CREATE TABLE IF NOT EXISTS unreadable_records (
     namespace TEXT NOT NULL,
@@ -242,40 +214,31 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     PRIMARY KEY (namespace, record_key)
   ) STRICT, WITHOUT ROWID;
   `,
-  // 5 → 6 (swamp-club#3691): the checkout's datastore filter inputs
-  // (directories and exclude, as JSON) the projection was built with. Its
-  // own table, never cleared by a reset, so a changed filter is refused
-  // rather than silently re-projected. IF NOT EXISTS, as in 2 → 3.
+  // the filter inputs the projection was built with, in their own table never
+  // cleared by a reset, so a changed filter is refused rather than silently
+  // re-projected
   `
   CREATE TABLE IF NOT EXISTS checkout_filter (
     only INTEGER PRIMARY KEY CHECK (only = 0),
     inputs TEXT NOT NULL
   ) STRICT;
   `,
-  // 6 → 7 (swamp-club#3693): the file access of each live, staged and
-  // unreadable record's put, so a file written from the state alone (the
-  // compacted base, the check after a restart, an unreadable retry) is
-  // executable or private as its put says. NULL is a plain file, which is
-  // what every put before this schema was.
+  // file access of each put, so a file written from state alone is executable
+  // or private as its put says; NULL is a plain file
   addColumnsIfAbsent([
     { table: "live_records", column: "access", type: "TEXT" },
     { table: "load_records", column: "access", type: "TEXT" },
     { table: "unreadable_records", column: "access", type: "TEXT" },
   ]),
-  // 7 → 8 (swamp-club#3922): who wrote each live record: the principal of
-  // the forwarded commit that put it, or the empty string for a commit
-  // serve, an HA peer or a direct writer appended, none of which carries a
-  // principal. NULL is unknown: a row from before this schema, or one a
-  // compacted base loaded, whose commit is gone. Serve trusts an evaluated
-  // file it runs only when its writer is known to be the empty string.
+  // who wrote each live record: the forwarded commit's principal, or empty for
+  // commits with none. NULL is unknown; serve trusts an evaluated file only
+  // when its writer is known to be empty
   addColumnsIfAbsent([
     { table: "live_records", column: "writer", type: "TEXT" },
   ]),
-  // 8 → 9 (swamp-club#4097): the version of each managed-config record the
-  // checkout held before another writer's commit replaced it, which a
-  // user's edit of it expects until the user loads it again or the
-  // checkout commits it. NULL is a record the checkout did not hold. Never
-  // cleared by a reset: it is what the user saw, not derived state.
+  // the version of a managed-config record held before another writer's commit
+  // replaced it, which a user's edit expects; NULL is none held. Never cleared
+  // by a reset: it is what the user saw, not derived state
   `
   CREATE TABLE IF NOT EXISTS config_edit_bases (
     namespace TEXT NOT NULL,
@@ -289,47 +252,34 @@ const MIGRATIONS: readonly SqliteMigration[] = [
 
 export type { FileOwnership };
 
-/**
- * A file a catch-up wrote or removed without syncing it, and what the state
- * says it holds: the bytes' SHA-256 when present, null when absent. A file
- * the state says is present but has no live record for is `unknown`.
- */
 export type UnsyncedFile =
   & { readonly namespace: string; readonly record_key: string }
   & (
     | {
       readonly expect: "present";
       readonly sha256: string;
-      /** Which put the file shows: its partition and feed position. */
       readonly owner: string;
       readonly mark: number;
-      /** The put's blob; undefined for inline content. */
       readonly blob?: BlobRef;
-      /** The put's file access; undefined for a plain file. */
       readonly access?: FileAccess;
     }
     | { readonly expect: "absent" | "unknown" }
   );
 
 /**
- * An unreadable record as the state keeps it (swamp-club#3617): with the
- * size and modification time (epoch ms) its chunk had when it was last
- * tried, both undefined when the chunk was absent or cannot be stat'ed, so
- * a retry runs only once the chunk changed.
+ * size and mtime of the chunk when last tried, undefined when absent or not
+ * stat-able, so a retry runs only once the chunk changed
  */
 export interface StoredUnreadableRecord extends UnreadableRecord {
   readonly chunkSize?: number;
   readonly chunkMtime?: number;
-  /** The put's file access (swamp-club#3693); undefined for a plain file. */
   readonly access?: FileAccess;
 }
 
 /**
- * A checkout file the read model wrote (swamp-club#3617): the blob it
- * wrote there, and the file's inode, device, size, and modification and
- * change times (epoch ms) as a stat showed them just after, when the inode
- * at the path was still the one it wrote. A file whose stat still shows all
- * of them is taken to hold the blob's content.
+ * the blob written and the stat taken just after, while the inode was still the
+ * one written; a file whose stat still matches all of it is taken to hold the
+ * blob
  */
 export interface WrittenFile {
   readonly namespace: string;
@@ -339,59 +289,45 @@ export interface WrittenFile {
   readonly ino: number;
   readonly dev: number;
   readonly mtime: number;
-  /** Undefined where the platform reports no change time. */
   readonly ctime?: number;
 }
 
-/** A materialised key a load writes or removes. */
 export interface LoadKey {
   readonly namespace: string;
   readonly record_key: string;
 }
 
-/** A file of a staged base, with the ownership it shows (swamp-club#3916). */
 export interface StagedFile extends LoadKey {
   readonly owner: string;
   readonly mark: number;
   readonly present: boolean;
 }
 
-/** A data name whose catalog rows a load replaces. */
 export interface LoadName {
   readonly namespace: string;
   readonly partition: string;
   readonly name: string;
 }
 
-/** The schema version this state store writes. */
 export const READ_MODEL_STATE_SCHEMA_VERSION = MIGRATIONS.length;
 
-/** A record a commit leaves present: its digest, and its blob when not inline. */
 export interface AppliedRecord {
   readonly sha256: string;
   readonly blob?: BlobRef;
-  /** The put's file access (swamp-club#3693); undefined for a plain file. */
   readonly access?: FileAccess;
   /**
-   * The principal of the forwarded commit that put it, or the empty string
-   * for a commit with none (swamp-club#3922). Absent is unknown, as for a
-   * row from before the column.
+   * principal of the forwarded commit that put it, or empty for a commit with
+   * none; absent is unknown, as for a row from before the column
    */
   readonly writer?: string;
 }
 
-/**
- * One live record, with who wrote it (swamp-club#3922): `writer` is the
- * forwarded commit's principal, the empty string for a commit with none, or
- * null when unknown.
- */
 export interface LiveRecordWriter {
   readonly sha256: string;
   readonly blob?: BlobRef;
   readonly writer: string | null;
 }
 
-/** What one applied commit changes in the state. */
 export interface AppliedCommit {
   readonly namespace: string;
   readonly partition: string;
@@ -402,32 +338,27 @@ export interface AppliedCommit {
    * The commit's feed position is known either way: see {@link files}.
    */
   readonly cursor?: number;
-  /** Each key the commit touched: present with its content, or null when removed. */
   readonly records: ReadonlyMap<string, AppliedRecord | null>;
-  /** Each data name the commit changed, with its live versions after it. */
   readonly live: ReadonlyMap<string, readonly LiveDataVersion[]>;
-  /** The new ownership of each file the commit wrote or removed; none when absent. */
   readonly files?: ReadonlyMap<string, FileOwnership>;
   /**
-   * The keys whose files the commit wrote or removed without a sync, and
-   * the boot it ran in (swamp-club#3337): recorded in the same transaction
-   * as the commit, so a commit is never applied without them.
+   * keys whose files were written or removed without a sync, and the boot;
+   * recorded in the commit's transaction, so a commit is never applied without
+   * them
    */
   readonly unsynced?: {
     readonly keys: ReadonlySet<string>;
     readonly boot: string;
   };
   /**
-   * Every key the commit decided to write or remove (swamp-club#3617): an
-   * unreadable record of such a key is forgotten, unless `unreadable`
-   * records it again. A key the commit left alone keeps its row.
+   * every key the commit decided to write or remove: its unreadable record is
+   * forgotten unless `unreadable` records it again; a key left alone keeps its
+   * row
    */
   readonly decided?: ReadonlySet<string>;
-  /** The keys whose content could not be read, by key. */
   readonly unreadable?: ReadonlyMap<string, StoredUnreadableRecord>;
 }
 
-/** The read model's state database. One connection per instance. */
 export class ReadModelState {
   readonly #db: DatabaseSync;
   readonly #selectMeta: StatementSync;
@@ -452,10 +383,9 @@ export class ReadModelState {
   #closed = false;
   #batchOpen = false;
   /**
-   * The keys with a present file, by namespace and folded spelling
-   * ({@link foldSpelling}), built from `materialised_keys` on first use
-   * (swamp-club#3939). {@link recordApplied} keeps it in step; anything else
-   * that rewrites the table, or rolls a change back, drops it.
+   * keys with a present file by folded spelling, built from materialised_keys
+   * on first use; recordApplied keeps it in step, anything else that rewrites
+   * the table or rolls back drops it
    */
   #foldedKeys: Map<string, Set<string>> | undefined;
 
@@ -522,10 +452,6 @@ export class ReadModelState {
     );
   }
 
-  /**
-   * Opens the state at `path`, creating the file and its schema when absent.
-   * Refuses a database written by a newer schema.
-   */
   static open(path: string): ReadModelState {
     ensureDirSync(dirname(path));
     const db = new DatabaseSync(path);
@@ -544,15 +470,10 @@ export class ReadModelState {
     }
   }
 
-  /** The store-wide cursor: the last change applied or skipped; 0 at first. */
   cursor(): number {
     return this.#meta("cursor") ?? 0;
   }
 
-  /**
-   * True once a catch-up has reached the end of the change feed since the
-   * last reset, so the index holds every live record up to the cursor.
-   */
   isComplete(): boolean {
     return this.#meta("complete") === 1;
   }
@@ -571,11 +492,6 @@ export class ReadModelState {
     });
   }
 
-  /**
-   * The checkout's datastore filter inputs the projection was built with
-   * (swamp-club#3691), as {@link stampFilterInputs} recorded them; undefined
-   * when none were recorded.
-   */
   filterInputs(): string | undefined {
     this.#requireOpen();
     const row = this.#db.prepare(
@@ -585,9 +501,8 @@ export class ReadModelState {
   }
 
   /**
-   * Records `inputs` as the checkout's filter inputs when none are recorded,
-   * and resolves with the recorded ones: `inputs` itself, or the earlier
-   * value it did not replace. A reset never clears them.
+   * records `inputs` when none are recorded and returns the recorded ones; a
+   * reset never clears them
    */
   stampFilterInputs(inputs: string): string {
     let stored = inputs;
@@ -600,12 +515,10 @@ export class ReadModelState {
     return stored;
   }
 
-  /** The catalog generation the state was built against, if any. */
   catalogGeneration(): number | undefined {
     return this.#meta("catalog_generation");
   }
 
-  /** The last seq of a partition this read model applied; 0 for none. */
   appliedSeq(namespace: string, partition: string): number {
     this.#requireOpen();
     const row = this.#selectApplied.get(namespace, partition) as
@@ -614,7 +527,6 @@ export class ReadModelState {
     return row?.applied_seq ?? 0;
   }
 
-  /** A data name's live versions, in ascending order. */
   liveVersions(
     namespace: string,
     partition: string,
@@ -629,7 +541,6 @@ export class ReadModelState {
     });
   }
 
-  /** Which put a materialised file shows; undefined when none was applied. */
   fileOwnership(
     namespace: string,
     recordKey: string,
@@ -643,7 +554,6 @@ export class ReadModelState {
       : { owner: row.owner, mark: row.mark, present: row.present === 1 };
   }
 
-  /** The records present in a partition, by key. */
   liveRecords(namespace: string, partition: string): LiveRecord[] {
     this.#requireOpen();
     return (this.#selectRecords.all(namespace, partition) as {
@@ -661,10 +571,9 @@ export class ReadModelState {
   }
 
   /**
-   * Notes that another writer's commit replaced `key`, whose file held
-   * `prior` (a digest, or undefined when there was none), as the base a
-   * user's edit of it expects (swamp-club#4097). A record that already has
-   * a base keeps it: the user saw neither later version.
+   * notes the digest `prior` a user's edit of `key` expects once another
+   * writer's commit replaced it; an existing base is kept, since the user saw
+   * neither later version
    */
   recordConfigBase(
     namespace: string,
@@ -678,7 +587,6 @@ export class ReadModelState {
     ).run(namespace, partition, key, prior ?? null);
   }
 
-  /** The base a user's edit of `key` expects, if a commit replaced it. */
   configBase(
     namespace: string,
     partition: string,
@@ -692,7 +600,6 @@ export class ReadModelState {
     return row.sha256 === null ? "absent" : { sha256: row.sha256 };
   }
 
-  /** Every base of `partition`'s records, by record key. */
   configBases(
     namespace: string,
     partition: string,
@@ -710,10 +617,6 @@ export class ReadModelState {
     }));
   }
 
-  /**
-   * Forgets the bases of `partition` (of its `key` only, when given): the
-   * user loaded the definition, or the checkout committed it.
-   */
   clearConfigBases(namespace: string, partition: string, key?: string): void {
     this.#requireOpen();
     if (key === undefined) {
@@ -727,7 +630,6 @@ export class ReadModelState {
     }
   }
 
-  /** One live record of a partition, with its writer; undefined when absent. */
   liveRecord(
     namespace: string,
     partition: string,
@@ -762,7 +664,6 @@ export class ReadModelState {
     ) !== undefined;
   }
 
-  /** Every chunk a live blob names in a namespace, parts expanded. */
   chunksInUse(namespace: string): Set<string> {
     this.#requireOpen();
     const chunks = new Set<string>();
@@ -790,7 +691,6 @@ export class ReadModelState {
     );
   }
 
-  /** {@link chunksInUse}, or undefined when the index is not complete; one snapshot. */
   chunksInUseIfComplete(namespace: string): Set<string> | undefined {
     return this.#snapshot(() =>
       this.isComplete() ? this.chunksInUse(namespace) : undefined
@@ -798,11 +698,9 @@ export class ReadModelState {
   }
 
   /**
-   * Records an applied commit in one transaction: its records, its live data
-   * versions, its files' ownership, the partition's applied seq and, from a
-   * catch-up, the cursor. A
-   * commit at or below the partition's applied seq changes nothing but the
-   * cursor; neither the cursor nor the applied seq moves back.
+   * one transaction; a commit at or below the partition's applied seq changes
+   * nothing but the cursor, and neither the cursor nor the applied seq moves
+   * back
    */
   recordApplied(commit: AppliedCommit): void {
     let ownershipChanged = false;
@@ -877,10 +775,6 @@ export class ReadModelState {
     }
   }
 
-  /**
-   * The keys of `namespace` with a present file whose spelling folds
-   * ({@link foldSpelling}) to `folded` (swamp-club#3939).
-   */
   presentKeysFoldedTo(namespace: string, folded: string): ReadonlySet<string> {
     this.#requireOpen();
     if (this.#foldedKeys === undefined) {
@@ -907,23 +801,14 @@ export class ReadModelState {
     this.#foldedKeys = undefined;
   }
 
-  /** Moves the cursor past a change applied earlier by a partition catch-up. */
   recordSkipped(cursor: number): void {
     this.#transaction(() => this.#advanceCursor(cursor));
   }
 
   /**
-   * Clears every table back to cursor 0, and the complete mark, and records
-   * the catalog generation the replay that follows builds against. The
-   * at-risk copies stay: they are files, not a cache of the commits.
-   *
-   * The files the state shows present are kept as removal candidates
-   * (swamp-club#3617): a compacted-base load that follows removes the ones
-   * the base does not show, so a removal a crash undid is redone even when
-   * the commit that removed it was compacted away. With `keepUnsynced`
-   * (the list was written in another boot, or the current one cannot be
-   * named) the unsynced keys are candidates too; within one boot the list
-   * names this boot's removals, which stay done.
+   * clears every table but the at-risk copies; files shown present stay as
+   * removal candidates so a later base load redoes a removal a crash undid.
+   * Unsynced keys are candidates too with keepUnsynced
    */
   reset(catalogGeneration: number, keepUnsynced = false): void {
     this.#foldedKeys = undefined;
@@ -946,8 +831,8 @@ export class ReadModelState {
   }
 
   /**
-   * Starts loading the compacted base (swamp-club#3258): clears what an
-   * earlier attempt staged. The touched files and names stay.
+   * starts loading the compacted base: clears what an earlier attempt staged;
+   * the touched files and names stay
    */
   beginLoad(): void {
     this.#transaction(() =>
@@ -958,7 +843,6 @@ export class ReadModelState {
     );
   }
 
-  /** Stages one page of the compacted base. */
   stageBase(entries: readonly CompactedBaseEntry[]): void {
     this.#transaction(() => {
       for (const entry of entries) {
@@ -1056,7 +940,6 @@ export class ReadModelState {
     ).all() as unknown as LoadKey[];
   }
 
-  /** The staged content of the record a staged file shows, with its access. */
   loadContent(
     namespace: string,
     recordKey: string,
@@ -1077,7 +960,6 @@ export class ReadModelState {
     return row.inline === null ? undefined : { inline: row.inline, ...access };
   }
 
-  /** Every staged file of the base, present or not, with its ownership. */
   stagedFiles(): StagedFile[] {
     this.#requireOpen();
     return (this.#db.prepare(
@@ -1091,7 +973,6 @@ export class ReadModelState {
     }[]).map((row) => ({ ...row, present: row.present === 1 }));
   }
 
-  /** The staged ownership of a file a load writes. */
   loadFile(namespace: string, recordKey: string): FileOwnership | undefined {
     this.#requireOpen();
     const row = this.#db.prepare(
@@ -1126,10 +1007,6 @@ export class ReadModelState {
     });
   }
 
-  /**
-   * The data names whose catalog rows a load replaces: every name the state
-   * or the staged base knows, and every name an earlier attempt touched.
-   */
   loadCatalogNames(): LoadName[] {
     this.#requireOpen();
     return this.#db.prepare(
@@ -1142,7 +1019,6 @@ export class ReadModelState {
     ).all() as unknown as LoadName[];
   }
 
-  /** Records catalog names a load is about to replace, durably, first. */
   touchNames(names: readonly LoadName[]): void {
     this.#transaction(() => {
       const insert = this.#db.prepare(
@@ -1152,7 +1028,6 @@ export class ReadModelState {
     });
   }
 
-  /** A data name's staged catalog rows and forward. */
   loadCatalogName(name: LoadName): CatalogNameState {
     this.#requireOpen();
     const rows = (this.#db.prepare(
@@ -1169,16 +1044,9 @@ export class ReadModelState {
   }
 
   /**
-   * Swaps the staged base in, in one transaction: the index, live versions,
-   * file ownership and partition progress become the base's, the cursor
-   * moves to the compaction point, the index is marked incomplete until a
-   * catch-up reaches the end of the feed, and the staging and touched
-   * tables are cleared. Unreadable records whose key the base no longer
-   * shows at their put are forgotten, and `unreadable`, the base records
-   * the load could not read, recorded (swamp-club#3617). `unsynced`, the
-   * keys the load wrote or removed without a sync, is listed with the boot
-   * in the same transaction, as a commit's are (swamp-club#3803), so the
-   * first open in a later boot checks them.
+   * swaps the staged base in one transaction and marks the index incomplete
+   * until a catch-up reaches the feed end; unsynced keys are listed with the
+   * boot, as a commit's are, so a later boot checks them
    */
   finishLoad(
     point: number,
@@ -1239,14 +1107,12 @@ export class ReadModelState {
     this.#batchOpen = true;
   }
 
-  /** Makes the open batch's changes durable. */
   commitBatch(): void {
     this.#requireOpen();
     this.#db.exec("COMMIT");
     this.#batchOpen = false;
   }
 
-  /** Drops the open batch's changes; does nothing when none is open. */
   rollbackBatch(): void {
     if (!this.#batchOpen) return;
     this.#batchOpen = false;
@@ -1254,7 +1120,6 @@ export class ReadModelState {
     rollbackQuietly(this.#db);
   }
 
-  /** The boot the unsynced files were written in; undefined when none are. */
   unsyncedBoot(): string | undefined {
     this.#requireOpen();
     const row = this.#db.prepare("SELECT boot FROM unsynced_boot").get() as
@@ -1263,10 +1128,6 @@ export class ReadModelState {
     return row?.boot;
   }
 
-  /**
-   * Every unsynced file, with what the state says it holds. The file of an
-   * unreadable record is absent (swamp-club#3617).
-   */
   unsyncedFiles(): UnsyncedFile[] {
     return this.#snapshot(() => {
       const rows = this.#db.prepare(`
@@ -1316,7 +1177,6 @@ export class ReadModelState {
     });
   }
 
-  /** The unreadable record at a key, if any (swamp-club#3617). */
   unreadableRecord(
     namespace: string,
     recordKey: string,
@@ -1329,10 +1189,9 @@ export class ReadModelState {
   }
 
   /**
-   * The unreadable records of `namespace` whose key is under the directory
-   * `keyPrefix` (`<keyPrefix>/...`), in key order (swamp-club#3617): one
-   * range scan of the primary key. `/` sorts just before `0`, so the keys
-   * under it are those from `<keyPrefix>/` up to `<keyPrefix>0`.
+   * unreadable records of namespace whose key is under keyPrefix, in key order:
+   * one range scan of the primary key; / sorts just before 0, so keys run from
+   * <keyPrefix>/ up to <keyPrefix>0
    */
   unreadableRecordsUnder(
     namespace: string,
@@ -1348,7 +1207,6 @@ export class ReadModelState {
     ) as unknown as UnreadableRow[]).map(unreadableOf);
   }
 
-  /** Up to `limit` unreadable records, least recently tried first. */
   unreadableDue(limit: number): StoredUnreadableRecord[] {
     this.#requireOpen();
     return (this.#db.prepare(
@@ -1356,10 +1214,6 @@ export class ReadModelState {
     ).all(limit) as unknown as UnreadableRow[]).map(unreadableOf);
   }
 
-  /**
-   * Records another failed try of each of `records`, unreadable records:
-   * when, and what its chunk looked like then; one transaction for all.
-   */
   noteUnreadableAttempts(records: readonly StoredUnreadableRecord[]): void {
     if (records.length === 0) return;
     this.#transaction(() => {
@@ -1367,18 +1221,10 @@ export class ReadModelState {
     });
   }
 
-  /**
-   * Forgets an unreadable record whose key's file no longer shows its put,
-   * without listing the key as written.
-   */
   forgetUnreadable(namespace: string, recordKey: string): void {
     this.#transaction(() => this.#deleteUnreadable.run(namespace, recordKey));
   }
 
-  /**
-   * Forgets an unreadable record whose file a retry wrote, and lists the
-   * key as written unsynced in `boot`, in one transaction.
-   */
   clearUnreadable(
     namespace: string,
     recordKey: string,
@@ -1390,10 +1236,6 @@ export class ReadModelState {
     });
   }
 
-  /**
-   * Records a checkout file moved aside (swamp-club#3617); a copy already
-   * recorded under the same namespace and SHA-256 keeps its row.
-   */
   recordAtRiskCopy(copy: StoredAtRiskCopy): void {
     this.#transaction(() => {
       this.#db.prepare(
@@ -1410,7 +1252,6 @@ export class ReadModelState {
     });
   }
 
-  /** Whether a copy is recorded under a namespace and SHA-256. */
   hasAtRiskCopy(namespace: string, sha256: string): boolean {
     this.#requireOpen();
     return this.#db.prepare(
@@ -1418,10 +1259,6 @@ export class ReadModelState {
     ).get(namespace, sha256) !== undefined;
   }
 
-  /**
-   * Up to `limit` at-risk copies last tried at or before `triedBy` (epoch
-   * ms), least recently tried first.
-   */
   atRiskDue(limit: number, triedBy: number): StoredAtRiskCopy[] {
     this.#requireOpen();
     return (this.#db.prepare(
@@ -1429,7 +1266,6 @@ export class ReadModelState {
     ).all(triedBy, limit) as unknown as AtRiskRow[]).map(atRiskOf);
   }
 
-  /** The bytes every recorded at-risk copy holds. */
   atRiskBytes(): number {
     this.#requireOpen();
     return (this.#db.prepare(
@@ -1437,7 +1273,6 @@ export class ReadModelState {
     ).get() as { n: number }).n;
   }
 
-  /** Records another failed try of an at-risk copy, at `at` (epoch ms). */
   noteAtRiskAttempt(namespace: string, sha256: string, at: number): void {
     this.#transaction(() => {
       this.#db.prepare(
@@ -1446,7 +1281,6 @@ export class ReadModelState {
     });
   }
 
-  /** Forgets an at-risk copy: its file was deleted, or is gone. */
   deleteAtRiskCopy(namespace: string, sha256: string): void {
     this.#transaction(() => {
       this.#db.prepare(
@@ -1455,7 +1289,6 @@ export class ReadModelState {
     });
   }
 
-  /** Up to `limit` unsynced keys, in key order. */
   unsyncedKeys(limit: number): { namespace: string; record_key: string }[] {
     return this.#snapshot(() =>
       this.#db.prepare(
@@ -1464,10 +1297,6 @@ export class ReadModelState {
     );
   }
 
-  /**
-   * Forgets `keys` as unsynced: they are known to be on disk. The boot they
-   * were written in is forgotten once no unsynced key is left.
-   */
   forgetUnsynced(
     keys: readonly { namespace: string; record_key: string }[],
   ): void {
@@ -1482,14 +1311,12 @@ export class ReadModelState {
     });
   }
 
-  /** Forgets the unsynced files: they are known to be on disk. */
   clearUnsynced(): void {
     this.#transaction(() =>
       this.#db.exec("DELETE FROM unsynced_keys; DELETE FROM unsynced_boot;")
     );
   }
 
-  /** Records a file the read model wrote ({@link WrittenFile}). */
   recordWrittenFile(file: WrittenFile): void {
     this.#transaction(() =>
       this.#db.prepare(
@@ -1507,7 +1334,6 @@ export class ReadModelState {
     );
   }
 
-  /** The file the read model last wrote at a key, if it recorded one. */
   writtenFile(namespace: string, recordKey: string): WrittenFile | undefined {
     this.#requireOpen();
     const row = this.#db.prepare(
@@ -1535,7 +1361,6 @@ export class ReadModelState {
     };
   }
 
-  /** Forgets the file the read model wrote at a key, once it is removed. */
   forgetWrittenFile(namespace: string, recordKey: string): void {
     this.#transaction(() =>
       this.#db.prepare(
@@ -1544,7 +1369,6 @@ export class ReadModelState {
     );
   }
 
-  /** Closes the connection. Closing again does nothing. */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -1649,10 +1473,6 @@ export class ReadModelState {
   }
 }
 
-/**
- * Brings the schema to {@link READ_MODEL_STATE_SCHEMA_VERSION} in one
- * transaction, refusing a database from a newer schema.
- */
 function migrate(db: DatabaseSync): void {
   const read = () =>
     (db.prepare("PRAGMA user_version").get() as { user_version: number })
@@ -1681,9 +1501,7 @@ function migrate(db: DatabaseSync): void {
   }
 }
 
-/** An at-risk copy as the state keeps it, with its content's reference. */
 export interface StoredAtRiskCopy extends AtRiskCopy {
-  /** The file's reference as the chunk store cuts it; undefined when unknown. */
   readonly blob?: BlobRef;
 }
 
@@ -1721,15 +1539,10 @@ function unreadableOf(row: UnreadableRow): StoredUnreadableRecord {
   };
 }
 
-/**
- * A record's content as the read model writes it: inline bytes or a blob,
- * with the put's file access when it has one (swamp-club#3693).
- */
 export type RecordContent =
   & ({ readonly blob: BlobRef } | { readonly inline: string })
   & { readonly access?: FileAccess };
 
-/** A stored access column, as an optional field; NULL is a plain file. */
 function accessOf(
   column: string | null,
 ): { readonly access?: FileAccess } {

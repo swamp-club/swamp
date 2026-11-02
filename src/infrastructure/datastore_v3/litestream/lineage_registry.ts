@@ -18,23 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The published replication lineages of a v3 datastore (swamp-club#3482,
- * Phase 4 D2), in its datastore-wide control plane beside the writer lease:
- *
- * - `lineage/<fence>/started.json`, created once;
- * - `lineage/<fence>/confirmed.json`, created once;
- * - `lineage/<fence>/head-<writer fence>.json`, rewritten by that writer;
- *   a read takes the highest writer's, so a head never goes backwards;
- * - `lineage/<fence>/kept.json`, created once collection decided the
- *   lineage may hold commits the current state lacks (swamp-club#3801), so
- *   every later collection keeps it too.
- *
- * Creates use `putIfAbsent`, so of two writers only one can claim a
- * lineage or confirm it. A read lists `lineage/` once and fetches only the
- * records the rules need: the current lineage's start, confirmation and
- * head, and the newest start. A copy that is current costs that, and no download.
- *
- * @module
+ * creates use putIfAbsent so only one writer claims or confirms a lineage; a
+ * read takes the highest writer's head so heads never go backwards; a kept
+ * record makes every collection keep the lineage
  */
 
 import type { WritableDatastoreControlPlaneStore } from "../../../domain/datastore/control_plane_store.ts";
@@ -53,7 +39,6 @@ import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import type { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 import { withSpan } from "../../tracing/tracer.ts";
 
-/** The control-plane prefix every lineage record is under. */
 export const LINEAGE_PREFIX = "lineage/";
 
 type RecordName = "started" | "confirmed" | "kept";
@@ -66,10 +51,8 @@ function keyOf(fence: number, name: RecordName): string {
 }
 
 /**
- * Where the writer at `writerFence` publishes lineage `fence`'s head. Each
- * writer has its own key, so a fenced writer's late head never overwrites
- * the head of the writer that continued the lineage after it: a read takes
- * the highest writer's.
+ * each writer has its own head key, so a fenced writer's late head never
+ * overwrites the head of the writer that continued the lineage
  */
 function headKeyOf(fence: number, writerFence: number): string {
   return `${LINEAGE_PREFIX}${padFence(fence)}/head-${
@@ -77,15 +60,12 @@ function headKeyOf(fence: number, writerFence: number): string {
   }.json`;
 }
 
-/** What one lineage's listed keys hold. */
 interface Listed {
   started: boolean;
   confirmed: boolean;
-  /** The writer fences that published a head, highest first. */
   heads: number[];
 }
 
-/** Reads and writes a datastore's published lineages. */
 export class LineageRegistry {
   constructor(private readonly store: WritableDatastoreControlPlaneStore) {}
 
@@ -115,13 +95,6 @@ export class LineageRegistry {
     return listed;
   }
 
-  /**
-   * The lineages the rules need, newest first: every fence with a record,
-   * with the start, confirmation and head fetched for the current lineage
-   * under `replicaRoot`, and the start of the newest one started. A
-   * lineage's head is its highest writer's that parses. Its span counts
-   * the keys listed and the records fetched (swamp-club#3803).
-   */
   read(
     replicaRoot: ReplicaRoot,
     options: { readonly signal?: AbortSignal } = {},
@@ -168,7 +141,6 @@ export class LineageRegistry {
       }
       return entry;
     };
-    // The newest start under this root.
     for (const fence of fences) {
       if (!listed.get(fence)!.started) continue;
       const entry = await started(fence);
@@ -179,7 +151,6 @@ export class LineageRegistry {
         break;
       }
     }
-    // The current lineage: the newest started and confirmed under this root.
     for (const fence of fences) {
       const has = listed.get(fence)!;
       if (!has.started || !has.confirmed || has.heads.length === 0) continue;
@@ -195,10 +166,9 @@ export class LineageRegistry {
       );
       if (confirmed === undefined || confirmed.fence !== fence) continue;
       entry.confirmed = confirmed;
-      // A writer prunes the heads below its own (swamp-club#3803): a head
-      // listed above the one found that is gone now means a newer writer
-      // published and pruned since the list, so the lineage is listed again
-      // rather than read at a lower head, or as headless.
+      // a writer prunes the heads below its own: a listed head above the one
+      // found that is now gone means a newer writer published and pruned, so
+      // list again rather than read a lower head or none
       let heads = has.heads;
       for (let relist = 0;; relist++) {
         let missingAbove = false;
@@ -232,11 +202,9 @@ export class LineageRegistry {
   }
 
   /**
-   * Whether any lineage, under any replica root, was ever confirmed
-   * (swamp-club#3491): until one is, no copy holds a published state, and
-   * a writer may still seed its copy from the datastore's shared
-   * `commits.db`. A confirmed lineage's records stay until a newer
-   * confirmed one replaces it, so this never goes back to false.
+   * until a lineage is confirmed, no copy holds a published state and a writer
+   * may seed from the shared commits.db; a confirmed lineage stays until a
+   * newer one replaces it, so this never goes back to false
    */
   async everConfirmed(): Promise<boolean> {
     for (const entry of (await this.#list()).values()) {
@@ -245,10 +213,6 @@ export class LineageRegistry {
     return false;
   }
 
-  /**
-   * The start of the lineage at `fence`: undefined when it has none,
-   * "unreadable" when its record does not parse.
-   */
   async started(
     fence: number,
   ): Promise<LineageStarted | "unreadable" | undefined> {
@@ -264,7 +228,6 @@ export class LineageRegistry {
     return record?.fence === fence ? record : "unreadable";
   }
 
-  /** Claims the lineage at `record.fence`; false when it was claimed before. */
   async start(record: LineageStarted): Promise<boolean> {
     return await this.store.putIfAbsent(
       keyOf(record.fence, "started"),
@@ -272,7 +235,6 @@ export class LineageRegistry {
     );
   }
 
-  /** Records a lineage's first confirmed sync; false when one was recorded. */
   async confirm(record: LineageConfirmed): Promise<boolean> {
     return await this.store.putIfAbsent(
       keyOf(record.fence, "confirmed"),
@@ -292,17 +254,13 @@ export class LineageRegistry {
   }
 
   /**
-   * Records that collection keeps lineage `fence` (swamp-club#3801). It
-   * stays kept in every later collection, whatever the chain then shows.
+   * once kept, a lineage stays kept in every later collection, whatever the
+   * chain then shows
    */
   async keep(fence: number): Promise<void> {
     await this.store.putIfAbsent(keyOf(fence, "kept"), encode("{}"));
   }
 
-  /**
-   * The fences whose lineage was started, confirmed and has a head, as
-   * listed: the lineages a writer could have restored from.
-   */
   async completeFences(): Promise<Set<number>> {
     const complete = new Set<number>();
     for (const [fence, entry] of await this.#list()) {
@@ -313,7 +271,6 @@ export class LineageRegistry {
     return complete;
   }
 
-  /** The fences a collection recorded as kept. */
   async kept(): Promise<Set<number>> {
     const kept = new Set<number>();
     for (const key of await this.store.list(LINEAGE_PREFIX)) {
@@ -324,9 +281,8 @@ export class LineageRegistry {
   }
 
   /**
-   * Every fence with any key under `lineage/<fence>/`, whether or not the
-   * key is a record this registry reads. Lineage collection leaves the
-   * replica path of each alone (swamp-club#3531).
+   * lineage collection leaves the replica path of each fence alone, whether or
+   * not its key is a record this registry reads
    */
   async fences(): Promise<Set<number>> {
     const fences = new Set<number>();
@@ -346,14 +302,13 @@ export class LineageRegistry {
     for (const writer of (await this.#list()).get(fence)?.heads ?? []) {
       await this.store.delete(headKeyOf(fence, writer));
     }
-    // A kept lineage is removed only by hand, or by a swamp before
-    // swamp-club#3801; its record goes with it.
+    // a kept lineage is removed only by hand, or by an older swamp; its record
+    // goes with it
     for (const name of ["kept", "confirmed", "started"] as const) {
       await this.store.delete(keyOf(fence, name));
     }
   }
 
-  /** The writers whose heads `fence` holds, highest first. */
   async #headsOf(fence: number): Promise<number[]> {
     const heads: number[] = [];
     for (const key of await this.store.list(lineagePrefixOf(fence))) {
@@ -366,23 +321,9 @@ export class LineageRegistry {
   }
 
   /**
-   * Removes the heads of the lineage at `fence` that writers below
-   * `writerFence` published, once `writerFence`'s own head is there
-   * (swamp-club#3803). A read takes the highest writer's head, so a lower
-   * one is never read once a higher one parses; without this, every writing
-   * command leaves one more behind for every read to list. The lineage's
-   * start and confirmation stay, so it stays complete for the lineage rules.
-   *
-   * The newest head below `writerFence`'s stays as well: a swamp before this
-   * one, which does not list a lineage again, may have listed the heads just
-   * before `writerFence` published, and reads the highest it listed first.
-   * The rest go in batches of {@link PRUNE_BATCH} at a time, in any order: a
-   * read that finds a listed head missing above the one it found lists the
-   * lineage again (see {@link read}), and finds `writerFence`'s head, which
-   * this never removes. At most `limit` heads, and no batch is started once
-   * `deadlineMs` has passed; a call still running then is left to finish on
-   * its own, since a delete can be repeated. Resolves with how many it
-   * removed.
+   * a read takes the highest parsing head, so lower ones are pruned once
+   * writerFence's own is there; the newest lower head stays, since an older
+   * swamp may have listed heads just before it published
    */
   async pruneHeads(
     fence: number,
@@ -419,22 +360,19 @@ export class LineageRegistry {
   }
 }
 
-/** Lists of a lineage a read makes when its listed heads are gone. */
 const MAX_RELISTS = 3;
 
 /** Heads one prune removes, so a long backlog spreads over writers. */
 const MAX_PRUNED_HEADS = 64;
 
 /**
- * Heads one prune deletes at once: a prune costs a writer about one list and
- * one round trip per batch (swamp-club#3803).
+ * heads one prune deletes at once: a prune costs a writer about one list and
+ * one round trip per batch
  */
 const PRUNE_BATCH = 16;
 
-/** How long one prune may keep a writer's publish waiting. */
 const PRUNE_DEADLINE_MS = 5_000;
 
-/** A prune's deadline passed: what remains is left for a later writer. */
 export class PruneDeadlineError extends Error {
   constructor() {
     super("Pruning the lineage heads ran out of time");
@@ -443,11 +381,9 @@ export class PruneDeadlineError extends Error {
 }
 
 /**
- * `work`, or a {@link PruneDeadlineError} once `until` passes. The store's
- * calls take no signal, so work still running then is not cancelled: its
- * outcome is handled here and goes unread, and a delete may still be in
- * flight when the process exits. That is harmless for a best-effort prune:
- * a delete can be repeated, and a later writer prunes what is left.
+ * the store's calls take no signal, so work still running past the deadline is
+ * not cancelled and goes unread; harmless for a best-effort prune, since a
+ * delete can be repeated
  */
 function withinDeadline<T>(work: Promise<T>, until: number): Promise<T> {
   const left = until - Date.now();

@@ -17,42 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The ambient unit of work: datastore rework Phase 1 (swamp-club#2971).
- *
- * A use case runs its operation inside {@link runInUnitOfWork}, and the
- * repositories it calls stage their changes into that unit of work instead of
- * calling their mark hook. Outside a scope, repositories call their hook
- * directly, as they always have. Two production functions open a scope
- * (pinned by `integration/datastore_write_seams_rules_test.ts`):
- * `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) around each write use
- * case, and `runInRootUnitOfWork` (`repo_unit_of_work.ts`) around a whole
- * command or request. The units they open forward each change to the same
- * hook, so the routing below changes nothing a user can see.
- *
- * **One repository context per unit.** Two repository contexts can share a
- * process (side-by-side repos, namespace migration). A repository stages into
- * the ambient unit of work only when that unit is bound to the repository's
- * own hook instance in the binding registry (`unit_of_work_binding.ts`,
- * swamp-club#3240): `createLegacyUnitOfWork` binds each unit it builds over
- * a hook, and the v3 commit-log adapter binds its own. Otherwise it calls
- * its hook as today, so its changes still reach its own datastore, unless
- * the hook belongs to a v3 datastore, which refuses the write instead.
- *
- * **Scope follows the async call chain.** The scope is an `AsyncLocalStorage`
- * store: concurrent operations (serve handlers, `Promise.all`) each see their
- * own unit of work. A promise started inside a scope keeps that scope even
- * when it is awaited after the scope returns. If its unit has ended
- * (committed or abandoned) by then, the late `stage` goes to the unit's
- * nearest open ancestor, when it is a child; otherwise it follows the unit's
- * `afterCommit` policy: units built for tests reject it with "unit of work
- * already committed" (or "abandoned"), and production units
- * (`repo_unit_of_work.ts`) send it straight to the hook. End a unit only
- * after every write started in its scope has settled.
- *
- * @module
- */
-
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type {
@@ -74,20 +38,13 @@ import {
 const ambientUnitOfWork = new AsyncLocalStorage<UnitOfWork>();
 
 /**
- * The innermost unit that takes typed changes (a v3 commit-log unit) around
- * the call, kept apart from {@link ambientUnitOfWork} so a unit that takes
- * none (a use case's unbound unit) opened inside it does not hide it. A
- * repository with no hook stages into it (swamp-club#3279). On v2 no such
- * unit exists, so this is always empty there.
+ * kept apart from the ambient unit so a unit that takes no typed changes,
+ * opened inside it, does not hide it; always empty on v2
  */
 const ambientTypedUnit = new AsyncLocalStorage<UnitOfWork>();
 
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
-/**
- * Runs `fn` with `uow` as the ambient unit of work. Scopes nest: the
- * innermost unit is active inside, and the outer one is active again after.
- */
 export function runInUnitOfWork<T>(
   uow: UnitOfWork,
   fn: () => Promise<T>,
@@ -98,40 +55,14 @@ export function runInUnitOfWork<T>(
   return ambientUnitOfWork.run(uow, fn);
 }
 
-/** The ambient unit of work, or undefined outside every scope. */
 export function currentUnitOfWork(): UnitOfWork | undefined {
   return ambientUnitOfWork.getStore();
 }
 
 /**
- * Sends a repository's change signal to the right place, in order:
- *
- * 1. the ambient unit of work, when it is bound to `markDirty` (a legacy unit
- *    then forwards the change to that same hook);
- * 2. otherwise `markDirty` itself: the path for `write` and `remove`, nothing
- *    for `bulk`. A hook marked with `requireUnit` (a v3 datastore's) has no
- *    route 2: the write is refused with {@link UnscopedWriteRefusedError}
- *    before anything is marked (decision 3 of "v3 domain model",
- *    `design/enablers/datastores.md`);
- * 3. otherwise nowhere (filesystem datastores have no hook).
- *
- * Call it before the write, as `notifyDirty` always has; a repository wraps
- * the write in {@link withChangeSignalled}, which calls it again once the
- * write has landed on v2 (swamp-club#2421). A rejected hook rejects the
- * returned promise with the same error on either route.
- *
- * With `options.typed`, the repository declares that it stages typed changes
- * for this write through {@link stageTyped} once the write is done
- * (swamp-club#3250). In a unit that takes typed changes (a v3 commit-log
- * unit) the path change is then checked, not staged: the unit takes no
- * path-only change. Everywhere else the option changes nothing.
- *
- * Route 2 is the fallback for a hooked write made outside every unit bound
- * to its hook. It marks exactly as it always has, then reports the write
- * (swamp-club#3056): production logs a warning once per call site, and tests
- * fail through {@link useUnscopedChangeReporterForTesting}. A later Phase 2
- * step removes route 2 once nothing reports; see
- * `design/enablers/datastores.md`.
+ * routes to the ambient unit bound to the hook, else the hook itself (refused
+ * with UnscopedWriteRefusedError on a v3 hook), else nowhere; call it before
+ * the write
  */
 export async function signalChange(
   markDirty: MarkDirtyHook | undefined,
@@ -139,10 +70,9 @@ export async function signalChange(
   options: { readonly typed?: boolean } = {},
 ): Promise<void> {
   if (markDirty === undefined) {
-    // A repository built without a hook marks nothing on v2. Inside a v3
-    // commit-log unit its write belongs to that unit (swamp-club#3279): a
-    // typed write stages through stageTyped, and any other is offered to
-    // the unit, which refuses a path-only change rather than drop it.
+    // inside a v3 unit a hookless typed write stages through stageTyped and any
+    // other is offered to the unit, which refuses a path-only change rather
+    // than drop it
     const adopter = adoptingUnit();
     if (adopter !== undefined) unitWrites.signal(adopter);
     if (adopter !== undefined && !options.typed) await adopter.stage(change);
@@ -152,8 +82,8 @@ export async function signalChange(
   const requiresUnit = unitOfWorkBinding.requiresUnit(markDirty);
   if (
     uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty &&
-    // A legacy unit forwards to the hook, so it cannot serve a hook that
-    // requires a unit, even one built before the hook was marked.
+    // a legacy unit forwards to the hook, so it cannot serve a hook that
+    // requires a unit, even one built before the hook was marked
     !(requiresUnit && legacyUnitOfWorkTarget(uow) !== undefined)
   ) {
     unitWrites.signal(uow);
@@ -162,9 +92,8 @@ export async function signalChange(
     return;
   }
   if (requiresUnit) {
-    // An unbound unit a use case opened (no repository context) does not
-    // hide the v3 unit around it that is bound to this hook
-    // (swamp-club#3279).
+    // an unbound unit a use case opened does not hide the v3 unit around it
+    // that is bound to this hook
     const outer = adoptingUnit();
     if (
       outer !== undefined && unitOfWorkBinding.boundHook(outer) === markDirty
@@ -181,32 +110,9 @@ export async function signalChange(
 }
 
 /**
- * Signals `changes` through {@link signalChange}, in order, before `write`
- * runs and, on v2, again once it has settled (swamp-club#2421). Every
- * repository write and remove goes through it.
- *
- * - The signals before keep what they always gave: a v3 unit checks (or
- *   refuses) each change before anything is written, and a process that
- *   dies mid-write leaves the path marked.
- * - The signals after close the window between the two: a push that ran
- *   while the write was in flight may have uploaded the old bytes (or
- *   re-uploaded a file about to be removed) and cleared the mark. Marking
- *   again once the path holds its final state makes the next push see it.
- *   They are sent when `write` throws too, since a write can land partly
- *   before it fails.
- *
- * The signals after are sent only for a hook that does not require a unit
- * (every v2 context). A v3 hook buffers changes in its commit-log unit,
- * where the signals before already did all there is to do; a hookless
- * repository marks nothing on v2. Marks are idempotent, so a doubled mark
- * changes nothing else.
- *
- * When `write` throws and a signal after fails as well, the write's error
- * is the one rethrown. When `write` succeeds and a signal after fails, the
- * failure is logged as a warning and the result returned, since the write
- * is on disk. The signal before still marked the path, but a push that ran
- * during the write may have cleared that mark, so the next push can then
- * miss the path, which is what the warning says.
+ * the signal after closes the window where a push mid-write cleared the mark;
+ * sent even if write throws, only for hooks needing no unit, and the write's
+ * own error wins
  */
 export async function withChangeSignalled<T>(
   markDirty: MarkDirtyHook | undefined,
@@ -240,10 +146,9 @@ export async function withChangeSignalled<T>(
       try {
         await signalChange(markDirty, change, options);
       } catch (error) {
-        // The write has landed, so a failed signal after must not report it
-        // as failed. The signal before may already have been cleared by a
-        // push that ran during the write, so the next push can miss the
-        // path: say so.
+        // the write has landed, so a failed signal after must not report it
+        // failed; a push during the write may have cleared the mark and the
+        // next push can miss the path, so warn
         logger
           .warn`Could not mark ${
           changeLabel(change)
@@ -267,31 +172,19 @@ function isChangeList(
 }
 
 /**
- * Stages the typed changes a repository write made, after the write
- * (swamp-club#3250): the version, the content and whether the latest marker
- * moved are known only then. Call it once per batch: a batch always lands in
- * one commit, and a partition's changes split between batches past
- * `MAX_COMMIT_OPS`.
- *
- * - With no hook, or a hook that does not require a unit (every v2 context),
- *   it returns at once and `build` never runs, so v2 pays nothing.
- * - In a unit bound to the hook that takes typed changes, it runs `build` and
- *   stages what it returns as one batch.
- * - Otherwise the hook belongs to a v3 context with no bound unit ambient,
- *   and the write would never be committed: it throws
- *   {@link UnscopedWriteRefusedError} rather than drop it.
+ * call once per batch, since a batch lands in one commit; with no bound unit on
+ * a v3 context it throws UnscopedWriteRefusedError rather than drop the write
  */
 export async function stageTyped(
   markDirty: MarkDirtyHook | undefined,
   build: () => readonly TypedChange[] | Promise<readonly TypedChange[]>,
 ): Promise<void> {
   if (markDirty === undefined) {
-    // See signalChange: a hookless write stages into the ambient v3 unit.
     const adopter = adoptingUnit();
     const stage = adoptingStager();
     if (adopter === undefined || stage === undefined) return;
-    // The files are written by now: the unit learns of them before the
-    // build can throw (swamp-club#3553).
+    // the files are written by now: the unit learns of them before the build
+    // can throw
     unitWrites.signal(adopter);
     const changes = await build();
     if (changes.length > 0) await stage(changes);
@@ -308,11 +201,9 @@ export async function stageTyped(
 }
 
 /**
- * Whether {@link stageTyped} would run its builder now: true only in a unit
- * bound to a hook that requires one and takes typed changes. A repository
- * asks it before a write when a typed change needs something the write
- * destroys, such as the digest of the file it replaces; on v2 it is false,
- * so v2 reads nothing extra.
+ * a repository asks before a write whose typed change needs something the write
+ * destroys, such as the digest of the file it replaces; false on v2, so v2
+ * reads nothing extra
  */
 export function typedStagingActive(
   markDirty: MarkDirtyHook | undefined,
@@ -323,11 +214,8 @@ export function typedStagingActive(
 }
 
 /**
- * Whether the v3 unit a write through `markDirty` stages into, found as
- * {@link stageTyped} finds its stager, admits `key` (swamp-club#4019): a
- * key its checkout filter rejects is dropped from its commit, so nothing
- * replays it. False with no such unit, so a caller that did not first ask
- * {@link typedStagingActive} makes its write durable rather than skip it.
+ * false with no such unit, so a caller that did not first ask
+ * typedStagingActive makes its write durable rather than skip it
  */
 export function unitAdmitsKey(
   markDirty: MarkDirtyHook | undefined,
@@ -340,10 +228,6 @@ export function unitAdmitsKey(
   return unitAdmissions.of(uow)?.(key) ?? true;
 }
 
-/**
- * The version-floor source of the v3 unit a write through `markDirty` stages
- * into, found as {@link stageTyped} finds its stager; undefined on v2.
- */
 export function versionFloorSource(
   markDirty: MarkDirtyHook | undefined,
 ): VersionFloorSource | undefined {
@@ -362,46 +246,30 @@ export function versionFloorSource(
     : undefined;
 }
 
-/**
- * Whether `uow` takes typed changes: a v3 commit-log unit (swamp-club#3257).
- * `withUnitOfWork` asks it to choose decision 5's ending for a v3 unit; a
- * legacy unit is never one, so v2 endings do not change.
- */
 export function takesTypedChanges(uow: UnitOfWork): boolean {
   return typedStagers.stagerOf(uow) !== undefined;
 }
 
-/**
- * The typed stager of the innermost v3 unit around the call, which a
- * repository with no hook stages into; undefined on v2.
- */
 function adoptingStager() {
   const uow = adoptingUnit();
   return uow === undefined ? undefined : typedStagers.stagerOf(uow);
 }
 
 /**
- * The open v3 unit a hookless write in this scope belongs to: the innermost
- * typed unit around the call while it is open, else its nearest open
- * ancestor. None when every one has ended: a callback that outlived its
- * operation then marks nothing, as on v2.
+ * none when every unit has ended: a callback that outlived its operation then
+ * marks nothing, as on v2
  */
 function adoptingUnit(): UnitOfWork | undefined {
   const uow = ambientTypedUnit.getStore();
   return uow === undefined ? undefined : typedStagers.openTargetOf(uow);
 }
 
-/**
- * The ambient unit bound to the hook and its typed stager, when it takes
- * typed changes.
- */
 function boundTypedStager(markDirty: MarkDirtyHook) {
   const uow = currentUnitOfWork();
   if (uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty) {
     const stage = typedStagers.stagerOf(uow);
     return stage === undefined ? undefined : { unit: uow, stage };
   }
-  // As in signalChange: an unbound unit does not hide the v3 unit around it.
   const outer = adoptingUnit();
   if (
     outer === undefined || unitOfWorkBinding.boundHook(outer) !== markDirty
@@ -413,14 +281,11 @@ function boundTypedStager(markDirty: MarkDirtyHook) {
 }
 
 /**
- * A hooked write on a v3 datastore made outside every unit of work bound to
- * its repository context (swamp-club#3240). A v3 datastore has no route 2:
- * a write it was not told about through a unit would never be committed.
- * Nothing was marked or written.
+ * a v3 datastore has no route 2: a write it was not told about through a unit
+ * would never be committed. Nothing was marked or written.
  */
 export class UnscopedWriteRefusedError extends Error {
   constructor(
-    /** The path change; undefined for typed changes ({@link stageTyped}). */
     readonly change: StagedChange | undefined,
     readonly caller: UnscopedCaller | undefined,
   ) {
@@ -439,30 +304,14 @@ export class UnscopedWriteRefusedError extends Error {
   }
 }
 
-/** Where an unscoped write came from. */
 export interface UnscopedCaller {
-  /**
-   * Path relative to the repository root, e.g. `src/serve/bookkeeping_gc.ts`,
-   * or the frame's full URL when it lies outside the repository's source
-   * (extension code, an unexpected binary layout).
-   */
   readonly file: string;
   readonly line: number;
-  /**
-   * The frame's function, or the nearest named frame below it in the same
-   * file when the frame is an anonymous closure; undefined when neither has
-   * a name.
-   */
   readonly fn: string | undefined;
 }
 
-/** A hooked write that took route 2, reported after its mark was sent. */
 export interface UnscopedChange {
   readonly change: StagedChange;
-  /**
-   * The first frame outside `src/infrastructure/persistence/`; undefined
-   * when the stack holds none.
-   */
   readonly caller: UnscopedCaller | undefined;
 }
 
@@ -475,26 +324,12 @@ export type UnscopedChangeReporter = (report: UnscopedChange) => void;
 let reporterForTesting: UnscopedChangeReporter | undefined;
 const warnedCallSites = new Set<string>();
 
-/**
- * This module's URL less its own path inside the repository: the prefix every
- * frame from the repository's source starts with, under `deno test` and in
- * the compiled binary alike.
- */
 const SOURCE_ROOT = new URL("../../../", import.meta.url).href;
 const PERSISTENCE_DIR = "src/infrastructure/persistence/";
 // Diagnostic phases wrap a repository's work without being its caller.
 const DIAGNOSTICS_DIR = "src/domain/diagnostics/";
 const FRAME = /^\s*at (?:async )?(?:(.+?) \()?(\S+?):(\d+):\d+\)?$/;
 
-/**
- * Finds the caller of a route-2 write in a stack trace: the first frame from
- * the repository's source (`root` is its URL prefix) outside
- * `src/infrastructure/persistence/` and the diagnostic phase wrappers in
- * `src/domain/diagnostics/`. Runtime frames are skipped. With no
- * such frame it falls back to the first `file:` frame outside the
- * repository's source, named by its full URL, so a caller loaded from
- * elsewhere still gets its own warning.
- */
 export function unscopedCallerFrom(
   stack: string,
   root: string,
@@ -536,14 +371,12 @@ export function unscopedCallerFrom(
   return { file: frame.file, line: frame.line, fn };
 }
 
-/** `Object.foo [as bar]` → `foo`; `Class.method` is kept whole. */
 function functionName(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
   const name = raw.replace(/ \[as [^\]]+\]$/, "").replace(/^Object\./, "");
   return name === "" || name === "<anonymous>" ? undefined : name;
 }
 
-/** The caller of the write `signalChange` is routing. */
 function callerOfThisWrite(): UnscopedCaller | undefined {
   // Ten frames (V8's default) can end inside the persistence layer.
   const limit = Error.stackTraceLimit;
@@ -566,10 +399,6 @@ function reportUnscopedChange(change: StagedChange): void {
   }
 }
 
-/**
- * A caller as `file:line (fn)`, as the production warning and the test guard
- * both print it.
- */
 export function formatUnscopedCaller(
   caller: UnscopedCaller | undefined,
 ): string {
@@ -588,22 +417,10 @@ function warnOnce({ change, caller }: UnscopedChange): void {
     .warn`A datastore ${change.kind} of ${target} from ${site} ran outside a unit of work; it still syncs (swamp-club#3056)`;
 }
 
-/**
- * Test seam: forgets which call sites the production warning has already
- * named, so a test of the warn-once rule sees a first warning on every run
- * (`deno test --repeats`). Only tests may call it
- * (`integration/datastore_write_seams_rules_test.ts`).
- */
 export function resetUnscopedWarningsForTesting(): void {
   warnedCallSites.clear();
 }
 
-/**
- * Test seam: sends every route-2 write to `reporter` instead of the
- * production warning until the returned function is called. Throws when a
- * reporter is already installed. Only tests may call it
- * (`integration/datastore_write_seams_rules_test.ts`).
- */
 export function useUnscopedChangeReporterForTesting(
   reporter: UnscopedChangeReporter,
 ): () => void {

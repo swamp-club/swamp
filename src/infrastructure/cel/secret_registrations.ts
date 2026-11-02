@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What an environment registers for the `Secret` value
- * (design/enablers/typed-secrets.md Sections 4.1 and 4.3): the type, the
- * allowed set, and every refusal the inventory
- * (`cel_js_secret_refusal_inventory.ts`) yields.
- *
- * Every handler is synchronous and every function is registered with
- * `{ async: false }`, so synchronous entry points stay synchronous (fact 4),
- * and every refusal records a fault before it throws, so `||`, `&&`,
- * `exists` and `all` cannot absorb it (fact 3).
+ * every function is registered with async: false so synchronous entry points
+ * stay synchronous, and every refusal records a fault before it throws so ||,
+ * &&, exists and all cannot absorb it
  */
 
 import type { Environment } from "cel-js";
@@ -47,9 +41,8 @@ export function registerSecretType(env: Environment): Environment {
 }
 
 /**
- * Register the allowed set's operators: concatenation composes a new
- * `Secret`, and comparison with `null` answers `false`, so `!=` answers
- * `true`. cel-js derives `!=` and the mirrored operand order of `==`.
+ * concatenation composes a new Secret; comparison with null answers false;
+ * cel-js derives != and the mirrored operand order of ==
  */
 export function registerAllowedSet(env: Environment): Environment {
   return env
@@ -59,19 +52,14 @@ export function registerAllowedSet(env: Environment): Environment {
     .registerOperator("Secret == null", () => false);
 }
 
-/** The refusals one environment registered. */
 export interface RefusalRegistration {
   readonly operators: readonly string[];
   readonly functions: readonly string[];
 }
 
 /**
- * Register every refusal the inventory yields on `env`: the operator
- * refusals with `customTypes` added to the operand types, the cross product
- * over the secret-capable cel-js built-ins read from `env`, and the cross
- * product over `swampSignatures`, swamp's registrations on `env`. A swamp
- * signature `env` already carries is never treated as a built-in, so nothing
- * is registered twice. Returns what was registered.
+ * a swamp signature env already carries is never treated as a built-in, so
+ * nothing is registered twice
  */
 export function registerSecretRefusals(
   env: Environment,
@@ -79,10 +67,8 @@ export function registerSecretRefusals(
     readonly customTypes?: readonly string[];
     readonly swampSignatures?: readonly string[];
     /**
-     * The code a function refusal records, by signature. Defaults to
-     * `secret_operation_unsupported`; a routing argument, such as the model
-     * and method names of `model.method`, records
-     * `secret_destination_refused` (Section 4.5 item 2).
+     * defaults to secret_operation_unsupported; a routing argument such as the
+     * model and method names of model.method records secret_destination_refused
      */
     readonly codeFor?: (signature: string) => SecretRefusalCode | undefined;
   } = {},

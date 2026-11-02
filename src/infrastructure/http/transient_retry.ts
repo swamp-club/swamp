@@ -30,9 +30,7 @@ import {
 
 const logger = getLogger(["swamp", "http", "retry"]);
 
-/** Retries after the initial attempt, across every retryable failure. */
 export const MAX_TRANSIENT_RETRIES = 5;
-/** Wait before each retry of a timeout, connection failure or 5xx. */
 export const TRANSIENT_BACKOFF_MS: readonly number[] = [
   1_000,
   2_000,
@@ -40,16 +38,12 @@ export const TRANSIENT_BACKOFF_MS: readonly number[] = [
   8_000,
   16_000,
 ];
-/** Largest share of a backoff wait added as random jitter. */
 const BACKOFF_JITTER_RATIO = 0.25;
-/** Upper bound of the random delay added to a Retry-After wait. */
 const RETRY_AFTER_JITTER_MS = 1000;
-/** Per-attempt timeout of a registry read. */
 export const REGISTRY_ATTEMPT_TIMEOUT_MS = 15_000;
 /**
- * Total time a registry read may take across all of its attempts and waits.
- * Fits two Retry-After waits at the 60s cap plus their jitter, so rate-limit
- * handling keeps the reach it had before transient retries existed.
+ * sized to fit two capped Retry-After waits plus jitter, so rate-limit handling
+ * keeps the reach it had before transient retries
  */
 export const REGISTRY_READ_BUDGET_MS = 150_000;
 
@@ -61,14 +55,12 @@ const STATUS_TEXT: Record<number, string> = {
   504: "Gateway Timeout",
 };
 
-/** Why an attempt is being retried. */
 export type RetryReason =
   | { kind: "timeout"; afterMs: number }
   | { kind: "connection"; message: string }
   | { kind: "status"; status: number }
   | { kind: "rate_limit"; scope: string };
 
-/** What the user is told before each retry wait. */
 export interface RetryNotice {
   service: string;
   method: string;
@@ -79,7 +71,6 @@ export interface RetryNotice {
   maxRetries: number;
 }
 
-/** How a retried request went, for the caller's final message. */
 export interface RetryOutcome {
   method: string;
   target: string;
@@ -93,11 +84,9 @@ export interface RetriedResponse {
 }
 
 /**
- * A request that failed without an HTTP answer. `kind` says how:
- *   - `timeout`: the last attempt hit its own timeout
- *   - `connection`: the last attempt could not connect or lost the body
- *   - `deadline`: the caller's signal timed out
- *   - `aborted`: the caller's signal was aborted for another reason
+ * timeout: last attempt hit its own timeout; connection: could not connect or
+ * lost the body; deadline: caller's signal timed out; aborted: caller's signal
+ * aborted otherwise
  */
 export class TransientRequestError extends Error {
   constructor(
@@ -117,21 +106,16 @@ export class TransientRequestError extends Error {
 }
 
 export interface TransientRetryOptions {
-  /** HTTP method of the request; only GET and HEAD are retried. */
   method?: string;
   /** The request's origin and path, never its query string. */
   target: string;
-  /** Who is being called, shown at the start of each retry line. */
   service?: string;
-  /** Caller's signal; aborting it ends the request and any pending wait. */
   signal?: AbortSignal;
   attemptTimeoutMs?: number;
   budgetMs?: number;
   sleep?: Sleep;
-  /** Source of jitter in [0, 1). */
   random?: () => number;
   now?: () => number;
-  /** Receives each retry notice; defaults to a warning on stderr. */
   onRetry?: (notice: RetryNotice) => void;
 }
 
@@ -149,9 +133,8 @@ export function describeRequestTarget(url: string): string {
 }
 
 /**
- * Replace every URL in `text` with its origin and path. Deno's fetch errors
- * embed the full request URL, signature and all, e.g. `error sending request
- * for url (https://host/a.tgz?X-Goog-Signature=...)`.
+ * Deno's fetch errors embed the full request URL, signature and all, so every
+ * URL in the text is reduced to origin and path
  */
 export function redactUrls(text: string): string {
   return text.replace(
@@ -160,12 +143,10 @@ export function redactUrls(text: string): string {
   );
 }
 
-/** A failure's message with any URLs in it reduced to origin and path. */
 export function causeMessage(cause: unknown): string {
   return redactUrls(cause instanceof Error ? cause.message : String(cause));
 }
 
-/** Render a duration as `850ms`, `12s` or `1m 47s`. */
 export function formatElapsed(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   const seconds = Math.round(ms / 1000);
@@ -188,11 +169,6 @@ function describeReason(reason: RetryReason): string {
   }
 }
 
-/**
- * The line shown before a retry, e.g.
- * `swamp-club registry: GET /api/v1/extensions/x timed out after 15s ·
- * retrying in 2s (retry 2/5)`.
- */
 export function formatRetryNotice(notice: RetryNotice): string {
   const wait = Math.max(1, Math.round(notice.waitMs / 1000));
   return `${notice.service}: ${notice.method} ${notice.target} ${
@@ -214,18 +190,9 @@ function isTimeout(error: unknown): boolean {
 }
 
 /**
- * Run `attempt`, retrying idempotent requests that fail transiently: a
- * timeout, a connection failure, HTTP 502/503/504, or a 429 whose
- * Retry-After is short enough to wait out. One loop, one retry ceiling and
- * one total budget cover every kind, so rate-limit and transient retries
- * never multiply.
- *
- * `attempt` receives the signal for that attempt — the caller's signal
- * combined with the per-attempt timeout — and must build a fresh request
- * each call. Returns the last response, which may still be a 5xx or 429
- * when retries are exhausted or not allowed. Throws
- * {@link TransientRequestError} when no attempt produced a response, and
- * rethrows a {@link UserError} from `attempt` untouched.
+ * one loop, retry ceiling and budget cover every kind so rate-limit and
+ * transient retries never multiply; attempt must build a fresh request each
+ * call; a UserError from attempt is rethrown
  */
 export async function fetchWithTransientRetry(
   attempt: (signal: AbortSignal) => Promise<Response>,
@@ -253,8 +220,6 @@ export async function fetchWithTransientRetry(
     elapsedMs: now() - start,
   });
 
-  // A retry is allowed while retries remain and its wait ends inside the
-  // budget.
   const canRetry = (waitMs: number): boolean =>
     retryable && attempts <= MAX_TRANSIENT_RETRIES &&
     now() - start + waitMs < budgetMs;

@@ -22,11 +22,9 @@ import { join } from "@std/path";
 import { UserIdentityRepository } from "./user_identity_repository.ts";
 import type { UserIdentityData } from "../../domain/identity/user_identity.ts";
 
-// The config directory is injected rather than steered through HOME /
-// XDG_CONFIG_HOME: `deno test --parallel` shares one process and one
-// `Deno.env` across test files, so repointing them here would send other
-// files' writes into a temp directory this file is about to delete. How
-// those variables resolve to a config dir is covered by paths_test.ts.
+// config dir is injected rather than set via HOME/XDG_CONFIG_HOME, which
+// parallel test files share and would send other files' writes into a temp dir
+// this file deletes
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,

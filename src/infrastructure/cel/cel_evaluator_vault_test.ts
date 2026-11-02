@@ -570,7 +570,6 @@ Deno.test("CelEvaluator: default compatibility corpus preserves plain expression
         );
       }
     }
-    // type() observes the registered type name, not the value (Section 4.3).
     await f.evaluate(`type(${secret})`);
     assertEquals(await f.evaluate(`${secret} == null`), false);
     assertEquals(await f.evaluate(`${secret} != null`), true);

@@ -127,7 +127,6 @@ Deno.test("WorkspaceRegistryFileRepository: persists the last agent, and drops o
     assertEquals((await repo.load())?.lastAgent(), undefined);
     await repo.update((r) => r.rememberAgent("codex"));
     assertEquals((await repo.load())?.lastAgent(), "codex");
-    // Registry changes that aren't about the agent keep it.
     await repo.update((r) => r.markTrusted("/w/a", "t"));
     assertEquals((await repo.load())?.lastAgent(), "codex");
 

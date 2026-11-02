@@ -159,7 +159,7 @@ Deno.test("resolveApiKey: a missing key file is a UserError naming the source an
       const err = assertThrows(() => resolveApiKey(), UserError);
       assertStringIncludes(err.message, "SWAMP_API_KEY_FILE file not found");
       assertStringIncludes(err.message, path);
-      // Telemetry removes the marked path from the message (swamp-club#2830).
+      // telemetry strips the marked path from the message
       assertEquals(errorPaths(err), [path]);
     });
     return Promise.resolve();

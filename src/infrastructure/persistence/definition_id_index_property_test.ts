@@ -28,16 +28,10 @@ import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 const IDS = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
 const TYPE_DIRS = ["test/a", "test/b", "test/a/nested"];
 const FILES = ["one.yaml", "two.yaml", "three.yaml"];
-/** Names a write may declare, so files of one name sit in both roots. */
 const NAMES = ["one", "two", "shared"];
 
 let clock = Date.UTC(2020, 0, 1);
 
-/**
- * Gives `path` and each directory above it, up to `root`, an mtime no
- * earlier change has used, as the writes a test makes would if each landed
- * in its own clock tick.
- */
 async function bumpUpTo(root: string, path: string): Promise<void> {
   for (let p = path;; p = dirname(p)) {
     clock += 1_000;
@@ -103,12 +97,6 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
   }),
 );
 
-/**
- * Applies `op` as another writer would: a write replaces the file by
- * renaming a new one over it, as swamp's saves and checkouts do, and a break
- * does so with a file that does not parse; a retag rewrites an existing file
- * in place, keeping its id and name.
- */
 async function apply(roots: string[], op: Op): Promise<void> {
   const root = roots[op.root];
   const dir = join(root, op.typeDir);
@@ -180,12 +168,6 @@ function describe(
   ) => [f.type.normalized, f.definition.name, f.definition.tags]);
 }
 
-/**
- * After any sequence of writes, removals and in-place edits, the index
- * answers every id as a scan of every definition does, and every name as
- * the first definition a scan reads declaring it, as findByNameGlobal's walk
- * finds it, with its clock at `clockAhead` ms past the real one.
- */
 async function assertMatchesScan(clockAhead: number, numRuns: number) {
   await fc.assert(
     fc.asyncProperty(
@@ -248,7 +230,6 @@ Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-plac
 });
 
 Deno.test("DefinitionIdIndex: answers as a scan does while every stat is too recent to trust", async () => {
-  // On the real clock the ctime each write sets is within the window.
   await assertMatchesScan(0, 20);
 });
 

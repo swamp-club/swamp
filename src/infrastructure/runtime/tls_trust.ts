@@ -18,40 +18,21 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * TLS trust-store configuration for the compiled swamp binary.
- *
- * swamp ships as a `deno compile` artifact, so every fetch-based TLS call
- * (registry, model HTTP APIs, source download, update check, telemetry)
- * validates against Deno's bundled Mozilla roots and, by default, ignores the
- * operating-system trust store. Behind a TLS-inspecting middlebox or a
- * privately-rooted CA installed in the OS store, every HTTPS call fails with
- * `invalid peer certificate: UnknownIssuer`.
- *
- * Deno reads its TLS CA environment variables lazily (when the rustls root
- * store is first built for a connection), so setting them in-process before the
- * first network call is honored — no re-exec is required. Child processes
- * spawned via `Deno.Command` inherit this environment, so the embedded-deno
- * subprocesses (registry push/bundle) are covered too.
- *
- * Note: the OpenSSL `SSL_CERT_DIR` directory convention is intentionally NOT
- * handled. Deno's `DENO_CERT` accepts a single PEM file only and has no
- * directory equivalent; users relying on a cert directory are covered by the
- * `system` trust-store default instead.
+ * compiled swamp ignores the OS trust store by default (UnknownIssuer behind
+ * private CAs); Deno reads CA env vars lazily and children inherit them, so
+ * setting them before the first network call suffices
  */
 
-/** Environment variable names this module consults and may set. */
 const DENO_TLS_CA_STORE = "DENO_TLS_CA_STORE";
 const DENO_CERT = "DENO_CERT";
 const SSL_CERT_FILE = "SSL_CERT_FILE";
 
 /**
- * The default trust store. `system` adds the OS trust store; `mozilla` keeps
- * Deno's bundled roots so public TLS still works even when the OS store is
- * empty or misconfigured.
+ * system adds the OS trust store; mozilla keeps Deno's bundled roots so public
+ * TLS still works when the OS store is empty or misconfigured
  */
 const DEFAULT_CA_STORE = "system,mozilla";
 
-/** A snapshot of the environment variables relevant to TLS trust. */
 export interface TlsTrustEnv {
   DENO_TLS_CA_STORE?: string;
   DENO_CERT?: string;
@@ -59,17 +40,14 @@ export interface TlsTrustEnv {
 }
 
 /**
- * Pure decision function: given a snapshot of the relevant environment
- * variables, return the mutations to apply. Never overrides a value the user
- * has already set. Empty strings are treated as unset.
+ * never overrides a value the user has already set; empty strings are treated
+ * as unset
  */
 export function computeTlsTrustEnv(
   env: TlsTrustEnv,
 ): Record<string, string> {
   const mutations: Record<string, string> = {};
 
-  // Default to merging the OS trust store with Deno's bundled roots, unless the
-  // user has explicitly chosen a store.
   if (!env.DENO_TLS_CA_STORE) {
     mutations[DENO_TLS_CA_STORE] = DEFAULT_CA_STORE;
   }

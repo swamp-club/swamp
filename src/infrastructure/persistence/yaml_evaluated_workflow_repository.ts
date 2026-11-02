@@ -75,23 +75,18 @@ import { InputRecordSchema } from "../../domain/inputs/input_record.ts";
 export interface EvaluatedWorkflowCache {
   workflow: Workflow;
   /**
-   * Where data sits in the workflow, in the coordinates of the raw copy
-   * rehydrate restores (swamp-club#3205). Absent in caches written before
-   * provenance was recorded; `"unreadable"` when present but malformed, which
-   * replay refuses.
+   * absent in caches written before provenance was recorded; unreadable when
+   * present but malformed, which replay refuses
    */
   provenance?: ProvenanceMap | "unreadable";
   /**
-   * Where data sits in the written workflow, in the file's own coordinates,
-   * so a typed replay restores references in place and aligns exactly
-   * (typed-secrets 4.4). Absent in caches written before it was recorded;
-   * `"unreadable"` when present but malformed, which replay refuses.
+   * where data sits in the written workflow, so a typed replay restores
+   * references in place and aligns exactly; absent in older caches, and
+   * unreadable when malformed, which replay refuses
    */
   persistedProvenance?: ProvenanceMap | "unreadable";
-  /** Expressions the source workflow contained when the cache was written. */
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
-  /** Where the file holds vault references in place of sensitive values. */
   writtenReferences: readonly WrittenReference[];
   /**
    * Set when the file was written with sensitive values kept as references;
@@ -99,21 +94,16 @@ export interface EvaluatedWorkflowCache {
    */
   sensitiveFormat?: number;
   /**
-   * The workflow inputs the cache was evaluated with, which a run replaying
-   * it records as its own (swamp-club#3583). `{}` for a workflow evaluated
-   * with none. Absent in caches written before they were recorded, and in a
-   * cache that withheld them (`evaluatedInputsOmitted`). Kept apart from the
-   * workflow's `inputs`, its schema.
+   * the inputs the cache was evaluated with, which a replaying run records as
+   * its own; absent in older caches or when withheld. Kept apart from the
+   * workflow's inputs, its schema.
    */
   evaluatedInputs?: Record<string, unknown>;
-  /** Origins of the recorded inputs, including expressions inherited from a parent. */
   evaluatedInputsProvenance?: ProvenanceMap;
-  /** The parent's authored expressions to retain if the replay suspends. */
   inheritedExpressions?: ReadonlySet<string>;
   /**
-   * Why a cache written by a swamp that records inputs holds none: an input
-   * held a sensitive value, which the file must not carry. Such a cache is
-   * not replayed, and running the workflow fresh withholds them again.
+   * an input held a sensitive value, which the file must not carry; such a
+   * cache is not replayed, and running the workflow fresh withholds them again
    */
   evaluatedInputsOmitted?: "sensitive";
 }
@@ -224,23 +214,13 @@ export function parseEvaluatedWorkflowCache(
   };
 }
 
-/**
- * Repository for storing evaluated workflows.
- *
- * Writes to {repoDir}/.swamp/workflows-evaluated/workflow-{name}.yaml
- * (or workflow-{uuid}.yaml for legacy/non-filename-safe names).
- * This directory contains workflows with all expressions resolved.
- */
 export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   private readonly baseDir: string;
   private readonly idToActualPath = new Map<WorkflowId, string>();
 
   /**
-   * `unreadableContent` tells an evaluated workflow a v3 read model could not
-   * materialise from an absent one (swamp-club#3617), so `--last-evaluated`
-   * fails loudly on it instead of finding no evaluation. A run's snapshot
-   * ({@link findByRunId}) is not loud: every reader settles against the
-   * workflow definition when it cannot read one.
+   * a run's snapshot (findByRunId) is not loud: every reader settles against
+   * the workflow definition when it cannot read one
    */
   constructor(
     private readonly repoDir: string,
@@ -253,7 +233,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
-    // Fast path: try UUID-based filename (legacy)
     const legacyPath = this.getLegacyPath(id);
     try {
       const content = await Deno.readTextFile(legacyPath);
@@ -268,7 +247,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       }
     }
 
-    // Try cached path
     const cachedPath = this.idToActualPath.get(id);
     if (cachedPath && cachedPath !== legacyPath) {
       try {
@@ -284,7 +262,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       }
     }
 
-    // Slow path: scan all files
     const workflows = await this.findAll();
     return workflows.find((w) => w.id === id) ?? null;
   }
@@ -318,21 +295,10 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     return workflows;
   }
 
-  /**
-   * Finds an evaluated workflow by its name.
-   *
-   * @param name - The workflow name
-   * @returns The evaluated workflow if found, or null
-   */
   async findByName(name: string): Promise<Workflow | null> {
     return (await this.findByNameWithProvenance(name))?.workflow ?? null;
   }
 
-  /**
-   * Finds an evaluated workflow by name together with the authored
-   * expressions persisted alongside it. Caches written before provenance was
-   * recorded yield an empty set.
-   */
   async findByNameWithProvenance(
     name: string,
   ): Promise<EvaluatedWorkflowCache | null> {
@@ -387,30 +353,17 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     return null;
   }
 
-  /**
-   * Saves an evaluated workflow.
-   *
-   * @param workflow - The evaluated workflow
-   * @param authoredExpressions - Expressions collected from the source
-   *   workflow before evaluation, restored by
-   *   {@link findByNameWithProvenance}
-   * @param recorded - The inputs `workflow` was evaluated with, or why they
-   *   are withheld, restored as {@link EvaluatedWorkflowCache.evaluatedInputs}
-   *   and {@link EvaluatedWorkflowCache.evaluatedInputsOmitted}
-   */
   async save(
     workflow: Workflow,
     /**
-     * Where data sits in the raw copy of `workflow` (swamp-club#3205).
-     * Required so every writer states it; `undefined` writes the legacy
-     * format, which replays with the raw-text rule alone.
+     * required so every writer states it; undefined writes the legacy format,
+     * which replays with the raw-text rule alone
      */
     provenance: ProvenanceMap | undefined,
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
     recorded?: RecordedEvaluationInputs,
-    /** See {@link EvaluatedWorkflowCache.persistedProvenance}. */
     persistedProvenance?: ProvenanceMap,
   ): Promise<void> {
     const dir = this.getWorkflowsDir();
@@ -425,9 +378,9 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       async () => {
         const previousPath = this.idToActualPath.get(workflow.id);
         const legacyPath = this.getLegacyPath(workflow.id);
-        // On v3, the names the files declared before this save, read before it
-        // replaces or removes them: a fresh repository's id cache is cold, so a
-        // rename is known only from them (swamp-club#3256).
+        // on v3, the names the files declared are read before this save
+        // replaces them: a fresh repository's id cache is cold, so a rename is
+        // known only from them
         const priors = typedStagingActive(this.markDirtyHook)
           ? await readPriors([targetPath, previousPath, legacyPath])
           : new Map<string, PriorFile>();
@@ -459,14 +412,11 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
             ? recorded.omitted
             : undefined,
         };
-        // Remove undefined values since YAML can't stringify them
         const cleanData = JSON.parse(JSON.stringify(data));
         const content = stringifyYaml(cleanData as Record<string, unknown>);
         await atomicWriteTextFile(targetPath, content);
-        // The paths a removal below actually removed, for their v3 tombstones.
         const removed: string[] = [];
 
-        // Clean up old file if it's at a different path
         if (previousPath && previousPath !== targetPath) {
           try {
             await Deno.remove(previousPath);
@@ -478,7 +428,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
           }
         }
 
-        // Also check legacy UUID path
         if (targetPath !== legacyPath && previousPath !== legacyPath) {
           try {
             await Deno.remove(legacyPath);
@@ -503,13 +452,9 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   /**
-   * Stages a save on v3 (swamp-club#3256). The evaluated workflow is derived,
-   * so nothing carries a precondition. The save, and the removal of any file
-   * that declared the same name, is one batch in the workflow's partition.
-   * Each removed file that declared another name, and a target that held
-   * another name (a same-key rename between two names stored at the uuid
-   * path), is tombstoned in that name's partition in a later batch, so the
-   * new name lands first.
+   * derived, so nothing carries a precondition; a removed file or target that
+   * declared another name is tombstoned in that name's partition in a later
+   * batch, so the new name lands first
    */
   private async stageSave(
     name: string,
@@ -556,7 +501,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   async delete(id: WorkflowId): Promise<void> {
-    // Populate cache so we discover name-based files on a cold instance
     const workflow = await this.findById(id);
 
     const pathsToTry = new Set([this.getLegacyPath(id)]);
@@ -592,8 +536,8 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         }
 
         this.idToActualPath.delete(id);
-        // On v3: a tombstone of each removed file in the partition of the name it
-        // declared; a file that names no workflow stages nothing.
+        // on v3 a tombstone of each removed file in the partition of the name
+        // it declared; a file that names no workflow stages nothing
         await stageTyped(this.markDirtyHook, () =>
           removed.flatMap((path) => {
             const name = priors.get(path)?.name ?? workflow?.name;
@@ -611,9 +555,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     );
   }
 
-  /**
-   * Clears all evaluated workflows.
-   */
   async clear(): Promise<void> {
     const dir = this.getWorkflowsDir();
     return await withChangeSignalled(this.markDirtyHook, {
@@ -622,8 +563,8 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     }, {
       typed: true,
     }, async () => {
-      // On v3, each file's partition is read before the removal destroys it,
-      // so the directory removal stages one tombstone per file.
+      // on v3 each file's partition is read before the removal destroys it, so
+      // the directory removal stages one tombstone per file
       const tombstones = typedStagingActive(this.markDirtyHook)
         ? await this.tombstonesOfAll()
         : [];
@@ -640,10 +581,8 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   /**
-   * A tombstone for every file under the base: an evaluated workflow in the
-   * partition of the name it declares, a run snapshot in its run's
-   * partition. Fields come from the raw YAML, never a schema parse; a file
-   * that names no valid aggregate stages nothing, as no repository put it.
+   * fields come from the raw YAML, never a schema parse; a file that names no
+   * valid aggregate stages nothing, as no repository put it
    */
   private async tombstonesOfAll(): Promise<TypedChange[]> {
     const tombstones: TypedChange[] = [];
@@ -679,7 +618,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     return tombstones;
   }
 
-  /** The record key of a file under the base. */
   private keyOf(path: string) {
     return keyUnder(SWAMP_SUBDIRS.workflowsEvaluated, this.baseDir, path);
   }
@@ -712,7 +650,6 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         const cleanData = JSON.parse(JSON.stringify(data));
         const content = stringifyYaml(cleanData as Record<string, unknown>);
         await atomicWriteTextFile(targetPath, content);
-        // On v3, the run's snapshot, which is derived: no precondition.
         await stageTyped(this.markDirtyHook, () => [
           new RunSnapshotChanges(workflow.id, runId).write(
             this.keyOf(targetPath),
@@ -762,9 +699,9 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
           });
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) throw error;
-          // The snapshot file is missing (partial write or concurrent
-          // delete) — fall back to the directory itself so the empty
-          // directory is still collectable.
+          // snapshot file missing (partial write or concurrent delete): fall
+          // back to the directory itself so the empty directory is still
+          // collectable
           try {
             const dirStat = await Deno.stat(join(runsDir, entry.name));
             snapshots.push({
@@ -792,10 +729,9 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     }, {
       typed: true,
     }, async () => {
-      // On v3, the snapshot's workflow id, read before the removal: run GC
-      // passes directory names, so a run id that is not a UUID, or a snapshot
-      // that is missing or names no workflow, stages nothing (no repository put
-      // it) rather than abort the collection.
+      // on v3 the snapshot's workflow id is read before the removal; a non-UUID
+      // run id or a missing snapshot stages nothing rather than abort the
+      // collection
       const snapshotPath = join(dir, "evaluated-workflow.yaml");
       const snapshot = typedStagingActive(this.markDirtyHook)
         ? await readPriorFile(snapshotPath)
@@ -822,9 +758,8 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
   }
 
   /**
-   * Resolves `runs/<runId>/`. The run ID must be a single path segment:
-   * `""`, `.` or `..` would resolve to `runs/` or the repository base itself,
-   * which `assertSafePath` accepts because it equals or sits inside the base.
+   * the run ID must be a single path segment: empty, . or .. would resolve to
+   * runs/ or the base itself, which assertSafePath accepts
    */
   private async runDir(runId: string): Promise<string> {
     if (!isSinglePathSegment(runId)) {

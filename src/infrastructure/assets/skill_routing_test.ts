@@ -23,22 +23,12 @@ import { join } from "@std/path";
 import { SkillAssets } from "./skill_assets.ts";
 
 /**
- * Directories under `.claude/skills/swamp/references/` that are deliberately
- * NOT routable guide topics and therefore need no eval coverage.
- *
- * Every entry here is a hole in the self-policing check below, so add one only
- * with a comment explaining why the directory is not a routing destination.
- * Currently empty — all reference directories are routable topics.
+ * reference directories that are deliberately not routable guide topics and
+ * need no eval coverage; each entry is a hole in the self-policing check, so
+ * add one only with a reason
  */
 const NON_ROUTABLE_REFERENCE_DIRS = new Set<string>([]);
 
-/**
- * Derives the guide topics from the on-disk references directory rather than a
- * hardcoded list, so a newly added guide cannot ship without routing evals,
- * a SKILL.md routing entry, and a BUNDLED_SKILLS entry.
- *
- * A topic is any directory under `references/` that contains a `guide.md`.
- */
 function discoverGuideTopics(skillsDir: string): string[] {
   const referencesDir = join(skillsDir, "swamp", "references");
   const topics: string[] = [];

@@ -33,32 +33,15 @@ import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts
 import { datastoreEngineOf } from "./datastore_format_guard.ts";
 import { SWAMP_DATA_DIR } from "./paths.ts";
 
-/**
- * Default implementation of DatastorePathResolver.
- *
- * Routes paths to either the local `.swamp/` directory or the configured
- * datastore based on the directory list and exclude patterns.
- */
 export class DefaultDatastorePathResolver implements DatastorePathResolver {
   private readonly repoDir: string;
   private readonly datastoreConfig: DatastoreConfig;
   private readonly datastoreSubdirs: ReadonlySet<string>;
   private readonly compiledExclude: ReturnType<typeof compilePatterns>;
   private readonly datastoreBasePath: string;
-  /**
-   * Giga-swamp namespace slug. When non-empty, it is prepended as the
-   * outermost segment of every datastore-tier path so repos sharing a
-   * datastore land their data under `{datastore}/{namespace}/...`. Empty
-   * string is solo mode: paths are byte-identical to a non-namespaced repo.
-   */
   private readonly namespace: string;
   private readonly datastoreEngine: DatastoreEngine;
 
-  /**
-   * `engine` defaults to what the format guard chose for this config object
-   * (`ensureSupportedDatastoreFormat`), or, for a config it has not checked,
-   * to what the datastore's marker says (`datastoreEngineOf`).
-   */
   constructor(
     repoDir: string,
     datastoreConfig: DatastoreConfig,
@@ -71,17 +54,15 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
     this.namespace = datastoreConfig.namespace ?? "";
     this.datastoreEngine = options.engine ?? datastoreEngineOf(datastoreConfig);
 
-    // Determine the base path for the datastore
     if (this.datastoreEngine === "v3") {
-      // A v3 datastore path holds the commit log, not records: each checkout
-      // materialises its records in its own `.swamp/` (swamp-club#3279), so
-      // the datastore tier resolves there, namespaced as before.
+      // a v3 datastore path holds the commit log, not records; each checkout
+      // materialises its records in its own .swamp/, so the datastore tier
+      // resolves there
       this.datastoreBasePath = join(repoDir, SWAMP_DATA_DIR);
     } else if (isCustomDatastoreConfig(datastoreConfig)) {
-      // For remote datastores with a local cache (e.g. S3), use the cache
-      // path so reads/writes go to the same directory the sync service
-      // pushes from and pulls to.  Fall back to datastorePath for custom
-      // datastores that don't use a separate cache.
+      // use the local cache path so reads and writes hit the directory the sync
+      // service pushes from and pulls to; custom datastores without a cache use
+      // datastorePath
       this.datastoreBasePath = datastoreConfig.cachePath ??
         datastoreConfig.datastorePath;
     } else {
@@ -94,11 +75,8 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
   }
 
   datastorePath(...segments: string[]): string {
-    // Giga-swamp: the namespace is the OUTERMOST segment of the datastore
-    // tier — `{base}/{namespace}/data/...`, never `{base}/data/{namespace}/`.
-    // Solo mode (empty namespace) produces byte-identical paths to before.
-    // Built with `join` so an empty namespace can never slip a stray
-    // separator into the result.
+    // the namespace is the outermost segment ({base}/{namespace}/data/...),
+    // built with join so an empty namespace adds no stray separator
     if (this.namespace.length > 0) {
       return join(this.datastoreBasePath, this.namespace, ...segments);
     }
@@ -125,12 +103,10 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
   }
 
   resolvePath(subdir: string, ...rest: string[]): string {
-    // Always-local subdirs never go to datastore
     if (!this.isDatastoreSubdir(subdir)) {
       return this.localPath(subdir, ...rest);
     }
 
-    // Check exclude patterns
     const relativePath = rest.length > 0 ? join(subdir, ...rest) : subdir;
 
     if (this.isExcluded(relativePath)) {

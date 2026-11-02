@@ -38,7 +38,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Whether an upper-case or decomposed spelling reaches a file in `dir`. */
 async function folds(dir: string): Promise<boolean> {
   const name = "oracle-é";
   await Deno.writeTextFile(join(dir, name), "");

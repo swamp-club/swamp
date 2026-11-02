@@ -25,20 +25,17 @@ import { canonicalizePath } from "./canonicalize_path.ts";
 import { FileLock } from "./file_lock.ts";
 import { swampPath } from "./paths.ts";
 
-/** Lock file, under the checkout's `.swamp` dir. */
 export const PULLED_EXTENSIONS_LOCK_KEY = "pulled-extensions.lock";
 /** Long enough for another process's apply, including dependency installs. */
 const PULLED_EXTENSIONS_LOCK_MAX_WAIT_MS = 180_000;
 const PULLED_EXTENSIONS_LOCK_TTL_MS = 30_000;
 const PULLED_EXTENSIONS_LOCK_RETRY_INTERVAL_MS = 100;
 
-/** The cross-process layer of the lock. */
 export type PulledExtensionsFileLock = Pick<
   FileLock,
   "acquire" | "tryAcquire" | "release"
 >;
 
-/** Result of {@link PulledExtensionsLock.tryWithLock}. */
 export type TryLockResult<T> =
   | { acquired: false }
   | { acquired: true; value: T };
@@ -55,32 +52,9 @@ interface Lease {
 }
 
 /**
- * Serializes changes to one checkout's pulled extensions: the files
- * under the pulled root and skills dirs, the lockfile entries, and the
- * catalog rows (swamp-club#2709).
- *
- * A section takes two layers, in order:
- *
- * 1. An in-process FIFO mutex keyed by the canonical repo dir, so
- *    concurrent requests in one process (e.g. `swamp serve`) queue
- *    without polling.
- * 2. A {@link FileLock} on `.swamp/pulled-extensions.lock`, so other
- *    processes wait too. Its TTL and heartbeat clear a crashed holder.
- *
- * **Reentrancy.** Each section runs under an `AsyncLocalStorage` lease.
- * A section entered while the caller's lease for the same checkout is
- * active runs inline (e.g. dependency installs under the parent's
- * install). The lease is deactivated when its section exits, so a
- * promise created inside it that enters a section after the exit has to
- * take the lock normally. The check happens at section entry only: a
- * nested section that entered inline and was not awaited keeps running
- * after the outer section exits. Always await nested sections.
- *
- * **Lock order.** Datastore global lock (when held, including by a
- * managed lockfile transaction), then the auto-resolve
- * `.extension-install.lock`, then this lock, then the lockfile's own
- * advisory lock (`lockfileAdvisoryLockPath`). Never take an outer lock
- * while holding this one.
+ * lock order: datastore global lock, auto-resolve .extension-install.lock, this
+ * lock, the lockfile advisory lock; never take an outer lock while holding this
+ * one. Always await nested sections
  */
 export class PulledExtensionsLock {
   readonly #queues = new Map<string, MutexQueue>();
@@ -92,17 +66,7 @@ export class PulledExtensionsLock {
   ) => PulledExtensionsFileLock;
 
   constructor(options?: {
-    /**
-     * Total time a section waits for both layers before throwing
-     * {@link LockTimeoutError}. Defaults to 180s.
-     */
     maxWaitMs?: number;
-    /**
-     * Test seam: builds the cross-process layer for a checkout's
-     * `.swamp` dir, waiting at most `maxWaitMs` (what is left of the
-     * section's budget). Called once per section, so each section gets
-     * a fresh lock instance.
-     */
     createFileLock?: (
       swampDir: string,
       maxWaitMs: number,
@@ -119,13 +83,6 @@ export class PulledExtensionsLock {
         }));
   }
 
-  /**
-   * Runs `fn` holding the lock for `repoDir`, waiting for it if needed.
-   * The wait behind other sections in this process and the wait for
-   * another process's file lock share one budget. Past it, throws
-   * {@link LockTimeoutError} naming the lock file (and, for another
-   * process, its holder).
-   */
   async withLock<T>(repoDir: string, fn: () => Promise<T>): Promise<T> {
     const key = lockKey(repoDir);
     if (this.#holds(key)) return await fn();
@@ -155,11 +112,6 @@ export class PulledExtensionsLock {
     }
   }
 
-  /**
-   * Runs `fn` holding the lock for `repoDir` when it is free, and
-   * reports busy instead of waiting when it is not. Inside an active
-   * lease for the same checkout, runs `fn` inline.
-   */
   async tryWithLock<T>(
     repoDir: string,
     fn: () => Promise<T>,
@@ -206,10 +158,8 @@ export class PulledExtensionsLock {
   }
 
   /**
-   * Queues behind the current holder and resolves to the release
-   * function. Gives up after the max wait: the abandoned place is
-   * released, so sections queued behind it wait only for the ones
-   * ahead of it.
+   * gives up after the max wait and releases the abandoned place, so sections
+   * queued behind it wait only for those ahead
    */
   async #enterMutex(key: string, repoDir: string): Promise<() => void> {
     const { entered, exit } = this.#queue(key);
@@ -233,17 +183,14 @@ export class PulledExtensionsLock {
     return exit;
   }
 
-  /** Enters only when nobody holds or waits for `key`. */
   #tryEnterMutex(key: string): (() => void) | undefined {
     if (this.#queues.has(key)) return undefined;
     return this.#queue(key).exit;
   }
 
   /**
-   * Takes a place at the back of `key`'s queue. `entered` resolves when
-   * every place ahead has exited. The queue's map entry is dropped once
-   * every place has exited, so the map does not grow and a later
-   * {@link tryWithLock} sees the checkout free.
+   * the queue's map entry is dropped once every place has exited, so the map
+   * does not grow and a later tryWithLock sees the checkout free
    */
   #queue(key: string): { entered: Promise<void>; exit: () => void } {
     const queue = this.#queues.get(key) ?? { tail: Promise.resolve(), size: 0 };
@@ -266,7 +213,6 @@ export class PulledExtensionsLock {
   }
 }
 
-/** A checkout's in-process FIFO: the last place's promise, and places held. */
 interface MutexQueue {
   tail: Promise<void>;
   size: number;
@@ -313,5 +259,4 @@ function timeoutError(
   );
 }
 
-/** The process-wide lock every install and removal goes through. */
 export const pulledExtensionsLock = new PulledExtensionsLock();

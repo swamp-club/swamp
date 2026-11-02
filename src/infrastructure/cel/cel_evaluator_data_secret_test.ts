@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// CelEvaluator with typed secrets on, reading data records whose tagged
-// fields are sensitive (design/enablers/typed-secrets.md Sections 3.4 and
-// 6.1, typed-secrets 3.3): the accessors return data-origin Secrets, the
-// evaluator authorizes every reference after release, and invalid records
-// refuse with a stable code.
-
 import {
   assert,
   assertEquals,
@@ -62,7 +56,6 @@ const pathsTag = (...paths: string[]) => ({
   [SENSITIVE_FIELDS_TAG]: JSON.stringify(paths),
 });
 
-/** A record as the accessors return it; its data name carries a secret-shaped suffix. */
 function record(
   name: string,
   attributes: Record<string, unknown>,
@@ -150,10 +143,6 @@ function fixture() {
       Promise.resolve(model === "empty" ? [] : [records.main, records.first]),
     findByTag: (_key: string, value: string) =>
       Promise.resolve(records[value] === undefined ? [] : [records[value]]),
-    // Answers as the query service does under its view: records as stored
-    // for no select or an empty one, and otherwise the projection the view
-    // post-processed, here each named record's attributes viewed through
-    // the view it received, or the record's name.
     query: (predicate: string, select?: string, view?: QueryView) => {
       calls.push({ accessor: "query", args: [predicate, select, view] });
       const named = predicate === "none"
@@ -196,7 +185,6 @@ function fixture() {
   };
 }
 
-/** The forms cel-js absorbs an error under, the erroring operand first. */
 function absorbed(expression: string): string[] {
   const probe = `dyn(${expression}) == null`;
   return [
@@ -250,7 +238,6 @@ Deno.test("CelEvaluator data secrets: a whole record keeps its structure, with a
   assertEquals(result.attributes.nested.plain, "p");
   assertEquals(result.content, result.attributes);
   assertEquals(result.name, "main-vary-s3cret");
-  // Plain data: cloneable, with no getter left.
   structuredClone(result);
   assertEquals(
     Object.getOwnPropertyDescriptor(result.attributes, "password")?.get,
@@ -305,13 +292,11 @@ Deno.test("CelEvaluator data secrets: data.version, findBySpec and findByTag ada
     );
     assertEquals(failure instanceof MissingModelDataError, false, expression);
   }
-  // No tag: reference-looking text stays text, and nothing needs a scope.
   const unscoped = { secretBag: f.bag };
   assertEquals(
     await f.evaluate("data.latest('db', 'untagged').attributes.a", unscoped),
     REF_A,
   );
-  // Another namespace's record is returned as stored, its tag unread.
   assertEquals(
     await f.evaluate(
       "data.latest('db', 'foreign').attributes.password",
@@ -398,9 +383,6 @@ Deno.test("CelEvaluator data secrets: an index into a set read that found no rec
     );
     assertStringIncludes(missing.message, "found no data record", expression);
   }
-  // A record set that is not empty, an empty list that is not the set read,
-  // and an empty answer to a different call are the expression's own
-  // failures.
   for (
     const expression of [
       "data.findBySpec('db', 'creds')[2]",
@@ -439,8 +421,6 @@ Deno.test("CelEvaluator data secrets: every tagged reference is authorized after
     assertStringIncludes(error.message, "Reading vault 'prod' is refused");
     assertEquals(denials.length, 1);
     assertEquals(denials[0].vaultName, "prod");
-    // With typed secrets off the read itself is refused, and the evaluation
-    // fails the same way.
     const cause = error.cause;
     const off = await assertRejects(
       () =>
@@ -490,7 +470,6 @@ Deno.test("CelEvaluator data secrets: a grant revoked mid-run fails the next eva
 
 Deno.test("CelEvaluator data secrets: a set read authorizes every returned record's references, even when the expression uses another record", async () => {
   const f = fixture();
-  // Only the main record references key B; the expression reads the first.
   const access = RunVaultAccess.create({
     policy: {
       principal: "user:tester",
@@ -533,7 +512,6 @@ Deno.test("CelEvaluator data secrets: a missing vault scope fails closed, and th
     InvalidExpressionError,
     "requires evaluateAsync",
   );
-  // Reads that touch no tagged record stay synchronous.
   assertEquals(
     f.evaluator.evaluate("model.web.input.name", f.context, f.scope),
     "web",
@@ -546,8 +524,6 @@ Deno.test("CelEvaluator data secrets: a missing vault scope fails closed, and th
     ),
     REF_A,
   );
-  // A refused synchronous result issues no sentinel: not a whole record,
-  // and not a map the expression returned without reading its records.
   for (
     const expression of [
       "model.web.resource.creds.main",
@@ -563,8 +539,6 @@ Deno.test("CelEvaluator data secrets: a missing vault scope fails closed, and th
     );
     assertEquals(f.bag.registry.isEmpty, true, expression);
   }
-  // An invalid record first read that way keeps its code wherever it sits:
-  // the whole result is read, so a valid record before it decides nothing.
   for (
     const expression of [
       "model.web.resource.broken",
@@ -585,8 +559,6 @@ Deno.test("CelEvaluator data secrets: a missing vault scope fails closed, and th
 
 Deno.test("CelEvaluator data secrets: the synchronous path reads the whole result, so a bound sentinel ahead of an unread record still refuses before release issues anything", () => {
   const f = fixture();
-  // A sentinel the run issued earlier, bound from the context as a Secret
-  // that the result holds before the record.
   f.context.inputs = {
     item: "x",
     s: f.bag.addSecret({ vaultName: "prod", key: "A" }, "inputs.s"),
@@ -609,7 +581,6 @@ Deno.test("CelEvaluator data secrets: the synchronous path reads the whole resul
     );
     assertEquals(issued(), before, expression);
   }
-  // An invalid record behind a valid one keeps its code.
   const invalid = assertThrows(
     () =>
       f.evaluator.evaluate(
@@ -621,7 +592,6 @@ Deno.test("CelEvaluator data secrets: the synchronous path reads the whole resul
   );
   assertEquals(invalid.code, SECRET_REFERENCE_INVALID);
   assertEquals(issued(), before);
-  // A bound sentinel beside an untagged record is not refused.
   const released = f.evaluator.evaluate(
     "[inputs.s, model.web.resource.creds.plain.attributes.a]",
     f.context,
@@ -686,7 +656,6 @@ Deno.test("CelEvaluator data secrets: has(), optional access and key membership 
   const f = fixture();
   for (
     const expression of [
-      // has() takes a select chain, so the record comes from the model map.
       "has(model.web.resource.creds.main.attributes.password) && inputs.item in ['x']",
       "data.latest('db', 'main').attributes.?password.hasValue() && inputs.item in ['x']",
       "'z' in data.latest('db', 'first').attributes && inputs.item in ['x']",
@@ -724,9 +693,6 @@ Deno.test("CelEvaluator data secrets: a model indexed by name and by id reads on
   assert(f.bag.registry.issuedEntryOf(byName));
   assertEquals(f.context.model, originalModel);
 
-  // model.method answers the record's attributes with its tagged fields as
-  // Secrets (typed-secrets 3.5), so the reference leaves as a data-origin
-  // sentinel and never as comparable text.
   const withMethod = fixture();
   withMethod.context.modelMethod = {
     method: () => Promise.resolve(withMethod.records.main),
@@ -753,7 +719,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged reference
   assertEquals(prepared.authorizedReferences?.size, 2);
   assert(prepared.authorizedReferences?.has("prod\u0000A"));
   assert(prepared.authorizedReferences?.has("prod\u0000B"));
-  // The original scope is untouched, and still fails closed.
   assertEquals(f.scope.authorizedReferences, undefined);
   assertThrows(
     () =>
@@ -765,9 +730,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged reference
     InvalidExpressionError,
     "requires evaluateAsync",
   );
-  // Under the prepared scope the read is accepted: a plain field reads, a
-  // tagged field leaves as a sentinel issued into the bag, and a record the
-  // expression returns whole is adapted and released.
   assertEquals(
     f.evaluator.evaluate(
       "model.web.resource.creds.main.attributes.user",
@@ -782,18 +744,14 @@ Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged reference
     prepared,
   ) as string;
   assert(f.bag.registry.issuedEntryOf(password));
-  // Expressions reading the same model by id share the authorization; a
-  // second prepare adds nothing and answers the same scope.
   const again = await f.evaluator.prepareSynchronousReads(
     "${{ model['uuid-1'].resource.creds.main.attributes.user }}",
     f.context,
     prepared,
   );
   assertEquals(again, prepared);
-  // A reference of a model the content never names is not authorized:
-  // the synchronous read of it still fails closed under the prepared scope.
-  // Authorization is by vault and key, so only a reference the named model
-  // does not hold tells the two apart.
+  // a reference to a model the content never names is not authorized, so the
+  // synchronous read still fails closed; authorization is by vault and key
   const other = {
     ...f.context,
     model: {
@@ -835,7 +793,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged reference
     ),
     "u",
   );
-  // An expression that names no model, or typed secrets off, changes nothing.
   assertEquals(
     await f.evaluator.prepareSynchronousReads(
       "${{ inputs.item }}",
@@ -872,7 +829,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: a denied reference is kept and 
     );
     assertInstanceOf(denied.cause, VaultAccessDeniedError);
     assertStringIncludes(denied.message, "Reading vault 'prod' is refused");
-    // An expression of the same content that reads no record evaluates.
     assertEquals(f.evaluator.evaluate("inputs.item", f.context, prepared), "x");
   });
   assertEquals(f.bag.registry.isEmpty, true);
@@ -890,9 +846,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: a denied reference is kept and 
     InvalidExpressionError,
     "requires the run's vault check scope",
   );
-  // A record whose tag does not parse yields nothing to authorize (the
-  // model's valid records still do) and is left for the evaluation to
-  // refuse with its own code.
   const prepared = await f.evaluator.prepareSynchronousReads(
     "${{ model.web.resource.broken.bad.attributes.password }}",
     f.context,
@@ -955,8 +908,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: a denied record of a named mode
       ),
       "u",
     );
-    // The denied record fails only the read that touches it, with the
-    // access error, and nothing is issued for it.
     const denied = assertThrows(
       () =>
         f.evaluator.evaluate(
@@ -991,9 +942,6 @@ Deno.test("CelEvaluator: steps.<name>.outputs reads through the step's sources w
   );
   const wait = { status: "succeeded", outputs: { payload: { ok: true } } };
   const context = { ...f.context, steps: { seed, wait } };
-  // A plain field reads; a tagged field leaves as a sentinel issued into
-  // the bag as a data-origin reference; a context with no sources is read
-  // as it is.
   assertEquals(
     await f.evaluator.evaluateAsync(
       "steps.seed.outputs.user",
@@ -1020,8 +968,6 @@ Deno.test("CelEvaluator: steps.<name>.outputs reads through the step's sources w
     ),
     true,
   );
-  // An operation on the tagged field is refused, and the caller's context
-  // keeps its flat outputs as stored.
   await assertRejects(
     () =>
       f.evaluator.evaluateAsync(
@@ -1032,8 +978,6 @@ Deno.test("CelEvaluator: steps.<name>.outputs reads through the step's sources w
     SecretRefusedError,
   );
   assertEquals(seed.outputs.password, REF_A);
-  // The synchronous evaluate fails closed until the authorization step has
-  // seen the step; a computed key authorizes nothing.
   assertThrows(
     () => f.evaluator.evaluate("steps.seed.outputs.user", context, f.scope),
     InvalidExpressionError,
@@ -1073,8 +1017,6 @@ Deno.test("CelEvaluator data secrets: data.query passes the typed environment's 
   assertEquals(call.args[1], undefined);
   const view = call.args[2] as QueryView;
   assertEquals(typeof view.predicate, "function");
-  // Records answered are adapted like findBySpec results: the own record's
-  // tagged field leaves as a data-origin sentinel, the foreign one as stored.
   const sentinel = whole[0].attributes.password as string;
   const entry = f.bag.registry.issuedEntryOf(sentinel);
   assert(entry !== undefined);
@@ -1087,9 +1029,6 @@ Deno.test("CelEvaluator data secrets: data.query passes the typed environment's 
   assertEquals(f.calls.at(-1)?.args[1], "");
   assert(f.bag.registry.issuedEntryOf(empty[0].attributes.password as string));
 
-  // A projection holding a Secret leaves as a sentinel, one holding a
-  // container of them with a sentinel at each tagged field, and a plain one
-  // plain.
   const projected = await f.evaluate(
     "data.query('main', 'attributes.password')",
   ) as string[];
@@ -1131,8 +1070,6 @@ Deno.test("CelEvaluator data secrets: the view data.query hands its delegate is 
       },
     },
   });
-  // Bound to "security": the record of that namespace is adapted (its
-  // field is no longer the stored text); bound to "": left as stored.
   assertEquals(
     await f.evaluator.evaluateAsync(
       "data.query('x', 'y')",

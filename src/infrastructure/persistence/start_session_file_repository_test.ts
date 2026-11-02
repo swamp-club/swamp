@@ -65,7 +65,6 @@ async function exists(path: string): Promise<boolean> {
   return await Deno.lstat(path).then(() => true, () => false);
 }
 
-/** Writes an old-style `state.json` (one session, `session` key). */
 async function writeLegacyState(
   path: string,
   session: StartSession,
@@ -78,7 +77,6 @@ async function writeLegacyState(
   );
 }
 
-/** A brief exactly as swamp start rendered it for `text`. */
 function briefFor(ws: string, text: string): string {
   return renderBrief({
     task: StartTask.create(text),
@@ -220,13 +218,11 @@ Deno.test("StartSessionFileRepository.reserveBriefFile: dates and slugs, skippin
       "List my pods",
     );
     assertEquals(first, "tasks/2026-10-03-list-my-pods.md");
-    // Taken by a task's record, before its brief is written.
     await repo.save(launchedTask(dir));
     assertEquals(
       await repo.reserveBriefFile(dir, "2026-10-03T11:00:00Z", "List my pods"),
       "tasks/2026-10-03-list-my-pods-2.md",
     );
-    // Taken by a file in tasks/.
     await Deno.mkdir(join(dir, "tasks"), { recursive: true });
     await Deno.writeTextFile(
       join(dir, "tasks", "2026-10-03-list-my-pods-2.md"),
@@ -286,22 +282,16 @@ Deno.test({
   },
 });
 
-// ---------------------------------------------------------------------------
-// Migration from the one-current-task layout
-// ---------------------------------------------------------------------------
-
 Deno.test("migrateLegacy: the current task and filed ones become task records with their briefs", async () => {
   await withTempDir(async (ws) => {
     const repo = new StartSessionFileRepository();
     const start = startDir(ws);
-    // The old current task, launched, its brief at TASK.md.
     const current = launchedTask(ws);
     await writeLegacyState(join(start, "state.json"), current);
     await Deno.writeTextFile(
       join(ws, "TASK.md"),
       briefFor(ws, "list my pods\nin prod"),
     );
-    // A filed task, its brief already in tasks/.
     const filed = legacyTask(ws, "List my VPCs", "2026-10-01T09:00:00Z");
     await writeLegacyState(
       join(start, "history", filed.id, "state.json"),
@@ -317,7 +307,6 @@ Deno.test("migrateLegacy: the current task and filed ones become task records wi
       JSON.stringify({ file: "tasks/2026-10-01-list-my-vpcs.md" }),
     );
 
-    // Listed read-only before migrating.
     assertEquals(
       (await repo.list(ws)).map((t) => t.id).sort(),
       [current.id, filed.id].sort(),
@@ -343,7 +332,6 @@ Deno.test("migrateLegacy: the current task and filed ones become task records wi
     assert(!await exists(join(start, "state.json")));
     assert(!await exists(join(start, "history")));
 
-    // Running it again changes nothing.
     assertEquals(await repo.migrateLegacy(ws), { migrated: 0, kept: [] });
     assertEquals((await repo.list(ws)).length, 2);
   });
@@ -370,7 +358,6 @@ Deno.test("migrateLegacy: a TASK.md written for another task is never given to t
       (await repo.load(ws, current.id))?.briefFile,
       "tasks/2026-10-03-list-my-pods.md",
     );
-    // The unmatched TASK.md is left exactly where it was.
     assertEquals(await Deno.readTextFile(join(ws, "TASK.md")), otherBrief);
     assertEquals(
       [...Deno.readDirSync(join(ws, "tasks"))].map((e) => e.name),
@@ -406,7 +393,6 @@ Deno.test("migrateLegacy: a TASK.md swamp didn't write is left alone", async () 
     assertEquals((await repo.migrateLegacy(ws)).migrated, 1);
     assertEquals(await Deno.readTextFile(join(ws, "TASK.md")), "my own notes");
     const [task] = await repo.list(ws);
-    // No brief was taken over: it gets one at its next launch.
     assertEquals(task.briefFile, undefined);
     assertEquals(task.step, "launched");
   });

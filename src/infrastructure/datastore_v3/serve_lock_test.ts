@@ -48,18 +48,14 @@ await initializeLogging({});
 
 const KEY = "data/aws/ec2/0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01/.lock";
 
-/** Serve's lock routes, in memory, recording every call. */
 class FakeServe implements ServeLockClient {
   readonly baseUrl = "https://serve.test";
   readonly timeoutMs = 30_000;
   readonly calls: string[] = [];
-  /** Answers each acquire in turn; the last repeats. */
   answers: Array<"held" | "acquired" | Error> = ["acquired"];
-  /** The lease renewals answer with; undefined says it expired. */
   renewal: "renew" | "expired" | Error = "renew";
   releaseError: Error | undefined;
   closed = 0;
-  /** The fence each granted lease carries; undefined is an older serve. */
   fence: number | undefined;
   floor: LockLease["floor"];
   #leases = 0;
@@ -276,8 +272,6 @@ Deno.test("ServeLock.withLock: holds the lease for the callback only", async () 
   assert(serve.calls.includes("release lease-1"));
 });
 
-// Fenced leases (swamp-club#4121).
-
 const ROOT = "/checkout/.swamp/datastore";
 const PARTITION = partitionOf({
   kind: "model",
@@ -299,7 +293,6 @@ Deno.test("ServeLock: a fenced lease is registered once acquire succeeds, and re
     },
   });
   await subject.acquire();
-  // Not before acquire succeeded.
   assertEquals(seenDuringCatchUp, undefined);
   assertEquals(heldServeLeaseOf(ROOT, PARTITION), {
     leaseId: "lease-1",
@@ -377,7 +370,6 @@ Deno.test("ServeLock: a fenced lease that cannot be renewed before its local dea
   resetServeLeasesForTesting();
   const serve = new FakeServe();
   serve.fence = 2;
-  // Serve away: every renewal fails as unreachable.
   serve.renewal = new ServeUnreachableError(
     "https://serve.test",
     "maybe",
@@ -419,7 +411,6 @@ Deno.test("ServeLock: a renewed fenced lease keeps its fence and floor", async (
   await subject.release();
 });
 
-/** A checkout-local lock, recording when it is held. */
 function localLock(events: string[]) {
   return {
     acquire: () => {

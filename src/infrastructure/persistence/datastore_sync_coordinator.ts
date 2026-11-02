@@ -17,26 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Global datastore sync coordinator with distributed locking.
- *
- * Supports two modes:
- * - **Full sync** (S3 datastores): lock + pull → execute → push + unlock
- * - **Lock-only** (filesystem datastores): lock → execute → unlock
- *
- * Supports both global locking (structural commands) and per-model
- * locking (model method run). Uses a Map of named entries so multiple
- * independent locks can be held concurrently.
- *
- * Registered in requireInitializedRepo, flushed from runCli() after the
- * command completes.
- *
- * Each direction (push/pull) is bounded by a hard deadline — see
- * `runBoundedSync`. The deadline protects swamp from extensions that
- * never return (issue #157) by firing a `SyncTimeoutError` regardless
- * of whether the extension honored the AbortSignal.
- */
-
 import { withRunPhase } from "../../domain/remote/run_progress.ts";
 import {
   type DatastoreSyncService,
@@ -55,67 +35,31 @@ import {
 } from "../process/shutdown_handlers.ts";
 import { summarizeSyncError } from "./sync_error_diagnostic.ts";
 
-/** Options for registering a datastore sync lifecycle. */
 export interface RegisterDatastoreSyncOptions {
-  /** Sync service for pull/push operations. */
   service?: DatastoreSyncService;
-  /** Distributed lock for concurrency control. */
   lock?: DistributedLock;
-  /** Label for log messages (e.g. "S3", "custom"). Defaults to "datastore". */
   label?: string;
-  /**
-   * Hard deadline (ms) enforced on each direction of sync. Applies
-   * independently to pull and push — not a combined budget. Falls back to
-   * `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes) when omitted. Ignored when no
-   * service is registered.
-   */
   syncTimeoutMs?: number;
-  /**
-   * When `true`, the initial pull passes `{ metadataOnly: true }` to
-   * `pullChanged`, signalling the extension to skip content files.
-   * Used when `hydrationStrategy` is `"lazy"`.
-   */
   metadataOnly?: boolean;
-  /**
-   * Namespace whose data subtree this sync lifecycle targets.
-   * Passed through to `pullChanged` and `pushChanged` so extensions
-   * can scope their index walk to `{namespace}/`. When `undefined` or
-   * empty, the extension syncs everything (solo mode).
-   */
   namespace?: string;
-  /**
-   * Which lock this is, and whether another repo can reach the datastore.
-   * A slow acquisition is reported only when this is set, with advice
-   * chosen by `slowLockAdvice`.
-   */
   slowLockScope?: SlowLockScope;
 }
 
-/** The lock a registration takes, for slow-acquisition advice. */
 export interface SlowLockScope {
-  /** Global datastore lock, or the lock of one model instance. */
   scope: LockScope;
-  /** Whether another repo can reach this datastore. */
   shareable: boolean;
 }
 
-/**
- * Advice for a slow global lock on a shareable datastore with no namespace.
- * Contains no `{`, so it can be appended to a LogTape template.
- */
+/** contains no brace so it can be appended to a LogTape template */
 export const SLOW_LOCK_NAMESPACE_ADVICE =
   "if multiple repos share this datastore without namespaces, all writes " +
   "serialize behind a single lock. Run 'swamp datastore namespace set " +
   "<name>' to scope each repo to its own lock and index";
 
-/**
- * Cause of a slow per-model lock. Contains no `{`, so it can be appended to
- * a LogTape template.
- */
+/** contains no brace so it can be appended to a LogTape template */
 export const SLOW_LOCK_MODEL_CONTENTION_ADVICE =
   "concurrent runs against one behavior instance take turns on its lock";
 
-/** Internal entry tracking a single lock/sync pair. */
 interface SyncEntry {
   service?: DatastoreSyncService;
   lock?: DistributedLock;
@@ -124,21 +68,16 @@ interface SyncEntry {
   namespace?: string;
 }
 
-/** Key used by the global (structural) lock. */
 export const GLOBAL_LOCK_KEY = "__global__";
 
-/** Interval at which long-running syncs emit a heartbeat log line. */
 const PROGRESS_LOG_INTERVAL_MS = 30_000;
 
-/** Map of all registered lock entries, keyed by lock name. */
 const entries: Map<string, SyncEntry> = new Map();
 let shutdownHandle: ShutdownHandlerHandle | null = null;
 
 /**
- * Installs the SIGINT handler to release all held locks. SIGINT-only by
- * design: this fast-path handler runs on Ctrl-C and `Deno.exit(130)`s
- * after a 5s force-exit deadline. Long-form POSIX signals (SIGTERM,
- * SIGHUP) are handled by command-level shutdown logic, not here.
+ * SIGINT only: this fast path runs on Ctrl-C and exits 130 after a 5s
+ * force-exit deadline; SIGTERM and SIGHUP are handled by command-level shutdown
  */
 function installSignalHandler(): void {
   if (shutdownHandle) return;
@@ -160,9 +99,6 @@ function installSignalHandler(): void {
   });
 }
 
-/**
- * Removes the SIGINT handler if no entries remain.
- */
 function maybeRemoveSignalHandler(): void {
   if (entries.size > 0 || !shutdownHandle) return;
   shutdownHandle.dispose();
@@ -172,13 +108,8 @@ function maybeRemoveSignalHandler(): void {
 let suppressCount = 0;
 
 /**
- * Temporarily suppresses the `Deno.exit(130)` call in the SIGINT handler.
- * Lock releases still happen, but the process stays alive so the caller can
- * do its own cleanup (e.g. save a cancelled workflow run and render the
- * final TUI state). Call the returned dispose function to re-enable.
- *
- * Reference-counted: if two callers suppress, the first dispose does not
- * re-enable exit for the second.
+ * reference-counted: the first dispose does not re-enable exit while another
+ * caller still suppresses it
  */
 export function suppressSyncExitOnSignal(): { dispose(): void } {
   suppressCount++;
@@ -194,27 +125,9 @@ export function suppressSyncExitOnSignal(): { dispose(): void } {
 }
 
 /**
- * Runs a sync operation with a hard deadline.
- *
- * Single-AbortController design: one `setTimeout` fires
- * `controller.abort(SyncTimeoutError)`, which both (a) aborts the signal
- * passed to the extension so signal-compliant implementations can unwind
- * cleanly, and (b) rejects the race so non-compliant implementations do
- * not block the CLI beyond the deadline. One source of truth, no
- * ms-level drift between two independent timers.
- *
- * While the operation is in flight, a progress log fires every
- * {@link PROGRESS_LOG_INTERVAL_MS} so CI logs don't go silent during
- * long syncs. The interval is cleared in the `finally` so it never
- * outlives the operation.
- *
- * The losing branch of `Promise.race` gets a `.catch(() => {})` so its
- * delayed rejection does not surface as an unhandled rejection.
- *
- * Exported so other entry points into extension sync services (e.g.
- * `datastore setup` migration, `datastore sync` CLI) can apply the same
- * bound — swamp core should never call an extension sync method
- * unbounded, regardless of which code path reaches it.
+ * one controller aborts the extension signal and rejects the race, so a
+ * non-compliant extension cannot block past the deadline; core never calls
+ * extension sync unbounded
  */
 export async function runBoundedSync<T>(
   label: string,
@@ -242,13 +155,11 @@ export async function runBoundedSync<T>(
   }, PROGRESS_LOG_INTERVAL_MS);
 
   try {
-    // Invoke the op inside the try so a synchronous throw still hits the
-    // `finally` that clears the timer and interval — otherwise a sync
-    // throw leaks the timers.
+    // invoke op inside the try so a synchronous throw still reaches the finally
+    // that clears the timer and interval
     const opPromise = Promise.resolve().then(() => op(controller.signal));
-    // Absorb late rejection from the losing branch of the race so the
-    // delayed error (typically AbortError from the extension observing
-    // signal.aborted) is not reported as an unhandled rejection.
+    // absorb the losing branch's late rejection so it is not reported as
+    // unhandled
     opPromise.catch(() => {});
 
     try {
@@ -263,11 +174,9 @@ export async function runBoundedSync<T>(
         }),
       ]);
     } catch (err) {
-      // If the hard deadline fired, prefer the actionable SyncTimeoutError
-      // over whatever the extension rejected with (e.g. a cooperative
-      // AbortError from observing signal.aborted). The extension may have
-      // rejected first due to microtask listener ordering, but users want
-      // the force-release hint in the message.
+      // when the deadline fired, prefer SyncTimeoutError over the extension's
+      // own rejection, which can win on listener ordering; users need the
+      // force-release hint
       if (
         controller.signal.aborted &&
         controller.signal.reason instanceof SyncTimeoutError
@@ -282,7 +191,6 @@ export async function runBoundedSync<T>(
   }
 }
 
-/** Warns about a slow lock acquisition when advice would help. */
 function logSlowLock(
   logger: ReturnType<typeof getSwampLogger>,
   lockMs: number,
@@ -308,27 +216,12 @@ function logSlowLock(
   }
 }
 
-/**
- * Registers the datastore sync lifecycle (global lock).
- *
- * - If `lock` is provided, acquires it and installs a SIGINT handler
- *   for best-effort release on Ctrl-C.
- * - If `service` is provided, pulls changed files from S3.
- * - Either can be used independently (lock-only for filesystem datastores,
- *   or service-only if no lock is needed).
- */
 export async function registerDatastoreSync(
   options: RegisterDatastoreSyncOptions,
 ): Promise<void> {
   await registerDatastoreSyncNamed(GLOBAL_LOCK_KEY, options);
 }
 
-/**
- * Registers a named datastore sync lifecycle.
- *
- * Acquires the lock (if provided), pulls from S3 (if service provided),
- * and registers for cleanup on flush/SIGINT.
- */
 export async function registerDatastoreSyncNamed(
   key: string,
   options: RegisterDatastoreSyncOptions,
@@ -339,12 +232,9 @@ export async function registerDatastoreSyncNamed(
   const entry: SyncEntry = { service, lock, label, syncTimeoutMs, namespace };
   entries.set(key, entry);
 
-  // Tracks what must be unwound if register fails. Critical: the outer
-  // runCli() error handler calls flushDatastoreSync() in its catch block
-  // (cli/mod.ts:1066) without try/catch, so an orphaned entry left here
-  // would cause the error handler to invoke push on the same hung service
-  // and throw again — shadowing the original error and doubling the
-  // user-visible timeout wait. See swamp#1216 review (double-timeout bug).
+  // unwind on failure: the outer error handler flushes without try/catch, so an
+  // orphaned entry would push to the same hung service and shadow the original
+  // error with a second timeout
   let lockAcquired = false;
 
   const unwindOnFailure = async () => {
@@ -359,7 +249,6 @@ export async function registerDatastoreSyncNamed(
     maybeRemoveSignalHandler();
   };
 
-  // Acquire distributed lock if provided
   if (lock) {
     const logger = getSwampLogger(["datastore", "lock"]);
     logger.debug("Acquiring lock for {label}", { label });
@@ -392,7 +281,6 @@ export async function registerDatastoreSyncNamed(
     installSignalHandler();
   }
 
-  // Pull changed files if a sync service is registered
   if (service) {
     const syncSpan = getTracer().startSpan("swamp.datastore.sync", {
       attributes: {
@@ -429,9 +317,8 @@ export async function registerDatastoreSyncNamed(
       const { summary, fields } = summarizeSyncError("pull", label, error);
       syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: summary });
       await unwindOnFailure();
-      // SyncTimeoutError renders cleanly at the top level (UserError); do
-      // not log here and do not rewrap (a generic Error wrapper would lose
-      // the clean render and double the output with stack trace).
+      // SyncTimeoutError renders cleanly as a UserError: do not log it here or
+      // rewrap it
       if (error instanceof SyncTimeoutError) {
         throw error;
       }
@@ -444,21 +331,10 @@ export async function registerDatastoreSyncNamed(
 }
 
 /**
- * Flushes the datastore sync lifecycle (global lock).
- *
- * - If a sync service is registered, pushes changed files to S3.
- * - Releases the distributed lock if held.
- * - Clears all references after flushing.
- *
- * If any individual flush throws (e.g. `SyncTimeoutError`), the loop still
- * completes the remaining entries so every lock gets released — otherwise a
- * single timeout would strand later entries with held locks, re-creating
- * the stuck-lock bug this coordinator was hardened against. Once all
- * entries settle, the first collected error is re-thrown, preferring a
- * `SyncTimeoutError` so the actionable message surfaces.
+ * a failing flush must not stop the loop, so every lock is released; the first
+ * error is rethrown afterwards, preferring SyncTimeoutError
  */
 export async function flushDatastoreSync(): Promise<void> {
-  // Flush all entries (global + any per-model entries)
   const keys = [...entries.keys()];
   const errors: unknown[] = [];
   for (const key of keys) {
@@ -477,14 +353,9 @@ export async function flushDatastoreSync(): Promise<void> {
 }
 
 /**
- * Flushes a single named sync entry.
- *
- * Pushes to S3 if a service is registered, then releases the lock. Push
- * errors are normally warn-downgraded so a transient S3 blip does not
- * abort the CLI run — BUT `SyncTimeoutError` propagates. A timeout is
- * structurally different from a transient failure (retries mask one,
- * not the other), so the user must see a non-zero exit to know data did
- * not make it to the remote.
+ * push errors warn-downgrade so a transient blip does not abort the run, but
+ * SyncTimeoutError propagates: a timeout means data did not reach the remote
+ * and needs a non-zero exit
  */
 export async function flushDatastoreSyncNamed(key: string): Promise<void> {
   const entry = entries.get(key);
@@ -528,14 +399,9 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
     } catch (error) {
       const { summary, fields } = summarizeSyncError("push", label, error);
       syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: summary });
-      // Asymmetric surface per issue #157: timeouts propagate so the user
-      // sees a non-zero exit; other push errors warn-downgrade (preserves
-      // historical behavior where a transient S3 blip doesn't kill a run).
-      //
-      // For timeouts we do NOT log here — the error propagates to the
-      // top-level renderError which renders the message (SyncTimeoutError
-      // extends UserError, so no stack). Logging here as well would double
-      // the output with slightly different wording.
+      // timeouts propagate for a non-zero exit while other push errors warn; a
+      // timeout is not logged here because the top-level renderError shows it
+      // and logging would double the output
       if (error instanceof SyncTimeoutError) {
         if (entry.lock) {
           try {
@@ -557,7 +423,6 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
     }
   }
 
-  // Release distributed lock
   if (entry.lock) {
     try {
       await entry.lock.release();
@@ -572,9 +437,6 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
   maybeRemoveSignalHandler();
 }
 
-/**
- * Returns all currently registered lock keys.
- */
 export function getRegisteredLockKeys(): string[] {
   return [...entries.keys()];
 }

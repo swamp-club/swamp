@@ -33,13 +33,8 @@ import {
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 
 /**
- * JSONL-based implementation of AuditRepository.
- *
- * Stores bash command entries in date-partitioned JSONL files:
- * {repoDir}/.swamp/audit/commands-{YYYY-MM-DD}.jsonl
- *
- * Append-only for safe concurrent writes from hooks.
- * Silent failure to avoid breaking CLI execution.
+ * append-only so hooks can write concurrently; failures are silent so the CLI
+ * never breaks
  */
 export class JsonlAuditRepository implements AuditRepository {
   private readonly baseDir: string;
@@ -48,10 +43,6 @@ export class JsonlAuditRepository implements AuditRepository {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.audit);
   }
 
-  /**
-   * Appends a bash command entry to the day's JSONL file.
-   * Never throws.
-   */
   async append(entry: BashCommandEntry): Promise<void> {
     try {
       const auditDir = this.getAuditDir();
@@ -79,9 +70,6 @@ export class JsonlAuditRepository implements AuditRepository {
     }
   }
 
-  /**
-   * Finds all bash command entries within a time range.
-   */
   async findByTimeRange(
     startTime: Date,
     endTime: Date,
@@ -91,7 +79,6 @@ export class JsonlAuditRepository implements AuditRepository {
     try {
       const auditDir = this.getAuditDir();
 
-      // Iterate date range to find relevant files
       const current = new Date(startTime);
       current.setUTCHours(0, 0, 0, 0);
 
@@ -110,7 +97,6 @@ export class JsonlAuditRepository implements AuditRepository {
               const data = JSON.parse(line) as BashCommandEntryData;
               const entry = bashCommandEntryFromData(data);
 
-              // Filter entries within the time range
               const entryTime = new Date(entry.timestamp);
               if (entryTime >= startTime && entryTime <= endTime) {
                 entries.push(entry);
@@ -141,9 +127,6 @@ export class JsonlAuditRepository implements AuditRepository {
     return entries;
   }
 
-  /**
-   * Deletes audit files older than the given date.
-   */
   async deleteOlderThan(date: Date): Promise<number> {
     let deletedCount = 0;
     const cutoffDateStr = date.toISOString().split("T")[0];

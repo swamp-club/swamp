@@ -17,14 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Which share of the scan permits a listing or read draws on: `"search"` for
- * the history and search listings serve requests run, `"lookup"` for the
- * per-type reads a method run makes.
- */
 export type ScanKind = "search" | "lookup";
 
-/** Gives back the permit {@link ScanPermits.acquire} took; later calls do nothing. */
 export type ReleaseScanPermit = () => void;
 
 interface Waiter {
@@ -33,11 +27,9 @@ interface Waiter {
 }
 
 /**
- * A counting semaphore of `limit` permits of which searches may hold at most
- * `searchLimit`, so lookups always have `limit - searchLimit` that no search
- * can take (swamp-club#4073). A released permit goes to the first waiter, in
- * arrival order, that may take it: a search waiting while searches hold
- * their whole share does not hold up a lookup that asked after it.
+ * searches may hold at most searchLimit so lookups always have the rest; a
+ * released permit goes to the first waiter that may take it, so a blocked
+ * search does not hold up a later lookup
  */
 export class ScanPermits {
   #held = 0;
@@ -52,11 +44,6 @@ export class ScanPermits {
     }
   }
 
-  /**
-   * A permit of `kind`, resolved with the function that gives it back. Once
-   * `signal` aborts, a caller still waiting leaves the queue without a permit
-   * and the promise rejects with the abort reason.
-   */
   acquire(kind: ScanKind, signal?: AbortSignal): Promise<ReleaseScanPermit> {
     if (signal?.aborted) {
       return Promise.reject(
@@ -120,63 +107,17 @@ export class ScanPermits {
 }
 
 /**
- * How many directories the output repository's findAllGlobalSince
- * (swamp-club#4056) and per-type listings (swamp-club#4058) and the
- * workflow-run repository's findAllGlobalSince and findGlobalByStatus
- * (swamp-club#4076) and findByStatus (swamp-club#4077) list, or files they and
- * the catalog report reads (swamp-club#4075) stat or read, at once, between all
- * of those scans in the process. An async listing of a large directory takes
- * dozens of event-loop turns, and a read one more, so awaiting them one at a
- * time made a busy serve's scan as slow as its turns added up. The bound is
- * shared, not per scan, because concurrent requests for different scans each
- * scan: 16 per scan ran a serve under a low hard open-file limit out of
- * descriptors. Identical requests share one scan (swamp-club#4074), so the
- * bound caps descriptors and sharing caps memory. Lookups that open one file at
- * a time (findById, findByIds and the like) do not take a permit, so the
- * process holds at most 16 scan descriptors plus one or two per such lookup,
- * beside the definition index's 32. A workflow-run status scan that finds a
- * workflow's run index out of line with its records repairs it outside the
- * permits, one record at a time, so it adds at most one descriptor per repair
- * under way, and it validates at most {@link SCAN_CONCURRENCY} workflows at
- * once; a since scan never repairs. Every repository in the process shares the
- * permits, so scans of a slow filesystem can delay scans of another. A scan
- * given an AbortSignal (a serve request's) stops waiting for permits once it
- * aborts, starts no further listing or read, and gives back each permit it
- * holds as that listing or read settles (swamp-club#4070). Workflow approvals
- * and superseding pass findByStatus their request's or run's signal
- * (swamp-club#4088).
- *
- * A listing holds its permit for its whole `Deno.readDir` iteration, and its
- * directory stays open throughout, so the permit cannot be given back
- * between batches without breaking the bound on open files. Instead the
- * search and history listings serve requests run (findHistoryByDefinition,
- * findAllGlobal, findAllGlobalSince) may hold at most
- * {@link SEARCH_SCAN_SHARE} permits, so a method run's per-type reads
- * (findAll, findByDefinition, findLatestByDefinition) always have the rest,
- * however many large listings are under way (swamp-club#4073). The share
- * follows the method, not its caller: serve's model output get reads
- * through findLatestByDefinition and findByDefinition, so it draws on the
- * lookups' permits as a method run does. Report search and get, and the
- * workflow-run scans, read through the search share: they are listings serve
- * requests run. The boot reconciliation and shutdown passes over running
- * runs go through findGlobalByStatus, so they wait behind searches for each
- * single listing or read.
+ * shared by all scans, not per scan, so concurrent scans cannot exhaust
+ * descriptors under a low open-file limit; searches hold at most
+ * SEARCH_SCAN_SHARE so method-run lookups always keep permits
  */
 export const SCAN_CONCURRENCY = 16;
 
-/** How many of the {@link SCAN_CONCURRENCY} permits searches may hold. */
 export const SEARCH_SCAN_SHARE = 12;
 
-/** The {@link SCAN_CONCURRENCY} permits all scans' listings and reads share. */
 const scanPermits = new ScanPermits(SCAN_CONCURRENCY, SEARCH_SCAN_SHARE);
 
-/**
- * `open` once one of the shared scan permits `kind` may take is free,
- * releasing it when `open` settles. `open` is one listing, stat or read: it
- * never waits for another permit, so scans cannot deadlock on each other.
- * Once `signal` aborts, a scan waiting for a permit leaves the queue without
- * one and `open` does not start; either rejects with the abort reason.
- */
+/** open never waits for another permit, so scans cannot deadlock on each other */
 export async function withScanPermit<T>(
   kind: ScanKind,
   open: () => Promise<T>,
@@ -194,16 +135,14 @@ export async function withScanPermit<T>(
 }
 
 /**
- * How long a scan's synchronous work over many items holds the event loop before
- * it yields, so a request running beside it waits about this long at worst.
+ * how long synchronous scan work holds the event loop before yielding, so a
+ * request running beside it waits about this long at worst
  */
 const SCAN_SLICE_MS = 4;
 
 /**
- * Runs `slice` while `more` says there is work, yielding to the event loop
- * between calls. `slice` is given the time it should stop at, and does at least
- * one item whatever that says, so the work always ends. Once `signal` aborts, it
- * rejects with the reason at the next yield.
+ * slice does at least one item whatever the deadline says, so the work always
+ * ends
  */
 export async function inTimeSlices(
   more: () => boolean,
@@ -220,11 +159,8 @@ export async function inTimeSlices(
 }
 
 /**
- * `fn` of each item, at most `limit` at once, in the items' order. Once one
- * call fails, or `signal` aborts, no further item starts, and the failure is
- * raised only after every started call has settled, so none is left running.
- * Once `signal` has aborted, its reason is the failure, whichever call
- * failed first.
+ * after a failure or abort no further item starts, and the failure is raised
+ * only after every started call has settled, so none is left running
  */
 export async function mapBounded<T, R>(
   items: readonly T[],

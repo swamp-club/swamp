@@ -138,7 +138,6 @@ Deno.test(
       try {
         // The same bytes are in place: the put is satisfied.
         await storage.put("team", SHA, bytes, live());
-        // Damaged bytes of the same length: the put must not pretend.
         await Deno.chmod(shard, 0o700);
         await Deno.writeFile(path, new Uint8Array([9, 9, 9]));
         await Deno.chmod(shard, 0o500);
@@ -176,7 +175,6 @@ Deno.test("FileSystemStorage.removeStaleTempFiles: removes old temp files and ke
     for (const path of [staleTemp, stray, join(shard, SHA)]) {
       await Deno.utime(path, old, old);
     }
-    // Another namespace's temp file is not this sweep's.
     await storage.put("other", SHA, new Uint8Array([7]), live());
     const otherTemp = join(
       dir,
@@ -225,7 +223,6 @@ function chunkPath(dir: string, namespace: string, sha256: string): string {
   return join(dir, "_blobs", namespace, "sha256", sha256.slice(0, 2), sha256);
 }
 
-/** A storage whose directory syncs are recorded, with its own memo. */
 function recordingStorage(dir: string) {
   const synced: string[] = [];
   const storage = new FileSystemStorage(dir, {
@@ -304,7 +301,6 @@ Deno.test("FileSystemStorage.statChunks: reports stored sizes and leaves out wha
     const storage = new FileSystemStorage(dir);
     await storage.put("team", SHA, new Uint8Array([1, 2, 3]), live());
     await storage.put("team", SHA_CD, new Uint8Array([1, 2, 3]), live());
-    // A chunk an older swamp left short.
     await Deno.truncate(chunkPath(dir, "team", SHA_CD), 1);
     const at = new Date("2026-01-01T00:00:00Z");
     await Deno.utime(chunkPath(dir, "team", SHA), at, at);
@@ -323,8 +319,6 @@ Deno.test("FileSystemStorage.statChunks: reports stored sizes and leaves out wha
 
 Deno.test("FileSystemStorage.syncChunkDirectories: syncs unique shards of chunks not known durable, and ancestors once, whoever made them", async () => {
   await withTempDir(async (dir) => {
-    // Directories and a chunk another process made: this storage did not
-    // create any of them.
     await Deno.mkdir(dirname(chunkPath(dir, "team", SHA)), {
       recursive: true,
     });
@@ -336,7 +330,6 @@ Deno.test("FileSystemStorage.syncChunkDirectories: syncs unique shards of chunks
     await storage.syncChunkDirectories("team", [SHA, SHA, SHA_CD], live());
     assertEquals(synced, [shardAb, shardCd, ...ancestorsOf(dir, "team")]);
 
-    // Both are durable now, whoever stored them: nothing to sync again.
     synced.length = 0;
     await storage.syncChunkDirectories("team", [SHA, SHA_CD], live());
     assertEquals(synced, []);
@@ -354,7 +347,6 @@ Deno.test("FileSystemStorage.syncChunkDirectories: a shard a put creates syncs i
     await storage.syncChunkDirectories("team", [SHA], live());
     synced.length = 0;
 
-    // Same shard: nothing new above it.
     await storage.put("team", SHA, new Uint8Array([1]), live());
     await storage.syncChunkDirectories("team", [SHA], live());
     assertEquals(synced, [dirname(chunkPath(dir, "team", SHA))]);
@@ -367,7 +359,6 @@ Deno.test("FileSystemStorage.syncChunkDirectories: a shard a put creates syncs i
       join(dir, "_blobs", "team", "sha256"),
     ]);
 
-    // A new namespace: every ancestor below the root is new.
     synced.length = 0;
     await storage.put("acme", SHA, new Uint8Array([1]), live());
     await storage.syncChunkDirectories("acme", [SHA], live());
@@ -399,7 +390,6 @@ Deno.test("FileSystemStorage.syncChunkDirectories: concurrent callers share an a
     release();
     await assertRejects(() => first, Error, "sync refused");
     await assertRejects(() => second, Error, "sync refused");
-    // Each ancestor was synced once for both callers.
     assertEquals(synced.filter((d) => d === dir).length, 1);
     assertEquals(
       synced.filter((d) => d === join(dir, "_blobs")).length,
@@ -450,7 +440,6 @@ Deno.test("FileSystemStorage.quarantineChunk: putting back keeps a chunk stored 
     await storage.put("team", SHA, new Uint8Array([9, 9]), live());
     const aside = await storage.quarantineChunk("team", SHA, live());
     assert(aside !== undefined);
-    // Another process stores the chunk meanwhile.
     await storage.put("team", SHA, new Uint8Array([1, 2]), live());
     await aside.putBack(live());
     assertEquals(
@@ -548,9 +537,7 @@ Deno.test("FileSystemStorage.stageChunks: syncs every staged file together, befo
       for (const [i, sha256] of hashes.entries()) {
         await stage.put(sha256, new Uint8Array([i, i, i]), live());
       }
-      // A staged hash is written once.
       await stage.put(SHA, new Uint8Array([0, 0, 0]), live());
-      // Staged, not stored: no reader sees them yet.
       assertEquals(await storage.has("team", hashes, live()), new Set());
       await stage.commit(live());
     } finally {
@@ -559,7 +546,6 @@ Deno.test("FileSystemStorage.stageChunks: syncs every staged file together, befo
     assertEquals(seen, [0, 0, 0]);
     for (const [i, path] of paths.entries()) {
       assertEquals(await Deno.readFile(path), new Uint8Array([i, i, i]));
-      // No temp file is left beside it.
       assertEquals(
         [...Deno.readDirSync(dirname(path))].map((e) => e.name),
         [hashes[i]],
@@ -654,17 +640,13 @@ Deno.test("FileSystemStorage.syncChunkDirectories: a chunk put, moved or deleted
       await storage.syncChunkDirectories("team", [SHA], live());
       return [...synced];
     };
-    // A dedupe hit on a chunk this process made durable: nothing to sync.
     assertEquals(await again(), []);
-    // Put again: a new rename.
     await storage.put("team", SHA, new Uint8Array([1]), live());
     assertEquals(await again(), [shard]);
     assertEquals(await again(), []);
-    // Moved aside and put back: renamed twice.
     const aside = await storage.quarantineChunk("team", SHA, live());
     await aside!.putBack(live());
     assertEquals(await again(), [shard]);
-    // Deleted, and stored again by another process.
     await storage.delete("team", SHA, live());
     await Deno.writeFile(chunkPath(dir, "team", SHA), new Uint8Array([1]));
     assertEquals(await again(), [shard]);
@@ -721,10 +703,6 @@ Deno.test("FileSystemStorage.syncChunkDirectories: a sync that fails, or that a 
   });
 });
 
-/**
- * A storage on a pretend macOS whose syncs are recorded: `barrier` answers
- * each ordering barrier, `devices` maps a path to its device.
- */
 function barrierStorage(
   dir: string,
   options: {
@@ -763,7 +741,6 @@ function barrierStorage(
   return { storage, barriers, fullFiles, fullDirs };
 }
 
-/** Whether `path` is a chunk's temp file rather than a directory. */
 function isTempFile(path: string): boolean {
   return path.endsWith(".tmp");
 }
@@ -805,13 +782,10 @@ Deno.test("FileSystemStorage: a volume that refuses the barrier falls back to th
       fullSyncDevices,
     });
     await storage.put("team", SHA, new Uint8Array([1]), live());
-    // The refused barrier, then the full sync of that same file.
     assertEquals(barriers.filter(isTempFile).length, 1);
     assertEquals(fullFiles, ["file"]);
     assertEquals([...fullSyncDevices], [9]);
 
-    // Remembered: the next chunk and every directory go straight to the
-    // full sync.
     barriers.length = 0;
     await storage.put("team", SHA_CD, new Uint8Array([2]), live());
     await storage.syncChunkDirectories("team", [SHA, SHA_CD], live());
@@ -856,7 +830,6 @@ Deno.test("FileSystemStorage: a directory whose barrier is refused gets the full
       "dir sync failed",
     );
     assertEquals(barriers, [dirname(chunkPath(dir, "team", SHA))]);
-    // Not marked durable: the next call syncs it again.
     failDirs = false;
     fullDirs.length = 0;
     await storage.syncChunkDirectories("team", [SHA], live());

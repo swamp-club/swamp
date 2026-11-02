@@ -163,7 +163,6 @@ Deno.test("openV3Datastore: collectChunks verifies only when asked, from the pre
     await initializeV3Datastore(datastorePath, "test");
     const handle = openV3Datastore({ repoDir: join(dir, "a"), datastorePath });
     try {
-      // Stored under a hash its bytes do not have.
       const rotten = "ab" + "0".repeat(62);
       const shard = join(datastorePath, "_blobs", "_default", "sha256", "ab");
       await Deno.mkdir(shard, { recursive: true });
@@ -203,7 +202,6 @@ Deno.test("openV3Datastore: chunk GC and compaction run on an empty datastore", 
       });
     } finally {
       await handle.close();
-      // Closing twice is harmless.
       await handle.close();
     }
   });
@@ -226,13 +224,11 @@ Deno.test("initializeV3Datastore: completes a fresh skeleton, and refuses a data
   await withTempDir(async (root) => {
     const dir = join(root, "datastore");
     await Deno.mkdir(dir);
-    // A setup that stopped after the marker: the re-run completes it.
     await writeDatastoreFormatMarker(dir, { format: 3, minReaderFormat: 3 });
     assert(await isFreshV3Skeleton(dir));
     await initializeV3Datastore(dir, "test");
     assert(await isFreshV3Skeleton(dir), "still empty once completed");
 
-    // One with a commit is no skeleton.
     const handle = openV3Datastore({
       repoDir: join(root, "repo"),
       datastorePath: dir,
@@ -284,7 +280,6 @@ Deno.test("openV3Datastore: an engine checkpoints the units open around the call
           ]);
           assertEquals(await engine.checkpointOpenUnit(), "committed");
         });
-        // Landed while the root is still open.
         assertEquals(await isFreshV3Skeleton(dir), false);
         await unit.commit();
       });
@@ -299,7 +294,6 @@ Deno.test("openV3Datastore: an engine checkpoints the units open around the call
         message: "refused",
         versions: [],
       }], []);
-      // Only a refusal a root threw after its commit counts.
       assertEquals(engine.committedBeforeThrowing(refused), false);
       assertEquals(engine.committedBeforeThrowing(new Error("x")), false);
     } finally {
@@ -308,7 +302,6 @@ Deno.test("openV3Datastore: an engine checkpoints the units open around the call
   });
 });
 
-/** Commits one auto-definition to `datastorePath` in `namespace`. */
 async function commitIn(
   dir: string,
   datastorePath: string,
@@ -373,7 +366,6 @@ Deno.test("listV3Namespaces: reads a checkpointed commits.db without writing to 
     await initializeV3Datastore(datastorePath, "test");
     await commitIn(dir, datastorePath, "team");
     const dbPath = join(datastorePath, COMMITS_DB_FILE);
-    // The writer's close checkpoints the WAL away.
     assertEquals(
       [...Deno.readDirSync(datastorePath)].map((entry) => entry.name)
         .filter((name) => name.startsWith(`${COMMITS_DB_FILE}-`)),
@@ -384,7 +376,6 @@ Deno.test("listV3Namespaces: reads a checkpointed commits.db without writing to 
     assertEquals(listV3Namespaces(datastorePath, datastorePath), ["team"]);
 
     assertEquals(await Deno.readFile(dbPath), before);
-    // A writer opens it afterwards as before.
     await commitIn(dir, datastorePath, "infra");
     assertEquals(listV3Namespaces(datastorePath, datastorePath), [
       "infra",
@@ -426,12 +417,9 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
       const reaped = await content("reaped");
       const kept = await content("kept");
       const history = [
-        // Written long ago, then removed by retention 10 days ago.
         [30, [await blobPut("a", 1, reaped), versionOp("a", 1)]],
         [10, [deleteVersion("a", 1)]],
-        // Older than a 3-day cutoff.
         [5, [await blobPut("b", 1, kept), versionOp("b", 1)]],
-        // Newer than the 3-day cutoff, even two days on.
         [1.5, [await savePut("c", 1), versionOp("c", 1)]],
       ] as const;
       let seq = 1;
@@ -444,11 +432,8 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
       const reapedChunks = [...reaped.chunkHashes()].sort();
       const all = await storedChunks();
 
-      // Well under the default policy's 500 commits: nothing is due.
       assertEquals(await handle.compactIfDue(signal()), undefined);
 
-      // A 20-day cutoff folds only the write; the remove is newer, so the
-      // base still names the reaped content.
       const older = await handle.compactBefore(
         new Date(now - 20 * DAY_MS),
         signal(),
@@ -460,8 +445,6 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
       assertEquals((await handle.collectChunks(signal())).deleted, 0);
       assertEquals(await storedChunks(), all);
 
-      // A 3-day cutoff folds the remove and the write before it; the commits
-      // after the cutoff stay.
       const cutoff = new Date(now - 3 * DAY_MS);
       const folded = await handle.compactBefore(cutoff, signal());
       assertEquals(folded.bound.toISOString(), ago(3));
@@ -471,9 +454,7 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
         storedCommits: 1,
         compactedThrough: 3,
       });
-      // Within the release grace the reaped chunks are still kept.
       assertEquals((await handle.collectChunks(signal())).deleted, 0);
-      // Past it, they are deleted and nothing else is.
       now += DAY_MS + 60 * 60 * 1000;
       const sweep = await handle.collectChunks(signal());
       assertEquals(sweep.deleted, reapedChunks.length);
@@ -485,8 +466,6 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
         assert((await storedChunks()).includes(hash));
       }
 
-      // A cutoff of now is held back to the policy's last day: the older
-      // commit folds, one written within the day stays.
       await handle.commitStore.append(
         modelCommit(5, [await savePut("d", 1), versionOp("d", 1)], {
           at: ago(0.5),
@@ -500,7 +479,6 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
         storedCommits: 1,
         compactedThrough: 4,
       });
-      // Nothing more is older than the bound: another call folds nothing.
       const again = await handle.compactBefore(new Date(now), signal());
       assertEquals(again.report, undefined);
       assertEquals(again.compactedThrough, 4);
@@ -528,8 +506,6 @@ Deno.test("openV3Datastore: a compaction stopped between batches keeps what it f
           }),
         );
       }
-      // The budget runs out after the first batch: the compaction checks
-      // its signal before each one.
       const controller = new AbortController();
       const signal = controller.signal;
       const check = signal.throwIfAborted.bind(signal);
@@ -545,7 +521,6 @@ Deno.test("openV3Datastore: a compaction stopped between batches keeps what it f
         storedCommits: 3250,
         compactedThrough: 250,
       });
-      // The next writer folds the rest down to the newest 2,500.
       const report = await handle.compactIfDue(new AbortController().signal);
       assertEquals(report?.point, 1000);
       assertEquals(await handle.describe(), {
@@ -571,14 +546,12 @@ Deno.test("openV3Datastore: compactIfDue folds commits written moments ago once 
     const signal = () => new AbortController().signal;
     const commit = async (seq: number) =>
       modelCommit(seq, [await savePut("a", seq), versionOp("a", seq)], {
-        // Written a minute before the compaction.
         at: new Date(now - 60_000).toISOString(),
       });
     try {
       for (let seq = 1; seq <= 2999; seq++) {
         await handle.commitStore.append(await commit(seq));
       }
-      // 499 commits below the newest 2,500: under the minimum.
       assertEquals(await handle.compactIfDue(signal()), undefined);
       await handle.commitStore.append(await commit(3000));
       const report = await handle.compactIfDue(signal());
@@ -588,7 +561,6 @@ Deno.test("openV3Datastore: compactIfDue folds commits written moments ago once 
         storedCommits: 2500,
         compactedThrough: 500,
       });
-      // A retry of a commit folded a minute after it landed finds its txnId.
       assertEquals(await handle.commitStore.append(await commit(1)), {
         kind: "duplicate",
         seq: 1,
@@ -597,7 +569,6 @@ Deno.test("openV3Datastore: compactIfDue folds commits written moments ago once 
         kind: "duplicate",
         seq: 500,
       });
-      // History goes on at the head.
       assertEquals(await handle.commitStore.append(await commit(3001)), {
         kind: "appended",
         seq: 3001,
@@ -619,7 +590,6 @@ Deno.test("openV3Datastore: dropped work is recovered only once no unit of the c
       const engine = handle.engineFor(() => Promise.resolve(), () => {
         throw new Error("no run repository needed");
       });
-      /** Writes `name` to the checkout, as a repository does, and stages it. */
       const write = async (name: string) => {
         const key = recordKeyOf(["auto-definitions", name]);
         const bytes = new TextEncoder().encode(`name: ${name}\n`);
@@ -638,7 +608,6 @@ Deno.test("openV3Datastore: dropped work is recovered only once no unit of the c
       };
       await engine.runRoot({}, () => write("kept.yaml"));
 
-      // A root stays open while another drops the work it wrote.
       const release = Promise.withResolvers<void>();
       const open = engine.runRoot({}, () => release.promise);
       await engine.runRoot(
@@ -720,7 +689,6 @@ Deno.test("openV3Datastore: a writer whose prepare meets a sweep batch in flight
     await initializeV3Datastore(datastorePath, "test");
     const handle = openV3Datastore({ repoDir: join(dir, "a"), datastorePath });
     try {
-      // An old chunk no commit names, which the sweep will delete.
       await handle.chunkStore.write(
         SOLO_NAMESPACE,
         new Uint8Array(1024).fill(1),
@@ -766,7 +734,6 @@ Deno.test("openV3Datastore: a writer whose prepare meets a sweep batch in flight
           afterPrepare = true;
         },
       });
-      // The writer's read after its prepare: it then waits on the batch.
       const read = handle.outbox.sweepState.bind(handle.outbox);
       const checked = Promise.withResolvers<void>();
       Object.defineProperty(handle.outbox, "sweepState", {
@@ -806,8 +773,6 @@ Deno.test("openV3Datastore: a writer whose prepare meets a sweep batch in flight
   });
 });
 
-// --- swamp-club#3617: a v3 datastore whose format marker a crash lost ---
-
 const MARKER = "datastore-format.json";
 const LOST_MARKERS: readonly (string | undefined)[] = [
   undefined,
@@ -816,7 +781,6 @@ const LOST_MARKERS: readonly (string | undefined)[] = [
   "\0".repeat(64),
 ];
 
-/** Writes `marker` at the datastore's marker path, or removes it. */
 async function setMarker(dir: string, marker: string | undefined) {
   await Deno.remove(join(dir, MARKER)).catch(() => {});
   if (marker !== undefined) await Deno.writeTextFile(join(dir, MARKER), marker);
@@ -894,7 +858,6 @@ Deno.test("initializeV3Datastore: a resume racing another resume past a blank ma
           return Promise.resolve();
         },
         rename: async (from, to) => {
-          // The other resume's remove, then its write, then this one's.
           await Deno.remove(from);
           if (otherWrote) {
             await Deno.writeTextFile(
@@ -932,8 +895,6 @@ Deno.test("restoreV3FormatMarker: a restore past a blank marker never deletes th
     await setMarker(dir, "");
     const winner = '{"format":3,"minReaderFormat":3,"writtenBy":"winner"}';
     const path = await restoreV3FormatMarker(dir, "test", {
-      // The other restore removes the blank marker and writes its own
-      // between this one's check and its remove.
       rename: async (from, to) => {
         await Deno.remove(from);
         await Deno.writeTextFile(from, winner);
@@ -949,7 +910,6 @@ Deno.test("isFreshV3Skeleton: a lost marker is no skeleton beside history, repli
   for (const lost of LOST_MARKERS) {
     const label = JSON.stringify(lost);
     await withTempDir(async (root) => {
-      // Commits.
       const dir = join(root, "datastore");
       await initializeV3Datastore(dir, "test");
       await commitIn(root, dir, "");
@@ -957,7 +917,6 @@ Deno.test("isFreshV3Skeleton: a lost marker is no skeleton beside history, repli
       assertEquals(await isFreshV3Skeleton(dir), false, label);
     });
     await withTempDir(async (root) => {
-      // A compacted history: no stored commits, a compaction point.
       const dir = join(root, "datastore");
       await initializeV3Datastore(dir, "test");
       const db = new DatabaseSync(join(dir, COMMITS_DB_FILE));
@@ -967,7 +926,6 @@ Deno.test("isFreshV3Skeleton: a lost marker is no skeleton beside history, repli
       assertEquals(await isFreshV3Skeleton(dir), false, label);
     });
     await withTempDir(async (root) => {
-      // Replication or Litestream state, content, no commits.db.
       const dir = join(root, "datastore");
       await initializeV3Datastore(dir, "test");
       await setMarker(dir, lost);
@@ -985,11 +943,9 @@ Deno.test("isFreshV3Skeleton: a lost marker is no skeleton beside history, repli
       await Deno.remove(join(dir, COMMITS_DB_FILE));
       const before = await names(dir);
       assertEquals(await isFreshV3Skeleton(dir), false, label);
-      // And looking created nothing.
       assertEquals(await names(dir), before, label);
     });
     await withTempDir(async (root) => {
-      // A directory, a non-SQLite file or a newer schema as commits.db.
       const dir = join(root, "datastore");
       await Deno.mkdir(dir);
       await setMarker(dir, lost);
@@ -1018,16 +974,13 @@ Deno.test("isFreshV3Skeleton: a lost marker beside what setup's open leaves befo
       await Deno.mkdir(dir);
       await setMarker(dir, lost);
       const commitsDb = join(dir, COMMITS_DB_FILE);
-      // Created, and stopped before anything was written: no pages.
       await Deno.writeFile(commitsDb, new Uint8Array());
       assert(await isFreshV3Skeleton(dir), `${label} empty file`);
-      // Switched to WAL, and stopped before the schema transaction.
       const wal = new DatabaseSync(commitsDb);
       wal.exec("PRAGMA journal_mode=WAL");
       wal.close();
       assert(await isFreshV3Skeleton(dir), `${label} WAL, no schema`);
       await Deno.remove(commitsDb);
-      // An SQLite file that is no commit log: user_version 0, no tables.
       const db = new DatabaseSync(commitsDb);
       db.exec("CREATE TABLE t (x); DROP TABLE t");
       db.close();
@@ -1075,7 +1028,6 @@ Deno.test("restoreV3FormatMarker: writes a v3 marker for a lost or blank one bes
         }),
         "v3",
       );
-      // Again: the marker is there, nothing to do.
       assertEquals(await restoreV3FormatMarker(dir, "other"), path);
       assertEquals(
         JSON.parse(await Deno.readTextFile(path)).writtenBy,
@@ -1144,7 +1096,6 @@ Deno.test("restoreV3FormatMarker: refuses a commits.db that is missing, not a re
     );
     await refused("could not be read as a v3 commit log");
     await Deno.remove(commitsDb);
-    // An SQLite file with no v3 schema.
     new DatabaseSync(commitsDb).close();
     await refused("is not a v3 commit log");
     await Deno.remove(commitsDb);
@@ -1153,7 +1104,6 @@ Deno.test("restoreV3FormatMarker: refuses a commits.db that is missing, not a re
     newer.close();
     await refused(`newer than this swamp's ${COMMIT_STORE_SCHEMA_VERSION}`);
     await Deno.remove(commitsDb);
-    // A marker someone wrote is not replaced.
     openCommitsDatabase(commitsDb).close();
     await setMarker(dir, '{"format": 3, "minReaderFormat":');
     await assertRejects(
@@ -1229,7 +1179,6 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-/** Deletes a checkout's recorded filter, as a state from before swamp-club#3691 has none. */
 function forgetCheckoutFilter(repoDir: string): void {
   const db = new DatabaseSync(
     join(readModelStateDir(Deno.realPathSync(repoDir)), READ_MODEL_STATE_FILE),
@@ -1258,7 +1207,6 @@ Deno.test("openV3Datastore: refuses a checkout whose directories changed since i
     } finally {
       await first.close();
     }
-    // The same filter spelled another way opens.
     await openV3Datastore({
       repoDir,
       datastorePath,
@@ -1356,7 +1304,6 @@ Deno.test("v3CheckoutFilterRefusal: names a changed filter without opening the c
       v3CheckoutFilterRefusal(repoDir, ["config"], undefined),
       undefined,
     );
-    // Not stamped: the checkout still opens with its own filter.
     await openV3Datastore({ repoDir, datastorePath }).close();
   });
 });
@@ -1431,12 +1378,10 @@ Deno.test("V3CheckoutFilterChangedError: says the change is the repository's, af
     assertStringIncludes(message, "every existing checkout");
     assertStringIncludes(message, "never committed");
     assertStringIncludes(message, "copy them out");
-    // It names the subdirectories this checkout kept local.
     assertStringIncludes(
       message,
       join(Deno.realPathSync(repoDir), ".swamp", "data"),
     );
-    // Restoring the previous directories is offered first.
     assert(
       message.indexOf("Restore the previous directories") <
         message.indexOf("fresh checkout"),
@@ -1445,11 +1390,6 @@ Deno.test("V3CheckoutFilterChangedError: says the change is the repository's, af
   });
 });
 
-/**
- * The real data and output repositories over a v3 handle's checkout, each
- * write in its own root: one ending as it normally does, or one dropping
- * its work (swamp-club#3736).
- */
 function checkoutWriter(dir: string) {
   const datastorePath = join(dir, "datastore");
   const repoDir = join(dir, "a");
@@ -1479,7 +1419,6 @@ function checkoutWriter(dir: string) {
     kept: <T>(fn: () => Promise<T>) => engine.runRoot({}, fn),
     dropped: <T>(fn: () => Promise<T>) =>
       engine.runRoot({ disposition: () => "discard" }, fn),
-    /** The version directories and `latest` marker the checkout lists. */
     listed: async (name: string): Promise<string[]> => {
       const dir = data.getDataNameDir(MODEL_TYPE, MODEL_ID, name);
       try {
@@ -1611,8 +1550,6 @@ for (const old of [true, false]) {
       const writer = checkoutWriter(dir);
       const bytes = new TextEncoder().encode("artifact\n");
       try {
-        // A method moves a file it kept in as its artifact, then fails
-        // before finalising: nothing is staged.
         await assertRejects(() =>
           writer.dropped(async () => {
             const { contentPath } = await writer.data.allocateVersion(
@@ -1717,7 +1654,6 @@ Deno.test("initializeV3Datastore: two creators of a copy that adopts the winner'
     // Several fresh copies, so the marker race is met on every run.
     for (let i = 0; i < 20; i++) {
       const dir = join(root, `copy-${i}`, "serve-x");
-      // As the serve binding creates it: look, then create from that look.
       const create = async () => {
         const markerSeen = await v3MarkerState(dir);
         if (markerSeen === "v3") return;
@@ -1741,7 +1677,6 @@ Deno.test("initializeV3Datastore: two creators of a copy that adopts the winner'
 
 Deno.test("initializeV3Datastore: a copy uses a v3 marker that appeared while it wrote its own; setup still refuses it, and an unreadable one is a retryable refusal (swamp-club#4253)", async () => {
   await withTempDir(async (root) => {
-    // The winner links its marker between this creator's check and link.
     const raced = (marker: string) => async (_from: string, to: string) => {
       await Deno.writeTextFile(to, marker);
       throw new Deno.errors.AlreadyExists("lost the race");
@@ -1760,7 +1695,6 @@ Deno.test("initializeV3Datastore: a copy uses a v3 marker that appeared while it
     assert((await Deno.lstat(join(adopted, COMMITS_DB_FILE))).isFile);
     assert((await Deno.lstat(join(adopted, "_blobs"))).isDirectory);
 
-    // `swamp datastore setup` passes no option: it refuses, as before.
     const setup = join(root, "setup");
     await assertRejects(
       () => initializeV3Datastore(setup, "test", { link: raced(winner) }),
@@ -1768,7 +1702,6 @@ Deno.test("initializeV3Datastore: a copy uses a v3 marker that appeared while it
       "already exists",
     );
 
-    // Part-written, as an exclusive create shows it: a retry finds it whole.
     for (const partial of ["", '{"format":']) {
       const dir = join(root, `partial-${partial.length}`);
       const error = await assertRejects(
@@ -1810,7 +1743,6 @@ Deno.test("initializeV3Datastore: a copy that saw no marker adopts the winner's,
       "temp file left": async (dir) => {
         await Deno.writeTextFile(join(dir, `.${crypto.randomUUID()}.tmp`), "");
       },
-      // Set up and bound: commits.db, _blobs and serve-mode state.
       bound: async (dir) => {
         await initializeV3Datastore(dir, "winner");
         await Deno.writeTextFile(join(dir, "serve_upstream.db"), "");
@@ -1818,7 +1750,6 @@ Deno.test("initializeV3Datastore: a copy that saw no marker adopts the winner's,
     };
     for (const [name, stage] of Object.entries(stages)) {
       const dir = join(root, name.replaceAll(" ", "-"));
-      // The winner gets this far after the copy looked and saw no marker.
       await Deno.mkdir(dir);
       await writeDatastoreFormatMarker(dir, winner);
       await stage(dir);
@@ -1834,7 +1765,6 @@ Deno.test("initializeV3Datastore: a copy that saw no marker adopts the winner's,
       assert((await Deno.lstat(join(dir, "_blobs"))).isDirectory, name);
     }
 
-    // `swamp datastore setup` passes no option: the same states refuse.
     const setup = join(root, "setup");
     await Deno.mkdir(setup);
     await writeDatastoreFormatMarker(setup, winner);

@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The SQLite {@link CommitOutbox} (swamp-club#3490): a local file of its own
- * beside the commit store's, never a table in it. An unsent commit must not
- * count as a commit, Litestream replicates only the commit store's file, and
- * a restore replaces that file's content without touching this one, whose
- * entries the fence chain then judges. `v3_datastore.ts` decides the path.
- *
- * The file is created by the first write (a prepare, a fence or a sweep),
- * never when it is opened: a datastore nothing has written keeps only the
- * files setup made. Reads of a file that does not exist yet see it empty.
- *
- * @module
+ * a file of its own beside the commit store's: an unsent commit must not count
+ * as a commit, Litestream replicates only the store, and a restore leaves this
+ * file, whose entries the fence chain judges
  */
 
 import { dirname } from "@std/path";
@@ -59,7 +51,6 @@ import {
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
 
-/** Error code for an outbox file written by a newer swamp. */
 export const COMMIT_OUTBOX_SCHEMA_NEWER_CODE =
   "datastore_v3_outbox_schema_newer";
 
@@ -68,7 +59,6 @@ export const COMMIT_OUTBOX_SCHEMA_NEWER_CODE =
  * `PRAGMA user_version` `i` to `i + 1`. Append, never edit one that shipped.
  */
 const MIGRATIONS: readonly string[] = [
-  // 0 → 1: entries, the chunks they name, the fence chain and the sweep.
   `
   CREATE TABLE outbox_entries (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,39 +93,33 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT;
   INSERT INTO outbox_sweep (id, epoch) VALUES (1, 0);
   `,
-  // 1 → 2 (swamp-club#3564): the preparing process's identity, by which a
-  // recovery judges whether it still runs, and the fence of the recovery
-  // that left an entry for its live writer, which the floor does not drop.
-  // A swamp at schema 1 refuses the outbox as newer: it would judge entries
-  // by hostname and drop left ones.
+  // the preparing process's identity, by which recovery judges whether it still
+  // runs, and the fence of a recovery that left an entry for its live writer.
+  // An older swamp refuses the outbox as newer
   `
   ALTER TABLE outbox_entries ADD COLUMN writer_process TEXT;
   ALTER TABLE outbox_entries ADD COLUMN left_at_fence INTEGER;
   `,
-  // 2 → 3 (swamp-club#3586): when a unit gave an entry up, which recovery
-  // honours whatever the writer's state, and the fence a writer noted as
-  // taken before raising it, by which a lost chain record is told from
-  // another copy's fence. A swamp at schema 2 refuses the outbox as newer:
-  // it would land an abandoned entry.
+  // when a unit gave an entry up, which recovery honours whatever the writer's
+  // state, and the fence noted before raising it. An older swamp refuses the
+  // outbox as newer, as it would land an abandoned entry
   `
   ALTER TABLE outbox_entries ADD COLUMN abandoned_at INTEGER;
   ALTER TABLE outbox_chain ADD COLUMN pending_fence INTEGER;
   `,
-  // 3 → 4 (swamp-club#3693): an entry's commit may hold puts with a file
-  // access. No table changes; a swamp at schema 3 would reject the op
-  // field and call the entry corrupt, so it must refuse the outbox as newer.
+  // no table changes, but an older swamp would reject the op's file access
+  // field and call the entry corrupt, so it must refuse the outbox as newer
   `SELECT 1;`,
-  // 4 → 5 (swamp-club#4121): the fenced model lease an entry was built
-  // under, which its recovery names. A swamp at schema 4 refuses the outbox
-  // as newer: it would resend the entry outside its lease.
+  // the fenced model lease an entry was built under, which its recovery names.
+  // An older swamp refuses the outbox as newer, as it would resend the entry
+  // outside its lease
   `
   ALTER TABLE outbox_entries ADD COLUMN lease_id TEXT;
   ALTER TABLE outbox_entries ADD COLUMN lease_fence INTEGER;
   `,
-  // 5 → 6 (swamp-club#4195): what became of an entry that is not pending
-  // (queued offline, rejected, quarantined) and why. A swamp at schema 5
-  // refuses the outbox as newer: it would drop an offline entry as stale
-  // or expired, or land a rejected one.
+  // what became of a non-pending entry (queued offline, rejected, quarantined)
+  // and why. An older swamp refuses the outbox as newer, as it would drop an
+  // offline entry as stale or land a rejected one
   `
   ALTER TABLE outbox_entries ADD COLUMN state TEXT;
   ALTER TABLE outbox_entries ADD COLUMN state_reason TEXT;
@@ -168,44 +152,21 @@ const MIGRATIONS: readonly string[] = [
   `,
 ];
 
-/** The schema version this outbox writes. */
 export const COMMIT_OUTBOX_SCHEMA_VERSION = MIGRATIONS.length;
 
-/** Hashes looked up per query by `referencedChunks`. */
 const REF_LOOKUP_PAGE = 500;
 
-/** Options for {@link SqliteCommitOutbox}. */
 export interface SqliteCommitOutboxOptions {
-  /** When an entry is first prepared; the system clock by default. */
   readonly clock?: () => Date;
-  /**
-   * Called inside each write transaction with the connection's
-   * `PRAGMA synchronous` value (2 is FULL, 1 NORMAL): tests observe which
-   * writes are fsynced through it.
-   */
   readonly onWrite?: (synchronous: number) => void;
-  /**
-   * This process's identity, recorded with each entry it prepares
-   * (swamp-club#3564); none by default.
-   */
   readonly writerProcess?: () => Promise<ProcessIdentity | undefined>;
-  /**
-   * Whether prepares made together share one transaction (swamp-club#3915);
-   * true by default. Turned off only by tests and benchmarks.
-   */
   readonly groupPrepares?: boolean;
 }
 
-/**
- * The most prepares one transaction writes (swamp-club#3915), as the commit
- * store's group commit caps its appends.
- */
 export const GROUP_PREPARE_MAX = 64;
 
-/** The savepoint each prepare of a group runs in. */
 const PREPARE_SAVEPOINT = "group_prepare";
 
-/** A prepare waiting for its group's transaction. */
 interface PendingPrepare {
   readonly preparation: OutboxPreparation;
   readonly process: ProcessIdentity | undefined;
@@ -248,9 +209,8 @@ function entryStateOf(raw: string | null): OutboxEntryState | undefined {
 }
 
 /**
- * The outbox at `path`. One connection per instance; every write is one
- * transaction with `synchronous=FULL`, so a prepared entry survives a power
- * cut as the commit store's appends do. A settle alone skips the fsync.
+ * every write is one synchronous=FULL transaction so a prepared entry survives
+ * a power cut; a settle alone skips the fsync
  */
 export class SqliteCommitOutbox implements CommitOutbox {
   readonly #path: string;
@@ -262,7 +222,6 @@ export class SqliteCommitOutbox implements CommitOutbox {
   readonly #groupPrepares: boolean;
   #db: DatabaseSync | undefined;
   #closed = false;
-  /** Prepares waiting for the next group transaction (swamp-club#3915). */
   #pending: PendingPrepare[] = [];
   #flushScheduled = false;
 
@@ -274,18 +233,14 @@ export class SqliteCommitOutbox implements CommitOutbox {
     this.#groupPrepares = options.groupPrepares ?? true;
   }
 
-  /** The outbox file's path. */
   get path(): string {
     return this.#path;
   }
 
   /**
-   * Prepares made together share one transaction, so a burst pays one fsync
-   * (swamp-club#3915): a prepare waits for the end of the current microtask
-   * turn, when every prepare made by then is written, each in a savepoint of
-   * its own so a failing one fails alone. Every other read or write writes
-   * the waiting prepares first, so the outbox sees its calls in the order
-   * they were made. A prepare resolves once its entry is durable, as before.
+   * prepares made together share one transaction, each in its own savepoint so
+   * one failing fails alone; any other read or write flushes them first to keep
+   * call order
    */
   async prepare(preparation: OutboxPreparation): Promise<void> {
     const process = await this.#writerProcess?.();
@@ -308,11 +263,6 @@ export class SqliteCommitOutbox implements CommitOutbox {
     });
   }
 
-  /**
-   * Writes every waiting prepare, settling each one's promise: one alone as
-   * a prepare was always written, more in transactions of up to
-   * {@link GROUP_PREPARE_MAX}, settled once the transaction commits.
-   */
   #flushPrepares(): void {
     while (this.#pending.length > 0) {
       const group = this.#pending.splice(0, GROUP_PREPARE_MAX);
@@ -352,14 +302,12 @@ export class SqliteCommitOutbox implements CommitOutbox {
     }
   }
 
-  /** Writes one prepared entry and the chunks it names. */
   #insertEntry(
     db: DatabaseSync,
     preparation: OutboxPreparation,
     process: ProcessIdentity | undefined,
   ): void {
     const { commit, unitId, base, lease, queuedOffline } = preparation;
-    // A prepare again is a new preparation: no recovery left it since.
     const row = db.prepare(
       "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process, lease_id, lease_fence, state) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
@@ -367,8 +315,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
         "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body, " +
         "writer_process = excluded.writer_process, left_at_fence = NULL, abandoned_at = NULL, " +
         "lease_id = excluded.lease_id, lease_fence = excluded.lease_fence, " +
-        // A prepare again never clears a state: an offline, rejected or
-        // quarantined entry stays one (swamp-club#4195).
+        // a prepare again never clears a state: an offline, rejected or
+        // quarantined entry stays one
         "state = COALESCE(excluded.state, outbox_entries.state) " +
         "RETURNING sequence",
     ).get(
@@ -388,8 +336,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
     db.prepare("DELETE FROM outbox_chunks WHERE sequence = ?").run(
       row.sequence,
     );
-    // The data versions it records, so a version allocation reads an index,
-    // not every entry's body (swamp-club#4195).
+    // records the data versions so a version allocation reads an index, not
+    // every entry's body
     db.prepare("DELETE FROM outbox_versions WHERE sequence = ?").run(
       row.sequence,
     );
@@ -410,8 +358,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
   }
 
   settle(keys: readonly OutboxKey[]): Promise<void> {
-    // A settle lost to a power cut costs one more settle at the next
-    // recovery, which finds the commit landed: no fsync of its own.
+    // a settle lost to a power cut costs one more settle at the next recovery,
+    // which finds the commit landed, so no fsync
     return this.#remove(keys, false);
   }
 
@@ -534,9 +482,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
   }
 
   /**
-   * Whether any entry could still land: one pending or queued offline.
-   * Rejected and quarantined entries are kept but never sent again
-   * (swamp-club#4195), so they do not count.
+   * only entries pending or queued offline count; rejected and quarantined
+   * entries are kept but never sent again
    */
   // deno-lint-ignore require-await
   async hasUnsettledEntries(): Promise<boolean> {
@@ -549,12 +496,8 @@ export class SqliteCommitOutbox implements CommitOutbox {
   }
 
   /**
-   * Empties the outbox as a new copy's would be, but for its rejected and
-   * quarantined entries, which are never discarded (swamp-club#4195): the
-   * fence chain and the sweep start over, every other entry and its chunk
-   * references go. One transaction, so a crash leaves the outbox either
-   * untouched or reset. Resolves with how many entries were kept; none when
-   * the file does not exist.
+   * empties the outbox like a new copy's but keeps rejected and quarantined
+   * entries; one transaction, so a crash leaves it untouched or reset
    */
   resetKeepingKept(): Promise<number> {
     return this.#write((db) => {
@@ -584,13 +527,9 @@ export class SqliteCommitOutbox implements CommitOutbox {
   }
 
   /**
-   * Records that the offline entry `key` landed, by a flush, at `at`
-   * (swamp-club#4195): a later flush judges the versions it wrote as this
-   * checkout's own, which its later offline work saw, and the partition's
-   * entries still queued follow what it renumbered and rewrote (`carry`).
-   * Records older than `retainMs` are dropped as one is added, except a
-   * partition's while it still has an entry queued offline, which may
-   * follow them.
+   * records that an offline entry landed by a flush so later flushes treat its
+   * versions as this checkout's own; old records drop unless the partition
+   * still has an offline entry queued
    */
   recordLandedOffline(
     key: OutboxKey,
@@ -620,11 +559,6 @@ export class SqliteCommitOutbox implements CommitOutbox {
     }, { create: false });
   }
 
-  /**
-   * What `partition`'s offline entries that flushes landed renumbered and
-   * rewrote (swamp-club#4195), merged: what its queued entries follow. A
-   * record that does not parse adds nothing.
-   */
   // deno-lint-ignore require-await
   async landedOfflineCarry(
     namespace: string,
@@ -643,7 +577,6 @@ export class SqliteCommitOutbox implements CommitOutbox {
     return merged;
   }
 
-  /** The txnIds of `partition`'s offline entries that flushes landed. */
   // deno-lint-ignore require-await
   async landedOfflineTxnIds(
     namespace: string,
@@ -853,8 +786,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
   }
 
   close(): Promise<void> {
-    // Prepares made before the close are written, as they were before
-    // grouping.
+    // close writes the prepares still waiting
     if (!this.#closed) this.#flushPrepares();
     this.#closed = true;
     this.#db?.close();
@@ -862,10 +794,6 @@ export class SqliteCommitOutbox implements CommitOutbox {
     return Promise.resolve();
   }
 
-  /**
-   * Runs `body` in a write transaction, creating the file unless told not
-   * to. The waiting prepares are written first.
-   */
   #write<T>(
     body: (db: DatabaseSync) => T,
     options: { readonly create?: boolean; readonly durable?: boolean } = {},
@@ -878,7 +806,6 @@ export class SqliteCommitOutbox implements CommitOutbox {
     }
   }
 
-  /** {@link #write}'s transaction, synchronously; throws its error. */
   #writeSync<T>(
     body: (db: DatabaseSync) => T,
     options: { readonly create?: boolean; readonly durable?: boolean } = {},
@@ -909,7 +836,6 @@ export class SqliteCommitOutbox implements CommitOutbox {
     }
   }
 
-  /** Runs `body` in a read transaction; undefined while the file does not exist. */
   #read<T>(body: (db: DatabaseSync) => T): T | undefined {
     this.#flushPrepares();
     const db = this.#connection(false);
@@ -935,15 +861,12 @@ export class SqliteCommitOutbox implements CommitOutbox {
 }
 
 /**
- * Opens the outbox file at `path`, creating it and its schema when absent:
- * WAL, `synchronous=FULL` and a busy timeout, as the commit store does.
- * Refuses a file written by a newer schema.
+ * opens with WAL, synchronous=FULL and a busy timeout; refuses a file written
+ * by a newer schema
  */
 /**
- * How many entries the outbox at `path` holds that recovery would still
- * land (not abandoned), read without opening the outbox: no migration, no
- * write, and 0 for a file that is absent or unreadable (swamp-club#4063).
- * A refused writer reports them, so its user knows a claim strands them.
+ * counts entries recovery would still land, read without opening the outbox (no
+ * migration, no write); 0 for a file that is absent or unreadable
  */
 export function countPendingOutboxEntries(path: string): number {
   let db: DatabaseSync;
@@ -1048,7 +971,6 @@ function rollbackQuietly(db: DatabaseSync): void {
   }
 }
 
-/** An entry's recorded identity, or undefined when it has none it can read. */
 function readWriterProcess(
   text: string | null,
 ): ProcessIdentity | undefined {

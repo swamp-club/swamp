@@ -160,8 +160,6 @@ Deno.test("withEventBridge: early return with resolving promise does not leak", 
 });
 
 Deno.test("withEventBridge handles push after error gracefully", async () => {
-  // If the callback pushes events then rejects, events before the
-  // rejection should still be yielded and the error should propagate.
   const events: string[] = [];
 
   async function* run() {

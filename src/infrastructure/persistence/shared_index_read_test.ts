@@ -32,7 +32,6 @@ Deno.test("SharedIndexRead: cancelling before the loader starts still releases i
   const rejected = assertRejects(() => waiting, DOMException, "stopped");
   abort.abort(new DOMException("stopped", "AbortError"));
   await rejected;
-  // The owner still releases the registration even though the loader never ran.
   assertEquals(read.signal.aborted, true);
   assertEquals(released, 1);
   assertEquals(started, false);

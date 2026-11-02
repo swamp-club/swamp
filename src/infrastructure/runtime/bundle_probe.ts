@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Probes one bundle: imports it and answers with what it exports, as plain
-// data (swamp-club#3374). The probe host process runs this after
-// installProbeIsolation, so whatever the bundle does at import stays in
-// that process, not in the command's.
+// the probe host runs this after installProbeIsolation, so whatever the bundle
+// does at import stays in that process, not the command's
 
 import { installZodGlobal } from "../../domain/models/bundle.ts";
 import type {
@@ -39,20 +37,15 @@ class ExitAtImport extends Error {
   }
 }
 
-/** What {@link installProbeIsolation} leaves the host to use. */
 export interface ProbeIsolation {
-  /** Lines a bundle wrote through `console`; taken by each answer. */
   readonly output: string[];
-  /** The real `Deno.exit`, which a bundle's call no longer reaches. */
   readonly exit: (code?: number) => never;
 }
 
 /**
- * Makes this isolate safe to import bundles into: `console` output is
- * captured, `Deno.exit` throws instead of exiting, and errors a bundle's
- * leftover work raises later are swallowed, so they never end the host
- * under the next bundle. For the probe host only: it takes over the whole
- * isolate.
+ * captures console, makes Deno.exit throw, and swallows errors from a bundle's
+ * leftover work so they never end the host under the next bundle; it takes over
+ * the whole isolate, so probe host only
  */
 export function installProbeIsolation(): ProbeIsolation {
   globalThis.addEventListener("error", (event) => event.preventDefault());
@@ -113,9 +106,8 @@ function findExit(error: unknown): ExitAtImport | undefined {
 }
 
 /**
- * Imports the bundle `request` names and reports its export. `onStarted`
- * is called once the kind adapter is loaded and the bundle's own import is
- * about to begin, so a caller can time that import alone. Never throws.
+ * onStarted fires once the kind adapter is loaded and the bundle's own import
+ * is about to begin, so a caller can time that import alone; never throws
  */
 export async function probeModule(
   request: BundleProbeRequest,

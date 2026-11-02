@@ -30,33 +30,18 @@ import { removeAbandonedTempFiles } from "../persistence/abandoned_temp_files.ts
 
 const logger = getLogger(["swamp", "runtime", "deno"]);
 
-/** Filename of the embedded deno binary (platform-dependent at build time). */
 const DENO_BINARY_NAME = Deno.build.os === "windows" ? "deno.exe" : "deno";
 
 /**
- * DenoRuntime implementation that manages an embedded deno binary.
- *
- * - **Dev mode** (running from source): returns `Deno.execPath()` directly.
- * - **Standalone mode** (compiled binary): reads the embedded binary from
- *   `resources/deno/`, extracts it to `~/.swamp/deno/`, and returns that path.
- *   Skips extraction when `~/.swamp/deno/.version` already matches.
- *
- * After extraction (and on each startup when the version is already current),
- * a health check runs `deno --version` to verify the binary executes cleanly.
- * On macOS, extended attributes are cleared after writing to prevent
- * provenance-based SIGKILL from the OS security layer. If the health check
- * still fails after extraction, swamp falls back to a system `deno` in PATH.
+ * macOS extended attributes are cleared after writing to prevent
+ * provenance-based SIGKILL; a deno --version health check runs, and if it fails
+ * after extraction swamp falls back to a system deno in PATH
  */
 export class EmbeddedDenoRuntime implements DenoRuntime {
   private cachedPath: string | null = null;
   private extractionPromise: Promise<string> | null = null;
   private readonly commandResolver: CommandResolver;
 
-  /**
-   * @param commandResolver Override the system PATH resolver. Tests inject a
-   *   fake to exercise the standalone-mode fallback path without depending on
-   *   the host's installed `deno`.
-   */
   constructor(commandResolver: CommandResolver = defaultCommandResolver()) {
     this.commandResolver = commandResolver;
   }
@@ -68,7 +53,6 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
 
     // deno-lint-ignore no-explicit-any
     if (!(Deno.build as any).standalone) {
-      // Dev mode: use the deno that's running us
       this.cachedPath = Deno.execPath();
       logger.debug`Dev mode: using system deno at ${this.cachedPath}`;
       return this.cachedPath;
@@ -89,10 +73,8 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     const targetBinary = join(swampDir, DENO_BINARY_NAME);
     const versionMarker = join(swampDir, ".version");
 
-    // Read embedded version
     const embeddedVersion = await this.readEmbeddedVersion();
 
-    // Check if already extracted with matching version
     try {
       const existingVersion = (await Deno.readTextFile(versionMarker)).trim();
       if (existingVersion === embeddedVersion.value) {
@@ -112,14 +94,12 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
 
     logger.debug`Extracting embedded deno ${embeddedVersion} to ${swampDir}`;
 
-    // Ensure target directory exists
     await Deno.mkdir(swampDir, { recursive: true });
 
     // Clean up temp files abandoned by a previous crashed extraction. Fresh
     // ones are kept — they may belong to a concurrent process mid-extraction.
     await removeAbandonedTempFiles(swampDir, ".deno.tmp.");
 
-    // Read embedded binary
     const embeddedBinary = await this.readEmbeddedBinary();
 
     // Write to a temp file, set permissions, then atomic-rename into place.
@@ -144,7 +124,6 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
       throw error;
     }
 
-    // Write version marker
     await Deno.writeTextFile(versionMarker, embeddedVersion.value);
 
     logger
@@ -155,7 +134,6 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
       return targetBinary;
     }
 
-    // Extracted binary still unhealthy — fall back to system deno in PATH.
     logger
       .warn`Embedded deno at ${targetBinary} failed health check after extraction — falling back to system deno: ${postExtract.stderr}`;
     const systemDeno = await this.findSystemDeno();
@@ -172,10 +150,8 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
   }
 
   /**
-   * Returns true if the binary at the given path executes cleanly.
-   * Uses an explicit cwd so the child process doesn't inherit an
-   * inaccessible working directory (e.g. when invoked via sudo -u
-   * from another user's restricted home).
+   * explicit cwd so the child does not inherit an inaccessible working
+   * directory, e.g. via sudo -u from another user's restricted home
    */
   private async healthCheck(
     binaryPath: string,
@@ -197,12 +173,9 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
   }
 
   /**
-   * Clears all extended attributes on a file on macOS.
-   *
-   * When swamp writes the embedded deno binary via Deno.writeFile, macOS
-   * records the writing process's provenance in com.apple.provenance. This
-   * can cause the OS security layer to SIGKILL the binary when it is later
-   * spawned as a subprocess. Clearing attributes after writing prevents this.
+   * writing via Deno.writeFile records provenance in com.apple.provenance,
+   * which can make macOS SIGKILL the binary when spawned; clearing attributes
+   * after writing prevents it
    */
   private async clearMacOSExtendedAttributes(
     binaryPath: string,
@@ -221,17 +194,6 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     }
   }
 
-  /**
-   * Searches PATH for a system-installed deno binary.
-   * Used as a fallback when the embedded binary fails its health check.
-   *
-   * The multi-line `which`/`where` parsing semantics live in
-   * `CommandResolver` and are covered by `resolve_command_test.ts`. The
-   * `commandResolver` constructor argument is the injection seam if tests
-   * ever need to drive this path through a public method (currently
-   * `ensureDeno()` only invokes it when `Deno.build.standalone === true`,
-   * which is not flippable from a test).
-   */
   private findSystemDeno(): Promise<string | null> {
     return this.commandResolver.resolve("deno");
   }
@@ -247,20 +209,11 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     return await Deno.readFile(binaryPath);
   }
 
-  /**
-   * Gets the path to an embedded resource file.
-   * Uses import.meta.dirname to navigate from this file's location
-   * (src/infrastructure/runtime/) up to repo root, then into resources/deno/.
-   */
   private getEmbeddedResourcePath(filename: string): string {
     const currentDir = import.meta.dirname ?? ".";
-    // From src/infrastructure/runtime -> ../../.. -> repo root
     return join(currentDir, "..", "..", "..", "resources", "deno", filename);
   }
 
-  /**
-   * Gets the swamp deno directory path for extracting the runtime.
-   */
   private getSwampDenoDir(): string {
     return join(getSwampDataDir(), "deno");
   }
@@ -279,10 +232,9 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
   }
 
   /**
-   * Returns a subprocess environment with DENO_DIR scoped to the swamp
-   * data directory. Prevents the embedded deno binary from creating
-   * `$HOME/Library/Caches/deno/` on macOS, which traverses `$HOME` and
-   * triggers TCC permission prompts for protected folders.
+   * DENO_DIR is scoped to the swamp data directory so the embedded deno does
+   * not create $HOME/Library/Caches/deno on macOS, which traverses $HOME and
+   * triggers TCC prompts
    */
   getDenoEnv(): Record<string, string> {
     return {

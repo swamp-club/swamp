@@ -54,12 +54,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * A type directory of auto-definitions in `dir`, a reader that counts file
- * reads, and an index whose clock runs a minute ahead, so every stat the
- * test sets is old enough to trust and only a stat that moved makes it list
- * or read again.
- */
 async function fixture(dir: string, options: { realClock?: boolean } = {}) {
   const auto = join(dir, ".swamp", "auto-definitions");
   const typeDir = join(auto, TYPE.toDirectoryPath());
@@ -94,13 +88,11 @@ async function fixture(dir: string, options: { realClock?: boolean } = {}) {
 
 let clock = Date.UTC(2020, 0, 1);
 
-/** Gives `path` an mtime no earlier change has used. */
 async function bump(path: string): Promise<void> {
   clock += 1_000;
   await Deno.utime(path, new Date(clock), new Date(clock));
 }
 
-/** Writes a definition file, then moves its own and its directory's mtime. */
 async function writeDefinition(
   typeDir: string,
   file: string,
@@ -114,7 +106,6 @@ async function writeDefinition(
   return path;
 }
 
-/** Rewrites a file in place: its directory's stat does not move. */
 async function rewriteInPlace(
   path: string,
   name: string,
@@ -177,7 +168,6 @@ Deno.test("AutoDefinitionNameIndex.find: a miss reads every file once, then only
     assertEquals(await index.find("new-worker"), null);
     assertEquals(counter.reads, 20);
 
-    // Nothing changed: no file is read.
     assertEquals(await index.find("new-worker"), null);
     assertEquals(counter.reads, 20);
 
@@ -237,7 +227,6 @@ Deno.test("AutoDefinitionNameIndex.find: a file found rewritten at lookup is not
       id,
     );
 
-    // Its stat says nothing changed: only the lookup's own read can tell.
     frozen.set(path, (await statRecord(path))!);
     await rewriteInPlace(path, "second", id);
     assertEquals(await index.find("first"), null);
@@ -360,8 +349,6 @@ Deno.test("AutoDefinitionNameIndex.find: overlapping lookups share one check", a
     }
 
     await Promise.all([index.find("a"), index.find("b"), index.find("c")]);
-    // The first check reads every file; the two queued behind it share one
-    // check, which finds nothing changed.
     assertEquals(counter.reads, 5);
   });
 });
@@ -399,7 +386,6 @@ Deno.test({
       const path = await writeDefinition(typeDir, "plain.yaml", "plain");
       assertEquals(await index.find("other"), null);
 
-      // The caller's own read of plain.yaml failed and reported a miss.
       await Deno.chmod(path, 0o000);
       try {
         await assertRejects(
@@ -426,7 +412,6 @@ Deno.test("AutoDefinitionNameIndex.find: a name-derived file rewritten in place 
     await rewriteInPlace(path, "renamed");
     assertEquals(await index.find("renamed"), null);
 
-    // A lookup of the name it declared before reads it, and sees the change.
     assertEquals(await index.find("plain"), null);
     assertEquals((await index.find("renamed"))?.path, path);
   });
@@ -445,7 +430,6 @@ Deno.test("AutoDefinitionNameIndex.find: the lookup that queued a check counts i
             { "swamp.diagnostic.scan_root": label },
             () => index.find("legacy"),
           );
-        // Both ask before the queued check starts, so the second joins it.
         return Promise.all([lookup("first"), lookup("second")]);
       });
       const [first, second] = ["first", "second"].map((label) =>

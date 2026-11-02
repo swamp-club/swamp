@@ -34,54 +34,26 @@ import type { DatastoreProvider } from "../../domain/datastore/datastore_provide
 import { resolveCustomProvider } from "./datastore_global_lock.ts";
 
 /**
- * How long the marker read through a provider's datastore-wide store may
- * take before the check gives up and proceeds. The read's signal aborts
- * then, so an extension that honours it stops its request and retry
- * backoff; one that does not is raced. A remote slower than this is treated
- * like a failed read: the check is skipped, never blocking, and the command
- * meets the same outage itself.
- *
- * Measured with `scripts/bench_datastore_format_guard.ts` (swamp-club#3191).
- * Against local emulators a healthy read adds no time distinguishable from
- * noise. A real bucket adds round trips and credential resolution to the
- * first request: with 300 ms round trips and a 1 s credentials fetch, this
- * read took about 1.95 s. A deadline it misses skips the check silently, so
- * the cap keeps headroom over that.
+ * past this the check proceeds and aborts the read's signal; a slower remote
+ * counts as a failed read and the command meets the outage itself; sized with
+ * headroom for a first request and credentials fetch
  */
 export const DATASTORE_FORMAT_READ_TIMEOUT_MS = 3_000;
 
 /**
- * The same cap for a provider without a datastore-wide store, read through
- * a fresh sync service. That path pays one more round trip than the
- * datastore-wide one (the S3 extension's `HeadBucket` credentials
- * preflight) and at 300 ms round trips with a 1 s credentials fetch did not
- * finish within 2 s, so it is given longer.
+ * the same cap for a provider without a datastore-wide store, read through a
+ * fresh sync service; that path pays one more round trip (credentials
+ * preflight), so it is given longer
  */
 export const DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS = 4_000;
 
-/** Options for {@link readDatastoreFormatMarker}. */
 export interface ReadDatastoreFormatMarkerOptions {
-  /**
-   * Overrides {@link DATASTORE_FORMAT_READ_TIMEOUT_MS} and, unless
-   * `fallbackTimeoutMs` is given, {@link DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS}
-   * (tests).
-   */
   readonly timeoutMs?: number;
-  /** Overrides {@link DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS} (tests). */
   readonly fallbackTimeoutMs?: number;
-  /**
-   * Overrides the format guard's uncapped second read
-   * (`DATASTORE_FORMAT_UNCAPPED_READ_TIMEOUT_MS`, tests).
-   */
   readonly uncappedTimeoutMs?: number;
-  /** Overrides provider resolution (tests). */
   readonly resolveProvider?: (
     config: CustomDatastoreConfig,
   ) => Promise<DatastoreProvider>;
-  /**
-   * Overrides how the format guard learns which extension, at which
-   * version, a datastore type was loaded from (tests).
-   */
   readonly resolveExtension?: (
     repoDir: string,
     type: string,
@@ -89,23 +61,9 @@ export interface ReadDatastoreFormatMarkerOptions {
 }
 
 /**
- * Reads a datastore's format marker without writing anything.
- *
- * Filesystem datastores keep the marker at the datastore root,
- * `<path>/datastore-format.json`, outside every namespace subdirectory.
- *
- * Other datastores keep it as the control-plane record `datastore-format`
- * at the datastore-wide `_control/` root. A provider that offers
- * `datastoreControlPlaneStore` is read through it: one request, no sync
- * service. Otherwise the read goes through a sync service built for this
- * read alone: one that has never pulled or pushed has no namespace bound,
- * so the S3 and GCS extensions resolve the key to the datastore-wide root
- * from a namespaced repo too. A provider that hands out one shared sync
- * service would have its namespace bound by that read, breaking the
- * command's later namespaced pull, so such a provider is skipped.
- *
- * The read is given an `AbortSignal` that aborts at the deadline, so an
- * extension that honours it stops its request and retries then.
+ * reads through datastoreControlPlaneStore when offered, else a fresh sync
+ * service so no namespace is bound; a provider sharing one sync service is
+ * skipped, since the read would bind its namespace
  */
 export async function readDatastoreFormatMarker(
   repoDir: string,

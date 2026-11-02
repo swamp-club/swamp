@@ -32,12 +32,9 @@ const LOCK_RETRY_COUNT = 10;
 const LOCK_RETRY_DELAY_MS = 100;
 
 /**
- * What a failed create-new of the advisory lock file means for the caller:
- * wait and `retry`, give up because the lock stayed `busy`, or `rethrow` an
- * error that is not contention. Windows reports PermissionDenied rather than
- * AlreadyExists while a lock file another writer just released is still
- * pending deletion, so that is retried there too; one that outlasts every
- * retry is a real permission problem and is rethrown (swamp-club#3167).
+ * Windows reports PermissionDenied, not AlreadyExists, while a just-released
+ * lock file awaits deletion, so that retries; one outlasting every retry is a
+ * real permission problem and is rethrown
  */
 export function lockAttemptOutcome(
   error: unknown,
@@ -53,129 +50,56 @@ export function lockAttemptOutcome(
   return "rethrow";
 }
 
-/** The advisory lock file a write holds, and where it lives. */
 interface HeldLock {
   file: Deno.FsFile;
   path: string;
 }
 
-/** Options accepted by {@link LockfileRepository.writeEntry}. */
 export interface WriteEntryOptions {
   include?: string[];
   checksum?: string;
   filesChecksum?: string;
   serverUrl?: string;
   channel?: string;
-  /** Release channel the registry lists the version on, when known. */
   publishedChannel?: string;
-  /** Preserve the original pulledAt timestamp (e.g. lockfile-restore flows). */
   pulledAt?: string;
 }
 
 /**
- * Sole gateway for read+write of `upstream_extensions.json` (the lockfile).
- *
- * **Asymmetric semantics — read carefully.**
- *
- * The repository captures a snapshot of the lockfile at construction time.
- * The intent is to preserve the W1b "snapshot frozen at construction"
- * contract that {@link ExtensionRepository} relies on (see its JSDoc) — the
- * snapshot now lives one layer out, but the contract is identical: two
- * repository instances constructed at different wall-clock times can see
- * different states. To refresh, construct a new instance.
- *
- * - **Reads** ({@link getEntry}, {@link getAllEntries},
- *   {@link getLockedVersion}) serve from the construction-time cache. They
- *   do NOT hit disk; subsequent disk mutations by sibling processes /
- *   instances are NOT reflected.
- *
- * - **Writes** ({@link writeEntry}, {@link removeEntry}) acquire the
- *   advisory file lock, re-read the CURRENT disk state, merge the new
- *   entry, atomic-write the merged result, release the lock, and update
- *   this instance's local cache to match. This preserves the
- *   pre-LockfileRepository concurrency semantic: two concurrent writers
- *   don't clobber each other; each sees the other's prior commits via the
- *   re-read step. The local cache update means the writer can read its
- *   own write back from this same instance.
- *
- * - **{@link refresh}** re-reads disk into the cache. Installs and
- *   removals call it first thing under the pulled-extensions lock
- *   (`pulled_extensions_lock.ts`), so the prior entry they act on is the
- *   one on disk, not the one captured when their context was built
- *   (swamp-club#2709).
- *
- * Future contributors: do NOT "fix" the cached read to be live. The
- * snapshot semantics are deliberate. A caller that needs current disk
- * state calls {@link refresh} (under the pulled-extensions lock, when it
- * is about to change the checkout) or constructs a new instance.
- *
- * Filed as the W2 prequel for swamp-club#231.
+ * reads serve a snapshot frozen at construction on purpose; writes lock,
+ * re-read disk, merge and update the cache. For current state call refresh or
+ * build a new instance, never make reads live
  */
 export class LockfileRepository {
   readonly lockfilePath: string;
   private cache: UpstreamExtensionsMap;
 
-  /**
-   * Captures a snapshot of the lockfile at this moment. A missing file
-   * yields an empty cache (matches {@link readUpstreamExtensions}'s
-   * NotFound semantics).
-   */
   static async create(lockfilePath: string): Promise<LockfileRepository> {
     const cache = await readUpstreamExtensions(lockfilePath);
     return new LockfileRepository(lockfilePath, cache);
   }
 
-  /**
-   * Constructs an instance with an explicit cache. Prefer
-   * {@link LockfileRepository.create} for production code. This constructor
-   * is the test seam for fixtures that need a known starting state without
-   * touching disk, and also wraps entries a caller has already read (for
-   * example, `extension list` merging the transitional local lockfile).
-   */
   constructor(lockfilePath: string, cache: UpstreamExtensionsMap = {}) {
     this.lockfilePath = lockfilePath;
     this.cache = cache;
   }
 
-  /**
-   * Re-reads the lockfile from disk into the cache. A missing file
-   * yields an empty cache, as in {@link create}.
-   */
   async refresh(): Promise<void> {
     this.cache = await readUpstreamExtensions(this.lockfilePath);
   }
 
-  /** Returns the cached entry for `name`, or null if absent. */
   getEntry(name: string): UpstreamExtensionEntry | null {
     return this.cache[name] ?? null;
   }
 
-  /**
-   * Returns the cached entry map. Callers receive a defensive deep copy
-   * so external mutation — including pushing into nested `files[]` /
-   * `include[]` arrays — cannot corrupt the cache. `structuredClone`
-   * (in scope on Deno via the global) covers every value shape the
-   * lockfile carries today (strings, arrays of strings, booleans).
-   */
   getAllEntries(): UpstreamExtensionsMap {
     return structuredClone(this.cache);
   }
 
-  /**
-   * Returns the version string for `name`, or null if absent. Sugar over
-   * `getEntry(name)?.version ?? null`. Replaces the W1b
-   * `getLockedVersion` closure injected into {@link ExtensionRepository}.
-   */
   getLockedVersion(name: string): string | null {
     return this.cache[name]?.version ?? null;
   }
 
-  /**
-   * Writes a new lockfile entry. Acquires the advisory lock, re-reads
-   * disk under the lock (so concurrent writes by siblings are not
-   * clobbered), merges, atomic-writes, releases the lock, and updates
-   * this instance's cache to match.
-   */
   async writeEntry(
     name: string,
     version: string,
@@ -215,18 +139,9 @@ export class LockfileRepository {
     }
   }
 
-  /**
-   * Removes an entry by name. No-op if absent. Acquires the advisory
-   * lock, re-reads disk under the lock, deletes the key, atomic-writes
-   * the result, releases the lock, and updates this instance's cache.
-   */
   async removeEntry(name: string): Promise<void> {
-    // Symmetric with writeEntry — defensive against callers who removed
-    // an extension in this process and the parent dir was cleaned up
-    // between then and now. In practice unreachable today (rm.ts only
-    // calls this after extensionRmPreview confirmed the entry exists,
-    // which read the lockfile successfully) but the asymmetry would
-    // surface as an unhelpful NotFound from acquireLock if it ever did.
+    // mkdir mirrors writeEntry so a cleaned-up parent dir does not surface as
+    // an unhelpful NotFound from acquireLock
     await Deno.mkdir(dirname(this.lockfilePath), { recursive: true });
     const lockFile = await this.acquireLock();
     try {
@@ -243,13 +158,9 @@ export class LockfileRepository {
   }
 
   /**
-   * Puts entries back as they were read: each named entry object is
-   * written in its canonical form (as every read returns it), or its key
-   * deleted when the value is null. All of them land in one atomic write
-   * under the advisory lock, so either every entry is restored or none
-   * is. Unlike {@link writeEntry}, the entry is not rebuilt: file order,
-   * empty fields and keys this version does not know are kept. Used to
-   * undo an install's lockfile writes.
+   * restores entries exactly as read in one atomic write under the lock, so all
+   * or none; unlike writeEntry it keeps file order, empty fields and unknown
+   * keys
    */
   async restoreEntries(
     entries: Readonly<Record<string, UpstreamExtensionEntry | null>>,
@@ -275,12 +186,6 @@ export class LockfileRepository {
     }
   }
 
-  /**
-   * Replaces every entry with `entries`, under the advisory lock. For
-   * replaying a checkout's pending change onto a lockfile just fetched from
-   * the datastore (swamp-club#2838); installs and removals use
-   * {@link writeEntry} and {@link removeEntry}.
-   */
   async replaceAll(entries: UpstreamExtensionsMap): Promise<void> {
     await Deno.mkdir(dirname(this.lockfilePath), { recursive: true });
     const lockFile = await this.acquireLock();
@@ -301,13 +206,9 @@ export class LockfileRepository {
   }
 
   /**
-   * Rewrites the lockfile in its canonical form when the file on disk is
-   * not in it: paths written with backslashes, or `files` listing bundle
-   * cache paths (see {@link canonicalLockfileEntry}). Reads accept both,
-   * so this only stops a lockfile written on another OS from showing as
-   * changed. Leaves the file alone, and returns false, when it is missing
-   * or already canonical; a canonical file whose `files` are out of order
-   * (hand-edited) is not re-sorted.
+   * rewrites to canonical form (forward slashes, no bundle cache paths) so a
+   * lockfile written on another OS does not show as changed; a missing or
+   * canonical file is left alone
    */
   async normalize(): Promise<boolean> {
     // No lockfile, nothing to rewrite: don't create the lock's dir for it.
@@ -375,10 +276,8 @@ export class LockfileRepository {
           continue;
         }
         if (outcome === "busy") {
-          // UserError so the top-level handler renders the clean
-          // message instead of a stack trace — matches the pre-W2-prequel
-          // behavior in pull.ts (rm.ts threw plain Error; this
-          // consolidates on the better UX).
+          // UserError so the top-level handler renders a clean message instead
+          // of a stack trace
           throw new UserError(
             "Could not acquire lock on upstream_extensions.json. Another operation may be in progress. Please retry.",
           );
@@ -396,8 +295,8 @@ export class LockfileRepository {
     try {
       await Deno.remove(lock.path);
     } catch {
-      // Best-effort cleanup; the lockfile may have been removed by a
-      // concurrent process or never created in the unhappy case.
+      // best-effort cleanup; the lockfile may already have been removed by a
+      // concurrent process
     }
   }
 }

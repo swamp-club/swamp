@@ -129,7 +129,6 @@ Deno.test("readPackageLockValidity: an installed version the lock does not say i
         "node_modules/zz": { version: "9.0.0" },
       }),
     );
-    // zz also differs; the first in path order is reported.
     const result = await readPackageLockValidity(dir, [
       { path: "node_modules/zz", version: "9.0.1" },
       { path: "node_modules/ms", version: "2.1.3" },
@@ -168,7 +167,6 @@ Deno.test("readPackageLockValidity: an installed package the lock does not list 
       dir,
       v3Lock({
         "node_modules/ms": { version: "2.1.3" },
-        // Not a package entry: no version string.
         "node_modules/linked": { resolved: "../linked", link: true },
       }),
     );

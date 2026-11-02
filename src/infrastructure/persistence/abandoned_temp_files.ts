@@ -1,47 +1,24 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 Elder Swamp Club, Inc.
-//
-// This file is part of Swamp.
-//
-// Swamp is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License version 3
-// as published by the Free Software Foundation, with the Swamp
-// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
-// file).
-//
-// Swamp is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
 
 import { join } from "@std/path";
 
 /**
- * Minimum age before a temp file is considered abandoned. A live writer keeps
- * advancing the file's mtime until its write finishes, and the steps after the
- * write (chmod, xattr clear, rename) take milliseconds, so anything this old
- * cannot belong to a process that is still running.
+ * a live writer keeps advancing mtime and the steps after the write are quick,
+ * so a file this old cannot belong to a running process
  */
 export const ABANDONED_TEMP_FILE_MAX_AGE_MS = 10 * 60 * 1000;
 
 /**
- * Minimum age before a temp directory is considered abandoned. Much longer
- * than the file threshold: a directory can belong to a process that is
- * paused rather than dead — a laptop asleep mid-download, or a job stopped
- * with Ctrl+Z — and removing it makes that process fail when it wakes.
+ * much longer than the file threshold: a directory can belong to a paused
+ * process (laptop asleep, job stopped), and removing it makes that process fail
+ * on waking
  */
 export const ABANDONED_TEMP_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Best-effort removal of temp files left behind by a crashed process.
- *
- * Removes regular files in `dir` whose name starts with `prefix` and whose
- * mtime is older than {@link ABANDONED_TEMP_FILE_MAX_AGE_MS}. Younger files
- * are kept: they may belong to a concurrent process that is still writing
- * them, and deleting one makes that process fail with ENOENT. Entries with no
- * mtime, a future mtime, or that are not regular files are also kept. All
- * errors are swallowed.
+ * younger files are kept since a concurrent writer would fail with ENOENT;
+ * entries with no or future mtime, or not regular files, are kept; all errors
+ * are swallowed
  */
 export async function removeAbandonedTempFiles(
   dir: string,
@@ -72,20 +49,9 @@ export async function removeAbandonedTempFiles(
 }
 
 /**
- * Best-effort removal of temp directories left behind by a killed process.
- *
- * Removes directories in `dir` whose name starts with `prefix` and whose
- * newest timestamp — the directory's own mtime, or that of anything directly
- * inside it — is older than {@link ABANDONED_TEMP_DIR_MAX_AGE_MS}. A live
- * writer keeps touching its directory, and a paused one may wake, so anything
- * younger is kept.
- *
- * `dir` may be a shared location such as the OS temp directory, so only real
- * directories are considered: symlinks and files are skipped, entries are
- * read with lstat so no link is followed, and the recursive remove unlinks
- * any symlink inside rather than following it. Entries with no mtime or a
- * future mtime are kept, and all errors (another user's directory in a shared
- * /tmp, a concurrent removal) are swallowed.
+ * dir may be shared like the OS temp dir, so only real directories count: lstat
+ * avoids following links, the recursive remove unlinks symlinks, and errors
+ * from others' directories are swallowed
  */
 export async function removeAbandonedTempDirs(
   dir: string,

@@ -18,27 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Obtains a verified Litestream binary for v3 replication (swamp-club#3358).
- *
- * The binary sees bucket credentials and every commit, so a binary that does
- * not hash to the pin is never returned. {@link LitestreamBinaryProvider.resolve}
- * hashes it on every call, and callers call it before every start.
- *
- * Where the binary comes from, in order:
- *
- * 1. `SWAMP_LITESTREAM_PATH`, for offline machines and the serve Docker
- *    image. Checked against the pin, never copied.
- * 2. The cache, `<swamp data dir>/litestream/<version>/`. A version directory
- *    whose binary is missing or does not match is refused, never replaced:
- *    the user deletes the directory.
- * 3. Upstream's GitHub release. The archive is hashed before anything is
- *    extracted, the binary after. It is staged in a temp directory beside
- *    the cache and renamed into place, so two processes racing on first use
- *    settle on whichever rename lands first, and the other one hashes the
- *    winner's binary.
- *
- * Dormant: nothing in production calls it until the Litestream sidecar
- * (Phase 4D) does. `integration/datastore_v3_rules_test.ts` pins that.
+ * the binary sees bucket credentials and every commit, so one that does not
+ * hash to the pin is never returned; resolve hashes on every call and callers
+ * call it before every start
  */
 
 import { join } from "@std/path";
@@ -57,28 +39,23 @@ import type { Fetcher } from "../../http/recording_fetcher.ts";
 import { getSwampDataDir } from "../../persistence/paths.ts";
 import { LITESTREAM_PIN } from "./litestream_pin.ts";
 
-/** The environment variable naming a binary the user installed themselves. */
 export const LITESTREAM_PATH_ENV = "SWAMP_LITESTREAM_PATH";
 
-/** The cache's directory under the swamp data dir. */
 export const LITESTREAM_CACHE_DIR = "litestream";
 
-/** Upstream archives are 13–14 MB; anything far past that is not one. */
+/** cap on a download: anything far past an upstream archive's size is not one */
 export const DEFAULT_MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
 
-/** The binary is about 40 MB unpacked. */
 export const MAX_EXTRACTED_BYTES = 256 * 1024 * 1024;
 
 export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** Staging directories older than this were left by a crashed process. */
 export const ABANDONED_STAGING_MAX_AGE_MS = 10 * 60 * 1000;
 
 const STAGING_PREFIX = ".tmp-";
 const EXTRACT_SUBDIR = ".extract";
 const LICENSE_FILE = "LICENSE";
 
-/** Litestream cannot be obtained or cannot run here. */
 export class LitestreamUnavailableError extends UserError {
   constructor(message: string) {
     super(message, "litestream_unavailable");
@@ -86,7 +63,6 @@ export class LitestreamUnavailableError extends UserError {
   }
 }
 
-/** A binary or archive does not hash to the pin, so it is never run. */
 export class LitestreamIntegrityError extends UserError {
   constructor(message: string) {
     super(message, "litestream_integrity");
@@ -94,30 +70,21 @@ export class LitestreamIntegrityError extends UserError {
   }
 }
 
-/** The filesystem operations the provider needs. */
 export interface LitestreamFs {
-  /** The file's bytes, or undefined when it does not exist. */
   readFile(path: string): Promise<Uint8Array | undefined>;
-  /** Whether anything exists at the path. */
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
   makeTempDir(dir: string, prefix: string): Promise<string>;
   rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
-  /** Whether the file has an exec bit; always true where there are none. */
   isExecutable(path: string): Promise<boolean>;
-  /**
-   * Directories under `dir` whose names start with `prefix`, with their
-   * modification time in ms. One removed while it is listed is left out.
-   */
   listDirs(
     dir: string,
     prefix: string,
   ): Promise<{ name: string; mtimeMs: number }[]>;
 }
 
-/** Unpacks an archive's whole contents into `destDir`. */
 export type LitestreamArchiveExtractor = (
   archive: Uint8Array,
   archiveName: string,
@@ -125,9 +92,7 @@ export type LitestreamArchiveExtractor = (
 ) => Promise<void>;
 
 export interface LitestreamBinaryProviderOptions {
-  /** The swamp data dir; the cache lives in its `litestream/` directory. */
   readonly dataDir: string;
-  /** The value of `SWAMP_LITESTREAM_PATH`, if set. */
   readonly overridePath?: string;
   readonly pin?: LitestreamPin;
   readonly os?: string;
@@ -135,7 +100,6 @@ export interface LitestreamBinaryProviderOptions {
   readonly fetch?: Fetcher;
   readonly fs?: LitestreamFs;
   readonly extract?: LitestreamArchiveExtractor;
-  /** Clears macOS quarantine from a freshly installed binary. */
   readonly clearQuarantine?: (path: string) => Promise<void>;
   readonly downloadTimeoutMs?: number;
   readonly maxDownloadBytes?: number;
@@ -148,7 +112,6 @@ export interface ResolvedLitestreamBinary {
   readonly source: "override" | "cache" | "download";
 }
 
-/** A path's modification time in ms, or undefined once it is gone. */
 export async function modificationTimeMs(
   path: string,
 ): Promise<number | undefined> {
@@ -215,10 +178,6 @@ export const denoLitestreamFs: LitestreamFs = {
   },
 };
 
-/**
- * Unpacks a `.tar.gz` in-process, and a `.zip` with PowerShell's
- * `Expand-Archive` (zip archives are Windows-only, as in the update checker).
- */
 export const defaultLitestreamExtractor: LitestreamArchiveExtractor = async (
   archive,
   archiveName,
@@ -253,10 +212,6 @@ export const defaultLitestreamExtractor: LitestreamArchiveExtractor = async (
   }
 };
 
-/**
- * Removes the quarantine attribute macOS may set on a downloaded binary
- * (best-effort, as the update checker does). A no-op elsewhere.
- */
 export async function clearMacOSQuarantine(path: string): Promise<void> {
   if (Deno.build.os !== "darwin") return;
   try {
@@ -299,15 +254,10 @@ export class LitestreamBinaryProvider {
     this.cacheRoot = join(options.dataDir, LITESTREAM_CACHE_DIR);
   }
 
-  /** The cache directory for the pinned version. */
   get versionDir(): string {
     return join(this.cacheRoot, this.pin.version);
   }
 
-  /**
-   * Returns the path of a binary that hashes to the pin, downloading it on
-   * first use. Call it before every start of the binary.
-   */
   async resolve(signal?: AbortSignal): Promise<ResolvedLitestreamBinary> {
     const availability = litestreamAvailability(this.pin, this.os, this.arch);
     if (!availability.available) {
@@ -361,7 +311,6 @@ export class LitestreamBinaryProvider {
     }
   }
 
-  /** Hashes the cached binary; a missing or wrong one is refused. */
   private async verifyCached(target: LitestreamTarget): Promise<string> {
     const versionDir = this.versionDir;
     const path = join(versionDir, litestreamBinaryName(target));
@@ -432,7 +381,6 @@ export class LitestreamBinaryProvider {
     return archive;
   }
 
-  /** Reads the body, refusing one larger than the cap. */
   private async readCapped(
     response: Response,
     target: LitestreamTarget,
@@ -463,7 +411,6 @@ export class LitestreamBinaryProvider {
     return archive;
   }
 
-  /** The error that tells the user exactly how to install it by hand. */
   private offline(
     target: LitestreamTarget,
     cause: string,
@@ -492,7 +439,6 @@ export class LitestreamBinaryProvider {
     );
   }
 
-  /** Stages the archive's binary beside the cache, then renames it in. */
   private async install(
     target: LitestreamTarget,
     archive: Uint8Array,
@@ -566,7 +512,6 @@ export class LitestreamBinaryProvider {
     };
   }
 
-  /** Removes staging directories a crashed process left behind. */
   private async removeAbandonedStaging(): Promise<void> {
     const cutoff = this.now() - ABANDONED_STAGING_MAX_AGE_MS;
     for (const dir of await this.fs.listDirs(this.cacheRoot, STAGING_PREFIX)) {
@@ -577,10 +522,6 @@ export class LitestreamBinaryProvider {
   }
 }
 
-/**
- * The provider wired to the real network, filesystem, swamp data dir and
- * `SWAMP_LITESTREAM_PATH`.
- */
 export function defaultLitestreamBinaryProvider(): LitestreamBinaryProvider {
   return new LitestreamBinaryProvider({
     dataDir: getSwampDataDir(),

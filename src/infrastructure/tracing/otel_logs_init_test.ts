@@ -60,9 +60,9 @@ Deno.test("initLogs: batch processor path initializes", async () => {
 });
 
 Deno.test("shutdownLogs: no-op and safe to call when logs were never initialized", async () => {
-  await initLogs({ exporterKind: "otlp" }); // returns undefined
+  await initLogs({ exporterKind: "otlp" });
   await shutdownLogs();
-  await shutdownLogs(); // double shutdown must not throw
+  await shutdownLogs();
 });
 
 Deno.test("initLogs: idempotent — a second call returns the same provider, not a new one", async () => {

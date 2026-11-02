@@ -26,9 +26,8 @@ export type ExtensionKind =
   | "webhook";
 
 /**
- * What went wrong, for consumers that group warnings (`swamp doctor
- * extensions`). A warning raised without one keeps the historical
- * `TypeExtractionFailed` label there.
+ * for consumers that group warnings; a warning raised without one is grouped as
+ * TypeExtractionFailed
  */
 export type ExtensionLoadWarningCategory =
   | "TypeExtractionFailed"
@@ -83,13 +82,12 @@ const HINT_BY_KIND: Record<ExtensionKind, string> = {
 };
 
 /**
- * extensions/behaviors/ is the behavior-spelled sibling of
- * extensions/models/ (swamp-club#3338), auto-discovered the same way.
+ * extensions/behaviors/ is the behavior-spelled sibling of extensions/models/,
+ * auto-discovered the same way
  */
 const BEHAVIORS_HINT =
   "extensions/behaviors/ is auto-discovered — running `swamp extension source add` here is a no-op.";
 
-/** The hint for a warning: the behaviors one for a model file there. */
 function hintFor(
   warning: Pick<ExtensionLoadWarningEvent, "kind" | "file">,
 ): string {

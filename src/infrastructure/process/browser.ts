@@ -25,13 +25,11 @@ import { UserError } from "../../domain/errors.ts";
  */
 export const BROWSER_LAUNCH_GRACE_MS = 2000;
 
-/** The parts of a spawned launcher process that {@link openBrowser} uses. */
 export interface BrowserLauncherProcess {
   readonly status: Promise<Deno.CommandStatus>;
   unref(): void;
 }
 
-/** Dependencies for {@link openBrowser}, injected for testability. */
 export interface OpenBrowserDeps {
   readonly os: typeof Deno.build.os;
   readonly graceMs: number;
@@ -48,14 +46,9 @@ const defaultDeps: OpenBrowserDeps = {
 };
 
 /**
- * Open a URL in the user's default browser.
- *
- * Resolves once the launcher has handed the URL off. Some launchers run the
- * browser in the foreground instead of exiting (xdg-open's generic path does
- * this when the browser is not already open), so a launcher still running
- * after the grace window is treated as launched rather than awaited.
- * Throws a UserError with the URL if the launcher cannot be started or exits
- * with an error.
+ * resolves once the launcher hands off; one still running after the grace
+ * window counts as launched, since some (xdg-open) run the browser in the
+ * foreground
  */
 export async function openBrowser(
   url: string,
@@ -69,7 +62,6 @@ export async function openBrowser(
   } else if (os === "windows") {
     cmd = ["cmd", "/c", "start", url];
   } else {
-    // Linux and other Unix-like systems
     cmd = ["xdg-open", url];
   }
 
@@ -106,7 +98,6 @@ export async function openBrowser(
   }
 
   if (outcome === "running") {
-    // Let this process exit without waiting for the browser.
     child.unref();
     return;
   }

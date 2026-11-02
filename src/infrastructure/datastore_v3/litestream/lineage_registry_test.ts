@@ -102,8 +102,6 @@ Deno.test("LineageRegistry: read finds the current lineage and its head", async 
     assertEquals(current?.fence, 5);
     assertEquals(current?.head?.txid, "000000000000000a");
     assertEquals(newestStartedFence(lineages, ReplicaRoot.of(ROOT)), 8);
-    // One list, then the newest start, and the current start,
-    // confirmation and head: the cost of a check on a current copy.
     assertEquals(calls, { list: 1, get: 4 });
   });
 });
@@ -113,12 +111,10 @@ Deno.test("LineageRegistry: records under another root or malformed are ignored"
     await registry.start(started(3));
     await registry.confirm({ fence: 3, txid: "1", confirmedAt: AT });
     await registry.publishHead(head(3, "1"));
-    // Confirmed without a head: not the current state.
     await registry.start(started(4));
     await registry.confirm({ fence: 4, txid: "1", confirmedAt: AT });
     await registry.start(started(6, "file:/other"));
     await registry.confirm({ fence: 6, txid: "1", confirmedAt: AT });
-    // A torn or hand-written record, and a key that is not a lineage's.
     const lineageDir = join(dir, "_control", "lineage");
     await Deno.mkdir(join(lineageDir, "000000000009"), { recursive: true });
     await Deno.writeTextFile(
@@ -147,8 +143,6 @@ Deno.test("LineageRegistry: a fenced writer's late head never moves a continued 
   await withRegistry(async (registry) => {
     await registry.start(started(5));
     await registry.confirm({ fence: 5, txid: "1", confirmedAt: AT });
-    // Writer 7 continued lineage 5 and published its head; writer 6, which
-    // lost the lease before, publishes late.
     await registry.publishHead({ ...head(5, "20"), writerFence: 7 });
     await registry.publishHead({ ...head(5, "18"), writerFence: 6 });
     const current = currentLineage(
@@ -165,8 +159,6 @@ Deno.test("LineageRegistry: a fenced writer's late head never moves a continued 
 Deno.test("LineageRegistry.everConfirmed: only once a lineage under any root is confirmed (swamp-club#3491)", async () => {
   await withRegistry(async (registry) => {
     assertEquals(await registry.everConfirmed(), false);
-    // Started but never confirmed: a writer that failed before its first
-    // sync leaves the shared commits for the next writer to seed.
     await registry.start(started(4));
     assertEquals(await registry.everConfirmed(), false);
     await registry.start(started(5, "file:/other"));
@@ -199,12 +191,10 @@ Deno.test("LineageRegistry: read finds the current lineage another spelling of t
   });
 });
 
-/** A head of lineage `fence` that writer `writerFence` published. */
 function headBy(fence: number, writerFence: number, txid: string) {
   return { ...head(fence, txid), writerFence };
 }
 
-/** The lineage records under `dir`, relative to the control plane. */
 async function lineageKeys(dir: string): Promise<string[]> {
   const fs = new FileSystemControlPlaneStore(dir);
   return (await fs.list("lineage/")).sort();
@@ -217,10 +207,7 @@ Deno.test("LineageRegistry.pruneHeads: removes the heads below its writer's, old
     for (const writer of [4, 5, 6, 7, 9]) {
       await registry.publishHead(headBy(3, writer, writer.toString(16)));
     }
-    // Writer 8's own head is not there yet: nothing goes.
     assertEquals(await registry.pruneHeads(3, 8), 0);
-    // At most `limit`, the oldest first; writer 9's stays, and so does
-    // writer 6's, the newest below writer 7's.
     assertEquals(await registry.pruneHeads(3, 7, { limit: 1 }), 1);
     assertEquals(await registry.pruneHeads(3, 7), 1);
     assertEquals(await lineageKeys(dir), [
@@ -256,8 +243,6 @@ Deno.test("LineageRegistry: a read whose listed heads a newer writer pruned list
     await setup.start(started(5));
     await setup.confirm({ fence: 5, txid: "2", confirmedAt: AT });
     await setup.publishHead(headBy(5, 6, "b"));
-    // Between the read's list and its first head GET, writer 7 publishes
-    // its head on lineage 5 and prunes writer 6's.
     let raced = false;
     const store: WritableDatastoreControlPlaneStore = {
       get: async (key) => {
@@ -295,8 +280,6 @@ Deno.test("LineageRegistry: a read that finds a higher listed head gone while a 
     for (const writer of [5, 6, 7]) {
       await setup.publishHead(headBy(3, writer, writer.toString(16)));
     }
-    // A prune that removes the highest head first: writer 8 publishes, and
-    // writer 7's head is gone before writer 6's.
     let raced = false;
     const store: WritableDatastoreControlPlaneStore = {
       get: async (key) => {
@@ -337,7 +320,6 @@ Deno.test("LineageRegistry.pruneHeads: deletes in batches of at most 16, keeping
       delete: async (key) => {
         most = Math.max(most, ++inFlight);
         try {
-          // Every delete of a batch starts before any finishes.
           await Promise.resolve();
           await fs.delete(key);
         } finally {
@@ -351,7 +333,6 @@ Deno.test("LineageRegistry.pruneHeads: deletes in batches of at most 16, keeping
     for (let writer = 4; writer <= 40; writer++) {
       await registry.publishHead(headBy(3, writer, writer.toString(16)));
     }
-    // 4..38 go; 39, the newest below 40, and 40 stay.
     assertEquals(await registry.pruneHeads(3, 40), 35);
     assertEquals(most, 16);
     assertEquals(await lineageKeys(dir), [

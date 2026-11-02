@@ -78,7 +78,6 @@ import {
   WRITER,
 } from "./commit_log_test_helpers.ts";
 
-/** An in-memory chunk storage with small chunks, so content spans several. */
 function memory(): MemoryStorage {
   return new MemoryStorage({ maxChunkBytes: 32 * 1024 });
 }
@@ -91,7 +90,6 @@ function bytesOf(length: number, seed = 7): Uint8Array {
   return bytes;
 }
 
-/** The bytes a put's content holds, inline or from the chunk storage. */
 async function contentOf(
   op: PutOp,
   storage: MemoryStorage,
@@ -199,7 +197,6 @@ Deno.test("createCommitLogUnitOfWork: small content is inlined, larger content i
   const small = bytesOf(MAX_INLINE_BYTES);
   const large = bytesOf(MAX_INLINE_BYTES + 1);
   sink.beforeAppend = async (commit) => {
-    // Every chunk a commit names is in storage before the commit lands.
     for (const op of commit.ops) {
       if (op.kind === "put" && "blob" in op.content) {
         const parts = op.content.blob.parts ??
@@ -259,7 +256,6 @@ Deno.test("createCommitLogUnitOfWork: streamed content within the inline limit i
   assertEquals(options.storage.puts(), 0);
 });
 
-/** Storage whose next put fails. */
 class FlakyStorage extends MemoryStorage {
   failNextPut = false;
   override put(
@@ -503,7 +499,6 @@ Deno.test("checkpointFrom: commits what an open child and its ancestors staged, 
     MODEL.toString(),
     runPartition().toString(),
   ]);
-  // Still open: it keeps staging, and its root commits the rest.
   await grandchild.stageOp({ partition: MODEL, op: await savePut("c", 1) });
   await grandchild.commit();
   await child.commit();
@@ -524,7 +519,6 @@ Deno.test("checkpointFrom: a later abandon of the child discards only what it st
   );
   await child.stageOp({ partition: MODEL, op: await savePut("a", 1) });
   await checkpointFrom(child);
-  // Handed over but not committed yet: the root's own commit lands it.
   await child.stageOp({ partition: MODEL, op: await savePut("b", 1) });
   const later = createCommitLogUnitOfWork(
     hook,
@@ -553,7 +547,6 @@ Deno.test("checkpointFrom: an ended child goes on from its nearest open ancestor
   await child.commit();
   assertEquals(await checkpointFrom(child), true);
   assertEquals(sink.landed.length, 1);
-  // Opened before its root ends, and still open after.
   const open = createCommitLogUnitOfWork(
     hook,
     unitOptions(sink, memory(), { parent: root }),
@@ -562,7 +555,6 @@ Deno.test("checkpointFrom: an ended child goes on from its nearest open ancestor
   await root.commit();
   assertEquals(await checkpointFrom(child), false);
   assertEquals(await checkpointFrom(root), false);
-  // A child still open under an ended root commits nothing either.
   assertEquals(await checkpointFrom(open), false);
   const other = {
     stage: () => Promise.resolve(),
@@ -590,7 +582,6 @@ Deno.test("checkpointFrom: a put the child stages while the root appends what it
   const started = new Promise<void>((resolve) => {
     reading = resolve;
   });
-  // The stream opens once the test lets it, then finds its file removed.
   await child.stageOp(pendingPut("a", async () => {
     reading();
     await opened;
@@ -639,7 +630,6 @@ Deno.test("createCommitLogUnitOfWork: a child that takes the root past MAX_COMMI
   for (let i = 0; i < MAX_COMMIT_OPS - 2; i++) {
     await root.stageOp({ partition: MODEL, op });
   }
-  // Five batches of one, handed up batch by batch.
   for (let i = 0; i < 5; i++) await child.stageOp({ partition: MODEL, op });
   await child.commit();
   assertEquals(root.stagedOps().length, MAX_COMMIT_OPS + 3);
@@ -679,7 +669,6 @@ Deno.test("createCommitLogUnitOfWork: a child's batch is never split when it is 
   );
 });
 
-/** A unit whose model partition is refused (stale fence) at its next flush. */
 async function refusingModel() {
   const sink = new MemorySink();
   await sink.append(
@@ -699,7 +688,6 @@ async function refusingModel() {
 const AUTO_ID = "55555555-5555-4555-8555-555555555555";
 const AUTO = partitionOf({ kind: "definition", id: AUTO_ID });
 
-/** A put in an auto-definition partition, which no fence refuses here. */
 function autoPut(): Promise<PutOp> {
   return putOp({
     intent: createIntent({
@@ -718,7 +706,6 @@ Deno.test("createCommitLogUnitOfWork: a refused partition holds the run records 
     () => uow.checkpoint(),
     PartitionsRefusedError,
   );
-  // Still a CommitRejectedError with the refusal's reason.
   assert(error instanceof CommitRejectedError);
   assertEquals(error.reason, "stale-fence");
   assertEquals(
@@ -726,7 +713,6 @@ Deno.test("createCommitLogUnitOfWork: a refused partition holds the run records 
     [[MODEL.toString(), "stale-fence", [{ dataId: DATA_ID, version: 1 }]]],
   );
   assertEquals(error.heldRuns.map(String), [runPartition().toString()]);
-  // A later save of the run still names what the refusal dropped: held too.
   await uow.stageOp({ partition: runPartition(), op: await runPut("r2") });
   const again = await assertRejects(
     () => uow.checkpoint(),
@@ -772,7 +758,6 @@ Deno.test("createCommitLogUnitOfWork: a re-save of a held run supersedes the hel
   });
   const held = countedStream(new TextEncoder().encode("names refused data"));
   await uow.stageOp(runRecord(held));
-  // Another key of the run's partition, as its snapshot is.
   await uow.stageOp({
     partition: runPartition(),
     op: await runPut("snapshot"),
@@ -782,7 +767,6 @@ Deno.test("createCommitLogUnitOfWork: a re-save of a held run supersedes the hel
   uow.acknowledgeRefusals();
   await uow.commit();
   assertEquals(held.opened, 0);
-  // The held group (now just the snapshot) commits, then the re-save.
   assertEquals(
     sink.commitsOf(runPartition()).flatMap((commit) =>
       commit.ops.map((op) => op.kind === "put" ? op.key.toString() : op.kind)
@@ -797,8 +781,6 @@ Deno.test("createCommitLogUnitOfWork: a re-save of a held run supersedes the hel
 Deno.test("createCommitLogUnitOfWork: an unacknowledged refusal is reported with every later one, and every flush throws until acknowledged (swamp-club#3257)", async () => {
   const { sink, uow } = await refusingModel();
   await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
-  // The caller carried on; nothing new is refused, but the flush still says
-  // so, since the refusal was never acknowledged.
   await uow.stageOp({ partition: AUTO, op: await autoPut() });
   const again = await assertRejects(
     () => uow.checkpoint(),
@@ -808,7 +790,6 @@ Deno.test("createCommitLogUnitOfWork: an unacknowledged refusal is reported with
   assertEquals(again.refusals.map((r) => r.partition.toString()), [
     MODEL.toString(),
   ]);
-  // A second refusal of the same partition is listed with the first.
   await uow.stageOps([
     { partition: MODEL, op: await savePut("b", 1) },
     { partition: MODEL, op: versionOp("b", 1) },
@@ -838,7 +819,6 @@ Deno.test("createCommitLogUnitOfWork: a transient failure after a refusal in the
   ]);
   assert(error.cause instanceof Error);
   assertEquals(error.cause.message, "disk full");
-  // The failed group stays pending and lands once the refusal is settled.
   fail = false;
   uow.acknowledgeRefusals();
   await uow.commit();
@@ -869,7 +849,6 @@ Deno.test("createCommitLogUnitOfWork: only a root acknowledges refusals, and aba
   await uow.abandon();
 });
 
-/** Makes another writer append to MODEL before each of the next `n` appends. */
 function raceNext(sink: MemorySink, n: number): void {
   let left = n;
   let inside = false;
@@ -1088,7 +1067,6 @@ Deno.test("createCommitLogUnitOfWork: a partition past MAX_COMMIT_OPS commits as
     sink.commitsOf(MODEL).map((commit) => commit.ops.length),
     [MAX_COMMIT_OPS, 2],
   );
-  // The run partition still commits last.
   assertEquals(sink.landed.at(-1)?.partition.kind, "run");
 });
 
@@ -1125,8 +1103,6 @@ Deno.test("createCommitLogUnitOfWork: a refused split drops the splits formed wi
     intent: modelIntent({ kind: "data.delete", name: "a" }),
     key: dataKey("a", 1),
   });
-  // The first split carries a put that must create a key the second
-  // batch of fillers never touches; a seeded record makes it refuse.
   await sink.append(modelCommit(1, [await savePut("seed", 1)]));
   await uow.stageOp({
     partition: MODEL,
@@ -1137,13 +1113,9 @@ Deno.test("createCommitLogUnitOfWork: a refused split drops the splits formed wi
   }
   await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
   await assertRejects(() => uow.checkpoint(), CommitRejectedError);
-  // The second split was formed with the refused one: dropped. The run
-  // partition, formed in the same flush, is held until the refusal is
-  // acknowledged (swamp-club#3257).
   await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
   assertEquals(sink.commitsOf(MODEL).length, 1);
   assertEquals(sink.commitsOf(runPartition()), []);
-  // A batch staged after the refusal forms a group of its own and lands.
   await uow.stageOp({ partition: MODEL, op: await savePut("later", 1) });
   uow.acknowledgeRefusals();
   await uow.commit();
@@ -1151,7 +1123,6 @@ Deno.test("createCommitLogUnitOfWork: a refused split drops the splits formed wi
   assertEquals(sink.commitsOf(runPartition()).length, 1);
 });
 
-/** A stream source that counts how often it was opened. */
 function countedStream(bytes: Uint8Array) {
   const source = Object.assign(
     () => {
@@ -1190,7 +1161,6 @@ Deno.test("createCommitLogUnitOfWork: a stream put superseded by a later tombsto
     sink.landed[0].ops.map((op) => op.kind),
     ["data-version", "tombstone"],
   );
-  // stagedOps still reports every change staged.
   assertEquals(uow.stagedOps().length, 3);
 });
 
@@ -1252,7 +1222,6 @@ Deno.test("createCommitLogUnitOfWork: a retry reuses the content stored the firs
   await assertRejects(() => uow.checkpoint(), Error, "append failed");
   assertEquals(source.opened, 1);
   await uow.commit();
-  // The file behind the stream may be gone by now; the retry never reads it.
   assertEquals(source.opened, 1);
   assertEquals(sink.commitsOf(MODEL).length, 1);
 });
@@ -1269,7 +1238,6 @@ Deno.test("createCommitLogUnitOfWork: a pending put superseded before it is stor
   storage.failNextPut = true;
   await assertRejects(() => uow.checkpoint(), Error, "bucket unreachable");
   assertEquals(source.opened, 1);
-  // A prune removes the file and stages its tombstone while the put waits.
   await uow.stageOp({
     partition: MODEL,
     op: tombstoneOp({
@@ -1299,7 +1267,6 @@ Deno.test("createCommitLogUnitOfWork: a put superseded while its group is being 
   const started = new Promise<void>((resolve) => {
     reading = resolve;
   });
-  // The stream opens once the test lets it, then finds its file removed.
   await uow.stageOp(pendingPut("a", async () => {
     reading();
     await opened;
@@ -1362,7 +1329,6 @@ Deno.test("createCommitLogUnitOfWork: an aborted signal rejects a commit that st
   assertEquals(sink.appendCalls, []);
 });
 
-/** Deletes every chunk a commit names, as a chunk sweep could. */
 async function deleteChunksOf(
   commit: { ops: readonly unknown[] },
   storage: MemoryStorage,
@@ -1388,8 +1354,8 @@ Deno.test("createCommitLogUnitOfWork: chunks a sweep deleted after they were sto
     const sink = new MemorySink();
     const options = unitOptions(sink, memory());
     let deleted: string[] = [];
-    // Between the unit's has()/touch() and its append, a sweep deletes the
-    // chunks after its re-check, so only the writer can restore them.
+    // between the unit's has()/touch() and its append, a sweep deletes the
+    // chunks after its re-check, so only the writer can restore them
     sink.beforeAppend = async (commit) => {
       deleted = await deleteChunksOf(commit, options.storage);
     };
@@ -1416,13 +1382,11 @@ Deno.test("createCommitLogUnitOfWork: a retried commit that lands as a duplicate
   const options = unitOptions(sink, memory());
   let fail = true;
   sink.afterAppend = async (commit) => {
-    // The append lands but the call fails, and a sweep deletes the chunks.
     if (!fail) return;
     fail = false;
     await deleteChunksOf(commit, options.storage);
     throw new Error("lost reply");
   };
-  // The retry re-stores content before its append; delete it again there.
   let retried = false;
   sink.beforeAppend = async (commit) => {
     if (fail) return;
@@ -1453,16 +1417,10 @@ Deno.test("createCommitLogUnitOfWork: a source that changed cannot restore a del
   await uow.stageOp(
     pendingPut("x", () => streamOf(bytesOf(100 * 1024, ++calls))),
   );
-  // It landed: failing the unit would drop work that is committed.
   await uow.commit();
   assertEquals(sink.landed.length, 1);
 });
 
-/**
- * A memory storage that stages chunks as the file system storage does:
- * nothing staged is stored until the stage commits, a discard drops what
- * was staged, and the names a barrier syncs are recorded.
- */
 class StagingMemoryStorage extends MemoryStorage {
   readonly synced: string[] = [];
 
@@ -1502,7 +1460,6 @@ Deno.test("createCommitLogUnitOfWork: a source that changed does not cost anothe
   let deleted: string[] = [];
   sink.beforeAppend = async (commit) => {
     deleted = await deleteChunksOf(commit, options.storage);
-    // Only the restore's barrier counts from here.
     options.storage.synced.length = 0;
   };
   let calls = 0;
@@ -1539,7 +1496,6 @@ Deno.test("createCommitLogUnitOfWork: a stored put superseded before a retry tha
   );
   let aOpens = 0;
   await uow.stageOp(pendingPut("a", () => {
-    // Read once, then its file is removed.
     if (aOpens++ > 0) throw new Deno.errors.NotFound("raw was pruned");
     return streamOf(bytesOf(100 * 1024, 5));
   }));
@@ -1548,9 +1504,7 @@ Deno.test("createCommitLogUnitOfWork: a stored put superseded before a retry tha
     if (bOpens++ === 0) throw new Error("b unreadable");
     return streamOf(bytesOf(100 * 1024, 6));
   }));
-  // a is stored, b fails: the failed barrier never stores a's chunks.
   await assertRejects(() => uow.checkpoint(), Error, "b unreadable");
-  // A prune removes a's file and stages its tombstone before the retry.
   await uow.stageOp({
     partition: MODEL,
     op: tombstoneOp({
@@ -1586,7 +1540,6 @@ Deno.test("createCommitLogUnitOfWork: an abort during the landed commit's chunk 
   await uow.stageOp(pendingPut("a", bytesOf(100 * 1024, 1)));
   await uow.stageOp(pendingPut("b", bytesOf(100 * 1024, 2)));
   await uow.stageOp(pendingPut("c", bytesOf(100 * 1024, 3)));
-  // The commit landed before the check, so the unit still succeeds.
   await uow.commit();
   assertEquals(sink.landed.length, 1);
   assertEquals(checks, 1);
@@ -1602,15 +1555,12 @@ Deno.test("createCommitLogUnitOfWork: a commit whose chunks are all present chec
   const putsBefore = storage.puts();
   await uow.commit();
   const hasCalls = storage.calls.filter((c) => c.startsWith("has "));
-  // One has() per chunk while storing, then one for the landed blob; the
-  // inline put adds none.
   const parts = (sink.landed[0].ops[0] as PutOp).content;
   assert("blob" in parts);
   assertEquals(hasCalls.length, parts.blob.chunkHashes().length + 1);
   assertEquals(storage.puts() - putsBefore, parts.blob.chunkHashes().length);
 });
 
-/** A unit tracker that records what it is told (swamp-club#3553). */
 function recordingTracker() {
   const seen = {
     open: 0,
@@ -1654,8 +1604,6 @@ for (const reason of ["version-live", "version-reused"] as const) {
     assertEquals(seen.open, 1);
     await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
     await assertRejects(() => uow.commit(), PartitionsRefusedError);
-    // Told at the refusal and again as the root's end fails: the handle
-    // keeps the earliest time, so a repeat costs nothing.
     assert(seen.dropped.length > 0);
     assertEquals(new Set(seen.dropped), new Set([AT.getTime()]));
     assertEquals(seen.open, 0);
@@ -1710,8 +1658,6 @@ Deno.test("createCommitLogUnitOfWork: a refusal that drops one partition reports
   await uow.stageOp({ partition: MODEL, op: await savePut("b", 1) });
   await uow.stageOp({ partition: AUTO, op: await autoPut() });
   await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
-  // The auto-definition partition still committed: its checkpoints hold
-  // work the unit goes on with.
   assertEquals(sink.commitsOf(AUTO).length, 2);
   assertEquals(seen.sentTxnIds.length, 1);
   assertEquals(
@@ -1719,7 +1665,6 @@ Deno.test("createCommitLogUnitOfWork: a refusal that drops one partition reports
     new Set([modelCheckpoint.txnId, ...refused]),
   );
   assert(!seen.sentTxnIds[0].includes(autoCheckpoint.txnId));
-  // Dropping the whole unit reports every commit it sent.
   await uow.abandon();
   assert(seen.sentTxnIds.at(-1)!.includes(autoCheckpoint.txnId));
 });
@@ -1758,7 +1703,6 @@ Deno.test("createCommitLogUnitOfWork: an abandon reports dropped work only when 
   await untouched.abandon();
   assertEquals(seen.dropped, []);
 
-  // A write signal with nothing staged yet: the files were written.
   const written = createCommitLogUnitOfWork(
     hook,
     unitOptions(sink, memory(), { tracker }),
@@ -1829,7 +1773,6 @@ Deno.test("createCommitLogUnitOfWork: a dropped unit reports the version directo
   await root.abandon();
   assertEquals(seen.versionDirs, [["data/t/m/a/1", "data/t/m/b/1"]]);
 
-  // Nothing staged, no write signal: the created directory alone touches.
   const allocatedOnly = createCommitLogUnitOfWork(
     hook,
     unitOptions(sink, memory(), { tracker }),
@@ -1838,7 +1781,6 @@ Deno.test("createCommitLogUnitOfWork: a dropped unit reports the version directo
   await allocatedOnly.abandon();
   assertEquals(seen.versionDirs.at(-1), ["data/t/m/c/1"]);
 
-  // An abandoned child reports its own; its root commits cleanly.
   const parent = createCommitLogUnitOfWork(
     hook,
     unitOptions(sink, memory(), { tracker }),

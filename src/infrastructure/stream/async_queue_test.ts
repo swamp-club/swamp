@@ -49,7 +49,6 @@ Deno.test("AsyncQueue concurrent push and consume", async () => {
   const q = new AsyncQueue<number>();
   const items: number[] = [];
 
-  // Push items asynchronously
   const producer = (async () => {
     for (let i = 0; i < 5; i++) {
       await new Promise((r) => setTimeout(r, 1));
@@ -79,21 +78,19 @@ Deno.test("AsyncQueue push after close throws", () => {
 Deno.test("AsyncQueue double close is safe", () => {
   const q = new AsyncQueue<number>();
   q.close();
-  q.close(); // should not throw
+  q.close();
 });
 
 Deno.test("AsyncQueue consumer waits for push", async () => {
   const q = new AsyncQueue<string>();
   const items: string[] = [];
 
-  // Start consuming before pushing
   const consumer = (async () => {
     for await (const item of q) {
       items.push(item);
     }
   })();
 
-  // Push after a small delay
   await new Promise((r) => setTimeout(r, 5));
   q.push("a");
   q.push("b");

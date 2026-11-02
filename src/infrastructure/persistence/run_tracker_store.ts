@@ -50,18 +50,11 @@ const RUN_TRACKER_DB_NAME = "run_tracker.db";
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active_run.ts";
 
-/**
- * How a CLI process judges a tracker row's owner: by this host's name, with
- * a pid check against the local process table.
- */
 export function localOwnerLiveness(): OwnerLiveness {
   return { hostname: hostname(), isDead: isProcessGone };
 }
 const RETENTION_DAYS = 7;
-/**
- * How long an unsettled `interrupted` row is kept past RETENTION_DAYS: the
- * backstop for a row no path ever settles (swamp-club#2917).
- */
+/** backstop retention for an interrupted row that no path ever settles */
 const UNSETTLED_RETENTION_DAYS = 90;
 const SCHEMA_VERSION = 6;
 
@@ -184,7 +177,6 @@ export class RunTrackerStore implements RunTrackerRepository {
     if (currentVersion >= SCHEMA_VERSION) return;
 
     if (currentVersion < 1) {
-      // v0 → v1: add completed_at and cancel_reason columns if table exists without them
       const tableExists = this.db.prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='active_runs'",
       ).get();
@@ -322,10 +314,9 @@ export class RunTrackerStore implements RunTrackerRepository {
   private purgeOldRuns(): void {
     const daysAgo = (days: number) =>
       new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-    // An interrupted row with no reason was reaped on liveness alone; its
-    // workflow or method run record may still say running, and the row is
-    // what lets recover and doctor settle it. Kept until markSettled() gives
-    // a reason, or for UNSETTLED_RETENTION_DAYS at most.
+    // an interrupted row with no reason was reaped on liveness alone and its
+    // run record may still say running, so it is kept until markSettled gives a
+    // reason, or for UNSETTLED_RETENTION_DAYS
     const result = this.db.prepare(
       `DELETE FROM active_runs
        WHERE status NOT IN ('running', 'suspended')
@@ -386,10 +377,8 @@ export class RunTrackerStore implements RunTrackerRepository {
   }
 
   /**
-   * Puts a workflow row its owner completed back to `running` when the
-   * owner's final run record was not committed (swamp-club#3587): only a
-   * row owned by `pid` on `hostname` that this owner ended, never one
-   * interrupted or settled by another process. Returns whether it did.
+   * only a row owned by pid on hostname that this owner ended, never one
+   * interrupted or settled by another process
    */
   reopenCompleted(runId: string, pid: number, hostname: string): boolean {
     const result = this.db.prepare(`
@@ -490,10 +479,6 @@ export class RunTrackerStore implements RunTrackerRepository {
     return reaped;
   }
 
-  /**
-   * Running rows owned by a process on this host that is no longer alive,
-   * whatever their heartbeat age. Rows owned by this process are excluded.
-   */
   findDeadProcessRuns(instanceId?: string): ActiveRun[] {
     const currentHostname = hostname();
     return this.findAllRunning().filter((run) =>

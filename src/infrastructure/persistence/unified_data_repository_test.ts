@@ -65,7 +65,6 @@ import { captureUnreadableWarnings } from "./unreadable_records_test_helpers.ts"
 
 const testType = ModelType.create("test/model");
 
-/** Runs `fn` with a fresh repo dir and a catalog in it, removing both after. */
 async function withTempRepo(
   fn: (repo: FileSystemUnifiedDataRepository) => void | Promise<void>,
 ): Promise<void> {
@@ -275,7 +274,6 @@ Deno.test("concurrent save returns unique versions with distinct content", async
       }),
     );
 
-    // All versions must be unique
     const versions = results.map((r) => r.version);
     const uniqueVersions = new Set(versions);
     assertEquals(
@@ -286,7 +284,6 @@ Deno.test("concurrent save returns unique versions with distinct content", async
       }]`,
     );
 
-    // All content must be preserved
     for (const version of versions) {
       const saved = await repo.getContent(
         testType,
@@ -389,10 +386,6 @@ Deno.test("allocateVersion rejects reserved data name 'latest'", async () => {
     }
   }
 });
-
-// ============================================================================
-// Sync read methods
-// ============================================================================
 
 function makeJsonData(name: string): Data {
   return Data.create({
@@ -905,7 +898,6 @@ Deno.test("findAllForType: a data name that fails is reported by name, and the m
       [["model-1", "report"]],
     );
 
-    // Without the option empty metadata reads as no data, as before.
     assertEquals(
       (await repo.findAllForType(testType)).map((r) => r.data.name),
       ["good"],
@@ -1027,7 +1019,6 @@ Deno.test({
     );
     await Deno.chmod(versionDir, 0o000);
     try {
-      // Without the option the unreadable model is skipped, as before.
       const plain = await repo.findAllForType(testType);
       assertEquals(plain.map((r) => r.modelId), ["model-ok"]);
 
@@ -1048,26 +1039,14 @@ Deno.test({
   },
 });
 
-// Pins the markDirty contract from design/enablers/datastores.md: every public mutation
-// that writes into the cache must call the sync service's markDirty hook before
-// the write begins, so the fast-path sidecar cannot short-circuit past it, and
-// again once the write has landed (swamp-club#2421), so a push that ran while
-// the write was in flight cannot have cleared the mark for good. Also pins the
-// per-call relPath granularity — pre-write notify sites (save, append,
-// allocateVersion) pass the data-name directory because the version directory
-// doesn't exist yet; finalizeVersion passes the version directory; delete
-// passes the version dir or data-name dir based on whether a version was
-// supplied; collectGarbage passes each version directory being removed
-// (per-path, so the sync service can detect deletions).
-//
-// Regression coverage for the datastore fast-path contract violation that
-// silently lost writes when the sidecar stayed clean.
+// pins the markDirty contract: every cache-writing mutation marks its path
+// before the write and again once it lands, so a push that ran mid-write cannot
+// clear the mark for good
 Deno.test("mutations call markDirty before and after writing", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
     const calls: Array<string | undefined> = [];
-    // Whether the marked path existed when the mark arrived.
     const existed: boolean[] = [];
     const markDirty = (relPath?: string) => {
       calls.push(relPath);
@@ -1088,8 +1067,6 @@ Deno.test("mutations call markDirty before and after writing", async () => {
       markDirty,
     );
 
-    // save → data-name directory (version not yet allocated): before the
-    // directory exists, then again once the version is on disk.
     const data = makeData("mark-dirty-save");
     await repo.save(
       testType,
@@ -1101,7 +1078,6 @@ Deno.test("mutations call markDirty before and after writing", async () => {
     assertEquals(calls, [saveDir, saveDir]);
     assertEquals(existed, [false, true]);
 
-    // allocateVersion → data-name directory; finalizeVersion → version dir
     const data2 = makeData("mark-dirty-alloc");
     const { version, contentPath } = await repo.allocateVersion(
       testType,
@@ -1125,10 +1101,8 @@ Deno.test("mutations call markDirty before and after writing", async () => {
     );
     assertEquals(calls.slice(4), [finalDir, finalDir]);
 
-    // append → data-name directory (matches save/allocateVersion granularity).
-    // The mark fires before the streaming-configured check throws, so the
-    // signal lands even though the operation aborts, and the after-mark
-    // still follows the failure. Tolerate the throw.
+    // append marks before the streaming-configured check throws, so the signal
+    // lands even though the operation aborts; the throw is tolerated
     try {
       await repo.append(
         testType,
@@ -1142,8 +1116,6 @@ Deno.test("mutations call markDirty before and after writing", async () => {
     assertEquals(calls.slice(6), [saveDir, saveDir]);
     const afterAppend = calls.length;
 
-    // rename → old-name directory at entry and again at the end. Internal
-    // save() emits its own per-path signals for the new name.
     await repo.rename(testType, "model-1", "mark-dirty-save", "mark-dirty-ren");
     if (calls.length < afterAppend + 3) {
       throw new Error(`rename did not call markDirty: ${calls.length}`);
@@ -1158,8 +1130,6 @@ Deno.test("mutations call markDirty before and after writing", async () => {
       saveDir,
       "rename's last markDirty call must be old-name directory",
     );
-    // The inner save() emits a per-path signal for the new name. Verify by
-    // looking for the new-name data-name directory in the subsequent calls.
     const renameTail = calls.slice(afterAppend + 1);
     const expectedRenameInner = repo.getDataNameDir(
       testType,
@@ -1175,9 +1145,8 @@ Deno.test("mutations call markDirty before and after writing", async () => {
     }
     const afterRename = calls.length;
 
-    // delete with specific version → version directory; it is the name's
-    // last version, so its latest marker goes too (swamp-club#3473). Each
-    // is marked while present, then again once gone.
+    // deleting a name's last version also removes its latest marker; each path
+    // is marked while present, then again once gone
     await repo.delete(testType, "model-1", "mark-dirty-ren", 1);
     const renVersion = repo.getPath(testType, "model-1", "mark-dirty-ren", 1);
     const renLatest = join(
@@ -1192,13 +1161,9 @@ Deno.test("mutations call markDirty before and after writing", async () => {
     ]);
     assertEquals(existed.slice(afterRename), [true, false, true, false]);
 
-    // delete without version → latest marker file (data-name dir already
-    // removed by the prior specific-version delete that left no versions;
-    // listVersions returns [] so only the latest marker signal fires).
     await repo.delete(testType, "model-1", "mark-dirty-ren");
     assertEquals(calls.slice(afterRename + 4), [renLatest, renLatest]);
 
-    // collectGarbage (live) with nothing to GC → no markDirty calls
     await repo.collectGarbage(testType, "model-1");
     assertEquals(
       calls.length,
@@ -1245,8 +1210,8 @@ Deno.test("delete: full delete emits per-version markDirty signals", async () =>
 
     await repo.delete(testType, "m1", "multi-ver");
 
-    // Must emit one signal per version directory + one for the latest
-    // marker, before the removal and again after it (swamp-club#2421).
+    // one signal per version directory plus one for the latest marker, before
+    // the removal and again after it
     const expectedVersionPaths = [1, 2, 3].map((v) =>
       repo.getPath(testType, "m1", "multi-ver", v)
     );
@@ -1348,7 +1313,6 @@ Deno.test("collectGarbage: emits per-path markDirty for each removed version", a
     const v1Dir = repo.getPath(testType, "gc-model", "gc-dirty", 1);
     const v2Dir = repo.getPath(testType, "gc-model", "gc-dirty", 2);
     const pruneCalls = calls.filter((c) => c === v1Dir || c === v2Dir);
-    // Each removal is marked before and after (swamp-club#2421).
     assertEquals(pruneCalls.length, 4);
   } finally {
     if (Deno.build.os === "windows") {
@@ -1375,7 +1339,6 @@ Deno.test("markDirty is not called on read paths", async () => {
       markDirty,
     );
 
-    // Seed data with a write (a mark before it and one after).
     const data = makeData("read-probe");
     await repo.save(
       testType,
@@ -1385,7 +1348,6 @@ Deno.test("markDirty is not called on read paths", async () => {
     );
     assertEquals(calls.length, 2);
 
-    // All reads below must not increment the count.
     await repo.findAllGlobal();
     await repo.findByName(testType, "model-1", "read-probe");
     await repo.findAllForModel(testType, "model-1");
@@ -1405,11 +1367,6 @@ Deno.test("markDirty is not called on read paths", async () => {
     }
   }
 });
-
-// ============================================================================
-// findAllGlobalSince — mirrors the workflow-run repo tests so the three
-// implementations of the same two-stage filter stay in lockstep.
-// ============================================================================
 
 async function withDataRepo(
   fn: (
@@ -1475,9 +1432,8 @@ Deno.test(
         new TextEncoder().encode("y"),
       );
 
-      // Concurrent deletion of the doomed item's metadata file. The data
-      // repo already wraps stat in per-file try/catch; this test pins
-      // that behavior so future refactors don't lose it.
+      // concurrent deletion of the doomed item's metadata file: the repo wraps
+      // stat in a per-file try/catch and this pins that
       await Deno.remove(
         repo.getMetadataPath(testType, "model-1", "doomed-data", 1),
       );
@@ -1581,7 +1537,6 @@ Deno.test("getContent: calls hydrateFile hook when raw file is missing", async (
     const expectedContent = new TextEncoder().encode("hydrated-content");
 
     const hydrateFile = async (absPath: string): Promise<boolean> => {
-      // Hook receives absolute path (same pattern as MarkDirtyHook)
       await Deno.mkdir(join(absPath, ".."), { recursive: true });
       await Deno.writeFile(absPath, expectedContent);
       return true;
@@ -1595,8 +1550,6 @@ Deno.test("getContent: calls hydrateFile hook when raw file is missing", async (
       hydrateFile,
     );
 
-    // Create a data item with content, then delete the raw file to simulate
-    // lazy hydration state (metadata exists but raw is missing)
     const data = makeData("hydrate-test");
     await repo.save(testType, "model-1", data, expectedContent);
     const contentPath = repo.getContentPath(
@@ -1607,7 +1560,6 @@ Deno.test("getContent: calls hydrateFile hook when raw file is missing", async (
     );
     await Deno.remove(contentPath);
 
-    // getContent should call hydrateFile and return the content
     const result = await repo.getContent(
       testType,
       "model-1",
@@ -1642,7 +1594,6 @@ Deno.test("getContent: returns null when hydrateFile returns false", async () =>
       hydrateFile,
     );
 
-    // Create a data item then delete the raw file
     const data = makeData("hydrate-fail");
     const content = new TextEncoder().encode("temp");
     await repo.save(testType, "model-1", data, content);
@@ -1654,7 +1605,6 @@ Deno.test("getContent: returns null when hydrateFile returns false", async () =>
     );
     await Deno.remove(contentPath);
 
-    // getContent should return null since hydrateFile returned false
     const result = await repo.getContent(
       testType,
       "model-1",
@@ -1681,14 +1631,12 @@ Deno.test("getContent: returns null without hook when raw file is missing", asyn
       catalogStore,
     );
 
-    // Create a data item then delete the raw file
     const data = makeData("no-hook");
     const content = new TextEncoder().encode("temp");
     await repo.save(testType, "model-1", data, content);
     const contentPath = repo.getContentPath(testType, "model-1", "no-hook", 1);
     await Deno.remove(contentPath);
 
-    // Without hydrateFile hook, getContent returns null
     const result = await repo.getContent(testType, "model-1", "no-hook", 1);
     assertEquals(result, null);
   } finally {
@@ -1700,10 +1648,6 @@ Deno.test("getContent: returns null without hook when raw file is missing", asyn
   }
 });
 
-/**
- * A repository whose unreadable-content lookup answers `answer` and records
- * the paths it was asked about (swamp-club#3617).
- */
 async function withUnreadableLookup(
   answer: UserError | undefined,
   fn: (
@@ -1992,7 +1936,6 @@ Deno.test("save: write-time pruning emits markDirty for each pruned version", as
 
     const v1Dir = repo.getPath(testType, "m", "dirty-prune", 1);
     const pruneMarkDirty = calls.filter((c) => c === v1Dir);
-    // Before the removal and after it (swamp-club#2421).
     assertEquals(pruneMarkDirty.length, 2);
   } finally {
     if (Deno.build.os === "windows") {
@@ -2003,11 +1946,8 @@ Deno.test("save: write-time pruning emits markDirty for each pruned version", as
   }
 });
 
-// ============================================================================
-// Numeric data names — models that key resources by an external numeric id
-// (TMDB id, issue number) produce `{model-id}/{207333}/{1}/`, which the tree
-// walk must not confuse with `{model-id}/{data-name}/{version}/`.
-// ============================================================================
+// models keyed by an external numeric id produce {model-id}/{207333}/{1}/,
+// which the tree walk must not confuse with {model-id}/{data-name}/{version}/
 
 Deno.test(
   "findAllGlobal: finds data whose names are purely numeric",
@@ -2299,7 +2239,6 @@ Deno.test("sortedSubdirectoryNames: keeps only directories, in code-unit order",
   assertEquals(sortedSubdirectoryNames(entries), ["Z", "a", "b", "c"]);
 });
 
-/** Saves one JSON item per name under `modelId`, in the order given. */
 async function saveNamed(
   repo: FileSystemUnifiedDataRepository,
   type: ModelType,
@@ -2355,8 +2294,6 @@ Deno.test("findAllGlobal: walks types, model ids and data names in name order", 
   });
 });
 
-// --- Removing a version keeps every step's latest (swamp-club#2975) ---
-
 function stepData(stepName: string, garbageCollection = 100): Data {
   return Data.create({
     name: "out",
@@ -2372,7 +2309,6 @@ function stepData(stepName: string, garbageCollection = 100): Data {
   });
 }
 
-/** `version:is_latest:is_step_latest` for every catalog row of `out`. */
 function outFlags(catalogStore: CatalogStore): string[] {
   return [...catalogStore.iterate()]
     .filter((r) => r.data_name === "out")
@@ -2380,7 +2316,6 @@ function outFlags(catalogStore: CatalogStore): string[] {
     .map((r) => `${r.version}:${r.is_latest}:${r.is_step_latest}`);
 }
 
-/** The flags a full catalog rebuild derives for the promoted rows of `out`. */
 function rebuiltOutFlags(catalogStore: CatalogStore): string[] {
   const rows = [...catalogStore.iterate()].filter((r) =>
     r.data_name === "out" && r.is_pending === 0
@@ -2441,7 +2376,6 @@ Deno.test("delete: deleting a step's latest version makes its previous version t
 
 Deno.test("rollbackVersions: rolling back a step's deferred write makes its promoted version that step's latest (swamp-club#2975)", async () => {
   await withStepRepo(async (repo, catalogStore) => {
-    // s1 reserves v1 and v2 as deferred writes; s2 then promotes v3.
     const first = await repo.saveDeferred(
       testType,
       "m1",
@@ -2580,10 +2514,8 @@ Deno.test("save: the write-time version cap neither counts nor prunes an in-flig
   }, true);
 });
 
-/** A pid no process can hold, so isProcessGone reports it gone. */
 const DEAD_PID = 2147483647;
 
-/** Rewrites the writer identity of a pending catalog row. */
 function setPendingWriter(
   catalogStore: CatalogStore,
   modelId: string,
@@ -2822,7 +2754,6 @@ Deno.test("advanceLatestMarkers: settles the pending row before promoting, and d
   });
 });
 
-/** Fails the metadata write of one version, as a full disk would. */
 class FailingMetadataRepository extends FileSystemUnifiedDataRepository {
   failVersion: number | null = null;
 
@@ -2865,7 +2796,6 @@ Deno.test("saveDeferred: a failed write removes its version and pending row (swa
   }
 });
 
-/** Fails writing a pending row, as a locked catalog would. */
 class FailingPendingCatalog extends CatalogStore {
   failPending = false;
 
@@ -2911,7 +2841,6 @@ Deno.test("saveDeferred: a write that reuses a deleted version number is not rea
   await withStepRepo(async (repo) => {
     await repo.saveDeferred(testType, "m1", stepData("s1"), bytes("a"));
     await repo.save(testType, "m1", stepData("s1"), bytes("b"));
-    // Only the in-flight v1 is left once v2 is deleted.
     await repo.delete(testType, "m1", "out", 2);
 
     const next = await repo.saveDeferred(
@@ -2959,13 +2888,6 @@ Deno.test("allocateVersion: a failed pending-row write removes the allocated ver
   }
 });
 
-// --- Content-ensuring step (swamp-club#3178) ---
-
-/**
- * A repository whose hydrate hook copies from `remote`, keyed by the
- * absolute content path, as a lazily hydrating datastore downloads the
- * remote's copy of a file.
- */
 async function withLazyRepo(
   fn: (ctx: {
     repo: FileSystemUnifiedDataRepository;
@@ -3032,11 +2954,6 @@ function makeStreamingData(name: string): Data {
   });
 }
 
-/**
- * Saves `full` as version 1, publishes it as the remote's copy, then leaves
- * `local` in the cache: the state a metadata-only pull leaves after another
- * host appended to the version.
- */
 async function seedStale(
   repo: FileSystemUnifiedDataRepository,
   remote: Map<string, Uint8Array>,
@@ -3134,7 +3051,6 @@ Deno.test("getContent: uses a copy the remote also holds short until the window 
     );
     assertEquals(hydrations.length, 1);
 
-    // The remote's raw lands; a read after the window picks it up.
     remote.set(path, enc("abcdef"));
     clock.now += ACCEPTED_SHORT_CONTENT_TTL_MS - 1;
     assertEquals(
@@ -3583,8 +3499,7 @@ Deno.test("allocateVersion: never allocates at or below a raised version floor (
     const floorPath = `${
       repo.getDataNameDir(testType, "m1", "reaped")
     }${VERSION_FLOOR_SUFFIX}`;
-    // Marked for the push, so other clones get it: before the write and
-    // after it (swamp-club#2421).
+    // marked for the push so other clones get it, before the write and after it
     assertEquals(calls, [floorPath, floorPath]);
     for (const v of [1, 2, 3]) {
       await repo.delete(testType, "m1", "reaped", v);
@@ -3593,7 +3508,6 @@ Deno.test("allocateVersion: never allocates at or below a raised version floor (
     const next = await repo.save(testType, "m1", makeData("reaped"), enc("d"));
     assertEquals(next.version, 4);
 
-    // A lower floor never lowers it.
     await repo.raiseVersionFloor(testType, "m1", "reaped", 2);
     assertEquals((await Deno.readTextFile(floorPath)).trim(), "3");
 
@@ -3691,12 +3605,10 @@ Deno.test("delete: measures file removal, catalog upkeep and staging into the ru
           observeDiagnosticPhase("data_removal", {}, async () => {
             await repo.delete(testType, "m1", "measured");
             await repo.delete(testType, "m1", "measured-version", 2);
-            // Already gone: not counted again.
             await repo.delete(testType, "m1", "measured-version", 2);
           }),
       );
       const removal = findSpan(spans, "swamp.diagnostic.data_removal");
-      // Two versions of the whole name, then one named version.
       assertEquals(removal.attributes["swamp.diagnostic.versions_removed"], 3);
       for (
         const work of [
@@ -3725,29 +3637,18 @@ Deno.test("delete: measures file removal, catalog upkeep and staging into the ru
   }
 });
 
-// ---------------------------------------------------------------------------
-// Durable v2 writes (swamp-club#4017)
-// ---------------------------------------------------------------------------
-
 interface DurableHarness {
   repo: FileSystemUnifiedDataRepository;
   dir: string;
-  /** Sync and catalog events in order, paths relative to the repo dir. */
   events: string[];
-  /** A path's label in `events`. */
   label: (path: string) => string;
 }
 
-/**
- * A v2 repository whose sync hooks and catalog publishing calls record
- * what they did, in order.
- */
 async function withDurableRepo(
   fn: (h: DurableHarness) => Promise<void>,
   options: {
     baseDir?: (dir: string) => string;
     hooks?: (h: Omit<DurableHarness, "repo">) => Partial<AtomicWriteSync>;
-    /** The datastore's `durable` setting; on in this harness. */
     durable?: boolean;
   } = {},
 ): Promise<void> {
@@ -3803,7 +3704,6 @@ async function withDurableRepo(
   }
 }
 
-/** Asserts `first` was recorded, and before every `then` event. */
 function assertBefore(events: string[], first: string, ...then: string[]) {
   const at = events.indexOf(first);
   assert(at >= 0, `${first} missing from ${JSON.stringify(events)}`);
@@ -3835,7 +3735,6 @@ Deno.test("save: on v2, syncs the version files and the directories that reach t
       `dir ${dataDir}`,
       `file ${dataDir}/state/latest`,
     );
-    // The data-name directory is synced again for the marker's rename.
     assertBefore(events, `file ${dataDir}/state/latest`, "catalog");
     assertEquals(events.at(-2), `dir ${dataDir}/state`);
     assertEquals(events.at(-1), "catalog");
@@ -3908,7 +3807,6 @@ Deno.test("allocateVersion: on v2, reports durable and syncs the parents of dire
       makeJsonData("stream"),
     );
     assertEquals(allocated.durable, true);
-    // Its data-name directory and every directory above it were created.
     assert(events.includes(`dir ${dataDir}`));
     assert(events.includes("dir .swamp/data"));
   });
@@ -4185,10 +4083,6 @@ Deno.test("save: on v3, the version is not synced by the repository", async () =
   });
 });
 
-/**
- * Runs `fn` in a v3 unit whose checkout filter admits only the keys
- * `admits` does (swamp-club#4019), then abandons the unit.
- */
 async function inV3Unit(
   admits: (key: string) => boolean,
   fn: () => Promise<void>,
@@ -4204,7 +4098,6 @@ async function inV3Unit(
   }
 }
 
-/** A checkout filter that keeps data local, as `directories` without data. */
 const keepsDataLocal = (key: string) => !key.startsWith("data/");
 
 Deno.test("save: on v3, a version the checkout keeps local is synced before its marker and the catalog (swamp-club#4019)", async () => {
@@ -4224,7 +4117,6 @@ Deno.test("save: on v3, a version the checkout keeps local is synced before its 
         "catalog",
       );
     }
-    // The directories above the version, created for it, are synced too.
     assertBefore(events, `dir .swamp/data/test/model`, `dir ${v1}`);
   });
 });
@@ -4237,7 +4129,6 @@ Deno.test("save: on v3, a version is synced when the checkout keeps only its raw
     });
     const v1 = `.swamp/data/test/model/${modelId}/state/1`;
     assertBefore(events, `file ${v1}/raw`, `dir ${v1}`);
-    // The new model's directory entry, which reaches the local raw, too.
     assertBefore(events, `dir .swamp/data/test/model`, `dir ${v1}`);
   });
 });
@@ -4356,7 +4247,6 @@ Deno.test("rename and delete: on v3, markers the checkout keeps local are writte
       await repo.save(testType, modelId, makeJsonData("kept"), bytes("1"));
       await repo.save(testType, modelId, makeJsonData("kept"), bytes("2"));
       events.length = 0;
-      // Deleting the latest version moves the marker back to version 1.
       await repo.delete(testType, modelId, "kept", 2);
     });
     assert(events.includes(`file ${modelDir}/kept/latest`), events.join());
@@ -4490,10 +4380,6 @@ Deno.test("save: on v2, a failed directory sync stops the version before the mar
   );
 });
 
-/**
- * Sync hooks that fail the data-name directory's sync once the latest
- * marker names `version`: the sync after the marker's rename.
- */
 function failSyncAfterMarkerMoves(
   version: number,
 ): (h: Omit<DurableHarness, "repo">) => Partial<AtomicWriteSync> {
@@ -4547,7 +4433,6 @@ Deno.test("advanceLatestMarkers: on v2, a failed sync after the marker moved sti
         bytes("2"),
       );
       events.length = 0;
-      // A promotion failure is logged, as before.
       await repo.advanceLatestMarkers([receipt]);
       assertEquals(
         await Deno.readTextFile(
@@ -4583,8 +4468,6 @@ Deno.test("save: on v2, a failed file sync names the file it was writing", async
   );
 });
 
-// --- swamp-club#3955: reads warn on published unreadable versions ---
-
 interface UnreadableFixture {
   dir: string;
   catalog: CatalogStore;
@@ -4593,10 +4476,6 @@ interface UnreadableFixture {
   versionDir: (version: number) => string;
 }
 
-/**
- * A repo holding three versions of `state`, each with JSON content; `make`
- * builds the repository read through, by default a plain v2 one.
- */
 async function withUnreadableFixture(
   fn: (f: UnreadableFixture) => Promise<void>,
   make: (
@@ -4713,7 +4592,6 @@ Deno.test("reads: a version that is not published, or whose metadata is missing 
       join(f.versionDir(3), "metadata.yaml"),
       join(f.versionDir(4), "metadata.yaml"),
     );
-    // A version whose metadata and raw are both gone.
     await Deno.remove(join(f.versionDir(2), "metadata.yaml"));
     await Deno.remove(join(f.versionDir(2), "raw"));
     const warnings = await captureUnreadableWarnings(async () => {
@@ -4875,7 +4753,6 @@ Deno.test("save and collectGarbage: a kept version with malformed metadata count
   }
 });
 
-/** Two observations, then a restatement of version 1 above them. */
 async function saveObservationsAndRestatement(
   repo: FileSystemUnifiedDataRepository,
   garbageCollection: number,

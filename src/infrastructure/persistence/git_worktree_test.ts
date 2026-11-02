@@ -43,8 +43,6 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
   assertEquals(code, 0, `git ${args.join(" ")} failed`);
 }
 
-/** A git repo at `root` with one commit (worktree add requires one) and a
- * `example/` directory inside it. */
 async function initRepo(root: string): Promise<void> {
   await git(root, "init");
   await Deno.mkdir(join(root, "example"));

@@ -208,7 +208,6 @@ function walkNode(
     return;
   }
 
-  // Binary operators (&&, ||, ==, !=, <, <=, >, >=, +, -, *, /, %, in)
   if (Array.isArray(args)) {
     metrics.weightedCost++;
     for (const child of args as unknown[]) {
@@ -323,7 +322,6 @@ export function validateGrantCondition(
   return { valid: true };
 }
 
-/** The variable a grant condition compares with a resource's type. */
 function typeVariable(kind: ResourceKind): string | null {
   if (kind === "model") return "modelType";
   if (kind === "access") return "name";
@@ -389,10 +387,6 @@ function collectTypeLiterals(
   visitChildren(args, (child) => collectTypeLiterals(child, variable, out));
 }
 
-/**
- * Calls `visit` on every AST node within `value`, however deeply it is
- * nested in arrays: call arguments, list elements and map entries.
- */
 function visitChildren(value: unknown, visit: (node: ASTNode) => void): void {
   if (isASTNode(value)) {
     visit(value);
@@ -402,11 +396,8 @@ function visitChildren(value: unknown, visit: (node: ASTNode) => void): void {
 }
 
 /**
- * The string literals a grant condition compares with the resource's type —
- * `modelType` on a model, `name` on an access resource — so a spelling no
- * type is stored in can be reported (swamp-club#3130). Literals are reported,
- * never rewritten. Returns [] for a condition that does not parse; validation
- * reports that.
+ * literals are reported, never rewritten; returns [] for a condition that does
+ * not parse, which validation reports
  */
 export const readConditionTypeLiterals: ConditionTypeLiteralReader = (
   condition,

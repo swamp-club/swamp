@@ -80,7 +80,6 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     created_at: "2026-01-01T00:00:00.000Z",
     tags: '{"type":"resource","specName":"result"}',
     ...overrides,
-    // Rows default to a step latest exactly when they are latest.
     is_step_latest: overrides.is_step_latest ?? overrides.is_latest ?? 1,
   };
 }
@@ -195,7 +194,6 @@ Deno.test("CatalogStore: upsertNewVersion does not touch unrelated data names", 
   store.close();
 });
 
-/** Returns `version:is_latest:is_step_latest` for every row, by version. */
 function flagsByVersion(store: CatalogStore): string[] {
   return [...store.iterate()]
     .sort((a, b) => a.version - b.version)
@@ -214,8 +212,8 @@ Deno.test("CatalogStore: upsertNewVersion keeps one latest across workflow steps
     makeRow({ version: 2, step_name: "step-b" }),
   );
 
-  // swamp-club#2520: only v2 is latest; both stay their step's latest so
-  // findBySpec still sees each step's output (swamp-club#1761).
+  // only v2 is latest; both stay their step's latest so findBySpec still sees
+  // each step's output
   assertEquals(flagsByVersion(store), ["1:0:1", "2:1:1"]);
   assertEquals(store.countDuplicateLatest(), 0);
   store.close();
@@ -548,7 +546,6 @@ Deno.test("CatalogStore: iterate paginates across page boundaries", () => {
   const rows = [...store.iterate()];
   assertEquals(rows.length, totalRows);
 
-  // Verify deterministic ordering — rows come back in rowid order
   for (let i = 0; i < totalRows; i++) {
     assertEquals(rows[i].model_id, `model-${String(i).padStart(5, "0")}`);
   }
@@ -688,19 +685,16 @@ Deno.test("CatalogStore: constructor retries under write lock contention", async
   const dbPath = tempDb.path;
   const dir = dirname(dbPath);
 
-  // Pre-create the database with WAL mode so it exists on disk
   const setup = new DatabaseSync(dbPath);
   setup.exec("PRAGMA journal_mode=WAL");
   setup.close();
 
-  // Reopen and hold an exclusive write lock from this process
   const holder = new DatabaseSync(dbPath);
   holder.exec("BEGIN EXCLUSIVE");
   holder.exec("CREATE TABLE IF NOT EXISTS _lock (x INTEGER)");
 
-  // Write a helper script that constructs a CatalogStore on the same DB.
-  // If busy_timeout is not set before journal_mode=WAL, this will throw
-  // "database is locked" because the PRAGMA needs a lock we're holding.
+  // if busy_timeout is not set before journal_mode=WAL, construction throws
+  // database is locked, because the PRAGMA needs the lock this test holds
   const catalogStoreUrl = new URL("./catalog_store.ts", import.meta.url).href;
   const scriptPath = join(dir, "open_catalog.ts");
   Deno.writeTextFileSync(
@@ -712,10 +706,9 @@ Deno.test("CatalogStore: constructor retries under write lock contention", async
     ].join("\n"),
   );
 
-  // Start a subprocess — it will block in busy_timeout waiting for our lock.
-  // Pass --config so the subprocess can resolve @std/fs and other imports.
-  // Use fromFileUrl so Windows produces "D:\\..." instead of URL-pathname
-  // "/D:/..." which Deno.Command cannot resolve as --config on Windows.
+  // pass --config so the subprocess resolves @std/fs; fromFileUrl is needed
+  // because a URL pathname like /D:/... is not a usable --config path on
+  // Windows
   const denoJsonPath = fromFileUrl(
     new URL("../../../deno.json", import.meta.url),
   );
@@ -734,12 +727,10 @@ Deno.test("CatalogStore: constructor retries under write lock contention", async
     stderr: "piped",
   }).spawn();
 
-  // Release the lock after 200ms so the subprocess can proceed
   await new Promise((r) => setTimeout(r, 200));
   holder.exec("COMMIT");
   holder.close();
 
-  // The subprocess should succeed — busy_timeout let it wait for our lock
   const output = await proc.output();
   assertEquals(
     output.code,
@@ -754,7 +745,6 @@ Deno.test("CatalogStore: migrates v1 catalog DB to v2 without throwing", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
 
-  // Pre-create a v1 catalog DB: no provenance columns, schema_version=1
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA busy_timeout=5000");
   db.exec("PRAGMA journal_mode=WAL");
@@ -787,10 +777,9 @@ Deno.test("CatalogStore: migrates v1 catalog DB to v2 without throwing", () => {
   `);
   db.close();
 
-  // Opening with CatalogStore should migrate to v2 (not throw)
   const store = new CatalogStore(dbPath);
-  assertEquals(store.count(), 0); // migration drops and recreates the table
-  assertEquals(store.isPopulated(), false); // populated cleared for backfill
+  assertEquals(store.count(), 0);
+  assertEquals(store.isPopulated(), false);
   store.close();
 });
 
@@ -866,11 +855,9 @@ Deno.test("CatalogStore: bulkRemoveVersions recomputes both flags for the group'
   store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
   store.upsertNewVersion(makeRow({ version: 3, step_name: "s2" }));
   store.upsertNewVersion(makeRow({ version: 4, step_name: "s1" }));
-  // An unpromoted deferred write of s2.
   store.upsert(
     makeRow({ version: 5, step_name: "s2", is_latest: 0, is_pending: 1 }),
   );
-  // Another data name in the same model is left alone.
   store.upsertNewVersion(makeRow({ data_name: "other", version: 1 }));
 
   store.bulkRemoveVersions(
@@ -941,7 +928,6 @@ Deno.test("CatalogStore: bulkUpsert never overwrites a pending row and derives f
     }),
   );
 
-  // A backfill walk that found both versions on disk.
   store.bulkUpsert(
     [
       makeRow({ version: 1, step_name: "s1", is_latest: 0 }),
@@ -975,7 +961,6 @@ Deno.test("CatalogStore: checkpoint returns WAL page counts and truncates WAL", 
   const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
-  // Write enough rows to force WAL pages to accumulate
   for (let i = 0; i < 50; i++) {
     store.upsertNewVersion(
       makeRow({ model_id: `m-${i}`, data_name: `d-${i}`, version: 1 }),
@@ -984,20 +969,17 @@ Deno.test("CatalogStore: checkpoint returns WAL page counts and truncates WAL", 
 
   const stats = store.checkpoint();
 
-  // WAL must have been checkpointed (all pages written to main db)
   assertEquals(
     stats.walPagesCheckpointed,
     stats.walPagesTotal,
     "Expected full checkpoint — all WAL pages should be written to main db",
   );
 
-  // WAL file should be gone or empty after TRUNCATE
   try {
     const walStat = Deno.statSync(dbPath + "-wal");
     assertEquals(walStat.size, 0, "WAL file should be truncated to zero bytes");
   } catch (e) {
     if (!(e instanceof Deno.errors.NotFound)) throw e;
-    // WAL file not present — also correct after TRUNCATE
   }
 
   store.close();
@@ -1027,7 +1009,6 @@ Deno.test("CatalogStore: vacuum reclaims space and preserves rows", () => {
   for (let version = 1; version <= total; version++) {
     store.upsert(makeRow({ version, id: `id-${version}`, tags: bloat }));
   }
-  // Delete the even versions to free pages and fragment the file.
   for (let version = 2; version <= total; version += 2) {
     store.removeVersion(
       "",
@@ -1047,11 +1028,9 @@ Deno.test("CatalogStore: vacuum reclaims space and preserves rows", () => {
 
   const after = Deno.statSync(dbPath).size;
   assertLess(after, before);
-  // No data lost: the same rows remain and are still queryable.
   assertEquals(store.count(), survivors);
   store.close();
 
-  // The swapped-in file is intact: a fresh store sees identical data.
   const reopened = new CatalogStore(dbPath);
   assertEquals(reopened.count(), survivors);
   const versions = [...reopened.iterate()].map((r) => r.version).sort((a, b) =>
@@ -1069,7 +1048,6 @@ Deno.test("CatalogStore: vacuum on an empty catalog returns true and keeps schem
 
   assertEquals(store.vacuum(), true);
 
-  // Schema survived the rebuild — the store is still writable and readable.
   store.upsert(makeRow());
   assertEquals(store.count(), 1);
   store.close();
@@ -1083,7 +1061,6 @@ Deno.test("CatalogStore: store is usable after vacuum and close is idempotent", 
 
   assertEquals(store.vacuum(), true);
 
-  // The reopened connection accepts further writes and reads.
   store.upsert(makeRow({ version: 2 }));
   assertEquals(store.count(), 2);
 
@@ -1129,7 +1106,6 @@ Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () =>
 
   store.invalidate();
   assertEquals(store.isPopulated(), false);
-  // Data rows are preserved — backfill will replace them
   assertEquals(store.count(), 1);
   store.close();
 });
@@ -1211,9 +1187,6 @@ Deno.test("CatalogStore: migrates v3 catalog DB to v4 with namespace column", ()
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
 
-  // Pre-create a v3 catalog DB: no namespace column, schema_version=3, with a
-  // pre-existing row and the populated flag set. This mirrors every existing
-  // repo at the moment it is first opened by a v4 build.
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA busy_timeout=5000");
   db.exec("PRAGMA journal_mode=WAL");
@@ -1254,13 +1227,10 @@ Deno.test("CatalogStore: migrates v3 catalog DB to v4 with namespace column", ()
   `);
   db.close();
 
-  // Opening with CatalogStore drops and recreates the table for v4 and clears
-  // the populated flag so the next query triggers a backfill.
   const store = new CatalogStore(dbPath);
   assertEquals(store.count(), 0, "migration drops and recreates the table");
   assertEquals(store.isPopulated(), false, "populated cleared for backfill");
 
-  // The rebuilt table accepts namespace-stamped rows.
   store.upsert(makeRow({ namespace: "infra" }));
   const rows = [...store.iterate()];
   assertEquals(rows.length, 1);
@@ -1272,8 +1242,6 @@ Deno.test("CatalogStore: rebuilds a v4 catalog holding per-step duplicate latest
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
 
-  // A v4 catalog: no is_step_latest column, and two workflow steps' versions
-  // of one data name both flagged is_latest.
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA busy_timeout=5000");
   db.exec("PRAGMA journal_mode=WAL");
@@ -1317,8 +1285,6 @@ Deno.test("CatalogStore: rebuilds a v4 catalog holding per-step duplicate latest
   `);
   db.close();
 
-  // Opening drops the stale rows and clears populated, so the next query
-  // rebuilds both flags from disk.
   const store = new CatalogStore(dbPath);
   assertEquals(store.count(), 0, "migration drops the per-step duplicates");
   assertEquals(store.isPopulated(), false, "populated cleared for backfill");
@@ -1332,8 +1298,6 @@ Deno.test("CatalogStore: migrates v5 catalog DB to v6 with garbage_collection co
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
 
-  // Build a v5 catalog: today's table without the garbage_collection column,
-  // schema_version=5, with a row and the populated flag set.
   new CatalogStore(dbPath).close();
   const db = new DatabaseSync(dbPath);
   db.exec(`
@@ -1552,8 +1516,6 @@ Deno.test("CatalogStore: every write path stores lifecycle", () => {
   store.close();
 });
 
-// ── Phase 6c: namespace-scoped backfill and foreign upsert ──────────────────
-
 Deno.test("latestRowCountsByType: counts latest rows per type within a namespace", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
@@ -1566,7 +1528,6 @@ Deno.test("latestRowCountsByType: counts latest rows per type within a namespace
     version: 2,
     is_latest: 1,
   }));
-  // An older version of the same item must not be counted twice.
   store.upsert(makeRow({
     namespace: "own",
     type_normalized: "@scope/shows",
@@ -1906,8 +1867,6 @@ Deno.test(
   () => {
     using tempDb = makeTempDb();
     const store = new CatalogStore(tempDb.path);
-    // Two workflow steps write a data name equal to its spec name; before
-    // the fix both stayed latest and data.latest() reported ambiguity.
     store.upsertNewVersion(makeRow({
       model_name: "fleet",
       spec_name: "result",
@@ -2014,8 +1973,6 @@ Deno.test(
   },
 );
 
-// --- countDuplicateLatest / enforceUniqueLatest tests ---
-
 Deno.test("countDuplicateLatest: zero when no duplicates", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;
@@ -2065,8 +2022,8 @@ Deno.test("enforceUniqueLatest: demotes is_latest across steps but keeps each st
   const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
-  // The shape a catalog written before swamp-club#2520 holds: one latest
-  // per workflow step.
+  // the shape of a catalog written before the single-latest rule: one latest
+  // per workflow step
   store.upsert(makeRow({ version: 3, is_latest: 1, step_name: "step-a" }));
   store.upsert(makeRow({ version: 4, is_latest: 1, step_name: "step-b" }));
 
@@ -2151,10 +2108,6 @@ Deno.test("enforceUniqueLatest: does not demote foreign namespace rows with same
 
   store.close();
 });
-
-// ============================================================================
-// Generation and shared-datastore freshness (swamp-club#2858)
-// ============================================================================
 
 Deno.test("CatalogStore: invalidate advances the generation", () => {
   using tempDb = makeTempDb();
@@ -2260,8 +2213,6 @@ Deno.test("CatalogStore: tokens that cannot be read leave the catalog unpopulate
     Deno.removeSync(dir, { recursive: true });
   }
 });
-
-// ── Rename forwards (swamp-club#2968) ───────────────────────────────────────
 
 function makeForward(
   overrides: Partial<RenameForwardRow> = {},
@@ -2381,7 +2332,6 @@ Deno.test("CatalogStore: a schema version change drops recorded forwards", () =>
   store.markPopulated();
   store.close();
 
-  // Simulate a catalog written by an older build.
   const db = new DatabaseSync(dbPath);
   db.exec(
     "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '4')",
@@ -2447,7 +2397,6 @@ Deno.test("CatalogStore.iterateSorted: pages past ITERATE_PAGE_SIZE by keyset in
       store.upsert(makeRow({
         data_name: `d${String(i).padStart(5, "0")}`,
         id: crypto.randomUUID(),
-        // Three rows share each value.
         tags: JSON.stringify({
           startedAt: String(Math.floor(i / 3)).padStart(5, "0"),
         }),

@@ -18,31 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Restores a copy of a v3 `commits.db` from a replication lineage
- * (swamp-club#3482, Phase 4 D2).
- *
- * Litestream 0.5 restores only in full outside follow mode, so a refresh
- * is a restore too. The restore goes into a temp file beside the copy:
- *
- * 1. `litestream restore -txid <head>`: exactly the state the lineage's
- *    writer last acknowledged. A TXID inside a range compaction merged
- *    after its L0 files expired cannot be restored ("no matching backup
- *    files"), so then the latest state is restored instead;
- * 2. the result is checked: SQLite's `integrity_check`, and a schema this
- *    swamp can read;
- * 3. every commit past the head's high-water mark is removed, so a zombie
- *    writer's later uploads never land. A restore whose commits past the
- *    mark were compacted is refused;
- * 4. the caller installs it: hard-linked into place when the copy is
- *    missing, never over a file another process created meanwhile, or
- *    copied into the open copy in one transaction
- *    (`SqliteCommitStore.replaceContentFrom`), so connections that have the
- *    copy open, serve's included, keep working on the restored state.
- *
- * The source path is always derived from the replica setting and the
- * lineage's fence, never read from a record.
- *
- * @module
+ * restores go to a temp file, are checked, and commits past the head's
+ * high-water mark are removed so a zombie writer's later uploads never land;
+ * the source path is derived, never read from a record
  */
 
 import {
@@ -67,39 +45,24 @@ import {
 } from "./replication_files.ts";
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
-/** What {@link restoreV3Copy} restores, and where. */
 export interface V3RestoreRequest {
-  /** The hash-checked Litestream binary. */
   readonly binary: string;
   readonly replica: V3ReplicaSetting;
-  /** The lineage to restore, and its head. */
   readonly head: LineageHead;
-  /** The canonical path of the copy to replace; the temp file goes beside it. */
   readonly target: string;
-  /**
-   * Installs the checked, truncated temp file as the copy. See
-   * {@link installByRename}.
-   */
   install(temp: string): Promise<void>;
-  /** A private directory for the restore's config (0700). */
   readonly configDir: string;
-  /** Bounds the whole restore; the child is killed past it. */
   readonly deadlineMs: number;
   readonly signal?: AbortSignal;
 }
 
-/** What a restore did. */
 export interface V3RestoreResult {
-  /** Whether the head's TXID could be restored exactly. */
   readonly exactTxid: boolean;
-  /** Commits past the high-water mark that were removed. */
   readonly truncated: number;
 }
 
-/** Error code for a restore that could not run or gave no usable copy. */
 export const V3_RESTORE_FAILED_CODE = "datastore_v3_restore_failed";
 
-/** A restore that could not run or produced no usable copy. */
 export class V3RestoreError extends UserError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(
@@ -112,9 +75,8 @@ export class V3RestoreError extends UserError {
 }
 
 /**
- * A restore whose download finished and whose database swamp then refused:
- * the storage answered, so the failure says nothing about reaching it, and
- * no listing follows it to call the replica unreachable (swamp-club#4092).
+ * the download finished but swamp refused the database: the storage answered,
+ * so the failure says nothing about reaching it
  */
 export class V3RestoredDatabaseRefusedError extends V3RestoreError {
   constructor(message: string) {
@@ -124,8 +86,8 @@ export class V3RestoredDatabaseRefusedError extends V3RestoreError {
 }
 
 /**
- * A restored database that failed SQLite's integrity check: the lineage
- * cannot be restored, unlike a restore that could not run (swamp-club#3935).
+ * a restored database that failed SQLite's integrity check: the lineage cannot
+ * be restored, unlike a restore that could not run
  */
 export class V3RestoredDatabaseCorruptError
   extends V3RestoredDatabaseRefusedError {
@@ -135,11 +97,6 @@ export class V3RestoredDatabaseCorruptError
   }
 }
 
-/**
- * Restores `request.head`'s lineage over `request.target`.
- *
- * @throws V3RestoreError
- */
 export async function restoreV3Copy(
   request: V3RestoreRequest,
 ): Promise<V3RestoreResult> {
@@ -196,7 +153,6 @@ export async function restoreV3Copy(
     return { exactTxid, truncated };
   } catch (error) {
     if (error instanceof UserError) throw error;
-    // The caller stopped the restore, and says why (swamp-club#3893).
     if (request.signal?.aborted === true) throw request.signal.reason;
     if (timeout.aborted) {
       throw new V3RestoreError(
@@ -211,31 +167,21 @@ export async function restoreV3Copy(
   }
 }
 
-/** What {@link restoreAndCheck} restores, and where. */
 export interface RestoreAndCheckRequest {
   readonly binary: string;
-  /** A Litestream config naming `source` and its one replica. */
   readonly config: string;
-  /** The database path the config names; the restore never touches it. */
   readonly source: string;
-  /** Where the restored file is written; it must not exist. */
   readonly temp: string;
-  /** The TXID to restore, as the lineage's writer acknowledged it. */
   readonly txid: string;
-  /** The lineage, for messages. */
   readonly lineageFence: number;
   readonly replicaType: LitestreamReplicaType;
   readonly signal: AbortSignal;
 }
 
 /**
- * Restores a lineage into `temp` as a reader does, and checks it
- * (swamp-club#3935, shared by a reader's restore and the writer's check of
- * its own replica): at `txid`, or the latest state when compaction merged
- * that TXID's files away, then SQLite's integrity check and a schema this
- * swamp reads. Resolves with whether `txid` was restored exactly.
- *
- * @throws V3RestoreError
+ * restores at txid, or the latest state when compaction merged its files away,
+ * then runs the integrity check; shared by a reader's restore and the writer's
+ * check of its own replica
  */
 export async function restoreAndCheck(
   request: RestoreAndCheckRequest,
@@ -307,9 +253,8 @@ export async function installByLink(
 }
 
 /**
- * Installs a restored temp file by renaming it over `target`. Only for a
- * copy no process has open: a connection to the old file would go on with
- * it.
+ * only for a copy no process has open: a connection to the old file would go on
+ * with it
  */
 export function installByRename(
   target: string,
@@ -326,10 +271,6 @@ type RestoreOutcome =
   | { readonly kind: "unavailable" }
   | { readonly kind: "failed"; readonly message: string };
 
-/**
- * One `litestream restore`, in its own span (swamp-club#3803): a restore at
- * the head's TXID that finds it compacted away runs a second, full one.
- */
 function runRestoreAttempt(
   binary: string,
   config: string,
@@ -382,7 +323,7 @@ async function runRestore(
     stdout: "null",
     stderr: "piped",
     signal,
-    // Only what its replica needs (swamp-club#3534).
+    // only the environment its replica needs
     env: litestreamChildEnv(replicaType, Deno.env.toObject()),
     clearEnv: true,
   }).output();
@@ -397,14 +338,11 @@ async function runRestore(
   };
 }
 
-/** SQLite's result codes for a damaged file: SQLITE_CORRUPT, SQLITE_NOTADB. */
 const DAMAGED_FILE_CODES = new Set([11, 26]);
 
 /**
- * Refuses a restored file that is damaged or newer than this swamp reads.
- * SQLite reports damage either as rows from its integrity check or, when
- * it cannot walk the file, by failing the check with SQLITE_CORRUPT or
- * SQLITE_NOTADB (swamp-club#3935); both are a corrupt restore.
+ * SQLite reports damage as integrity-check rows or by failing the check with
+ * SQLITE_CORRUPT or SQLITE_NOTADB; both are a corrupt restore
  */
 function checkDatabase(path: string): void {
   const db = new DatabaseSync(path, { readOnly: true });
@@ -448,7 +386,6 @@ function checkDatabase(path: string): void {
   }
 }
 
-/** Removes every commit past the head's mark; refuses when it cannot. */
 async function truncateToMark(
   path: string,
   head: LineageHead,
@@ -489,11 +426,6 @@ async function truncateToMark(
   }
 }
 
-/**
- * Removes a SQLite database, its WAL and shared-memory files, and the
- * `.tmp` file Litestream restores into before renaming it, which a restore
- * stopped part way leaves behind.
- */
 async function removeDatabase(path: string): Promise<void> {
   for (const file of [path, `${path}-wal`, `${path}-shm`, `${path}.tmp`]) {
     try {

@@ -26,7 +26,6 @@ import {
   warnIfRunningAsInit,
 } from "./init_process.ts";
 
-/** Runs warnIfRunningAsInit for `identity` and returns what it logged. */
 async function captureWarning(identity: ProcessIdentity): Promise<LogRecord[]> {
   const records: LogRecord[] = [];
   await configure({

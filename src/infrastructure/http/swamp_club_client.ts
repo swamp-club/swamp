@@ -56,7 +56,6 @@ export type { ClientIdentity };
 const NO_INBOX_MESSAGE = "This Swamp Club server has no inbox.";
 const INBOX_REQUIRES_USER_MESSAGE =
   "The inbox needs a personal API key; collective keys have no inbox.";
-/** The most ids `POST /api/inbox/read` accepts in one request. */
 const MARK_READ_BATCH_SIZE = 100;
 
 /**
@@ -73,14 +72,11 @@ async function readJson(res: Response): Promise<unknown> {
   }
 }
 
-/** A classified `/api/whoami` answer, with the response when there was one. */
 export interface IdentityCheckResult {
   readonly outcome: IdentityCheckOutcome;
-  /** The parsed body of a verified response. */
   readonly response?: WhoamiResponse;
 }
 
-/** True for whoami's own 401 body, `{ "authenticated": false }`. */
 async function isWhoamiRejection(res: Response): Promise<boolean> {
   try {
     const body = await res.json();
@@ -91,12 +87,10 @@ async function isWhoamiRejection(res: Response): Promise<boolean> {
   }
 }
 
-/** Metadata fields shared by all collective token responses (never includes the secret key). */
 export interface CollectiveTokenMetadata {
   id: string;
   name: string;
   keyPrefix: string;
-  /** Sent by servers with lab #1700; absent from older ones. */
   fingerprint?: string;
   enabled: boolean;
   expiresAt: string | null;
@@ -105,42 +99,29 @@ export interface CollectiveTokenMetadata {
   scopes: string[];
 }
 
-/** Response from creating a collective API token. */
 export interface CreateCollectiveTokenResponse {
   token: CollectiveTokenMetadata;
   key: string;
   /**
-   * A signed proof for `key` (`<proof>.<signature>`), set as
-   * SWAMP_SIGNIN_TOKEN so a CI run passes the auth gate while swamp-club is
-   * unreachable. Absent from servers that predate it, or when signing failed.
+   * signed proof for key, set as SWAMP_SIGNIN_TOKEN so CI passes the auth gate
+   * while swamp-club is unreachable; absent from older servers or when signing
+   * failed
    */
   signinToken?: string;
 }
 
-/** Response from listing collective API tokens — metadata only, no secrets. */
 export interface ListCollectiveTokensResponse {
   tokens: CollectiveTokenMetadata[];
 }
 
-/**
- * The server's answer to a personal API key revoking itself:
- * - `revoked`: the key was deleted.
- * - `already_invalid` (401): the server no longer accepts the key (revoked,
- *   expired, or never existed), so there is nothing left to revoke.
- * - `not_personal_key` (403): the credential is not a personal API key, so it
- *   cannot revoke itself.
- * - `unsupported` (404): the server has no self-revoke endpoint.
- */
 export type RevokePresentingApiKeyResult =
   | { kind: "revoked"; id: string }
   | { kind: "already_invalid" }
   | { kind: "not_personal_key" }
   | { kind: "unsupported" };
 
-/** Longest server response body echoed into an error message. */
 const MAX_ERROR_BODY_CHARS = 200;
 
-/** Response from BetterAuth sign-in endpoint. */
 export interface SignInResponse {
   token: string;
   user: {
@@ -151,18 +132,15 @@ export interface SignInResponse {
   };
 }
 
-/** Response from BetterAuth API key creation endpoint. */
 export interface CreateApiKeyResponse {
   id: string;
   key: string;
 }
 
 /**
- * A collective's trial clock, as the server resolved it.
- *
- * Every number here is elapsed-based and computed server-side, so it is
- * timezone-independent. Render `daysRemaining` as given — recomputing it from
- * `endsAt` in local time reintroduces the zone bug the server avoided.
+ * server-computed and elapsed-based, so timezone-independent; render
+ * daysRemaining as given, since recomputing from endsAt locally reintroduces
+ * the zone bug
  */
 export interface WhoamiTrial {
   state: "none" | "active" | "expired";
@@ -175,13 +153,8 @@ export interface WhoamiTrial {
 }
 
 /**
- * An organization the user belongs to.
- *
- * Membership only — deliberately carries no billing. Extension push and pull
- * authorize namespace ownership from this list (via {@link getCollectives}),
- * so entitlement travels in {@link WhoamiResponse.collectiveEntitlements}
- * instead of as extra keys here. Keeping the two apart means a change to how
- * plans are reported can never reach the publish path.
+ * membership only, no billing: push and pull authorize namespace ownership from
+ * this list, so entitlement travels in collectiveEntitlements instead
  */
 export interface WhoamiOrganization {
   slug: string;
@@ -191,12 +164,8 @@ export interface WhoamiOrganization {
 }
 
 /**
- * What one collective entitles the user to, joined to
- * {@link WhoamiOrganization} on `slug`.
- *
- * All fields but `slug` are optional: a self-hosted or older swamp-club sends
- * no entitlement at all, and whoami must not degrade to an error when it is
- * missing.
+ * all fields but slug are optional: a self-hosted or older swamp-club sends no
+ * entitlement, and whoami must not error then
  */
 export interface WhoamiCollectiveEntitlementResponse {
   slug: string;
@@ -214,48 +183,38 @@ export interface WhoamiCollectiveEntitlementResponse {
 }
 
 /**
- * One collective's source hosting, joined to {@link WhoamiOrganization} on
- * `slug`. Its own field for the same reason as
- * {@link WhoamiCollectiveEntitlementResponse}: it only feeds the local quality
- * rubric, never publish authorization.
+ * its own field, like entitlements: it feeds only the local quality rubric,
+ * never publish authorization
  */
 export interface WhoamiCollectiveSourceHostingResponse {
   slug: string;
-  /** The registry attests the collective's private extensions' source. */
   privateSourceHosting: boolean;
   /** A first publish in this namespace is private whatever the manifest says. */
   privateNamespace: boolean;
 }
 
-/** Response from the /api/whoami endpoint. */
 export interface WhoamiResponse {
   authenticated: boolean;
   id?: string;
   username?: string;
   email?: string;
   name?: string;
-  /** Strongest plan across the user's collectives. Server-derived. */
   plan?: string;
   organizations?: WhoamiOrganization[];
-  /** Per-collective entitlement. Absent from servers that predate it. */
   collectiveEntitlements?: WhoamiCollectiveEntitlementResponse[];
-  /** Per-collective source hosting. Absent from servers that predate it. */
   collectiveSourceHosting?: WhoamiCollectiveSourceHostingResponse[];
   collectiveToken?: boolean;
   collectiveId?: string;
   collectiveSlug?: string;
   scopes?: string[];
-  /** Signed verification proof (canonical JSON). Absent from older servers. */
   verificationProof?: string;
-  /** Ed25519 signature over the proof, base64url-encoded. */
   verificationSignature?: string;
-  /** Public keys for verifying proofs (each with kid + base64url raw key). */
   publicKeys?: Array<{ kid: string; key: string }>;
 }
 
 /**
- * Returns the user's collectives (organization slugs) from a whoami response.
- * Returns undefined if the server doesn't include organizations.
+ * slugs only, undefined when the server sends no organizations; push and pull
+ * authorize namespace ownership from this list
  */
 export function getCollectives(
   whoami: WhoamiResponse,
@@ -264,14 +223,12 @@ export function getCollectives(
   return whoami.organizations.map((org) => org.slug);
 }
 
-/** A single comment (ripple) on a Lab issue. */
 export interface IssueCommentRecord {
   author: string;
   body: string;
   createdAt: string;
 }
 
-/** Response from fetching a Lab issue by number. */
 export interface FetchIssueResponse {
   number: number;
   title: string;
@@ -287,19 +244,15 @@ export interface FetchIssueResponse {
 }
 
 /**
- * Response from the recruit-link endpoint.
- *
- * Get-or-create is idempotent server-side, so repeated calls by the same
- * operative return the same `code` — it never changes and never expires. Use
- * `url` verbatim; the server builds it from its canonical origin, so
- * reconstructing it from `code` would guess the host wrong.
+ * the code is stable and never expires; use url verbatim, since the server
+ * builds it from its canonical origin and rebuilding it from code would guess
+ * the host
  */
 export interface FetchRecruitLinkResponse {
   code: string;
   url: string;
 }
 
-/** Filters for the issue search endpoint. */
 export interface SearchIssuesFilter {
   q?: string;
   type?: string;
@@ -309,16 +262,11 @@ export interface SearchIssuesFilter {
   offset?: number;
 }
 
-/** Response from the issue search/list endpoint. */
 export interface SearchIssuesResponse {
   issues: FetchIssueResponse[];
   total: number;
 }
 
-/**
- * HTTP client for swamp-club API interactions.
- * Used by auth commands to sign in, create API keys, and verify identity.
- */
 export class SwampClubClient {
   constructor(
     private readonly serverUrl: string,
@@ -326,10 +274,6 @@ export class SwampClubClient {
     private readonly options: { sleep?: Sleep; fetch?: Fetcher } = {},
   ) {}
 
-  /**
-   * Sign in with email/username and password.
-   * Returns session token and user info.
-   */
   async signIn(
     credential: string,
     password: string,
@@ -365,10 +309,6 @@ export class SwampClubClient {
     };
   }
 
-  /**
-   * Create an API key for the authenticated user.
-   * Requires a session token from sign-in.
-   */
   async createApiKey(
     sessionToken: string,
     name: string,
@@ -393,10 +333,6 @@ export class SwampClubClient {
     return { id: data.id, key: data.key };
   }
 
-  /**
-   * Call /api/whoami to verify identity.
-   * Authenticates using the x-api-key header.
-   */
   async whoami(
     apiKey: string,
     signal?: AbortSignal,
@@ -421,12 +357,9 @@ export class SwampClubClient {
   }
 
   /**
-   * Call /api/whoami for the auth gate and classify the answer by who gave
-   * it, instead of throwing. Unlike {@link whoami}, a timeout, a refused
-   * connection and a 429 come back as outcomes, so the gate can tell
-   * swamp-club saying no (`rejected`) from swamp-club failing
-   * (`server_error`), from something a client can provoke (`refused`), and
-   * from no answer at all (`unreachable`).
+   * classifies instead of throwing: timeouts, refused connections and 429 are
+   * outcomes, so the gate can tell swamp-club saying no from failing, from a
+   * client-provoked refusal, from no answer
    */
   async verifyIdentity(
     apiKey: string,
@@ -466,10 +399,9 @@ export class SwampClubClient {
         : refusedUnlessTimedOut();
     }
     if (status === 403) {
-      // swamp-club's whoami never answers 403, so a 403 always comes from
-      // something in front of it — and gateways commonly send their own
-      // `{ "error": … }` body. Counting it as a rejection would delete a good
-      // proof; without a proof `refused` still blocks.
+      // whoami never answers 403, so it comes from a gateway whose own error
+      // body must not count as rejection and delete a good proof; refused still
+      // blocks without a proof
       await res.body?.cancel();
       return refusedUnlessTimedOut();
     }
@@ -501,10 +433,9 @@ export class SwampClubClient {
       return { outcome: { kind: "refused", status } };
     }
     const response = body as WhoamiResponse;
-    // Only swamp-club's own answer counts either way: `authenticated: true`
-    // verifies and `authenticated: false` rejects. Any other object (a
-    // proxy's `200 {}`) says nothing about the key, so it must never delete a
-    // good proof.
+    // only swamp-club's own authenticated true or false counts; any other
+    // object, such as a proxy's 200 {}, says nothing about the key and must
+    // never delete a good proof
     if (response.authenticated === false) {
       return { outcome: { kind: "rejected", status } };
     }
@@ -518,12 +449,6 @@ export class SwampClubClient {
     return { outcome: { kind: "verified", freshProof }, response };
   }
 
-  /**
-   * Submit a bug report or feature request to the Lab.
-   * Authenticates using the x-api-key header. Tags a submission with
-   * `source: "swamp"` so the Lab UI can attribute it to the CLI, unless the
-   * caller chose another source.
-   */
   async submitIssue(
     apiKey: string,
     input: {
@@ -591,16 +516,6 @@ export class SwampClubClient {
     throw new Error("unreachable");
   }
 
-  /**
-   * Post a comment ("ripple") on an existing Lab issue.
-   * Authenticates using the x-api-key header.
-   *
-   * Surfaces server-side error shapes the Lab returns:
-   *   - 401 → not logged in
-   *   - 403 → comments locked or no access
-   *   - 404 → issue not found / not visible
-   *   - 422 → profanity check failed (response includes `flagged` array)
-   */
   async submitComment(
     apiKey: string,
     issueNumber: number,
@@ -652,10 +567,6 @@ export class SwampClubClient {
     return { id: data.id };
   }
 
-  /**
-   * Update the status of an existing Lab issue (close or reopen).
-   * Authenticates using the x-api-key header.
-   */
   async updateIssueStatus(
     apiKey: string,
     issueNumber: number,
@@ -687,10 +598,6 @@ export class SwampClubClient {
     return { status: data.issue.status };
   }
 
-  /**
-   * Update fields of an existing Lab issue.
-   * Authenticates using the x-api-key header.
-   */
   async updateIssue(
     apiKey: string,
     issueNumber: number,
@@ -746,10 +653,6 @@ export class SwampClubClient {
     };
   }
 
-  /**
-   * Fetch an existing Lab issue by number.
-   * When an API key is provided, authenticates using the x-api-key header.
-   */
   async fetchIssue(
     apiKey: string | undefined,
     issueNumber: number,
@@ -801,18 +704,9 @@ export class SwampClubClient {
   }
 
   /**
-   * Fetch the operative's recruit link, creating it on first use.
-   *
-   * Unlike {@link fetchIssue}, this endpoint is identity-scoped — there is no
-   * anonymous form — so callers are expected to have checked for credentials
-   * before getting here; the 401 branch is the backstop, not the first line of
-   * defence.
-   *
-   * Error messages lift the server's `error` string and place it behind a short
-   * status-carrying prefix, matching {@link createCollectiveToken}. The prefix
-   * keeps the status visible for debugging; lifting the field (rather than
-   * dumping the raw body, as the older methods here do) keeps a JSON envelope
-   * out of a human-facing message.
+   * identity-scoped with no anonymous form, so callers check credentials first
+   * and the 401 branch is a backstop; lifts the server's error string behind a
+   * status prefix rather than dumping a JSON envelope
    */
   async fetchRecruitLink(
     apiKey: string | undefined,
@@ -851,10 +745,6 @@ export class SwampClubClient {
     return { code: data.code, url: data.url };
   }
 
-  /**
-   * Search or list Lab issues with optional filters.
-   * When an API key is provided, authenticates using the x-api-key header.
-   */
   async searchIssues(
     apiKey: string | undefined,
     filter?: SearchIssuesFilter,
@@ -911,14 +801,8 @@ export class SwampClubClient {
   }
 
   /**
-   * Fetch an operative's Genesis quest pass — the linear battle-pass read model
-   * that swamp-club derives from telemetry and serves as the single source of
-   * truth for both the web profile and `swamp quest`.
-   *
-   * This is a public read keyed by username (the CLI resolves its own username
-   * via {@link whoami}). It carries no x-api-key: the endpoint is public and
-   * `canClaim` is only true for the owner's own authenticated session on the
-   * web — the CLI renders read-only.
+   * public read keyed by username, no x-api-key; canClaim is true only for the
+   * owner's web session, so the CLI renders read-only
    */
   async fetchGenesisPass(
     username: string,
@@ -944,11 +828,8 @@ export class SwampClubClient {
   }
 
   /**
-   * Fetch the UNAUTHENTICATED (ghost) Genesis pass — the progress this device
-   * has accrued in the event stream, keyed by its `Swamp-Distinct-Id` (attached
-   * automatically from the client identity). Every reward reads unclaimed until
-   * the distinct_id is bound to an account via an authenticated session
-   * (`swamp auth login` or `SWAMP_API_KEY`).
+   * unauthenticated pass keyed by the device's Swamp-Distinct-Id; every reward
+   * reads unclaimed until the id is bound to an account
    */
   async fetchGhostGenesisPass(
     signal?: AbortSignal,
@@ -1071,9 +952,9 @@ export class SwampClubClient {
   }
 
   /**
-   * Revoke (delete) a collective API token. swamp-club answers a successful
-   * DELETE with `{"ok":true}` and no token metadata, so a 2xx counts as revoked
-   * only when its body confirms it; any other answer throws UserError.
+   * swamp-club answers a successful DELETE with {ok:true} and no metadata, so a
+   * 2xx counts as revoked only when its body confirms it; any other answer
+   * throws UserError
    */
   async revokeCollectiveToken(
     apiKey: string,
@@ -1165,11 +1046,9 @@ export class SwampClubClient {
   }
 
   /**
-   * Revoke the personal API key that authenticates the request. The server
-   * derives the key id from the credential itself, so a key can only revoke
-   * itself. A 2xx counts as revoked only when its body confirms it; every
-   * answer that is not one of the result kinds throws UserError, so callers
-   * never mistake a failure for a revocation.
+   * the server derives the key id from the credential, so a key can only revoke
+   * itself; a 2xx counts only when its body confirms it, other answers throw so
+   * failure is never mistaken for revocation
    */
   async revokePresentingApiKey(
     apiKey: string,
@@ -1253,10 +1132,9 @@ export class SwampClubClient {
   }
 
   /**
-   * Ask `/api/inbox/summary` how many messages are unread. Never throws: the
-   * background poll is best effort, so every failure is a result case. It
-   * bypasses the shared fetch helper because a `Retry-After` sleep would hold
-   * teardown; the caller's signal is the only timeout.
+   * never throws: the background poll is best effort, so failures are result
+   * cases; bypasses the shared fetch helper because a Retry-After sleep would
+   * hold teardown
    */
   async inboxSummary(
     apiKey: string,
@@ -1338,7 +1216,6 @@ export class SwampClubClient {
     }
   }
 
-  /** List inbox messages, newest first. Throws UserError on failure. */
   async listInboxMessages(
     apiKey: string,
     options: InboxListOptions = {},
@@ -1371,7 +1248,6 @@ export class SwampClubClient {
     return page;
   }
 
-  /** Fetch one inbox message. Throws UserError on failure. */
   async getInboxMessage(
     apiKey: string,
     id: string,
@@ -1400,12 +1276,9 @@ export class SwampClubClient {
   }
 
   /**
-   * Mark inbox messages read, in batches the endpoint accepts. Returns the
-   * requested ids swamp-club confirmed, in request order; ids that are unknown
-   * or not the caller's are left out. A throw may follow batches that were
-   * already applied; marking read is idempotent, so retrying the whole call
-   * is safe. `onConfirmed` is given each batch's confirmed ids as it is
-   * answered, so a caller still knows them when a later batch throws.
+   * returns the requested ids confirmed, in order; a throw may follow applied
+   * batches, but marking read is idempotent so retrying the whole call is safe;
+   * onConfirmed reports each batch as answered
    */
   async markInboxRead(
     apiKey: string,
@@ -1490,10 +1363,8 @@ export class SwampClubClient {
   }
 
   /**
-   * The parsed JSON body of an inbox answer, or undefined when it is not
-   * JSON. A body cut off by the caller's signal rethrows the abort, as the
-   * fetch helper does; a timeout or a dropped connection is a UserError that
-   * says so, never a malformed answer.
+   * a body cut off by the caller's signal rethrows the abort; a timeout or
+   * dropped connection is a UserError that says so, never a malformed answer
    */
   private async readInboxJson(
     res: Response,
@@ -1531,10 +1402,9 @@ export class SwampClubClient {
         ? AbortSignal.any([callerSignal, timeoutSignal])
         : timeoutSignal;
     };
-    // Merge identity headers FIRST so any caller-supplied header in
-    // init.headers wins on conflict. Required so per-call x-api-key /
-    // Authorization values (e.g. signIn, getCurrentUser session token,
-    // whoami) override the constructor identity.
+    // identity headers merge first so caller-supplied init.headers win, letting
+    // per-call x-api-key or Authorization values override the constructor
+    // identity
     const headers = mergeIdentityHeaders(this.identity, init.headers);
     const doFetch = this.options.fetch ?? globalThis.fetch;
     try {
@@ -1555,7 +1425,6 @@ export class SwampClubClient {
       return res;
     } catch (error) {
       if (error instanceof UserError) throw error;
-      // Re-throw AbortError from caller signal without wrapping
       if (
         callerSignal?.aborted && error instanceof DOMException &&
         error.name === "AbortError"

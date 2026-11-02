@@ -22,17 +22,11 @@ import type { LogAttributes, LoggerProvider } from "@opentelemetry/api-logs";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { runFileSink } from "./run_file_sink.ts";
 
-// This module is a LogTape sink — a logging concern — so it lives in the
-// logging module alongside run_file_sink.ts (which it uses for redaction) and
-// receives the OTel LoggerProvider by injection. It imports nothing from
-// src/infrastructure/tracing, keeping the dependency one-way (logger.ts pulls
-// initLogs from tracing; tracing never pulls logging) and avoiding an import
-// cycle.
+// imports nothing from tracing, keeping the dependency one-way (logger pulls
+// initLogs from tracing) and avoiding an import cycle; the provider is injected
 
-/** Instrumentation scope name for swamp's log records. */
 const LOGGER_NAME = "swamp";
 
-/** Maps a LogTape level to the OTel {@link SeverityNumber}. */
 function toSeverityNumber(level: LogRecord["level"]): SeverityNumber {
   switch (level) {
     case "trace":
@@ -53,9 +47,8 @@ function toSeverityNumber(level: LogRecord["level"]): SeverityNumber {
 }
 
 /**
- * Maps a LogTape level to the OTel `severityText`. Follows the OTel log data
- * model's short names (notably `WARN`, not LogTape's `warning`) so records
- * group consistently with other services' logs in the backend.
+ * follows the OTel short names (WARN, not warning) so records group with other
+ * services' logs in the backend
  */
 function toSeverityText(level: LogRecord["level"]): string {
   switch (level) {
@@ -76,7 +69,6 @@ function toSeverityText(level: LogRecord["level"]): string {
   }
 }
 
-/** Renders a single non-string message part into a readable string. */
 function renderValue(value: unknown): string {
   if (typeof value === "string") return value;
   try {
@@ -86,20 +78,13 @@ function renderValue(value: unknown): string {
   }
 }
 
-/**
- * Renders a LogTape message (an array of alternating literal strings and
- * interpolated values) into a single human-readable body string. Non-string
- * parts are rendered via {@link renderValue} so structured values never collapse
- * to `[object Object]`.
- */
 function renderBody(message: readonly unknown[]): string {
   return message.map(renderValue).join("");
 }
 
 /**
- * Coerces a LogTape property value into an OTel-attribute-safe value. OTel
- * attribute values may only be primitives (or arrays of primitives); objects
- * and arrays are stringified.
+ * OTel attribute values may only be primitives, so objects and arrays are
+ * stringified
  */
 function toAttributeValue(value: unknown): string | number | boolean {
   if (
@@ -112,19 +97,9 @@ function toAttributeValue(value: unknown): string | number | boolean {
 }
 
 /**
- * Creates a LogTape {@link Sink} that forwards each log record to the OTel
- * `logs` signal via the supplied {@link LoggerProvider}.
- *
- * - **Correlation** is automatic: `emit()` is called with no explicit context,
- *   so the OTel SDK stamps the active span's `trace_id`/`span_id` onto the
- *   record from `context.active()` at emit time.
- * - **Redaction**: the rendered body and every string attribute value pass
- *   through {@link runFileSink.redactActive}, and a number or boolean
- *   attribute whose text is a registered value is sent as `***`
- *   ({@link runFileSink.isActiveSecret}), so secrets from the active run are
- *   scrubbed before the record leaves the process — parity with the persisted
- *   per-run log files, which matters because OTLP export is a new external
- *   egress to a third-party collector.
+ * emit takes no context so the SDK stamps the active span ids; body and
+ * attributes are redacted, secret numbers or booleans sent as ***, matching run
+ * log files since OTLP leaves the process
  */
 export function createOtelLogRecordSink(provider: LoggerProvider): Sink {
   const otelLogger = provider.getLogger(LOGGER_NAME);
@@ -137,7 +112,7 @@ export function createOtelLogRecordSink(provider: LoggerProvider): Sink {
       const coerced = toAttributeValue(value);
       attributes[key] = typeof coerced === "string"
         ? runFileSink.redactActive(coerced)
-        // A secret delivered as a number or boolean (swamp-club#3967).
+        // a secret delivered as a number or boolean is masked too
         : runFileSink.isActiveSecret(String(coerced))
         ? "***"
         : coerced;

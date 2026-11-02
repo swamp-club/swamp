@@ -41,8 +41,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-// --- findFileCollisions ---
-
 Deno.test("findFileCollisions: detects top-level file collision", async () => {
   await withTempDir(async (root) => {
     const src = join(root, "src");
@@ -111,8 +109,6 @@ Deno.test("findFileCollisions: detects symlink collision", async () => {
     assertEquals(collisions, ["latest", "target"]);
   });
 });
-
-// --- mergeDirInto ---
 
 Deno.test("mergeDirInto: moves non-colliding files and preserves colliding source files", async () => {
   await withTempDir(async (root) => {
@@ -301,8 +297,6 @@ Deno.test("mergeDirInto: mixed tree — partial collision preserves only collidi
   });
 });
 
-// --- removeEmptyDirs ---
-
 Deno.test("removeEmptyDirs: removes fully empty tree", async () => {
   await withTempDir(async (root) => {
     const dir = join(root, "empty");
@@ -362,8 +356,6 @@ Deno.test("mergeDirInto: leaves install staging in the source", async () => {
     );
   });
 });
-
-// --- catalog files (swamp-club#3316) ---
 
 const CATALOG_NAMES = [
   "_catalog.db",

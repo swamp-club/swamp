@@ -17,30 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The behavior history scan behind serve's `model.output.search` with
- * `since: "7d"` (swamp-club#4056): `findAllGlobalSince` over repositories of
- * growing size, 2% of whose outputs started inside the window. Each size is
- * read with the records' mtimes at their completion, with every mtime fresh
- * (as after a v3 read-model replay), and fresh under event-loop contention
- * from four tasks that each await a stat and then hold the loop for 0.25 ms.
- * One model's history with the same `since` (swamp-club#4058),
- * `findHistoryByDefinition`, is read the same ways, from that repository
- * ("spread": 200 models over 20 types) and from one where a single type holds
- * two models ("busy"). Run with:
- *
- *   deno bench --allow-all src/infrastructure/persistence/output_history_scan_bench.ts
- *   deno bench --allow-all src/infrastructure/persistence/output_history_scan_bench.ts -- 10000,50000,200000
- *
- * Files stat'ed and read per iteration are printed when the run ends: they
- * should stay at zero stats and the in-window count of reads (of the model's
- * outputs, for a model's history) whatever the repository size.
- *
- * Those read the records, with the output summaries disabled. The "whole
- * window" group (swamp-club#4145) has every output inside the window, read
- * from the records and then from warm summaries, which should read none.
- */
-
 import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -69,12 +45,6 @@ const now = Date.now();
 const cutoff = new Date(now - 7 * DAY_MS);
 const root = await Deno.makeTempDir({ prefix: "swamp_history_scan_bench_" });
 
-/**
- * A repository of `size` outputs of `models` models over the first
- * `typeCount` types, their mtimes at completion or now, with the first model
- * and its type. `inWindow` is the share of them started inside the window.
- * With `summaries` the repository keeps output summaries.
- */
 async function seed(
   size: number,
   fresh: boolean,
@@ -157,7 +127,6 @@ let counting: { stats: number; reads: number; runs: number } | undefined;
   return readTextFile(path, options);
 };
 
-/** Holds the event loop as other in-flight requests would, until stopped. */
 function contend(): () => Promise<void> {
   let running = true;
   const contenders = Array.from({ length: CONTENDERS }, async () => {
@@ -196,7 +165,6 @@ for (const size of SIZES) {
   const wholeGroup = `${size} outputs, whole window`;
   const records = await seed(size, false, 200, types.length, 1);
   const warm = await seed(size, false, 200, types.length, 1, true);
-  // The first read fills the summaries of what it reads.
   await warm.repo.findAllGlobalSince(cutoff);
   for (
     const [name, { repo }, baseline, n] of [

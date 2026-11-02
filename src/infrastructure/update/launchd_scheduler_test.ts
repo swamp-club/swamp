@@ -32,8 +32,8 @@ import {
   unescapeXml,
 } from "./launchd_scheduler.ts";
 
-// The job-level part of `launchctl print` from swamp-club#3007: the agent
-// after a self-update, refused by launchd on every run.
+// the job-level part of launchctl print for an agent refused by launchd on
+// every run after a self-update
 const STUCK_PRINT = `gui/501/club.swamp.autoupdate = {
 	active count = 0
 	path = /Users/someone/Library/LaunchAgents/club.swamp.autoupdate.plist
@@ -74,9 +74,8 @@ const UNPINNED_PRINT = `gui/501/club.swamp.autoupdate = {
 }
 `;
 
-// us.zoom.updater on macOS 27 straight after bootout + bootstrap of a job
-// Background Task Management pinned at login: the old requirement is gone
-// and a fresh one is computed at the next launch.
+// launchctl print of a job straight after bootout and bootstrap on macOS: the
+// old requirement is gone and a fresh one is computed at the next launch
 const RELOADED_MANAGED_PRINT = `gui/501/us.zoom.updater = {
 	active count = 0
 	state = not running
@@ -105,7 +104,6 @@ const NOT_FOUND = {
   code: 113,
 };
 
-/** `launchctl print`: the domain exists, the job does not. */
 function printJobMissing(args: string[]) {
   return args[1].endsWith("club.swamp.autoupdate")
     ? NOT_FOUND

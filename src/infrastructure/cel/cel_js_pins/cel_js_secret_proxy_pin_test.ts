@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Phase 1.2 pins for the Proxy-based Secret (design/enablers/typed-secrets.md
-// Section 3.1, and the Phase 1.2 list in Section 11: "cel-js recognizes the
-// Proxy-based `Secret` by its constructor. Building a macro range over it
-// records a fault and throws; cel-js absorbs the error like a handler error,
-// so the fault is what fails the evaluation." and "An async custom function
-// can return a `Secret`, and awaiting it reads `then` without a fault.").
-//
-// The absorption is the one place the design's first draft was wrong: the
-// fact 3 pin covers an error while evaluating a list literal range, which is
-// not absorbed; iterating a range value whose `ownKeys` throws is absorbed
-// like any handler error. The recorded fault is what makes the refusal
-// visible (Section 4.3, item 2).
 import {
   assertEquals,
   assertInstanceOf,
@@ -121,7 +109,6 @@ Deno.test(
     "the range error over a Secret is absorbed like a handler error, and only the recorded fault shows it",
   ),
   () => {
-    // The third column is how many ranges were built: one fault each.
     const absorbed: Array<[string, unknown, number]> = [
       ["s.exists(x, true) || true", true, 1],
       ["s.all(x, true) && false", false, 1],
@@ -143,7 +130,6 @@ Deno.test(
         );
       });
     }
-    // An unselected branch builds no range and records nothing.
     withFaultContext((faults) => {
       assertEquals(
         secretEnvironment().evaluate("true || s.exists(x, true)", { s }),
@@ -151,7 +137,6 @@ Deno.test(
       );
       assertEquals(faults, []);
     });
-    // When the other side does not decide, the error is rethrown.
     withFaultContext((faults) => {
       assertThrows(
         () => secretEnvironment().evaluate("s.exists(x, true) || false", { s }),
@@ -240,8 +225,8 @@ Deno.test(
   },
 );
 
-// This pin depends on Deno's inspect output, not on cel-js: a Deno bump in
-// .tool-versions is what would change it.
+// depends on Deno's inspect output, not on cel-js: a Deno version bump is what
+// would change it
 Deno.test(
   pin(
     "inspecting a Secret is harmless: Deno.inspect prints the class and touches no trap, except with showProxy",

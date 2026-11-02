@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Doubles and fixtures for commit-log unit tests (swamp-club#3240).
- *
- * @module
- */
-
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
@@ -55,21 +49,12 @@ import type {
 export const WRITER = { host: "host-a", pid: 4242, instance: "cli-1" } as const;
 export const AT = new Date("2026-10-11T12:00:00.000Z");
 
-/**
- * A commit sink over in-memory partitions, applying each commit through
- * `Partition.append` as the store does. Hooks let a test fail a call.
- */
 export class MemorySink implements CommitSink {
   readonly partitions = new Map<string, Partition>();
-  /** Every commit applied, in the order it landed. */
   readonly landed: Commit[] = [];
-  /** Every append call, in order, by partition key. */
   readonly appendCalls: string[] = [];
-  /** Runs before each append; a throw fails the append before it applies. */
   beforeAppend: (commit: Commit) => void | Promise<void> = () => {};
-  /** Runs after an append applied; a throw fails the call after it landed. */
   afterAppend: (commit: Commit) => void | Promise<void> = () => {};
-  /** Runs before each head read; a throw fails the read. */
   beforeHead: () => void = () => {};
 
   #partition(key: PartitionKey): Partition {
@@ -103,24 +88,15 @@ export class MemorySink implements CommitSink {
     });
   }
 
-  /** The commits that landed on one partition, in seq order. */
   commitsOf(partition: PartitionKey): Commit[] {
     return this.landed.filter((commit) => commit.partition.equals(partition));
   }
 }
 
-/**
- * A {@link MemorySink} with an in-memory outbox (swamp-club#3490), recording
- * every outbox call in `events` beside the appends.
- */
 export class OutboxMemorySink extends MemorySink {
-  /** The entries prepared and not removed, by txnId. */
   readonly entries = new Map<string, OutboxPreparation>();
-  /** Outbox calls and appends, in order: `prepare:<txnId>`, `settle:`, `discard:`, `append:`. */
   readonly events: string[] = [];
-  /** The sweep state each read returns, in turn; quiet once used up. */
   sweepStates: SweepState[] = [];
-  /** Runs before each removal; a throw fails it. */
   beforeRemove: (keys: readonly OutboxKey[]) => void = () => {};
 
   constructor() {
@@ -184,7 +160,6 @@ export function runIntent(): Intent {
   });
 }
 
-/** A put on the fixture run's record. */
 export function runPut(text: string): Promise<PutOp> {
   return putOp({
     intent: runIntent(),
@@ -195,15 +170,10 @@ export function runPut(text: string): Promise<PutOp> {
   });
 }
 
-/** A hook standing for one v3 repository context. */
 export function contextHook(): MarkDirtyHook {
   return () => Promise.resolve();
 }
 
-/**
- * Unit options over a sink and a chunk storage (an in-memory one in unit
- * tests: `MemoryStorage` from `v3_test_helpers.ts`).
- */
 export function unitOptions<S extends DatastoreStorage>(
   sink: CommitSink,
   storage: S,

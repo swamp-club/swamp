@@ -24,7 +24,6 @@ import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 
 Deno.test("EditorService.findEditor returns $EDITOR when set", async () => {
-  // Set EDITOR to a command that exists
   await withMockedEnv({ EDITOR: "cat" }, async () => {
     const service = new EditorService();
     const editor = await service.findEditor();
@@ -33,7 +32,6 @@ Deno.test("EditorService.findEditor returns $EDITOR when set", async () => {
 });
 
 Deno.test("EditorService.findEditor handles $EDITOR with arguments", async () => {
-  // Set EDITOR to a command with arguments
   await withMockedEnv({ EDITOR: "cat -n" }, async () => {
     const service = new EditorService();
     const editor = await service.findEditor();
@@ -55,16 +53,12 @@ Deno.test("EditorService.prepareOpenFile exposes wait state before launching", a
 });
 
 Deno.test("EditorService.findEditor falls back when $EDITOR is not available", async () => {
-  // Set EDITOR to a non-existent command
   await withMockedEnv({ EDITOR: "nonexistent-editor-12345" }, async () => {
     const service = new EditorService();
-    // Should fall back to an available editor or throw
     try {
       const editor = await service.findEditor();
-      // If we get here, a fallback editor was found
       assertEquals(typeof editor, "string");
     } catch (error) {
-      // If no editor is found, error message should list fallbacks
       assertStringIncludes(
         (error as Error).message,
         "No editor found",

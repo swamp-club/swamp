@@ -42,39 +42,23 @@ import { downloadToFile } from "./resumable_download.ts";
 
 const logger = getLogger(["swamp", "update"]);
 
-/** How long one update-check request may take before it is abandoned. */
 const CHECK_TIMEOUT_MS = 5000;
-/** Wait before each retry of the update check: 1s, then 2s, then 4s… */
 const CHECK_RETRY_BASE_DELAY_MS = 1000;
-/** Name prefix of the temp directory each update downloads into. */
 const UPDATE_TEMP_DIR_PREFIX = "swamp-update-";
 
-/** Options for {@link HttpUpdateChecker}. */
 export interface HttpUpdateCheckerOptions {
-  /**
-   * How many times `checkForUpdate` sends its request before giving up.
-   * Timeouts, connection errors and HTTP 5xx are retried. Defaults to 1.
-   */
   maxAttempts?: number;
-  /** Waits between attempts; replaced in tests. */
   sleep?: Sleep;
   /**
-   * Where update temp directories go; defaults to the OS temp dir. Tests set
-   * it: an install also sweeps abandoned update directories from it, and a
-   * test must not touch the real temp dir.
+   * tests set this: an install sweeps abandoned update directories from it, and
+   * a test must not touch the real temp dir
    */
   tempRoot?: string;
-  /** Replaced in tests; see {@link downloadToFile}. */
   downloadStallTimeoutMs?: number;
   downloadMaxAttempts?: number;
-  /** Replaced in tests; see {@link BinaryFileOps}. */
   fileOps?: BinaryFileOps;
 }
 
-/**
- * The file operations that replace the binary. A seam so tests can fail an
- * operation or drive the Windows path on every OS.
- */
 export interface BinaryFileOps {
   rename(oldPath: string, newPath: string): Promise<void>;
   copyFile(fromPath: string, toPath: string): Promise<void>;
@@ -87,7 +71,6 @@ const denoFileOps: BinaryFileOps = {
   remove: (path) => Deno.remove(path),
 };
 
-/** One request's result: a value, or the reason to try again. */
 type AttemptResult<T> = { ok: true; value: T } | { ok: false; reason: string };
 
 async function extractZip(
@@ -112,13 +95,8 @@ async function extractZip(
 }
 
 /**
- * Remove macOS quarantine extended attribute (best-effort).
- * Files downloaded via fetch() get tagged with com.apple.quarantine,
- * and Gatekeeper will SIGKILL unsigned binaries that have it.
- *
- * Only meaningful on darwin — `xattr` is not present on Linux or Windows,
- * and the quarantine attribute is a macOS-specific concept. Calls on other
- * platforms become a no-op.
+ * files fetched are tagged com.apple.quarantine and Gatekeeper SIGKILLs
+ * unsigned binaries carrying it; darwin only, best-effort
  */
 async function removeQuarantine(path: string): Promise<void> {
   if (Deno.build.os !== "darwin") return;
@@ -134,10 +112,6 @@ async function removeQuarantine(path: string): Promise<void> {
   }
 }
 
-/**
- * Best-effort cleanup of a stale `.old` binary left by a previous update.
- * Exported so the CLI startup path can call it on Windows.
- */
 export async function cleanupStaleBinary(binaryPath: string): Promise<void> {
   const oldPath = binaryPath + ".old";
   try {
@@ -148,31 +122,17 @@ export async function cleanupStaleBinary(binaryPath: string): Promise<void> {
 }
 
 /**
- * Replace a binary at `targetPath` with the file at `sourcePath`.
- *
- * On POSIX (macOS, Linux): atomic rename creates a new inode at the target
- * path. Running processes keep their vnode reference to the old inode —
- * no SIGKILL on macOS, no ETXTBSY on Linux.
- *
- * On Windows: running executables are locked and cannot be overwritten,
- * but CAN be renamed. Strategy: stage the new binary in a temp file beside
- * the target (rename, or copy across volumes), rename the running binary to
- * `.old`, then rename the staged file into place. If placement fails,
- * rollback by renaming `.old` back. The `.old` file is cleaned up on next
- * launch.
- *
- * POSIX fallback: if rename fails with EXDEV (cross-filesystem), copy to
- * a temp file in the target directory (same filesystem), then rename.
- *
- * Exported so tests can drive it through `ops`.
+ * POSIX atomic rename keeps running processes on the old inode. Windows cannot
+ * overwrite a running exe but can rename it, so move it to .old and roll back
+ * on failure
  */
 export async function replaceBinary(
   sourcePath: string,
   targetPath: string,
   ops: BinaryFileOps = denoFileOps,
 ): Promise<void> {
-  // Clean up temp files abandoned by a previous crashed update. Fresh ones
-  // are kept — they may belong to a concurrent update still copying.
+  // sweep temp files abandoned by a crashed update; fresh ones stay, as a
+  // concurrent update may still be copying
   const targetDir = dirname(targetPath);
   await removeAbandonedTempFiles(targetDir, ".swamp.tmp.");
 
@@ -187,8 +147,8 @@ export async function replaceBinary(
     if (error instanceof Deno.errors.PermissionDenied) {
       throw new UserError(await describePermissionDenied(targetPath));
     }
-    // EXDEV: source and target on different filesystems — rename won't work.
-    // Copy to a temp file in the target directory, then atomic rename.
+    // EXDEV: source and target are on different filesystems, so copy to a temp
+    // file in the target directory, then atomic rename
     const code = error instanceof Error
       ? (error as Error & { code?: string }).code
       : undefined;
@@ -214,10 +174,6 @@ export async function replaceBinary(
   }
 }
 
-/**
- * The Windows strategy of {@link replaceBinary}. Exported so tests can drive
- * it on every OS through `ops`.
- */
 export async function replaceBinaryWindows(
   sourcePath: string,
   targetPath: string,
@@ -236,12 +192,10 @@ export async function replaceBinaryWindows(
     }
   };
 
-  // Clean up stale .old from a previous update
   await cleanupStaleBinary(targetPath);
 
-  // Stage the new binary beside the target first, so swamp.exe is only
-  // absent between the two renames below. Fall back to copy if EXDEV
-  // (cross-volume, e.g. %TEMP% on D: and swamp installed on C:).
+  // stage beside the target so swamp.exe is absent only between the two
+  // renames; fall back to copy on EXDEV (cross-volume)
   try {
     try {
       await ops.rename(sourcePath, tmpPath);
@@ -260,8 +214,7 @@ export async function replaceBinaryWindows(
     throw stageError;
   }
 
-  // Rename the running binary out of the way — Windows allows renaming
-  // a locked file, just not overwriting or deleting it.
+  // Windows allows renaming a locked file, just not overwriting or deleting it
   let targetExisted = false;
   try {
     await ops.rename(targetPath, oldPath);
@@ -281,12 +234,12 @@ export async function replaceBinaryWindows(
   try {
     await ops.rename(tmpPath, targetPath);
   } catch (renameError) {
-    // Rollback: restore the old binary so the user isn't left without one
+    // roll back so the user is not left without a binary
     if (targetExisted) {
       try {
         await ops.rename(oldPath, targetPath);
       } catch {
-        // Rollback failed — .old file still exists for manual recovery
+        // if rollback fails, the .old file remains for manual recovery
       }
     }
     await removeTmp();
@@ -297,7 +250,6 @@ export async function replaceBinaryWindows(
   }
 }
 
-/** Says why one update-check request failed. */
 function describeCheckFailure(error: unknown): string {
   if (error instanceof DOMException && error.name === "TimeoutError") {
     return `the update server did not respond within ${
@@ -320,7 +272,6 @@ function checkFailedError(reason: string, attempts: number): UserError {
   );
 }
 
-/** The error for a checksum fetch whose every attempt failed. */
 function checksumFailedError(reason: string, attempts: number): UserError {
   if (attempts === 1) {
     return new UserError(`Failed to fetch checksum: ${reason}`);
@@ -330,10 +281,6 @@ function checksumFailedError(reason: string, attempts: number): UserError {
   );
 }
 
-/**
- * HTTP adapter implementing UpdateChecker.
- * Checks artifacts.swamp-club.com for the latest swamp binary.
- */
 export class HttpUpdateChecker implements UpdateChecker {
   private readonly maxAttempts: number;
   private readonly sleep: Sleep;
@@ -352,13 +299,9 @@ export class HttpUpdateChecker implements UpdateChecker {
   }
 
   /**
-   * Issue a HEAD request to the stable URL with manual redirect handling.
-   * The redirect location header contains the versioned URL.
-   * Returns the redirect URL, or null if no redirect (already at latest).
-   *
-   * A timeout, connection error or HTTP 5xx is retried with backoff up to
-   * `maxAttempts`; when the last attempt fails it becomes a UserError.
-   * Aborting `signal` stops at once, with no further attempt.
+   * HEAD to the stable URL without following redirects; the location header is
+   * the versioned URL. Timeouts, connection errors and 5xx retry with backoff;
+   * abort stops at once
    */
   async checkForUpdate(
     platform: Platform,
@@ -381,7 +324,6 @@ export class HttpUpdateChecker implements UpdateChecker {
       signal,
     );
 
-    // Check for redirect via Location header or S3 metadata
     const redirectLocation = response.headers.get("location") ||
       response.headers.get("x-amz-website-redirect-location") ||
       response.headers.get("x-amz-meta-x-amz-website-redirect-location");
@@ -390,7 +332,6 @@ export class HttpUpdateChecker implements UpdateChecker {
       return redirectLocation;
     }
 
-    // 200 means we're at the actual file (stable URL IS the latest)
     if (response.ok) {
       return url;
     }
@@ -406,12 +347,6 @@ export class HttpUpdateChecker implements UpdateChecker {
     );
   }
 
-  /**
-   * Run `request` with a per-attempt timeout, retrying a timeout, connection
-   * error or retryable result with backoff up to `maxAttempts`. A UserError
-   * from `request` is not retried. Aborting `signal` rethrows its reason at
-   * once.
-   */
   private async withRetry<T>(
     what: string,
     request: (attemptSignal: AbortSignal) => Promise<AttemptResult<T>>,
@@ -444,10 +379,6 @@ export class HttpUpdateChecker implements UpdateChecker {
     }
   }
 
-  /**
-   * Fetch the expected SHA-256 checksum for a tarball, retrying transient
-   * failures like the update check does.
-   */
   async fetchChecksum(
     tarballUrl: string,
     signal?: AbortSignal,
@@ -476,9 +407,8 @@ export class HttpUpdateChecker implements UpdateChecker {
   }
 
   /**
-   * Download the archive, verify its checksum, and install the binary.
-   * Aborting `options.signal` before the binary is replaced rejects with its
-   * reason; the temp directory is removed either way.
+   * aborting before the binary is replaced rejects with its reason; the temp
+   * directory is removed either way
    */
   async downloadAndInstall(
     url: string,
@@ -492,8 +422,8 @@ export class HttpUpdateChecker implements UpdateChecker {
       dir: this.tempRoot,
       prefix: UPDATE_TEMP_DIR_PREFIX,
     });
-    // Remove what an earlier update killed mid-download left behind. The new
-    // directory is fresh, so the sweep keeps it.
+    // sweep what an earlier killed update left behind; the new directory is
+    // fresh, so the sweep keeps it
     await removeAbandonedTempDirs(dirname(tempDir), UPDATE_TEMP_DIR_PREFIX);
 
     try {
@@ -508,12 +438,10 @@ export class HttpUpdateChecker implements UpdateChecker {
       });
       signal?.throwIfAborted();
 
-      // Verify archive integrity before extraction
       const archiveBytes = await Deno.readFile(archivePath);
       const actualChecksum = await computeChecksum(archiveBytes);
       verifyChecksum(expectedChecksum, actualChecksum);
 
-      // Extract the archive
       if (isZip) {
         try {
           await extractZip(archivePath, tempDir);
@@ -535,7 +463,6 @@ export class HttpUpdateChecker implements UpdateChecker {
         }
       }
 
-      // Find the extracted binary
       const binaryFilename = isZip ? "swamp.exe" : "swamp";
       const extractedBinary = `${tempDir}/${binaryFilename}`;
       try {
@@ -546,17 +473,16 @@ export class HttpUpdateChecker implements UpdateChecker {
         );
       }
 
-      // The archive is no longer needed; don't keep it on disk alongside the
-      // extracted binary and the old one through the replace.
+      // drop the archive so it is not kept on disk alongside the extracted and
+      // old binaries through the replace
       try {
         await Deno.remove(archivePath);
       } catch (error) {
         logger.debug`Could not remove ${archivePath}: ${error}`;
       }
 
-      // macOS: remove quarantine attribute from extracted binary before copying.
-      // When fetch() writes to disk, macOS tags the file with com.apple.quarantine.
-      // tar preserves this on extraction, and Gatekeeper will SIGKILL the binary.
+      // fetch tags the file com.apple.quarantine, tar preserves it, and
+      // Gatekeeper SIGKILLs the binary, so clear it before copying
       if (Deno.build.os === "darwin") {
         await removeQuarantine(extractedBinary);
       }
@@ -565,21 +491,17 @@ export class HttpUpdateChecker implements UpdateChecker {
       // runs to the end, so a Ctrl+C never leaves a half-replaced install.
       signal?.throwIfAborted();
 
-      // Replace the current binary (atomic rename to preserve running processes)
       await replaceBinary(extractedBinary, binaryPath, this.fileOps);
 
-      // chmod is meaningless on Windows (file permissions live in the ACL,
-      // not POSIX mode bits). Only set the executable bit on POSIX hosts.
       if (Deno.build.os !== "windows") {
         await Deno.chmod(binaryPath, 0o755);
       }
 
-      // Also clear quarantine on the final path (in case copyFile propagates it)
+      // also clear quarantine on the final path in case copyFile propagates it
       if (Deno.build.os === "darwin") {
         await removeQuarantine(binaryPath);
       }
     } finally {
-      // Cleanup temp directory
       try {
         await Deno.remove(tempDir, { recursive: true });
       } catch {

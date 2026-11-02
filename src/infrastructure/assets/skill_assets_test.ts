@@ -83,7 +83,6 @@ Deno.test("SkillAssets.listSkills returns a copy", () => {
   const skills1 = assets.listSkills();
   const skills2 = assets.listSkills();
 
-  // Modifying one should not affect the other
   skills1.push({ relativePath: "test/TEST.md", name: "test" });
   assertEquals(skills1.length !== skills2.length, true);
 });
@@ -93,7 +92,6 @@ Deno.test("SkillAssets.getSkillNames returns unique names", () => {
   const names = assets.getSkillNames();
 
   assertEquals(names.length > 0, true);
-  // Check for uniqueness
   const uniqueNames = new Set(names);
   assertEquals(uniqueNames.size, names.length);
   assertEquals(names.includes("swamp"), true);
@@ -128,12 +126,10 @@ Deno.test("SkillAssets.copySkillsTo copies files correctly", async () => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
-    // Check that the gateway SKILL.md was copied
     const skillPath = join(dir, "swamp", "SKILL.md");
     const stat = await Deno.stat(skillPath);
     assertEquals(stat.isFile, true);
 
-    // Verify content matches source
     const copiedContent = await Deno.readTextFile(skillPath);
     const originalContent = await assets.readSkill("swamp/SKILL.md");
     assertEquals(copiedContent, originalContent);
@@ -181,7 +177,6 @@ Deno.test("SkillAssets.copySkillsTo rejects path traversal attempts", async () =
 
     await assets.copySkillsTo(dir);
 
-    // Verify files are written within the target directory
     const skillPath = join(dir, "swamp", "SKILL.md");
     const realPath = await Deno.realPath(skillPath);
     assertEquals(realPath.startsWith(await Deno.realPath(dir)), true);

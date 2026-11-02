@@ -18,28 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The async context swamp starts with, before any run enters a scope.
- *
- * Deno can call a `Deno.serve` handler with the async context the last code
- * that ran left behind: after a first-time dynamic `import()` inside an
- * `AsyncLocalStorage` scope, every later request inherits that scope
- * (swamp-club#3125). swamp keeps ambient authority in such stores — a run's
- * vault scope, unit of work, held lock ids, trace frames and extension lock
- * leases — so a request must not see them.
- *
- * The snapshot is taken when this module is evaluated, which must happen at
- * startup, while no scope is entered: import this module statically only.
- * Evaluated inside a run, it would capture that run's context instead.
+ * Deno.serve handlers can inherit the async context a prior dynamic import left
+ * behind, exposing a run's vault scope, locks and leases; snapshot at startup,
+ * so import statically only
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const rootContext = AsyncLocalStorage.snapshot();
 
-/**
- * Runs `fn` outside every `AsyncLocalStorage` store, current and future:
- * each store reads `undefined` inside `fn` and in the work it continues
- * into, while stores `fn` enters itself work as usual.
- */
 export function runOutsideAmbientContext<T>(fn: () => T): T {
   return rootContext(fn);
 }

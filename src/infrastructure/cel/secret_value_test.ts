@@ -61,7 +61,6 @@ Deno.test("composeSecrets: joins parts in order, merging adjacent text", () => {
   const [ref] = secretParts(a)!;
   const [refB] = secretParts(b)!;
   assertEquals(secretParts(both), ["x", ref, "yz", refB]);
-  // A part keeps its identity across compositions.
   assertStrictEquals(secretParts(both)![1], ref);
   assertStrictEquals(secretParts(both)![3], refB);
 });
@@ -89,7 +88,6 @@ Deno.test("Secret: enumeration and descriptors refuse with a fault", () => {
       "ownKeys",
       "getOwnPropertyDescriptor",
     ]);
-    // Cloning reads a descriptor, so it refuses with a fault too.
     assertThrows(() => structuredClone(secret));
     assertEquals(scope.faults.length, 3);
   });

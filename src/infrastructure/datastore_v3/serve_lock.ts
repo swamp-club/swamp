@@ -18,31 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A per-model or workflow-run lock a serve-mode checkout takes at serve
- * (swamp-club#3985). Checkouts on different machines that write one
- * datastore through serve each pick a model's next data version from their
- * own copy, so a local file lock cannot keep them apart: the lock must be
- * serve's own, the one serve's runs take. {@link ServeLock} holds a lease
- * on it through serve's datastore API (`POST locks`), renews it at a third
- * of its TTL, and releases it.
- *
- * Once the lease is taken, `onAcquired` brings the checkout's copy up to
- * serve's log, so the work done under the lock reads every version written
- * before it, whichever machine wrote it.
- *
- * It asks for a fenced lease (swamp-club#4121). Serve answers with a fence,
- * and for a behavior a data-version floor; the hold registers the lease, so
- * the checkout's commits to the partition name it and allocate above the
- * floor. A fenced lease that cannot be renewed (serve answers that it no
- * longer holds it, refuses the renewal, or cannot be reached before the
- * lease's local deadline) has lapsed: `onLost` fires once, and the work
- * under it is cancelled. An older serve grants an unfenced lease, which
- * behaves as before: a lapse is only logged.
- *
- * See "Model locks" under "Team mode: the CLI's serve upstream" in
- * `design/enablers/datastores.md`.
- *
- * @module
+ * a local file lock cannot keep checkouts on different machines apart, so the
+ * lock is serve's own. A fenced lease that cannot be renewed has lapsed: onLost
+ * fires once and the work is cancelled; unfenced only logs
  */
 
 import {
@@ -62,22 +40,16 @@ import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 
 const logger = getSwampLogger(["datastore", "lock", "serve"]);
 
-/** The lease a hold asks serve for. */
 export const SERVE_LOCK_TTL_MS = 30_000;
-/** The longest one acquire request asks serve to wait. */
 export const SERVE_LOCK_REQUEST_WAIT_MS = 10_000;
-/** The first pause after serve answers "held" at once. */
 const RETRY_INTERVAL_MS = 100;
-/** The longest pause between acquire requests. */
 const MAX_BACKOFF_MS = 1_000;
 
-/** The most a lease's local deadline keeps back from its TTL. */
 const MAX_DEADLINE_MARGIN_MS = 2_000;
 
 /**
- * A fenced lease at serve lapsed (swamp-club#4121): the work under it no
- * longer holds the lock, so it is cancelled, and serve refuses any commit
- * it still sends.
+ * the work under a lapsed fenced lease does not hold the lock, so it is
+ * cancelled and serve refuses any commit it still sends
  */
 export class ServeLeaseLapsedError extends Error {
   constructor(readonly lockKey: string, readonly reason: string) {
@@ -89,7 +61,6 @@ export class ServeLeaseLapsedError extends Error {
   }
 }
 
-/** What a {@link ServeLock} needs of the datastore API client. */
 export type ServeLockClient =
   & Pick<
     ServeDatastoreClient,
@@ -98,16 +69,11 @@ export type ServeLockClient =
   & { close?(): void };
 
 export interface ServeLockOptions {
-  /** Opens the client one hold uses; closed when the hold ends. */
   readonly client: () => ServeLockClient;
-  /** The lock key serve takes, with no namespace. */
   readonly lockKey: string;
-  /** The key errors name; `lockKey` when omitted. */
   readonly displayKey?: string;
   readonly ttlMs?: number;
-  /** How long `acquire` keeps asking before {@link LockTimeoutError}. */
   readonly maxWaitMs: number;
-  /** The most one request asks serve to wait. */
   readonly requestWaitMs?: number;
   readonly retryIntervalMs?: number;
   /**
@@ -115,20 +81,14 @@ export interface ServeLockOptions {
    * releases the lease and rejects `acquire`.
    */
   readonly onAcquired?: () => Promise<void>;
-  /**
-   * The checkout root the lease is registered under while held, so its
-   * commits name it (swamp-club#4121); no registration when omitted.
-   */
   readonly root?: string;
-  /** Fires once when a fenced lease lapses; see the module documentation. */
   readonly onLost?: (error: ServeLeaseLapsedError) => void;
   /**
-   * The explicit lease this checkout holds on the key, if any
-   * (swamp-club#4121): the hold takes it over instead of asking for
-   * another, renews it while held, and leaves it held when released.
+   * the explicit lease this checkout holds on the key, if any: the hold takes
+   * it over instead of asking for another, renews it while held, and leaves it
+   * held when released
    */
   readonly adopt?: () => Promise<ExplicitLease | undefined>;
-  /** Forgets an adopted explicit lease serve no longer holds. */
   readonly forget?: (leaseId: string) => Promise<void>;
   /**
    * A lock local to the checkout, held while an explicit lease is adopted:
@@ -137,21 +97,17 @@ export interface ServeLockOptions {
    */
   readonly localLock?: () => DistributedLock;
   readonly now?: () => number;
-  /** A monotonic clock in milliseconds, for the lease's local deadline. */
   readonly monotonic?: () => number;
   /**
-   * The checkout's offline mode (swamp-club#4195): undefined while online.
-   * Offline, the hold never asks serve. It takes the checkout-local lock,
-   * and adopts the explicit lease the checkout recorded on the key, if any,
-   * until that lease's recorded end (by serve's clock, at `clockOffsetMs`)
-   * less `skewMs`, when the work under it is cancelled.
+   * undefined while online. Offline, the hold never asks serve: it takes the
+   * checkout-local lock and adopts the recorded explicit lease until its end by
+   * serve's clock less `skewMs`, when the work is cancelled
    */
   readonly offline?: () =>
     | { readonly clockOffsetMs?: number; readonly skewMs: number }
     | undefined;
 }
 
-/** A lock held at serve; see the module documentation. */
 export class ServeLock implements DistributedLock {
   readonly #options: ServeLockOptions;
   readonly #ttlMs: number;
@@ -161,21 +117,14 @@ export class ServeLock implements DistributedLock {
   #lease: LockLease | undefined;
   #acquiredAt: number | undefined;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
-  /** The renewal in flight, awaited by `release`. */
   #renewing: Promise<void> | undefined;
-  /** Aborted when the hold ends: a renewal in flight gives up. */
   #hold: AbortController | undefined;
-  /** Fires when a fenced lease's local deadline passes without a renewal. */
   #deadline: ReturnType<typeof setTimeout> | undefined;
-  /** Whether this hold's fenced lease lapsed; `onLost` fired. */
   #lost = false;
-  /** Whether this hold took over an explicit lease, which outlives it. */
   #adopted = false;
-  /** The checkout-local lock held with an adopted lease. */
   #local: DistributedLock | undefined;
   /** Set while the hold is released: a renewal in flight cannot lapse it. */
   #releasing = false;
-  /** An offline hold of the checkout-local lock alone (swamp-club#4195). */
   #localOnly = false;
 
   constructor(options: ServeLockOptions) {
@@ -185,7 +134,6 @@ export class ServeLock implements DistributedLock {
     this.#monotonic = options.monotonic ?? (() => performance.now());
   }
 
-  /** The lease serve granted this hold, while it holds one. */
   get lease(): LockLease | undefined {
     return this.#lease;
   }
@@ -268,11 +216,6 @@ export class ServeLock implements DistributedLock {
     await this.#settleAcquired();
   }
 
-  /**
-   * Takes over the explicit lease this checkout holds on the key, renewing
-   * it at serve first. False when there is none, or serve no longer holds
-   * it (its record is forgotten): the hold then asks as usual.
-   */
   async #adoptExplicit(): Promise<boolean> {
     // Read once without the local lock, so a checkout holding no explicit
     // lease never takes it; read again under it below.
@@ -344,10 +287,9 @@ export class ServeLock implements DistributedLock {
   }
 
   /**
-   * Holds the lock while serve is unreachable (swamp-club#4195): the
-   * checkout-local lock, and the explicit lease the checkout recorded on the
-   * key while it lasts. Nothing is renewed; the lease is still registered,
-   * so what the work queues records it and lands under it.
+   * holds the checkout-local lock and the recorded explicit lease while it
+   * lasts; nothing is renewed, but the lease stays registered so queued work
+   * records it and lands under it
    */
   async #acquireOffline(
     offline: { readonly clockOffsetMs?: number; readonly skewMs: number },
@@ -397,7 +339,6 @@ export class ServeLock implements DistributedLock {
     }
   }
 
-  /** Runs `onAcquired`, then registers a fenced lease for its commits. */
   async #settleAcquired(): Promise<void> {
     try {
       await this.#options.onAcquired?.();
@@ -421,7 +362,6 @@ export class ServeLock implements DistributedLock {
     }
   }
 
-  /** Releases the lease; safe to call again, or without a hold. */
   async release(): Promise<void> {
     this.#releasing = true;
     try {
@@ -461,9 +401,8 @@ export class ServeLock implements DistributedLock {
     this.#client = undefined;
     this.#acquiredAt = undefined;
     this.#adopted = false;
-    // An explicit lease outlives the command that used it: it ends on
-    // `swamp model lease release`, or at serve once its hold passes.
-    // Adopted offline, no client was opened.
+    // an explicit lease outlives the command: it ends on an explicit release,
+    // or at serve once its hold passes. Adopted offline, no client was opened
     if (adopted && lease !== undefined) {
       client?.close?.();
       const local = this.#local;
@@ -473,7 +412,6 @@ export class ServeLock implements DistributedLock {
     }
     if (lease === undefined || client === undefined) return;
     try {
-      // Bounded by the client's own per-request timeout.
       await client.releaseLock(lease.leaseId, new AbortController().signal);
     } catch (error) {
       // Serve frees it once its TTL passes without a renewal.
@@ -513,12 +451,10 @@ export class ServeLock implements DistributedLock {
     });
   }
 
-  /** Serve's locks are never broken from a checkout. */
   forceRelease(_expectedNonce: string): Promise<boolean> {
     return Promise.resolve(false);
   }
 
-  /** The TTL the held lease renews with: an explicit lease's hold. */
   #holdTtlMs(): number {
     return this.#lease?.holdMs ?? this.#ttlMs;
   }
@@ -582,9 +518,9 @@ export class ServeLock implements DistributedLock {
   }
 
   /**
-   * Arms the lease's local deadline: its TTL from `from` (a monotonic time
-   * no later than serve started the TTL), less a margin. Serve's own clock
-   * never decides it, so skew cannot move it.
+   * arms the local deadline at the lease's TTL from a monotonic time no later
+   * than serve started it, less a margin; serve's clock never decides it, so
+   * skew cannot move it
    */
   #armDeadline(asked: number): void {
     this.#clearDeadline();
@@ -610,9 +546,8 @@ export class ServeLock implements DistributedLock {
   }
 
   /**
-   * Ends a fenced hold that lapsed: the lease leaves the registry, so no
-   * later commit names it, and `onLost` fires once. An unfenced lease only
-   * logs, as before swamp-club#4121.
+   * ends a lapsed fenced hold: the lease leaves the registry so no later commit
+   * names it, and onLost fires once. An unfenced lease only logs
    */
   #lapse(reason: string): void {
     const lease = this.#lease;
@@ -649,14 +584,8 @@ export class ServeLock implements DistributedLock {
   }
 }
 
-/** Options {@link createServeLock} passes on to {@link ServeLock}. */
 export type ServeLockFactoryOptions = Omit<ServeLockOptions, "client">;
 
-/**
- * The lock serve takes for `options.lockKey`, when the v3 local root
- * `datastorePath` is a checkout's copy of a datastore written through serve;
- * undefined for any other datastore, whose locks stay local.
- */
 export function createServeLock(
   datastorePath: string,
   options: ServeLockFactoryOptions,

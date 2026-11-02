@@ -33,14 +33,12 @@ import {
   REPO_LOCAL_STREAM_SUBDIRS,
 } from "./record_path_guard.ts";
 
-// Paths are only resolved lexically: nothing here touches the filesystem.
 const REPO = resolve("guard-property-repo");
 const ROOT = swampPath(REPO);
 const STATE = readModelStateDir(REPO);
 
 const STREAMS: readonly string[] = REPO_LOCAL_STREAM_SUBDIRS;
 
-// The synced set before swamp-club#3278 took the stream directories out.
 const SYNCED_BEFORE: ReadonlySet<string> = new Set(
   DEFAULT_DATASTORE_SUBDIRS.filter((dir) =>
     !(ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes(dir)

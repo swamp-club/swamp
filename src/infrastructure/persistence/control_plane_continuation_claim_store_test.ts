@@ -167,7 +167,6 @@ Deno.test("heartbeatLiveness: an instance is judged by the stale TTL its heartbe
       now: () => NOW,
     });
 
-    // A slow-beating instance is alive past the reader's own default.
     await beat(5000, 10_000);
     assertEquals(await liveness(serveHolder("a")), "alive");
     await beat(10_001, 10_000);

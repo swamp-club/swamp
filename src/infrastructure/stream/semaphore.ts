@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Counting semaphore for limiting concurrent async operations.
- *
- * Acquire a permit before starting work, release it when done.
- * When all permits are taken, `acquire()` blocks until one is released.
- */
 export class Semaphore {
   private available: number;
   private readonly waiters: {

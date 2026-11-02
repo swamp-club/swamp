@@ -19,94 +19,48 @@
 
 import { dirname, isAbsolute, join, relative, resolve } from "@std/path";
 
-/**
- * Central constants for swamp data storage paths.
- *
- * All code that references the .swamp directory should use these constants
- * to ensure consistency and make future path changes easier.
- */
-
-/** The main data directory name (hidden directory in repo root) */
 export const SWAMP_DATA_DIR = ".swamp";
 
-/** The marker file name for initialized repositories */
 export const SWAMP_MARKER_FILE = ".swamp.yaml";
 
-/** The sources file name for local extension sources */
 export const SWAMP_SOURCES_FILE = ".swamp-sources.yaml";
 
-/** The custom tools file name for user-defined AI tool configurations */
 export const SWAMP_CUSTOM_TOOLS_FILE = ".swamp-custom-tools.yaml";
 
-/**
- * Subdirectory names within the .swamp directory.
- */
 export const SWAMP_SUBDIRS = {
-  /** Model and resource definitions */
   definitions: "definitions",
-  /** Evaluated definitions with resolved expressions */
   definitionsEvaluated: "definitions-evaluated",
-  /** Workflow definitions */
   workflows: "workflows",
-  /** Evaluated workflows */
   workflowsEvaluated: "workflows-evaluated",
-  /** Workflow execution runs */
   workflowRuns: "workflow-runs",
-  /** Method execution outputs */
   outputs: "outputs",
-  /** Unified data storage (resources, logs, files) */
   data: "data",
-  /** Vault configurations */
   vault: "vault",
-  /** Encrypted secrets for local vaults */
   secrets: "secrets",
-  /** Telemetry data */
   telemetry: "telemetry",
-  /** Log files */
   logs: "logs",
-  /** Arbitrary files */
   files: "files",
-  /** Legacy: input definitions (now use definitions) */
   inputs: "inputs",
-  /** Legacy: evaluated inputs */
   inputsEvaluated: "inputs-evaluated",
-  /** Cached extension bundles */
   bundles: "bundles",
-  /** Cached vault extension bundles */
   vaultBundles: "vault-bundles",
-  /** Cached datastore extension bundles */
   datastoreBundles: "datastore-bundles",
-  /** Cached report extension bundles */
   reportBundles: "report-bundles",
-  /** Cached webhook extension bundles */
   webhookBundles: "webhook-bundles",
-  /** Auto-created definitions from direct type execution */
   autoDefinitions: "auto-definitions",
-  /** Audit command logs */
   audit: "audit",
-  /** Legacy: resource definitions */
   resources: "resources",
-  /** Pulled extension source: models */
   pulledModels: "pulled-extensions/models",
-  /** Pulled extension source: vaults */
   pulledVaults: "pulled-extensions/vaults",
-  /** Pulled extension source: workflows */
   pulledWorkflows: "pulled-extensions/workflows",
-  /** Pulled extension source: datastores */
   pulledDatastores: "pulled-extensions/datastores",
-  /** Pulled extension source: reports */
   pulledReports: "pulled-extensions/reports",
-  /** Pulled extension source: webhooks */
   pulledWebhooks: "pulled-extensions/webhooks",
-  /** Pulled extension source: skills */
   pulledSkills: "pulled-extensions/skills",
 } as const;
 
-// Lockfile-relative prefixes for regenerable bundle output. Sourced from
-// SWAMP_SUBDIRS so a future bundle-dir addition only needs the key list
-// extended below to stay in sync. Forward slashes match lockfile paths,
-// which the lockfile reader and writer convert to forward slashes
-// (canonicalLockfileEntry in upstream_extensions.ts).
+// forward slashes match lockfile paths, which the lockfile reader and writer
+// convert to forward slashes
 const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
   SWAMP_SUBDIRS.bundles,
   SWAMP_SUBDIRS.vaultBundles,
@@ -115,7 +69,6 @@ const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
   SWAMP_SUBDIRS.webhookBundles,
 ].map((subdir) => `.swamp/${subdir}/`);
 
-/** True for a lockfile path under a regenerable bundle cache. */
 export function isBundleArtifactPath(relPath: string): boolean {
   return BUNDLE_ARTIFACT_PREFIXES.some((prefix) => relPath.startsWith(prefix));
 }
@@ -123,73 +76,37 @@ export function isBundleArtifactPath(relPath: string): boolean {
 const PULLED_SKILLS_PREFIX = `.swamp/${SWAMP_SUBDIRS.pulledSkills}/`;
 
 /**
- * True for a skill dir under the pulled skills dir. Skills land in a
- * dir shared across extensions, so another extension shipping the same
- * skill name raises a ConflictError on it.
+ * skills land in a dir shared across extensions, so another extension shipping
+ * the same skill name raises a ConflictError
  */
 export function isPulledSkillPath(relPath: string): boolean {
   return relPath.startsWith(PULLED_SKILLS_PREFIX);
 }
 
-/**
- * The repo-relative skill dir that a lockfile path under the pulled skills
- * dir belongs to (`.swamp/pulled-extensions/skills/<skill>`), or undefined
- * for any other path. Lockfile paths use forward slashes.
- */
 export function pulledSkillDir(relPath: string): string | undefined {
   if (!isPulledSkillPath(relPath)) return undefined;
   const skill = relPath.slice(PULLED_SKILLS_PREFIX.length).split("/")[0];
   return skill ? `${PULLED_SKILLS_PREFIX}${skill}` : undefined;
 }
 
-/**
- * Constructs a path within the .swamp data directory.
- *
- * @param repoDir - The repository root directory
- * @param segments - Path segments to join after .swamp/
- * @returns The full path
- *
- * @example
- * swampPath("/repo", "definitions", "aws/ec2", "my-vpc.yaml")
- * // Returns: "/repo/.swamp/definitions/aws/ec2/my-vpc.yaml"
- */
 export function swampPath(repoDir: string, ...segments: string[]): string {
   return join(repoDir, SWAMP_DATA_DIR, ...segments);
 }
 
-/**
- * A registered managed config base. `resolved` records whether the base
- * came from the datastore resolver, or is the in-repo `.swamp/config`
- * fallback registered because the datastore could not be resolved (for
- * example, its extension is not installed yet).
- */
 interface ManagedConfigRegistration {
   base: string;
   resolved: boolean;
 }
 
 /**
- * Module-level managed config state, keyed by the resolved repo dir. Stores
- * the config base path: for custom datastores this is the cache path
- * (`<cache>/<ns>/config`), for filesystem datastores the datastore path
- * (`<path>/config`). Repo constructors check this to resolve their default
- * baseDir when managedConfig is active.
- *
- * The last resolved registration wins, and a fallback registration never
- * overwrites a resolved one, so the base cannot move from a resolved path
- * back to a guess within a process (swamp-club#2483).
+ * the last resolved registration wins and a fallback never overwrites a
+ * resolved one, so the base cannot move from a resolved path back to a guess
  */
 const managedConfigRegistry = new Map<
   string,
   ManagedConfigRegistration | false
 >();
 
-/**
- * Registers the managed config state for a repo.
- *
- * @param resolved Whether `configBasePath` came from the datastore resolver.
- *   Pass `false` for the in-repo fallback. Defaults to `true`.
- */
 export function registerManagedConfig(
   repoDir: string,
   active: boolean,
@@ -221,17 +138,9 @@ export function getManagedConfigBase(repoDir: string): string | undefined {
 }
 
 /**
- * Where {@link LockfileRepository} takes its advisory lock for the lockfile
- * at `lockfilePath`.
- *
- * A lockfile inside a registered managed config base locks a sibling file
- * named exactly `.lock`. Everyone who writes that lockfile shares the one
- * lock: repos on a shared filesystem datastore, and worktrees sharing a
- * datastore cache. In a datastore cache, a `<lockfile>.lock` could be
- * uploaded by a push and block other checkouts' extension writes
- * (swamp-club#2838); datastore sync excludes files named `.lock` in both
- * directions, as it does the per-model `data/.../.lock` keys. Any other
- * lockfile is in the repo and keeps `<lockfile>.lock`.
+ * a lockfile in a managed config base locks a shared sibling named .lock, which
+ * datastore sync excludes; a <lockfile>.lock in a cache could be pushed and
+ * block other checkouts
  */
 export function lockfileAdvisoryLockPath(lockfilePath: string): string {
   const target = resolve(lockfilePath);
@@ -245,26 +154,16 @@ export function lockfileAdvisoryLockPath(lockfilePath: string): string {
   return `${lockfilePath}.lock`;
 }
 
-/**
- * True when the registered managed config base came from the datastore
- * resolver rather than the in-repo fallback.
- */
 export function isManagedConfigBaseResolved(repoDir: string): boolean {
   const val = managedConfigRegistry.get(resolve(repoDir));
   return val ? val.resolved : false;
 }
 
-/**
- * Single-flight memo for installed-only managed config resolution, keyed by
- * the resolved repo dir. The CLI supplies the resolution step; this module
- * only owns the state so the test reset can clear it with the registry.
- */
 const managedConfigResolutionMemo = new Map<string, Promise<boolean>>();
 
 /**
- * Runs `resolveOnce` at most once at a time per repo and caches a successful
- * outcome. A failed outcome (`false` or a throw) is not cached, so a later
- * call retries once the datastore extension is on disk.
+ * single-flight per repo; a failed outcome is not cached, so a later call
+ * retries once the datastore extension is on disk
  */
 export function resolveManagedConfigOnce(
   repoDir: string,
@@ -288,8 +187,8 @@ export function resolveManagedConfigOnce(
 }
 
 /**
- * Test-only: clears the managed config registry and the resolution memo so
- * tests stay independent under `deno test --repeats`.
+ * clears the managed config registry and resolution memo; test-only, so tests
+ * stay independent under --repeats
  */
 export function resetManagedConfigRegistry(): void {
   managedConfigRegistry.clear();
@@ -320,11 +219,8 @@ export function resolvePulledExtensionsRoot(
 }
 
 /**
- * The active pulled-extensions root, or `undefined` when no managed status
- * has been recorded for the repo yet. Unlike
- * {@link resolvePulledExtensionsRoot}, an unregistered repo is not assumed
- * to be unmanaged, so callers that delete rows under the other root can
- * skip that step instead of guessing (swamp-club#2490).
+ * unlike resolvePulledExtensionsRoot, an unregistered repo is not assumed
+ * unmanaged, so callers deleting rows under the other root can skip that step
  */
 export function activePulledExtensionsRoot(
   repoDir: string,
@@ -333,31 +229,14 @@ export function activePulledExtensionsRoot(
   return resolvePulledExtensionsRoot(repoDir);
 }
 
-/**
- * Resolves the lockfile path for a repository when managedConfig is true.
- * Returns the .swamp/config/upstream_extensions.json path.
- * When managedConfig is false, callers should derive it from resolveModelsDir.
- */
 export function managedConfigLockfilePath(repoDir: string): string {
   return join(swampPath(repoDir, "config"), "upstream_extensions.json");
 }
 
-/**
- * Constructs the path to the repository marker file.
- *
- * @param repoDir - The repository root directory
- * @returns The full path to .swamp.yaml
- */
 export function swampMarkerPath(repoDir: string): string {
   return join(repoDir, SWAMP_MARKER_FILE);
 }
 
-/**
- * Constructs the path to the extension sources file.
- *
- * @param repoDir - The repository root directory
- * @returns The full path to .swamp-sources.yaml
- */
 export function swampSourcesPath(repoDir: string): string {
   return join(repoDir, SWAMP_SOURCES_FILE);
 }
@@ -367,21 +246,11 @@ export function swampCustomToolsPath(repoDir: string): string {
 }
 
 /**
- * Creates a short, stable hash for namespacing bundle cache directories.
- *
- * Uses the **relative** path from `repoDir` to `baseDir` as the hash input
- * rather than the absolute path. This ensures consistency across processes
- * even when the repo path resolves differently due to filesystem symlinks
- * (e.g., macOS `/var` → `/private/var`). Since both paths share the same
- * prefix within a process, `relative()` cancels it out.
- *
- * @param baseDir - The extension source directory (absolute)
- * @param repoDir - The repository root directory (absolute)
- * @returns An 8-character hex hash string
+ * hashes the relative path so processes agree when the repo path resolves
+ * differently through symlinks (macOS /var vs /private/var)
  */
 export function bundleNamespace(baseDir: string, repoDir: string): string {
   const rel = relative(repoDir, baseDir);
-  // FNV-1a hash
   let hash = 0x811c9dc5;
   for (let i = 0; i < rel.length; i++) {
     hash ^= rel.charCodeAt(i);
@@ -390,10 +259,6 @@ export function bundleNamespace(baseDir: string, repoDir: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-/**
- * Each extension source kind dir and the `.swamp` dir its pre-built
- * bundles are cached in, in the order installs copy them.
- */
 export const EXTENSION_BUNDLE_KINDS = [
   { sourceKind: "models", bundleKind: "bundles" },
   { sourceKind: "vaults", bundleKind: "vault-bundles" },
@@ -402,20 +267,15 @@ export const EXTENSION_BUNDLE_KINDS = [
   { sourceKind: "webhooks", bundleKind: "webhook-bundles" },
 ] as const;
 
-/** One bundle namespace dir a pulled extension owns. */
 export interface ExtensionBundleRoot {
   sourceKind: typeof EXTENSION_BUNDLE_KINDS[number]["sourceKind"];
-  /** `.swamp/<kind>-bundles`, the dir the namespace lives in. */
   kindDir: string;
-  /** `.swamp/<kind>-bundles/<namespace>`. */
   live: string;
 }
 
 /**
- * The live roots an install of pulled extension `name` writes: its
- * per-extension root and one bundle namespace dir per source kind. The
- * single derivation installs and crash recovery share, so a journal's
- * paths can be checked against it exactly.
+ * the single derivation installs and crash recovery share, so a journal's paths
+ * can be checked against it exactly
  */
 export function extensionInstallRoots(
   repoDir: string,
@@ -441,52 +301,23 @@ export function extensionInstallRoots(
   };
 }
 
-/**
- * Converts an absolute path to a relative path from the repository root.
- *
- * Used when persisting paths to YAML files so they work across different
- * users and machines. If the path is already relative, returns it unchanged.
- *
- * @param repoDir - The repository root directory
- * @param absolutePath - The absolute path to convert
- * @returns The relative path from repoDir
- */
 export function toRelativePath(repoDir: string, absolutePath: string): string {
   if (!isAbsolute(absolutePath)) {
-    return absolutePath; // Already relative
+    return absolutePath;
   }
   return relative(repoDir, absolutePath);
 }
 
-/**
- * Converts a relative path to an absolute path from the repository root.
- *
- * Used when loading paths from YAML files to reconstruct the full path
- * for the current machine. If the path is already absolute, returns it
- * unchanged for backwards compatibility with existing data.
- *
- * @param repoDir - The repository root directory
- * @param relativePath - The relative path to convert
- * @returns The absolute path
- */
 export function toAbsolutePath(repoDir: string, relativePath: string): string {
   if (isAbsolute(relativePath)) {
-    return relativePath; // Backwards compat: already absolute
+    return relativePath;
   }
   return join(repoDir, relativePath);
 }
 
 /**
- * Returns the current user's home directory in a cross-platform way.
- *
- * Reads `HOME` first (POSIX) and falls back to `USERPROFILE` (Windows).
- * Throws when neither is set so callers fail loudly rather than building
- * paths from `undefined`. Sites that intentionally tolerate a missing
- * home (e.g., the `~/file` literal-pass-through in the input parser)
- * must catch this error explicitly.
- *
- * @returns The absolute path to the user's home directory
- * @throws Error when neither HOME nor USERPROFILE is set
+ * throws when neither HOME nor USERPROFILE is set so callers fail loudly; sites
+ * that tolerate a missing home must catch it explicitly
  */
 export function homeDirectory(): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
@@ -499,16 +330,8 @@ export function homeDirectory(): string {
 }
 
 /**
- * Reports whether a swamp data directory can be resolved from the
- * environment.
- *
- * Returns true when any of `SWAMP_HOME`, `HOME`, or `USERPROFILE` is set —
- * i.e. when {@link getSwampDataDir} would succeed. Callers use this to
- * surface an actionable message *before* a path resolution fails deep in
- * the call stack — notably the extension loaders, whose embedded runtime
- * lives under the swamp data dir and is required to load every extension.
- *
- * @returns true when getSwampDataDir() would succeed, false otherwise
+ * lets callers give an actionable message before path resolution fails deep in
+ * the stack, notably the extension loaders
  */
 export function homeDirectoryIsSet(): boolean {
   return Boolean(
@@ -518,20 +341,8 @@ export function homeDirectoryIsSet(): boolean {
 }
 
 /**
- * Returns the user-level swamp data directory.
- *
- * Resolution order:
- * 1. `SWAMP_HOME` — if set, returned directly (the entire directory is
- *    relocated; there is no `.swamp` suffix).
- * 2. `HOME` / `USERPROFILE` — falls back to `~/.swamp/`.
- *
- * This directory stores operational data like installed binaries and
- * downloaded source code. Distinct from the XDG config directory which
- * stores identity and auth configuration. Agent skill directories are not
- * under it: they stay in the user's home directory (see GLOBAL_SKILL_DIRS).
- *
- * @returns The absolute path to the swamp data directory
- * @throws Error if neither SWAMP_HOME nor HOME/USERPROFILE is set
+ * SWAMP_HOME relocates the whole directory with no .swamp suffix; otherwise
+ * ~/.swamp. Agent skill directories stay in the user's home directory
  */
 export function getSwampDataDir(): string {
   const swampHome = Deno.env.get("SWAMP_HOME");
@@ -548,19 +359,9 @@ export function getSwampDataDir(): string {
 }
 
 /**
- * Returns the user-level swamp configuration directory.
- *
- * Resolution order:
- * 1. `SWAMP_CONFIG_DIR` — if set, returned directly. `swamp serve daemon
- *    enable` sets it alongside `SWAMP_HOME` so the service reads the same
- *    credentials as the user who enabled it.
- * 2. `SWAMP_HOME` — if set, returns `$SWAMP_HOME/config`.
- * 3. `XDG_CONFIG_HOME` — returns `$XDG_CONFIG_HOME/swamp/`.
- * 4. `HOME` / `USERPROFILE` — falls back to `~/.config/swamp/`.
- *
- * @returns The absolute path to the swamp config directory
- * @throws Error if none of SWAMP_CONFIG_DIR, SWAMP_HOME, HOME, or
- *   USERPROFILE is set
+ * order: SWAMP_CONFIG_DIR, SWAMP_HOME/config, XDG_CONFIG_HOME/swamp,
+ * ~/.config/swamp; daemon enable sets SWAMP_CONFIG_DIR so the service reads the
+ * user's credentials
  */
 export function getSwampConfigDir(): string {
   const configDir = Deno.env.get("SWAMP_CONFIG_DIR");
@@ -588,15 +389,8 @@ export function getSwampConfigDir(): string {
 }
 
 /**
- * Returns the single, user-level telemetry spool directory.
- *
- * Telemetry is global (keyed to the user identity), not repo-scoped: every CLI
- * invocation spools here regardless of whether it ran inside a swamp repo. This
- * is the one spool — there is no repo-local telemetry directory.
- *
- * @returns The absolute path to `<config>/telemetry` (XDG-aware via
- *   {@link getSwampConfigDir})
- * @throws Error if no user home environment variable is set
+ * telemetry is global, keyed to the user identity, not repo-scoped; this is the
+ * one spool
  */
 export function globalTelemetryDir(): string {
   return join(getSwampConfigDir(), SWAMP_SUBDIRS.telemetry);

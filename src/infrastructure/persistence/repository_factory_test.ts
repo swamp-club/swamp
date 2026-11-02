@@ -46,7 +46,6 @@ import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts
 import { assertPathEquals } from "./path_test_helpers.ts";
 import { fullWriteSync } from "./ordered_sync.ts";
 
-/** A temp repo directory, removed when disposed. */
 function tempRepoDir(): { path: string } & Disposable {
   const path = Deno.makeTempDirSync({ prefix: "swamp-factory-test-" });
   return {
@@ -124,8 +123,6 @@ Deno.test("createUnifiedDataRepository: defaults to SOLO_NAMESPACE", () => {
   catalog.close();
 });
 
-// ── Giga-swamp catalog is repo-local (Phase 3, Decision 1a) ─────────────────
-
 Deno.test("catalogDbPath: repo-local for a default (no datastore) repo", () => {
   assertPathEquals(catalogDbPath("/repo"), "/repo/.swamp/data/_catalog.db");
 });
@@ -156,7 +153,6 @@ Deno.test("catalogDbPath: repo-local and identical with vs without a namespace",
     new DefaultDatastorePathResolver("/repo", namespaced),
   );
   assertPathEquals(soloPath, "/repo/.swamp/data/_catalog.db");
-  // The namespace must NOT partition or relocate the catalog.
   assertPathEquals(nsPath, soloPath);
 });
 
@@ -193,8 +189,6 @@ Deno.test("namespaceFromResolver: SOLO_NAMESPACE for no resolver or empty namesp
   });
   assertEquals(namespaceFromResolver(solo), SOLO_NAMESPACE);
 });
-
-// ── writeCatalogExport ────────────────────────────────────────────────────────
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
@@ -513,8 +507,6 @@ Deno.test("createRepositoryContext: loads a repo already bound to a reserved nam
   assertEquals(ctx.unifiedDataRepo.namespace, "data");
   ctx.catalogStore.close();
 });
-
-// --- The v2 write-sync policy (swamp-club#4032) ---
 
 Deno.test("createRepositoryContext: the default datastore's repository orders its durable writes on macOS", () => {
   using temp = tempRepoDir();

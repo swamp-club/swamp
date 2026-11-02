@@ -26,13 +26,9 @@ import type { SharedDatastoreWriteTracker } from "./shared_datastore_write_track
 const logger = getLogger(["swamp", "persistence", "catalog"]);
 
 /**
- * A single row in the catalog table, representing one version of a data
- * artifact. The `is_latest` flag is set on exactly one row per
- * (namespace, type_normalized, model_id, data_name) group: the highest
- * promoted version. The `is_step_latest` flag marks the latest version each
- * workflow step wrote to that group (see {@link CatalogStore.upsertNewVersion}),
- * and is always set on the `is_latest` row. `is_pending` marks a deferred
- * write that is not promoted yet; it holds neither latest flag until it is.
+ * is_latest marks the highest promoted version per group; is_step_latest marks
+ * each step's latest and is always set on the is_latest row; is_pending is a
+ * deferred write holding neither flag until promoted
  */
 export interface CatalogRow {
   namespace: string;
@@ -50,9 +46,8 @@ export interface CatalogRow {
   lifetime: string;
   garbage_collection: string;
   /**
-   * The version's data lifecycle: "deleted" for a deletion marker, "active"
-   * otherwise. Empty when unknown (a foreign row pulled from a catalog export
-   * written before the column existed).
+   * deleted for a deletion marker, active otherwise; empty when unknown, such
+   * as a foreign row exported before the column existed
    */
   lifecycle: string;
   owner_type: string;
@@ -73,21 +68,13 @@ export interface CatalogRow {
    */
   is_pending?: number;
   /**
-   * The pid and host identity (hostname, plus pid namespace on Linux; see
-   * processHostIdentity) of the process that wrote a pending row, so GC can
-   * tell a write whose process died (never to be promoted or rolled back)
-   * from one still in flight. 0 and "" when the row is not pending.
+   * pid and host identity of the process that wrote a pending row, so GC can
+   * tell a dead writer's row from one in flight; 0 and empty when not pending
    */
   pending_pid?: number;
   pending_host?: string;
 }
 
-/**
- * A rename forward: the data item `data_name` was renamed to `renamed_to`
- * under the same (namespace, type_normalized, model_id). Projected from the
- * rename marker the repository writes on the old name, so data query can
- * follow it the way an unversioned repository read does.
- */
 export interface RenameForwardRow {
   namespace: string;
   type_normalized: string;
@@ -96,7 +83,6 @@ export interface RenameForwardRow {
   renamed_to: string;
 }
 
-/** A row {@link CatalogStore.versionKeys} returns. */
 export interface CatalogVersionKey {
   type_normalized: string;
   model_id: string;
@@ -107,7 +93,6 @@ export interface CatalogVersionKey {
   model_name: string;
 }
 
-/** A row {@link CatalogStore.rowsCreatedBefore} returns. */
 export interface CatalogAgedRow {
   row_id: number;
   type_normalized: string;
@@ -119,39 +104,26 @@ export interface CatalogAgedRow {
 }
 
 /**
- * SQLite-backed metadata catalog for data query.
- *
- * Stores one row per version of each data artifact with all metadata fields
- * needed for CEL predicate evaluation. The `is_latest` column marks exactly
- * one row per (type, model, name) as the current latest, and
- * `is_step_latest` marks each workflow step's latest. Content is NOT
- * stored — it remains on disk in the existing versioned file layout.
- *
- * The catalog is local-only and excluded from datastore sync. It self-heals
- * by triggering a backfill when missing or not yet populated.
+ * local-only and excluded from datastore sync; stores no content, which stays
+ * on disk; self-heals by backfilling when missing or unpopulated
  */
 export const ITERATE_PAGE_SIZE = 1000;
 
-/** Stats returned by {@link CatalogStore.checkpoint}. */
 export interface CatalogCheckpointStats {
-  /** Total WAL frames at the time of the checkpoint call. */
   walPagesTotal: number;
-  /** Frames successfully written to the main database file. */
   walPagesCheckpointed: number;
 }
 
 /**
- * Schema version. Bump this when the catalog table structure changes.
- * On startup, if the stored version differs, the catalog is dropped and
- * rebuilt via self-healing backfill.
+ * bump when the table structure changes; a differing stored version drops the
+ * catalog and rebuilds it by backfill
  */
 export const CATALOG_SCHEMA_VERSION = "9";
 
 /**
- * Columns of the catalog table at {@link CATALOG_SCHEMA_VERSION}. A catalog
- * missing any of them is rebuilt on open even when its stored version matches:
- * processes on different schema versions racing on one file can leave the
- * current version recorded over an older table (swamp-club#2994).
+ * a catalog missing any of these columns is rebuilt on open even when its
+ * version matches, since processes on different schema versions racing on one
+ * file can leave the current version over an older table
  */
 export const CATALOG_COLUMNS: readonly (keyof CatalogRow)[] = [
   "namespace",
@@ -185,23 +157,16 @@ export const CATALOG_COLUMNS: readonly (keyof CatalogRow)[] = [
   "pending_host",
 ];
 
-/**
- * A value SQLite can round-trip when copying rows generically during
- * compaction. Mirrors node:sqlite's supported bind/output value union.
- */
 type SqlValue = null | number | bigint | string | Uint8Array;
 
-/** Options for {@link CatalogStore}. */
 export interface CatalogStoreOptions {
   /**
-   * Set when the datastore is a filesystem directory shared with other
-   * repositories: their writes then invalidate this catalog
-   * (swamp-club#2858).
+   * set when the datastore is a filesystem directory shared with other
+   * repositories, whose writes then invalidate this catalog
    */
   writeTracker?: SharedDatastoreWriteTracker;
 }
 
-/** A row's primary key as one string, for set membership. */
 function rowKey(row: {
   namespace: string;
   type_normalized: string;
@@ -212,7 +177,6 @@ function rowKey(row: {
   return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}\0${row.version}`;
 }
 
-/** What identifies a catalog row: a rename row has no version. */
 export interface CatalogRowKey {
   readonly namespace: string;
   readonly type_normalized: string;
@@ -221,10 +185,8 @@ export interface CatalogRowKey {
   readonly version?: number;
 }
 
-/** Largest internal page {@link CatalogStore.iterateSorted} reads at once. */
 export const MAX_SORTED_PAGE_SIZE = 16 * ITERATE_PAGE_SIZE;
 
-/** The columns that identify a row, the tie-break of a sorted read. */
 const CATALOG_IDENTITY_COLUMNS = [
   "namespace",
   "type_normalized",
@@ -233,29 +195,20 @@ const CATALOG_IDENTITY_COLUMNS = [
   "version",
 ] as const;
 
-/** The order of {@link CatalogStore.iterateSorted}. */
 export interface CatalogSortOrder {
-  /** The tag whose value orders the rows, or null to order by created_at. */
   readonly tagKey: string | null;
   readonly direction: "asc" | "desc";
-  /** Start after this sort value and row identity. */
   readonly after?: {
     readonly key: string;
     readonly id: readonly [string, string, string, string, number];
   };
 }
 
-/** A row from {@link CatalogStore.iterateSorted}, with its sort value. */
 export interface SortedCatalogRow {
   row: CatalogRow;
   sortKey: string;
 }
 
-/**
- * The catalog changes {@link CatalogStore.applyInTransaction} hands out, each
- * as the store's method of the same name makes it. The store itself is one,
- * with a transaction per call.
- */
 export interface CatalogWriter {
   upsertNewVersion(row: CatalogRow): void;
   removeVersion(
@@ -282,23 +235,19 @@ export interface CatalogWriter {
 }
 
 /**
- * Each step's versions within a group, for the latest-flag recompute
- * (swamp-club#3803). Created on open like every other index, so a catalog
- * written before it gains it without a rebuild.
+ * created on open like every other index, so a catalog written before it gains
+ * it without a rebuild
  */
 const GROUP_STEP_INDEX = "idx_catalog_group_step_version";
 
-/** One group's rows, `catalog` aliased as `alias`; four parameters. */
 function groupWhere(alias: string): string {
   return `${alias}.namespace = ? AND ${alias}.type_normalized = ? AND ${alias}.model_id = ? AND ${alias}.data_name = ? AND ${alias}.is_pending = 0`;
 }
 
 /**
- * The latest-flag recompute of one group's promoted rows, by the rules of
- * `computeLatestFlags`: `is_latest` on the highest version; a model-method
- * row (`step_name` empty) is step-latest only as the highest version; a step
- * row is step-latest as its step's highest version, unless a model-method
- * version is higher. Takes the group's four key columns three times.
+ * is_latest goes on the highest version; a model-method row (empty step_name)
+ * is step-latest only as the highest; a step row is step-latest as its step's
+ * highest unless a model-method version is higher
  */
 const RECOMPUTE_GROUP_FLAGS_SQL = `
   WITH top AS (
@@ -344,11 +293,8 @@ export class CatalogStore {
   }
 
   /**
-   * Opens a SQLite connection at `path` and applies the baseline pragma shared
-   * by initial construction and the post-compaction reopen. WAL mode is
-   * established separately — with retry by {@link initializeWithRetry} on the
-   * constructor path, and explicitly on the reopen path in {@link vacuum} — so
-   * this helper only sets `busy_timeout`.
+   * WAL mode is set elsewhere (with retry on construction, explicitly on the
+   * reopen in vacuum), so this only sets busy_timeout
    */
   private openConnection(path: string): DatabaseSync {
     ensureDirSync(dirname(path));
@@ -358,12 +304,9 @@ export class CatalogStore {
   }
 
   /**
-   * Initializes WAL mode and schema with retry logic.
-   *
-   * `PRAGMA journal_mode=WAL` requires an **exclusive** lock to switch
-   * modes. WAL mode persists on disk, so we skip the mode switch when
-   * the database is already in WAL mode — avoiding the exclusive lock
-   * that serializes concurrent process startups.
+   * switching to WAL needs an exclusive lock and WAL persists on disk, so skip
+   * the switch when already in WAL to avoid serializing concurrent process
+   * startups
    */
   private initializeWithRetry(): void {
     const MAX_RETRIES = 5;
@@ -472,26 +415,18 @@ export class CatalogStore {
   }
 
   /**
-   * Checks the stored schema version against {@link CATALOG_SCHEMA_VERSION}
-   * and the catalog table against {@link CATALOG_COLUMNS}. If either is stale,
-   * drops the catalog and rename tables, clears the populated flag so the next
-   * query triggers a full backfill with the new schema, and advances
-   * {@link generation} so a backfill that read the old generation cannot mark
-   * the rebuilt catalog populated.
-   *
-   * A healthy catalog is checked without a write lock. A stale one is checked
-   * again inside an IMMEDIATE transaction, so concurrent openers rebuild it
-   * once; a lock error propagates to {@link initializeWithRetry}.
+   * a stale catalog is dropped and generation advanced so an older backfill
+   * can't mark the rebuild populated; rechecked in an IMMEDIATE transaction so
+   * concurrent openers rebuild once
    */
   private migrateIfNeeded(): void {
     if (this.catalogStaleness() === undefined) return;
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      // Re-check under the lock: another opener may have rebuilt it already,
-      // and rebuilding again would advance the generation twice. Unit tests
-      // cannot interleave two synchronous constructors, so this branch is
-      // covered only by SQLite's locking.
+      // re-check under the lock: another opener may have rebuilt already, and
+      // rebuilding again would advance the generation twice; only SQLite
+      // locking covers this branch in tests
       const staleness = this.catalogStaleness();
       if (staleness !== undefined) {
         if (staleness.kind === "missing-table") {
@@ -543,13 +478,9 @@ export class CatalogStore {
   }
 
   /**
-   * Upserts a row into the catalog. Replaces any existing row with the
-   * same primary key (namespace, type_normalized, model_id, data_name, version).
-   *
-   * Writes `is_latest` exactly as supplied. Backfill uses this because it
-   * knows the correct `is_latest` for every version up front. Runtime writes
-   * from a single write path should use {@link upsertNewVersion} instead,
-   * which atomically maintains the "exactly one latest per name" invariant.
+   * writes is_latest as supplied, for backfill, which knows it up front;
+   * runtime writes should use upsertNewVersion, which maintains the
+   * one-latest-per-name invariant atomically
    */
   upsert(row: CatalogRow): void {
     const stmt = this.db.prepare(`
@@ -595,27 +526,9 @@ export class CatalogStore {
   }
 
   /**
-   * Inserts a newly promoted version and maintains both latest flags for its
-   * (namespace, type, model, name) group. The flags on the supplied row are
-   * ignored. Version order, not arrival order, decides the flags, so
-   * parallel workflow steps that promote out of order converge on the flags
-   * {@link computeLatestFlags} derives on rebuild.
-   *
-   * - `is_latest`: one row per group, the highest promoted version. Lower
-   *   rows are demoted; the new row is latest only when no higher row holds
-   *   either flag. A higher row holding neither flag is either superseded by
-   *   a still-higher flagged row or an unpromoted deferred write, which does
-   *   not count.
-   * - `is_step_latest`: the latest version each workflow step wrote, used by
-   *   `findBySpec`/`findByTag` so every step's output stays visible
-   *   (swamp-club#1761). A row's scope is its own step plus model-method
-   *   rows (step_name = ""), or every row for a model-method write
-   *   (swamp-club#1802). The new row demotes lower rows in its scope, and is
-   *   a step latest unless a higher row in its scope exists. The `is_latest`
-   *   row is always a step latest.
-   *
-   * Runs in an IMMEDIATE transaction so concurrent writers serialize
-   * through SQLite's reserved lock rather than racing on the flags.
+   * version order, not arrival order, decides the flags, so out-of-order
+   * promotes converge with computeLatestFlags; runs in an IMMEDIATE transaction
+   * so concurrent writers serialize
    */
   upsertNewVersion(row: CatalogRow): void {
     this.db.exec("BEGIN IMMEDIATE");
@@ -628,7 +541,6 @@ export class CatalogStore {
     }
   }
 
-  /** {@link upsertNewVersion}'s writes, inside a transaction the caller holds. */
   #upsertNewVersionRows(row: CatalogRow): void {
     const group = [
       row.namespace,
@@ -646,13 +558,9 @@ export class CatalogStore {
          AND (is_latest = 1 OR is_step_latest = 1)
        LIMIT 1`,
     ).get(...group, row.version);
-    // Not filtered on flags: a superseded model-method row holds neither
-    // flag yet still outranks lower step rows, exactly as it does in
-    // computeLatestFlags. An unpromoted deferred row counts too; if it is
-    // rolled back, removeVersion recomputes the flags without it. The
-    // removal recompute skips pending rows, so until a pending row settles
-    // a lower row of its step may hold is_step_latest from one path and not
-    // the other; both agree once it is promoted or rolled back.
+    // not filtered on flags: a superseded model-method row holds neither flag
+    // yet outranks lower step rows, as in computeLatestFlags; a pending row
+    // counts too, and flags agree once it is promoted or rolled back
     const higherInScope = this.db.prepare(
       `SELECT 1 FROM catalog
        WHERE ${groupWhere} AND version > ? AND ${stepScope}
@@ -690,18 +598,9 @@ export class CatalogStore {
   }
 
   /**
-   * Upserts catalog rows without deleting anything first. Rows already
-   * present (by primary key) are updated; rows absent from the batch
-   * are left untouched. Used by backfill so data the on-disk walk
-   * cannot see — e.g. under lazy hydration — is preserved rather than
-   * deleted.
-   *
-   * A row whose version the catalog holds as pending (an in-flight deferred
-   * write, on disk before it is promoted) is never overwritten, so a backfill
-   * cannot promote it. With `computeFlags`, the latest flags of the rows that
-   * are written are derived inside the same IMMEDIATE transaction, after the
-   * pending rows are left out, so no writer can register a pending row in
-   * between.
+   * updates present rows and leaves absent ones, so data the walk can't see
+   * (lazy hydration) survives; a pending row is never overwritten, so backfill
+   * can't promote it; flags are derived in the same transaction
    */
   bulkUpsert(
     rows: readonly CatalogRow[],
@@ -773,15 +672,9 @@ export class CatalogStore {
   }
 
   /**
-   * Upserts foreign catalog rows from a catalog export. Uses INSERT OR
-   * REPLACE so existing foreign rows are updated in place. Records the
-   * sync timestamp in catalog_meta as `foreign_synced:{namespace}`.
-   * Does NOT touch the global "populated" flag.
-   *
-   * Every row must belong to `namespace`, which must not be empty: an export
-   * speaks only for the namespace that wrote it, so a row naming another
-   * namespace would replace that namespace's rows — the reader's own among
-   * them (swamp-club#3636). Throws before writing anything otherwise.
+   * namespace must be non-empty and every row must belong to it, since an
+   * export speaks only for its own namespace and another's rows would replace
+   * the reader's own; throws before writing
    */
   bulkUpsertForeign(
     namespace: string,
@@ -858,10 +751,6 @@ export class CatalogStore {
     }
   }
 
-  /**
-   * Returns the last sync timestamp for a foreign namespace's catalog,
-   * or null if never synced.
-   */
   foreignSyncedAt(namespace: string): string | null {
     const stmt = this.db.prepare(
       "SELECT value FROM catalog_meta WHERE key = ?",
@@ -872,10 +761,6 @@ export class CatalogStore {
     return row?.value ?? null;
   }
 
-  /**
-   * Removes all rows for (namespace, type, model, name) regardless of version.
-   * Used when an entire data item is deleted or tombstoned.
-   */
   remove(
     namespace: string,
     typeNormalized: string,
@@ -888,10 +773,6 @@ export class CatalogStore {
     stmt.run(namespace, typeNormalized, modelId, dataName);
   }
 
-  /**
-   * Records that `data_name` now forwards to `renamed_to`, replacing any
-   * forward already recorded for the same name.
-   */
   recordRename(row: RenameForwardRow): void {
     this.db.prepare(
       `INSERT OR REPLACE INTO catalog_renames (
@@ -906,7 +787,6 @@ export class CatalogStore {
     );
   }
 
-  /** Removes the rename forward from (namespace, type, model, name), if any. */
   removeRename(
     namespace: string,
     typeNormalized: string,
@@ -919,12 +799,9 @@ export class CatalogStore {
   }
 
   /**
-   * Records `rows` as rename forwards in one transaction, replacing a forward
-   * already recorded for the same name and leaving every other forward in
-   * place. Backfill merges what its walk found this way, as it does catalog
-   * rows: a walk with gaps (lazy hydration) must not drop a forward it could
-   * not see. A forward that a later write or delete ended is never followed:
-   * data query confirms each hop against the rename marker on disk.
+   * backfill merges forwards like catalog rows, since a walk with gaps (lazy
+   * hydration) must not drop one it couldn't see; data query confirms each hop
+   * against the on-disk marker, so ended forwards are not followed
    */
   mergeRenames(rows: readonly RenameForwardRow[]): void {
     this.db.exec("BEGIN IMMEDIATE");
@@ -950,14 +827,12 @@ export class CatalogStore {
     }
   }
 
-  /** Every rename forward whose old name is `dataName`, in any model. */
   findRenamesFrom(dataName: string): RenameForwardRow[] {
     return this.db.prepare(
       "SELECT * FROM catalog_renames WHERE data_name = ?",
     ).all(dataName) as unknown as RenameForwardRow[];
   }
 
-  /** The name `dataName` forwards to under one model, or null. */
   findRenameTarget(
     namespace: string,
     typeNormalized: string,
@@ -972,11 +847,6 @@ export class CatalogStore {
     return row?.renamed_to ?? null;
   }
 
-  /**
-   * Removes a single version row from the catalog and recomputes both latest
-   * flags for the rest of its group, in one IMMEDIATE transaction (see
-   * {@link bulkRemoveVersions}).
-   */
   removeVersion(
     namespace: string,
     typeNormalized: string,
@@ -995,10 +865,6 @@ export class CatalogStore {
     );
   }
 
-  /**
-   * Versions of one (namespace, type, model, name) group that are in-flight
-   * deferred writes: written but not yet promoted or rolled back.
-   */
   pendingVersions(
     namespace: string,
     typeNormalized: string,
@@ -1016,12 +882,9 @@ export class CatalogStore {
   }
 
   /**
-   * The published (not pending) versions of one namespace, or of one
-   * (type, model, name) group of it, with the latest flag, size and model
-   * name of each. Rows of other namespaces are never read. For `swamp
-   * doctor datastores`, which checks each published version's files
-   * against the catalog (swamp-club#3955), and for the read warning's
-   * check that a version is published.
+   * published (not pending) versions with latest flag, size and model name;
+   * rows of other namespaces are never read; used by doctor datastores and the
+   * read warning's published check
    */
   versionKeys(
     namespace: string,
@@ -1041,12 +904,6 @@ export class CatalogStore {
     ).all(...params) as unknown as CatalogVersionKey[];
   }
 
-  /**
-   * One page of promoted (not pending) rows of a namespace created before
-   * `cutoffIso`, oldest first, through the created_at index rather than a
-   * table scan. Pass the last row's `created_at` and `row_id` as `after` to
-   * read the next page. Rows of `excludeTypes` are left out.
-   */
   rowsCreatedBefore(
     namespace: string,
     cutoffIso: string,
@@ -1078,9 +935,8 @@ export class CatalogStore {
   }
 
   /**
-   * Ends a deferred write's pending state when its promotion begins: clears
-   * the pending mark and writer identity (the flags stay 0 until the caller
-   * promotes the row), or removes the row when `keep` is false.
+   * clears the pending mark and writer identity (flags stay 0 until the caller
+   * promotes the row), or removes the row when keep is false
    */
   settlePending(
     namespace: string,
@@ -1099,10 +955,6 @@ export class CatalogStore {
     ).run(namespace, typeNormalized, modelId, dataName, version);
   }
 
-  /**
-   * Every pending row (an in-flight deferred write) of one model, across its
-   * data names.
-   */
   pendingRows(
     namespace: string,
     typeNormalized: string,
@@ -1116,10 +968,6 @@ export class CatalogStore {
     ];
   }
 
-  /**
-   * Iterates over all catalog rows using paged queries.
-   * Fetches rows in batches of {@link ITERATE_PAGE_SIZE} to bound memory.
-   */
   *iterate(): IterableIterator<CatalogRow> {
     const stmt = this.db.prepare(
       "SELECT * FROM catalog ORDER BY rowid LIMIT ? OFFSET ?",
@@ -1159,16 +1007,9 @@ export class CatalogStore {
   }
 
   /**
-   * Iterates the rows matching `whereClause` in a total order: by the sort
-   * value (created_at, or one tag's value as text, "" when the row lacks
-   * it), then by the row's identity, all in `order.direction`. Starts after
-   * `order.after` when given. Each internal page starts after the previous
-   * page's last row rather than at an offset, so a page never re-sorts the
-   * rows before it. A tag sort has no index, so every page scans the rows
-   * the WHERE clause leaves; pages double in size up to
-   * {@link MAX_SORTED_PAGE_SIZE}, so reading far into a large catalog takes
-   * a logarithmic number of scans rather than one per
-   * {@link ITERATE_PAGE_SIZE} rows. Reads metadata columns only.
+   * total order by sort value then row identity; pages start after the previous
+   * last row, not an offset; a tag sort has no index, so pages double in size
+   * up to MAX_SORTED_PAGE_SIZE to keep scans logarithmic
    */
   *iterateSorted(
     whereClause: string,
@@ -1252,11 +1093,6 @@ export class CatalogStore {
     }
   }
 
-  /**
-   * Direct indexed lookup for a single latest row by model name, data name,
-   * and optional namespace. Uses the idx_catalog_latest_lookup composite
-   * index instead of a full table scan.
-   */
   findLatestRow(
     modelName: string,
     dataName: string,
@@ -1285,11 +1121,6 @@ export class CatalogStore {
     return (stmt.get(...params) as unknown as CatalogRow) ?? null;
   }
 
-  /**
-   * Returns all latest rows sharing a spec_name under a model, optionally
-   * scoped to a namespace.  Used by the ambiguity check in data.latest() —
-   * if more than one row shares the spec_name the lookup is ambiguous.
-   */
   findLatestRowsBySpecName(
     modelName: string,
     specName: string,
@@ -1313,9 +1144,6 @@ export class CatalogStore {
     return stmt.all(modelName, specName) as unknown as CatalogRow[];
   }
 
-  /**
-   * Returns the number of rows in the catalog.
-   */
   count(): number {
     const stmt = this.db.prepare("SELECT COUNT(*) as cnt FROM catalog");
     const row = stmt.get() as { cnt: number };
@@ -1323,13 +1151,9 @@ export class CatalogStore {
   }
 
   /**
-   * Counts latest-version rows grouped by normalized model type, optionally
-   * scoped to a namespace.
-   *
-   * Exists so `swamp doctor datastores` can compare the index against what the
-   * on-disk walk sees without going through {@link DataQueryService} — a query
-   * triggers the very backfill being diagnosed, which would repair (or, on a
-   * broken walk, further damage) the state before it could be reported.
+   * exists so doctor datastores can compare the index with the on-disk walk
+   * without DataQueryService, whose query would trigger the very backfill being
+   * diagnosed and repair or damage the state first
    */
   latestRowCountsByType(namespace?: string): Map<string, number> {
     const stmt = namespace !== undefined
@@ -1352,23 +1176,15 @@ export class CatalogStore {
     return new Map(rows.map((r) => [r.type_normalized, r.cnt]));
   }
 
-  /**
-   * Returns true if the catalog has been fully populated (backfill complete).
-   *
-   * On a shared filesystem datastore, another repository's write since the
-   * last check invalidates the catalog first.
-   */
   isPopulated(): boolean {
     this.invalidateOnForeignWrites();
     return this.readMeta("populated") === "true";
   }
 
   /**
-   * Marks the catalog as fully populated.
-   *
-   * With `ifGeneration`, does nothing when the catalog was invalidated since
-   * that generation was read: a backfill that walked the disk before the
-   * invalidation must not mark the catalog fresh.
+   * with ifGeneration, does nothing when the catalog was invalidated since: a
+   * backfill that walked the disk before the invalidation must not mark it
+   * fresh
    */
   markPopulated(ifGeneration?: number): void {
     if (ifGeneration === undefined) {
@@ -1386,11 +1202,6 @@ export class CatalogStore {
     ).run(ifGeneration);
   }
 
-  /**
-   * Clears the populated flag so the next query triggers a full backfill.
-   * Used after remote datastore sync to ensure the catalog reflects
-   * freshly-pulled data. Advances {@link generation}.
-   */
   invalidate(): void {
     // Advance the generation first: a markPopulated holding the old
     // generation that lands after it is rejected, and one that lands before
@@ -1403,12 +1214,9 @@ export class CatalogStore {
   }
 
   /**
-   * Deletes the catalog and rename rows `clears` selects and advances
-   * {@link generation}, keeping the populated mark, so a reader never sees
-   * an unpopulated catalog and backfills it from disk while the caller
-   * rebuilds it. The v3 read model recovers an interrupted writer's checkout
-   * this way (swamp-club#3299). A rename row is offered without a version.
-   * Resolves with the new generation.
+   * keeps the populated mark and advances generation, so a reader never sees an
+   * unpopulated catalog and backfills from disk while the caller rebuilds it; a
+   * rename row is offered without a version
    */
   clearRows(clears: (row: CatalogRowKey) => boolean): number {
     this.db.exec("BEGIN IMMEDIATE");
@@ -1454,18 +1262,14 @@ export class CatalogStore {
     }
   }
 
-  /** Counts invalidations; see {@link markPopulated}. */
   generation(): number {
     return Number(this.readMeta("generation") ?? "0");
   }
 
   /**
-   * Tells catalogs sharing this filesystem datastore that this repository
-   * changed data on disk. Call after the write; a no-op without a tracker.
-   *
-   * Best-effort: the data is already committed, so a token that cannot be
-   * written only delays other repositories noticing it, and must not fail
-   * the write.
+   * no-op without a tracker; best effort since the data is already committed:
+   * an unwritable token only delays other repositories noticing, and must not
+   * fail the write
    */
   recordLocalWrite(): void {
     if (!this.writeTracker) return;
@@ -1521,10 +1325,6 @@ export class CatalogStore {
     ).run(key, value);
   }
 
-  /**
-   * Returns distinct non-empty values for a catalog column.
-   * Used for autocomplete in the interactive query TUI.
-   */
   distinctValues(
     column:
       | "id"
@@ -1575,10 +1375,6 @@ export class CatalogStore {
     );
   }
 
-  /**
-   * Returns distinct tag keys across all catalog rows.
-   * Parses the JSON `tags` column from each row.
-   */
   distinctTagKeys(): string[] {
     const keys = new Set<string>();
     for (const row of this.iterate()) {
@@ -1594,9 +1390,6 @@ export class CatalogStore {
     return [...keys].sort();
   }
 
-  /**
-   * Returns distinct tag values for a given tag key.
-   */
   distinctTagValues(tagKey: string): string[] {
     const values = new Set<string>();
     for (const row of this.iterate()) {
@@ -1612,15 +1405,6 @@ export class CatalogStore {
     return [...values].sort();
   }
 
-  /**
-   * Checkpoints the WAL file using TRUNCATE mode, which writes all WAL frames
-   * to the main database file and physically truncates the WAL to zero bytes.
-   *
-   * If active readers are still using WAL pages, SQLite returns fewer
-   * checkpointed frames than total frames (partial checkpoint). The caller
-   * should surface this discrepancy rather than treating it as an error — the
-   * next checkpoint will catch the remaining frames.
-   */
   checkpoint(): CatalogCheckpointStats {
     const row = this.db.prepare(
       "PRAGMA wal_checkpoint(TRUNCATE)",
@@ -1632,19 +1416,9 @@ export class CatalogStore {
   }
 
   /**
-   * Removes multiple versions for a single (type, model, name) triple and
-   * recomputes both latest flags for the group's remaining promoted rows by
-   * the rules of `computeLatestFlags`, all in one BEGIN IMMEDIATE
-   * transaction. The recompute runs in SQL (swamp-club#3803), so
-   * `computeFlags` is not called: every caller passes `computeLatestFlags`,
-   * and a caller with other rules would need its own recompute. The recompute
-   * restores `is_step_latest` for a step whose latest was removed, which
-   * re-promoting only the surviving highest version cannot (swamp-club#2975).
-   * Pending rows (unpromoted deferred writes) are left out, so they keep
-   * neither flag.
-   *
-   * If the transaction fails, it is rolled back and the catalog remains
-   * consistent.
+   * recomputes latest flags in SQL by computeLatestFlags rules, so computeFlags
+   * is unused; restores is_step_latest for a step whose latest was removed;
+   * pending rows are left out; rolled back on failure
    */
   bulkRemoveVersions(
     namespace: string,
@@ -1673,12 +1447,9 @@ export class CatalogStore {
   }
 
   /**
-   * Runs `apply` in one IMMEDIATE transaction, handing it a writer whose
-   * methods make the same changes as this store's methods of the same name
-   * without a transaction of their own, and commits once `apply` returns;
-   * rolls back and rethrows when it throws. The v3 read model applies a
-   * page of commits' catalog actions this way (swamp-club#3803), instead of
-   * one transaction per action.
+   * writer methods make the same changes as the store's without their own
+   * transaction; commits once apply returns, rolls back and rethrows on a
+   * throw, instead of one transaction per action
    */
   applyInTransaction(apply: (writer: CatalogWriter) => void): void {
     const writer: CatalogWriter = {
@@ -1715,7 +1486,6 @@ export class CatalogStore {
     }
   }
 
-  /** {@link bulkRemoveVersions}' writes, inside a transaction the caller holds. */
   #removeVersionRows(
     namespace: string,
     typeNormalized: string,
@@ -1741,28 +1511,9 @@ export class CatalogStore {
   }
 
   /**
-   * Rebuilds the database file to reclaim freed pages — a manual VACUUM.
-   *
-   * SQLite's native `VACUUM` (and `VACUUM INTO`) cannot run under Deno's
-   * node:sqlite binding: both ATTACH a temporary database internally, but the
-   * binding hardcodes `SQLITE_LIMIT_ATTACHED` to 0, so the attach is rejected
-   * with "too many attached databases - max 0". Instead we rebuild manually:
-   * copy the schema and stream every row into a fresh single-file database via
-   * a second connection (no ATTACH), then atomically swap it into place.
-   *
-   * The rows are paged by rowid in {@link ITERATE_PAGE_SIZE} batches so a large
-   * catalog is never loaded into memory at once. The rebuild transiently needs
-   * roughly twice the catalog size in free disk (old file plus the temp file)
-   * — the same requirement as native VACUUM.
-   *
-   * Must be called outside any open transaction and only when no other
-   * connection is writing the catalog — the compact command holds the
-   * datastore-global lock for this reason. Returns `true` on success, or
-   * `false` (after logging a warning) if the rebuild or the swap failed,
-   * preserving the graceful-degradation contract: the WAL checkpoint already
-   * reclaimed space, and the store is reopened on the original catalog. Throws
-   * only when neither the original nor the rebuilt catalog can be put back in
-   * place; the store is then closed, so a later close() is a no-op.
+   * native VACUUM needs ATTACH, which the node:sqlite binding rejects, so
+   * rebuild via a second connection and swap; no other writer allowed; false on
+   * failure, throws only if no catalog can be restored
    */
   vacuum(): boolean {
     const tmpPath = `${this.dbPath}.compact`;
@@ -1810,8 +1561,8 @@ export class CatalogStore {
       throw error;
     }
     if (swapError !== undefined) {
-      // The original catalog is intact and open again; only the space the
-      // rebuild would have reclaimed is lost (swamp-club#3167).
+      // the original catalog is intact and open again; only the space the
+      // rebuild would have reclaimed is lost
       logger.warn`VACUUM skipped: rebuilt catalog not swapped in: ${swapError}`;
       this.removeDbFiles(tmpPath);
       return false;
@@ -1820,10 +1571,9 @@ export class CatalogStore {
   }
 
   /**
-   * Renames `tmpPath` over the catalog file. POSIX replaces the destination
-   * atomically; Windows rejects a rename onto an existing file, so the old
-   * file is removed first. Throws when the rename fails, for example while
-   * another connection still holds the catalog open on Windows.
+   * POSIX replaces the destination atomically; Windows rejects a rename onto an
+   * existing file, so the old file is removed first; throws if the rename
+   * fails, such as another connection holding it open
    */
   private replaceWith(tmpPath: string): void {
     try {
@@ -1847,14 +1597,7 @@ export class CatalogStore {
     }
   }
 
-  /**
-   * Rebuilds the catalog into a fresh database at `targetPath`. Copies all DDL
-   * (tables before indexes/triggers/views) then streams every row of every
-   * user table inside a single transaction. Throws on any failure; the caller
-   * cleans up `targetPath`.
-   */
   private rebuildInto(targetPath: string): void {
-    // Clear any stale temp artifacts from a previous interrupted run.
     this.removeDbFiles(targetPath);
 
     // Default rollback-journal mode keeps the rebuilt DB to a single file (no
@@ -1889,11 +1632,8 @@ export class CatalogStore {
   }
 
   /**
-   * Streams every row of `table` from this database into `dst`, paging by
-   * rowid in {@link ITERATE_PAGE_SIZE} batches so the full table is never
-   * materialized in memory. Assumes a rowid table — both `catalog` and
-   * `catalog_meta` are ordinary rowid tables; a WITHOUT ROWID table would
-   * break this cursor.
+   * assumes a rowid table, as catalog and catalog_meta are; a WITHOUT ROWID
+   * table would break the rowid-paging cursor
    */
   private copyTableRows(dst: DatabaseSync, table: string): void {
     const columns = (this.db.prepare(`PRAGMA table_info("${table}")`)
@@ -1923,10 +1663,6 @@ export class CatalogStore {
     }
   }
 
-  /**
-   * Removes a SQLite database file and its WAL/SHM sidecars, ignoring any that
-   * are already absent. Pass `keepMain` to drop only the sidecars.
-   */
   private removeDbFiles(path: string, opts: { keepMain?: boolean } = {}): void {
     const targets = opts.keepMain ? [] : [path];
     targets.push(`${path}-wal`, `${path}-shm`);
@@ -1939,12 +1675,6 @@ export class CatalogStore {
     }
   }
 
-  /**
-   * Returns the number of (namespace, type, model, name) groups whose latest
-   * flags conflict: more than one `is_latest=1` row, or more than one
-   * `is_step_latest=1` row for the same step_name. Zero means the catalog
-   * is consistent.
-   */
   countDuplicateLatest(): number {
     const stmt = this.db.prepare(
       `SELECT COUNT(*) as cnt FROM (
@@ -1966,19 +1696,9 @@ export class CatalogStore {
   }
 
   /**
-   * Recomputes both latest flags over every flagged row via
-   * {@link computeLatestFlags} and writes back any row whose flags changed.
-   * Returns the number of rows changed.
-   *
-   * Only flagged rows take part, so an unpromoted deferred write (both
-   * flags 0) is never promoted here. The read, recompute and write run in
-   * one IMMEDIATE transaction, so a concurrent {@link upsertNewVersion}
-   * cannot interleave with a stale snapshot.
-   *
-   * Called after {@link bulkUpsert} in the backfill path to close the
-   * race between the async disk walk and concurrent writes: a `save()`
-   * that interleaves during the walk may demote a row that `bulkUpsert`
-   * then re-promotes from stale in-memory state.
+   * only flagged rows take part, so a pending write is never promoted; one
+   * IMMEDIATE transaction; closes the race where a save() during the walk
+   * demotes a row bulkUpsert re-promotes from stale state
    */
   enforceUniqueLatest(
     computeFlags: (rows: CatalogRow[]) => void,
@@ -2003,17 +1723,9 @@ export class CatalogStore {
   }
 
   /**
-   * Recomputes both latest flags for one (namespace, type, model, name)
-   * group over its promoted rows, by the rules of `computeLatestFlags`, and
-   * writes only the rows whose flags change. Must run inside the caller's
-   * transaction.
-   *
-   * It runs in SQL (swamp-club#3803): the group's highest version, its
-   * highest model-method version and each step's highest version come from
-   * the primary key and {@link GROUP_STEP_INDEX}, so no row is read into
-   * JavaScript. Reading the whole group for every removal made a replay of
-   * many removals slow. Every caller passes `computeLatestFlags`, which these
-   * rules are; a test holds the two to the same flags.
+   * runs in SQL from the primary key and GROUP_STEP_INDEX, so no row is read
+   * into JS, as reading the whole group per removal made replays slow; a test
+   * holds it to computeLatestFlags
    */
   private recomputeGroupFlags(
     namespace: string,
@@ -2030,11 +1742,6 @@ export class CatalogStore {
     );
   }
 
-  /**
-   * Runs `computeFlags` over `rows` and writes back each row whose flags
-   * changed. Returns the number of rows changed. Must run inside the
-   * caller's transaction.
-   */
   private writeRecomputedFlags(
     rows: CatalogRow[],
     computeFlags: (rows: CatalogRow[]) => void,
@@ -2068,9 +1775,8 @@ export class CatalogStore {
   }
 
   /**
-   * Closes the database connection. Idempotent — a second call is a no-op, so
-   * a `finally { close() }` cannot mask an earlier reopen failure (node:sqlite
-   * throws "database is not open" on double-close).
+   * idempotent, so a finally close() cannot mask an earlier reopen failure,
+   * since node:sqlite throws on double-close
    */
   close(): void {
     if (this.closed) return;

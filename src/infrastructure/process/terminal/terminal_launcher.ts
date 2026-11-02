@@ -49,28 +49,22 @@ export const LAUNCHER_EXPORTED_VARS = [
 ] as const;
 
 /**
- * The Windows launcher relative to the workspace. The window opens in the
- * workspace (`wt -d .` or `start`, both from a process running there), so
- * the command `cmd /k` runs never contains the workspace path: a folder
- * like `R&D` or `a;b` cannot split it, and `wt` never sees a `;` (its
- * command separator) from the path.
+ * the window opens in the workspace so the cmd /k command never contains the
+ * workspace path: a folder like R&D or a;b cannot split it, and wt never sees a
+ * ; (its separator)
  */
 export const WINDOWS_LAUNCHER_RELATIVE_PATH = ".swamp\\start\\launch.cmd";
 
-/** How long a terminal may run before it counts as having opened a window. */
 export const TERMINAL_LAUNCH_GRACE_MS = 1500;
 
-/** The parts of a spawned process the launcher uses. */
 export interface TerminalProcess {
   readonly status: Promise<{ readonly success: boolean }>;
   unref(): void;
 }
 
-/** Dependencies of {@link SystemTerminalLauncher}, injected for testing. */
 export interface TerminalLauncherDeps {
   readonly os: typeof Deno.build.os;
   readonly env: (name: string) => string | undefined;
-  /** Resolves an executable on PATH to its absolute path. */
   readonly resolve: (name: string) => Promise<string | null>;
   readonly spawn: (
     command: string,
@@ -78,7 +72,6 @@ export interface TerminalLauncherDeps {
     cwd: string,
   ) => TerminalProcess;
   readonly writeScript: (path: string, content: string) => Promise<void>;
-  /** The running swamp binary. */
   readonly execPath: string;
   readonly graceMs: number;
 }
@@ -89,12 +82,6 @@ interface Candidate {
   readonly args: readonly string[];
 }
 
-/**
- * Opens the launcher with the default .command application on macOS,
- * Windows Terminal or `cmd start` on Windows, the first terminal found on
- * Linux. With no display, over SSH, or when every attempt fails, it opens
- * nothing and returns the copy-command outcome.
- */
 export class SystemTerminalLauncher implements TerminalLauncher {
   constructor(private readonly deps: TerminalLauncherDeps) {}
 
@@ -239,7 +226,6 @@ export class SystemTerminalLauncher implements TerminalLauncher {
   }
 }
 
-/** The real launcher, wired to this process and machine. */
 export function createSystemTerminalLauncher(): SystemTerminalLauncher {
   const resolver = defaultCommandResolver();
   return new SystemTerminalLauncher({
@@ -268,9 +254,8 @@ export function createSystemTerminalLauncher(): SystemTerminalLauncher {
 }
 
 /**
- * Every PATH hit for an executable, in lookup order: `which` on POSIX
- * (first hit), `where` on Windows (all hits, so the caller can prefer a
- * `.cmd` or `.exe` over the extensionless npm shim).
+ * where returns all hits so the caller can prefer a .cmd or .exe over the
+ * extensionless npm shim; which returns the first
  */
 export async function lookupExecutable(name: string): Promise<string[]> {
   const tool = Deno.build.os === "windows" ? "where" : "which";

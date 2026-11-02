@@ -106,7 +106,6 @@ interface DenoInfoModule {
   dependencies?: DenoInfoDependency[];
 }
 
-/** Reads what the importer has at `span`, quotes stripped, or undefined. */
 function textAt(
   lines: string[] | undefined,
   span: SpecifierSpan,
@@ -125,19 +124,15 @@ function textAt(
   return quoted.slice(1, -1);
 }
 
-/** File access the parser needs: whether a module exists, and its text. */
 export interface DenoInfoGraphFiles {
   exists: (path: string) => Promise<boolean>;
   readText: (path: string) => Promise<string | undefined>;
 }
 
 /**
- * Reads the local part of `deno info --json` output, and what Deno resolved
- * each bare import a local module writes to. `files.exists` decides
- * whether a module deno did not load itself (a text or bytes import, which
- * deno reports as external) is on disk. Each edge's specifier is the text
- * the importer holds at the edge's span — for a type edge that may be a
- * `@ts-types` pragma or a `/// <reference>` rather than the import itself.
+ * each edge's specifier is the text the importer holds at the edge's span; for
+ * a type edge that may be a @ts-types pragma or a /// reference rather than the
+ * import itself
  */
 export async function parseDenoInfoGraph(
   json: unknown,
@@ -234,7 +229,6 @@ async function readProjectPackageJson(projectDir: string): Promise<unknown> {
   }
 }
 
-/** A JSON file's value; undefined when it cannot be read or parsed. */
 async function readJson(path: string): Promise<unknown> {
   try {
     return JSON.parse(await Deno.readTextFile(path));
@@ -252,9 +246,8 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * The installed version of each `npm:` import a local module writes, and of
- * each import-map target, that Deno read from node_modules rather than the
- * registry: the bundle holds that copy, so push pins it (swamp-club#3970).
+ * versions Deno read from node_modules rather than the registry: the bundle
+ * holds that copy, so push pins it
  */
 async function installedPackageVersionsOf(
   json: unknown,
@@ -294,7 +287,6 @@ async function installedPackageVersionsOf(
   return versions;
 }
 
-/** `sha256:<hex>` of a file's bytes; undefined when it cannot be read. */
 async function fileSha256(path: string): Promise<string | undefined> {
   try {
     return `sha256:${await sha256Hex(await Deno.readFile(path))}`;
@@ -303,7 +295,6 @@ async function fileSha256(path: string): Promise<string | undefined> {
   }
 }
 
-/** The `file:` modules of a `deno info` graph, as paths. */
 function fileModulePaths(json: unknown): string[] {
   const raw = (json as { modules?: DenoInfoModule[] })?.modules;
   return (Array.isArray(raw) ? raw : []).flatMap((m) =>
@@ -333,10 +324,6 @@ function nodeModulesPackageDirsOf(json: unknown): string[] {
   return [...dirs].sort();
 }
 
-/**
- * The `jsr:` imports naming a dist-tag: written in a local module, or what
- * the project's import map resolves a bare import to.
- */
 function jsrDistTagsOf(
   json: unknown,
   bareImports: readonly ResolvedBareImport[],
@@ -362,15 +349,10 @@ function jsrDistTagsOf(
   return [...found.values()];
 }
 
-/** A path from `dir`, with forward slashes. */
 function relativeForward(dir: string, path: string): string {
   return relative(dir, path).split(SEPARATOR).join("/");
 }
 
-/**
- * Every package the graph takes from a node_modules below `packageDir`,
- * transitive ones included, with the version its package.json names.
- */
 async function installedPackagesOf(
   json: unknown,
   packageDir: string,
@@ -395,12 +377,9 @@ async function installedPackagesOf(
 }
 
 /**
- * Code the graph holds from outside npm and JSR: each URL a local module
- * imports with the modules fetched through it, and in a package.json
- * project each dependency installed from a path, a workspace or git with
- * the modules the graph reads from it. Every module carries a SHA-256 of
- * the copy Deno read; a module keys by its URL or its path from the
- * package.json directory, never by a local absolute path.
+ * every module carries a SHA-256 of the copy Deno read; a module keys by its
+ * URL or its path from the package.json directory, never by a local absolute
+ * path
  */
 async function unauditedCodeOf(
   json: unknown,
@@ -440,17 +419,14 @@ async function unauditedCodeOf(
 }
 
 /**
- * Reads an entry point's module graph with `deno info --json`, run with the
- * same project flags, working directory and environment as `deno bundle`, so
- * the graph is the one the bundle is built from.
+ * runs with the same project flags, working directory and environment as deno
+ * bundle, so the graph is the one the bundle is built from
  */
 export class DenoInfoModuleGraphReader implements ModuleGraphReader {
   /**
-   * @param options.readOnlyLock - Never write the project's lockfile, as push
-   *   and quality bundle: `--frozen` when it has one, `--no-lock` when not.
-   * @param options.readPastStaleLock - With `readOnlyLock`, read the graph
-   *   again with `--no-lock` when the lock is stale, instead of failing, as
-   *   the extension loader does (swamp-club#3869).
+   * readOnlyLock never writes the lockfile; readPastStaleLock re-reads with
+   * --no-lock when the lock is stale instead of failing, as the extension
+   * loader does
    */
   constructor(
     private readonly denoPath: string,
@@ -529,9 +505,8 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     }
     let packageJson: unknown;
     if (!project.denoConfigPath && project.packageJsonDir) {
-      // Read as installed (--node-modules-dir=manual), a bare import names a
+      // read as installed (--node-modules-dir=manual), a bare import names a
       // file in node_modules; name the package installed there instead
-      // (swamp-club#3630).
       packageJson = await readProjectPackageJson(project.packageJsonDir);
       const installed = await installedPackageImports(
         graph.bareImports ?? [],
@@ -554,8 +529,8 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         await this.readPackageSpecifiers(entryPoint, project),
       );
     }
-    // The exact versions push pins in the archive's source, and the code
-    // from outside npm and JSR it lists as unaudited (swamp-club#3970).
+    // the exact versions push pins in the archive's source, and the code from
+    // outside npm and JSR it lists as unaudited
     graph.packageVersions = {
       ...await installedPackageVersionsOf(json, graph.bareImports ?? []),
       ...packageVersionsFromDenoInfo(json),
@@ -567,7 +542,6 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         : undefined,
     );
     if (unaudited.length > 0) graph.unaudited = unaudited;
-    // What push refuses before bundling (swamp-club#3971).
     const packageDirs = nodeModulesPackageDirsOf(json);
     if (packageDirs.length > 0) graph.nodeModulesPackageDirs = packageDirs;
     const distTags = jsrDistTagsOf(json, graph.bareImports ?? []);
@@ -576,10 +550,9 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
   }
 
   /**
-   * The bare imports read again with `--node-modules-dir=none`, so a name
-   * the config maps to an npm package reads as that specifier rather than
-   * as missing from, or a file in, node_modules (swamp-club#3612). None when
-   * that read fails: the first read's answer stands.
+   * read again with --node-modules-dir=none so a name the config maps to an npm
+   * package reads as that specifier, not a node_modules file; none if that read
+   * fails, and the first read stands
    */
   private async readPackageSpecifiers(
     entryPoint: string,
@@ -609,7 +582,6 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
   }
 }
 
-/** Builds a {@link DenoInfoModuleGraphReader} for the extension loader. */
 export const createDenoInfoModuleGraphReader: ModuleGraphReaderFactory = (
   denoPath,
   env,

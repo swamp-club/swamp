@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's explicit leases in its shared control plane (swamp-club#4195):
- * `leases/<leaderFence>/<sha256 of the lock key>`, with a
- * `leases/<leaderFence>/complete` record once a leader's prefix holds every
- * lease it adopted. See {@link PersistedLeaseStore}.
- *
- * @module
- */
-
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import {
   leaderFenceOfKey,
@@ -41,7 +32,6 @@ import { getSwampLogger } from "../logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "datastore-locks"]);
 
-/** The control-plane key of `lockKey`'s record under a leader's prefix. */
 async function recordKeyOf(
   leaderFence: number,
   lockKey: string,
@@ -56,12 +46,10 @@ async function recordKeyOf(
   return `${leasePrefixOf(leaderFence)}${hex}`;
 }
 
-/** The record marking a leader's prefix complete. */
 function completeKeyOf(leaderFence: number): string {
   return `${leasePrefixOf(leaderFence)}${PERSISTED_LEASES_COMPLETE}`;
 }
 
-/** A {@link PersistedLeaseStore} over serve's control-plane store. */
 export class ControlPlaneLeaseStore implements PersistedLeaseStore {
   readonly #store: ControlPlaneStore;
 

@@ -19,27 +19,18 @@
 
 import { join } from "@std/path";
 
-/** Directory, at the datastore tier root, that holds one token per catalog. */
 export const CATALOG_WRITERS_DIR = ".catalog-writers";
 
 const TEMP_SUFFIX = ".tmp";
 
 /**
- * Lets catalogs that share a filesystem datastore notice each other's writes.
- *
- * Each repository keeps its own SQLite catalog, so a write by one repository
- * never reaches another's catalog (swamp-club#2858). Every catalog owns one
- * file in {@link CATALOG_WRITERS_DIR}, named by its writer id, and rewrites it
- * with a fresh token after each data write. A reader compares the other
- * writers' tokens with the ones it last saw and invalidates on any change.
- *
- * Plain files only: SQLite's WAL mode is unsafe on network filesystems, which
- * is where shared datastores usually live.
+ * each catalog rewrites its own token file after each data write and readers
+ * invalidate when others' tokens change; plain files only, as SQLite WAL is
+ * unsafe on network filesystems
  */
 export class SharedDatastoreWriteTracker {
   constructor(private readonly dir: string) {}
 
-  /** Replaces this writer's token, atomically (temp file, then rename). */
   recordWrite(writerId: string): void {
     Deno.mkdirSync(this.dir, { recursive: true });
     const target = join(this.dir, writerId);
@@ -58,8 +49,8 @@ export class SharedDatastoreWriteTracker {
   }
 
   /**
-   * Every other writer's current token, serialised in a stable order so the
-   * result can be stored and compared as a string.
+   * serialised in a stable order so the result can be stored and compared as a
+   * string
    */
   foreignTokens(writerId: string): string {
     const tokens: Record<string, string> = {};

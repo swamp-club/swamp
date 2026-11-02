@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A repository built without a hook stages its typed changes into the v3
- * unit around the call (swamp-club#3279), never into an ended one, and an
- * untyped write there is refused rather than dropped. v2 is untouched: no
- * commit-log unit exists there.
+ * a repository built without a hook stages typed changes into the surrounding
+ * v3 unit, never an ended one; an untyped write is refused, not dropped. v2 has
+ * no commit-log unit
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
@@ -109,7 +108,6 @@ Deno.test("signalChange: a hookless untyped write inside a v3 unit is refused", 
       () => signalChange(undefined, { kind: "write", path: "/x" }),
       PathOnlyChangeRefusedError,
     );
-    // A typed write's path signal is checked, not staged.
     await signalChange(undefined, { kind: "write", path: "/x" }, {
       typed: true,
     });
@@ -142,7 +140,6 @@ Deno.test("signalChange: a hooked write under an unbound unit stages into the v3
   const unbound = createLegacyUnitOfWork(undefined, { flush: undefined });
   await runInUnitOfWork(unit, () =>
     runInUnitOfWork(unbound, async () => {
-      // The path signal is checked, then the typed changes stage.
       await signalChange(hook, { kind: "write", path: "/x" }, { typed: true });
       await stageTyped(hook, () => [change()]);
     }));

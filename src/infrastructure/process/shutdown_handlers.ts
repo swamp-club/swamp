@@ -18,22 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Cross-platform shutdown signal registration.
- *
- * Windows only supports `SIGINT` — registering `SIGTERM` or `SIGHUP`
- * listeners on Windows throws. This helper centralizes the OS branching so
- * each call site stays a single line and works on every platform that
- * swamp supports.
- *
- * On POSIX, `SIGINT`, `SIGTERM`, and `SIGHUP` are all registered (unless
- * the caller opts out of POSIX-only signals via `includePosixSignals: false`).
- * On Windows, `SIGINT` is registered, and in place of `SIGTERM` the handler
- * listens for the stop requests another swamp process sends (see
- * `windows_stop_request.ts`) unless the caller opts out the same way.
+ * Windows supports only SIGINT (SIGTERM or SIGHUP listeners throw), so it
+ * listens for other swamp processes' stop requests instead; POSIX registers all
+ * three unless includePosixSignals is false
  */
 import { listenForStopRequests } from "./windows_stop_request.ts";
 
-/** Options passed to {@link registerShutdownHandler}. */
 export interface ShutdownHandlerOptions {
   /**
    * Handler invoked once per signal arrival. Errors thrown synchronously
@@ -42,56 +32,32 @@ export interface ShutdownHandlerOptions {
    */
   handler: () => void | Promise<void>;
   /**
-   * If true (default), also register `SIGTERM` and `SIGHUP` on POSIX
-   * platforms. Set to false for sites that only ever cared about `SIGINT`
-   * (e.g., the datastore sync coordinator's lock-release fast path).
-   * On Windows it decides whether the handler also listens for stop
-   * requests, the `SIGTERM` swamp sends there.
+   * also registers SIGTERM and SIGHUP on POSIX; on Windows it decides whether
+   * the handler listens for stop requests, the SIGTERM swamp sends there
    */
   includePosixSignals?: boolean;
   /**
-   * When true, the first signal invokes the handler normally; a second
-   * signal force-exits the process with code 130. Prevents stuck
-   * processes when the handler fires an AbortSignal that the in-flight
-   * work ignores.
+   * a second signal force-exits with code 130, preventing a stuck process when
+   * in-flight work ignores the abort the handler fires
    */
   forceExitOnRepeat?: boolean;
 }
 
-/** Disposer returned by {@link registerShutdownHandler}. */
 export interface ShutdownHandlerHandle {
-  /**
-   * Removes every signal listener that was registered. Idempotent —
-   * safe to call multiple times.
-   */
   dispose: () => void;
 }
 
-/** What {@link registerShutdownHandler} uses, replaceable in tests. */
 export interface ShutdownHandlerDeps {
   os?: typeof Deno.build.os;
   listenForStopRequests?: (handler: () => void) => (() => void) | undefined;
 }
 
-/**
- * POSIX-only signals registered when `includePosixSignals` is true.
- * Kept as a const tuple so callers see the exact set at a glance.
- */
 const POSIX_ONLY_SIGNALS: readonly Deno.Signal[] = ["SIGTERM", "SIGHUP"];
 
 /**
- * Registers a shutdown handler against the appropriate OS signals.
- *
- * - Always registers `SIGINT` (cross-platform).
- * - On non-Windows, also registers `SIGTERM` and `SIGHUP` unless
- *   `includePosixSignals` is explicitly false.
- * - On Windows, also listens for stop requests unless `includePosixSignals`
- *   is explicitly false. A stop request counts as a signal for
- *   `forceExitOnRepeat`.
- *
- * Returns a disposer that calls `Deno.removeSignalListener` for every
- * signal that was actually registered, and stops listening for stop
- * requests.
+ * a Windows stop request counts as a signal for forceExitOnRepeat; the disposer
+ * removes only listeners actually registered and stops listening for stop
+ * requests
  */
 export function registerShutdownHandler(
   options: ShutdownHandlerOptions,

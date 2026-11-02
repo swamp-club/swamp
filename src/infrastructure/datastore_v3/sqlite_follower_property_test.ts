@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Follower mode (swamp-club#3985): a follower commit store and read model fed
- * random gapped seqs, as serve's changes feed delivers them with the commits
- * the caller may not read left out, end holding exactly what was delivered.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import fc from "fast-check";
@@ -40,7 +34,6 @@ import { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { SqliteReadModel } from "./sqlite_read_model.ts";
 import { v3CacheRoot } from "./v3_datastore.ts";
 
-/** Strictly increasing seqs from 1, with holes of up to four. */
 const arbGappedSeqs = fc
   .array(fc.nat({ max: 4 }), { minLength: 1, maxLength: 25 })
   .map((gaps) => {
@@ -107,8 +100,6 @@ Deno.test("SqliteCommitStore + SqliteReadModel follower: over random gapped seqs
             await store.close();
           }
 
-          // A reopened follower rebuilds past every gap: each delivered
-          // commit is a duplicate and the next gapped seq appends.
           const reopened = SqliteCommitStore.open(path, options);
           try {
             const last = seqs[seqs.length - 1];

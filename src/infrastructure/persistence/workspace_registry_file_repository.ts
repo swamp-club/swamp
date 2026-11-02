@@ -39,19 +39,15 @@ const RegistryFileSchema = z.object({
     path: z.string().min(1),
     createdAt: z.string(),
     trustedAt: z.string().optional(),
-    // Added without a schema bump, so older Swamp versions still read the
-    // file. A value this version doesn't know is dropped, not fatal.
+    // added without a schema bump so older versions still read the file; a
+    // value this version does not know is dropped, not fatal
     origin: z.enum(["created", "imported"]).optional().catch(undefined),
   })),
-  // A preference: a value that can't be used is dropped, never a reason to
-  // call the whole workspace list unreadable.
+  // a preference: a value that cannot be used is dropped, never a reason to
+  // call the whole workspace list unreadable
   lastAgent: z.string().min(1).optional().catch(undefined),
 });
 
-/**
- * Stores the workspace registry in `<config dir>/workspaces.json`, beside
- * `auth.json`, written atomically with mode 0600 under a file lock.
- */
 export class WorkspaceRegistryFileRepository
   implements WorkspaceRegistryRepository {
   constructor(private readonly configDir: string = getSwampConfigDir()) {}
@@ -61,12 +57,8 @@ export class WorkspaceRegistryFileRepository
   }
 
   /**
-   * The registry, or null when the file doesn't exist.
-   *
-   * @throws {UserError} code `registry_unreadable` when the file exists but
-   *   can't be used: damaged JSON, an unexpected shape, a newer schema
-   *   version, or duplicate entries. It is never treated as missing, so the
-   *   workspaces it lists are never silently dropped.
+   * throws registry_unreadable for a file that exists but cannot be used, never
+   * treating it as missing, so listed workspaces are never silently dropped
    */
   async load(): Promise<WorkspaceRegistry | null> {
     const path = this.path;

@@ -20,13 +20,8 @@
 import type { Context } from "@opentelemetry/api";
 import { parseOtlpHeaders, resolveOtlpEndpoint } from "./otel_config.ts";
 
-/** Handle to the provider so we can flush on shutdown. */
 let providerRef: { shutdown(): Promise<void> } | undefined;
 
-/**
- * Test-only configuration that bypasses `Deno.env` for OTel tracing setup.
- * Production callers omit this — `initTracing` reads env vars by default.
- */
 export interface InitTracingConfig {
   endpoint?: string;
   exporterKind?: string;
@@ -36,13 +31,6 @@ export interface InitTracingConfig {
   envGet?: (key: string) => string | undefined;
 }
 
-/**
- * Initializes OpenTelemetry tracing if an OTLP traces endpoint is configured.
- *
- * All SDK packages are dynamically imported so they impose zero cost when
- * tracing is disabled. `@opentelemetry/api` is statically imported because it
- * returns no-op implementations by default.
- */
 export async function initTracing(
   config?: InitTracingConfig,
 ): Promise<Context | undefined> {
@@ -54,11 +42,9 @@ export async function initTracing(
     envGet("OTEL_TRACES_EXPORTER") ?? "otlp";
 
   if (!endpoint && exporterKind !== "console") {
-    // No endpoint configured and not console mode — tracing stays disabled.
     return undefined;
   }
 
-  // Dynamic imports — only loaded when tracing is actually enabled.
   const [
     {
       BasicTracerProvider,
@@ -78,13 +64,11 @@ export async function initTracing(
     import("@opentelemetry/api"),
   ]);
 
-  // Short-lived CLI invocations may exit before BatchSpanProcessor's batching
-  // window completes (Deno.exit short-circuits finally blocks). Default to
-  // SimpleSpanProcessor for predictable per-span flush; allow opting back into
-  // BatchSpanProcessor via OTEL_BSP_USE=1 for long-running modes (`swamp serve`).
+  // Deno.exit can beat BatchSpanProcessor's window, so default to
+  // SimpleSpanProcessor; OTEL_BSP_USE=1 opts into batching for long-running
+  // modes like serve
   const useBatch = config?.bspUse ?? envGet("OTEL_BSP_USE") === "1";
 
-  // Register AsyncLocalStorage-based context manager
   const contextManager = new AsyncLocalStorageContextManager();
   contextApi.context.setGlobalContextManager(contextManager);
 
@@ -103,8 +87,8 @@ export async function initTracing(
   if (exporterKind === "console") {
     provider.addSpanProcessor(wrapProcessor(new ConsoleSpanExporter()));
   } else {
-    // Fetch-based OTLP/HTTP exporter — uses Deno's native fetch instead of
-    // Node.js http/https modules, which fail TLS in compiled binaries.
+    // native fetch exporter, since Node http/https modules fail TLS in compiled
+    // binaries
     const { FetchOtlpExporter } = await import("./fetch_otlp_exporter.ts");
     const headers = parseOtlpHeaders("traces");
 
@@ -115,10 +99,8 @@ export async function initTracing(
     provider.addSpanProcessor(wrapProcessor(exporter));
   }
 
-  // Register as global tracer provider
   provider.register();
 
-  // Register W3C propagator so inject/extract produce real traceparent headers.
   const { W3CTraceContextPropagator } = await import("@opentelemetry/core");
   contextApi.propagation.setGlobalPropagator(
     new W3CTraceContextPropagator(),
@@ -129,7 +111,6 @@ export async function initTracing(
   const { installExecutionObserver } = await import("./execution_observer.ts");
   installExecutionObserver();
 
-  // Extract inbound TRACEPARENT from the parent process, if present.
   const traceparent = config?.traceparent ?? envGet("TRACEPARENT");
   if (traceparent) {
     const headers: Record<string, string> = { traceparent };
@@ -143,10 +124,6 @@ export async function initTracing(
   return undefined;
 }
 
-/**
- * Flushes pending spans and shuts down the tracer provider.
- * No-op when tracing was not initialized.
- */
 export async function shutdownTracing(): Promise<void> {
   const { setExecutionObserver } = await import(
     "../../domain/remote/observability.ts"
@@ -160,7 +137,6 @@ export async function shutdownTracing(): Promise<void> {
     }
     providerRef = undefined;
 
-    // Disable global context manager, propagator, and tracer provider
     const contextApi = await import("@opentelemetry/api");
     contextApi.trace.disable();
     contextApi.context.disable();

@@ -62,7 +62,6 @@ export async function readDenoLockfile(
   return lock;
 }
 
-/** The lockfile the bundler honours for `project`, read; or undefined. */
 export async function readProjectLockfile(
   project: ExtensionProject,
 ): Promise<LockedDependencyVersions | undefined> {
@@ -70,10 +69,6 @@ export async function readProjectLockfile(
   return path ? await readDenoLockfile(path) : undefined;
 }
 
-/**
- * The lockfile push leaves untouched for `project`, as the bundle options
- * name it: see {@link frozenLockPath}.
- */
 export async function readOnlyLockFor(
   project: ExtensionProject,
 ): Promise<ReadOnlyLock> {

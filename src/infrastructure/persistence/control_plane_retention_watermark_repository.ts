@@ -37,18 +37,11 @@ const WATERMARK_PREFIX = "retention/watermarks/";
 // which a Windows filesystem control plane cannot hold.
 const CLAIM_PREFIX = "retention/claims";
 
-/** Hourly claims older than this are removed when a new one is taken. */
 const CLAIM_KEEP_MS = 24 * 60 * 60 * 1000;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/**
- * Keeps the per-kind retention watermarks in the datastore's control plane
- * (`_control/retention/` of the repository's namespace), so every process
- * sharing the datastore sees the same records: serve replicas and CLI
- * checkouts alike.
- */
 export class ControlPlaneRetentionWatermarkRepository
   implements RetentionWatermarkRepository {
   constructor(private readonly store: ControlPlaneStore) {}
@@ -93,7 +86,6 @@ export class ControlPlaneRetentionWatermarkRepository
     return claimed;
   }
 
-  /** Removes claims a day older than the one just taken, so they never pile up. */
   private async pruneClaims(hourStart: Date): Promise<void> {
     const keys = await this.store.list(CLAIM_PREFIX);
     for (const key of keys) {
@@ -127,10 +119,6 @@ function parseWatermark(
   return null;
 }
 
-/**
- * The start of the UTC hour containing `now`, the key an hourly pass is
- * claimed under.
- */
 export function hourStartOf(now: Date): Date {
   const hour = new Date(now.getTime());
   hour.setUTCMinutes(0, 0, 0);

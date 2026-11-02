@@ -18,24 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Binds a checkout's v3 datastore to serve as its upstream
- * (swamp-club#3985). The datastore's own storage is never resolved, so its
- * credentials are never read: the checkout gets a local root under its
- * `.swamp/`, keyed by serve's address and the datastore's namespace, which
- * holds its follower copy of serve's commit log, its serve-mode state and
- * its chunk cache. The v3 helpers open that root as they open a filesystem
- * datastore; the registry tells them its upstream is serve.
- *
- * Serve filters what each caller may read, so the copy is one caller's
- * view. The copy records a fingerprint of the token it was built with; a
- * command with another token resets it before anything reads it
- * ({@link resetCopyForCaller}), and the checkout's projection is rebuilt
- * from the new view when its context opens (`checkout_view.ts`). It also
- * records the fingerprint of the caller's read access serve sends
- * (swamp-club#4089): when serve sends another, the next command resets the
- * copy the same way, so a widened or narrowed grant refreshes it.
- *
- * @module
+ * the copy is one caller's view of serve, so a command with another token
+ * resets it before anything reads it; a changed read-access fingerprint does
+ * the same. The datastore's own storage is untouched
  */
 
 import { createHash } from "node:crypto";
@@ -86,13 +71,6 @@ import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
-/**
- * The local root of the datastore that serve at `serverUrl` writes, for the
- * checkout at `repoDir`: keyed by the address and namespace, so a checkout
- * that moves to another serve or another namespace starts a new copy. One
- * copy serves every token; a change of token resets it
- * ({@link resetCopyForCaller}).
- */
 export function serveUpstreamLocalRoot(
   repoDir: string,
   serverUrl: string,
@@ -104,12 +82,6 @@ export function serveUpstreamLocalRoot(
   return swampPath(resolve(repoDir), V3_LOCAL_COPIES_DIR, `serve-${key}`);
 }
 
-/**
- * Binds the v3 datastore `config` names for the checkout at `repoDir` to
- * serve at `target`, creating its local root on first use, and returns the
- * location the v3 helpers open. `writtenBy` names this swamp in the root's
- * format marker.
- */
 export async function bindV3ServeUpstream(
   repoDir: string,
   config: DatastoreConfig,
@@ -141,9 +113,8 @@ export async function bindV3ServeUpstream(
   // Registered first: the copy it creates is then never a replicated one.
   const markerSeen = await v3MarkerState(root);
   if (markerSeen !== "v3") {
-    // Two commands may create the copy at once (swamp-club#4253): the one
-    // that loses the marker race uses the marker the other wrote, decided
-    // from this look, however far the other has got since.
+    // two commands may create the copy at once; the one that loses the marker
+    // race uses the marker the other wrote, decided from this look
     await initializeV3Datastore(root, writtenBy, {
       adoptConcurrentMarker: { markerSeen },
     });
@@ -166,19 +137,16 @@ export async function bindV3ServeUpstream(
   };
 }
 
-/** The checkout roots whose explicit leases this process renewed. */
 const renewedLeaseRoots = new Set<string>();
 
-/** Test seam: renews each checkout's explicit leases again, as a new process. */
 export function resetLeaseRenewalsForTesting(): void {
   renewedLeaseRoots.clear();
 }
 
 /**
- * Renews the explicit model leases recorded for `root` (swamp-club#4121),
- * once per process: every swamp command in the checkout keeps them alive
- * while they live. A failure is a warning, never the command's: a lease
- * not renewed lapses at serve once its hold passes.
+ * renews the explicit model leases recorded for root, once per process; a
+ * failure is a warning, never the command's, and an unrenewed lease lapses at
+ * serve once its hold passes
  */
 async function renewCheckoutLeases(root: string): Promise<void> {
   if (renewedLeaseRoots.has(root)) return;
@@ -204,15 +172,9 @@ async function renewCheckoutLeases(root: string): Promise<void> {
 }
 
 /**
- * Registers the explicit leases `recorded` for `root` in this process, so
- * every commit it makes to a behavior the checkout holds names the lease,
- * whether or not the command takes the behavior's lock: a read-kind method
- * saves data without one. A lease `renewal` renewed is registered as
- * serve vouched for it. One it could not renew, or every one when the
- * renewal failed as a whole, is registered from the record, unconfirmed
- * (swamp-club#4167): serve, not the record, decides whether it is live, and
- * a commit serve refuses under it is sent again under no lease. A lease
- * serve said has ended is never registered.
+ * registers recorded leases so every commit to a held behavior names one, even
+ * from a read-kind method taking no lock; a lease that could not be renewed is
+ * registered unconfirmed, and one serve ended never
  */
 export function registerCheckoutLeases(
   root: string,
@@ -234,14 +196,11 @@ export function registerCheckoutLeases(
   }
 }
 
-/** The copy's files a reset removes: the commit log and the outbox. */
 const COPY_DATABASE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 
 /**
- * Resets the outbox at `path` in place when it keeps rejected or
- * quarantined entries, which are never discarded (swamp-club#4195): true
- * when it kept any, so the reset leaves the file; false when it may be
- * removed with the copy.
+ * resets the outbox in place when it keeps rejected or quarantined entries,
+ * which are never discarded: true if it kept any, so the reset leaves the file
  */
 async function outboxKeepsEntries(path: string): Promise<boolean> {
   const outbox = new SqliteCommitOutbox(path);
@@ -253,44 +212,9 @@ async function outboxKeepsEntries(path: string): Promise<boolean> {
 }
 
 /**
- * Makes the copy at `root` hold the view of serve that `target`'s token is
- * given (swamp-club#3985), under the caller's current read access
- * (swamp-club#4089). A copy with no caller recorded is stamped with this
- * one. A copy built with another token, or whose reset was cut short, is
- * reset under the copy's writer lease, which every writer of this checkout
- * holds for its whole command, so no writer uses the copy while it is
- * removed; a read-only command takes it too, waiting up to the lock
- * timeout:
- *
- * 1. A copy whose outbox holds entries is refused: they are the previous
- *    caller's writes, not yet settled with serve
- *    ({@link ServeCopyHoldsUnlandedCommitsError}).
- * 2. The serve-mode state forgets its feed cursor and serve's heads, takes
- *    a new copy id and is marked resetting, so a reset cut short from here
- *    runs again.
- * 3. `commits.db` and the outbox are removed.
- * 4. The new fingerprint is recorded and the reset marked done.
- *
- * A copy built with this token whose read access serve last reported as
- * different from the access it was built under is reset the same way
- * ({@link accessResetDue}), with two differences: an outbox holding
- * entries defers the reset with a warning instead of refusing, since the
- * caller cannot return to the old access to settle them: a writing
- * command lands them, as it would without the change, and the next
- * command resets; and a reset within the cooldown of the last one only
- * warns.
- *
- * The checkout's projection, built from the old copy, is rebuilt when its
- * context opens: the checkout recorded the old copy id and token
- * (`alignCheckoutView`). The command then catches the copy up from serve
- * as a fresh checkout does. The chunk cache (`_blobs/`) stays: it is
- * content-addressed, and the read model reads from it only the chunks the
- * new copy's commits name, which are chunks serve let this caller
- * reference.
- *
- * @throws ServeCopyHoldsUnlandedCommitsError
- * @throws V3WriterBusyError when another process writes the checkout past
- *   the lock timeout
+ * a copy built for another caller or with a cut-short reset is reset under the
+ * writer lease; one whose outbox holds the previous caller's entries is
+ * refused. An access change defers with a warning instead
  */
 async function resetCopyForCaller(
   repoDir: string,
@@ -349,9 +273,8 @@ async function resetCopyForCaller(
       }
       state.beginCallerReset();
       const commitsDb = v3CommitsDbPath(root, repoDir);
-      // Rejected and quarantined entries are never discarded
-      // (swamp-club#4195): an outbox holding any is reset in place, keeping
-      // them, rather than removed with the copy.
+      // rejected and quarantined entries are never discarded, so an outbox
+      // holding any is reset in place rather than removed with the copy
       const files = await outboxKeepsEntries(v3OutboxPath(commitsDb))
         ? [commitsDb]
         : [commitsDb, v3OutboxPath(commitsDb)];

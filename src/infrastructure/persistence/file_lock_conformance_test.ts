@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Runs the @swamp-club/swamp-testing lock conformance suite against
- * FileLock — the same DistributedLock contract extension datastore
- * authors are held to.
- */
-
 import {
   assertLockConformance,
   assertLockTimeoutConformance,

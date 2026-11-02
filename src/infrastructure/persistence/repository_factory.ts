@@ -18,36 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Factory for creating repositories with optional EventBus wiring.
- *
- * This factory provides a centralized way to create repositories that
- * automatically emit domain events for index updates.
- *
- * ## When to Use createRepositoryContext
- *
- * Use `createRepositoryContext()` when:
- * - **Creating or mutating data** (model create, delete, workflow run, etc.)
- * - You need the logical views (`/models/`, `/workflows/`) to stay in sync
- * - You want automatic index updates via domain events
- *
- * ## When to Use Direct Repository Instantiation
- *
- * Use direct instantiation (e.g., `new YamlDefinitionRepository(repoDir)`) when:
- * - **Read-only operations** (search, get, validate, describe)
- * - You don't need index updates (faster, less overhead)
- * - You're in a context where the index service isn't needed
- *
- * ## Examples
- *
- * ```typescript
- * // Mutation operation - use createRepositoryContext
- * const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
- * await ctx.definitionRepo.save(type, model); // Will update /models/ index
- *
- * // Read-only operation - direct instantiation is fine
- * const definitionRepo = new YamlDefinitionRepository(repoDir);
- * const model = await definitionRepo.findById(type, id); // No index needed
- * ```
+ * use createRepositoryContext when mutating data so events keep the logical
+ * views in sync; direct repository instantiation is enough for read-only
+ * operations
  */
 
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
@@ -103,45 +76,23 @@ import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { dirname, join, resolve } from "@std/path";
 import { ensureDir } from "@std/fs";
 
-// =============================================================================
-// Catalog Store Factory
-// =============================================================================
-
 /**
- * Resolves the on-disk path of the `_catalog.db` SQLite read-model.
- *
- * The catalog is **repo-local**: it always lives under the repo's own
- * `.swamp/data/` directory, never in the (possibly shared, possibly
- * namespaced) datastore tier. Under giga-swamp, multiple repos can share a
- * single datastore; a per-repo catalog lets each one own a private index
- * instead of clobbering the others' rows via full-replace backfill. The
- * resolver's `localPath` is never namespace-prefixed, so this is identical
- * across solo and namespaced repos.
- *
- * This is the single source of truth for the catalog path — callers that need
- * the path (e.g. `datastore compact`) must use this helper rather than
- * recomputing it, so the location can never silently drift.
- *
- * @param repoDir - The repository directory path
- * @param datastoreResolver - Optional datastore path resolver
- * @returns The absolute path to `_catalog.db`
+ * repo-local under .swamp/data, never in the shared datastore tier, so repos
+ * sharing a datastore each own a private index; callers must use this helper so
+ * the location cannot drift
  */
 export function catalogDbPath(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
 ): string {
-  // On a v3 datastore the catalog is the read model's, in the checkout's own
-  // state directory (swamp-club#3279); the read model fills it.
+  // on v3 the catalog is the read model's, in the checkout's own state
+  // directory, and the read model fills it
   if (resolverEngine(datastoreResolver) === "v3") return v3CatalogPath(repoDir);
   const dataBaseDir = datastoreResolver?.localPath(SWAMP_SUBDIRS.data) ??
     swampPath(repoDir, SWAMP_SUBDIRS.data);
   return join(dataBaseDir, "_catalog.db");
 }
 
-/**
- * Removes the repo's local catalog database and its SQLite sidecars, so the
- * next data query rebuilds the index from disk.
- */
 export async function removeCatalogDb(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -157,15 +108,9 @@ export async function removeCatalogDb(
 }
 
 /**
- * Derives the giga-swamp {@link Namespace} value from a datastore path
- * resolver's config.
- *
- * Construction sites that build a {@link FileSystemUnifiedDataRepository}
- * directly (outside {@link createRepositoryContext}) use this so the catalog
- * namespace stamp stays in lockstep with the namespaced data path the same
- * resolver produces. Returns {@link SOLO_NAMESPACE} when no namespace is
- * configured. Centralizing the derivation keeps the ~13 direct sites from
- * drifting into a split-brain (namespaced path, solo stamp, or vice versa).
+ * keeps the catalog namespace stamp in lockstep with the namespaced data path,
+ * so direct construction sites cannot split-brain (namespaced path with solo
+ * stamp, or the reverse)
  */
 export function namespaceFromResolver(
   datastoreResolver?: DatastorePathResolver,
@@ -174,17 +119,6 @@ export function namespaceFromResolver(
   return slug.length > 0 ? restoreNamespace(slug) : SOLO_NAMESPACE;
 }
 
-/**
- * Creates a CatalogStore for the given repository.
- *
- * Centralizes the three-step pattern: resolve data base dir, build DB path,
- * construct CatalogStore. Use this whenever you need a CatalogStore outside
- * of {@link createRepositoryContext}.
- *
- * @param repoDir - The repository directory path
- * @param datastoreResolver - Optional datastore path resolver
- * @returns A new CatalogStore instance
- */
 export function createCatalogStore(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -195,10 +129,8 @@ export function createCatalogStore(
 }
 
 /**
- * A write tracker for a filesystem datastore whose data lives outside the
- * repo's own `.swamp/`, where other repositories may write too
- * (swamp-club#2858). Repo-local and extension datastores get none: the
- * extensions' pull path already invalidates the catalog.
+ * only for a filesystem datastore outside the repo's own .swamp, where other
+ * repos may write too; repo-local and extension datastores get none
  */
 function sharedDatastoreWriteTracker(
   datastoreResolver?: DatastorePathResolver,
@@ -217,18 +149,9 @@ function sharedDatastoreWriteTracker(
 }
 
 /**
- * Writes a `.catalog-export.json` file to the local cache for the given
- * namespace. The file contains all catalog rows for that namespace as a
- * flat JSON array. Extensions upload this file to the remote datastore
- * via {@link DatastoreSyncService.exportCatalog}.
- *
- * Writes to a temp file first, then atomically renames to the final path
- * so a crash mid-write never corrupts the previous valid export.
- *
- * Uses page-buffered writes (one write per {@link ITERATE_PAGE_SIZE}
- * batch) and compact JSON to minimize I/O syscalls and output size.
- * Yields the event loop between pages so concurrent async work is not
- * starved by the synchronous SQLite reads.
+ * writes to a temp file then renames atomically so a crash never corrupts the
+ * previous export; yields the event loop between pages so synchronous SQLite
+ * reads do not starve other work
  */
 export async function writeCatalogExport(
   catalogStore: CatalogStore,
@@ -278,19 +201,6 @@ export async function writeCatalogExport(
   }
 }
 
-// =============================================================================
-// Standalone Repository Factory Functions
-// =============================================================================
-// Use these when you need a single repository without the full context.
-// For read-only operations, these are more efficient than createRepositoryContext.
-
-/**
- * Creates a YamlDefinitionRepository for storing model definitions.
- *
- * @param repoDir - The repository directory path
- * @param eventBus - Optional event bus for emitting domain events
- * @returns A new YamlDefinitionRepository instance
- */
 export function createDefinitionRepository(
   repoDir: string,
   eventBus?: EventBus,
@@ -299,15 +209,6 @@ export function createDefinitionRepository(
   return new YamlDefinitionRepository(repoDir, eventBus, baseDir);
 }
 
-/**
- * Creates a YamlEvaluatedDefinitionRepository for storing evaluated definitions.
- *
- * Evaluated definitions have CEL expressions already resolved.
- * This repository stores derived data that can be regenerated.
- *
- * @param repoDir - The repository directory path
- * @returns A new YamlEvaluatedDefinitionRepository instance
- */
 export function createEvaluatedDefinitionRepository(
   repoDir: string,
   baseDir?: string,
@@ -316,18 +217,6 @@ export function createEvaluatedDefinitionRepository(
   return new YamlEvaluatedDefinitionRepository(repoDir, baseDir, markDirty);
 }
 
-/**
- * Creates a FileSystemUnifiedDataRepository for storing versioned data.
- *
- * The unified data repository provides:
- * - Versioned data storage with automatic version management
- * - Ownership validation to prevent unauthorized writes
- * - Garbage collection based on lifetime policies
- * - Support for streaming data
- *
- * @param repoDir - The repository directory path
- * @returns A new FileSystemUnifiedDataRepository instance
- */
 export function createUnifiedDataRepository(
   repoDir: string,
   catalogStore: CatalogStore,
@@ -345,14 +234,6 @@ export function createUnifiedDataRepository(
   );
 }
 
-/**
- * Creates a YamlOutputRepository for storing method execution outputs.
- *
- * Outputs track method execution state, timing, and produced artifacts.
- *
- * @param repoDir - The repository directory path
- * @returns A new YamlOutputRepository instance
- */
 export function createOutputRepository(
   repoDir: string,
   baseDir?: string,
@@ -361,13 +242,6 @@ export function createOutputRepository(
   return new YamlOutputRepository(repoDir, baseDir, markDirty);
 }
 
-/**
- * Creates a YamlWorkflowRepository for storing workflow definitions.
- *
- * @param repoDir - The repository directory path
- * @param eventBus - Optional event bus for emitting domain events
- * @returns A new YamlWorkflowRepository instance
- */
 export function createWorkflowRepository(
   repoDir: string,
   eventBus?: EventBus,
@@ -376,13 +250,6 @@ export function createWorkflowRepository(
   return new YamlWorkflowRepository(repoDir, eventBus, baseDir);
 }
 
-/**
- * Creates a YamlWorkflowRunRepository for storing workflow run records.
- *
- * @param repoDir - The repository directory path
- * @param eventBus - Optional event bus for emitting domain events
- * @returns A new YamlWorkflowRunRepository instance
- */
 export function createWorkflowRunRepository(
   repoDir: string,
   eventBus?: EventBus,
@@ -392,84 +259,60 @@ export function createWorkflowRunRepository(
   return new YamlWorkflowRunRepository(repoDir, eventBus, baseDir, markDirty);
 }
 
-// =============================================================================
-// Repository Context
-// =============================================================================
-
-/**
- * Configuration for the repository factory.
- */
 export interface RepositoryFactoryConfig {
   repoDir: string;
   enableIndexing?: boolean;
   workflowsDir?: string;
-  /** Additional workflow directories to scan (e.g. pulled extensions). */
   additionalWorkflowsDirs?: string[];
   definitionsDir?: string;
   yamlWorkflowsDir?: string;
   vaultsDir?: string;
   datastoreResolver?: DatastorePathResolver;
   /**
-   * Hook wired through to every datastore-tier repository so cache writes
-   * invalidate the sync service's fast-path watermark. Supplied by the CLI
-   * when a remote datastore with a sync service is active; absent for
-   * filesystem datastores. When absent, writes do not notify — which is
-   * correct for datastores without a fast-path. See `design/enablers/datastores.md`.
+   * absent for filesystem datastores, where writes do not notify because there
+   * is no fast-path watermark to invalidate
    */
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
   /**
-   * Tells content a v3 read model could not materialise from absent content
-   * (swamp-club#3617), so the unified data repository's content reads, and
-   * the run, definition, evaluated definition and output repositories' reads
-   * of one record, fail loudly on it, and their listings warn that they
-   * leave it out. Set only for a v3 datastore.
+   * content a v3 read model could not materialise from absent content: reads of
+   * it fail loudly and listings warn they leave it out. Set only for a v3
+   * datastore
    */
   unreadableContent?: UnreadableContentLookup;
   /**
-   * Reads another namespace's content from the remote datastore, for the
-   * foreign rows a catalog pull adds. Carried by the unified data repository,
-   * so every query service built from it can fetch (swamp-club#3306).
+   * reads another namespace's content from the remote datastore, for the
+   * foreign rows a catalog pull adds
    */
   fetchForeignContent?: ForeignContentFetcher;
   /**
-   * Namespace slug from the resolved datastore config (giga-swamp Phase 2).
-   * Translated into the Namespace value object and stamped onto every catalog
-   * row written by the unified data repository. Absent/empty → SOLO_NAMESPACE.
+   * stamped onto every catalog row the unified data repository writes; absent
+   * or empty means solo
    */
   namespace?: string;
   autoGc?: boolean;
   /**
-   * When true, catalog query hydration drops rows whose backing `raw` file
-   * is absent on local disk. Correct for filesystem datastores where a
-   * missing file means the catalog row is stale (e.g. model retype moved
-   * data to a different type path). Must be false for remote datastores
-   * where content may not yet be hydrated into the local cache.
-   * Defaults to true for backward compatibility.
+   * drops rows whose raw file is absent on local disk; right for filesystem
+   * datastores, but must be false for remote ones where content may not be
+   * hydrated yet
    */
   filterStaleRows?: boolean;
   /**
-   * Builds the v3 commit log this context commits through, given the
-   * context's hook (swamp-club#3279). Set only for a v3 datastore. The
-   * factory then gives the context a hook of its own when `markDirty` is
-   * absent and marks it `requireUnit` before any repository can write, so a
-   * write outside a commit-log unit is refused rather than left uncommitted.
+   * set only for v3; the factory gives the context its own hook when markDirty
+   * is absent and marks it requireUnit, so a write outside a commit-log unit is
+   * refused
    */
   commitLog?: (
     markDirty: MarkDirtyHook,
     workflowRunRepo: () => YamlWorkflowRunRepository,
   ) => CommitLogEngine;
   /**
-   * The catalog to read and write instead of the one at `catalogDbPath`:
-   * the v3 read model's on a v3 datastore, which the read model fills, so
-   * the query service never backfills it from disk.
+   * the v3 read model's catalog on a v3 datastore, filled by the read model, so
+   * the query service never backfills it from disk
    */
   catalogStore?: CatalogStore;
 }
 
-/**
- * Container for all repositories and the event bus.
- */
 export interface RepositoryContext {
   eventBus: EventBus;
   indexService: RepoIndexService;
@@ -488,57 +331,39 @@ export interface RepositoryContext {
   dataQueryService: DataQueryService;
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
-  /**
-   * Tells content a v3 read model could not materialise from absent content
-   * (swamp-club#3617). Code that builds its own data repositories for this
-   * repo passes it on, as it does `hydrateFile`.
-   */
   unreadableContent?: UnreadableContentLookup;
-  /**
-   * The v3 commit log this context commits through; set only on a v3
-   * datastore (swamp-club#3279). Roots and use-case units open commit-log
-   * units through it instead of legacy ones.
-   */
   commitLog?: CommitLogEngine;
   autoDefinitionsDir: string;
   /**
-   * The repo's `autoGc` setting, which `unifiedDataRepo` enforces at write
-   * time. Code that builds its own data repositories for this repo, such as
-   * workflow execution, passes it on so their writes keep the same caps
-   * (swamp-club#3251).
+   * code building its own data repositories for this repo passes it on, so
+   * their writes keep the same caps
    */
   autoGc?: boolean;
   /**
-   * Whether this repository's datastore supports workflow signal waits, with
-   * the store for their records. Set by the code that resolves the
-   * datastore; absent in a context built without one, which then refuses a
-   * wait.
+   * absent in a context built without a resolved datastore, which then refuses
+   * a wait
    */
   signalWaits?: SignalWaitSupport;
   /**
-   * The continuation claims a resume in this repository takes
-   * (swamp-club#3108). Absent where the datastore has no store every host
-   * reads directly; a resume there takes none.
+   * absent where the datastore has no store every host reads directly; a resume
+   * there takes none
    */
   continuationClaims?: ContinuationClaims;
   /**
-   * Compares this host's record of a run with the datastore's
-   * (swamp-club#3108). Absent on a filesystem datastore, where they are the
-   * same file, and where the sync service has no `fetchContent`.
+   * absent on a filesystem datastore, where the host's record and the
+   * datastore's are the same file, and where the sync service has no
+   * fetchContent
    */
   runRecordCurrency?: RunRecordCurrency;
   /**
-   * The per-kind retention watermarks of this datastore
-   * (swamp-club#3473): when each kind was last reaped and up to when.
-   * Absent where the datastore has no control-plane store every host
-   * reads, or for a read-only command on a custom datastore.
+   * absent where the datastore has no control-plane store every host reads, or
+   * for a read-only command on a custom datastore
    */
   retentionWatermarks?: RetentionWatermarkRepository;
   /**
-   * The evaluations a run with `--last-evaluated` may use (swamp-club#3922).
-   * Serve sets it on a v3 datastore, where a team member's client forwards
-   * the evaluations its own runs write: only serve's own are run. Unset, the
-   * evaluated repositories are read directly.
+   * serve sets it on v3, where a team member's client forwards its own
+   * evaluations and only serve's own are run; unset, evaluated repositories are
+   * read directly
    */
   evaluationTrust?: EvaluationTrust;
   /**
@@ -548,12 +373,6 @@ export interface RepositoryContext {
   takesForwardedRunRecords?: boolean;
 }
 
-/**
- * Creates a repository context with all repositories wired to an event bus.
- *
- * When enableIndexing is true (default), repositories will emit events
- * that the RepoIndexService uses to maintain logical views.
- */
 export function createRepositoryContext(
   config: RepositoryFactoryConfig,
 ): RepositoryContext {
@@ -588,24 +407,18 @@ export function createRepositoryContext(
     bindCommitLogEngine(markDirty, commitLog);
   }
 
-  // Translate the raw config namespace slug into the Namespace value object
-  // exactly once — this factory is the single composition root where config
-  // becomes a domain value. Empty/absent → SOLO_NAMESPACE (solo mode).
   const namespace: Namespace = config.namespace
     ? restoreNamespace(config.namespace)
     : SOLO_NAMESPACE;
 
-  // Helper to resolve datastore-tier base directories
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver ? datastoreResolver.resolvePath(subdir) : undefined;
 
-  // Create event bus
   const eventBus = new EventBus();
 
-  // Create repositories with event bus
-  // Definition and workflow repos are always local (not datastore tier).
-  // Auto-definitions are datastore-tier — resolve via the datastore path
-  // resolver so they're found at the namespaced path after migration.
+  // definition and workflow repos are always local; auto-definitions are
+  // datastore-tier, resolved through the resolver so they are found at the
+  // namespaced path
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions) ??
     swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
   const definitionRepo = new YamlDefinitionRepository(
@@ -623,7 +436,6 @@ export function createRepositoryContext(
     markDirty,
   );
 
-  // Create composite workflow repo if extension workflows dir is provided
   const extensionWorkflowRepo = workflowsDir
     ? new ExtensionWorkflowRepository(workflowsDir, additionalWorkflowsDirs)
     : null;
@@ -632,9 +444,8 @@ export function createRepositoryContext(
     extensionWorkflowRepo,
   );
 
-  // Datastore-tier repositories get resolved base directories. markDirty
-  // is only wired when the caller supplies one — bare factory consumers
-  // (tests, filesystem datastores) pass undefined and writes do not notify.
+  // markDirty is wired only when the caller supplies one; bare consumers
+  // (tests, filesystem datastores) pass undefined and writes do not notify
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
@@ -644,7 +455,6 @@ export function createRepositoryContext(
     unreadableContent,
   );
 
-  // Evaluated definition repository (derived data, no events)
   const evaluatedDefinitionRepo = new YamlEvaluatedDefinitionRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
@@ -652,11 +462,9 @@ export function createRepositoryContext(
     unreadableContent,
   );
 
-  // Create catalog store for data query
   const catalogStore = config.catalogStore ??
     createCatalogStore(repoDir, datastoreResolver);
 
-  // Unified data repository with catalog write-through
   const unifiedDataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
@@ -676,9 +484,6 @@ export function createRepositoryContext(
     ),
   );
 
-  // Construct the query service alongside its dependencies so consumers
-  // never need to reach into the repo to rebuild it. This keeps the
-  // catalog handle as an infrastructure detail of the composition root.
   const dataQueryService = new DataQueryService(catalogStore, unifiedDataRepo, {
     filterStaleRows: config.filterStaleRows ?? true,
     backfill: config.catalogStore === undefined,
@@ -690,7 +495,6 @@ export function createRepositoryContext(
     unreadableContent,
   );
 
-  // Vault config repository with event bus
   const vaultConfigRepo = new YamlVaultConfigRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
@@ -698,7 +502,6 @@ export function createRepositoryContext(
     markDirty,
   );
 
-  // Create index service (no-op — symlink-based indexing has been removed)
   const indexService = new NoopRepoIndexService();
 
   return {

@@ -67,7 +67,6 @@ import {
   unitOptions,
 } from "./commit_log_test_helpers.ts";
 
-/** An in-memory chunk storage with small chunks, so content spans several. */
 function memory(): MemoryStorage {
   return new MemoryStorage({ maxChunkBytes: 32 * 1024 });
 }
@@ -338,7 +337,6 @@ Deno.test("runInCommitLogRoot: a repository's typed declaration and stageTyped l
       await stageTyped(hook, () => [{ partition: MODEL, op: put }]);
       assertEquals(root.stagedOps().length, 1);
       assertEquals(currentUnitOfWork()?.staged(), []);
-      // Without the declaration the path-only change is refused.
       await assertRejects(
         () => signalChange(hook, { kind: "write", path: "/c/a" }),
         PathOnlyChangeRefusedError,
@@ -347,21 +345,18 @@ Deno.test("runInCommitLogRoot: a repository's typed declaration and stageTyped l
   );
   assertEquals(sink.landed.length, 1);
   assertEquals(sink.landed[0].ops, [put]);
-  // After the root ended, a typed write is refused, not dropped.
   await assertRejects(
     () => stageTyped(hook, () => [{ partition: MODEL, op: put }]),
     UnscopedWriteRefusedError,
   );
 });
 
-/** A sink whose model partition refuses a unit fenced at 3 (stale fence). */
 async function fencedSink(): Promise<MemorySink> {
   const sink = new MemorySink();
   await sink.append(modelCommit(1, [await savePut("seed", 1)], { fence: 5 }));
   return sink;
 }
 
-/** A run that wrote a data version, then saved its record. */
 async function runWritingData(root: CommitLogRoot): Promise<void> {
   await root.stageOps([
     { partition: MODEL, op: await savePut("a", 1) },
@@ -384,7 +379,6 @@ Deno.test("runInCommitLogRoot: onRefused re-saves the held run in the root, whic
           ...unitOptions(sink, memory(), { fence: 3 }),
           onRefused: async (refusal) => {
             seen.push(refusal);
-            // The re-save stages into the root, which is ambient.
             const root = currentUnitOfWork() as CommitLogUnitOfWork;
             await root.stageOp({
               partition: runPartition(),
@@ -400,11 +394,9 @@ Deno.test("runInCommitLogRoot: onRefused re-saves the held run in the root, whic
     PartitionsRefusedError,
   );
   assertStrictEquals(seen[0], error);
-  // Thrown after the commit, and marked so (swamp-club#3587).
   assertEquals(wasThrownAfterCommit(error), true);
   assertEquals(error.refusals[0].versions, [{ dataId: DATA_ID, version: 1 }]);
   assertEquals(error.heldRuns.map(String), [runPartition().toString()]);
-  // Both run puts commit, in order: the last one is the re-saved record.
   const ops = sink.commitsOf(runPartition()).flatMap((commit) => commit.ops);
   assertEquals(
     ops.map((op) =>
@@ -428,8 +420,6 @@ Deno.test("runInCommitLogRoot: without onRefused, a refusal commits no run recor
     PartitionsRefusedError,
   );
   assertEquals(plain.commitsOf(runPartition()), []);
-  // The root's own commit threw it, so the run record never landed
-  // (swamp-club#3587).
   assertEquals(wasThrownAfterCommit(thrownByCommit), false);
 
   const failing = await fencedSink();
@@ -540,7 +530,6 @@ Deno.test("runInCommitLogRoot: a settling checkpoint cut off from the storage is
   assertEquals(calls, 2, "one settling checkpoint, then the commit");
 });
 
-/** Runs a root that stages one op, and returns what `onEnded` was told. */
 async function endedWith(
   sink: MemorySink,
   options: {
@@ -568,7 +557,6 @@ async function endedWith(
 
 Deno.test("runInCommitLogRoot: onEnded is told once that a root whose commit resolved committed (swamp-club#3759)", async () => {
   assertEquals(await endedWith(new MemorySink()), [true]);
-  // A failed operation the disposition commits committed too.
   assertEquals(
     await endedWith(new MemorySink(), {
       fails: true,
@@ -704,7 +692,6 @@ Deno.test("runInCommitLogRoot: an operation that failed after a checkpoint commi
               content: new Uint8Array(100 * 1024).fill(7),
             },
           });
-          // The run's final record, which the end cannot commit.
           await root.stageOp({
             partition: runPartition(),
             op: await runPut("failed"),

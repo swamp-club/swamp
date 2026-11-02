@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** The commit-log unit's use of the commit outbox (swamp-club#3490). */
-
 import { waitFor } from "@swamp-club/swamp-testing";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -76,7 +74,6 @@ function bytesOf(length: number): Uint8Array {
   return bytes;
 }
 
-/** The outbox removals the sink saw, in order: `settle:` or `discard:`. */
 function removals(sink: OutboxMemorySink): string[] {
   return sink.events.filter((event) =>
     event.startsWith("settle:") || event.startsWith("discard:")
@@ -94,7 +91,6 @@ function blobChange(name: string) {
   };
 }
 
-/** A connection refusal, as the S3 extension wraps its transport's error. */
 function refused(): Error {
   return new Error("S3 headObject failed key=_blobs/x", {
     cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:9"), {
@@ -103,7 +99,6 @@ function refused(): Error {
   });
 }
 
-/** `storage` with its bucket calls failing with `failure()` while `down.on`. */
 function failingWhen(
   storage: MemoryStorage,
   down: { on: boolean },
@@ -176,7 +171,6 @@ Deno.test("commit-log unit with an outbox: a run whose checkpoint landed and who
 
 const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
 
-/** A put on another run of the fixture workflow, whose saves all land. */
 function otherRunChange(text: string) {
   return putOp({
     intent: createIntent({
@@ -265,14 +259,11 @@ Deno.test("commit-log unit with an outbox: a commit that cannot reach the storag
     unitOptions(sink, failingWhen(memory(), down, refused)),
   );
   await uow.stageOp(blobChange("a"));
-  // A first attempt stores the content and prepares the entry, then fails
-  // to append: the entry stays for a retry.
   sink.beforeAppend = () => {
     throw new Error("disk full");
   };
   await assertRejects(() => uow.checkpoint(), Error, "disk full");
   assertEquals(sink.entries.size, 1);
-  // The retry cannot reach the storage, and the give-up cannot be written.
   down.on = true;
   sink.beforeRemove = () => {
     throw new Error("outbox locked");
@@ -313,7 +304,6 @@ Deno.test("commit-log unit with an outbox: the base is the head read under the p
       return prepare(preparation);
     },
   });
-  // Another writer lands seq 1 between this unit's head read and append.
   let raced = false;
   sink.beforeAppend = async () => {
     if (raced) return;
@@ -393,7 +383,6 @@ Deno.test("commit-log unit with an outbox: abandon discards what it prepared", a
 Deno.test("commit-log unit with an outbox: a refusal discards the refused entry and the unit's run entries, and held runs are never prepared", async () => {
   const sink = new OutboxMemorySink();
   const options = unitOptions(sink, memory());
-  // The run's first append fails, so its entry stays prepared.
   let runFails = true;
   sink.beforeAppend = (commit) => {
     if (runFails && commit.partition.equals(runPartition())) {
@@ -415,7 +404,6 @@ Deno.test("commit-log unit with an outbox: a refusal discards the refused entry 
   await assertRejects(() => uow.checkpoint(), Error, "transient");
   const runTxn = [...sink.entries.keys()];
   assertEquals(runTxn.length, 1);
-  // Refused: its expect no longer holds.
   await uow.stageOp({
     partition: MODEL,
     op: await savePut("a", 1, "again", "absent"),
@@ -446,13 +434,11 @@ Deno.test("commit-log unit with an outbox: chunks are checked before the append 
   for (const overlap of [false, true]) {
     const sink = new OutboxMemorySink();
     const options = unitOptions(sink, memory());
-    // Read before storing, then after preparing.
     sink.sweepStates = [
       { epoch: 4, active: false },
       { epoch: overlap ? 5 : 4, active: false },
     ];
     let presentAtAppend: boolean | undefined;
-    // A sweep deletes every chunk between the content store and the prepare.
     sink.beforeHead = () => options.storage.chunks.clear();
     sink.beforeAppend = () => {
       presentAtAppend = options.storage.chunks.size > 0;
@@ -461,7 +447,6 @@ Deno.test("commit-log unit with an outbox: chunks are checked before the append 
     await uow.stageOp(blobChange("x"));
     await uow.commit();
     assertEquals(presentAtAppend, overlap);
-    // The post-commit check restores them either way.
     assert(options.storage.chunks.size > 0);
   }
 });
@@ -540,11 +525,10 @@ Deno.test("commit-log unit with an outbox: abandon reports an expired checkpoint
 Deno.test("commit-log unit with an outbox: a writer that may overlap a sweep batch waits for it before its chunk check and its append (swamp-club#3586)", async () => {
   const sink = new OutboxMemorySink();
   const options = unitOptions(sink, memory());
-  // A sweep is in progress at both reads.
   sink.sweepStates = [{ epoch: 4, active: true }, { epoch: 4, active: true }];
-  // The batch in flight judged the chunks unreferenced before the prepare.
-  // Run to its end, it deletes them and its re-check, finding the entry,
-  // puts them back.
+  // the batch in flight judged the chunks unreferenced before the prepare; run
+  // to its end it deletes them, and its re-check, finding the entry, puts them
+  // back
   let batchEnded = false;
   Object.assign(sink.outbox, {
     sweepBatch: () => {
@@ -555,8 +539,6 @@ Deno.test("commit-log unit with an outbox: a writer that may overlap a sweep bat
   });
   let presentAtAppend: boolean | undefined;
   sink.beforeAppend = () => {
-    // Not waited for, it deletes them after the writer's check, and the
-    // process dies before either re-check runs.
     if (!batchEnded) options.storage.chunks.clear();
     presentAtAppend = options.storage.chunks.size > 0;
   };
@@ -610,7 +592,6 @@ Deno.test("commit-log unit with an outbox: a retry refreshes the chunks it store
   const uow = createCommitLogUnitOfWork(contextHook(), options);
   await uow.stageOp(blobChange("x"));
   await assertRejects(() => uow.checkpoint(), Error, "transient");
-  // Past the grace period while the retry waited, a sweep deletes them.
   options.storage.chunks.clear();
   fail = false;
   await uow.commit();
@@ -628,7 +609,6 @@ Deno.test("commit-log unit with an outbox: a refusal in the unit's own commit wh
       op: await savePut("a", 1, "a", "absent"),
     });
     await first.commit();
-    // Neither the abandoned mark nor the discard can be written.
     Object.assign(sink.outbox, {
       abandon: () => Promise.reject(new Error("database or disk is full")),
     });
@@ -636,7 +616,6 @@ Deno.test("commit-log unit with an outbox: a refusal in the unit's own commit wh
       throw new Error("database or disk is full");
     };
     const uow = createCommitLogUnitOfWork(contextHook(), options);
-    // Refused: its expect no longer holds.
     await uow.stageOp({
       partition: MODEL,
       op: await savePut("a", 1, "again", "absent"),
@@ -651,10 +630,6 @@ Deno.test("commit-log unit with an outbox: a refusal in the unit's own commit wh
   }
 });
 
-/**
- * A memory storage that syncs chunk directories as the filesystem storage
- * does, recording each barrier in `events` as `sync:<hashes>` (sorted).
- */
 class SyncingStorage extends MemoryStorage {
   failSync = false;
 
@@ -674,7 +649,6 @@ class SyncingStorage extends MemoryStorage {
   }
 }
 
-/** The barrier event naming every chunk of `content`. */
 async function syncEventOf(content: Uint8Array): Promise<string> {
   const { parts } = await new ChunkStore(memory()).refOf(
     content,
@@ -700,8 +674,6 @@ Deno.test("commit-log unit with an outbox: one chunk directory barrier covers th
     `settle:${landed.txnId}`,
   ]);
 
-  // The same content again: every chunk is a dedupe hit, put by no one
-  // now, and its shard is still synced before the prepare.
   sink.events.length = 0;
   const puts = storage.puts();
   const second = createCommitLogUnitOfWork(contextHook(), options);
@@ -752,8 +724,6 @@ Deno.test("commit-log unit with an outbox: a failed chunk directory barrier prep
   assertEquals(sink.landed, []);
   assertEquals(sink.entries.size, 0);
 
-  // The chunks are stored but their names may not be durable: a later unit
-  // that finds them present syncs them before it prepares.
   storage.failSync = false;
   const next = createCommitLogUnitOfWork(contextHook(), options);
   await next.stageOp(blobChange("x"));
@@ -767,8 +737,6 @@ Deno.test("commit-log unit with an outbox: chunks stored again before or after t
   const storage = new SyncingStorage(sink.events);
   const options = unitOptions(sink, storage);
   const sync = await syncEventOf(bytesOf(100 * 1024));
-  // A sweep overlaps: the chunks vanish after the first barrier, are stored
-  // again under the lock, and vanish again before the post-commit check.
   sink.sweepStates = [
     { epoch: 4, active: false },
     { epoch: 5, active: false },
@@ -790,7 +758,6 @@ Deno.test("commit-log unit with an outbox: chunks stored again before or after t
   assert(storage.chunks.size > 0);
 });
 
-/** 100 KiB of content that differs by `seed`: one chunk each. */
 function seededBytes(seed: number): Uint8Array {
   const bytes = new Uint8Array(100 * 1024);
   for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + seed) % 251;
@@ -808,11 +775,6 @@ function seededChange(name: string, seed: number) {
   };
 }
 
-/**
- * A filesystem storage in a temp directory whose file and directory syncs
- * are recorded in `events` (`file:<chunks renamed so far>`, `dir:<path>`),
- * with memos of its own. `syncFile` runs inside each file sync.
- */
 async function withRecordingFs(
   events: string[],
   fn: (
@@ -875,7 +837,6 @@ Deno.test("commit-log unit with an outbox: a group's new chunks are synced toget
     let entered = 0;
     hooks.syncFile = async () => {
       entered++;
-      // Each file sync waits for the others: the group's syncs run at once.
       await waitFor(() => entered === seeds.length, "every file sync", {
         timeoutMs: 2_000,
         intervalMs: 1,
@@ -895,13 +856,11 @@ Deno.test("commit-log unit with an outbox: a group's new chunks are synced toget
     const [landed] = sink.landed;
     const prepareAt = sink.events.indexOf(`prepare:${landed.txnId}`);
     const before = sink.events.slice(0, prepareAt);
-    // Every file synced before any chunk was renamed into place.
     assertEquals(before.filter((e) => e.startsWith("file:")), [
       "file:0",
       "file:0",
       "file:0",
     ]);
-    // Then the directories, each shard once, after every file sync.
     const dirs = before.filter((e) => e.startsWith("dir:"));
     const shards = [...new Set(paths.map((path) => `dir:${dirname(path)}`))];
     for (const shard of shards) {
@@ -956,7 +915,6 @@ Deno.test("commit-log unit with an outbox: a failed file sync prepares nothing a
     for (const seed of [1, 2]) {
       const path = chunkPath(await hashOf(seededBytes(seed)));
       assertEquals(await present(path), false, path);
-      // No temp file is left beside it either.
       const left = await present(dirname(path))
         ? [...Deno.readDirSync(dirname(path))]
         : [];
@@ -994,7 +952,6 @@ Deno.test("commit-log unit with an outbox: a commit the sink will queue offline 
   let atAppend: boolean | undefined;
   sink.outbox.queue = () => Promise.resolve();
   sink.beforeAppend = (commit) => {
-    // What a process that dies now, before the queue's mark, leaves.
     atAppend = sink.entries.get(commit.txnId)?.queuedOffline;
     throw new CommitQueuedOfflineError(commit.partition);
   };
@@ -1006,7 +963,6 @@ Deno.test("commit-log unit with an outbox: a commit the sink will queue offline 
   await uow.commit();
   assertEquals(atAppend, true);
 
-  // A sink that would send it prepares it pending, as before.
   const online = new OutboxMemorySink();
   let pendingAtAppend: boolean | undefined;
   online.beforeAppend = (commit) => {

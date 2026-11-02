@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Shared harness for the cel-js dependency pins (typed-secrets Phase 1.1,
- * design/enablers/typed-secrets.md Section 4.2).
- *
- * The pin tests assert behavior observed in the pinned cel-js release, not
- * behavior swamp wants. A failure after a dependency change means the
- * typed-secrets design must be re-reviewed against the new behavior, not that
- * the test should be bent to pass.
- *
- * Error messages are pinned exactly on purpose: a release that only rewords
- * one still fails, so a human looks at it.
+ * pin tests assert behavior observed in the pinned cel-js release; a failure
+ * after a dependency change means the design needs re-review, not the test
+ * bent. Messages are pinned exactly so rewording is noticed
  */
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
@@ -49,24 +42,17 @@ function pinnedCelJsVersion(): string {
   return version;
 }
 
-/**
- * The cel-js version the pins ran against, read from the deno.json import
- * map so the test names follow the dependency instead of going stale when
- * it is bumped.
- */
+/** read from the deno.json import map so test names follow the dependency */
 const CEL_JS_VERSION: string = pinnedCelJsVersion();
 
-/** Prefix a test name with the pinned library version. */
 export function pin(name: string): string {
   return `cel-js ${CEL_JS_VERSION}: ${name}`;
 }
 
-/** Stand-in for a secret value: a class whose one field is public. */
 export class FixtureSecret {
   constructor(readonly v: string) {}
 }
 
-/** A value whose only state is a private field. */
 export class PrivateFieldSecret {
   readonly #v: string;
   constructor(v: string) {
@@ -77,10 +63,6 @@ export class PrivateFieldSecret {
   }
 }
 
-/**
- * An environment configured like the review probes: unlisted variables are
- * dyn, optional syntax is enabled and literals may mix element types.
- */
 export function dynEnvironment(): Environment {
   return new Environment({
     unlistedVariablesAreDyn: true,
@@ -94,7 +76,6 @@ type CelErrorClass =
   | typeof ParseError
   | typeof CelTypeError;
 
-/** Assert that `fn` throws the given cel-js error class with `code`. */
 export function assertCelError<T extends CelErrorClass>(
   fn: () => unknown,
   errorClass: T,
@@ -111,7 +92,6 @@ export function assertCelError<T extends CelErrorClass>(
   return thrown as InstanceType<T>;
 }
 
-/** Assert that `fn` throws a plain Error (not a cel-js error) with `message`. */
 export function assertPlainError(fn: () => unknown, message: string): void {
   let thrown: unknown;
   try {
@@ -125,9 +105,8 @@ export function assertPlainError(fn: () => unknown, message: string): void {
 }
 
 /**
- * Read the evaluator's internal maybe-async flag from a parsed program.
- * `ast.maybeAsync` is not part of cel-js's typed API; this is the one place
- * the pins read it, so a rename fails here with one clear message.
+ * ast.maybeAsync is not part of cel-js's typed API; the pins read it only here,
+ * so a rename fails with one clear message
  */
 export function readMaybeAsync(
   program: ReturnType<Environment["parse"]>,
@@ -141,30 +120,20 @@ export function readMaybeAsync(
   return flag;
 }
 
-/**
- * The production `Secret` (design Section 3.1) holding one vault reference,
- * written `vault/key`. The typed-secrets pins observe cel-js against what
- * ships, so a dependency upgrade is checked against it.
- */
+/** the production Secret, so a dependency upgrade is checked against what ships */
 export function createSecret(reference: string): Secret {
   const [vaultName, key] = reference.split("/");
   return vaultReferenceSecret({ vaultName, key }, "pin");
 }
 
-/**
- * Run `fn` inside a fresh fault scope, handing it the scope's live fault
- * list, which it reads after `fn` returns or its promise settles.
- */
 export function withFaultContext<T>(fn: (faults: Fault[]) => T): T {
   return runInFaultScope((scope) => fn(scope.faults));
 }
 
-/** The fault an operator, function or trap refusal records. */
 export function fault(operation: string): Fault {
   return { operation, code: SECRET_OPERATION_UNSUPPORTED };
 }
 
-/** The options the review probes and the internal environment use. */
 export function secretEnvironmentOptions(): ConstructorParameters<
   typeof Environment
 >[0] {
@@ -176,9 +145,9 @@ export function secretEnvironmentOptions(): ConstructorParameters<
 }
 
 /**
- * A plain object whose every property is an enumerable getter that pushes
- * `<label>.<key>` to `reads` before answering, so a pin can see which values
- * cel-js read. The container rule relies on this read being observable.
+ * every property is an enumerable getter that records its read, so a pin can
+ * see which values cel-js read; the container rule relies on this read being
+ * observable
  */
 export function recordingObject<T extends Record<string, unknown>>(
   label: string,
@@ -198,7 +167,6 @@ export function recordingObject<T extends Record<string, unknown>>(
   return out;
 }
 
-/** An array whose every element is an enumerable getter, like above. */
 export function recordingList(
   label: string,
   items: readonly unknown[],

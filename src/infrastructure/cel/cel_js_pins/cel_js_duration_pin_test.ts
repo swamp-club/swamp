@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins for the cel-js duration internals that cel_evaluator.ts relies on when
-// it replaces Duration's addDuration and subtractDuration (swamp-club#3714).
-// Each holds whether or not that file has been loaded in this process.
+// pins the cel-js duration internals cel_evaluator.ts relies on when it
+// replaces addDuration and subtractDuration; each holds whether or not that
+// file is loaded
 
 import { assertEquals, assertStrictEquals } from "@std/assert";
 import { dynEnvironment, pin } from "./cel_js_pin_test_helpers.ts";

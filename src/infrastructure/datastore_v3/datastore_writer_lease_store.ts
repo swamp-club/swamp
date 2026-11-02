@@ -18,22 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Where the v3 writer lease lives on a datastore that is not a filesystem
- * one: its provider's writable datastore-wide control plane, at
- * `_control/writer/` at the datastore root (swamp-club#3364). There is one
- * `commits.db`, and so one writer, per datastore, so the lease is never
- * scoped to a namespace.
- *
- * The provider must declare `datastoreWideLease`: a writable store shows
- * only that the records can be written at the root, not that a namespaced
- * push leaves them there (swamp-club#3414).
- *
- * Dormant: format 3 is refused on every datastore but a filesystem one, so
- * nothing calls it until the Phase 4 bucket opt-in binds the lease through
- * it. That opt-in must bind the lease only through this function, so it
- * cannot be enabled against an extension that does not declare it.
- *
- * @module
+ * the v3 writer lease lives in the provider's datastore-wide control plane,
+ * never scoped to a namespace; the provider must declare `datastoreWideLease`,
+ * since a writable store alone does not show that
  */
 
 import {
@@ -44,10 +31,9 @@ import type { DatastoreProvider } from "../../domain/datastore/datastore_provide
 import { UserError } from "../../domain/errors.ts";
 
 /**
- * The provider's writable datastore-wide control plane, for the v3 writer
- * lease. Throws when the provider does not declare `datastoreWideLease`, or
- * offers no store or only a read-only one: a sync service's control plane
- * binds a namespace, so it can never stand in.
+ * throws when the provider does not declare `datastoreWideLease` or offers no
+ * writable store: a sync service's control plane binds a namespace, so it can
+ * never stand in
  */
 export function datastoreWriterLeaseStore(
   provider: Pick<

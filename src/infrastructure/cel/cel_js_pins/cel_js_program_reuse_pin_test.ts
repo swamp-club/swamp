@@ -17,14 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins for parsed-program reuse and registry mutation
-// (design/enablers/typed-secrets.md Section 4.2, fact 7: "Parsed programs
-// contain mutable checker and comprehension state. Successful concurrent
-// examples are evidence for a test case, not a concurrency contract.").
-//
-// Concurrency is driven by gates the test releases in reverse start order,
-// never by timers, so every run is suspended at the same time before any
-// resumes.
+// concurrency is driven by gates released in reverse start order, never timers,
+// so every run is suspended before any resumes
 
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -37,11 +31,6 @@ import {
   pin,
 } from "./cel_js_pin_test_helpers.ts";
 
-/**
- * Registers `gate(value, run)`, which suspends until the test opens gate
- * `run` and then returns `value + "!"`, and `gateBool(value, run)`, which
- * returns whether `value` starts with "y".
- */
 function gatedEnvironment(): {
   env: Environment;
   started: Set<bigint>;
@@ -80,9 +69,8 @@ function gatedEnvironment(): {
 }
 
 /**
- * Start every run, wait until all are suspended, then release them in reverse.
- * If the wait times out the runs stay pending; that is safe only because the
- * gates hold no timers or ops, so keep them that way.
+ * if the wait times out the runs stay pending; safe only because the gates hold
+ * no timers or ops, so keep them that way
  */
 async function runSuspendedTogether<T>(
   harness: ReturnType<typeof gatedEnvironment>,
@@ -236,12 +224,9 @@ Deno.test(
 
     const afterFirstRun = secretEnvironment();
     const program = afterFirstRun.parse("s == 'a'");
-    // No overload yet: identity fallback.
     assertEquals(program({ s }), false);
     afterFirstRun.registerOperator("Secret == string: bool", equalsString);
-    // The program keeps the dispatch it resolved on its first run.
     assertEquals(program({ s }), false);
-    // A new parse on the same environment sees the overload.
     assertEquals(afterFirstRun.parse("s == 'a'")({ s }), true);
     assertEquals(afterFirstRun.evaluate("s == 'a'", { s }), true);
   },

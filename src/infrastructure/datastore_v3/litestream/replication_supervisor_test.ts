@@ -55,7 +55,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A Litestream child that exits on the signals it honours. */
 class FakeChild implements LitestreamChild {
   readonly pid = 4242;
   readonly signals: Deno.Signal[] = [];
@@ -76,9 +75,7 @@ class FakeChild implements LitestreamChild {
 interface Harness {
   readonly deps: SupervisorDeps;
   readonly child: FakeChild;
-  /** Fake time, advanced by every sleep. */
   now(): number;
-  /** Runs `fn` once fake time reaches `atMs` past the start. */
   at(atMs: number, fn: () => Promise<void> | void): void;
   started: boolean;
 }
@@ -111,7 +108,6 @@ function harness(
           pending.splice(pending.indexOf(due), 1);
           await due.fn();
         }
-        // Lets the fake child's exit settle.
         await new Promise((resolve) => setTimeout(resolve, 0));
       },
     },
@@ -204,7 +200,6 @@ Deno.test({
       const started = h.now();
       assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
       assertEquals(stoppedWhileHeld, false);
-      // It stopped a whole idle timeout after the command released it.
       assert(h.now() - started >= 3_000 + options.idleMs);
     });
   },
@@ -250,7 +245,6 @@ Deno.test({
       });
       await probe.lock(true);
       const h = harness();
-      // The probe lets go 200 ms into the supervisor's retries.
       h.at(200, () => probe.close());
       assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
       assert(h.started);
@@ -349,7 +343,6 @@ Deno.test("parseSupervisorArgs: reads back the replica check's interval (swamp-c
   assertEquals(parseSupervisorArgs(supervisorArgs(options)), options);
 });
 
-/** A sidecar whose copy acknowledged `txid` on lineage 3, with a fake check. */
 async function verifySetup(dir: string, txid = "0000000000000005") {
   const { options, paths } = await setup(dir);
   await writeCopyState(paths, {
@@ -377,8 +370,6 @@ Deno.test({
         return Promise.resolve(undefined);
       };
       assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
-      // Once when it started, and not again at the idle exit: that TXID was
-      // tried, and no new one was acknowledged.
       assertEquals(calls.length, 1);
       assertEquals(calls[0].lineageFence, 3);
       assertEquals(calls[0].replicaType, "file");

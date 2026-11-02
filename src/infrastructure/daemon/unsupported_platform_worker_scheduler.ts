@@ -24,11 +24,6 @@ import type {
 } from "../../domain/worker/worker_daemon_scheduler.ts";
 import { UserError } from "../../domain/errors.ts";
 
-/**
- * The worker daemon scheduler for a platform with no supported service
- * manager. No daemon can be installed there, so status reports it as not
- * configured, while enable and disable refuse.
- */
 export class UnsupportedPlatformWorkerScheduler
   implements WorkerDaemonScheduler {
   private readonly reason: string;

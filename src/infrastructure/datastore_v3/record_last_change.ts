@@ -23,22 +23,13 @@ import {
 } from "../../domain/datastore_v3/commit_store.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 
-/** How many commits back the newest change to a refused key is looked for. */
 const CHANGED_BY_SCAN = 200;
 
-/** Who last changed a record and when, as far as recent history tells. */
 export interface RecordLastChange {
-  /** The commit's principal, else its writer's host. */
   readonly changedBy?: string;
-  /** When the single writer accepted the commit. */
   readonly changedAt?: string;
 }
 
-/**
- * The newest of the last {@link CHANGED_BY_SCAN} commits of `partition`
- * that put or tombstoned `key`, as who and when; empty when none of them
- * did or that history is compacted away.
- */
 export async function recordLastChange(
   commitStore: Pick<CommitStore, "head" | "readPartition">,
   namespace: string,

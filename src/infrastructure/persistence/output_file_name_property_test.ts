@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// An output file's name carries its startedAt, and findAllGlobalSince skips
-// a name stamped before the cutoff without reading it (swamp-club#4056), as
-// findHistoryByDefinition skips one stamped outside its since and until
-// (swamp-club#4058). The skip is safe only if comparing stamps orders records
-// as comparing their instants does: then no record started inside the window
-// is skipped.
+// skipping a file by its name stamp is safe only if comparing stamps orders
+// records as comparing their instants does
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
@@ -35,10 +31,8 @@ import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import "../../domain/models/models.ts";
 
 const TYPE = ModelType.create("command/shell");
-// 1970 through the end of 9999, the years a stamp spells in four digits.
 const MAX_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
 const instant = fc.integer({ min: 0, max: MAX_MS });
-// A start and a cutoff: anywhere, or within 2 ms of each other.
 const startAndCutoff = instant.chain((started) =>
   fc.tuple(
     fc.constant(started),
@@ -136,11 +130,8 @@ Deno.test("findHistoryByDefinition: returns a record exactly when it started in 
   }
 });
 
-// A global scan judges a file on the key its location carries before it
-// reads it (swamp-club#4142): its type and method directories and the
-// definition id in its name. That is safe only if, for every record save()
-// writes, the location says what the record says.
-// A record's definition id is a UUID, hyphens and all.
+// a global scan judges a file by the key its location carries, so for every
+// saved record the location must say what the record says
 const definitionIdArb = fc.uuid();
 const methodArb = fc.stringMatching(/^[a-z][a-zA-Z0-9_-]{0,15}$/);
 const typeArb = fc.constantFrom(TYPE, SERVER_TOKEN_MODEL_TYPE);

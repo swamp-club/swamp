@@ -40,15 +40,9 @@ const logger = getLogger(["extension-workflow-repo"]);
 const WORKFLOW_FILE_PATTERN = /\.ya?ml$/;
 
 /**
- * Yields the path of every file under `dir` that the extension workflow
- * loader reads: `*.yaml` and `*.yml` at any depth, except manifests. Whether
- * a file is actually a workflow (a top-level `jobs` key) is decided by the
- * caller after parsing. Each level is visited in name order, so the same
- * directory yields the same sequence on every filesystem (swamp-club#3067).
- * Paths are yielded as they are found: a caller that stops early, or that
- * catches an error from an unreadable subdirectory, keeps the files before
- * it. Errors, including `Deno.errors.NotFound` for a missing `dir`,
- * propagate to the caller.
+ * visits each level in name order for the same sequence on every filesystem;
+ * yields as found so an early stop or caught error keeps earlier files; errors,
+ * including NotFound for dir, propagate
  */
 export async function* extensionWorkflowFiles(
   dir: string,
@@ -67,14 +61,8 @@ export async function* extensionWorkflowFiles(
 }
 
 /**
- * Read-only WorkflowRepository that discovers YAML workflows from an
- * extension workflows directory (e.g. `extensions/workflows/`).
- *
- * Extension workflows are read-only — save() and delete() throw UserError.
- * A `*.yaml` / `*.yml` file in the directory tree is treated as a workflow
- * definition only if it has a top-level `jobs` key; `manifest.yaml`,
- * `manifest.yml`, and other YAML an extension ships (data files read by its
- * models) are skipped.
+ * read-only; a YAML file counts as a workflow only with a top-level jobs key,
+ * so manifests and data files an extension ships are skipped
  */
 export class ExtensionWorkflowRepository implements WorkflowRepository {
   private readonly baseDir: string;
@@ -95,7 +83,6 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
     this.workflowsDirs = [this.baseDir, ...additionalDirs];
   }
 
-  /** The directories this repository reads: the base dir, then additional dirs. */
   getWorkflowDirs(): readonly string[] {
     return this.workflowsDirs;
   }
@@ -164,7 +151,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
         }
       } catch (error) {
         if (error instanceof Deno.errors.NotFound) {
-          continue; // Directory doesn't exist — skip
+          continue;
         }
         throw error;
       }
@@ -194,15 +181,10 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   }
 
   getPath(id: WorkflowId): string {
-    // Scan the directory to find the file for a given workflow ID
-    // This is a synchronous fallback — for display purposes only
+    // synchronous fallback for display purposes only
     return `${this.workflowsDirs[0]}/workflow-${id}.yaml`;
   }
 
-  /**
-   * Finds the actual file path for a workflow by scanning the directory.
-   * Returns null if not found.
-   */
   async findPath(id: WorkflowId): Promise<string | null> {
     for (const dir of this.workflowsDirs) {
       try {
@@ -236,10 +218,8 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
 }
 
 /**
- * {@link ExtensionWorkflowRepository.memoizedView}: the source's `findAll`,
- * read at most once, searched the same way the source searches it. Every
- * lookup returns the same `Workflow` instances, so callers must not mutate
- * them.
+ * reads the source's findAll at most once; every lookup returns the same
+ * Workflow instances, so callers must not mutate them
  */
 class MemoizedExtensionWorkflows implements WorkflowRepository {
   #all: Promise<Workflow[]> | undefined;

@@ -95,10 +95,6 @@ async function writeFiles(
   }
 }
 
-/**
- * Every file, dir and symlink under `dir` (staging excluded) → content,
- * "<dir>" or "<link target>".
- */
 async function readTree(dir: string): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   const walk = async (current: string) => {
@@ -127,7 +123,6 @@ async function exists(path: string): Promise<boolean> {
   return await defaultInstallFsOps.lstat(path) !== "absent";
 }
 
-/** Resets the fixture to a plain v1 install. */
 async function seedFresh(f: Fixture): Promise<void> {
   await Deno.remove(f.extRoot, { recursive: true }).catch(() => {});
   await Deno.remove(join(f.pulledRoot, STAGING_DIR_NAME), { recursive: true })
@@ -138,7 +133,6 @@ async function seedFresh(f: Fixture): Promise<void> {
   await seedV1(f);
 }
 
-/** Installs v1 the plain way: files in place, no staging. */
 async function seedV1(f: Fixture): Promise<void> {
   await writeFiles(f.extRoot, {
     "models/a.ts": "v1 a",
@@ -191,17 +185,12 @@ interface Call {
   args: string[];
 }
 
-/**
- * Wraps the real ops: records every call, asserts no rename lands on an
- * existing path, and throws `failWith` on the `failAt`-th rename.
- */
 function recordingOps(
   opts: { failAt?: number; failWith?: () => Error } = {},
 ): {
   ops: InstallFsOps;
   calls: Call[];
   renames: () => number;
-  /** Set to make every later readFile throw. */
   control: { failReads: boolean };
 } {
   const calls: Call[] = [];
@@ -415,7 +404,6 @@ Deno.test("ExtensionInstallTransaction.swap: refuses when the journal on disk ha
   });
 });
 
-/** Replaces the v1 extension root with a symlink to a dev copy of it. */
 async function linkExtRoot(f: Fixture): Promise<string> {
   const target = join(f.repoDir, "elsewhere");
   await writeFiles(target, {
@@ -497,7 +485,6 @@ Deno.test("ExtensionInstallTransaction.settle: a failing settle never throws, ke
     );
     assertEquals(isActiveInstallOwner(tx.journal.ownerId), false);
 
-    // Recovery with working ops finishes the roll-back.
     const report = await recoverInstallStaging({
       bounds: boundsOf(f),
       bundleKindDirs: [f.bundleKindDir],
@@ -524,8 +511,6 @@ Deno.test("ExtensionInstallTransaction.settle: rolls forward when the lockfile e
     );
   });
 });
-
-// ---- crash recovery ----
 
 async function crashAt(f: Fixture, rename: number): Promise<string> {
   const { ops } = recordingOps({
@@ -570,7 +555,6 @@ Deno.test("recoverInstallStaging: rolls forward a swapped journal whose lockfile
     const { ops } = recordingOps();
     const tx = await beginV2(f, ops);
     await tx.swap();
-    // The process dies after the lockfile write, before commit.
     await tx.settle(
       new SimulatedInstallCrash("after lockfile"),
       () => Promise.resolve(null),
@@ -668,9 +652,7 @@ Deno.test("recoverInstallStaging: leaves an invalid or out-of-containment journa
       NAME,
     );
     assertEquals(report.rolledBack, []);
-    // The live root stays wherever the crash left it: nothing moved.
     assertEquals(await exists(f.extRoot), false);
-    // The bundle staging of a known journal is never swept.
     assert(
       await exists(join(f.bundleKindDir, bundleStagingDirName(stagingId))),
     );
@@ -701,7 +683,6 @@ Deno.test("recoverInstallStaging: leaves a journal whose lockfile is not this re
 Deno.test("recoverInstallStaging: a left journal says where the extension root's copies are", async () => {
   await withFixture(async (f) => {
     await seedV1(f);
-    // Phase 1 moved the extension root aside, then the process died.
     const stagingId = await crashAt(f, 2);
     const report = await recoverInstallStaging({
       bounds: {
@@ -792,7 +773,6 @@ Deno.test("recoverInstallStaging: sweeps journal-less staging only past the age 
   });
 });
 
-/** Real ops whose remove() dies (a simulated crash) on the nth call. */
 function crashOnRemove(nth: number): InstallFsOps {
   let removes = 0;
   return crashAware({
@@ -919,7 +899,6 @@ Deno.test("ExtensionInstallTransaction.swap: an undo step that fails does not st
     const tx = await beginV2(f, ops);
     await assertRejects(() => tx.swap(), Error, "manifest rename failed");
     assert(failedUndo);
-    // The bundle root went back even though the step before it failed.
     assertEquals(await readTree(f.bundleRoot), { "a.js": "v1 bundle" });
     await tx.settle(new Error("swap failed"), () => Promise.resolve(null));
     assertEquals(await readTree(f.repoDir), before);
@@ -947,7 +926,6 @@ Deno.test("recoverInstallStaging: leaves a journal whose staging dir is a symlin
     assertEquals(report.rolledBack, []);
     assertEquals(report.left.length, 1);
     assert(report.left[0].reason.includes("not a plain directory"));
-    // Nothing was moved through the link.
     assertEquals(await exists(join(outside, "discard")), false);
   });
 });
@@ -989,23 +967,15 @@ Deno.test({
   },
 });
 
-// ---- rollback and release (swamp-club#2724) ----
-
-/**
- * A bundle root, in a second bundle kind dir, that neither v1 nor v2
- * has: the catalog save's loaders create it after the swap.
- */
 function absentBundleRootOf(f: Fixture): string {
   return join(f.repoDir, ".swamp", "vault-bundles", "abcd1234");
 }
 
-/** Seeds v1 and the (empty) kind dir of the absent bundle root. */
 async function seedV1WithAbsentKind(f: Fixture): Promise<void> {
   await seedV1(f);
   await Deno.mkdir(dirname(absentBundleRootOf(f)), { recursive: true });
 }
 
-/** {@link boundsOf} that also accepts the absent bundle root. */
 function boundsWithAbsent(f: Fixture): InstallJournalBounds {
   return {
     ...boundsOf(f),
@@ -1016,7 +986,6 @@ function boundsWithAbsent(f: Fixture): InstallJournalBounds {
   };
 }
 
-/** Every staging dir left: the pulled one and each bundle kind dir's. */
 async function stagingLeft(f: Fixture): Promise<string[]> {
   const left: string[] = [];
   const pulledStaging = join(f.pulledRoot, STAGING_DIR_NAME);
@@ -1034,16 +1003,10 @@ async function stagingLeft(f: Fixture): Promise<string[]> {
 
 interface RollbackOps {
   ops: InstallFsOps;
-  /** Every rename that went through once `rollingBack` was set. */
   rollbackRenames: Array<{ from: string; to: string }>;
   control: { rollingBack: boolean };
 }
 
-/**
- * Real, crash-aware ops. Once `control.rollingBack` is set, each rename
- * attempt is numbered from 1 and passed to `before` (which may throw to
- * fail or crash it) and, once it went through, to `after`.
- */
 function rollbackOps(hooks: {
   before?: (n: number, from: string, to: string) => void;
   after?: (n: number, from: string, to: string) => Promise<void>;
@@ -1224,8 +1187,6 @@ Deno.test("ExtensionInstallTransaction.rollback: a bundle dir recreated mid-roll
         superseded,
         `${bundle.index}-rollback-${occupied ? 1 : 0}`,
       );
-      // The new copy went to discard/<i>; the rebuilt dir went to the
-      // first free superseded path, never to discard/<i>.
       assertEquals(
         rollbackRenames.filter((r) => r.from === f.bundleRoot).map((r) => r.to),
         [join(bundle.stagingDir, "discard", String(bundle.index)), aside],
@@ -1245,7 +1206,6 @@ Deno.test("ExtensionInstallTransaction.rollback: a state it cannot account for l
     await tx.swap();
     const bundle = tx.journal.roots.find((r) => r.live === f.bundleRoot);
     assert(bundle);
-    // discard/<i> is taken, so the new bundle root has nowhere to go.
     await Deno.mkdir(join(bundle.stagingDir, "discard", String(bundle.index)), {
       recursive: true,
     });
@@ -1290,7 +1250,6 @@ Deno.test("ExtensionInstallTransaction.rollback: a rename that fails for another
     );
     assertEquals(isActiveInstallOwner(tx.journal.ownerId), false);
 
-    // Recovery with working ops finishes the roll-back.
     const report = await recover(f, "sum-v1");
     assertEquals(report.rolledBack, [NAME]);
     assertEquals(report.left, []);
@@ -1304,7 +1263,6 @@ Deno.test("ExtensionInstallTransaction.release: leaves the journal, releases the
     { swap: true, lockfile: "sum-v2", forward: true },
     { swap: true, lockfile: "sum-v1", forward: false },
     { swap: true, lockfile: null, forward: false },
-    // Not swapped: back even when the entry names this install.
     { swap: false, lockfile: "sum-v2", forward: false },
   ];
   for (const c of cases) {
@@ -1330,7 +1288,6 @@ Deno.test("ExtensionInstallTransaction.release: leaves the journal, releases the
       assert(await exists(journalPath), label);
       assertEquals(isActiveInstallOwner(tx.journal.ownerId), false, label);
       assertEquals(await readTree(f.repoDir), afterSwap, label);
-      // Released: a rollback no longer acts.
       assertEquals(await tx.rollback(), false, label);
       assert(await exists(journalPath), label);
 
@@ -1393,7 +1350,6 @@ Deno.test("recoverInstallStaging: a rollback that crashed before deleting its st
     const journalPath = installJournalPath(f.pulledRoot, tx.journal.stagingId);
     assert(await exists(journalPath));
     assertEquals(isActiveInstallOwner(tx.journal.ownerId), false);
-    // The originals are already live.
     assertEquals(await readTree(f.repoDir), before);
 
     const recording = recordingOps();
@@ -1413,7 +1369,6 @@ Deno.test("recoverInstallStaging: puts the prior tree back after a crash at ever
     const absent = absentBundleRootOf(f);
     const before = await readTree(f.repoDir);
 
-    // How many renames a rollback of this install makes.
     const probe = rollbackOps();
     const probeTx = await beginV2(f, probe.ops, {
       absentBundleRoots: [absent],
@@ -1423,8 +1378,6 @@ Deno.test("recoverInstallStaging: puts the prior tree back after a crash at ever
     probe.control.rollingBack = true;
     assertEquals(await probeTx.rollback(), true);
     const total = probe.rollbackRenames.length;
-    // ext and bundle root: live -> discard, old -> live;
-    // absent: live -> discard.
     assertEquals(total, 5);
     assertEquals(await readTree(f.repoDir), before);
 
@@ -1441,7 +1394,6 @@ Deno.test("recoverInstallStaging: puts the prior tree back after a crash at ever
       await tx.swap();
       await writeFiles(absent, { "loaded.js": "loader" });
       control.rollingBack = true;
-      // The caller restored the lockfile entry before rolling back.
       assertEquals(await tx.rollback(), false, label);
       assert(
         await exists(installJournalPath(f.pulledRoot, tx.journal.stagingId)),
@@ -1465,8 +1417,6 @@ Deno.test("recoverInstallStaging: rolls forward a swapped install with a loader-
     const tx = await beginV2(f, crashAware(), { absentBundleRoots: [absent] });
     await tx.swap();
     await writeFiles(absent, { "loaded.js": "loader" });
-    // The process dies while the caller still holds the transaction,
-    // after the lockfile entry landed.
     await tx.settle(
       new SimulatedInstallCrash("holding the handle"),
       () => Promise.resolve(null),

@@ -60,7 +60,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Runs a section that holds the lock until `release` resolves. */
 function holdLock(
   lock: PulledExtensionsLock,
   repoDir: string,
@@ -93,8 +92,6 @@ Deno.test("PulledExtensionsLock.withLock: two sections on one checkout run one a
       events.push("b:start");
       return Promise.resolve();
     });
-    // The second section is queued: the lock reports busy while the
-    // first holds it.
     assertEquals(
       await lock.tryWithLock(repoDir, () => Promise.resolve()),
       { acquired: false },
@@ -196,7 +193,6 @@ Deno.test("PulledExtensionsLock: a promise that outlives its lease waits for the
 
     let escaped!: Promise<void>;
     await lock.withLock(repoDir, () => {
-      // Created inside the lease, enters its section after the exit.
       escaped = (async () => {
         await afterExit.promise;
         attempting.resolve();
@@ -377,7 +373,6 @@ Deno.test("PulledExtensionsLock.withLock: a waiter behind a section in this proc
     );
     assertStringIncludes(error.message, "this swamp process");
     assertStringIncludes(error.message, lockFilePath(repoDir));
-    // The abandoned place does not count as a holder.
     held.release();
     await held.done;
     assertEquals(

@@ -25,22 +25,9 @@ import {
 } from "../../domain/extensions/installed_extension_digest.ts";
 
 /**
- * Walks a per-extension root (e.g. `.swamp/pulled-extensions/<name>/`) and
- * produces the rolled-up digest over every file found. Used by the auto-
- * update service to detect whether the user has modified any files since
- * install.
- *
- * `excludeRelDirs` names subtrees to leave out, relative to `extRoot`
- * with forward slashes: the roots of entries nested under this one
- * (`@a/b/c` inside `@a/b`), whose files belong to that entry. A root with
- * no nested entries hashes exactly as it always has.
- *
- * Ignores macOS AppleDouble resource forks (`._*`) — matches the installer's
- * behavior in `isMacOsResourceFork`, so forks created by a Finder copy of
- * the extension tree do not change the digest.
- *
- * Returns `null` if the extension root does not exist (a caller-visible
- * signal distinct from "exists but empty" → empty-set digest).
+ * excludeRelDirs skips nested entries' roots; AppleDouble ._* forks are ignored
+ * as the installer does; null when the root is absent, distinct from an
+ * empty-set digest
  */
 export async function readInstalledExtensionDigest(
   extRoot: string,
@@ -60,13 +47,9 @@ export async function readInstalledExtensionDigest(
 }
 
 /**
- * Whether the files under `extRoot` still match the digest `stored` at
- * install. Returns `null` when the root does not exist.
- *
- * The digest leaves out nested entries' roots. A digest stored before
- * that rule covered them too, so when `nestedRelDirs` is non-empty and
- * the new digest differs, the whole-tree digest is also accepted. The
- * next install stores the new digest, after which only it matches.
+ * the digest leaves out nested entries' roots, but one stored before that rule
+ * covered them, so when nested dirs exist and the new digest differs the
+ * whole-tree digest is also accepted until the next install
  */
 export async function installedDigestMatches(
   extRoot: string,
@@ -92,8 +75,8 @@ async function walk(
     if (isMacOsResourceFork(entry.name)) continue;
 
     const childPath = join(currentDir, entry.name);
-    // Use forward slashes in the hashed relPath so the digest matches
-    // across platforms (Windows back-slashes would otherwise diverge).
+    // forward slashes in the hashed relPath so the digest matches across
+    // platforms
     const relPath = relative(extRoot, childPath).split("\\").join("/");
     if (entry.isDirectory) {
       if (excluded.has(relPath)) continue;

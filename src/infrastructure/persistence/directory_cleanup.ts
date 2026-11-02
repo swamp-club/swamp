@@ -20,25 +20,6 @@
 import { dirname, join } from "@std/path";
 import { assertContainedPath } from "./safe_path.ts";
 
-/**
- * Removes a list of repo-relative paths and reports which were actually
- * removed. Used by `installExtension` to prune source files, bundle
- * files, and skill directories declared in a prior version's lockfile
- * entry but absent in the current version's `extractedFiles`.
- *
- * Behavior:
- * - Each path is resolved against `repoDir` and removed with
- *   `{ recursive: true }` so non-empty entries (skill directory roots
- *   tracked as a single path) are handled correctly.
- * - `Deno.errors.NotFound` is tolerated — the path is already gone, so
- *   it is NOT included in the returned list (the caller should report
- *   ground truth, not intent).
- * - Empty parent directories up to `repoDir` are pruned after each
- *   removal via `cleanupEmptyParentDirs`.
- * - Any other error propagates immediately.
- *
- * @returns the repo-relative paths that were actually removed
- */
 export async function pruneOrphanFiles(
   orphanPaths: string[],
   repoDir: string,
@@ -61,7 +42,6 @@ export async function pruneOrphanFiles(
   return removed;
 }
 
-/** The file operations {@link cleanupEmptyParentDirs} uses; tests count them. */
 export interface DirectoryCleanupFs {
   lstat(path: string): Promise<Deno.FileInfo>;
   remove(path: string): Promise<void>;
@@ -83,18 +63,9 @@ async function hasEntries(
 }
 
 /**
- * Removes empty parent directories up to but not including the stopAt directory.
- *
- * This is useful when deleting files from nested directory structures
- * (e.g., data/inputs/aws/ec2/vpc/uuid.yaml) to clean up empty folders.
- *
- * Each directory is removed without listing it: a non-recursive remove
- * fails on a directory that is not empty, so a deletion costs the same
- * however many entries sit beside it (swamp-club#3535). That failure, or
- * any other, ends the cleanup quietly.
- *
- * @param filePath The path of the file that was deleted
- * @param stopAtDir The directory to stop at (will not be deleted)
+ * each directory is removed without listing: a non-recursive remove fails on a
+ * non-empty one, so cost does not grow with sibling count; that failure or any
+ * other ends the cleanup quietly
  */
 export async function cleanupEmptyParentDirs(
   filePath: string,
@@ -114,7 +85,6 @@ export async function cleanupEmptyParentDirs(
       currentDir = dirname(currentDir);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        // Directory already gone, try parent
         currentDir = dirname(currentDir);
       } else {
         // Not empty (each OS words it differently), or another error: stop

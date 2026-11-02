@@ -31,10 +31,8 @@ import { UntarStream } from "@std/tar/untar-stream";
 import { markErrorPaths } from "../../domain/errors.ts";
 
 /**
- * `DecompressionStream` is typed to emit `BufferSource`, which TypeScript
- * doesn't accept where `UntarStream` expects `Uint8Array`. Wrap each chunk
- * defensively so the TS lib types line up; at runtime every chunk really is
- * a `Uint8Array` from the gzip decoder.
+ * DecompressionStream is typed to emit BufferSource, which UntarStream rejects;
+ * at runtime every chunk is a Uint8Array, so wrap to satisfy the TS lib types
  */
 function toUint8ArrayStream(): TransformStream<BufferSource, Uint8Array> {
   return new TransformStream({
@@ -52,11 +50,6 @@ function toUint8ArrayStream(): TransformStream<BufferSource, Uint8Array> {
   });
 }
 
-/**
- * Thrown when a `.tar.gz` stream decompresses to more bytes than the
- * caller's `maxDecompressedBytes` allows. Carries the limit so callers can
- * report it in their own terms.
- */
 export class ArchiveSizeLimitError extends Error {
   constructor(readonly maxDecompressedBytes: number) {
     super(
@@ -66,20 +59,13 @@ export class ArchiveSizeLimitError extends Error {
   }
 }
 
-/** Options shared by the `.tar.gz` read passes. */
 export interface TarGzReadOptions {
-  /**
-   * Abort with `ArchiveSizeLimitError` once the decompressed stream (tar
-   * headers, padding and file bodies) exceeds this many bytes. A stream of
-   * exactly this length is accepted. Omit for no limit.
-   */
   maxDecompressedBytes?: number;
 }
 
 /**
- * Passes chunks through unchanged, erroring once more than `maxBytes` have
- * flowed. Erroring the transform also cancels its upstream, so the source
- * (e.g. an `FsFile.readable`) is released.
+ * erroring the transform also cancels its upstream, so the source (e.g. an
+ * FsFile.readable) is released
  */
 function byteLimitStream(
   maxBytes: number,
@@ -97,17 +83,14 @@ function byteLimitStream(
   });
 }
 
-/**
- * gunzip → optional byte limit → untar. Aborting `signal` cancels `source`.
- */
 function untarGz(
   source: ReadableStream<Uint8Array>,
   options: TarGzReadOptions,
   signal?: AbortSignal,
 ) {
-  // `pipeThrough` typings on `ReadableStream<Uint8Array>` are tighter than
-  // what `DecompressionStream` accepts as its writable side; cast to the
-  // BufferSource-shaped stream that `DecompressionStream` actually needs.
+  // pipeThrough typings on ReadableStream<Uint8Array> are tighter than
+  // DecompressionStream accepts; cast to the BufferSource-shaped stream it
+  // needs
   const readable = signal ? cancelOnAbort(source, signal) : source;
   const compressed = readable as unknown as ReadableStream<BufferSource>;
   let decompressed = compressed
@@ -122,11 +105,9 @@ function untarGz(
 }
 
 /**
- * Reads `source` through a reader that `signal` cancels directly. Aborting a
- * pipe cancels its source only once the pending write settles, and a write
- * into a backpressured `DecompressionStream` never settles after the consumer
- * stops reading, which left a file-backed source's handle open (seen on
- * Windows).
+ * aborting a pipe cancels its source only once the pending write settles, which
+ * never happens on a backpressured DecompressionStream; cancel the reader
+ * directly so file handles close
  */
 function cancelOnAbort(
   source: ReadableStream<Uint8Array>,
@@ -155,10 +136,9 @@ function cancelOnAbort(
 }
 
 /**
- * Iterates `stream`, aborting `abort` if the consumer leaves the loop early
- * (e.g. throws on an entry). `UntarStream`'s readable side does not forward
- * cancellation to its input, so without this a large archive's source (an
- * `FsFile.readable`) would stay open once backpressure stops reading.
+ * UntarStream's readable does not forward cancellation to its input, so abort
+ * the source when the consumer leaves the loop early or its file handle stays
+ * open
  */
 async function* abortOnEarlyExit<T>(
   stream: ReadableStream<T>,
@@ -173,31 +153,17 @@ async function* abortOnEarlyExit<T>(
   }
 }
 
-/**
- * An entry written by the tar reader during streaming extraction.
- *
- * The entry holds the raw tar header along with an absolute target path
- * (derived from the configured extraction root) so callers can apply
- * additional validation — e.g. refusing entry kinds — before any bytes hit
- * disk.
- */
 export interface ExtractedEntry {
-  /** Path inside the archive (as recorded in the tar header). */
   archivePath: string;
-  /** The fully-resolved on-disk target path. */
   targetPath: string;
-  /** What the entry is, decided from its typeflag alone. */
   kind: TarEntryKind;
-  /** Link target as recorded in the header (only set for links). */
   linkname: string | null;
-  /** POSIX mode bits as recorded in the header. */
   mode: number;
 }
 
 /**
- * What a tar entry is. `unsupported` covers every typeflag not named here
- * (GNU sparse or dump-dir entries, vendor extensions): `UntarStream` gives
- * those a body, so telling a file by its body would read them as files.
+ * unsupported covers every typeflag not named here; UntarStream gives those a
+ * body, so judging by body would read them as files
  */
 export type TarEntryKind =
   | "file"
@@ -228,10 +194,8 @@ function tarEntryKind(typeflag: string): TarEntryKind {
 }
 
 /**
- * Whether a tar typeflag indicates a hardlink (typeflag '1') or a symlink
- * (typeflag '2'). We treat both as link-typed entries; only symlinks are
- * created on disk, hardlinks are skipped (they're vanishingly rare in our
- * archives and risky cross-platform).
+ * only symlinks are created on disk; hardlinks are skipped as rare and risky
+ * cross-platform
  */
 function isLinkTypeflag(typeflag: string): boolean {
   return typeflag === "1" || typeflag === "2";
@@ -241,11 +205,6 @@ function isDirectoryTypeflag(typeflag: string): boolean {
   return typeflag === "5";
 }
 
-/**
- * Validates that `targetPath` stays within `extractRoot`. Throws when the
- * archive entry's path resolves outside the root (the classic ../ traversal
- * attack against tar extraction).
- */
 function ensureNoTraversal(targetPath: string, extractRoot: string): void {
   const rel = relative(extractRoot, targetPath);
   if (rel.startsWith("..") || rel === "..") {
@@ -259,24 +218,8 @@ function ensureNoTraversal(targetPath: string, extractRoot: string): void {
 }
 
 /**
- * Streams a `.tar.gz` byte stream into `extractRoot`, calling `onEntry` for
- * each entry before any bytes are written. `onEntry` may throw to abort
- * extraction (e.g. on a path-traversal violation discovered during validation).
- * With `options.maxDecompressedBytes`, extraction aborts with
- * `ArchiveSizeLimitError` once the decompressed stream exceeds it; files
- * written before the abort stay under `extractRoot` for the caller to remove.
- *
- * Behavior preserved from the previous shell-out:
- * - Symlinks are recreated as symlinks (not dereferenced).
- * - File modes are honored where present in the archive header.
- * - Path-traversal entries (`../foo`) abort extraction with an error.
- *
- * Note: macOS resource-fork files (`._foo`) leak into archives only when the
- * archiver is the BSD `tar` binary on darwin reading from an HFS+/APFS source
- * tree. Since we now produce archives via `TarStream` from explicit per-file
- * input, those AppleDouble files cannot appear unless a caller explicitly
- * adds them — there is no equivalent of the `COPYFILE_DISABLE=1` env var
- * because the underlying mechanism doesn't run.
+ * onEntry may throw to abort before bytes are written; files written before a
+ * size-limit abort stay under extractRoot for the caller to remove
  */
 export async function extractTarGz(
   source: ReadableStream<Uint8Array>,
@@ -301,10 +244,8 @@ export async function extractTarGz(
   for await (const entry of abortOnEarlyExit(stream, abort)) {
     const typeflag = entry.header.typeflag;
 
-    // PAX extended-header entries (typeflag 'x' / 'g') and macOS AppleDouble
-    // resource forks (`._foo`) are noise injected by BSD `tar` on darwin
-    // sources. They have no place in our archives — skip them so we don't
-    // litter the extract dir with metadata files.
+    // skip PAX headers and AppleDouble resource forks so metadata files do not
+    // litter the extract dir
     if (
       typeflag === "x" || typeflag === "g" || typeflag === "L" ||
       typeflag === "K"
@@ -322,15 +263,14 @@ export async function extractTarGz(
     }
 
     const normalized = normalize(entry.path);
-    // `normalize` resolves `..` segments relative to nothing; check the raw
-    // archive path for traversal attempts, then again on the resolved target.
+    // normalize resolves .. relative to nothing, so check the raw archive path
+    // for traversal and then the resolved target
     if (
       normalized.startsWith("..") ||
       normalized === ".." ||
       normalized.startsWith("/") ||
       normalized.startsWith("\\")
     ) {
-      // Drain any readable to release the lock so the next entry can resolve.
       if (entry.readable) {
         await entry.readable.cancel();
       }
@@ -378,8 +318,6 @@ export async function extractTarGz(
         );
       }
 
-      // Resolve the relative target against the symlink's parent directory
-      // and verify it stays within the extract root.
       const resolvedLinkTarget = normalize(
         join(dirname(targetPath), linkTarget),
       );
@@ -424,7 +362,6 @@ export async function extractTarGz(
     }
 
     if (!entry.readable) {
-      // Other typeflags (block/char devices, FIFOs, etc.) — skip.
       continue;
     }
 
@@ -459,10 +396,8 @@ export async function extractTarGz(
 }
 
 /**
- * Reads a `.tar.gz` byte stream and returns the list of archive paths without
- * writing anything to disk. Used for pre-extraction safety checks (e.g.
- * "archive contains unsafe path"). Entry bodies are still decompressed to
- * reach the next header, so `maxDecompressedBytes` bounds this pass too.
+ * entry bodies are still decompressed to reach the next header, so
+ * maxDecompressedBytes bounds this pass too
  */
 export async function listTarGzEntries(
   source: ReadableStream<Uint8Array>,
@@ -473,8 +408,6 @@ export async function listTarGzEntries(
 
   for await (const entry of stream) {
     const typeflag = entry.header.typeflag;
-    // Skip PAX extended-header and macOS AppleDouble companion entries —
-    // see extractTarGz for the matching filter.
     const skipMeta = typeflag === "x" || typeflag === "g" ||
       typeflag === "L" || typeflag === "K" ||
       entry.path.split("/").some((seg) => seg.startsWith("._")) ||
@@ -491,20 +424,9 @@ export async function listTarGzEntries(
 }
 
 /**
- * Recursively walks `sourceDir` and writes a gzip-compressed tar archive to
- * `archivePath`. The archive paths are relative to `sourceDir.parent`, so
- * passing `/tmp/foo/extension` writes entries like `extension/...`,
- * matching `tar -czf out.tar.gz -C /tmp/foo extension`.
- *
- * AppleDouble files (`._foo`) are not produced because we walk the source
- * tree explicitly via `Deno.readDir` rather than asking BSD `tar` to copy
- * extended attributes — the underlying mechanism doesn't run.
- *
- * On Windows, which has no POSIX modes, Deno reports 0o666 for every file and
- * folder. Recording that would leave folders without the execute bit, so a
- * POSIX extractor that honours modes (the registry scorer) could not enter
- * them. Windows archives record 0o755 folders and 0o644 files instead — what
- * a POSIX host with the usual 022 umask records.
+ * Windows reports 0o666 for every file and folder, leaving folders without the
+ * execute bit; record 0o755 folders and 0o644 files so POSIX extractors that
+ * honour modes can enter them
  */
 export async function createTarGz(
   sourceDir: string,
@@ -530,7 +452,6 @@ export async function createTarGz(
     .pipeTo(file.writable);
 }
 
-/** Modes recorded on Windows, where Deno's reported mode is meaningless. */
 const WINDOWS_DIRECTORY_MODE = 0o755;
 const WINDOWS_FILE_MODE = 0o644;
 
@@ -600,6 +521,4 @@ async function collectEntries(
     });
     return;
   }
-
-  // Sockets, FIFOs, devices, etc. — skip.
 }

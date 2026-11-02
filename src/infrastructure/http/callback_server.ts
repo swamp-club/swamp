@@ -19,13 +19,9 @@
 
 import { UserError } from "../../domain/errors.ts";
 
-/** Handle returned by startCallbackServer. */
 export interface CallbackServerHandle {
-  /** The localhost port the server is listening on. */
   port: number;
-  /** Resolves with the session token once the browser redirects back. */
   token: Promise<string>;
-  /** Shut down the server. */
   shutdown(): Promise<void>;
 }
 
@@ -42,13 +38,6 @@ const ERROR_HTML = `<!DOCTYPE html>
 
 const TIMEOUT_MS = 120_000;
 
-/**
- * Start an ephemeral localhost HTTP server that waits for a single
- * callback from the browser containing a session token.
- *
- * @param expectedState  The random state nonce the CLI generated.
- * @param serverUrl      The swamp-club server URL used to build the success redirect.
- */
 export function startCallbackServer(
   expectedState: string,
   serverUrl: string,
@@ -63,7 +52,6 @@ export function startCallbackServer(
 
   const ac = new AbortController();
 
-  // Timeout: reject if the browser never comes back
   const timer = setTimeout(() => {
     rejectToken(
       new UserError(

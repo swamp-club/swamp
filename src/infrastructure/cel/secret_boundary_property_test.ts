@@ -32,7 +32,6 @@ import {
   vaultReferenceSecret,
 } from "./secret_value.ts";
 
-/** Text that may itself look like a sentinel under a prefix of no bag. */
 const text = fc.oneof(
   fc.string(),
   fc.stringMatching(/^[0-9a-f]{32}$/).map((prefix) =>
@@ -40,7 +39,6 @@ const text = fc.oneof(
   ),
 );
 
-/** A run whose bag issued `count` vault references. */
 function run(count: number): { bag: VaultSecretBag; sentinels: string[] } {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const sentinels = Array.from(
@@ -61,7 +59,6 @@ Deno.test("SecretBoundary: text bound in and released out round-trips, sentinels
         ).join("");
         const boundary = new SecretBoundary(bag);
         const bound = boundary.bind({ v: original }).v;
-        // Text holds a Secret exactly when it holds one of the run's sentinels.
         assertEquals(
           isSecret(bound),
           sentinels.some((sentinel) => original.includes(sentinel)),

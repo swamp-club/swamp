@@ -310,7 +310,6 @@ Deno.test("DenoInfoModuleGraphReader: an npm package in a manual node_modules di
   }
 });
 
-/** Every path under `dir` with its bytes and mtime, to show nothing changed. */
 async function treeSnapshot(dir: string): Promise<string[]> {
   const entries: string[] = [];
   const visit = async (path: string) => {
@@ -379,10 +378,9 @@ Deno.test("DenoInfoModuleGraphReader: a package.json project resolves bare impor
 // or package.json is in play (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
 // so the no-project case is the one swamp alone could break.
 Deno.test("DenoInfoModuleGraphReader: a repository checked out under a directory named node_modules keeps its local modules", async () => {
-  // Resolved: below a node_modules, deno info reports imports by real path,
-  // so an entry point read through a symlinked temp dir (macOS /var) would
-  // be read in two spellings. Push resolves its entry points the same way
-  // (swamp-club#3794).
+  // resolved: below a node_modules, deno info reports imports by real path, so
+  // an entry point read through a symlinked temp dir would be read in two
+  // spellings
   const outer = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "graph-reader-ancestor-" }),
   );
@@ -597,7 +595,6 @@ Deno.test("createDenoInfoModuleGraphReader: the loader's reader never writes the
   });
 });
 
-/** Writes `files` under a fresh temp dir and runs `fn` on it. */
 async function withProject(
   files: Record<string, string>,
   fn: (dir: string) => Promise<void>,
@@ -616,7 +613,6 @@ async function withProject(
   }
 }
 
-/** Each bare import as `[importer relative to dir, specifier, target]`. */
 function bareImportsOf(
   dir: string,
   graph: {
@@ -728,7 +724,6 @@ Deno.test("DenoInfoModuleGraphReader: a remote importMap is refused as Deno refu
   });
 });
 
-/** deno info output for one local module whose bare `zod` resolves as given. */
 function zodInfo(code: Record<string, string>) {
   return JSON.stringify({
     modules: [{

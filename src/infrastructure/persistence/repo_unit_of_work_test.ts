@@ -122,7 +122,6 @@ Deno.test("useUnitOfWorkFactoryForTesting: refuses a second install while one is
   useUnitOfWorkFactoryForTesting(factory)();
 });
 
-/** A flush that counts its calls and can be made to reject. */
 function countingFlush(error?: Error): {
   flush: () => Promise<void>;
   calls: () => number;
@@ -173,7 +172,6 @@ Deno.test("runInRootUnitOfWork: a use case's unit inside the root is a child tha
     { flush: push.flush },
     async (root) => {
       rootSeen = root;
-      // fn gets a view of the root; the ambient unit is the root itself.
       rootUnit = currentUnitOfWork();
       child = openRepoUnitOfWork(hook);
       await child.stage({ kind: "write", path: "/cache/data/a" });
@@ -511,7 +509,6 @@ Deno.test("openRepoUnitOfWork: when the ambient unit has ended, the new unit rol
       rootSeen = root;
       const rootUnit = currentUnitOfWork();
       const useCase = openRepoUnitOfWork(hook);
-      // Work started in the use case's scope that outlives its unit.
       const { promise: go, resolve } = Promise.withResolvers<void>();
       const escaped = runInUnitOfWork(useCase, async () => {
         await go;
@@ -577,7 +574,6 @@ Deno.test("runInRootUnitOfWork: under an ended ambient unit with no open ancesto
   assertEquals(push.calls(), 1);
 });
 
-/** A mark hook whose next call stays in flight until released. */
 function holdingHook(): {
   hook: MarkDirtyHook;
   holdNext: () => () => void;
@@ -915,7 +911,6 @@ Deno.test("currentRootUnitOfWork: returns the root opened over the exact hook, a
     { flush: undefined },
     (root) => {
       assertStrictEquals(currentRootUnitOfWork(hook), root);
-      // A wrapper of the hook is another function: no root.
       assertEquals(currentRootUnitOfWork((path) => hook(path)), undefined);
       return Promise.resolve();
     },

@@ -24,77 +24,47 @@ import { shouldIsolateProcessGroup } from "./process_group_policy.ts";
 import { isProcessAlive } from "./process_kill.ts";
 import { attachProcessJob, type ProcessJob } from "./windows_job.ts";
 
-/**
- * Options for executing a process.
- */
 export interface ProcessExecutorOptions {
-  /** The command to execute. */
   command: string;
-  /** Command arguments. */
   args?: string[];
-  /** Working directory. */
   cwd?: string;
-  /** Environment variables. */
   env?: Record<string, string>;
   /** When true, the child starts with an empty environment and gets only
    *  the variables from `env`. Without this, `env` augments the inherited
    *  parent environment (Deno default). */
   clearEnv?: boolean;
-  /** Timeout in milliseconds. */
   timeoutMs?: number;
-  /** Logger for streaming stdout (info) and stderr (warning). */
   logger?: Logger;
-  /** Secret redactor for stripping vault secrets from streamed output. */
   redactor?: SecretRedactor;
-  /** Optional callback for streaming output lines to an event stream. */
   onOutput?: (line: string, stream: "stdout" | "stderr") => void;
-  /** Optional abort signal — when aborted, the subprocess is killed. */
   signal?: AbortSignal;
-  /** When true, an abort or timeout terminates everything the command
-   *  started, not just the direct child: on POSIX by running it in its own
-   *  process group (subject to `process_group_policy.ts`), on Windows with
-   *  `taskkill /T`. A command that exits on its own is never signalled, so
-   *  processes it deliberately backgrounds keep running. On Windows the
-   *  command also runs in a kill-on-close Job Object, so it does not outlive
-   *  a swamp process that is killed outright. */
+  /**
+   * abort or timeout kills the whole tree: its own process group on POSIX,
+   * taskkill /T plus a kill-on-close Job Object on Windows; a command that
+   * exits on its own is never signalled
+   */
   terminateProcessTree?: boolean;
-  /** Grace between SIGTERM and SIGKILL when terminating. Tests only. */
   killGraceMs?: number;
-  /** When true, a CR ending a line is dropped along with its LF, so output
-   *  from a shell that ends lines with CRLF (PowerShell) is captured and
-   *  streamed exactly as LF output is. Off by default: every CR the command
-   *  writes is kept. */
+  /**
+   * drops a CR ending a line so CRLF shell output matches LF output; off by
+   * default, so every CR the command writes is kept
+   */
   normalizeCrlf?: boolean;
-  /** Attaches the Job Object of a `terminateProcessTree` spawn. Tests only. */
   attachJob?: (pid: number) => ProcessJob | undefined;
 }
 
-/**
- * Result of executing a process.
- */
 export interface ProcessResult {
-  /** Process exit code. */
   exitCode: number;
-  /** Whether the process exited successfully (code 0). */
   success: boolean;
-  /** Captured stdout. */
   stdout: string;
-  /** Captured stderr. */
   stderr: string;
-  /** Execution duration in milliseconds. */
   durationMs: number;
 }
 
 /**
- * Reads lines from a ReadableStream, calling onLine for each complete line.
- * Returns the full accumulated output as a string.
- *
- * When an AbortSignal is provided and fires, the read loop breaks and the
- * function returns whatever output has been accumulated so far.
- *
- * With `normalizeCrlf`, a CR that ends an LF-terminated line is dropped, so
- * CRLF output yields the same lines as LF output. A CR anywhere else, and
- * an unterminated final line, are kept as written.
+ * on abort returns the output accumulated so far; with normalizeCrlf only a CR
+ * ending an LF-terminated line is dropped, and an unterminated final line is
+ * kept as written
  */
 export async function streamLines(
   stream: ReadableStream<Uint8Array>,
@@ -131,7 +101,6 @@ export async function streamLines(
       buffer += decoder.decode(value, { stream: true });
       const bufferLines = buffer.split("\n");
 
-      // Process all complete lines
       for (let i = 0; i < bufferLines.length - 1; i++) {
         const line = options.normalizeCrlf && bufferLines[i].endsWith("\r")
           ? bufferLines[i].slice(0, -1)
@@ -140,11 +109,9 @@ export async function streamLines(
         onLine?.(line);
       }
 
-      // Keep the incomplete line in the buffer
       buffer = bufferLines[bufferLines.length - 1];
     }
 
-    // Process any remaining content
     if (buffer) {
       lines.push(buffer);
       onLine?.(buffer);
@@ -168,38 +135,29 @@ export async function streamLines(
 const PIPE_DRAIN_GRACE_MS = 5000;
 
 /**
- * Grace between SIGTERM and SIGKILL. Kept under the `STEP_STOP_GRACE_MS` a
- * cancelled workflow run waits for its model methods to stop, itself under
- * the 5 s serve allows aborted runs to settle (`SHUTDOWN_ABORT_GRACE_MS`), so
- * a step that ignores SIGTERM still records its own cancellation. `swamp
- * model cancel` budgets its wait for the owning process on it.
+ * kept under STEP_STOP_GRACE_MS, itself under SHUTDOWN_ABORT_GRACE_MS, so a
+ * step that ignores SIGTERM still records its cancellation; swamp model cancel
+ * budgets its wait on it
  */
 export const KILL_GRACE_MS = 3000;
 const GROUP_POLL_MS = 50;
 
-/** How an aborted or timed-out process is terminated. */
 type TerminationMode =
-  /** POSIX: signal the process group the child leads. */
   | "group"
-  /** Windows: `taskkill /T` the child's tree. */
   | "tree"
-  /** Signal only the direct child. */
   | "child";
 
-/** A spawned command, and the Job Object holding its tree on Windows. */
 interface Spawned {
   child: Deno.ChildProcess;
   job?: ProcessJob;
 }
 
-/** Process groups of isolated spawns that have not settled yet. */
 const liveProcessGroups = new Set<number>();
 let unloadListenerInstalled = false;
 
 /**
- * SIGKILLs every isolated process group that has not settled. Runs on
- * `unload`, which fires on `Deno.exit` — a forced second Ctrl-C, or a process
- * exiting before an escalation finished — so no group outlives swamp.
+ * runs on unload, which fires on Deno.exit, so no isolated process group
+ * outlives swamp
  */
 export function killLiveProcessGroups(): void {
   for (const pgid of liveProcessGroups) {
@@ -219,16 +177,14 @@ function trackProcessGroup(pgid: number): void {
 }
 
 /**
- * Terminates the process, at most once however many triggers (timeout,
- * abort) fire, and never once the direct child has exited on its own: a
- * late abort (say, while pipes drain) must not reach what it backgrounded.
+ * terminates at most once however many triggers fire, and never once the child
+ * exited on its own: a late abort must not reach what it backgrounded
  */
 interface Terminator {
   /** The child's status. Every path awaits this instead of `child.status`,
    *  so the terminator learns when the child exits. */
   status: Promise<Deno.CommandStatus>;
   terminate(): void;
-  /** Resolves once a started termination finishes, or at once if none. */
   settled(): Promise<void>;
 }
 
@@ -259,10 +215,6 @@ function createTerminator(
   };
 }
 
-/**
- * Runs `onAbort` when `signal` aborts, immediately if it already has.
- * Returns a function that detaches the listener.
- */
 function onSignalAbort(
   signal: AbortSignal | undefined,
   onAbort: () => void,
@@ -276,10 +228,7 @@ function onSignalAbort(
   return () => signal.removeEventListener("abort", onAbort);
 }
 
-/**
- * SIGTERM, then SIGKILL whatever is still alive after the grace period.
- * Never rejects: it is started from a synchronous listener and awaited later.
- */
+/** never rejects: it is started from a synchronous listener and awaited later */
 async function terminateProcess(
   child: Deno.ChildProcess,
   mode: TerminationMode,
@@ -310,7 +259,7 @@ async function terminateGroup(pgid: number, graceMs: number): Promise<void> {
   try {
     Deno.kill(-pgid, "SIGTERM");
   } catch {
-    return; // Group already gone
+    return;
   }
   const deadline = Date.now() + graceMs;
   while (isProcessAlive(-pgid)) {
@@ -334,7 +283,7 @@ async function terminateChild(
   try {
     child.kill("SIGTERM");
   } catch {
-    return; // Already exited
+    return;
   }
   // Wait on the status rather than probing the pid: once the child is
   // reaped, its pid can belong to an unrelated process.
@@ -383,13 +332,6 @@ async function exitsWithin(
   }
 }
 
-/**
- * Executes a process with optional streaming through a logger.
- *
- * When a logger is provided, stdout lines are logged at info level and stderr
- * lines at warning level, providing real-time output. When omitted, output is
- * buffered and returned in the result.
- */
 export async function executeProcess(
   options: ProcessExecutorOptions,
 ): Promise<ProcessResult> {
@@ -438,10 +380,9 @@ export async function executeProcess(
     const job = options.terminateProcessTree ? attachJob(child.pid) : undefined;
     return { child, job };
   };
-  // Waits out any termination, then stops tracking the group. A path that
-  // ends while the child still runs (a throwing output callback) abandons
-  // it, so it is terminated rather than left running untracked; a child
-  // that already exited is left alone.
+  // waits out any termination, then stops tracking the group; a path ending
+  // while the child still runs (a throwing output callback) terminates it
+  // rather than leave it untracked
   const release = async (
     child: Deno.ChildProcess,
     terminator: Terminator,
@@ -456,10 +397,9 @@ export async function executeProcess(
   let exitCode: number;
 
   if (options.timeoutMs) {
-    // Timeout path: race process.status against the timeout, then drain
-    // pipes separately.  This prevents orphaned child processes that hold
-    // pipes open from causing a spurious timeout when the command itself
-    // exited successfully.
+    // race the status against the timeout and drain pipes separately, so
+    // orphans holding pipes open cannot cause a spurious timeout after a
+    // successful exit
     const spawned = spawn();
     const process = spawned.child;
     const terminator = createTerminator(spawned, mode, graceMs);
@@ -510,7 +450,6 @@ export async function executeProcess(
       stop();
     }, options.timeoutMs);
 
-    // Kill subprocess when abort signal fires
     const detachAbort = onSignalAbort(options.signal, stop);
 
     try {
@@ -524,7 +463,6 @@ export async function executeProcess(
         throw new Error(`Command timed out after ${options.timeoutMs}ms`);
       }
 
-      // Re-throw as AbortError if signal was responsible for the kill
       if (options.signal?.aborted) {
         throw new DOMException("The operation was aborted.", "AbortError");
       }
@@ -546,7 +484,6 @@ export async function executeProcess(
         clearTimeout(graceTimeout);
       }
     } catch (err) {
-      // On timeout/abort, wait for pipe promises to settle
       await Promise.all([
         stdoutPromise.catch(() => {}),
         stderrPromise.catch(() => {}),
@@ -558,13 +495,11 @@ export async function executeProcess(
       await release(process, terminator);
     }
   } else if (options.logger) {
-    // Streaming mode without timeout
     const spawned = spawn();
     const process = spawned.child;
     const terminator = createTerminator(spawned, mode, graceMs);
     const pipeAbort = new AbortController();
 
-    // Kill subprocess when abort signal fires
     const detachAbort = onSignalAbort(options.signal, () => {
       terminator.terminate();
       pipeAbort.abort();
@@ -607,12 +542,10 @@ export async function executeProcess(
       await release(process, terminator);
     }
 
-    // Re-throw as AbortError if signal was responsible for the kill
     if (options.signal?.aborted) {
       throw new DOMException("The operation was aborted.", "AbortError");
     }
   } else {
-    // Simple buffered execution
     const spawned = spawn();
     const process = spawned.child;
     const terminator = createTerminator(spawned, mode, graceMs);

@@ -58,7 +58,6 @@ const REF_B = "${{ vault.get('prod', 'B') }}";
 const DATA_NAME = "creds-vary-s3cret-suffix";
 const LOCATION = "data.latest of model 'db' record r1 version 2 (data.latest)";
 
-/** A record as the accessors return it, own namespace, JSON content. */
 function record(
   attributes: Record<string, unknown>,
   tags: Record<string, string> = {},
@@ -96,7 +95,6 @@ function record(
   };
 }
 
-/** The reader of `namespace`; a solo row is its own unless it reads them. */
 function readerOf(
   namespace: string,
   readsSoloNamespace = false,
@@ -110,7 +108,6 @@ const pathsTag = (...paths: string[]) => ({
 });
 const starTag = { [SENSITIVE_FIELDS_TAG]: "*" };
 
-/** Adapts `value` in a fault scope and hands back the view and the scope. */
 function adapt(
   value: unknown,
   reader: NamespaceReader = SOLO,
@@ -151,7 +148,6 @@ function assertRefusesInvalid(
       true,
       error.operation,
     );
-    // Never the data name, never a value, never the reference text.
     for (const hidden of [DATA_NAME, "prod", "vault.get", "s3cret"]) {
       assertEquals(error.message.includes(hidden), false, error.message);
     }
@@ -177,8 +173,8 @@ Deno.test("adaptDataRecord: null, a non-record, an untagged record and a record 
       adaptDataRecord(untagged, SOLO, "data.latest"),
       untagged,
     );
-    // A foreign record is returned as stored, its tag unread, even when
-    // the tag is malformed or names a non-reference.
+    // a foreign record is returned as stored with its tag unread, even when the
+    // tag is malformed or names a non-reference
     assertStrictEquals(adaptDataRecord(foreign, SOLO, "data.latest"), foreign);
     assertStrictEquals(
       adaptDataRecord(foreignMalformed, readerOf("infra"), "data.latest"),
@@ -188,7 +184,6 @@ Deno.test("adaptDataRecord: null, a non-record, an untagged record and a record 
   });
   assertEquals(scope.sensitiveReferences.size, 0);
   assertEquals(scope.faults, []);
-  // An own record reached through a namespaced read is adapted.
   const own = record({ a: REF_A }, pathsTag("a"), { namespace: "infra" });
   const { view } = adapt(own, readerOf("infra"));
   assert(isSecret(attributesOf(view).a));
@@ -272,8 +267,8 @@ Deno.test("adaptDataRecord: under the star tag every leaf at any depth must be a
   assert(isSecret(attributesOf(view).c));
   assertEquals(scope.sensitiveReferences.size, 2);
 
-  // A schema that marks a parent and a child inside it sensitive leaves the
-  // child's reference inside a container at the top level.
+  // a schema that marks a parent and a child inside it sensitive leaves the
+  // child's reference inside a container at the top level
   const nested = adapt(
     record(
       { config: { token: REF_A, deeper: { key: REF_B } }, n: null },
@@ -310,7 +305,6 @@ Deno.test("adaptDataRecord: under the star tag every leaf at any depth must be a
     record({ config: JSON.parse('{"constructor": "x"}') }, starTag),
     "the unsafe field name 'constructor'",
   );
-  // No tagged field with a value: nothing to refuse and nothing recorded.
   const empty = adapt(record({}, starTag));
   assertEquals(empty.scope.sensitiveReferences.size, 0);
 });
@@ -334,7 +328,6 @@ Deno.test("adaptDataRecord: nested paths view their containers, absent and null 
   assertEquals(attributesOf(view).plain, "p");
   assertEquals(scope.sensitiveReferences.size, 1);
 
-  // Child first: the parent path holds the reference, the child is absent.
   const childFirst = adapt(
     record(
       { credentials: REF_B },
@@ -343,7 +336,6 @@ Deno.test("adaptDataRecord: nested paths view their containers, absent and null 
   );
   assert(isSecret(attributesOf(childFirst.view).credentials));
 
-  // A deeper container on the way to a tagged leaf is accepted too.
   const deep = adapt(
     record({ a: { b: { c: REF_A } } }, pathsTag("a", "a.b.c")),
   );
@@ -353,13 +345,10 @@ Deno.test("adaptDataRecord: nested paths view their containers, absent and null 
   >;
   assert(isSecret(b.c));
 
-  // A container at a path that is a prefix of no other tagged path is not
-  // what the writer stores.
   assertRefusesInvalid(
     record({ credentials: { apiKey: REF_A } }, pathsTag("credentials")),
     "field 'credentials' is not a stored vault reference",
   );
-  // Nor is an untagged leaf inside a container at a tagged path, at any depth.
   assertRefusesInvalid(
     record(
       { credentials: { apiKey: REF_A, other: "plain-s3cret" } },
@@ -490,8 +479,8 @@ Deno.test("adaptDataResult: adapts null, a record, each record of a list, and th
     const error = await assertRejects(() => rejected, SecretRefusal);
     assertEquals(error.code, SECRET_REFERENCE_INVALID);
     assertEquals(scope.faults.length, 1);
-    // The adaptation itself is left unobserved by this test; the sanitizer
-    // fails the test if the rejection were unhandled.
+    // the adaptation itself is left unobserved; the sanitizer fails the test if
+    // its rejection were unhandled
     adaptDataResult(
       Promise.resolve(record({ a: "plain" }, pathsTag("a"))),
       SOLO,
@@ -511,7 +500,6 @@ Deno.test("recordSensitiveReference: adapting a tagged record outside an evaluat
   );
 });
 
-/** A model map as buildContext builds it: lazy resource and file loaders. */
 function modelMap(instances: Record<string, unknown>) {
   let loads = 0;
   const specs = { creds: instances };
@@ -582,10 +570,8 @@ Deno.test("modelMapView: lazy, shared by name and id, adapts each record at firs
       creds,
     );
     assertEquals(loads(), 1);
-    // The original map is untouched, and its loader has settled its value.
     assertStrictEquals(modelData.resource, specs);
     assertStrictEquals(specs.creds.main, main);
-    // Other keys pass through, firing their loader only now.
     assertEquals(
       ((web.file as Record<string, unknown>).readme as Record<
         string,
@@ -595,7 +581,6 @@ Deno.test("modelMapView: lazy, shared by name and id, adapts each record at firs
     );
     assertEquals(loads(), 2);
   });
-  // Anything that is not a plain map is returned as it is.
   const receiver = new (class {})();
   assertStrictEquals(modelMapView(receiver, SOLO), receiver);
   assertEquals(modelMapView(undefined, SOLO), undefined);
@@ -606,7 +591,6 @@ Deno.test("modelMapView: a record merged into the original map before first read
   const { model, specs } = modelMap({ main });
   runInFaultScope(() => {
     const view = modelMapView(model, SOLO) as Record<string, unknown>;
-    // As the resolver's prepare step merges changed items before binding.
     Object.assign(specs.creds, {
       extra: record({ password: REF_B }, pathsTag("password"), { id: "r2" }),
     });
@@ -648,14 +632,11 @@ Deno.test("adaptModelMethodResult: a record's attributes with tagged fields as S
   );
   assertEquals(attributes.host, "h");
   assertEquals(isSecret(attributes.password), true);
-  // The original record is untouched.
   assertEquals(record.attributes.password, "${{ vault.get('v', 'k') }}");
-  // An untagged record answers its attributes as stored.
   assertEquals(
     adaptModelMethodResult({ ...record, tags: {} }),
     record.attributes,
   );
-  // Anything that is not a record passes through.
   assertEquals(adaptModelMethodResult({ dataHandles: [] }), {
     dataHandles: [],
   });
@@ -663,7 +644,6 @@ Deno.test("adaptModelMethodResult: a record's attributes with tagged fields as S
   assertEquals(adaptModelMethodResult(null), null);
 });
 
-/** A step output source: the stored form of one record a step wrote. */
 function source(
   id: string,
   attributes: Record<string, unknown>,
@@ -717,8 +697,6 @@ Deno.test("stepsView: lazy, reads a sourced step's outputs as the adapted merge 
     const seedView = view.seed as Record<string, unknown>;
     assert(seedView !== seed);
     assertEquals(seedView.status, "succeeded");
-    // Nothing is adapted until the outputs are read; then every record is,
-    // selected or not.
     assertEquals(scope.sensitiveReferences.size, 0);
     const outputs = seedView.outputs as Record<string, unknown>;
     assertEquals(scope.sensitiveReferences.size, 2);
@@ -739,7 +717,6 @@ Deno.test("stepsView: lazy, reads a sourced step's outputs as the adapted merge 
       locationOf(outputs.password),
       "steps.seed.outputs of model 'writer' record r1 version 1 (steps.seed.outputs), field 'password'",
     );
-    // The context and its flat outputs are untouched.
     assertEquals(seed.outputs.password, REF_A);
     assertEquals(Object.keys(seed), ["status", "outputs"]);
     assertEquals(first.attributes.password, REF_A);
@@ -859,7 +836,6 @@ Deno.test("synchronousSensitiveReferences: lists the references of the sources o
   assertEquals(keys("steps.wait.outputs"), []);
   assertEquals(keys("steps[inputs.name].outputs"), []);
   assertEquals(keys("steps.foreign.outputs.password"), []);
-  // With no namespace to name the reader's own, every record is the run's.
   assertEquals(
     synchronousSensitiveReferences(
       "steps.foreign.outputs.password",
@@ -911,7 +887,6 @@ Deno.test("stepsView: a later group at the same path replaces the earlier one, a
     assertEquals(Object.keys(deploy).sort(), ["token", "x"]);
     assertEquals(deploy.x, "2");
     assert(isSecret(deploy.token));
-    // Only the winning group's records are adapted and recorded.
     assertEquals(scope.sensitiveReferences.size, 1);
   });
   const proto = sourced({}, [{
@@ -953,7 +928,6 @@ Deno.test("isAdaptedView: answers true for the record view and every attribute v
   assertEquals(isAdaptedView({ password: REF_A }), false);
   assertEquals(isAdaptedView(null), false);
   assertEquals(isAdaptedView("text"), false);
-  // A record the adapter returns as it is was not built by it.
   const foreign = record({ password: REF_A }, pathsTag("password"), {
     namespace: "security",
   });
@@ -1024,13 +998,10 @@ Deno.test("adaptDataRecord, modelMapView, stepsView and synchronousSensitiveRefe
   assertEquals(keys(expression, v3), []);
 });
 
-// --- places only the key-list tag names (swamp-club#3038) ---
-
 const REF_C = "${{ vault.get('prod', 'C') }}";
 const REF_D = "${{ vault.get('prod', 'D') }}";
 const REF_E = "${{ vault.get('prod', 'E') }}";
 
-/** A path-list tag with the key lists the writer adds beside it. */
 const keyListTag = (
   paths: string[],
   keyLists: (string | number)[][],
@@ -1040,7 +1011,6 @@ const keyListTag = (
 });
 
 Deno.test("adaptDataRecord: a place the key-list tag names, under a dotted, empty or prototype-named key or an array index, reads as a Secret, and untagged neighbours are carried as they are", () => {
-  // Parsed, as stored bytes are, so __proto__ is an own key.
   const attributes = JSON.parse(JSON.stringify({
     tokens: {
       "eu.west": REF_A,
@@ -1088,7 +1058,6 @@ Deno.test("adaptDataRecord: a place the key-list tag names, under a dotted, empt
     "D",
   );
   assertEquals(tokens.plain, "not tagged");
-  // The view's prototype is the original's, never a stored value.
   assertStrictEquals(Object.getPrototypeOf(tokens), Object.prototype);
   assertEquals(
     [...scope.sensitiveReferences.values()].map((r) => r.key).sort(),
@@ -1148,8 +1117,6 @@ Deno.test("synchronousSensitiveReferences: lists the references at key-list plac
 });
 
 Deno.test("adaptDataRecord: a field tagged inside a container stored as one reference is not refused, and the container reads as a Secret", () => {
-  // The writer tags a marked field inside a stored container beside it, so
-  // a reader that restores the container registers the field (swamp-club#3038).
   const { view, scope } = adapt(
     record(
       { credentials: REF_A, services: [{ image: REF_B }] },
@@ -1206,7 +1173,6 @@ Deno.test("adaptDataRecord: a place the JSON tag lists reads as a Secret marked 
     true,
   );
 
-  // Under the star tag the JSON tag is not read.
   const star = adapt(
     record({ port: REF_A }, {
       ...starTag,

@@ -22,12 +22,10 @@ import fc from "fast-check";
 import { streamLines } from "./process_executor.ts";
 import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
 
-/** Text over a small alphabet so line endings and repeats are frequent. */
 const text = (maxLength: number) =>
   fc.array(fc.constantFrom("a", "b", "\r", "\n"), { maxLength })
     .map((chars) => chars.join(""));
 
-/** Delivers the text split at the given offsets, one chunk per piece. */
 function chunkedStream(
   value: string,
   cuts: number[],
@@ -69,7 +67,6 @@ Deno.test("streamLines + SecretRedactor: a secret in CRLF-normalised output is a
         );
         const redacted = redactor.redact(captured);
 
-        // What CRLF normalisation can leave of the secret's text.
         const normalised = secret.replace(/\r(?=\n|$)/g, "");
         assert(
           !redacted.includes(secret),

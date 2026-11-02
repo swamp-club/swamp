@@ -85,10 +85,6 @@ interface FakeSidecar {
   frozen: boolean;
 }
 
-/**
- * Supervisors as fakes over the real lock files: a launch takes
- * supervisor.lock and writes presence.json as a real supervisor would.
- */
 class FakeWorld {
   time = Date.now();
   nextPid = 50_000;
@@ -99,7 +95,6 @@ class FakeWorld {
   syncAnswer: () => Promise<Record<string, unknown>> = () =>
     Promise.resolve({ status: "synced", txid: 2, replicated_txid: 2 });
   leaseCurrent = true;
-  /** A lease check that fails for another reason than a takeover. */
   leaseCheckError: Error | undefined;
   leaseChecks = 0;
 
@@ -201,12 +196,10 @@ class FakeWorld {
       },
       now: () => this.time,
       sleep: async (ms) => {
-        // A launched fake supervisor records itself before the clock moves:
-        // under load its real lock and write could outlast the fake start
-        // wait (swamp-club#3653).
+        // a launched fake supervisor records itself before the clock moves:
+        // under load its real lock and write could outlast the fake start wait
         await Promise.allSettled(this.starting);
         this.time += ms;
-        // Lets a launched fake supervisor take its lock.
         await new Promise((resolve) => setTimeout(resolve, 2));
       },
       privateRoot: dirname(this.paths.privateDir),
@@ -214,7 +207,6 @@ class FakeWorld {
     };
   }
 
-  /** A request for `db` at `fence`, checking the world's lease. */
   request(db: string, fence: number) {
     return {
       commitsDb: db,
@@ -225,7 +217,6 @@ class FakeWorld {
         if (this.leaseCheckError !== undefined) {
           return Promise.reject(this.leaseCheckError);
         }
-        // A lost lease, as the real hold reports it.
         return this.leaseCurrent
           ? Promise.resolve()
           : Promise.reject(new WriterFencedError(fence, fence + 1));
@@ -292,7 +283,6 @@ Deno.test({
       assertEquals(world.sidecars.length, 1);
       await a.release();
       await a.release();
-      // Still held by b: another process could not take it exclusively.
       const probe = await Deno.open(world.paths.useLock, {
         read: true,
         write: true,
@@ -421,7 +411,6 @@ Deno.test({
       const replicator = new LitestreamReplicator(world.deps());
       const handle = await replicator.acquire(world.request(db, 1));
       world.leaseCurrent = false;
-      // A lost lease fails the command like any unconfirmed sync.
       await assertRejects(
         () => handle.sync(5_000),
         V3ReplicationError,
@@ -540,7 +529,6 @@ Deno.test({
       const replicator = new LitestreamReplicator(world.deps());
       await (await replicator.acquire(world.request(db, 1))).release();
       const old = world.sidecars[0];
-      // The supervisor is gone; its Litestream lives on.
       old.alive = false;
       old.lock.close();
       world.commandLines.delete(old.supervisorPid);
@@ -564,7 +552,6 @@ Deno.test({
       await (await replicator.acquire(world.request(db, 1))).release();
       const before = (await Deno.stat(world.paths.useLock)).mtime?.getTime();
       world.sidecars[0].frozen = true;
-      // Another command holds it, so the frozen sidecar cannot be replaced.
       const other = await Deno.open(world.paths.useLock, {
         read: true,
         write: true,
@@ -610,9 +597,9 @@ Deno.test({
         probe.close();
       }
       await b.release();
-      // Polled, not checked once: under full-suite load the released hold
-      // was once still seen right after release (swamp-club#3560). A hold
-      // that is never dropped still fails when the wait runs out.
+      // polled, not checked once: under load a released hold can still be seen
+      // right after release; a hold never dropped still fails when the wait
+      // runs out
       await waitFor(async () => {
         const after = await Deno.open(world.paths.useLock, {
           read: true,
@@ -638,8 +625,6 @@ Deno.test({
       await (await setupReplicator.acquire(world.request(db, 1))).release();
       const first = world.sidecars[0];
       first.frozen = true;
-      // Another command holds the sidecar, so this one's replacement waits
-      // for the use lock.
       const other = await Deno.open(world.paths.useLock, {
         read: true,
         write: true,
@@ -652,8 +637,6 @@ Deno.test({
         ...base,
         async sleep(ms) {
           await base.sleep(ms);
-          // Past the start wait, the replacement is waiting for the lock:
-          // the other command replaces the sidecar and lets go.
           if (!swapped && world.time - started > 350) {
             swapped = true;
             world.processes.signalGroup(first.supervisorPid, "SIGKILL");
@@ -719,10 +702,9 @@ Deno.test({
         Error,
         "download failed",
       );
-      // Polled, not checked once: under full-suite load the released probe
-      // was once still seen right after the failed launch (swamp-club#3791,
-      // like swamp-club#3560). A probe left held still fails when the wait
-      // runs out.
+      // polled, not checked once: under load a released probe can still be seen
+      // after the failed launch; a probe left held still fails when the wait
+      // runs out
       await waitFor(async () => {
         const probe = await Deno.open(world.paths.supervisorLock, {
           read: true,
@@ -746,8 +728,6 @@ Deno.test({
   ignore: !UNIX,
   async fn() {
     await withWorld(async (world, db) => {
-      // This copy replicated a lineage at 1, then restarted at 4; the
-      // lease's records were recreated and hand out 1 again.
       await writeLineage(world.paths, {
         replicaRoot: "file:/replica",
         lineageFence: 4,
@@ -779,7 +759,6 @@ Deno.test({
       const second = await replicator.acquire(world.request(db, 1));
       assertEquals(world.live.length, 1);
       assertEquals(world.sidecars.length, 2, "a new sidecar, not the dead one");
-      // Each caller releases the hold it was given; none leaks.
       await first.release();
       await second.release();
       // Like the shared-handle case above, wait for the released file holds
@@ -890,7 +869,6 @@ Deno.test({
       const release = await replicator.quiesce(db);
       assertEquals(world.live.length, 0);
       assert(world.killed.includes(-supervisor), "its group was killed");
-      // A command meanwhile waits for use.lock, then gives up.
       await assertRejects(
         () => replicator.acquire(world.request(db, 2)),
         V3ReplicationUnavailableError,
@@ -944,7 +922,6 @@ Deno.test({
       const replicator = new LitestreamReplicator(world.deps());
       const handle = await replicator.acquire(world.request(db, 1));
       await handle.release();
-      // The recorded pid now runs something else.
       const supervisor = world.live[0].supervisorPid;
       const litestream = world.live[0].litestreamPid;
       const real = world.commandLines.get(supervisor)!;
@@ -955,7 +932,6 @@ Deno.test({
         "cannot verify",
       );
       assertEquals(world.killed, []);
-      // The refusal gave use.lock back: once verifiable, it quiesces.
       world.commandLines.set(supervisor, real);
       (await replicator.quiesce(db))();
       assertEquals(world.killed, [-supervisor, litestream]);
@@ -971,7 +947,6 @@ Deno.test({
       const replicator = new LitestreamReplicator(world.deps({
         processes: {
           ...world.processes,
-          // The kill is ignored: the supervisor keeps its lock.
           signalGroup: (pgid) => {
             world.killed.push(-pgid);
           },
@@ -1030,7 +1005,6 @@ Deno.test({
       );
       assertEquals(published.code, WRITER_FENCED_CODE);
       assertStringIncludes(published.message, "They may still appear");
-      // Lost before anything was published: nothing may land.
       const unpublished = await assertRejects(
         () => handle.sync(5_000),
         V3ReplicationError,
@@ -1091,8 +1065,6 @@ Deno.test({
       const first = await replicator.acquire(world.request(db, 1));
       let open!: () => void;
       gate = new Promise((done) => open = done);
-      // The second acquire probes the held sidecar, and the last hold is
-      // released meanwhile.
       const second = replicator.acquire(world.request(db, 1));
       await waitFor(() => probing, "the second acquire to probe");
       await first.release();
@@ -1120,7 +1092,6 @@ Deno.test({
   },
 });
 
-/** This process's identity, as another host name would have recorded it. */
 async function renamedIdentity(hostname: string) {
   const identity = (await localProcess()).identity;
   const at = identity.host.indexOf("#");
@@ -1139,8 +1110,6 @@ Deno.test({
       const replicator = new LitestreamReplicator(world.deps());
       await (await replicator.acquire(world.request(db, 1))).release();
       const sidecar = world.live[0];
-      // Its supervisor recorded the name the machine had then; a DHCP
-      // renewal renamed the machine since.
       await writePresence(world.paths, {
         supervisorPid: sidecar.supervisorPid,
         litestreamPid: sidecar.litestreamPid,
@@ -1151,7 +1120,6 @@ Deno.test({
         replicaPath: "/replica/_litestream/000000000001",
       });
       await (await replicator.acquire(world.request(db, 1))).release();
-      // The same, with the rename seen by this process instead.
       const local = await localProcess();
       setLocalProcessForTesting({ ...local, hostname: () => "Renamed.local" });
       try {
@@ -1174,7 +1142,6 @@ Deno.test({
     for (
       const process of [
         { ...here.identity, bootId: "another-boot" },
-        // A container sharing this boot id, in its own pid namespace.
         {
           ...here.identity,
           host: `${here.identity.host.split("#")[0]}#pid:[4026532999]`,
@@ -1269,8 +1236,6 @@ Deno.test({
       };
       const present = async () =>
         await Deno.stat(state).then(() => true, () => false);
-      // A copy from before the record goes by its last published head:
-      // published on another lineage, fresh.
       await plant();
       await writeCopyState(paths, {
         replicaRoot: "file:/r",
@@ -1280,16 +1245,12 @@ Deno.test({
       await resetForeignLitestreamState(paths, 7);
       assertEquals(await present(), false);
       assertEquals(await readLitestreamStateOwner(paths), 7);
-      // A sidecar on lineage 7 that died before any head on it was
-      // published: its state is kept for the next one on lineage 7.
       await plant();
       await resetForeignLitestreamState(paths, 7);
       assertEquals(await present(), true);
-      // Another lineage: fresh, and the record follows.
       await resetForeignLitestreamState(paths, 8);
       assertEquals(await present(), false);
       assertEquals(await readLitestreamStateOwner(paths), 8);
-      // Nothing to remove is no error.
       await resetForeignLitestreamState(paths, 9);
     } finally {
       await Deno.remove(dir, { recursive: true });

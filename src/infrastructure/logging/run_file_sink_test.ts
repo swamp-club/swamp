@@ -102,8 +102,6 @@ Deno.test("RunFileSink writes lines with an RFC3339 timestamp", async () => {
     );
 
     const content = await Deno.readTextFile(logPath);
-    // Persisted run-file lines share the console text format: a full
-    // ISO-8601 UTC timestamp with a `Z`, followed by a bracketed level.
     assertMatch(
       content,
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[INF\] /m,
@@ -157,7 +155,6 @@ Deno.test("RunFileSink writes to all matching prefixes", async () => {
     const specificContent = await Deno.readTextFile(specificPath);
     assertStringIncludes(specificContent, "specific");
 
-    // "specific" record also matches the broad prefix
     const broadContent = await Deno.readTextFile(broadPath);
     assertStringIncludes(broadContent, "broad");
     assertStringIncludes(broadContent, "specific");
@@ -182,7 +179,6 @@ Deno.test("RunFileSink unregister closes file and stops writing", async () => {
 
     sink.unregister(handle);
 
-    // After unregister, records should not be written
     sinkFn(makeRecord(["model", "method", "run", "my-model"], "after"));
 
     const content = await Deno.readTextFile(logPath);
@@ -243,20 +239,16 @@ Deno.test("RunFileSink dispose closes all writers", async () => {
 
     await sink.dispose();
 
-    // After dispose, writing should silently fail (no match)
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["a"], "should not write"));
 
-    // Files should be empty since no records matched after dispose
     const contentA = await Deno.readTextFile(join(dir, "a.log"));
     assertEquals(contentA, "");
   });
 });
 
-// Regression: issue #718. Concurrent runs (forEach children, parent+child) all
-// register under the same catch-all `[]` prefix. Each registration must get its
-// own writer keyed by a unique handle so one run can never close another run's
-// open file descriptor ("Bad resource ID").
+// concurrent runs register under the same catch-all prefix; each registration
+// needs its own writer so one run never closes another's open file descriptor
 
 Deno.test("RunFileSink: concurrent same-prefix registrations get independent writers", async () => {
   await withTempDir(async (dir) => {
@@ -264,8 +256,6 @@ Deno.test("RunFileSink: concurrent same-prefix registrations get independent wri
     const pathA = join(dir, "run-a.log");
     const pathB = join(dir, "run-b.log");
 
-    // Two "runs" register under the identical `[]` prefix — the exact collision
-    // that previously clobbered a shared map entry.
     const handleA = await sink.register([], pathA);
     const handleB = await sink.register([], pathB);
     assertNotEquals(handleA, handleB);
@@ -273,7 +263,6 @@ Deno.test("RunFileSink: concurrent same-prefix registrations get independent wri
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["workflow", "run", "wf1"], "shared record"));
 
-    // Both writers survive and capture the record; neither close throws.
     assertStringIncludes(await Deno.readTextFile(pathA), "shared record");
     assertStringIncludes(await Deno.readTextFile(pathB), "shared record");
 
@@ -293,12 +282,9 @@ Deno.test("RunFileSink: unregistering one writer leaves a same-prefix sibling wo
 
     const sinkFn = sink.sink;
 
-    // Run A finishes first. Under the old shared-key design this evicted/closed
-    // the sibling's fd; now it must only affect A.
     sink.unregister(handleA);
     sinkFn(makeRecord(["workflow", "run", "wf1"], "after-a-unregister"));
 
-    // B is still open and still writing — no "Bad resource ID".
     assertStringIncludes(
       await Deno.readTextFile(pathB),
       "after-a-unregister",
@@ -317,13 +303,11 @@ Deno.test("RunFileSink: unregister is a safe no-op for unknown, undefined, and d
     const sink = new RunFileSink();
     const handle = await sink.register([], join(dir, "run.log"));
 
-    // None of these may throw "Bad resource ID".
     sink.unregister(undefined);
     sink.unregister("not-a-real-handle");
     sink.unregister(handle);
-    sink.unregister(handle); // double close of the same handle
+    sink.unregister(handle);
 
-    // Sink still works for surviving registrations.
     const pathB = join(dir, "run-b.log");
     const handleB = await sink.register([], pathB);
     sink.sink(makeRecord(["workflow", "run", "wf1"], "still works"));
@@ -336,7 +320,6 @@ Deno.test("RunFileSink: register is failure-atomic and leaves no state on a reje
   await withTempDir(async (dir) => {
     const sink = new RunFileSink();
 
-    // A healthy registration that must remain intact after the failure below.
     const goodPath = join(dir, "good.log");
     const goodHandle = await sink.register([], goodPath);
 
@@ -352,10 +335,8 @@ Deno.test("RunFileSink: register is failure-atomic and leaves no state on a reje
     }
     assertEquals(threw, true);
 
-    // No handle was returned; unregistering the undefined handle is a no-op.
     sink.unregister(badHandle);
 
-    // The good writer is untouched and still works.
     sink.sink(makeRecord(["workflow", "run", "wf1"], "survived"));
     assertStringIncludes(await Deno.readTextFile(goodPath), "survived");
 
@@ -465,10 +446,8 @@ Deno.test("RunFileSink.redactActive: passes text through unchanged when no redac
   await withTempDir(async (dir) => {
     const sink = new RunFileSink();
 
-    // No redactor at all.
     assertEquals(sink.redactActive("nothing to redact"), "nothing to redact");
 
-    // A registered writer with no secrets must not alter text either.
     const handle = await sink.register(
       [],
       join(dir, "run.log"),
@@ -478,8 +457,6 @@ Deno.test("RunFileSink.redactActive: passes text through unchanged when no redac
     sink.unregister(handle);
   });
 });
-
-// --- runId filtering (swamp-club#2305) ---
 
 Deno.test("RunFileSink: writer with runId captures only records with matching swampRunId", async () => {
   await withTempDir(async (dir) => {
@@ -639,7 +616,6 @@ Deno.test("RunFileSink.registerRedactor: a file-less redactor scrubs through red
 
   const handle = sink.registerRedactor(redactor);
   assertEquals(sink.redactActive("got dispatch-secret"), "got ***");
-  // Not a file writer: nothing was opened, nothing to close.
   assertEquals(sink.activeCount, 0);
 
   sink.unregisterRedactor(handle);

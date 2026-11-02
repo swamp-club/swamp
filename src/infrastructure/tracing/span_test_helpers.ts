@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Test-only helpers for asserting on the spans code under test produces.
-
 import { type Context, context, SpanKind, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
@@ -39,10 +37,9 @@ import {
 export { SpanKind };
 export type { ReadableSpan };
 
-// A synchronous in-memory span exporter. OTel's own InMemorySpanExporter
-// defers its result callback via setTimeout(0) and never clears it, so one
-// timer per exported span leaks and Deno's resource sanitizer fails the test.
-// See swamp-club#1121.
+// synchronous because OTel's InMemorySpanExporter defers its callback via
+// setTimeout(0) and never clears it, leaking a timer per span that fails Deno's
+// resource sanitizer
 class SyncInMemorySpanExporter implements SpanExporter {
   readonly finishedSpans: ReadableSpan[] = [];
   export(
@@ -61,11 +58,8 @@ class SyncInMemorySpanExporter implements SpanExporter {
 }
 
 /**
- * Registers a global tracer provider and AsyncLocalStorage context manager,
- * runs `fn` with the list that finished spans are appended to, and tears both
- * down however `fn` settles. Global registration is safe because
- * `deno test --parallel` runs each test file in its own worker and tests
- * within a file run one at a time.
+ * global registration is safe: each test file runs in its own worker and tests
+ * within a file run one at a time
  */
 export async function withCapturedSpans(
   fn: (spans: readonly ReadableSpan[]) => Promise<void>,
@@ -85,10 +79,6 @@ export async function withCapturedSpans(
   }
 }
 
-/**
- * Like {@link withCapturedSpans}, with the execution observer installed so
- * observations and diagnostic phases are exported as spans.
- */
 export async function withObservedSpans(
   fn: (spans: readonly ReadableSpan[]) => Promise<void>,
 ): Promise<void> {
@@ -102,7 +92,6 @@ export async function withObservedSpans(
   });
 }
 
-/** Finished `swamp.diagnostic.<phase>` spans, in the order they ended. */
 export function diagnosticPhases(
   spans: readonly ReadableSpan[],
   phase: DiagnosticPhase,
@@ -110,7 +99,6 @@ export function diagnosticPhases(
   return spans.filter((s) => s.name === `swamp.diagnostic.${phase}`);
 }
 
-/** Returns the one finished span named `name`, failing if there is not exactly one. */
 export function findSpan(
   spans: readonly ReadableSpan[],
   name: string,
@@ -125,17 +113,11 @@ export function findSpan(
   return matches[0];
 }
 
-/** True when `child` was started as a direct child of `parent`. */
 export function isChildOf(child: ReadableSpan, parent: ReadableSpan): boolean {
   return child.parentSpanId === parent.spanContext().spanId &&
     child.spanContext().traceId === parent.spanContext().traceId;
 }
 
-/**
- * Asserts the poll-cycle spans for `poller`: at least `min` of them, each the
- * root of its own trace, outside the trace of `ambient` (the span that was
- * active when the poller started). Returns them.
- */
 export function assertPollCycleRoots(
   spans: readonly ReadableSpan[],
   poller: string,
@@ -167,10 +149,6 @@ export function assertPollCycleRoots(
   return cycles;
 }
 
-/**
- * Records every span the SDK starts and every span it ends, synchronously, so
- * a test can assert that no started span was left open.
- */
 export class SpanRecorder implements SpanProcessor {
   readonly started: ReadableSpan[] = [];
   readonly ended: ReadableSpan[] = [];
@@ -186,27 +164,20 @@ export class SpanRecorder implements SpanProcessor {
   shutdown(): Promise<void> {
     return Promise.resolve();
   }
-  /** Ended spans named `name`. */
   named(name: string): ReadableSpan[] {
     return this.ended.filter((s) => s.name === name);
   }
-  /** The one ended span named `name` whose `key` attribute is `value`. */
   find(name: string, key: string, value: string): ReadableSpan {
     return findSpan(
       this.named(name).filter((s) => s.attributes[key] === value),
       name,
     );
   }
-  /** True when every started span has been ended. */
   allEnded(): boolean {
     return this.started.every((s) => this.ended.includes(s));
   }
 }
 
-/**
- * Like {@link withCapturedSpans}, but hands `fn` a {@link SpanRecorder} that
- * also sees spans when they start.
- */
 export async function withRecordedSpans(
   fn: (recorder: SpanRecorder) => Promise<void>,
 ): Promise<void> {

@@ -222,7 +222,6 @@ Deno.test("YamlWorkflowRepository.delete does not throw for nonexistent", async 
     const repo = new YamlWorkflowRepository(dir);
     const id = createWorkflowId("550e8400-e29b-41d4-a716-446655440000");
 
-    // Should not throw
     await repo.delete(id);
   });
 });
@@ -234,7 +233,7 @@ Deno.test("YamlWorkflowRepository.nextId returns unique IDs", () => {
   const id2 = repo.nextId();
 
   assertNotEquals(id1, id2);
-  assertEquals(id1.length, 36); // UUID length
+  assertEquals(id1.length, 36);
 });
 
 Deno.test("YamlWorkflowRepository.getPath returns correct path", () => {
@@ -295,7 +294,6 @@ Deno.test("YamlWorkflowRepository.findAll skips broken YAML files", async () => 
 
     await repo.save(goodWorkflow);
 
-    // Write a broken YAML file in the workflows directory
     const workflowsDir = join(dir, "workflows");
     await Deno.writeTextFile(
       join(workflowsDir, "workflow-00000000-0000-4000-8000-000000000000.yaml"),
@@ -304,7 +302,6 @@ Deno.test("YamlWorkflowRepository.findAll skips broken YAML files", async () => 
 
     const results = await repo.findAll();
 
-    // Should return the good workflow and skip the broken one
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "good-workflow");
   });
@@ -317,7 +314,6 @@ Deno.test("YamlWorkflowRepository.findAll skips schema-invalid YAML files", asyn
 
     await repo.save(goodWorkflow);
 
-    // Write a valid YAML file that fails schema validation (missing required fields)
     const workflowsDir = join(dir, "workflows");
     const invalidData = { description: "no name or id field" };
     await Deno.writeTextFile(
@@ -330,7 +326,6 @@ Deno.test("YamlWorkflowRepository.findAll skips schema-invalid YAML files", asyn
 
     const results = await repo.findAll();
 
-    // Should return only the good workflow
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "good-workflow");
   });
@@ -343,21 +338,17 @@ Deno.test("YamlWorkflowRepository.findByName skips broken YAML files", async () 
 
     await repo.save(goodWorkflow);
 
-    // Write a broken YAML file in the workflows directory
     const workflowsDir = join(dir, "workflows");
     await Deno.writeTextFile(
       join(workflowsDir, "workflow-00000000-0000-4000-8000-000000000000.yaml"),
       "not valid yaml content {{{",
     );
 
-    // Should still find the good workflow despite the broken file
     const result = await repo.findByName("good-workflow");
     assertNotEquals(result, null);
     assertEquals(result!.name, "good-workflow");
   });
 });
-
-// Name-based filename tests
 
 Deno.test("YamlWorkflowRepository.save writes name-based filename", async () => {
   await withTempDir(async (dir) => {
@@ -394,7 +385,6 @@ Deno.test("YamlWorkflowRepository.findById reads legacy UUID-based files", async
     const workflow = createTestWorkflow("legacy-workflow");
     const id = workflow.id;
 
-    // Write a legacy UUID-based file directly
     const workflowsDir = join(dir, "workflows");
     await Deno.mkdir(workflowsDir, { recursive: true });
     const { stringify } = await import("@std/yaml");
@@ -417,7 +407,6 @@ Deno.test("YamlWorkflowRepository.save migrates legacy UUID file to name-based",
     const workflow = createTestWorkflow("migrating-workflow");
     const id = workflow.id;
 
-    // Write a legacy UUID-based file directly
     const workflowsDir = join(dir, "workflows");
     await Deno.mkdir(workflowsDir, { recursive: true });
     const { stringify } = await import("@std/yaml");
@@ -427,7 +416,6 @@ Deno.test("YamlWorkflowRepository.save migrates legacy UUID file to name-based",
       stringify(JSON.parse(JSON.stringify(data)) as Record<string, unknown>),
     );
 
-    // Re-save triggers migration
     await repo.save(workflow);
 
     const files: string[] = [];
@@ -459,7 +447,6 @@ Deno.test("YamlWorkflowRepository.findByName falls through when file name diverg
 
     await repo.save(workflow);
 
-    // Simulate user editing the YAML name without renaming the file
     const workflowsDir = join(dir, "workflows");
     const filePath = join(workflowsDir, "workflow-deploy.yaml");
     const content = await Deno.readTextFile(filePath);
@@ -468,11 +455,9 @@ Deno.test("YamlWorkflowRepository.findByName falls through when file name diverg
       content.replace("name: deploy", "name: staging"),
     );
 
-    // findByName("deploy") should NOT return the mismatched workflow
     const result = await repo.findByName("deploy");
     assertEquals(result, null);
 
-    // findByName("staging") should find it via the slow path
     const staging = await repo.findByName("staging");
     assertNotEquals(staging, null);
     assertEquals(staging!.name, "staging");
@@ -502,7 +487,6 @@ Deno.test("YamlWorkflowRepository.getPath returns UUID path for legacy files", a
     const workflow = createTestWorkflow("legacy-path-test");
     const id = workflow.id;
 
-    // Write a legacy UUID-based file directly
     const workflowsDir = join(dir, "workflows");
     await Deno.mkdir(workflowsDir, { recursive: true });
     const { stringify } = await import("@std/yaml");
@@ -513,25 +497,16 @@ Deno.test("YamlWorkflowRepository.getPath returns UUID path for legacy files", a
       stringify(JSON.parse(JSON.stringify(data)) as Record<string, unknown>),
     );
 
-    // Load via findById — populates the cache with the actual path
     await repo.findById(id);
 
-    // getPath should return the UUID-based path where the file actually is
     const path = repo.getPath(id);
     assertStringIncludes(path, legacyFilename);
 
-    // The file at that path should actually exist
     const stat = await Deno.stat(path);
     assertEquals(stat.isFile, true);
   });
 });
 
-// --- Name → path hint tests ---
-//
-// These pin the efficiency claim by COUNTING filesystem reads, never by timing
-// (AGENTS.md forbids wall-clock assertions). The counter wraps and delegates to
-// the real Deno.readTextFile and is restored in a finally block, installed only
-// across the call being measured.
 async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
   const original = Deno.readTextFile;
   let count = 0;
@@ -546,7 +521,6 @@ async function countingReads<T>(fn: () => Promise<T>): Promise<[T, number]> {
   }
 }
 
-/** Writes a workflow under a legacy `workflow-{uuid}.yaml` filename. */
 async function writeLegacyWorkflowFile(
   dir: string,
   workflow: Workflow,
@@ -566,7 +540,6 @@ Deno.test("YamlWorkflowRepository.findByName reuses a hint for legacy-filename w
     const repo = new YamlWorkflowRepository(dir);
     const target = createTestWorkflow("hinted-workflow");
     await writeLegacyWorkflowFile(dir, target);
-    // Noise the scan has to parse before reaching the target.
     for (let i = 0; i < 5; i++) {
       await writeLegacyWorkflowFile(dir, createTestWorkflow(`noise-${i}`));
     }
@@ -595,7 +568,6 @@ Deno.test("YamlWorkflowRepository hints do not hide an external rename", async (
 
     assertEquals((await repo.findByName("before-rename"))?.id, target.id);
 
-    // Someone edits the name field in place, outside the repository.
     const data = target.toData();
     data.name = "after-rename";
     await Deno.writeTextFile(
@@ -614,7 +586,6 @@ Deno.test("YamlWorkflowRepository hints do not hide external delete or addition"
     const target = createTestWorkflow("doomed-workflow");
     const path = await writeLegacyWorkflowFile(dir, target);
 
-    // Warm the hint, and confirm a miss is never cached as a negative result.
     assertEquals((await repo.findByName("doomed-workflow"))?.id, target.id);
     assertEquals(await repo.findByName("newcomer-workflow"), null);
 
@@ -634,7 +605,6 @@ Deno.test("YamlWorkflowRepository hint rejects a path swapped for a symlink", as
       const target = createTestWorkflow("swap-target");
       const path = await writeLegacyWorkflowFile(dir, target);
 
-      // Warm the hint while the path is a plain file.
       assertEquals((await repo.findByName("swap-target"))?.id, target.id);
 
       // Replace it with a symlink. findAll discovers regular files only, so the
@@ -700,7 +670,6 @@ Deno.test("YamlWorkflowRepository.delete: stages a remove of the deleted file", 
 
     await runInUnitOfWork(uow, () => repo.delete(workflow.id));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "remove", path }, {
       kind: "remove",
       path,
@@ -729,7 +698,6 @@ Deno.test("YamlWorkflowRepository.delete: stages a write when the file holds ano
 
     await runInUnitOfWork(uow, () => repo.delete(ghost.id));
 
-    // Signalled before the write and again after it (swamp-club#2421).
     assertEquals(uow.staged(), [{ kind: "write", path }, {
       kind: "write",
       path,
@@ -739,7 +707,6 @@ Deno.test("YamlWorkflowRepository.delete: stages a write when the file holds ano
   });
 });
 
-/** Writes a workflow file whose job weight breaks the schema. */
 async function writeSchemaBrokenWorkflow(
   dir: string,
   fileName: string,
@@ -779,7 +746,6 @@ Deno.test("YamlWorkflowRepository.findByName: a schema-broken file at the name p
       error.message,
       "workflow-deploy.yaml: jobs[0].weight: Invalid input: expected number, received string",
     );
-    // The directory stays out of the message and rides on the error instead.
     assertEquals(error.message.includes(dir), false);
     assertEquals(errorPaths(error), [path]);
   });
@@ -866,9 +832,6 @@ Deno.test("YamlWorkflowRepository.findAll: returns workflows in file-name order"
   });
 });
 
-// --- findAllById tests ---
-
-/** Counts YAML documents built into workflows while `fn` runs. */
 async function countingBuilds<T>(fn: () => Promise<T>): Promise<[T, number]> {
   const original = Workflow.fromData;
   let count = 0;
@@ -888,7 +851,6 @@ Deno.test("YamlWorkflowRepository.findAllById: returns every workflow sharing th
     const repo = new YamlWorkflowRepository(dir);
     const original = createTestWorkflow("original");
     await repo.save(original);
-    // A copied file keeps its ID.
     const copy = original.toData();
     copy.name = "copy";
     await Deno.writeTextFile(
@@ -938,9 +900,6 @@ Deno.test("YamlWorkflowRepository.findAllById: finds an ID written with an escap
   });
 });
 
-// --- findAllListings tests (swamp-club#3443) ---
-
-/** Sets every workflow file back a minute, so its listing is kept. */
 async function settleWorkflowFiles(dir: string): Promise<void> {
   const when = new Date(Date.now() - 60_000);
   for await (const entry of Deno.readDir(join(dir, "workflows"))) {
@@ -999,7 +958,6 @@ Deno.test("YamlWorkflowRepository.findAllListings: reads again only the files th
     const [, keptBuilds] = await countingBuilds(() => repo.findAllListings());
     assertEquals(keptBuilds, 0);
 
-    // An edit outside the repository: renamed in place.
     const path = join(dir, "workflows", "workflow-wf-2.yaml");
     const data = (await repo.findByName("wf-2"))!.toData();
     data.name = "renamed";
@@ -1073,7 +1031,6 @@ Deno.test("YamlWorkflowRepository.findByName and findById: with listings kept, o
       await writeLegacyWorkflowFile(dir, createTestWorkflow(`noise-${i}`));
     }
     await settleWorkflowFiles(dir);
-    // A legacy file is not at its name-derived path.
     assertEquals((await writer.findByName("legacy-target"))?.id, target.id);
 
     const reader = new YamlWorkflowRepository(dir);

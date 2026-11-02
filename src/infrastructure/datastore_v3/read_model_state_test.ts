@@ -58,10 +58,8 @@ Deno.test("ReadModelState.configBase: keeps the first base a commit recorded acr
     try {
       assertEquals(reopened.configBase("", P, K), { sha256: "a".repeat(64) });
       assertEquals(reopened.configBase("team", P, K), undefined);
-      // The checkout committed it.
       reopened.clearConfigBases("", P, K);
       assertEquals(reopened.configBase("", P, K), undefined);
-      // A record the checkout never held, then the user loaded it.
       reopened.recordConfigBase("", P, K, undefined);
       assertEquals(reopened.configBase("", P, K), "absent");
       reopened.clearConfigBases("", P);
@@ -151,7 +149,6 @@ Deno.test("ReadModelState.liveRecord: records who wrote each record, and a schem
     } finally {
       state.close();
     }
-    // A state from before the writer column: its rows' writers are unknown.
     const db = new DatabaseSync(path);
     db.exec(
       "ALTER TABLE live_records DROP COLUMN writer; PRAGMA user_version=7",
@@ -187,7 +184,6 @@ Deno.test("ReadModelState.presentKeysFoldedTo: keeps in step with applied files,
     try {
       apply([["data/vpc/1/raw", true]]);
       assertEquals(keys(), ["data/vpc/1/raw"]);
-      // Built now: later applies keep it in step.
       apply([["data/VPC/1/raw", true]]);
       assertEquals(keys().toSorted(), ["data/VPC/1/raw", "data/vpc/1/raw"]);
       apply([["data/vpc/1/raw", false]]);

@@ -55,7 +55,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Writes a pulled extension and returns its datastore source path. */
 async function pullExtension(
   root: string,
   name: string,
@@ -258,7 +257,6 @@ Deno.test("assertV3BucketExtensionVersions: looks the pin up by extension name, 
         ),
       V3BucketExtensionTooOldError,
     );
-    // The fix names the extension to update, not the datastore type.
     assertStringIncludes(error.message, "The @acme/s3 datastore");
     assertStringIncludes(error.message, "swamp extension update @acme/stores`");
   });

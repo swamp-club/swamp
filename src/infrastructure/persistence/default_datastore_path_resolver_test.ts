@@ -67,10 +67,8 @@ Deno.test("DefaultDatastorePathResolver - no always-local subdirs remain", () =>
     path: "/data/store",
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
-  // definitions, workflows, and vault are now top-level dirs, not .swamp/ subdirs
-  // They are no longer in ALWAYS_LOCAL_SUBDIRS, so if they appeared in the
-  // datastore directories list they would be routed to the datastore.
-  // In practice they are not in DEFAULT_DATASTORE_SUBDIRS either.
+  // definitions, workflows and vault are top-level dirs and not in
+  // DEFAULT_DATASTORE_SUBDIRS, so they are never routed to the datastore
   assertEquals(resolver.isDatastoreSubdir("definitions"), false);
   assertEquals(resolver.isDatastoreSubdir("workflows"), false);
   assertEquals(resolver.isDatastoreSubdir("vault"), false);
@@ -109,10 +107,7 @@ Deno.test("DefaultDatastorePathResolver - resolvePath routes datastore subdirs",
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
 
-  // Datastore subdir goes to datastore
   assertPathEquals(resolver.resolvePath("data", "foo"), "/data/store/data/foo");
-  // Non-datastore subdir stays local (definitions is no longer always-local
-  // but it's also not in DEFAULT_DATASTORE_SUBDIRS, so it stays local)
   assertPathEquals(
     resolver.resolvePath("definitions", "foo"),
     "/repo/.swamp/definitions/foo",
@@ -132,7 +127,6 @@ Deno.test("DefaultDatastorePathResolver - resolvePath with exclude patterns", ()
     resolver.resolvePath("telemetry", "foo.json"),
     "/repo/.swamp/telemetry/foo.json",
   );
-  // data is not excluded
   assertPathEquals(resolver.resolvePath("data", "foo"), "/data/store/data/foo");
 });
 
@@ -143,12 +137,10 @@ Deno.test("DefaultDatastorePathResolver - default config (no external datastore)
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
 
-  // Both local and datastore paths resolve to .swamp
   assertPathEquals(
     resolver.resolvePath("data", "foo"),
     "/repo/.swamp/data/foo",
   );
-  // definitions is not a datastore subdir, so it stays in .swamp even with default config
   assertPathEquals(
     resolver.resolvePath("definitions", "foo"),
     "/repo/.swamp/definitions/foo",
@@ -163,7 +155,6 @@ Deno.test("DefaultDatastorePathResolver - custom datastore prefers cachePath ove
     cachePath: "/home/user/.swamp/repos/abc",
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
-  // Data should go to cachePath so the sync service can find it
   assertPathEquals(
     resolver.datastorePath("data"),
     "/home/user/.swamp/repos/abc/data",
@@ -202,7 +193,6 @@ Deno.test("DefaultDatastorePathResolver - bundle subdirs are always-local", () =
     path: "/data/store",
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
-  // All bundle dirs are always-local — derived artifacts, not synced (swamp-club#869)
   assertEquals(resolver.isDatastoreSubdir("bundles"), false);
   assertEquals(resolver.isDatastoreSubdir("vault-bundles"), false);
   assertEquals(resolver.isDatastoreSubdir("datastore-bundles"), false);
@@ -218,7 +208,6 @@ Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to local .s
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
 
-  // Bundles are always-local — never routed to S3 cache (swamp-club#869)
   assertPathEquals(
     resolver.resolvePath("bundles", "2e4ea9ae", "aws/logs.js"),
     "/repo/.swamp/bundles/2e4ea9ae/aws/logs.js",
@@ -248,14 +237,11 @@ Deno.test("DefaultDatastorePathResolver - filesystem datastore resolves bundles 
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
 
-  // With default filesystem datastore, bundles stay in .swamp/ (same path)
   assertPathEquals(
     resolver.resolvePath("bundles", "2e4ea9ae", "aws/logs.js"),
     "/repo/.swamp/bundles/2e4ea9ae/aws/logs.js",
   );
 });
-
-// ── Giga-swamp namespace prefixing (Phase 3) ────────────────────────────────
 
 Deno.test("DefaultDatastorePathResolver - namespace prepends as outermost datastore segment", () => {
   const config: DatastoreConfig = {
@@ -285,7 +271,6 @@ Deno.test("DefaultDatastorePathResolver - empty namespace is byte-identical to s
   const soloResolver = new DefaultDatastorePathResolver("/repo", solo);
   const explicitResolver = new DefaultDatastorePathResolver("/repo", explicit);
 
-  // No prefix, no leading separator, no double slash.
   assertPathEquals(soloResolver.datastorePath("data"), "/data/store/data");
   assertPathEquals(explicitResolver.datastorePath("data"), "/data/store/data");
   assertPathEquals(
@@ -332,12 +317,10 @@ Deno.test("DefaultDatastorePathResolver - exclude patterns match the un-prefixed
     exclude: ["data/scratch/**"],
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
-  // Excluded paths fall back to local tier (and are therefore not namespaced).
   assertPathEquals(
     resolver.resolvePath("data", "scratch", "tmp.json"),
     "/repo/.swamp/data/scratch/tmp.json",
   );
-  // Non-excluded data is namespaced in the datastore tier.
   assertPathEquals(
     resolver.resolvePath("data", "keep", "v.json"),
     "/data/store/infra/data/keep/v.json",

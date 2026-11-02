@@ -25,28 +25,20 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 const PREFERENCES_FILE_NAME = "telemetry.yaml";
 
 /**
- * User-level telemetry preferences, persisted at
- * `<config>/telemetry.yaml` (XDG-aware).
- *
- * This is the user's persistent opt-out, set with
- * `swamp config set telemetry.collection disabled`. It applies to every run,
- * inside a swamp repo or not, and a repo marker cannot override it.
- * `disabled` mirrors the marker's `telemetryDisabled` polarity (default
- * `false` = telemetry enabled).
+ * the user's persistent opt-out: it applies to every run, inside a repo or not,
+ * and a repo marker cannot override it
  */
 export interface TelemetryPreferences {
   readonly disabled: boolean;
 }
 
-/** Default preferences when no file exists: telemetry enabled. */
 export const DEFAULT_TELEMETRY_PREFERENCES: TelemetryPreferences = {
   disabled: false,
 };
 
 /**
- * Reads and writes the user-level telemetry preferences file. Never throws on
- * read — a missing or malformed file yields the default (enabled), matching the
- * best-effort discipline of the rest of the telemetry pipeline.
+ * a missing or malformed file yields the default (enabled), matching the
+ * best-effort discipline of the telemetry pipeline
  */
 export class TelemetryPreferencesFileRepository {
   private readonly filePath: string;

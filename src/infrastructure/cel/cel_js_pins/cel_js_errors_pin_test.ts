@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins for error absorption (design/enablers/typed-secrets.md Section 4.2,
-// fact 3: "A missing-overload error at run time, or an error a handler throws,
-// is absorbed by `||`, `&&`, `exists` or `all` when the other operand decides
-// the result. A statically detectable type error, and an error while building
-// a macro's range, are not absorbed."). Absorption is CEL's commutative logic:
-// an error on one side is discarded only when the other side alone decides
-// the result.
-
 import {
   assertEquals,
   assertInstanceOf,

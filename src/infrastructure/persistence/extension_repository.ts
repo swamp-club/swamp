@@ -48,12 +48,6 @@ import type {
 
 const logger = getLogger(["swamp", "persistence", "extension-repository"]);
 
-/**
- * Result of evaluating a kind's cold-start invalidation guards. Carries
- * which trigger fired so the loader can log a specific warning ("layout
- * version changed", "datastore base path changed", etc.) instead of a
- * generic one.
- */
 export interface InvalidationGuardResult {
   readonly shouldInvalidate: boolean;
   readonly reason:
@@ -65,51 +59,9 @@ export interface InvalidationGuardResult {
 }
 
 /**
- * Sole gateway to {@link ExtensionCatalogStore}'s `bundle_types` table
- * for AGGREGATE-shaped operations on the {@link Extension} aggregate.
- *
- * **Role.** The repository hides SQLite for save/load/saveAll, returning
- * Extensions rather than rows. Loaders, lifecycle services
- * (W2 InstallExtensionService etc.), and `ReconcileFromDisk` (W3) talk
- * to this class and never touch SQL directly. The ExtensionLoader
- * accesses the catalog via {@link ExtensionRepository.getCatalogStore}
- * for row-level operations (buildIndex, loadSingleType).
- *
- * **I-Repo-1 invariant** (cross-aggregate `(kind, typeNormalized)`
- * uniqueness over non-Tombstoned Sources). Evaluated against post-save
- * state on EVERY commit — `save(ext)` is sugar for `saveAll([ext])` and
- * runs the same check. Violation → ROLLBACK + {@link DuplicateTypeError}
- * naming both source paths. The day-to-day case for I-Repo-1 firing
- * legitimately is the upgrade-as-atomic-transition transaction:
- * `saveAll([vN.tombstoneAll(), vN+1])`. v1's Sources are Tombstoned in
- * the post-state, so only v2 occupies the type slot.
- *
- * **Lockfile fallback** (W1b deferred from W1a). Pulled rows in the
- * catalog deliberately have empty `extension_version` because the
- * pulled-extensions on-disk tree encodes only the name. Version is
- * owned by `upstream_extensions.json` (the lockfile) and consulted at
- * read time. The repository takes a {@link LockfileRepository} injected
- * at construction and asks it for the locked version on every fallback
- * lookup.
- *
- * **Snapshot frozen at construction.** The lockfile snapshot lives one
- * layer out, inside the {@link LockfileRepository}. That repository is
- * itself constructed-with-snapshot per its own JSDoc; callers who need
- * a fresh snapshot construct a new {@link LockfileRepository} and pass
- * it to a new {@link ExtensionRepository}. Long-lived instances do NOT
- * auto-refresh — re-construction is the recommended mechanism. The race
- * window between lockfile read and write-back (process A reads v1,
- * process B upgrades to v2 + rewrites lockfile, process A writes back
- * v1) is acknowledged but deferred to W3's `ReconcileFromDisk` for
- * convergence; SQLite's `busy_timeout` serializes the write itself.
- *
- * **Composition over inheritance.** The repository wraps an
- * {@link ExtensionCatalogStore} via composition, NOT inheritance. The
- * {@link ExtensionLoader} accesses the catalog via
- * {@link getCatalogStore} for row-level operations.
- *
- * See `design/primitives/extensions.md` (workstream W1) for the full
- * architectural blueprint this class lives inside.
+ * sole gateway to bundle_types for aggregate operations; every save checks
+ * (kind, type) uniqueness over non-Tombstoned sources and rolls back with
+ * DuplicateTypeError; pulled versions come from the lockfile
  */
 export class ExtensionRepository {
   private readonly catalog: ExtensionCatalogStore;
@@ -118,11 +70,8 @@ export class ExtensionRepository {
   private readonly repoRoot: string;
   private readonly localManifestIdentity: LocalManifestIdentity | null;
   /**
-   * Tracks rows we've already info-logged for the empty-version
-   * fallback in this process's lifetime. The write-back makes
-   * subsequent boots silent; this set keeps a single boot silent on
-   * repeated reads of the same row before write-back commits (e.g.
-   * concurrent loadByName calls before the UPDATE lands).
+   * rows already info-logged for the empty-version fallback, so repeated reads
+   * before the write-back commits stay quiet
    */
   private readonly fallbackLoggedSourcePaths: Set<string>;
   private _lastOriginConflicts: OriginConflict[] = [];
@@ -132,17 +81,8 @@ export class ExtensionRepository {
   private readonly mountedSourceDirsCanonical: readonly string[];
 
   /**
-   * @param args.activePulledRoot Returns the repo's active pulled root, or
-   *   `undefined` while managed status is unknown. Defaults to
-   *   {@link activePulledExtensionsRoot} of the raw `repoRoot`, read at
-   *   call time because managed status is recorded during startup.
-   * @param args.sourceExists Whether a catalog row's source file exists.
-   *   Defaults to a stat where only NotFound counts as missing.
-   * @param args.mountedSourceDirs The extension directories
-   *   `.swamp-sources.yaml` mounts, in source order (see
-   *   `resolveMountedSourceDirs`). {@link saveAll} keeps catalog rows
-   *   under them although they are outside the repo root, and settles
-   *   their type conflicts (swamp-club#2563). Defaults to none.
+   * activePulledRoot is read at call time because managed status is recorded
+   * during startup; sourceExists counts only NotFound as missing
    */
   constructor(args: {
     catalog: ExtensionCatalogStore;
@@ -169,16 +109,10 @@ export class ExtensionRepository {
     );
   }
 
-  /** The canonical directories `.swamp-sources.yaml` mounts, in order. */
   get mountedSourceDirs(): readonly string[] {
     return this.mountedSourceDirsCanonical;
   }
 
-  /**
-   * Settles type conflicts involving mounted sources outside a save, for
-   * the loader's own catalog writes. See
-   * {@link ExtensionCatalogStore.settleMountedTypeConflicts}.
-   */
   settleMountedTypeConflicts(): MountedTypeConflict[] {
     return this.catalog.settleMountedTypeConflicts(
       this.repoRoot,
@@ -190,19 +124,10 @@ export class ExtensionRepository {
     return this._lastOriginConflicts;
   }
 
-  /**
-   * The pulled-vs-pulled conflicts the last `saveAll` settled. Empty
-   * unless it committed with `settlePulledTypeConflicts`.
-   */
   get lastPulledTypeConflicts(): readonly PulledTypeConflict[] {
     return this._lastPulledTypeConflicts;
   }
 
-  /**
-   * Loads every Extension in the catalog. Applies the empty-identity
-   * fallback to pulled rows with empty `extension_version` and to W1a
-   * leftover rows where both identity columns are empty.
-   */
   getCatalogStore(): ExtensionCatalogStore {
     return this.catalog;
   }
@@ -237,12 +162,6 @@ export class ExtensionRepository {
     return this.materialiseExtensions(rows, true);
   }
 
-  /**
-   * Loads the Extension(s) sharing the given name. Multiple versions of
-   * the same name return as multiple Extension instances. Empty array
-   * if no rows match (or if every match was orphaned by the lockfile
-   * fallback).
-   */
   loadByName(name: string): Extension[] {
     // Need full-table read because findByExtension takes (name, version)
     // and we don't know which versions are present. Filter in-memory by
@@ -254,54 +173,19 @@ export class ExtensionRepository {
   }
 
   /**
-   * Saves a single Extension. Sugar for `saveAll([extension])`. Triggers
-   * I-Repo-1 evaluation on every call — single-extension saves DO get
-   * the cross-aggregate uniqueness check. Required: a single
-   * `save(ext)` that reuses a `(kind, type)` already owned by another
-   * extension must throw {@link DuplicateTypeError}, not silently
-   * overwrite.
+   * a single save still gets the cross-aggregate uniqueness check: reusing a
+   * (kind, type) owned by another extension must throw DuplicateTypeError, not
+   * overwrite
    */
   save(extension: Extension): void {
     this.saveAll([extension]);
   }
 
   /**
-   * Saves multiple Extensions atomically. Diff-based: for each
-   * Extension, computes per-Source INSERT/UPDATE/DELETE against the
-   * current persisted state and applies inside a single SQLite
-   * transaction.
-   *
-   * Tombstoned Sources are DELETEd on save (per I4: retained in-memory
-   * until the aggregate is persisted, then dropped). Non-Tombstoned
-   * Sources are upserted with explicit `extension_name` /
-   * `extension_version` identity columns (the aggregate is authoritative
-   * for those — distinct from the loader-shaped upsert which deliberately
-   * preserves them).
-   *
-   * After the diff is applied, evaluates I-Repo-1 against the full
-   * post-save catalog state. Violation → ROLLBACK + throw
-   * {@link DuplicateTypeError}.
-   *
-   * `pruneUnreachable: false` skips pruning rows whose source is outside
-   * the repo root. That prune deletes every such row not in this save
-   * unless its source still exists under one of the repository's
-   * `mountedSourceDirs` (swamp-club#2563). Serve reload's scoped
-   * reconcile, which only creates aggregates for extensions that have
-   * none (swamp-club#2355), turns it off.
-   *
-   * Type conflicts involving rows under `mountedSourceDirs` are settled
-   * before the I-Repo-1 check, local before mounted and earlier mounts
-   * before later ones, so a kept mounted row that a local extension
-   * overrides does not fail the save.
-   *
-   * `settlePulledTypeConflicts: true` settles pulled-vs-pulled type
-   * conflicts before the I-Repo-1 check instead of rejecting them: the
-   * earliest-inserted pulled row keeps the type and the others are
-   * cleared, as the loader does (swamp-club#2490). Reconcile repairs
-   * state it did not create, so it turns this on (swamp-club#2702).
-   * Installs leave it off, so pulling a second provider of a type still
-   * fails with {@link DuplicateTypeError}. The settled conflicts are
-   * available from {@link lastPulledTypeConflicts}.
+   * pruneUnreachable false skips pruning out-of-root rows;
+   * settlePulledTypeConflicts true clears later pulled claimants instead of
+   * rejecting them (reconcile only; installs still fail with
+   * DuplicateTypeError)
    */
   saveAll(
     extensions: readonly Extension[],
@@ -375,19 +259,9 @@ export class ExtensionRepository {
   }
 
   /**
-   * Encapsulates the cold-start invalidation guards for a kind. Returns
-   * which (if any) trigger fired. Replaces the per-loader hand-rolled
-   * guard blocks (3 in the model loader, 1 in each sibling) with one
-   * uniform check — closes the audit's "model has 3, siblings have 1"
-   * coverage gap.
-   *
-   * Guards (in priority order):
-   *   1. populated-flag absent → not yet populated → invalidate.
-   *   2. layout-version mismatch → bundle layout changed → invalidate.
-   *   3. datastore-base-path mismatch → datastore migrated → invalidate.
-   *   4. source-dirs-fingerprint mismatch → extension dirs added/removed
-   *      → invalidate.
-   * Returns `{ shouldInvalidate: false, reason: "fresh" }` when none fire.
+   * one uniform check for every loader, in priority order: not populated,
+   * layout version mismatch, datastore base path mismatch, source dirs
+   * fingerprint mismatch
    */
   invalidationGuards(args: {
     kind: ExtensionKind;
@@ -423,19 +297,9 @@ export class ExtensionRepository {
   }
 
   /**
-   * Best-effort full-catalog rescan trigger. Invalidates the populated
-   * flag for every known kind. Replaces the standalone
-   * `forceCatalogRescan` helper.
-   *
-   * **Best-effort semantics** — a failure to invalidate is logged and
-   * swallowed so callers (open.ts, doctor_extensions.ts) don't crash on
-   * a missing or corrupt catalog. The next loader pass bootstraps a
-   * fresh catalog from disk.
-   *
-   * Runs inside a transaction so all kinds are invalidated
-   * atomically — a partial invalidation (some kinds cleared, others
-   * not) leaves the catalog in an inconsistent state that can cause
-   * BundleBuildFailed errors on the next run.
+   * best-effort: a failure is logged and swallowed so callers do not crash on a
+   * missing or corrupt catalog; one transaction so a partial invalidation
+   * cannot cause BundleBuildFailed
    */
   invalidateAll(): void {
     const kinds: ExtensionKind[] = [
@@ -457,19 +321,9 @@ export class ExtensionRepository {
   }
 
   /**
-   * Whole-repo cold-start check for {@link ReconcileFromDiskService}.
-   * Returns `true` if ANY kind is not yet populated — reconcile then
-   * runs a full-tree reconcile across all origins.
-   *
-   * Checks only the `isPopulated` flag — the cheapest guard that
-   * catches the cold-start case (first run, after invalidateAll, after
-   * catalog deletion). Per-kind guard values (layout version, base path,
-   * source dirs fingerprint) require loader-computed inputs not available
-   * at the CLI layer; those guards continue to trigger per-loader
-   * rebuilds via {@link invalidationGuards}.
-   *
-   * Loaders keep their per-kind interface unchanged (W2/legacy path).
-   * W4 collapses both entry points when it unifies loaders.
+   * checks only the populated flag, the cheapest cold-start guard; the other
+   * guards need loader-computed inputs unavailable at the CLI layer and stay
+   * per-loader
    */
   anyKindNeedsInvalidation(): boolean {
     const kinds: ExtensionKind[] = [
@@ -486,19 +340,9 @@ export class ExtensionRepository {
   }
 
   /**
-   * Deletes catalog rows by canonical source path. Used by the W6
-   * repair service to prune Tombstoned and unreachable rows.
-   *
-   * Matches by canonical form rather than PK lookup so cross-OS
-   * catalog rows are found: a row written on WSL/Linux (where
-   * canonicalizePath is identity, preserving case) stores a mixed-case
-   * PK that Windows's canonicalizePath (lowercase) won't match via
-   * `findBySourcePath`. Iterating `findAll()` and comparing canonical
-   * forms closes the gap; deletion uses the raw PK value so the
-   * DELETE hits the actual stored row.
-   *
-   * Runs inside a single transaction for atomicity. Returns the count
-   * of rows actually deleted.
+   * matches by canonical form, not PK lookup, so cross-OS rows are found (a
+   * WSL/Linux row keeps its case, which Windows canonicalizePath lowercases);
+   * deletion uses the raw PK value
    */
   deleteBySourcePaths(paths: readonly string[]): number {
     const targetSet = new Set(paths.map(canonicalizePath));
@@ -522,13 +366,6 @@ export class ExtensionRepository {
     return stored !== current;
   }
 
-  // ----- private helpers -----
-
-  /**
-   * Materialises rows into Extension aggregates. Runs the empty-identity
-   * fallback per row, drops rows whose identity can't be resolved, then
-   * groups surviving rows by `(extension_name, extension_version)`.
-   */
   private materialiseExtensions(
     rows: ExtensionTypeRow[],
     pruneOrphans: boolean,
@@ -605,20 +442,9 @@ export class ExtensionRepository {
   }
 
   /**
-   * Resolves a row's `(extension_name, extension_version)` identity,
-   * applying the empty-identity fallback per the W1b contract.
-   *
-   * Returns `null` when the row should be DELETEd as an orphan — when
-   * either the source path matches no known layout (deriveExtensionIdentity
-   * returns null) or the lockfile has no entry for a pulled extension.
-   *
-   * **W1b/W3 boundary.** This fallback does NOT try to repair the
-   * "two pulled versions of the same extension on disk after an
-   * interrupted upgrade" corruption case. Both rows backfill to the
-   * same name; the lockfile gives both the same version; I-Repo-1 then
-   * fires with DuplicateTypeError on the next save. That is the correct
-   * error in a corrupt state. Repair (drop the stale subtree, re-derive
-   * from lockfile) belongs to W3's ReconcileFromDisk.
+   * does not repair two pulled versions left by an interrupted upgrade: both
+   * resolve to the same version and the next save fails with
+   * DuplicateTypeError; repair belongs to reconcile
    */
   private resolveIdentity(
     row: ExtensionTypeRow,
@@ -646,8 +472,8 @@ export class ExtensionRepository {
       }
       name = derived.name;
       version = derived.version;
-      // When a manifest declares identity, use it for local rows
-      // instead of the synthetic @local/<basename>@0.0.0.
+      // a manifest-declared identity replaces the synthetic
+      // @local/<basename>@0.0.0 for local rows
       if (
         version.length > 0 && this.localManifestIdentity &&
         name.startsWith("@local/")
@@ -663,12 +489,9 @@ export class ExtensionRepository {
         );
         return { name, version };
       }
-      // Pulled with empty version — fall through to the lockfile case
-      // with the derived name in hand.
     }
 
     if (name !== null && (!version || version.length === 0)) {
-      // Pulled row: name populated, version empty. Consult the lockfile.
       const locked = this.lockfileRepository.getLockedVersion(name);
       if (locked === null) {
         if (pruneOrphans) {
@@ -687,15 +510,9 @@ export class ExtensionRepository {
       return { name, version: locked };
     }
 
-    // Both populated — no fallback needed.
     return { name: name ?? "", version: version ?? "" };
   }
 
-  /**
-   * Applies the diff for one extension: writes/updates rows for the
-   * Extension's non-Tombstoned Sources, deletes rows for Tombstoned
-   * Sources and rows that the Extension no longer owns.
-   */
   private applyDiffForExtension(extension: Extension): void {
     const currentRows = this.catalog.findByExtension(
       extension.name,
@@ -705,7 +522,6 @@ export class ExtensionRepository {
 
     for (const source of extension.sources.values()) {
       if (source.state.tag === "Tombstoned") {
-        // Tombstoned sources are DELETEd on save.
         this.catalog.removeBySourcePath(source.id.canonicalPath);
         continue;
       }
@@ -714,9 +530,8 @@ export class ExtensionRepository {
       this.catalog.upsertWithIdentity(row);
     }
 
-    // DELETE current rows whose source_path is no longer owned by the
-    // aggregate (the source was dropped without being explicitly
-    // tombstoned — e.g. v2 of an extension with fewer files than v1).
+    // delete rows the aggregate does not own, such as a new version with fewer
+    // files whose sources were dropped without being tombstoned
     for (const row of currentRows) {
       if (!newSourcePaths.has(row.source_path)) {
         this.catalog.removeBySourcePath(row.source_path);
@@ -725,15 +540,9 @@ export class ExtensionRepository {
   }
 
   /**
-   * Scans the post-save catalog state for I-Repo-1 violations. Throws
-   * {@link DuplicateTypeError} on first conflict found — caller's
-   * transaction wrapper rolls back. Naming both source paths is a hard
-   * requirement.
-   *
-   * `savedPaths` are the canonical paths of the sources in the current
-   * save. When exactly one side of a conflict is among them, the other
-   * side was already in the catalog and is reported as `firstSource`,
-   * whatever the scan order (swamp-club#2762).
+   * throws on the first conflict, which the caller rolls back; when exactly one
+   * side is in savedPaths the other was already in the catalog and is reported
+   * as firstSource whatever the scan order
    */
   private assertIRepo1(savedPaths: ReadonlySet<string>): void {
     const rows = this.catalog.findAll();
@@ -773,26 +582,13 @@ export class ExtensionRepository {
 }
 
 /**
- * Derives an Extension's origin from its name. Pulled extensions are
- * scoped (`@scope/name`) and are NOT under the `@local/` namespace;
- * locals are `@local/<basename>` (synthetic) or manifest-sourced.
- *
- * When a manifest declares identity, the local extension uses the
- * manifest name (e.g. `@hivemq/terraform-harvester`) which does NOT
- * start with `@local/`. Callers in `materialiseExtensions` check the
- * `localManifestIdentity` first to handle this case before falling
- * back to this name-prefix heuristic.
+ * a manifest-declared local extension has a name not starting with @local/, so
+ * callers check localManifestIdentity first, before this name-prefix heuristic
  */
 function inferOrigin(extensionName: string): ExtensionOrigin {
   return extensionName.startsWith("@local/") ? "local" : "pulled";
 }
 
-/**
- * Computes the canonical extensionRoot for an Extension. Pulled
- * extensions root at `<repoRoot>/.swamp/pulled-extensions/<name>/`;
- * locals root at the repo root itself (synthetic aggregate spans every
- * `extensions/<kind>/` tree).
- */
 function computeExtensionRoot(
   origin: ExtensionOrigin,
   extensionName: string,
@@ -811,14 +607,9 @@ function computeExtensionRoot(
 }
 
 /**
- * Reconstructs a {@link RowState} from a catalog row. The catalog stores
- * the `state` tag as TEXT plus other row fields (bundle_path,
- * source_fingerprint, type_normalized) that flow into the state's
- * payload. States that carry payload not recoverable from the row
- * (lastError strings, the OrphanedBundleOnly / EntryPointUnreadable
- * branches) reconstruct with placeholder values; W3's ReconcileFromDisk
- * is the source of truth for refreshed payload, and `swamp doctor`
- * (W6) surfaces the reconstructed shape verbatim.
+ * states with payload not recoverable from the row (lastError,
+ * OrphanedBundleOnly, EntryPointUnreadable) reconstruct with placeholders;
+ * reconcile refreshes the payload
  */
 function mapStateRowToRowState(row: ExtensionTypeRow): RowState {
   const tag = (row.state ?? "Indexed") as RowStateTag;
@@ -854,8 +645,8 @@ function mapStateRowToRowState(row: ExtensionTypeRow): RowState {
     case "Tombstoned":
       return { tag: "Tombstoned", reason: "source-deleted" };
     default:
-      // Unknown tag — be defensive and treat as Indexed using the row's
-      // type. Logged once per process to surface schema drift.
+      // unknown tag: treat as Indexed with the row's type, and warn to surface
+      // schema drift
       logger
         .warn`Unknown RowState tag "${row.state}" at ${row.source_path}; defaulting to Indexed.`;
       return { tag: "Indexed", type: row.type_normalized, bundle };
@@ -863,13 +654,8 @@ function mapStateRowToRowState(row: ExtensionTypeRow): RowState {
 }
 
 /**
- * Projects a Source into a row tuple suitable for upsertWithIdentity.
- * The state tag goes into the `state` column; the type and bundle go
- * into the `type_normalized` / `bundle_path` / `source_fingerprint`
- * columns where applicable. States without a type (BundleBuildFailed,
- * EntryPointUnreadable, OrphanedBundleOnly, Tombstoned) write empty
- * type_normalized; ValidationFailed also writes empty so it doesn't
- * occupy the `(kind, type)` namespace at the row level either.
+ * typeless states and ValidationFailed write an empty type_normalized so they
+ * do not occupy the (kind, type) namespace at row level
  */
 function sourceToRow(
   extension: Extension,
@@ -886,15 +672,14 @@ function sourceToRow(
       break;
     case "ValidationFailed":
     case "OrphanedBundleOnly":
-      // Carry bundle but not type — the row's type_normalized stays
-      // empty so I-Repo-1 doesn't see these as occupying the namespace.
+      // carry the bundle but not the type, so I-Repo-1 does not see these rows
+      // as occupying the namespace
       bundlePath = state.bundle.canonicalPath;
       break;
     case "BundleBuildFailed":
     case "EntryPointUnreadable":
     case "Tombstoned":
-      // Tombstoned shouldn't reach this function (caller filters), but
-      // the switch is exhaustive for type safety.
+      // the caller filters Tombstoned out; the case keeps the switch exhaustive
       break;
   }
 
@@ -906,15 +691,9 @@ function sourceToRow(
     lastError = state.lastError;
   }
 
-  // For extension-kind sources the row's type_normalized IS the target
-  // type (state.type carries it for Indexed/Bundled), so extends_type
-  // must mirror it — matching the loader path (extension_loader.ts, which
-  // writes extends_type: typeNormalized). Without this the merge query
-  // `findExtensionsForType` (WHERE extends_type = ? AND kind = 'extension')
-  // never matches and the extension's methods are silently dropped
-  // (swamp-club#903). typeNormalized stays "" for the typeless states
-  // (ValidationFailed, OrphanedBundleOnly, ...), so broken extension rows
-  // still write "" and correctly fall out of the query.
+  // an extension row's type_normalized is its target type, so extends_type must
+  // mirror it or findExtensionsForType never matches and its methods are
+  // dropped; typeless states stay empty
   const extendsType = source.kind === "extension" ? typeNormalized : "";
 
   return {

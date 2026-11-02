@@ -17,17 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Push-based producer to pull-based consumer bridge.
- * Producers call `push()` to enqueue items and `close()` to signal end-of-stream.
- * Consumers iterate with `for await...of`.
- */
 export class AsyncQueue<T> implements AsyncIterable<T> {
   private buffer: T[] = [];
   private closed = false;
   private waiting: ((value: IteratorResult<T>) => void) | null = null;
 
-  /** Enqueue an item. Wakes the consumer if it's waiting. */
   push(item: T): void {
     if (this.closed) {
       throw new Error("Cannot push to a closed AsyncQueue");
@@ -41,7 +35,6 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     }
   }
 
-  /** Signal end-of-stream. Wakes the consumer if it's waiting. */
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -52,10 +45,6 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     }
   }
 
-  /**
-   * Abort the queue with a reason. Closes the queue and resolves any
-   * waiting consumer with `done: true`, causing `for await` to exit.
-   */
   abort(_reason?: unknown): void {
     this.close();
   }

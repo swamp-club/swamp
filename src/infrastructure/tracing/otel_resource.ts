@@ -23,17 +23,8 @@ import type { Resource } from "@opentelemetry/resources";
 const serviceInstanceId = crypto.randomUUID();
 
 /**
- * Builds the OpenTelemetry {@link Resource} shared by every swamp signal
- * (traces and logs). Both the tracer provider and the logger provider consume
- * this so log records and spans report an identical service identity —
- * `service.name`, `service.version`, and any operator-supplied
- * `OTEL_RESOURCE_ATTRIBUTES` (picked up by `envDetectorSync`) — and therefore
- * collate under the same service in the backend.
- *
- * The `@opentelemetry/resources` package is dynamically imported by callers,
- * so this builder receives the already-loaded constructors and detectors as
- * arguments rather than importing the SDK itself. That keeps it a leaf module
- * with no eager SDK cost when telemetry is disabled.
+ * shared by traces and logs so both report an identical service identity; takes
+ * already-loaded SDK constructors so this stays a leaf with no eager SDK cost
  */
 export function buildOtelResource(
   ResourceCtor: typeof Resource,

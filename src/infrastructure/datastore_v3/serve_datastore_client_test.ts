@@ -84,7 +84,6 @@ function sha(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** A client whose fetch is `handler`, recording each request it sent. */
 function clientWith(
   handler: (req: Request, call: number) => Response | Promise<Response>,
   options: Partial<ServeDatastoreClientOptions> = {},
@@ -472,7 +471,6 @@ Deno.test("ServeDatastoreClient: the caller's abort ends a Retry-After wait", as
   assertEquals(requests.length, 1);
 });
 
-/** A client whose fetch throws `error`. */
 function failingWith(error: unknown): ServeDatastoreClient {
   return clientWith(() => {
     throw error;
@@ -939,14 +937,8 @@ Deno.test("ServeDatastoreClient.checkAccess: every reply naming the caller's rea
   assertEquals(seen, ["a1", "b2"]);
 });
 
-/** The bytes a stream hands out per pull in the bounded-read tests. */
 const PIECE = 256 * 1024;
 
-/**
- * A body of `total` bytes of `fill` (endless when omitted), handed out
- * {@link PIECE} bytes a pull and only when read, counting what it handed
- * out and whether it was cancelled.
- */
 function counted(total = Infinity, fill = 0x20, prefix = new Uint8Array()) {
   let handed = 0;
   let cancelled = false;
@@ -972,13 +964,11 @@ function counted(total = Infinity, fill = 0x20, prefix = new Uint8Array()) {
   return { stream, handed: () => handed, cancelled: () => cancelled };
 }
 
-/** A JSON object `{"head":0,"commits":[]}` padded with spaces to `total` bytes. */
 function paddedPage(total: number) {
   const json = new TextEncoder().encode('{"head":0,"commits":[]}');
   return counted(total, 0x20, json);
 }
 
-/** Asserts `body` was cut off within one piece of `maxBytes`, and cancelled. */
 function assertBounded(body: ReturnType<typeof counted>, maxBytes: number) {
   assert(
     body.handed() <= maxBytes + PIECE,
@@ -1015,7 +1005,6 @@ Deno.test("ServeDatastoreClient.getChunk: a 206 is held to the range asked, a 20
   );
   assertEquals(error.maxBytes, 100);
 
-  // A serve that answers a range with the whole chunk: read and hash-checked.
   const whole = new Uint8Array(CHUNK_BYTES).fill(7);
   const { client: ignoring } = clientWith(() =>
     new Response(whole, { status: 200 })
@@ -1093,9 +1082,6 @@ Deno.test("ServeDatastoreClient.changes: a page of 1000 typical commits reads", 
 });
 
 Deno.test("MAX_WRITTEN_COMMIT_REPLY_BYTES: a page of the largest commit serve's unit of work writes fits it", async () => {
-  // MAX_COMMIT_OPS puts, each of the most inline content, the longest key
-  // and the longest intent strings, in three-byte characters. Every op has
-  // the same size, so one is measured and the rest counted.
   const wide = "€";
   const longest = wide.repeat(MAX_INTENT_FIELD_LENGTH);
   const prefix = `data/x/${MAX_COMMIT_OPS}/`;
@@ -1116,7 +1102,6 @@ Deno.test("MAX_WRITTEN_COMMIT_REPLY_BYTES: a page of the largest commit serve's 
       commits: [serveStamped(1, [op], modelPartition()).toJSON()],
     }),
   ).byteLength - opBytes;
-  // One comma between each op and the next.
   const page = empty + MAX_COMMIT_OPS * (opBytes + 1);
   assert(
     page <= MAX_WRITTEN_COMMIT_REPLY_BYTES,

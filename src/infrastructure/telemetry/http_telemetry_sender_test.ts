@@ -165,7 +165,6 @@ Deno.test("HttpTelemetrySender.sendBatch returns reason on non-202 status", asyn
 });
 
 Deno.test("HttpTelemetrySender.sendBatch returns network error reason on connection failure", async () => {
-  // Use a port that nothing is listening on
   const sender = new HttpTelemetrySender("http://localhost:1");
   const entry = createTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z"));
 
@@ -311,11 +310,9 @@ Deno.test("HttpTelemetrySender.sendBatch includes User-Agent header when provide
 });
 
 Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.invocationContext", async () => {
-  // Wire-shape contract: TelemetryEntry.toData() is splatted into properties
-  // verbatim, so the swamp-club consumer side queries
-  // properties.invocationContext.{configuredAiTools, detectedAiTool,
-  // agentSessionDetected, isInteractive, externalDatastoreConfigured}.
-  // Lock the shape here.
+  // wire-shape contract: toData() is splatted into properties verbatim, and the
+  // swamp-club consumer queries properties.invocationContext, so the shape is
+  // locked here
   let capturedBody: string | undefined;
 
   const server = Deno.serve({ port: 0 }, async (req: Request) => {
@@ -369,9 +366,6 @@ Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.i
 });
 
 Deno.test("HttpTelemetrySender.sendBatch lands parentInvocationId and workflowContext at properties", async () => {
-  // Same wire-shape contract as invocationContext: TelemetryEntry.toData()
-  // is splatted into properties, so child invocation entries land
-  // properties.parentInvocationId and properties.workflowContext.{...}.
   let capturedBody: string | undefined;
 
   const server = Deno.serve({ port: 0 }, async (req: Request) => {

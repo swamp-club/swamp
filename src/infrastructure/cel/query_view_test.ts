@@ -51,7 +51,6 @@ import { isAdaptedView } from "./sensitive_record_adapter.ts";
 const REF_A = "${{ vault.get('prod', 'A') }}";
 const REF_B = "${{ vault.get('prod', 'B') }}";
 
-/** A record as the query service builds it: own namespace, JSON content. */
 function record(
   attributes: Record<string, unknown>,
   tags: Record<string, string> = {},
@@ -101,7 +100,6 @@ const tagged = () =>
   );
 
 const base = createQueryEnvironment();
-/** The reader of `namespace`; a solo row is its own unless it reads them. */
 function readerOf(
   namespace: string,
   readsSoloNamespace = false,
@@ -116,10 +114,6 @@ function program(expression: string, from: Environment = env): QueryProgram {
   return from.parse(expression) as unknown as QueryProgram;
 }
 
-/**
- * A row's context as the service builds it: the record below, the aliases
- * beside it, and attributes and content viewed on first read.
- */
 function rowContext(
   r: DataRecord,
   on: QueryView = view,
@@ -267,7 +261,6 @@ Deno.test("expressionQueryView.record: adapts an own-namespace tagged record, an
     );
     const untagged = record({ password: REF_A });
     assertStrictEquals(view.record(untagged), untagged);
-    // The service routes content by this identity (QueryView.record).
     const legacy = record({ password: REF_A }, pathsTag("password"));
     assertStrictEquals(
       expressionQueryView(readerOf("infra", true)).record(legacy),
@@ -366,7 +359,6 @@ Deno.test("expressionQueryView.predicate: the container rule refuses a membershi
       "{'k': attributes.password} != {'k': 'x'}",
       "modelName == behaviorName && attributes.password != null",
       "has(attributes.password) && name != ns",
-      // The rule decides before an unrelated error in the same row.
       "attributes.password in ['x'] || attributes.missing.k == 'x'",
       "[attributes.password] == ['x'] ? true : attributes.missing.k == 'x'",
     ]
@@ -443,7 +435,6 @@ Deno.test("expressionQueryView.predicate: an error that is no refusal propagates
   );
   assertEquals(error.message, "boom");
   assertEquals(error instanceof QueryViewRefusal, false);
-  // The refusal decides when both happened.
   const both = Object.assign(
     (ctx: Record<string, unknown>): unknown => {
       try {
@@ -582,7 +573,6 @@ Deno.test("expressionQueryView.projection: a refusal propagates, absorbed or not
     });
     assertEquals(calling.faults.length, 1, expression);
   }
-  // A container comparison that reads no secret passes.
   inScope(() => {
     assertEquals(
       view.projection(

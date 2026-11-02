@@ -117,10 +117,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * A handle whose compaction is counted and can be held open. Its storage
- * moves chunks aside, as the filesystem's does, unless `storage` is given.
- */
 function fakeHandle(storage: object = { quarantineChunk: () => {} }) {
   let calls = 0;
   let sweeps = 0;
@@ -464,10 +460,6 @@ Deno.test("holdV3Writer: a hostname change while the writer runs still removes i
   });
 });
 
-/**
- * A v3 datastore at `dir/datastore` whose checkout `dir/repo` another live
- * process on this host writes, as its lease and checkout record say.
- */
 async function withAnotherWriter(
   dir: string,
 ): Promise<{
@@ -480,7 +472,6 @@ async function withAnotherWriter(
   await initializeV3Datastore(datastorePath, "test");
   const repoDir = join(dir, "repo");
   await Deno.mkdir(repoDir);
-  // A live process that is not this one.
   const otherPid = Deno.ppid;
   await plantV3WriterLease(datastorePath, { pid: otherPid });
   await Deno.writeTextFile(
@@ -530,7 +521,6 @@ Deno.test("v3RepositoryFactoryConfig: a writer's first catch-up of a fresh check
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
     const config = { type: "filesystem" as const, path: datastorePath };
-    // Another checkout wrote x twice, then y.
     const writer = openV3Datastore({
       repoDir: join(dir, "writer"),
       datastorePath,
@@ -554,7 +544,6 @@ Deno.test("v3RepositoryFactoryConfig: a writer's first catch-up of a fresh check
     } finally {
       await writer.close();
     }
-    // A fresh checkout whose first command writes, as `workflow run` does.
     const repoDir = join(dir, "repo");
     await Deno.mkdir(repoDir);
     await holdV3Writer(config, repoDir);
@@ -587,7 +576,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process w
     const env = await withAnotherWriter(dir);
     const config = { type: "filesystem" as const, path: env.datastorePath };
     await env.commit("x");
-    // The read model completed a catch-up before (the writer's own, say).
     const handle = openV3Datastore({
       repoDir: env.repoDir,
       datastorePath: env.datastorePath,
@@ -598,7 +586,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process w
       await handle.close();
     }
     assertEquals(await env.materialised(env.repoDir, "x"), true);
-    // A commit the writer's files may already be newer than.
     await env.commit("y");
 
     await v3RepositoryFactoryConfig(env.repoDir, config);
@@ -608,7 +595,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process w
       "the written checkout was not caught up",
     );
 
-    // A checkout the other process does not write catches up as usual.
     const other = join(dir, "elsewhere");
     await v3RepositoryFactoryConfig(other, config);
     assertEquals(await env.materialised(other, "y"), true);
@@ -619,8 +605,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process w
   await withTempDir(async (dir) => {
     const env = await withAnotherWriter(dir);
     await env.commit("x");
-    // No catch-up ever completed here: a fresh clone whose first catch-up
-    // was cut short, or is still running in another process.
     await v3RepositoryFactoryConfig(env.repoDir, {
       type: "filesystem",
       path: env.datastorePath,
@@ -633,8 +617,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader waits no longer than the lock tim
   await withTempDir(async (dir) => {
     const env = await withAnotherWriter(dir);
     await env.commit("x");
-    // Another process is mid-way through the checkout's first catch-up: it
-    // holds the read model's lock.
     const stateDir = readModelStateDir(env.repoDir);
     await Deno.mkdir(stateDir, { recursive: true });
     const held = await Deno.open(join(stateDir, READ_MODEL_LOCK_FILE), {
@@ -671,7 +653,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader catches up when the recorded writ
     await initializeV3Datastore(datastorePath, "test");
     const repoDir = join(dir, "repo");
     await Deno.mkdir(repoDir);
-    // A writer on this host that was killed: its lease is within its TTL.
     const otherPid = 99_999_999;
     await plantV3WriterLease(datastorePath, { pid: otherPid });
     await Deno.writeTextFile(
@@ -682,7 +663,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader catches up when the recorded writ
         pid: otherPid,
       }),
     );
-    // A commit exists that a catch-up would materialise.
     const key = recordKeyOf(["auto-definitions", "x.yaml"]);
     const writer = openV3Datastore({
       repoDir: join(dir, "writer"),
@@ -773,7 +753,6 @@ Deno.test("V3MaintenanceTimer: a real v3 datastore's chunks are swept by serve's
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
-    // An orphaned chunk, old enough to be past the grace period.
     const orphan = join(
       datastorePath,
       "_blobs",
@@ -809,7 +788,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader reaching the writer's checkout th
     await completeReadModel(realRepo, datastorePath);
     const linkedRepo = join(dir, "repo-link");
     await Deno.symlink(realRepo, linkedRepo, { type: "dir" });
-    // A live process that is not this one.
     const otherPid = Deno.ppid;
     await plantV3WriterLease(datastorePath, { pid: otherPid });
     await Deno.writeTextFile(
@@ -858,7 +836,6 @@ Deno.test("holdV3Writer: a live Phase 3 writer refuses the lease before commits.
       await legacy.release();
       await closeV3Datastores();
     }
-    // The Phase 3 writer can still open its commits.db.
     const check = new DatabaseSync(join(datastorePath, "commits.db"));
     try {
       assertEquals(
@@ -894,7 +871,6 @@ Deno.test("v3RepositoryFactoryConfig: a writing process catches up once, not aga
   });
 });
 
-/** Commits one auto-definition through a separate handle. */
 async function commitOneDefinition(
   datastorePath: string,
   writerRepo: string,
@@ -902,7 +878,6 @@ async function commitOneDefinition(
   const writer = openV3Datastore({
     repoDir: writerRepo,
     datastorePath,
-    // This process's commits name its lease's fence.
     writerFence: () => v3WriterFence(datastorePath),
   });
   try {
@@ -924,7 +899,6 @@ async function commitOneDefinition(
   }
 }
 
-/** Commits one auto-definition from another checkout, for a catch-up to materialise. */
 async function commitFromElsewhere(
   dir: string,
   datastorePath: string,
@@ -959,7 +933,6 @@ function caughtUp(repoDir: string): Promise<boolean> {
   );
 }
 
-/** The writer checkout sidecar as a writer at `fence` records it. */
 async function plantSidecar(
   datastorePath: string,
   repoDir: string,
@@ -975,7 +948,6 @@ async function plantSidecar(
   );
 }
 
-/** A datastore and checkout with a commit the checkout has not caught up. */
 async function withUncaughtCheckout(
   fn: (
     paths: { dir: string; datastorePath: string; repoDir: string },
@@ -990,11 +962,6 @@ async function withUncaughtCheckout(
   });
 }
 
-/**
- * Catches `repoDir` up with the datastore, which completes its read model,
- * as a writer's first catch-up does: a reader then skips catch-up while the
- * writer writes (swamp-club#3803).
- */
 async function completeReadModel(
   repoDir: string,
   datastorePath: string,
@@ -1015,7 +982,6 @@ const config = (datastorePath: string) => ({
 Deno.test("v3RepositoryFactoryConfig: a reader does not catch up over a live writer on this kernel past its TTL (swamp-club#3564)", async () => {
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
     await completeReadModel(repoDir, datastorePath);
-    // A live writer whose renewals stalled for longer than its TTL.
     const planted = await plantV3WriterLease(datastorePath, {
       pid: Deno.ppid,
       acquiredAt: new Date(Date.now() - 600_000),
@@ -1035,7 +1001,6 @@ Deno.test("v3RepositoryFactoryConfig: a reader does not catch up over a live wri
 Deno.test("v3RepositoryFactoryConfig: a writer this process cannot judge is protected until a higher fence, then the reader's recovery fences it first (swamp-club#3564)", async () => {
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
     await completeReadModel(repoDir, datastorePath);
-    // A container sharing this hostname, in another pid namespace.
     const kernel = await thisKernelIdentity();
     const elsewhere = { ...kernel, host: `${kernel.host}#pid:[4026532999]` };
     const planted = await plantV3WriterLease(datastorePath, {
@@ -1048,13 +1013,10 @@ Deno.test("v3RepositoryFactoryConfig: a writer this process cannot judge is prot
       fence: planted.fence,
     });
     await commitFromElsewhere(dir, datastorePath);
-    // Within its TTL, and with its pid absent here: still protected.
     await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
     assertEquals(await caughtUp(repoDir), false);
     await closeV3Datastores();
 
-    // Past its TTL, with no marker to recover: protected until a higher
-    // fence exists.
     const expired = await plantV3WriterLease(datastorePath, {
       pid: 4242,
       process: elsewhere,
@@ -1127,7 +1089,6 @@ Deno.test("holdV3Writer: serve's retake of a lost hold records its checkout unde
       () => checkV3WriterLease(datastorePath),
       WriterFencedError,
     );
-    // A caller joining the lost hold makes serve take the lease again.
     const release = await acquireV3WriterLock(datastorePath);
     try {
       assertEquals(v3WriterFence(datastorePath), 2);
@@ -1153,9 +1114,7 @@ Deno.test("tryAcquireV3WriterLock: a read-only recovery's hold records no writer
 Deno.test("holdV3Writer: a fenced command's retention pass does not join its lost hold, and its close leaves the new writer's checkout record (swamp-club#3564)", async () => {
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
     const sidecar = join(datastorePath, "_control", "writer.checkout.json");
-    // The command's own hold.
     await holdV3Writer(config(datastorePath), repoDir);
-    // `lock release --force`, then another process writes another checkout.
     const handle = v3WriterLockHandle(datastorePath);
     assert(await handle.forceRelease((await handle.inspect())!.nonce!));
     const otherCheckout = join(dir, "other");
@@ -1167,7 +1126,6 @@ Deno.test("holdV3Writer: a fenced command's retention pass does not join its los
       fence: other.fence,
     });
     const before = await Deno.readTextFile(sidecar);
-    // The retention pass at teardown opens the repository again.
     await assertRejects(
       () => holdV3Writer(config(datastorePath), repoDir),
       WriterFencedError,
@@ -1227,7 +1185,6 @@ Deno.test("v3RepositoryFactoryConfig: a reserved namespace is refused with the v
       );
       assertEquals(error.code, V3_RESERVED_NAMESPACE_CODE);
     }
-    // Refused before anything opened: no read model state was made.
     assertEquals(
       await Deno.stat(swampPath(repoDir, "_read_model_v3")).then(
         () => true,
@@ -1287,7 +1244,6 @@ Deno.test("v3RepositoryFactoryConfig: a link out of a namespace's cache root is 
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
     const outside = join(dir, "elsewhere");
     await Deno.mkdir(outside);
-    // Inside .swamp: harmless, and opened.
     const inside = swampPath(repoDir, "data-real");
     await Deno.mkdir(inside, { recursive: true });
     await Deno.symlink(inside, swampPath(repoDir, "data"), { type: "dir" });
@@ -1295,7 +1251,6 @@ Deno.test("v3RepositoryFactoryConfig: a link out of a namespace's cache root is 
     await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
     assertEquals(await caughtUp(repoDir), true);
     await closeV3Datastores();
-    // Out of the namespace's own cache root: refused.
     await Deno.mkdir(swampPath(repoDir, "team-a"), { recursive: true });
     await Deno.symlink(outside, swampPath(repoDir, "team-a", "outputs"), {
       type: "dir",
@@ -1327,21 +1282,14 @@ Deno.test("v3RepositoryFactoryConfig: a solo-root link out of .swamp in a subdir
   });
 });
 
-// ── Another namespace's content (swamp-club#3691) ───────────────────────────
-
 const FOREIGN_KEY = "data/test/model/m-1/state/1/raw";
 
-/** Writes `text` at `key` under `root`, creating its directories. */
 async function plant(root: string, key: string, text: string): Promise<void> {
   const path = join(root, ...key.split("/"));
   await Deno.mkdir(join(path, ".."), { recursive: true });
   await Deno.writeTextFile(path, text);
 }
 
-/**
- * The fetcher the factory gives checkout `alpha` of a fresh v3 datastore,
- * with the checkout's `.swamp/`.
- */
 async function alphaFetcher(
   dir: string,
   config: { namespace?: string; exclude?: string[] } = { namespace: "alpha" },
@@ -1367,7 +1315,6 @@ Deno.test("v3RepositoryFactoryConfig: the foreign fetcher reads another namespac
   await withTempDir(async (dir) => {
     const { fetcher, swamp } = await alphaFetcher(dir);
     assertEquals(fetcher.readsSoloNamespace, true);
-    // The reader's own item lives at the same key under its own root.
     await plant(join(swamp, "alpha"), FOREIGN_KEY, '{"who":"alpha"}');
     await plant(join(swamp, "beta"), FOREIGN_KEY, '{"who":"beta"}');
     await plant(swamp, FOREIGN_KEY, '{"who":"solo"}');
@@ -1381,7 +1328,6 @@ Deno.test("v3RepositoryFactoryConfig: the foreign fetcher reads another namespac
 Deno.test("v3RepositoryFactoryConfig: the foreign fetcher refuses reserved namespaces and paths that leave the namespace's tree (swamp-club#3691)", async () => {
   await withTempDir(async (dir) => {
     const { fetcher, swamp } = await alphaFetcher(dir);
-    // `data` is a reserved name: `.swamp/data` is the solo namespace's tier.
     await plant(join(swamp, "data"), FOREIGN_KEY, "solo tier");
     await plant(join(swamp, "beta"), "data/x", "x");
 
@@ -1403,7 +1349,6 @@ Deno.test("v3RepositoryFactoryConfig: the foreign fetcher refuses reserved names
         `${namespace}:${relPath}`,
       );
     }
-    // The same file under a key the read model materialises is read.
     assertEquals(text(await fetcher("beta", "data/x")), "x");
   });
 });
@@ -1418,7 +1363,6 @@ Deno.test("v3RepositoryFactoryConfig: the foreign fetcher refuses a solo key thi
     await plant(join(swamp, "beta"), FOREIGN_KEY, "beta");
 
     assertEquals(await fetcher("", FOREIGN_KEY), null);
-    // Another namespace's checkouts keep their own directories.
     assertEquals(text(await fetcher("beta", FOREIGN_KEY)), "beta");
   });
 });
@@ -1446,10 +1390,6 @@ Deno.test({
   },
 });
 
-/**
- * A set-up bucket datastore's provider whose datastore-wide control plane
- * writes fail with `failure()`, once `seeded` has written its marker.
- */
 async function failingControlPlaneProvider(
   failure: () => Error,
 ): Promise<DatastoreProvider> {
@@ -1465,7 +1405,6 @@ async function failingControlPlaneProvider(
     replicaPaths: true,
   });
   const store = remote.datastoreControlPlaneStore!();
-  // The datastore was set up: its format marker is there to read.
   const seeded = store.put(
     "datastore-format",
     new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
@@ -1586,9 +1525,6 @@ Deno.test({
         "datastore-format",
         new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
       );
-      // The lease's fence is created. Getting ready then fails with an error
-      // of its own (the lineage record is refused), and the release that
-      // follows is cut off, as the reporter's was.
       let releases = 0;
       const cut = new Proxy(store, {
         get(target, property) {
@@ -1675,8 +1611,6 @@ Deno.test({
         "datastore-format",
         new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
       );
-      // The lease is taken and the copy made current; the bucket is then
-      // lost as the writer records its lineage, as the reporter's cut was.
       const cut = new Proxy(store, {
         get(target, property) {
           const value = Reflect.get(target, property, target);

@@ -33,25 +33,17 @@ import { resolveCustomProvider } from "./datastore_global_lock.ts";
 import { lockingConfigOf } from "./datastore_lock_target.ts";
 import { FileLock } from "./file_lock.ts";
 
-// The lock that serialises the writers of one server token, shared by the CLI
-// and `swamp serve` (swamp-club#2482).
-
 /**
- * Retry settings for a filesystem datastore. The lock is held for one short
- * read, write and push, like a per-model lock, so it uses that lock's values
- * (`MODEL_LOCK_RETRY_INTERVAL_MS` and `MODEL_LOCK_MAX_BACKOFF_MS`).
+ * held for one short read, write and push like a per-model lock, so it uses
+ * that lock's retry values
  */
 export const SERVER_TOKEN_LOCK_RETRY_INTERVAL_MS = 25;
 export const SERVER_TOKEN_LOCK_MAX_BACKOFF_MS = 250;
 
 /**
- * Constructs the lock key that serialises every write of one server token's
- * record and secret (swamp-club#2482), optionally scoped under a namespace.
- * The key is built from a digest of the token name, never the name itself:
- * the name arrives from a client and a first mint has no definition to have
- * validated it. Like the workflow run claim key it sits outside `data/`, so
- * the per-model lock scan does not see it, and the file is named `.lock`,
- * the one name datastore sync never transfers.
+ * keyed by a digest of the token name, never the name, which comes from a
+ * client and may be unvalidated on a first mint; outside data/ and named .lock,
+ * which datastore sync never transfers
  */
 export async function serverTokenLockKey(
   namespace: string | undefined,
@@ -70,19 +62,15 @@ export async function serverTokenLockKey(
 }
 
 /**
- * Creates the distributed lock that serialises writes of one server token.
- *
- * Every writer that rewrites a token's record or secret (mint, rotate, revoke,
- * the secret migration) holds it across its pull, its writes and its push, so
- * one mint's record is never left beside another's secret. It is keyed by
- * token name, not model id, so it covers a first mint, which has no
- * definition yet. Take it before any per-model lock.
+ * every writer of a token's record or secret holds it across pull, write and
+ * push; keyed by name so a first mint is covered. Take it before any per-model
+ * lock
  */
 export async function createServerTokenLock(
   datastoreConfig: DatastoreConfig,
   tokenName: string,
 ): Promise<DistributedLock> {
-  // A v3 bucket datastore locks as a filesystem one (swamp-club#3534).
+  // a v3 bucket datastore locks as a filesystem one
   const config = lockingConfigOf(datastoreConfig);
   const lockKey = await serverTokenLockKey(config.namespace, tokenName);
   const maxWaitMs = resolveLockTimeoutMs();
@@ -99,10 +87,8 @@ export async function createServerTokenLock(
 }
 
 /**
- * Runs `fn` holding the server token lock for `tokenName`.
- *
- * An error thrown before `fn` starts is the lock's. A timeout among them
- * names the token: the lock key is a digest, which tells an operator nothing.
+ * a timeout names the token, because the lock key is a digest that tells an
+ * operator nothing
  */
 export async function withServerTokenLock<T>(
   config: DatastoreConfig,
@@ -132,11 +118,8 @@ export async function withServerTokenLock<T>(
 }
 
 /**
- * The token name to lock for an identifier a caller gave. Rotate and revoke
- * accept a definition id as well as a name, and every writer of one token has
- * to take the same lock, so an id is resolved to its definition's name. An
- * identifier that names no server token is returned as given: the operation
- * will report it missing, under a lock nothing else contends for.
+ * every writer of a token must take the same lock, so a definition id resolves
+ * to its name; an unknown identifier is returned as given and reported missing
  */
 export async function serverTokenLockName(
   definitionRepo: DefinitionRepository,

@@ -18,21 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What `swamp doctor datastores` reports about a v3 checkout's content
- * (swamp-club#3617): records the read model could not materialise because
- * a chunk was missing or damaged, checkout files moved aside into the
- * read model's `at-risk` directory, and, on a filesystem datastore, chunks
- * the checkout's live records name that a crash left short.
- *
- * Read-only, and from checkout-local state only: the read model's state
- * database is opened read-only and the datastore's chunks are only
- * `stat`ed. The commit store is never opened, so the checkout's view may lag
- * the datastore's; a chunk absent from the datastore is not reported, as a
- * lagging checkout may still name one history compaction released. Only a
- * copy whose replication lineage was found broken has its `commits.db`
- * quick-checked, read-only (swamp-club#3935).
- *
- * @module
+ * read-only, from checkout-local state; the commit store is never opened, so
+ * the view may lag and a chunk absent from the datastore is not reported
  */
 
 import { DatabaseSync } from "node:sqlite";
@@ -62,69 +49,45 @@ import { v3DatastoreConfigOf } from "./v3_repo_context.ts";
 import { v3CommitsDbPath } from "./v3_datastore.ts";
 import { v3ReplicatesAt } from "./v3_datastore_binding.ts";
 
-/** How many entries of each kind an inspection lists; the rest are counted. */
 export const V3_CONTENT_LISTED = 10;
 
-/** Chunks one `statChunks` call reads at most. */
 const STAT_BATCH = 512;
 
-/** A record the read model could not materialise. */
 export interface V3UnreadableContent {
-  /** The commit namespace, `""` unnamespaced. */
   readonly namespace: string;
   readonly recordKey: string;
   readonly reason: "missing" | "damaged";
-  /** The first chunk found missing or damaged, when known. */
   readonly chunk?: string;
-  /** How to repair or remove it. */
   readonly advice: string;
 }
 
-/** A checkout file moved aside into the read model's `at-risk` directory. */
 export interface V3AtRiskContent {
   readonly namespace: string;
-  /** The whole file's SHA-256, its name in the at-risk directory. */
   readonly sha256: string;
-  /** The record key the file was at; empty when unknown. */
   readonly recordKey: string;
   readonly size: number;
 }
 
-/** A chunk a live record names that is stored with the wrong size. */
 export interface V3TornChunk {
   readonly namespace: string;
   readonly sha256: string;
-  /** A record whose content names it. */
   readonly recordKey: string;
   readonly expectedSize: number;
   readonly size: number;
-  /** How to repair it. */
   readonly advice: string;
 }
 
-/**
- * What {@link inspectV3Content} found. Each list holds the first
- * {@link V3_CONTENT_LISTED} entries; the counts hold them all.
- */
 export interface V3ContentInspection {
   readonly unreadableRecords: number;
   readonly unreadable: readonly V3UnreadableContent[];
   readonly atRiskCopies: number;
   readonly atRisk: readonly V3AtRiskContent[];
-  /** Where the at-risk copies lie. */
   readonly atRiskDir: string;
-  /** Advice for the at-risk copies. */
   readonly atRiskAdvice: string;
   readonly tornChunks: number;
   readonly torn: readonly V3TornChunk[];
 }
 
-/** Options for {@link inspectV3Content}. */
-/**
- * The replication lineages collection keeps for recovery in the v3
- * datastore the repository at `repoDir` names (swamp-club#3801), for
- * `doctor datastores`. Read-only, from the datastore's lineage records.
- */
 export async function inspectV3KeptLineages(
   options: {
     readonly repoDir: string;
@@ -138,33 +101,15 @@ export async function inspectV3KeptLineages(
   return await v3KeptLineages(location.path);
 }
 
-/**
- * Whether the lineage this checkout's copy replicates can be restored, as
- * its sidecar last found (swamp-club#3935):
- *
- * - `verified`: the last check of this lineage restored it cleanly;
- * - `unverified`: no check of this lineage has finished yet;
- * - `broken`: the last check failed SQLite's integrity check, and the next
- *   writer starts a new lineage from this copy;
- * - `broken-copy-damaged`: so did the copy's own quick check, so no new
- *   lineage is started from it.
- */
 export interface V3ReplicaRestorable {
   readonly status: "verified" | "unverified" | "broken" | "broken-copy-damaged";
   readonly lineageFence?: number;
   readonly txid?: string;
   readonly checkedAt?: string;
   readonly error?: string;
-  /** The copy's quick check, when the lineage is broken. */
   readonly copyCheck?: string;
 }
 
-/**
- * What this checkout's sidecar last found about restoring its replication
- * lineage (swamp-club#3935), for `doctor datastores`; undefined while the
- * datastore does not replicate. Read-only, from the copy's own files: the
- * copy is quick-checked only when its lineage was found broken.
- */
 export async function inspectV3ReplicaRestorable(
   options: {
     readonly repoDir: string;
@@ -205,21 +150,14 @@ export async function inspectV3ReplicaRestorable(
 export interface InspectV3ContentOptions {
   readonly repoDir: string;
   /**
-   * The repository's datastore config: a filesystem datastore's chunks are
-   * stat'ed; a bucket's cannot tear and are not.
+   * a filesystem datastore's chunks are stat'ed; a bucket's cannot tear and are
+   * not
    */
   readonly datastoreConfig: DatastoreConfig;
-  /** The storage whose chunk sizes are read; the filesystem one by default. */
   readonly stats?: ChunkStatReader;
   readonly signal?: AbortSignal;
 }
 
-/**
- * Inspects the checkout's v3 read model state for content it could not
- * materialise or moved aside, and the datastore for torn chunks its live
- * records name. A missing state database, or one from before these tables,
- * reports nothing.
- */
 export async function inspectV3Content(
   options: InspectV3ContentOptions,
 ): Promise<V3ContentInspection> {
@@ -349,11 +287,6 @@ function tornAdvice(recordKey: string, heldHere: boolean): string {
     `Until then other checkouts cannot read ${recordKey}.`;
 }
 
-/**
- * The chunks the live records name, outside a pre-v3 layout, that `stats`
- * finds stored with a size other than their part's: torn by a crash.
- * Absent chunks are left out (see the module doc).
- */
 async function tornChunks(
   db: DatabaseSync,
   stats: ChunkStatReader,

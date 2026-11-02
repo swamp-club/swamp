@@ -20,8 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { canonicalizePath, canonicalizePathFor } from "./canonicalize_path.ts";
 
-// --- POSIX branch (isWindows = false) -----------------------------------
-
 Deno.test("canonicalizePathFor: POSIX returns input unchanged", () => {
   assertEquals(
     canonicalizePathFor("/foo/Bar/Baz.ts", false),
@@ -37,8 +35,8 @@ Deno.test("canonicalizePathFor: POSIX preserves case", () => {
 });
 
 Deno.test("canonicalizePathFor: POSIX preserves backslashes (unusual but legal in POSIX file names)", () => {
-  // Backslash is a legal character in POSIX file names. Per the issue's
-  // "raw on POSIX" rule, the canonicalizer must not rewrite it.
+  // backslash is a legal character in POSIX file names, so the canonicalizer
+  // must leave it raw
   assertEquals(
     canonicalizePathFor("/foo\\bar.ts", false),
     "/foo\\bar.ts",
@@ -48,8 +46,6 @@ Deno.test("canonicalizePathFor: POSIX preserves backslashes (unusual but legal i
 Deno.test("canonicalizePathFor: POSIX empty string is unchanged", () => {
   assertEquals(canonicalizePathFor("", false), "");
 });
-
-// --- Windows branch (isWindows = true) ----------------------------------
 
 Deno.test("canonicalizePathFor: Windows lowercases and uses forward slashes", () => {
   assertEquals(
@@ -73,9 +69,8 @@ Deno.test("canonicalizePathFor: Windows already-canonical input is idempotent", 
 });
 
 Deno.test("canonicalizePathFor: Windows two surface forms collapse to one canonical form", () => {
-  // The whole point of the function — `C:\\Users\\Foo\\Bar.ts` and
-  // `c:/users/foo/bar.ts` refer to the same file on NTFS and must produce
-  // the same primary key.
+  // C:\Users\Foo\Bar.ts and c:/users/foo/bar.ts are the same file on NTFS and
+  // must give the same primary key
   assertEquals(
     canonicalizePathFor("C:\\Users\\Foo\\Bar.ts", true),
     canonicalizePathFor("c:/users/foo/bar.ts", true),
@@ -83,9 +78,6 @@ Deno.test("canonicalizePathFor: Windows two surface forms collapse to one canoni
 });
 
 Deno.test("canonicalizePathFor: Windows EXTENSIONS/Models/A.ts collapses with extensions/models/a.ts", () => {
-  // The fixture pair the W1 plan calls out explicitly for the SourceLocation
-  // equality test in W1b — pinning it here as well so the contract is
-  // documented at the helper's level.
   assertEquals(
     canonicalizePathFor("EXTENSIONS/Models/A.ts", true),
     canonicalizePathFor("extensions/models/a.ts", true),
@@ -96,11 +88,7 @@ Deno.test("canonicalizePathFor: Windows empty string is unchanged", () => {
   assertEquals(canonicalizePathFor("", true), "");
 });
 
-// --- Default-OS dispatcher ---------------------------------------------
-
 Deno.test("canonicalizePath: dispatches based on Deno.build.os", () => {
-  // The default canonicalizePath() reads Deno.build.os. On the test
-  // runner's host OS it must match canonicalizePathFor(input, isHostWindows).
   const input = "/foo/Bar.ts";
   const isHostWindows = Deno.build.os === "windows";
   assertEquals(

@@ -174,7 +174,6 @@ export class SystemdScheduler implements AutoupdateScheduler {
     await Deno.remove(servicePath(this.mode)).catch(() => {});
   }
 
-  /** systemd starts the binary at its path as-is; nothing to re-register. */
   refresh(): Promise<SchedulerRefreshResult> {
     return Promise.resolve("not_installed");
   }

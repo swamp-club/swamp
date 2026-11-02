@@ -57,12 +57,10 @@ Deno.test("serveCallerFingerprint: tells tokens apart without holding them", () 
 
 Deno.test("accessResetDue: resets when serve sent another access, except within the cooldown of the last access reset (swamp-club#4089)", () => {
   const now = 10 * ACCESS_RESET_COOLDOWN_MS;
-  // Nothing to compare: an old serve, or a copy not yet read.
   assertEquals(accessResetDue({}, now), "current");
   assertEquals(accessResetDue({ built: "a1" }, now), "current");
   assertEquals(accessResetDue({ built: "a1", seen: "a1" }, now), "current");
   assertEquals(accessResetDue({ built: "a1", seen: "b2" }, now), "reset");
-  // Replicas that disagree send two in turn: within the cooldown it waits.
   assertEquals(
     accessResetDue({ built: "a1", seen: "b2", resetAt: now - 1 }, now),
     "cooling",
@@ -74,7 +72,6 @@ Deno.test("accessResetDue: resets when serve sent another access, except within 
     ),
     "reset",
   );
-  // A reset recorded in the future (the clock moved back) holds nothing off.
   assertEquals(
     accessResetDue({ built: "a1", seen: "b2", resetAt: now + 1 }, now),
     "reset",
@@ -122,7 +119,6 @@ Deno.test("registerCheckoutLeases: a renewed lease is confirmed, one not renewed
     });
     assertEquals(heldServeLeaseOf(root, partitions[2]), undefined);
 
-    // A renewal that failed as a whole leaves every lease unconfirmed.
     resetServeLeasesForTesting();
     registerCheckoutLeases(root, [failed, ended], undefined);
     assertEquals(heldServeLeaseOf(root, partitions[1])?.unconfirmed, true);

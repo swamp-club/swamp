@@ -18,25 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The `Secret` value of the CEL adapter (design/enablers/typed-secrets.md
- * Section 3.1). It holds where a secret lives, never the secret:
- *
- * - Each instance is a Proxy over one frozen, empty `Secret` object. Its
- *   state lives in a module-private WeakMap keyed by the proxy, so nothing
- *   reads it through the object.
- * - `ownKeys` and `getOwnPropertyDescriptor` refuse. The `get` trap answers
- *   `constructor`, returns refusing functions for `toString`, `toJSON`,
- *   `valueOf` and `Symbol.toPrimitive`, and answers `undefined` for every
- *   other key, `then` included, so awaiting a `Secret` or inspecting it is
- *   harmless. Code that mishandles a `Secret` fails instead of turning it
- *   into `{}` or text, and each refusal records a fault first.
- * - Only this module's functions create instances, and nothing recognizes a
- *   `Secret` by its shape.
- *
- * No code outside the CEL adapter sees a `Secret`: the boundary conversion
- * (`secret_boundary.ts`) turns each one into its sentinel as it leaves CEL.
- * Compare two secrets with `assertStrictEquals` or {@link secretParts}:
- * `assertEquals` walks their keys and trips the `ownKeys` trap.
+ * a Proxy over a frozen empty object with state in a private WeakMap; traps
+ * refuse enumeration and string conversion and answer undefined elsewhere, so
+ * mishandling fails instead of becoming {} or text
  */
 
 import type { SecretReference } from "../../domain/vaults/secret_bag_registry.ts";
@@ -48,28 +32,21 @@ import { refuse } from "./secret_fault_context.ts";
  * with this class.
  */
 export class Secret {
-  /** A type-only brand, so a type guard can tell a `Secret` from `{}`. */
   declare private readonly secretBrand: never;
 }
 
-/** One reference a `Secret` holds. */
 export interface SecretReferencePart {
   readonly reference: SecretReference;
-  /** True when the secret reached CEL through a data read. */
   readonly dataOrigin: boolean;
-  /** Where the author wrote the reference, for a load's errors. */
   readonly location?: string;
-  /** The sentinel the reference entered CEL as, which it leaves as. */
   readonly sentinel?: string;
   /**
-   * Set when the vault value is the JSON text of a value that is not a
-   * string (a place `_swamp.sensitiveFieldJson` lists), so a delivery of the
-   * reference as a whole value parses it.
+   * set when the vault value is the JSON text of a non-string value, so
+   * delivering the reference as a whole value parses it
    */
   readonly jsonValue?: true;
 }
 
-/** A part of a `Secret`: text, or a reference. */
 export type SecretPart = string | SecretReferencePart;
 
 const states = new WeakMap<object, readonly SecretPart[]>();
@@ -95,10 +72,6 @@ const handler: ProxyHandler<Secret> = {
   },
 };
 
-/**
- * A `Secret` holding `parts`, with adjacent text joined and empty text
- * dropped. At least one part must be a reference.
- */
 export function secretFromParts(parts: readonly SecretPart[]): Secret {
   const joined: SecretPart[] = [];
   for (const part of parts) {
@@ -121,7 +94,6 @@ export function secretFromParts(parts: readonly SecretPart[]): Secret {
   return proxy;
 }
 
-/** A `Secret` holding one vault reference, written at `location`. */
 export function vaultReferenceSecret(
   reference: SecretReference,
   location: string,
@@ -130,11 +102,8 @@ export function vaultReferenceSecret(
 }
 
 /**
- * A `Secret` holding one sensitive-field reference a data read brought into
- * CEL (typed-secrets 3.3), read at `location`: the record and the field it
- * was read from, for a load's errors. `jsonValue` marks a reference whose
- * vault value is the JSON text of a value that is not a string. Only the
- * accessor adapter creates one.
+ * only the accessor adapter creates one; jsonValue marks a reference whose
+ * vault value is the JSON text of a non-string value
  */
 export function dataReferenceSecret(
   reference: SecretReference,
@@ -148,22 +117,16 @@ export function dataReferenceSecret(
   ]);
 }
 
-/** Whether `value` is a `Secret` this module created. */
 export function isSecret(value: unknown): value is Secret {
   return typeof value === "object" && value !== null && states.has(value);
 }
 
-/** The parts behind a `Secret`, or undefined for any other value. */
 export function secretParts(value: unknown): readonly SecretPart[] | undefined {
   return typeof value === "object" && value !== null
     ? states.get(value)
     : undefined;
 }
 
-/**
- * Concatenation, the allowed set's one operation that builds a value: the
- * parts of `a` then the parts of `b`, each a `Secret` or text.
- */
 export function composeSecrets(
   a: Secret | string,
   b: Secret | string,

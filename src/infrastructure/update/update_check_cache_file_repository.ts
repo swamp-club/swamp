@@ -27,10 +27,6 @@ import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 
 const CACHE_FILE_NAME = "last-update-check.json";
 
-/**
- * File-based implementation of UpdateCheckCacheRepository.
- * Stores cache data in ~/.swamp/last-update-check.json.
- */
 export class UpdateCheckCacheFileRepository
   implements UpdateCheckCacheRepository {
   private readonly filePath: string;
@@ -44,7 +40,6 @@ export class UpdateCheckCacheFileRepository
       const content = await Deno.readTextFile(this.filePath);
       const data = JSON.parse(content) as UpdateCheckCacheData;
 
-      // Basic shape validation
       if (
         typeof data.latestVersion === "string" &&
         typeof data.checkedAt === "string"

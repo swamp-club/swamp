@@ -26,16 +26,13 @@ import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 
-// Property: whatever a save merges onto an existing definition file — scalar
-// edits made in place, structural changes merged onto the document, anchors
-// changed under their aliases — the file reads back as exactly the data that
-// was saved (swamp-club#3502).
+// whatever a save merges onto an existing definition file, the file reads back
+// as exactly the data that was saved
 
 const testType = ModelType.create("test/merge-property");
 
 type DefinitionData = Parameters<typeof Definition.fromData>[0];
 
-/** Strings that read as another type, or need quoting, when written plain. */
 const arbString = fc.oneof(
   fc.constantFrom(
     "",
@@ -145,7 +142,6 @@ Deno.test("YamlDefinitionRepository.save: a merged save onto a commented file re
   );
 });
 
-/** `value` with its leaves replaced, in order, by the defined `edits`. */
 function editLeaves(value: unknown, edits: unknown[]): unknown {
   if (Array.isArray(value)) return value.map((item) => editLeaves(item, edits));
   if (value !== null && typeof value === "object") {
@@ -197,8 +193,8 @@ Deno.test("YamlDefinitionRepository.save: scalar-only edits to a commented file 
     ),
     {
       numRuns: 150,
-      // A quoted empty string edited to null, beside a plain string that the
-      // document merge's parser reads as a float (swamp-club#3541).
+      // a quoted empty string edited to null, beside a plain string the
+      // document merge's parser reads as a float
       examples: [[
         { alpha: { alpha: "" }, beta: { alpha: { alpha: "e0" } } },
         [null],
@@ -207,7 +203,6 @@ Deno.test("YamlDefinitionRepository.save: scalar-only edits to a commented file 
   );
 });
 
-/** A file whose arguments share an anchored map through an alias. */
 function anchoredYaml(id: string): string {
   return [
     `type: ${testType.normalized}`,

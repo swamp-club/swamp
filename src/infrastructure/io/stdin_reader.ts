@@ -18,13 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reads all content from stdin until EOF.
- *
- * Returns null if stdin is a TTY. Callers should gate invocation behind
- * an explicit `--stdin` flag to avoid blocking on pipes that never close.
+ * returns null on a TTY; callers gate on an explicit --stdin flag so they don't
+ * block on pipes that never close
  */
 export async function readStdin(): Promise<string | null> {
-  // If stdin is a TTY, no piped data available
   if (Deno.stdin.isTerminal()) {
     return null;
   }
@@ -46,7 +43,6 @@ export async function readStdin(): Promise<string | null> {
     return null;
   }
 
-  // Concatenate all chunks into a single Uint8Array
   const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
   const result = new Uint8Array(totalLength);
   let offset = 0;
@@ -59,16 +55,6 @@ export async function readStdin(): Promise<string | null> {
   return decoder.decode(result);
 }
 
-/**
- * Reads a secret value from a TTY with echo suppression.
- *
- * Prompts the user and reads input character-by-character without echoing
- * to the terminal. Supports backspace and Ctrl-C to cancel.
- *
- * Must only be called when stdin is a TTY (interactive terminal).
- *
- * @throws {Error} If the user cancels with Ctrl-C (throws with message "Cancelled.")
- */
 export async function readSecretFromTty(prompt: string): Promise<string> {
   if (!Deno.stdin.isTerminal()) {
     throw new Error("Cannot read secret: stdin is not a TTY");
@@ -86,14 +72,11 @@ export async function readSecretFromTty(prompt: string): Promise<string> {
     while (true) {
       const n = await Deno.stdin.read(buf);
       if (n === null) break;
-      // Enter key
       if (buf[0] === 13 || buf[0] === 10) break;
-      // Backspace
       if (buf[0] === 127 || buf[0] === 8) {
         chars.pop();
         continue;
       }
-      // Ctrl-C
       if (buf[0] === 3) {
         await Deno.stdout.write(encoder.encode("\n"));
         throw new Error("Cancelled.");

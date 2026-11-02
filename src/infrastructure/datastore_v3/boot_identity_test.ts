@@ -28,7 +28,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when handles are not yet released.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -97,9 +96,8 @@ Deno.test("readBootIdentity: other systems name no boot and run nothing", async 
   assertEquals(calls, []);
 });
 
-// The released binary's grant has no `--allow-all`, and Deno refuses any
-// read under `/proc` without it (swamp-club#3418). Denying read refuses the
-// read the same way, with NotCapable.
+// the released binary's grant has no --allow-all and Deno refuses any /proc
+// read without it; denying read refuses the same way, with NotCapable
 const BOOT_ID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
 const BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id";
 

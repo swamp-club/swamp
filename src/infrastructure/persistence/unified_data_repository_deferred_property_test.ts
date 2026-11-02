@@ -31,11 +31,9 @@ import type { DeferredWriteReceipt } from "../../domain/data/repositories.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 
 /**
- * Model-based check of the deferred-write lifecycle against the catalog's
- * latest flags (swamp-club#2975): random interleavings of saves, deferred
- * saves, streamed deferred writes, promotions, rollbacks, deletes, GC,
- * catalog backfills and writer crashes, with the catalog, the disk and reads
- * compared against a reference model after every step.
+ * model-based check of the deferred-write lifecycle: random saves, promotions,
+ * rollbacks, deletes, GC and writer crashes, compared against a reference model
+ * after every step
  */
 
 const TYPE = ModelType.create("test/model");
@@ -47,10 +45,10 @@ const DEAD_PID = 2147483647;
 
 type VersionState =
   | "promoted"
-  | "pending" // deferred, finalized, in flight
-  | "allocated" // streamed deferred write, content not finalized yet
-  | "crashed" // pending or allocated whose process died
-  | "foreign"; // pending or allocated, in flight in another live process
+  | "pending"
+  | "allocated"
+  | "crashed"
+  | "foreign";
 
 type Op =
   | { kind: "save"; step: string }
@@ -157,7 +155,6 @@ interface Tracked {
   state: VersionState;
   step: string;
   receipt: DeferredWriteReceipt;
-  /** Streamed writes only: where the content goes and the prior versions. */
   contentPath?: string;
   priorVersions?: number[];
 }
@@ -191,7 +188,6 @@ async function checkInvariants(
     .map(([v]) => v)
     .sort((a, b) => a - b);
 
-  // 1. The catalog holds exactly the model's versions, pending ones unflagged.
   assertEquals(
     rows.map((r) => r.version),
     [...model.keys()].sort((a, b) => a - b),
@@ -210,21 +206,18 @@ async function checkInvariants(
     }
   }
 
-  // 2. The disk holds the same version directories.
   assertEquals(
     await repo.listVersions(TYPE, MODEL_ID, NAME),
     [...model.keys()].sort((a, b) => a - b),
     `disk versions ${trace}`,
   );
 
-  // 3. Exactly one latest row, the highest promoted version, or none.
   assertEquals(
     rows.filter((r) => r.is_latest === 1).map((r) => r.version),
     promoted.length === 0 ? [] : [promoted[promoted.length - 1]],
     `is_latest ${trace}`,
   );
 
-  // 4. With nothing in flight, the flags are what a rebuild derives.
   if (rows.every((r) => r.is_pending === 0)) {
     const expected = rows.map((r) => ({ ...r }));
     computeLatestFlags(expected);
@@ -375,10 +368,9 @@ Deno.test("property: deferred writes, removals, GC, backfill and crashes keep th
                 case "promote": {
                   const p = picked(model, ["pending"], op.pick);
                   if (!p) break;
-                  // Promotion applies the write-time cap: the newest GC_KEEP
-                  // promoted versions stay, counting this one, which may
-                  // itself go if newer ones were promoted first
-                  // (swamp-club#3251).
+                  // promotion applies the write-time cap: the newest GC_KEEP
+                  // promoted versions stay, counting this one, which may itself
+                  // go if newer ones were promoted first
                   await repo.advanceLatestMarkers([p[1].receipt]);
                   p[1].state = "promoted";
                   const promoted = [...model.entries()]

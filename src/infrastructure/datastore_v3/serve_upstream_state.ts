@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The serve-mode state of a checkout whose v3 datastore's upstream is serve
- * (swamp-club#3985): the changes-feed cursor its copy has applied up to and
- * the commit it ended at (swamp-club#4049), the head serve last reported
- * for each partition, a fingerprint of the serve token the copy was built
- * with (never the token), and the fingerprints of the caller's read access
- * serve sent (swamp-club#4089). A file of its own beside the checkout's
- * copy of serve's commit log, so a solo checkout never opens it and the
- * commit store's schema is unchanged.
- *
- * A serve head can be above the copy's own: serve filters single commits a
- * caller may not read, so the copy's last commit of a partition is not
- * always serve's last. A commit is built on the higher of the two.
- *
- * @module
+ * a file of its own beside the copy, so a solo checkout never opens it. A serve
+ * head can exceed the copy's, as serve filters commits a caller cannot read; a
+ * commit is built on the higher. Token only fingerprinted
  */
 
 import { dirname } from "@std/path";
@@ -39,17 +28,15 @@ import { ensureDirSync } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
-/** Error code for a serve-mode state file written by a newer swamp. */
 export const SERVE_UPSTREAM_STATE_SCHEMA_NEWER_CODE =
   "datastore_v3_serve_state_schema_newer";
 
-/** Error code for {@link ServeCopyReplacedError}. */
 export const SERVE_COPY_REPLACED_CODE = "datastore_v3_serve_copy_replaced";
 
 /**
- * Thrown when a command records its catch-up into a copy another command
- * has since reset (swamp-club#4089): what it read went into the copy that
- * was replaced, so recording it would leave the new copy missing commits.
+ * a command recording its catch-up into a copy another command reset: what it
+ * read went into the replaced copy, so recording it would leave the new copy
+ * missing commits
  */
 export class ServeCopyReplacedError extends UserError {
   constructor(readonly statePath: string) {
@@ -64,10 +51,8 @@ export class ServeCopyReplacedError extends UserError {
   }
 }
 
-/** The copy id a handle opened during a reset holds: never a real one. */
 const RESETTING_COPY = "";
 
-/** The file name, beside the checkout's `commits.db`. */
 export const SERVE_UPSTREAM_STATE_FILE = "serve_upstream.db";
 
 const MIGRATIONS: readonly string[] = [
@@ -86,11 +71,9 @@ const MIGRATIONS: readonly string[] = [
      fingerprint TEXT NOT NULL,
      resetting INTEGER NOT NULL DEFAULT 0
    );`,
-  // The feed anchor (swamp-club#4049): the last commit of the last page
-  // applied, which serve must still hold for the cursor to mean anything.
-  // And the copy's id, random per copy: a copy moved aside and started
-  // afresh at the same root is another view of serve; and the id of the
-  // commit log serve served it, which every later reply must name.
+  // the feed anchor (last commit of the last page applied), which serve must
+  // still hold for the cursor to mean anything; a random copy id, so a
+  // restarted copy is another view; and the log id serve served it
   `ALTER TABLE feed ADD COLUMN anchor_namespace TEXT;
    ALTER TABLE feed ADD COLUMN anchor_partition TEXT;
    ALTER TABLE feed ADD COLUMN anchor_seq INTEGER;
@@ -101,20 +84,18 @@ const MIGRATIONS: readonly string[] = [
      log_id TEXT
    );
    INSERT INTO copy (id, copy_id) VALUES (1, lower(hex(randomblob(16))));`,
-  // The compaction point of the base the copy loaded (swamp-club#4006); 0
-  // when it loaded none. A partition compacted past the copy's head reads
-  // on from its compacted seq only when this base covers serve's point.
+  // compaction point of the loaded base, 0 if none: a partition compacted past
+  // the copy's head reads on from its compacted seq only when this base covers
+  // serve's point
   `ALTER TABLE copy ADD COLUMN base_point INTEGER NOT NULL DEFAULT 0;`,
-  // The caller's read access (swamp-club#4089): the fingerprint serve sent
-  // when the copy was first read after it was made or reset, the last one
-  // serve sent, and when (epoch ms) the copy was last reset because they
-  // differed.
+  // the access fingerprint first seen after the copy was made or reset, the
+  // last one sent, and when the copy was last reset because they differed
+  // (epoch ms)
   `ALTER TABLE copy ADD COLUMN access_built TEXT;
    ALTER TABLE copy ADD COLUMN access_seen TEXT;
    ALTER TABLE copy ADD COLUMN access_reset_at INTEGER;`,
-  // The last contact with serve (swamp-club#4195): when, and serve's clock
-  // against this one then, which offline work judges a lease's expiry and
-  // corrects its times by.
+  // the last contact with serve and its clock against this one then, which
+  // offline work judges a lease's expiry and corrects times by
   `CREATE TABLE contact (
      id INTEGER PRIMARY KEY CHECK (id = 1),
      at TEXT NOT NULL,
@@ -122,10 +103,6 @@ const MIGRATIONS: readonly string[] = [
    );`,
 ];
 
-/**
- * A commit of serve's feed the copy has passed: its identity, which serve
- * must still answer with at that partition and seq.
- */
 export interface ServeFeedAnchor {
   readonly namespace: string;
   readonly partition: string;
@@ -133,21 +110,11 @@ export interface ServeFeedAnchor {
   readonly txnId: string;
 }
 
-/**
- * The caller a copy was built for: the fingerprint of its serve token, and
- * whether a reset to another caller started and has not finished.
- */
 export interface ServeCopyCaller {
   readonly fingerprint: string;
   readonly resetting: boolean;
 }
 
-/**
- * The caller's read access as serve reported it (swamp-club#4089): the
- * fingerprint the copy was built under, the last one serve sent, and when
- * the copy was last reset because they differed. Each is undefined until
- * known: a serve too old to send the fingerprint leaves both undefined.
- */
 export interface ServeCopyAccess {
   readonly built?: string;
   readonly seen?: string;
@@ -155,20 +122,15 @@ export interface ServeCopyAccess {
 }
 
 /**
- * How long after a reset for a change of read access another change only
- * warns (swamp-club#4089): serve replicas whose access data disagree send
- * a caller two fingerprints in turn, which must not reset the copy on
- * every command.
+ * after a reset for access, another change only warns during this cooldown:
+ * serve replicas whose access data disagree send two fingerprints in turn,
+ * which must not reset the copy on every command
  */
 export const ACCESS_RESET_COOLDOWN_MS = 10 * 60 * 1000;
 
 /**
- * What a copy whose caller is current does about its read access at `now`
- * (epoch ms): `"current"` when serve last sent the access the copy was
- * built under (or a serve too old to send one sent none), `"reset"` when it
- * sent another, and `"cooling"` when it sent another within
- * {@link ACCESS_RESET_COOLDOWN_MS} of the last reset for access. A reset in
- * the future (the clock moved back) does not hold one off.
+ * a reset time in the future (the clock moved back) does not hold a reset off;
+ * a serve too old to send a fingerprint counts as current
  */
 export function accessResetDue(
   access: ServeCopyAccess,
@@ -187,20 +149,15 @@ export function accessResetDue(
     : "reset";
 }
 
-/** The schema version this swamp writes. */
 export const SERVE_UPSTREAM_STATE_SCHEMA_VERSION = MIGRATIONS.length;
 
-/** A checkout's serve-mode state: see the module doc. */
 export class ServeUpstreamState {
   readonly path: string;
   readonly #db: DatabaseSync;
   /**
-   * The copy's id when this handle opened: a reset by another handle gives
-   * the copy another, and this handle's catch-up writes are then refused
-   * ({@link ServeCopyReplacedError}). Opened during a reset, none: every
-   * catch-up write is refused. A handle is opened before the copy's
-   * `commits.db` (`openV3Datastore`), so the files it reads are never a
-   * newer copy's than this id.
+   * the copy's id when opened: a reset by another handle changes it and this
+   * handle's catch-up writes are then refused; opened during a reset there is
+   * none, so every write is refused
    */
   #copyId: string;
   #closed = false;
@@ -222,22 +179,16 @@ export class ServeUpstreamState {
     }).copy_id;
   }
 
-  /**
-   * Refuses a write for a copy this handle did not open: another handle
-   * reset it since. Run inside the write's transaction.
-   */
   #assertSameCopy(): void {
     if (this.#currentCopyId() !== this.#copyId) {
       throw markErrorPaths(new ServeCopyReplacedError(this.path), [this.path]);
     }
   }
 
-  /** Opens the file at `path`, creating it and its schema when absent. */
   static open(path: string): ServeUpstreamState {
     return new ServeUpstreamState(path, openStateDatabase(path));
   }
 
-  /** The feed cursor the copy has applied up to; 0 before the first page. */
   feedCursor(): number {
     this.#assertOpen();
     const row = this.#db.prepare("SELECT cursor FROM feed WHERE id = 1")
@@ -245,10 +196,6 @@ export class ServeUpstreamState {
     return row?.cursor ?? 0;
   }
 
-  /**
-   * Whether the copy has read serve's feed at least once: a page was applied,
-   * if only an empty one, since it was created or last reset.
-   */
   hasReadFeed(): boolean {
     this.#assertOpen();
     return this.#db.prepare("SELECT 1 FROM feed WHERE id = 1").get() !==
@@ -256,12 +203,9 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Records the feed cursor once the page it ends was applied, with the
-   * page's last commit as the anchor; a page without commits keeps the
-   * anchor recorded. Never moves either back: two processes catching up the
-   * same checkout both land, and the anchor stays the recorded cursor's.
-   * With `basePoint`, the base point the page was read under: when another
-   * process loaded a base since, nothing moves and it answers false.
+   * never moves the cursor or anchor back, so two processes catching up one
+   * checkout both land; with `basePoint`, a base loaded by another process
+   * since moves nothing and answers false
    */
   advanceFeedCursor(
     cursor: number,
@@ -312,7 +256,6 @@ export class ServeUpstreamState {
     );
   }
 
-  /** The feed anchor; undefined before a page with a commit was applied. */
   feedAnchor(): ServeFeedAnchor | undefined {
     this.#assertOpen();
     const row = this.#db.prepare(
@@ -340,12 +283,9 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Records that the copy loaded serve's compacted base at `point`
-   * (swamp-club#4006), in one transaction: the feed reads on from exactly
-   * the point (the install replaced every commit the copy held), the anchor
-   * is forgotten (a compacted commit cannot be asked for), the base's point
-   * is recorded, and each partition's compacted seq is a head serve
-   * reported.
+   * one transaction: the feed reads on from exactly the point, the anchor is
+   * forgotten (a compacted commit cannot be asked for), and each partition's
+   * compacted seq is recorded as a head serve reported
    */
   recordBaseLoaded(
     point: number,
@@ -379,14 +319,12 @@ export class ServeUpstreamState {
     });
   }
 
-  /** The compaction point of the base the copy loaded; 0 when none. */
   basePoint(): number {
     this.#assertOpen();
     return (this.#db.prepare("SELECT base_point FROM copy WHERE id = 1")
       .get() as { base_point: number } | undefined)?.base_point ?? 0;
   }
 
-  /** The head serve last reported for a partition; 0 when none was. */
   serveHead(namespace: string, partition: string): number {
     this.#assertOpen();
     const row = this.#db.prepare(
@@ -395,7 +333,6 @@ export class ServeUpstreamState {
     return row?.seq ?? 0;
   }
 
-  /** Records a head serve reported for a partition; never moves it back. */
   recordServeHead(namespace: string, partition: string, seq: number): void {
     this.#assertOpen();
     assertSeqLike(seq, "serve head");
@@ -409,10 +346,6 @@ export class ServeUpstreamState {
     });
   }
 
-  /**
-   * The checkout's last contact with serve (swamp-club#4195): when, by the
-   * local clock, and serve's clock minus the local one then, if measured.
-   */
   lastContact():
     | { readonly at: string; readonly clockOffsetMs?: number }
     | undefined {
@@ -429,7 +362,6 @@ export class ServeUpstreamState {
     };
   }
 
-  /** Records a contact with serve; see {@link lastContact}. */
   recordContact(at: Date, clockOffsetMs: number | undefined): void {
     this.#assertOpen();
     this.#transaction(() => {
@@ -444,10 +376,6 @@ export class ServeUpstreamState {
     });
   }
 
-  /**
-   * The copy's id: random, made with the file, so a fresh copy at the same
-   * root has another (swamp-club#4049).
-   */
   copyId(): string {
     this.#assertOpen();
     return (this.#db.prepare("SELECT copy_id FROM copy WHERE id = 1").get() as {
@@ -455,7 +383,6 @@ export class ServeUpstreamState {
     }).copy_id;
   }
 
-  /** The id of the commit log the copy follows; undefined before serve named one. */
   serveLogId(): string | undefined {
     this.#assertOpen();
     const row = this.#db.prepare("SELECT log_id FROM copy WHERE id = 1")
@@ -479,7 +406,6 @@ export class ServeUpstreamState {
     return this.serveLogId()!;
   }
 
-  /** The caller the copy was built for; undefined before the first stamp. */
   caller(): ServeCopyCaller | undefined {
     this.#assertOpen();
     const row = this.#db.prepare(
@@ -503,7 +429,6 @@ export class ServeUpstreamState {
     return this.caller()!;
   }
 
-  /** The caller's read access as serve reported it. */
   access(): ServeCopyAccess {
     this.#assertOpen();
     const row = this.#db.prepare(
@@ -521,12 +446,9 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Records `fingerprint` as read access serve sent, and as the access the
-   * copy was built under when none is recorded: the first fingerprint a
-   * copy sees is the one it was read under. A fingerprint other than the
-   * built one sticks until the copy is reset: the copy took that reply, so
-   * a later reply under the built access, as serve replicas that disagree
-   * send, does not make it current again. Returns the access recorded.
+   * the first fingerprint a copy sees is the one it was built under; a
+   * different one sticks until reset, so a later reply under the built access,
+   * as disagreeing replicas send, does not make it current
    */
   recordAccessSeen(fingerprint: string): ServeCopyAccess {
     this.#assertOpen();
@@ -551,13 +473,9 @@ export class ServeUpstreamState {
   }
 
   /**
-   * Starts a reset to another caller, or to the same caller's changed read
-   * access: forgets the feed cursor, its anchor, serve's heads, the log the
-   * copy follows and the access serve reported, which describe the old
-   * view of serve, gives the copy a new id, so the checkout's projection is
-   * rebuilt from the new copy (swamp-club#4089), and marks the reset
-   * unfinished, so a reset cut short is run again whatever the fingerprint
-   * says. The recorded fingerprint stays the old caller's.
+   * forgets state describing the old view of serve and gives the copy a new id
+   * so the projection is rebuilt; marks the reset unfinished so a cut-short
+   * reset runs again. The fingerprint stays the old caller's
    */
   beginCallerReset(): void {
     this.#assertOpen();
@@ -576,11 +494,6 @@ export class ServeUpstreamState {
     this.#copyId = this.#currentCopyId();
   }
 
-  /**
-   * Ends a reset: the copy is now `fingerprint`'s. With `accessResetAt`,
-   * the reset was for a change of read access, made at that time (epoch
-   * ms).
-   */
   finishCallerReset(fingerprint: string, accessResetAt?: number): void {
     this.#assertOpen();
     this.#transaction(() => {

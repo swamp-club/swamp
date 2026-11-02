@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Global definition-name lookup in a repository of 15,000 auto-definitions
- * of one type, as serve's direct-type steps do it (swamp-club#4037): the
- * walk every lookup did before, the definition index's cold build, 36
- * concurrent misses once it is warm, and 36 concurrent lookups right after
- * a burst of 36 new definitions in the same directory, while its stat is
- * too recent to trust. Run with:
- *
- *   deno bench --allow-all src/infrastructure/persistence/definition_name_lookup_bench.ts
- *
- * Files read per iteration are printed when the run ends.
- */
-
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import {
@@ -54,13 +41,12 @@ for (let i = 0; i < STORED; i++) {
     `type: ${TYPE}\nid: ${crypto.randomUUID()}\nname: stored-${i}\nversion: 1\ntags: {}\nglobalArguments: {}\nmethods: {}\n`,
   );
 }
-// Past the index's racy window, so the stored files count as settled, as
-// they have on a server.
+// wait past the index's racy window so the stored files count as settled, as
+// they do on a server
 await new Promise((resolve) => setTimeout(resolve, 2_500));
 
 const reads = new Map<string, { files: number; iterations: number }>();
 
-/** An index over `repo` that counts its reads under `label`. */
 function countingIndex(label: string): DefinitionIdIndex {
   const source: DefinitionFileSource = {
     definitionRoots: () => repo.definitionRoots(),

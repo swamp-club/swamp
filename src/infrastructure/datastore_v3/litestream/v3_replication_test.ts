@@ -33,7 +33,6 @@ Deno.test("setV3ClosingDeadline: the closing sync takes what is left when it sta
     setV3ClosingDeadline(deadline);
     assertStrictEquals(v3ClosingDeadline(), deadline);
     assertEquals(v3SyncDeadlineMs(), 12_000);
-    // Read again when the sync starts, not when the deadline was set.
     left = 3_000;
     assertEquals(v3SyncDeadlineMs(), 3_000);
     // 30 days would overflow setTimeout, which then fires at once.

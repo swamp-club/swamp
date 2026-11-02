@@ -18,81 +18,36 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The upload ledger (swamp-club#3915): an in-memory, bounded record of the
- * chunks each principal uploaded to serve, kept as proof of possession for
- * the commits that later name them, and as the measure of each principal's
- * unreferenced uploads.
- *
- * - An upload is reserved before its bytes are read
- *   ({@link UploadLedger.reserve}) and recorded against that reservation
- *   once stored ({@link UploadLedger.record}). A reservation counts toward
- *   every cap from the moment it is granted, so requests in flight
- *   together cannot pass them (swamp-club#3938); one that is never
- *   recorded is cancelled.
- * - An entry holds within the grace window (`graceMs`, the chunk sweep's
- *   {@link DEFAULT_CHUNK_GRACE_MS} by default) of when it was recorded.
- * - {@link UploadLedger.release} marks chunks a commit now references: they
- *   stop counting toward the uploader's byte quota and entry cap but still
- *   hold, so a retried commit is not refused.
- * - The ledger never holds more than `maxEntries` entries and reservations.
- *   A reservation at that bound makes room by evicting the oldest released
- *   entry, whose commit's partition vouches for its chunk instead. With none
- *   released, the principal with the most unreferenced uploads gives up its
- *   oldest one; when that is the caller, the caller is refused. One
- *   principal's uploads therefore never push out a lighter principal's.
- *
- * The clock is the caller's: every call takes `now` (epoch milliseconds),
- * expected not to go backward. There are no timers; expired entries are
- * pruned on each call.
- *
- * @module
+ * reservations count toward every cap when granted, so concurrent requests
+ * cannot pass them; at the bound the oldest released entry is evicted, else the
+ * heaviest principal's oldest, never a lighter principal's
  */
 
 import { DEFAULT_CHUNK_GRACE_MS } from "../../domain/datastore_v3/chunk_collector.ts";
 
-/** Unreferenced bytes one principal may have uploaded: 2 GiB. */
 export const DEFAULT_MAX_UNREFERENCED_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
-/** Unreferenced uploads one principal may hold. */
 export const DEFAULT_MAX_UPLOAD_ENTRIES_PER_PRINCIPAL = 20_000;
 
-/** Ledger entries and reservations across every principal. */
 export const DEFAULT_MAX_UPLOAD_LEDGER_ENTRIES = 200_000;
 
-/** The options of an {@link UploadLedger}. */
 export interface UploadLedgerOptions {
-  /** How long an upload holds. {@link DEFAULT_CHUNK_GRACE_MS} by default. */
   readonly graceMs?: number;
-  /** {@link DEFAULT_MAX_UNREFERENCED_UPLOAD_BYTES} by default. */
   readonly maxUnreferencedBytesPerPrincipal?: number;
-  /** {@link DEFAULT_MAX_UPLOAD_ENTRIES_PER_PRINCIPAL} by default. */
   readonly maxEntriesPerPrincipal?: number;
-  /** {@link DEFAULT_MAX_UPLOAD_LEDGER_ENTRIES} by default. */
   readonly maxEntries?: number;
 }
 
-/**
- * Room for one upload of a known size, granted by
- * {@link UploadLedger.reserve}. It counts toward the caps until it is
- * recorded or cancelled.
- */
 export interface UploadReservation {
   readonly principalId: string;
   readonly size: number;
-  /** Gives the room back. Does nothing once recorded or cancelled. */
   cancel(): void;
 }
 
-/** The answer of {@link UploadLedger.reserve}. */
 export type UploadAdmission =
   | { readonly allowed: true; readonly reservation: UploadReservation }
   | {
     readonly allowed: false;
-    /**
-     * `bytes`: past the unreferenced-byte quota; `entries`: the
-     * per-principal entry cap; `full`: the ledger is full and the caller
-     * holds the most unreferenced uploads.
-     */
     readonly reason: "bytes" | "entries" | "full";
     readonly unreferencedBytes: number;
     readonly limitBytes: number;
@@ -108,11 +63,8 @@ interface Entry {
 }
 
 interface PrincipalTally {
-  /** Entries recorded, released or not. */
   held: number;
-  /** Keys of the unreleased entries, oldest first. */
   readonly unreferenced: Set<string>;
-  /** Bytes of the unreleased entries. */
   unreferencedBytes: number;
   reservedEntries: number;
   reservedBytes: number;
@@ -157,17 +109,13 @@ function chunkKey(namespace: string, sha256: string) {
   return `${namespace}\u0000${sha256}`;
 }
 
-/** See the module documentation. */
 export class UploadLedger {
   readonly graceMs: number;
   readonly maxUnreferencedBytesPerPrincipal: number;
   readonly maxEntriesPerPrincipal: number;
   readonly maxEntries: number;
-  /** In recording order, oldest first: a re-record moves to the end. */
   readonly #entries = new Map<string, Entry>();
-  /** Keys of released entries, in the order they were released. */
   readonly #released = new Set<string>();
-  /** (namespace, sha256) → the entry keys that recorded it. */
   readonly #byChunk = new Map<string, Set<string>>();
   readonly #tallies = new Map<string, PrincipalTally>();
   #reserved = 0;
@@ -193,24 +141,14 @@ export class UploadLedger {
     );
   }
 
-  /** Entries held across every principal, expired ones included until pruned. */
   get size(): number {
     return this.#entries.size;
   }
 
-  /** Reservations granted and not yet recorded or cancelled. */
   get reserved(): number {
     return this.#reserved;
   }
 
-  /**
-   * Reserves room for `principalId` to upload `size` more bytes as one
-   * entry. Refused when it would take the principal's unreferenced bytes
-   * (reservations included) past the quota, when it already holds its
-   * entry cap, or when the ledger is full and the principal holds the most
-   * unreferenced uploads. Otherwise the reservation counts from now; the
-   * caller records or cancels it.
-   */
   reserve(principalId: string, size: number, now: number): UploadAdmission {
     if (!Number.isSafeInteger(size) || size < 0) {
       throw new RangeError(`size must be a non-negative integer: ${size}`);
@@ -250,10 +188,8 @@ export class UploadLedger {
   }
 
   /**
-   * Records, against `reservation`, that its principal uploaded the chunk
-   * `sha256` of the reserved size into `namespace` at `now`. Recording a
-   * chunk again restarts its window and counts it as unreferenced again.
-   * The reservation is spent; the room it held becomes the entry's.
+   * recording a chunk again restarts its window and counts it as unreferenced
+   * again; the reservation is spent
    */
   record(
     reservation: UploadReservation,
@@ -294,7 +230,6 @@ export class UploadLedger {
     tally.unreferencedBytes += size;
   }
 
-  /** Whether `principalId` uploaded the chunk within the grace window. */
   holds(
     principalId: string,
     namespace: string,
@@ -307,9 +242,8 @@ export class UploadLedger {
   }
 
   /**
-   * Marks chunks a commit now references, for every principal that
-   * uploaded them: they stop counting toward the quota and the entry cap.
-   * They still hold until their window ends.
+   * released chunks stop counting toward the quota and entry cap but still hold
+   * until their window ends
    */
   release(namespace: string, sha256s: Iterable<string>): void {
     for (const sha256 of sha256s) {
@@ -327,7 +261,6 @@ export class UploadLedger {
     }
   }
 
-  /** Bytes `principalId` uploaded within the window that no commit names. */
   unreferencedBytes(principalId: string, now: number): number {
     this.#prune(now);
     return this.#tallies.get(principalId)?.unreferencedBytes ?? 0;
@@ -339,17 +272,10 @@ export class UploadLedger {
       : tally.unreferenced.size + tally.reservedEntries;
   }
 
-  /**
-   * Frees one slot for `principalId`: the oldest released entry, else the
-   * oldest unreferenced entry of the principal with the most unreferenced
-   * uploads, provided that is not the caller. False when neither exists.
-   */
   #makeRoom(principalId: string): boolean {
-    // A released entry's commit landed, so evicting it costs no retry: serve
-    // answers a retry of a landed commit before proof of possession
-    // (swamp-club#3922). A new commit naming the chunk is vouched for by a
-    // partition that references it only for a caller who may read that
-    // partition; a writer who may not carries the chunk again.
+    // a released entry's commit landed, so evicting it costs no retry: serve
+    // answers a retry of a landed commit before proof of possession; a writer
+    // who may not read the partition carries the chunk again
     const [oldestReleased] = this.#released;
     if (oldestReleased !== undefined) {
       this.#delete(oldestReleased, this.#entries.get(oldestReleased)!);
@@ -387,7 +313,6 @@ export class UploadLedger {
     return now - entry.at >= this.graceMs;
   }
 
-  /** Drops expired entries from the oldest end. */
   #prune(now: number): void {
     for (const [key, entry] of this.#entries) {
       if (!this.#expired(entry, now)) break;

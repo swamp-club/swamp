@@ -90,19 +90,11 @@ import {
   synchronousSensitiveReferences,
 } from "./sensitive_record_adapter.ts";
 
-/**
- * Result of expression validation.
- */
 export interface ValidationResult {
   valid: boolean;
   error?: string;
 }
 
-/**
- * Fields of `DataRecord` — the shape `data.latest()` and `data.version()`
- * resolve to. See {@link CelEvaluator.explainMissedLookups} for why these are
- * written out rather than derived.
- */
 const DATA_RECORD_FIELDS = new Set([
   "attributes",
   "content",
@@ -142,11 +134,8 @@ function unwrapOptional(value: unknown): unknown {
 }
 
 /**
- * Converts the CEL ints in a value bound for a delegate to numbers, as
- * {@link coerceBigInts} does for results, so the value serializes as JSON.
- * Unlike coerceBigInts it walks only arrays and plain maps and leaves every
- * other object as it is, so a timestamp in the inputs of model.method
- * reaches the method as a Date and serializes as its ISO string.
+ * walks only arrays and plain maps, leaving other objects as they are, so a
+ * timestamp reaches the method as a Date and serializes as its ISO string
  */
 function coerceBigIntsForDelegate(value: unknown): unknown {
   if (typeof value === "bigint") return coerceBigInts(value);
@@ -169,9 +158,8 @@ function coerceBigIntsForDelegate(value: unknown): unknown {
 }
 
 /**
- * Wrapper class for file namespace context objects.
- * cel-js requires a registered type (via constructor matching) so it doesn't
- * try to infer the type as a map and choke on function-valued properties.
+ * cel-js needs a registered type via constructor matching, or it infers a map
+ * and chokes on function-valued properties
  */
 export class CelFileNamespace {
   private readonly delegate: Record<string, unknown>;
@@ -189,10 +177,6 @@ export class CelFileNamespace {
   }
 }
 
-/**
- * Wrapper class for workers namespace context objects.
- * Provides helpers for querying workers eligible for dispatch.
- */
 export class CelWorkersNamespace {
   private readonly delegate: Record<string, unknown>;
 
@@ -210,9 +194,8 @@ export class CelWorkersNamespace {
 }
 
 /**
- * A missed `data.latest()`/`data.version()` lookup whose data name may have
- * been an output spec name. Vary forms are never recorded: their data name is
- * composed, so it cannot be a spec name.
+ * vary forms are never recorded: their data name is composed, so it cannot be a
+ * spec name
  */
 interface SpecNameCandidate {
   accessor: "latest" | "version";
@@ -220,13 +203,8 @@ interface SpecNameCandidate {
   dataName: string;
 }
 
-/** Spec instance names shown in the hint before the rest are counted. */
 const MAX_LISTED_SPEC_INSTANCES = 3;
 
-/**
- * Renders the hint for a lookup that passed a spec name where a data name was
- * expected. `names` are the data names written under that spec, newest first.
- */
 function describeSpecInstances(
   accessor: "latest" | "version",
   modelName: string,
@@ -247,11 +225,9 @@ function describeSpecInstances(
 }
 
 /**
- * Follow the receiver of the failed select through literal containers and
- * conditional branches. Only the selected value matters: a missing lookup
- * in a sibling must not excuse an invalid select on an ordinary map or null.
- * Resolve selectors from plain bindings without invoking getters or replaying
- * functions, so diagnosing a failure performs no additional external work.
+ * only the selected value matters: a missing lookup in a sibling must not
+ * excuse an invalid select. Resolve from plain bindings without invoking
+ * getters or replaying functions, so diagnosis does no external work
  */
 function selectsDataLookup(
   error: unknown,
@@ -268,7 +244,6 @@ function selectsDataLookup(
     receiver.op === "id" && receiver.args === "data";
 }
 
-/** The `data` accessors that answer a list of records. */
 const SET_READ_ACCESSORS = ["findBySpec", "findByTag", "query"] as const;
 type SetReadAccessor = typeof SET_READ_ACCESSORS[number];
 
@@ -276,17 +251,14 @@ function isSetReadAccessor(name: unknown): name is SetReadAccessor {
   return (SET_READ_ACCESSORS as readonly unknown[]).includes(name);
 }
 
-/** Identifies one set-read call by its accessor and string arguments. */
 function setReadKey(accessor: SetReadAccessor, args: unknown[]): string {
   return JSON.stringify([accessor, ...args]);
 }
 
 /**
- * The call, when the failed index's receiver — followed through literal
- * containers and conditional branches like {@link selectsDataLookup} — is a
- * set read that answered no record. Its arguments are read from plain
- * literals and bindings and matched against the answers recorded, so an
- * empty answer to one call never excuses an index into another.
+ * arguments are read from plain literals and bindings and matched against
+ * recorded answers, so an empty answer to one call never excuses an index into
+ * another
  */
 function indexedEmptySetRead(
   error: unknown,
@@ -364,7 +336,6 @@ function selectorData(value: unknown, seen = new Set<object>()): unknown {
   }
 }
 
-/** Evaluate a selector using only copied data and standard, pure CEL functions. */
 function pureSelectorValue(
   node: ASTNode,
   context: Record<string, unknown>,
@@ -482,9 +453,8 @@ function isAstNode(value: unknown): value is ASTNode {
 }
 
 /**
- * Refuses a `data.version()` version that is not a whole number. A record's
- * `version` reaches CEL as a double, so `data.version()` takes a double as
- * well as an int; only a whole one can name a version.
+ * a record's version reaches CEL as a double, so data.version() accepts a
+ * double; only a whole one can name a version
  */
 function requireWholeVersion(
   modelName: string,
@@ -498,17 +468,12 @@ function requireWholeVersion(
   );
 }
 
-/**
- * Wrapper class for data namespace context objects.
- */
 export class CelDataNamespace {
   private readonly delegate: Record<string, unknown>;
   /**
-   * Lookups that resolved to no record, in call order. A null lookup is a
-   * supported result — guards use it as a presence test and `.?attributes`
-   * selects through it — so the miss is recorded rather than thrown, and
-   * {@link CelEvaluator} uses it to explain the "No such key" that a
-   * non-optional select on the missing record raises.
+   * a null lookup is supported (guards use it as a presence test), so misses
+   * are recorded rather than thrown, and used to explain the No such key a
+   * non-optional select raises
    */
   readonly missedLookups: string[] = [];
   /**
@@ -523,14 +488,12 @@ export class CelDataNamespace {
     this.delegate = delegate;
   }
 
-  /** Drops recorded misses so they cannot leak into a later evaluation. */
   clearMissedLookups(): void {
     this.missedLookups.length = 0;
     this.emptySetReads.clear();
     this.specNameCandidates.length = 0;
   }
 
-  /** Records `accessor(args)` when the set read answered no record. */
   private recordEmpty(
     result: unknown,
     accessor: SetReadAccessor,
@@ -551,13 +514,6 @@ export class CelDataNamespace {
     return result;
   }
 
-  /**
-   * The reader as the delegate describes it: its own namespace, whose
-   * records' tagged fields are this repository's to read, and whether it
-   * reads the solo namespace as another namespace. The namespace is empty,
-   * the solo default a context built without a repository uses, and the
-   * solo namespace is the reader's own, when the delegate carries neither.
-   */
   get reader(): NamespaceReader {
     const namespace = this.delegate["namespace"];
     return {
@@ -567,9 +523,9 @@ export class CelDataNamespace {
   }
 
   /**
-   * Records `call` when the lookup resolved to no record. Delegates return
-   * either a value or a Promise; the Promise arm returns the derived promise
-   * so the miss is recorded before cel-js selects a field off the result.
+   * delegates return a value or a Promise; the Promise arm returns the derived
+   * promise so the miss is recorded before cel-js selects a field off the
+   * result
    */
   private recordMiss(
     result: unknown,
@@ -591,12 +547,9 @@ export class CelDataNamespace {
   }
 
   /**
-   * Explains missed lookups whose data name is really an output spec name:
-   * `data.latest()` and `data.version()` take the data (instance) name a
-   * model wrote, which is often not its spec name — a model can write spec
-   * `summary` as `sync-<timestamp>`. Returns one paragraph per such lookup,
-   * naming the data names written under that spec. Only called on the error
-   * path, so the lookup costs nothing when an expression succeeds.
+   * data.latest and data.version take the data instance name, often not the
+   * spec name; only called on the error path, so the lookup costs nothing when
+   * an expression succeeds
    */
   explainSpecNameMisses(): string[] {
     const fn = this.delegate["specInstanceNames"];
@@ -659,7 +612,6 @@ export class CelDataNamespace {
   ): unknown {
     const fn = this.delegate["version"];
     if (typeof fn === "function") {
-      // 4-arg form: version(model, name, varyValues[], version)
       if (Array.isArray(versionOrVary)) {
         requireWholeVersion(modelName, dataName, version);
         const resolvedName = versionOrVary.length > 0
@@ -680,7 +632,6 @@ export class CelDataNamespace {
             : undefined,
         );
       }
-      // 3-arg form: version(model, name, version)
       requireWholeVersion(modelName, dataName, versionOrVary);
       return this.recordMiss(
         (fn as (m: string, d: string, v: number) => unknown)(
@@ -737,11 +688,6 @@ export class CelDataNamespace {
     return [];
   }
 
-  /**
-   * `view` is the expression-facing query view of a typed environment
-   * (typed-secrets Section 6.2), which the delegate hands to the query
-   * service; the untyped environment passes none.
-   */
   query(predicate: string, select?: string, view?: QueryView): unknown {
     const fn = this.delegate["query"];
     if (typeof fn === "function") {
@@ -759,11 +705,6 @@ export class CelDataNamespace {
   }
 }
 
-/**
- * Wrapper class for model namespace context objects.
- * Provides model.method() for invoking model methods from CEL expressions
- * (e.g., guard expressions).
- */
 export class CelModelNamespace {
   private readonly delegate: Record<string, unknown>;
 
@@ -791,19 +732,8 @@ export class CelModelNamespace {
 }
 
 /**
- * Builds a fresh, isolated cel-js `Environment` with swamp's baseline
- * registrations for extension use.
- *
- * Options: `{ unlistedVariablesAreDyn: true }` so callers can pass arbitrary
- * context maps without pre-registering every variable.
- * `{ homogeneousAggregateLiterals: false }` so map/list literals can contain
- * mixed value types (e.g. dyn context lookups alongside string literals).
- *
- * Registrations: bigint/double arithmetic operator overloads only. The
- * returned Environment does NOT carry swamp's internal namespace types
- * (`CelFileNamespace`/`CelDataNamespace`) — those are private to swamp's
- * own expression surface. Callers may freely register their own
- * functions, types, and operators on the returned Environment.
+ * the returned Environment omits swamp's internal namespace types; callers may
+ * register their own functions, types and operators on it
  */
 function registerArithmeticOverloads(env: Environment): void {
   env.registerOperator(
@@ -849,7 +779,6 @@ function registerArithmeticOverloads(env: Environment): void {
 }
 
 export { registerArithmeticOverloads };
-// The coercion lives in cel_coercion.ts; re-exported for its importers.
 export { coerceBigInts };
 
 export function createExtensionCelEnvironment(): Environment {
@@ -863,11 +792,8 @@ export function createExtensionCelEnvironment(): Environment {
 }
 
 /**
- * Awaits the context's data-namespace `prepare` for one expression, when the
- * context has one. Async evaluation calls it before every expression; a
- * synchronous evaluation pass calls it for each expression it is about to
- * evaluate, since it cannot wait on what the expression reads
- * (swamp-club#3179).
+ * a synchronous pass calls it per expression it is about to evaluate, since it
+ * cannot wait on what the expression reads
  */
 export async function prepareExpressionContext(
   expression: string,
@@ -882,10 +808,6 @@ export async function prepareExpressionContext(
   }
 }
 
-/**
- * {@link prepareExpressionContext} for every `${{ }}` expression in
- * `content`, before a synchronous pass evaluates them.
- */
 export async function prepareExpressionsIn(
   content: unknown,
   context: Record<string, unknown>,
@@ -898,12 +820,10 @@ export async function prepareExpressionsIn(
   }
 }
 
-/** What one evaluation runs with. */
 export interface EvaluationScope {
   /**
-   * The run's issuing bag (a delivery view cannot issue). With typed
-   * secrets on, sentinels it issued read as a `Secret`, and a `Secret`
-   * result leaves as a sentinel issued into it.
+   * with typed secrets on, sentinels the bag issued read as a Secret, and a
+   * Secret result leaves as a sentinel issued into it
    */
   readonly secretBag?: VaultSecretBag;
   /** Required for direct typed vault calls; checks use the run's services. */
@@ -911,59 +831,37 @@ export interface EvaluationScope {
   /** Built only when a direct vault call or sensitive-field read needs it. */
   readonly getVault?: () => Promise<VaultEvaluationScope>;
   /**
-   * What becomes of a `Secret` in the result. `release`, the default, issues
-   * its sentinel into the bag. `refuse` is the predicate destination of a
-   * guard or assert (design/enablers/typed-secrets.md Section 7.1): a result
-   * that holds a secret anywhere is refused with `secret_destination_refused`
-   * before anything reads it, while the bindings still read sentinels as
-   * Secrets, so a comparison to null decides as it always did.
+   * refuse is the guard/assert destination: a result holding a secret anywhere
+   * is refused with secret_destination_refused before anything reads it, while
+   * bindings still read sentinels as Secrets
    */
   readonly secretResult?: "release" | "refuse";
   /**
-   * The sensitive-field references a synchronous evaluation may read,
-   * authorized by {@link CelEvaluator.prepareSynchronousReads} under the
-   * run's vault access and keyed as the fault scope keys them. The
-   * synchronous `evaluate` accepts a recorded reference in this set and
-   * fails closed on any other, as it does with no set at all.
+   * references a synchronous evaluation may read; evaluate accepts a recorded
+   * reference in this set and fails closed on any other, or when there is no
+   * set
    */
   readonly authorizedReferences?: ReadonlySet<string>;
   /**
-   * The sensitive-field references the authorization step could not
-   * authorize, each with the error its check raised: a denial under the
-   * run's vault access, an unavailable vault, or no vault scope to check
-   * under. A synchronous `evaluate` that reads one fails with that error,
-   * before release issues a sentinel. One the evaluation never reads costs
-   * nothing, so a denied record of a named model does not fail a read of
-   * another of its records.
+   * references that could not be authorized, with the error raised; a
+   * synchronous evaluate that reads one fails with it before release issues a
+   * sentinel, and unread ones cost nothing
    */
   readonly deniedReferences?: ReadonlyMap<string, unknown>;
 }
 
-/**
- * Builds the internal environment: the extension baseline plus swamp's
- * namespace types and their receiver methods.
- */
 export function createInternalCelEnvironment(): Environment {
   return buildInternalEnvironment("evaluate");
 }
 
 /**
- * How an internal environment treats typed secrets. `off` is the legacy
- * environment. `evaluate` registers the `Secret` type, the typed vault
- * receiver, the allowed set and every refusal the inventory yields. `check`
- * is the type-check environment that nothing ever evaluates
- * (design/enablers/typed-secrets.md Section 4.3 item 4): the type, the
- * receiver and the allowed set with no refusal, and `vault` bound as a
- * variable of the receiver type, so a check accepts the allowed set and
- * rejects any other operation on a `vault.get` result.
+ * check is a type-check environment nothing evaluates: Secret type, receiver
+ * and allowed set with no refusal, vault bound as a receiver variable, so a
+ * check rejects other operations on a vault.get result
  */
 type SecretMode = "evaluate" | "check";
 
-/**
- * The type-check environment of the static misuse diagnostics
- * (`secret_diagnostics.ts`). Built here so the `Secret` modules stay inside
- * the adapter.
- */
+/** built here so the Secret modules stay inside the adapter */
 export function createSecretCheckEnvironment(): Environment {
   return buildInternalEnvironment("check");
 }
@@ -982,10 +880,9 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
     ? <T>(value: T, operation: string) =>
       detachForDestination(value, operation) as T
     : <T>(value: T) => value;
-  // Records an accessor answers: with typed secrets on, the reader's
-  // own-namespace records are read as stored and their tagged fields become
-  // data-origin Secrets (typed-secrets 3.3). Gated here, on the option, so a
-  // namespace instance built earlier and reused is adapted all the same.
+  // with typed secrets on, own-namespace records are read as stored and tagged
+  // fields become data-origin Secrets; gated on the option so a reused
+  // namespace instance is adapted too
   const fromAccessor: (
     receiver: CelDataNamespace,
     result: unknown,
@@ -997,16 +894,13 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
   const readOptions: DataReadOptions | undefined = typed
     ? { sensitiveFields: "stored" }
     : undefined;
-  // The query view a typed data.query hands the service (typed-secrets
-  // Section 6.2), bound per call to the receiver's reader: the one identity
-  // that decides the own-namespace check for the rows a predicate reads and
-  // for the records fromAccessor adapts afterwards.
+  // bound per call to the receiver's reader: the one identity that decides the
+  // own-namespace check for rows a predicate reads and for records fromAccessor
+  // adapts afterwards
   const queryView: (receiver: CelDataNamespace) => QueryView | undefined = typed
     ? (receiver) => expressionQueryView(receiver.reader)
     : () => undefined;
 
-  // Register namespace types so cel-js recognizes them via constructor
-  // matching instead of trying to infer them as maps.
   env.registerType("CelFileNamespace", CelFileNamespace);
   env.registerType("CelDataNamespace", CelDataNamespace);
   env.registerType("CelWorkersNamespace", CelWorkersNamespace);
@@ -1017,14 +911,12 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
   // `${{ inputs.env }} on ${{ literal('{{host.name}}') }}`.
   env.registerFunction(LITERAL_FUNCTION_SIGNATURE, literal);
 
-  // Register receiver methods for file namespace
   env.registerFunction(
     "CelFileNamespace.contents(string, string): dyn",
     (receiver: CelFileNamespace, modelName: string, specName: string) =>
       receiver.contents(modelName, specName),
   );
 
-  // Register receiver methods for data namespace
   env.registerFunction(
     "CelDataNamespace.latest(string, string): dyn",
     (receiver: CelDataNamespace, modelName: string, dataName: string) =>
@@ -1073,7 +965,6 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
       receiver.listVersions(modelName, dataName),
   );
 
-  // Register vary-aware overloads (3rd arg is list<dyn>)
   env.registerFunction(
     "CelDataNamespace.latest(string, string, list<dyn>): dyn",
     (
@@ -1171,10 +1062,9 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
       ),
   );
 
-  // Records data.query answers are adapted like every other accessor's; the
-  // view adapted what the predicate read. A projection is answered as the
-  // view post-processed it, and a select the service treats as none (the
-  // empty string) answers records, adapted the same way.
+  // data.query records are adapted like every other accessor's; a projection
+  // answers as the view post-processed it, and an empty-string select answers
+  // records, adapted the same way
   env.registerFunction(
     "CelDataNamespace.query(string): dyn",
     (receiver: CelDataNamespace, predicate: string) =>
@@ -1197,19 +1087,16 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
         ),
   );
 
-  // Register receiver methods for workers namespace
   env.registerFunction(
     "CelWorkersNamespace.connected(): dyn",
     (receiver: CelWorkersNamespace) => receiver.connected(),
   );
 
-  // Register receiver methods for model namespace. model.method is the
-  // effectful function (design/enablers/typed-secrets.md Section 4.5): with
-  // typed secrets on, the effect gate runs before any delegate work, the
-  // inputs are delivered through the boundary into the run's bag, and the
-  // record it returns is adapted so its tagged fields are Secrets.
+  // model.method is effectful: with typed secrets on, the gate runs before any
+  // delegate work, inputs go through the boundary into the run's bag, and the
+  // returned record is adapted so tagged fields are Secrets
   const gate: () => void = typed ? gateModelMethodEffect : () => {};
-  // Ints are delivered as numbers on both paths (swamp-club#3708).
+  // ints are delivered as numbers on both paths
   const deliverInputs: (inputs: unknown) => Record<string, unknown> = typed
     ? (inputs) =>
       coerceBigIntsForDelegate(deliverModelMethodInputs(inputs)) as Record<
@@ -1270,8 +1157,8 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
         ...INTERNAL_FUNCTION_SIGNATURES,
         ...TYPED_VAULT_FUNCTION_SIGNATURES,
       ],
-      // The model and method names of model.method are routing arguments
-      // (Section 4.5 item 2): a Secret there is refused as a destination.
+      // model and method names are routing arguments: a Secret there is refused
+      // as a destination
       codeFor: (signature) =>
         signature.startsWith("CelModelNamespace.method(")
           ? SECRET_DESTINATION_REFUSED
@@ -1281,7 +1168,6 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
   return env;
 }
 
-/** The error for a Promise the synchronous path cannot await. */
 function unresolvedPromiseError(expression: string): InvalidExpressionError {
   return new InvalidExpressionError(
     "Expression returned an unresolved Promise. " +
@@ -1297,13 +1183,9 @@ function unresolvedPromiseError(expression: string): InvalidExpressionError {
 }
 
 /**
- * The effect gate of `model.method` (design/enablers/typed-secrets.md
- * Section 4.5 item 1), run before any delegate work: refuse when the
- * evaluation has already recorded a fault or a binding failure, or when its
- * expression has a container comparison and a secret was already read, so a
- * refusal that `||`, `&&`, `exists` or `all` absorbed never starts an effect
- * that today's short-circuit would have skipped. Outside an evaluation it
- * fails closed.
+ * refuse on a recorded fault, or a container comparison after a secret was
+ * read, so an absorbed refusal never starts an effect that short-circuit would
+ * have skipped; fails closed outside an evaluation
  */
 function gateModelMethodEffect(): void {
   const scope = currentFaultScope();
@@ -1321,13 +1203,9 @@ function gateModelMethodEffect(): void {
 }
 
 /**
- * The inputs of `model.method` as its delegate receives them (Section 4.5
- * item 3): a plain copy with each `Secret` released as a sentinel of the
- * run's bag, so the synthetic step loads it under its own attempt and no
- * `Secret` reaches the delegate. The copy keeps cel-js's own values (ints as
- * bigints, which the caller delivers as numbers). With no bag to issue into,
- * a `Secret` in them has nowhere to go and is refused as a destination, and
- * the rest is copied plain.
+ * plain copy with each Secret released as a sentinel of the run's bag, so no
+ * Secret reaches the delegate; with no bag, a Secret is refused as a
+ * destination and the rest copied plain
  */
 function deliverModelMethodInputs(inputs: unknown): Record<string, unknown> {
   const release = currentFaultScope()?.release;
@@ -1340,10 +1218,8 @@ function deliverModelMethodInputs(inputs: unknown): Record<string, unknown> {
 }
 
 /**
- * {@link adaptModelMethodResult} over what the delegate answers, a value or
- * a Promise of one. A rejected adaptation is a refusal cel-js observes when
- * it awaits the result; the Promise is also marked handled, so an
- * evaluation abandoned before that leaves no unobserved rejection.
+ * a rejected adaptation is a refusal cel-js observes on await; the Promise is
+ * also marked handled so an abandoned evaluation leaves no unobserved rejection
  */
 function adaptModelMethodResultDeep(result: unknown): unknown {
   if (result instanceof Promise) {
@@ -1354,30 +1230,18 @@ function adaptModelMethodResultDeep(result: unknown): unknown {
   return adaptModelMethodResult(result);
 }
 
-/** One evaluation with typed secrets on, parsed and bound. */
 interface SecretEvaluation {
   readonly evaluate: () => unknown;
   readonly analysis: VaultCallAnalysis;
   readonly bindings: Record<string, unknown>;
-  /** Whether the expression holds a container comparison. */
   readonly containerComparison: boolean;
-  /** The conversion, when the evaluation has a run's bag. */
   readonly boundary?: SecretBoundary;
-  /** Whether the result is a predicate destination, which refuses a secret. */
   readonly refusesSecretResult: boolean;
 }
 
-/** What the predicate destination names when it refuses a result. */
 const PREDICATE_RESULT =
   "a guard or assert predicate result that holds a secret";
 
-/**
- * CEL evaluator that wraps the cel-js library.
- *
- * Uses the cel-js Environment class with registered types and receiver methods
- * to support function call syntax (e.g., file.contents(), data.latest()) in
- * CEL expressions.
- */
 export class CelEvaluator {
   private readonly env: Environment;
   private readonly warnedPatterns = new Set<string>();
@@ -1385,15 +1249,6 @@ export class CelEvaluator {
     this.env = createInternalCelEnvironment();
   }
 
-  /**
-   * Evaluates a CEL expression with the given context.
-   *
-   * @param expression - The CEL expression to evaluate
-   * @param context - The context object containing model, self, workflow data
-   * @param scope - What the evaluation runs with, read with typed secrets on
-   * @returns The evaluated result
-   * @throws InvalidExpressionError if evaluation fails
-   */
   evaluate(
     expression: string,
     context: Record<string, unknown>,
@@ -1403,16 +1258,9 @@ export class CelEvaluator {
   }
 
   /**
-   * Evaluates a CEL expression that may contain async functions.
-   *
-   * cel-js natively propagates Promises through operators and macros.
-   * When a registered function returns a Promise, env.evaluate() returns
-   * a Promise. This method awaits it.
-   *
-   * Use this for expressions that may call data namespace functions
-   * (data.findBySpec, data.latest, etc.) which are async.
-   * Use the sync evaluate() for predicate filtering where no async
-   * functions are involved.
+   * cel-js propagates Promises through operators and macros; use this for
+   * expressions calling async data functions, and sync evaluate() where none
+   * are involved
    */
   async evaluateAsync(
     expression: string,
@@ -1422,11 +1270,6 @@ export class CelEvaluator {
     return await this.evaluateWithSecretsAsync(expression, context, scope);
   }
 
-  /**
-   * {@link evaluate} with typed secrets on: the bindings read through the
-   * boundary conversion, the evaluation runs in a fault scope, and a
-   * refusal decides the outcome before anything else does.
-   */
   private evaluateWithSecrets(
     expression: string,
     context: Record<string, unknown>,
@@ -1457,12 +1300,9 @@ export class CelEvaluator {
       faults.recording = false;
       this.refuseFaulted(faults, run, expression);
       if (result instanceof Promise) throw unresolvedPromiseError(expression);
-      // Authorization is asynchronous, so a record with tagged fields cannot
-      // be read here, as vault.get cannot (typed-secrets 3.3; Phase 4 gives
-      // the synchronous passes an authorization step of their own). The
-      // result is read as release reads it first, so a record the expression
-      // returned without selecting into it is adapted now, and the check
-      // refuses before release issues a sentinel for anything.
+      // authorization is async, so a record with tagged fields cannot be read
+      // here; read the result as release does so an unselected record is
+      // adapted and refused before release issues a sentinel
       try {
         readResult(result);
       } catch (error) {
@@ -1482,12 +1322,9 @@ export class CelEvaluator {
   }
 
   /**
-   * Fails a synchronous evaluation closed on a sensitive-field reference it
-   * read that {@link prepareSynchronousReads} did not authorize: with the
-   * error the step's check raised for it, or, for one the step never saw,
-   * naming evaluateAsync, since the authorization is asynchronous and the
-   * synchronous path can only accept what was authorized ahead of it
-   * (typed-secrets 3.3 and 4.1).
+   * fails closed on a sensitive-field reference that prepareSynchronousReads
+   * did not authorize: the sync path only accepts what was authorized ahead of
+   * it, so unseen ones name evaluateAsync
    */
   private refuseSynchronousSensitiveReads(
     faults: FaultScope,
@@ -1509,26 +1346,9 @@ export class CelEvaluator {
   }
 
   /**
-   * The authorization step of the synchronous passes
-   * (design/enablers/typed-secrets.md Section 3.4, typed-secrets 4.1). It
-   * prepares the context for every expression in `content` as
-   * {@link prepareExpressionsIn} does, and with typed secrets on, it takes
-   * the `model.<name>.resource` records those expressions read
-   * synchronously, from the same analysis the data namespace's `prepare`
-   * uses, and the output sources of the `steps.<name>` contexts they read
-   * (typed-secrets 4.2), parses their sensitive-fields tags (no vault read)
-   * and authorizes
-   * each reference through the scope's vault service under the run's vault
-   * access, as the asynchronous path does after evaluation. The scope it
-   * returns carries the authorized keys, so a synchronous `evaluate` under
-   * it accepts those reads and keeps failing closed on any other. The read
-   * set names models, not records, so a check that fails (a denial, an
-   * unavailable vault, no vault scope) is kept for its reference and fails
-   * the evaluation that reads the record holding it, before release issues
-   * a sentinel; a reference the evaluation never reads costs nothing. A
-   * record whose tag does not parse is left for the evaluation to refuse.
-   * With typed secrets off, or no record read, the scope is returned as
-   * given.
+   * authorizes sensitive-field references of records the expressions read
+   * synchronously under the run's vault access; a failed check is kept per
+   * reference and fails only an evaluation that reads that record
    */
   async prepareSynchronousReads(
     content: unknown,
@@ -1582,7 +1402,6 @@ export class CelEvaluator {
       : scope;
   }
 
-  /** {@link evaluateAsync} with typed secrets on, as {@link evaluateWithSecrets}. */
   private async evaluateWithSecretsAsync(
     expression: string,
     context: Record<string, unknown>,
@@ -1664,14 +1483,9 @@ export class CelEvaluator {
   }
 
   /**
-   * Authorizes every sensitive-field reference the evaluation's records hold
-   * under the run's vault access, selected or not, before the result is used
-   * (design/enablers/typed-secrets.md Section 3.4). A policy decision only:
-   * no existence check, probe or load. A denial fails the evaluation as the
-   * read-time denial does with typed secrets off, and a missing scope fails
-   * closed. The rows a `data.query` predicate reads record theirs in a
-   * row-local scope (Section 6.2), so the records here are the ones the
-   * expression received: answered whole, or read by a projection.
+   * authorizes every sensitive-field reference of the evaluation's records,
+   * selected or not, before the result is used; a policy decision only, no
+   * existence check or load; a missing scope fails closed
    */
   private async authorizeSensitiveReferences(
     faults: FaultScope,
@@ -1704,12 +1518,6 @@ export class CelEvaluator {
     }
   }
 
-  /**
-   * Parses normalized source, scans it for a container comparison, and
-   * binds the context through the boundary conversion. Calling the parsed
-   * program is what `env.evaluate` does, so no state lands on a shared
-   * program (fact 7).
-   */
   private beginWithSecrets(
     expression: string,
     wrappedContext: Record<string, unknown>,
@@ -1726,7 +1534,6 @@ export class CelEvaluator {
     const context = this.withModelView(wrappedContext);
     const bindings = boundary?.bind(context) ?? context;
     const containerComparison = hasContainerComparison(program.ast);
-    // What the effectful function reads before it starts (Section 4.5).
     faults.containerComparison = containerComparison;
     faults.release = boundary === undefined
       ? undefined
@@ -1742,15 +1549,8 @@ export class CelEvaluator {
   }
 
   /**
-   * The context with a plain model map replaced by the accessor adapter's
-   * lazy view, so `model.<name>.resource` records read with their tagged
-   * fields as Secrets (typed-secrets 3.3), and the steps map replaced by its
-   * view, so `steps.<name>.outputs` read through their sources the same way
-   * (typed-secrets 4.2). A context whose `model` is the method receiver
-   * {@link wrapNamespaces} installs, or that has neither map, is returned as
-   * it is. The copy keeps the caller's context untouched. Both maps hold
-   * only this repository's records, so a context with no data namespace to
-   * name the reader's own adapts every record they hold.
+   * replaces the model and steps maps with lazy views so tagged fields read as
+   * Secrets; the copy leaves the caller's context untouched
    */
   private withModelView(
     wrappedContext: Record<string, unknown>,
@@ -1780,10 +1580,9 @@ export class CelEvaluator {
   }
 
   /**
-   * Fails the evaluation on what its fault scope recorded, whatever cel-js
-   * answered: a binding the conversion could not read, a refusal (the first
-   * one decides the code), or a container comparison in an expression that
-   * read a secret (design/enablers/typed-secrets.md Section 4.3).
+   * fails on what the fault scope recorded whatever cel-js answered: an
+   * unreadable binding, a refusal (the first decides the code), or a container
+   * comparison in an expression that read a secret
    */
   private refuseFaulted(
     faults: FaultScope,
@@ -1811,11 +1610,9 @@ export class CelEvaluator {
   }
 
   /**
-   * Converts a result at the boundary, before the adapter's own
-   * post-processing: each `Secret` leaves as its sentinel, and with no
-   * run's bag to issue into, a `Secret` result is refused. Release reads a
-   * record the expression returned without selecting into it, so a record
-   * the accessor adapter refuses there keeps its code.
+   * release also reads a record returned unselected, so a record the accessor
+   * adapter refuses keeps its code; with no bag to issue into, a Secret result
+   * is refused
    */
   private releaseWithSecrets(
     result: unknown,
@@ -1860,7 +1657,6 @@ export class CelEvaluator {
       );
     }
     const message = error instanceof Error ? error.message : String(error);
-    // An index into a set read that found no record is the same gap.
     const emptySetRead = indexedEmptySetRead(error, wrappedContext);
     if (emptySetRead !== undefined) {
       return new MissingModelDataError(
@@ -1872,11 +1668,9 @@ export class CelEvaluator {
       );
     }
     const explained = this.explainMissedLookups(message, wrappedContext);
-    // A select whose operand is the lookup that found no record is upstream
-    // data not produced yet, which validation tolerates as it tolerates an
-    // absent binding. The gap is recognized by the failing select itself: a
-    // miss elsewhere in the expression does not excuse a select on something
-    // else, which is the expression's own failure whatever the hint says.
+    // a select on a lookup that found no record is upstream data not produced
+    // yet, which validation tolerates; recognized by the failing select itself,
+    // so a miss elsewhere does not excuse an unrelated select
     const Failure = explained !== message &&
         selectsDataLookup(error, wrappedContext)
       ? MissingModelDataError
@@ -1890,12 +1684,8 @@ export class CelEvaluator {
   }
 
   /**
-   * Validates a CEL expression without evaluating it. Parses the same text
-   * evaluation does — hyphenated model refs (`model.web-1a`) are rewritten
-   * first — so an expression that evaluates is never reported as invalid.
-   *
-   * @param expression - The CEL expression to validate
-   * @returns Validation result with error message if invalid
+   * parses the same text evaluation does, with hyphenated model refs rewritten,
+   * so an expression that evaluates is never reported invalid
    */
   validate(expression: string): ValidationResult {
     try {
@@ -1913,9 +1703,6 @@ export class CelEvaluator {
     }
   }
 
-  /**
-   * Wraps file and data namespace context objects in their registered CEL types.
-   */
   private wrapNamespaces(
     context: Record<string, unknown>,
   ): Record<string, unknown> {
@@ -1961,22 +1748,9 @@ export class CelEvaluator {
   }
 
   /**
-   * Appends an explanation when a "No such key" error is really a data lookup
-   * that found no record.
-   *
-   * `data.latest()` and `data.version()` return null when the record is
-   * missing, and a non-optional select off that null raises cel-js's generic
-   * "No such key: attributes" — which points the caret at the field and hides
-   * the real cause. The hint names the lookups that missed, and is appended
-   * below cel-js's own source snippet so the caret survives.
-   *
-   * Gated on the selected key being a field of `DataRecord`, so an expression
-   * that mixes an optional miss with a genuine misspelled attribute is not
-   * told to make the misspelling optional. The field set is written out rather
-   * than derived from the `DataRecord` type, which carries no runtime keys;
-   * drift is harmless either way — a missing entry only costs the hint, and a
-   * stale one only adds it to an expression that already names a missed
-   * lookup.
+   * a non-optional select off a null lookup raises a generic No such key that
+   * hides the cause; the hint goes below cel-js's source snippet so the caret
+   * survives, gated on the key being a DataRecord field
    */
   private explainMissedLookups(
     message: string,
@@ -2001,10 +1775,6 @@ export class CelEvaluator {
       : `${explained}\n\n${specHints.join("\n\n")}`;
   }
 
-  /**
-   * Emits a deprecation warning when an expression uses model.*.resource or
-   * model.*.file patterns. Warnings are deduplicated per expression.
-   */
   private warnDeprecatedPatterns(expression: string): void {
     // Match model.X.resource or model["X"].resource (and .file). Text passed
     // through literal() is not a reference, so it never warns.

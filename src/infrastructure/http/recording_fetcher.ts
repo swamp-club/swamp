@@ -22,19 +22,16 @@ import {
   classifyApiCallService,
 } from "../../domain/extensions/extension_publish_checks.ts";
 
-/** The `fetch` signature the HTTP clients and the trust checker accept. */
 export type Fetcher = (
   url: string | URL,
   init?: RequestInit,
 ) => Promise<Response>;
 
-/** Collects the HTTP calls made through a {@link recordingFetcher}. */
 export interface ApiCallRecorder {
   readonly calls: ApiCallRecord[];
   record(call: ApiCallRecord): void;
 }
 
-/** A recorder that keeps every call in order. */
 export function createApiCallRecorder(): ApiCallRecorder {
   const calls: ApiCallRecord[] = [];
   return {
@@ -46,10 +43,8 @@ export function createApiCallRecorder(): ApiCallRecorder {
 }
 
 /**
- * Wraps a fetcher so every request is recorded, whether it answered or threw.
- * The record names the service by host (`registryUrl` identifies the
- * registry), and carries the method and URL only — never headers, and never
- * userinfo embedded in the URL.
+ * records carry method and URL only, never headers or URL userinfo, and name
+ * the service by host
  */
 function withoutUserinfo(url: string): string {
   try {

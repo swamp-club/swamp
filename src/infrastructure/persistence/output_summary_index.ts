@@ -43,49 +43,40 @@ import { inTimeSlices } from "./scan_permits.ts";
 const logger = getLogger(["output-repo", "summaries"]);
 
 /**
- * The checkout's own directory of summary shards, under `.swamp` beside the
- * read model's state: outside every materialised and synced subdirectory, so
- * it is never committed, pushed or swept by a v3 recovery.
+ * outside every materialised and synced subdirectory, so it is never committed,
+ * pushed or swept by a v3 recovery
  */
 export const OUTPUT_SUMMARIES_DIR = "_output_summaries";
 
-/** Bump when a shard's lines change, so old shards are simply not read. */
 const SCHEMA_VERSION = "v1";
 
 const SHARD_SUFFIX = ".ndjson";
 
 /**
- * How much of a shard is decoded at once. A string of a whole shard would hold
- * the event loop while it is decoded and split, and past V8's string limit of
- * about 512 MB could not be made at all.
+ * chunked so decoding a shard neither holds the event loop nor hits V8's string
+ * limit
  */
 const SHARD_CHUNK_BYTES = 1024 * 1024;
 
 const NEWLINE = 10;
 
-/** Changes each time the summaries are cleared: see {@link OutputSummaryIndex.generation}. */
 const CLEARED_MARKER = "cleared";
 
-/** Names a clear moves entries to before removing them. */
 const CLEARED_ASIDE_PREFIX = ".cleared-";
 
 /**
- * A row of a shard: a run's summary, and the fingerprint of the record it was
- * made from, so a record changed since can be told apart without reading it. As
- * read back from a shard the fingerprint is not trusted:
- * {@link fingerprintMatches} takes anything and matches only a real one.
+ * the fingerprint read back from a shard is untrusted: fingerprintMatches takes
+ * anything and matches only a real one
  */
 export interface OutputSummaryRow {
   readonly summary: OutputSummary;
   readonly record: unknown;
 }
 
-/** `startedAt` as an output file name spells it. */
 export function outputFileStamp(startedAt: Date): string {
   return startedAt.toISOString().replace(/[:.]/g, "-");
 }
 
-/** What identifies a row in its shard, and the file it may stand in for. */
 export function outputSummaryKey(
   method: string,
   definitionId: string,
@@ -94,7 +85,6 @@ export function outputSummaryKey(
   return JSON.stringify([method, definitionId, stamp]);
 }
 
-/** The key of the file an output with this summary is saved to. */
 function keyOfSummary(summary: OutputSummary): string {
   return outputSummaryKey(
     summary.methodName,
@@ -103,7 +93,6 @@ function keyOfSummary(summary: OutputSummary): string {
   );
 }
 
-/** `rows` as the lines of a shard. */
 async function shardText(rows: readonly OutputSummaryRow[]): Promise<string> {
   let text = "";
   let next = 0;
@@ -120,7 +109,6 @@ async function shardText(rows: readonly OutputSummaryRow[]): Promise<string> {
   return text;
 }
 
-/** Where the chunk of `content` starting at `start` ends: after a whole line. */
 function chunkEnd(content: Uint8Array, start: number): number {
   const limit = start + SHARD_CHUNK_BYTES;
   if (limit >= content.length) return content.length;
@@ -130,12 +118,10 @@ function chunkEnd(content: Uint8Array, start: number): number {
   return next === -1 ? content.length : next + 1;
 }
 
-/** The shard a file name's stamp belongs in: its UTC day. */
 export function shardDayOf(stamp: string): string {
   return stamp.slice(0, 10);
 }
 
-/** Whether `path` is itself a symlink; false when it is absent. */
 async function isSymlink(path: string): Promise<boolean> {
   try {
     return (await Deno.lstat(path)).isSymlink;
@@ -146,16 +132,8 @@ async function isSymlink(path: string): Promise<boolean> {
 }
 
 /**
- * Removes every summary of the checkout at `repoDir`, so its next reads go back
- * to the records: a v3 recovery can put back the committed version of a record
- * whose later save the index already holds. Rows are checked against their
- * records anyway, so this is a second guard, and what frees their disk.
- *
- * Entries are moved aside before they are removed. A read adding rows can add a
- * file to a directory while a removal empties it, which fails the removal. Under
- * a name no writer knows that cannot happen, and every shard is gone at once
- * rather than as the removal reaches it. One still there from a removal that
- * failed goes with the next clear. Nothing here fails the caller.
+ * entries are moved aside before removal so a concurrent read adding a file
+ * cannot fail it; a leftover goes with the next clear; never fails the caller
  */
 export async function removeStaleOutputSummaries(
   repoDir: string,
@@ -201,25 +179,9 @@ export async function removeStaleOutputSummaries(
 }
 
 /**
- * A derived cache of finished outputs' summaries: per type and UTC day, one
- * NDJSON shard, so a search of a window parses a few shards instead of a YAML
- * file per output (swamp-club#4145).
- *
- * The record files stay the only truth. A row is looked up only by what a
- * listing of the records found, and its key comes from its own content, so it
- * can stand in only for a file whose location says the same. A row with no
- * listed file is never used, so a delete needs no write here. A row carries the
- * fingerprint of the record it was made from, and its caller uses it only while
- * the record's stat still says the same, so a record damaged, replaced or put
- * back is read as it would be without this index. A row that is missing, torn,
- * lost or outdated costs one read of its record, which adds it back if it can;
- * nothing here ever fails a caller. Only finished outputs have rows: a running
- * output changes too often for one to be worth keeping.
- *
- * Every write is one append, so writers in other processes interleave whole
- * lines. Readers racing on a cold index each add the same rows, so {@link read}
- * rewrites a shard that is at least half lines no read would use. A rewrite can
- * lose an append that lands while it runs, which costs that one read as well.
+ * derived cache; the record files stay the only truth. A row is used only for a
+ * listed file whose stat fingerprint still matches, and a missing or bad row
+ * costs one record read, never a failure
  */
 export class OutputSummaryIndex {
   readonly #root: string;
@@ -227,7 +189,6 @@ export class OutputSummaryIndex {
   /** Where shards must really be: `.swamp`, so no link inside it can move them. */
   readonly #boundary: string;
 
-  /** `baseDir` is where the records live: each root has its own shards. */
   constructor(repoDir: string, baseDir: string) {
     const location = createHash("sha256").update(resolve(baseDir)).digest("hex")
       .slice(0, 16);
@@ -242,11 +203,8 @@ export class OutputSummaryIndex {
   }
 
   /**
-   * What identifies the summaries since they were last cleared. A caller adding
-   * rows from records compares it from before it read them with its value now:
-   * if it moved, those records may be what the clear was for. A clear landing
-   * between that comparison and the append can still lose the race, but a row
-   * added that way does not match a record the clear's recovery put back.
+   * callers compare it from before reading records with its value now; if it
+   * moved, those records may be what the clear was for
    */
   async generation(): Promise<string | undefined> {
     try {
@@ -260,7 +218,6 @@ export class OutputSummaryIndex {
     return join(this.#root, type, `${day}${SHARD_SUFFIX}`);
   }
 
-  /** A shard's size in bytes; 0 when it cannot be told or there is none. */
   async shardBytes(type: string, day: string): Promise<number> {
     try {
       return (await Deno.lstat(this.#shardPath(type, day))).size;
@@ -270,11 +227,9 @@ export class OutputSummaryIndex {
   }
 
   /**
-   * A shard's rows by key, the last row of each winning. A shard at least half
-   * made of lines that lost to another, or are not rows, is rewritten with only
-   * the winners. Each line a rewrite drops took an append to add, so a read pays
-   * for this at most once per doubling of the shard. Once `signal` aborts, it
-   * rejects with the reason at the next yield to the event loop.
+   * the last row per key wins; a shard at least half dead lines is rewritten
+   * with only winners, so a read pays for this at most once per doubling of the
+   * shard
    */
   async read(
     type: string,
@@ -309,9 +264,8 @@ export class OutputSummaryIndex {
   }
 
   /**
-   * A shard's rows, parsed a chunk at a time in slices of the event loop, so a
-   * large shard neither holds up other requests nor resists a cancelled read. A
-   * chunk that cannot be decoded costs only the reads of its rows.
+   * parsed a chunk at a time in slices of the event loop, so a large shard
+   * neither holds up other requests nor resists a cancelled read
    */
   async #readShard(
     path: string,
@@ -377,11 +331,6 @@ export class OutputSummaryIndex {
     return { rows, lines, bytes: content.length };
   }
 
-  /**
-   * Adds `rows` of `type`, one append per shard; how many were written. A
-   * summary whose start no file name can carry, or a run not yet finished, is
-   * left out. A failure only leaves those rows to be added on a later read.
-   */
   async append(
     type: string,
     rows: readonly OutputSummaryRow[],
@@ -422,10 +371,8 @@ export class OutputSummaryIndex {
   }
 
   /**
-   * Drops the rows of every shard older than `quietFrom` (a UTC day) whose
-   * record is gone, and shards left with none. `live` holds the key of each
-   * record per type. Newer shards are left: a record saved since `live` was
-   * listed would lose its row, and they are compacted once they are old enough.
+   * newer shards are left: a record saved since live was listed would lose its
+   * row
    */
   async compact(
     live: ReadonlyMap<string, ReadonlySet<string>>,

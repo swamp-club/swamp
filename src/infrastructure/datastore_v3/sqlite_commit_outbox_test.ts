@@ -106,7 +106,6 @@ Deno.test("SqliteCommitOutbox: an entry keeps the model lease it was prepared un
     await outbox.close();
     const reopened = new SqliteCommitOutbox(path);
     assertEquals((await reopened.entries()).entries[0].lease, lease);
-    // Prepared again outside any lease: the entry names none.
     await reopened.prepare({
       commit,
       unitId: "u1",
@@ -138,7 +137,6 @@ Deno.test("SqliteCommitOutbox: a prepared entry survives a reopen, and a re-prep
       base: { seq: 0, txnId: undefined },
     });
     now = 5_000;
-    // A seq-gap rebuild prepares again with its new base.
     const rebuilt = modelCommit(2, first.ops, { txnId: "txn-1", fence: 2 });
     await outbox.prepare({
       commit: rebuilt,
@@ -220,7 +218,6 @@ Deno.test("SqliteCommitOutbox: names the chunks of its entries until they are re
       new Set([HASH_A]),
     );
     assertEquals(await outbox.referencedChunks("other", [HASH_A]), new Set());
-    // A re-prepare with other content names only that content.
     await outbox.prepare({
       commit: modelCommit(1, [await blobPut("a", 1, blobOf(HASH_B))]),
       unitId: "u",
@@ -277,7 +274,6 @@ Deno.test("SqliteCommitOutbox: a sweep is active until it ends or its heartbeat 
       await outbox.sweepState(100 + OUTBOX_SWEEP_STALE_MS),
       { epoch: 1, active: true },
     );
-    // Another sweeper's end leaves this one in progress.
     await outbox.endSweep("s2");
     assertEquals((await outbox.sweepState(100)).epoch, 1);
     await outbox.endSweep("s1");
@@ -320,8 +316,8 @@ Deno.test("SqliteCommitOutbox: refuses a file written by a newer schema", async 
       (error as { code?: string }).code,
       COMMIT_OUTBOX_SCHEMA_NEWER_CODE,
     );
-    // An upgrade, never corruption: what a swamp at schema 1 also says of a
-    // schema 2 outbox (swamp-club#3564).
+    // an upgrade, never corruption: what a swamp at schema 1 also says of a
+    // schema 2 outbox
     assertEquals(
       (error as Error).message,
       `The v3 commit outbox at ${path} is at schema version ` +
@@ -332,10 +328,6 @@ Deno.test("SqliteCommitOutbox: refuses a file written by a newer schema", async 
   });
 });
 
-/**
- * An outbox file as a swamp at schema 1 left it, holding one entry with no
- * identity (swamp-club#3564).
- */
 async function schemaOneOutbox(path: string): Promise<void> {
   const outbox = new SqliteCommitOutbox(path);
   await outbox.prepare({
@@ -362,10 +354,6 @@ async function schemaOneOutbox(path: string): Promise<void> {
   db.close();
 }
 
-/**
- * An outbox file as a swamp at schema 2 left it (swamp-club#3586): a chain,
- * and an entry a recovery left for its live writer.
- */
 async function schemaTwoOutbox(path: string): Promise<void> {
   const outbox = new SqliteCommitOutbox(path);
   const commit = modelCommit(1, [await savePut("a", 1)]);
@@ -495,16 +483,13 @@ Deno.test("SqliteCommitOutbox: a noted fence whose record was lost continues the
     try {
       await outbox.notePendingFence(1);
       await outbox.recordFence(1, { replicated: true });
-      // Fence 2 noted, then its writer died before the record.
       await outbox.notePendingFence(2);
       await outbox.notePendingFence(3);
       assertEquals(
         await outbox.recordFence(3, { replicated: true }),
         { lastFence: 3, chainStart: 1, floor: 0 },
       );
-      // A stale lower note never lowers it.
       await outbox.notePendingFence(2);
-      // Fence 4 was never noted here: another copy's, while replicating.
       assertEquals(
         await outbox.recordFence(5, { replicated: true }),
         { lastFence: 5, chainStart: 5, floor: 0 },
@@ -521,8 +506,6 @@ Deno.test("SqliteCommitOutbox: another copy's fence, then this copy's noted fenc
     try {
       await outbox.notePendingFence(1);
       await outbox.recordFence(1, { replicated: true });
-      // Another copy takes fence 2 and replicates; this copy's writer at 3
-      // notes it, raises it and dies before the record.
       await outbox.notePendingFence(3);
       await outbox.notePendingFence(4);
       assertEquals(
@@ -543,13 +526,10 @@ Deno.test("SqliteCommitOutbox: a recorded fence clears its note, so a stale note
       await outbox.notePendingFence(10);
       assertEquals(await outbox.chain(), undefined, "a note is no chain");
       await outbox.recordFence(10, { replicated: true });
-      // The lease records are recreated: the chain restarts at 1 and climbs
-      // back to 9.
       for (let fence = 1; fence <= 9; fence++) {
         await outbox.notePendingFence(fence);
         await outbox.recordFence(fence, { replicated: true });
       }
-      // Another copy takes 10; this copy's next fence is 11.
       await outbox.notePendingFence(11);
       assertEquals(
         await outbox.recordFence(11, { replicated: true }),
@@ -575,7 +555,6 @@ Deno.test("SqliteCommitOutbox: the first fence of a copy, noted and its record l
       await outbox.close();
     }
   });
-  // A copy whose first fence is not 1: other copies took the ones before.
   await withTempDir(async (dir) => {
     const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
     try {
@@ -607,7 +586,6 @@ Deno.test("SqliteCommitOutbox: records the preparing process's identity, and a l
       };
       await outbox.prepare(preparation);
       await outbox.markLeft([outboxKeyOf(commit)], 4);
-      // A second mark keeps the first recovery's fence.
       await outbox.markLeft([outboxKeyOf(commit)], 5);
       let [entry] = (await outbox.entries()).entries;
       assertEquals([entry.writerProcess, entry.leftAtFence], [process, 4]);
@@ -619,8 +597,6 @@ Deno.test("SqliteCommitOutbox: records the preparing process's identity, and a l
     }
   });
 });
-
-// Grouped prepares (swamp-club#3915).
 
 Deno.test("SqliteCommitOutbox.prepare: prepares made together share one fsynced transaction", async () => {
   await withTempDir(async (dir) => {
@@ -654,7 +630,6 @@ Deno.test("SqliteCommitOutbox.prepare: a failing prepare in a group fails alone"
     const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
     const good = modelCommit(1, [await savePut("a", 1)]);
     const other = modelCommit(2, [await savePut("a", 2)]);
-    // A commit whose body cannot be written: its prepare throws mid-group.
     const broken = Object.create(other, {
       txnId: { value: "txn-broken" },
       toJSON: {
@@ -745,7 +720,6 @@ Deno.test("SqliteCommitOutbox.markState: an entry marked offline, rejected or qu
         "quarantined",
         "a grant was revoked",
       );
-      // A unit's rebuild prepares it again: the mark stays.
       await outbox.prepare({
         commit: queued,
         unitId: "u",
@@ -773,7 +747,6 @@ Deno.test("SqliteCommitOutbox.prepare: an entry prepared to be queued offline is
       base: { seq: 0, txnId: undefined },
       queuedOffline: true,
     });
-    // The process dies here: no markState, no close.
     const reopened = new SqliteCommitOutbox(path);
     try {
       const { entries } = await reopened.entries();
@@ -866,7 +839,6 @@ Deno.test("SqliteCommitOutbox.queuedDataHighWater: counts the versions kept entr
       const partition = queued.partition.toString();
       assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 4);
       assertEquals(await outbox.queuedDataHighWater("", partition, "x"), 0);
-      // Settled, it no longer counts.
       await outbox.settle([outboxKeyOf(queued)]);
       assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 0);
     } finally {
@@ -906,7 +878,6 @@ Deno.test("SqliteCommitOutbox: a schema 5 outbox migrates to 6, its entries pend
       const { entries } = await migrated.entries();
       assertEquals(entries.map((entry) => entry.state), [undefined]);
       assertEquals(schemaOf(path), 6);
-      // The migration indexed the version the old entry records.
       await migrated.markState([outboxKeyOf(commit)], "offline");
       assertEquals(
         await migrated.queuedDataHighWater(
@@ -1049,19 +1020,15 @@ Deno.test("SqliteCommitOutbox.recordLandedOffline: keeps what a landed offline e
       await outbox.recordLandedOffline(outboxKeyOf(first), 1_000, 10, carry);
       const partition = first.partition.toString();
       assertEquals(await outbox.landedOfflineCarry("", partition), carry);
-      // Long past the retention, a later record keeps it: an entry of the
-      // partition is still queued and may follow it.
       const later = { ...outboxKeyOf(first), txnId: "t-other" };
       await outbox.recordLandedOffline(later, 1_000_000, 10);
       assertEquals(await outbox.landedOfflineCarry("", partition), carry);
-      // Once nothing of the partition is queued, it goes with the retention.
       await outbox.settle([outboxKeyOf(queued)]);
       await outbox.recordLandedOffline(later, 2_000_000, 10);
       assertEquals(
         (await outbox.landedOfflineCarry("", partition)).versions,
         [],
       );
-      // A record that does not parse adds nothing.
       const db = new DatabaseSync(path);
       db.prepare("UPDATE outbox_landed_offline SET carry = '{\"versions\":1}'")
         .run();

@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The check a checkout passes to join a v3 datastore (swamp-club#3690).
- *
- * A v3 datastore starts empty: its records live in the commit log, and a
- * checkout's files are rebuilt from it. Setup refuses a repository that
- * holds records, but a teammate joins through the committed `.swamp.yaml`
- * instead, so the first v3 open of a checkout runs the same check. A
- * checkout that holds v2 records is refused before anything catches up,
- * leases or writes; `swamp doctor datastores --repair` moves the records
- * aside. Once the checkout has v3 state the check is one stat.
- *
- * @module
+ * a teammate joins via the committed .swamp.yaml, bypassing setup's check, so
+ * the first v3 open refuses a checkout holding v2 records before anything
+ * catches up, leases or writes; later opens cost one stat
  */
 
 import { ensureDir } from "@std/fs";
@@ -47,24 +39,16 @@ import { swampPath } from "../persistence/paths.ts";
 import { isCheckoutLocalKey, readModelStateDir } from "./record_path_guard.ts";
 import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 
-/** Error code for a checkout that holds records joining a v3 datastore. */
 export const V3_CHECKOUT_HOLDS_RECORDS_CODE = "v3_checkout_holds_records";
 
 /**
- * Where `swamp doctor datastores --repair` moves a joining checkout's
- * records, under its `.swamp/`. It is no datastore subdirectory, so the read
- * model never writes or removes a file in it, and the join check never
- * counts it.
+ * not a datastore subdirectory, so the read model never writes or removes a
+ * file in it and the join check never counts it
  */
 export const PRE_V3_RECORDS_DIR = "pre-v3-records";
 
-/**
- * Thrown when a checkout whose `.swamp/` holds records opens a v3 datastore
- * for the first time (swamp-club#3690). Nothing was written.
- */
 export class V3CheckoutHoldsRecordsError extends UserError {
   readonly swampDir: string;
-  /** The record directories found, relative to `swampDir`. */
   readonly recordDirs: readonly string[];
 
   constructor(swampDir: string, recordDirs: readonly string[]) {
@@ -91,15 +75,9 @@ export class V3CheckoutHoldsRecordsError extends UserError {
 }
 
 /**
- * Whether a file under `.swamp/` (or `.swamp/<namespace>/`) is the joining
- * checkout's own, so the join check never counts or moves it: a file the
- * checkout keeps as its own under v3 (`isCheckoutLocalKey`), or the
- * managedConfig lockfile `config/upstream_extensions.json`. The datastore
- * extension's auto-install writes that lockfile on a fresh checkout's first
- * command, before the check runs, and swamp regenerates it while the
- * datastore holds its committed copy (swamp-club#3696). Crash recovery does
- * not use this rule: the lockfile is a committed record there.
- * `segments` is the file's path from the record root.
+ * the lockfile config/upstream_extensions.json counts as the checkout's own:
+ * extension auto-install writes it on a fresh checkout's first command, before
+ * the check runs. Crash recovery does not use this rule
  */
 export function isJoinOwnFile(segments: readonly string[]): boolean {
   if (isCheckoutLocalKey(segments)) return true;
@@ -108,10 +86,9 @@ export function isJoinOwnFile(segments: readonly string[]): boolean {
 }
 
 /**
- * Whether the checkout at `repoDir` has opened a v3 datastore before: its
- * read model's state exists. The read model creates it when it opens,
- * before it materialises any file, so a checkout another process is joining
- * already has it. State deleted by hand counts as never opened.
+ * the read model creates its state when it opens, before it materialises any
+ * file, so a checkout another process is joining already has it; state deleted
+ * by hand counts as never opened
  */
 export async function hasV3CheckoutState(repoDir: string): Promise<boolean> {
   try {
@@ -123,10 +100,6 @@ export async function hasV3CheckoutState(repoDir: string): Promise<boolean> {
   }
 }
 
-/**
- * The roots a checkout materialises records under: `.swamp/` and, with a
- * namespace, `.swamp/<namespace>/`, each with its path under `.swamp/`.
- */
 function recordRoots(
   repoDir: string,
   namespace?: string,
@@ -143,14 +116,9 @@ function recordRoots(
 }
 
 /**
- * The record directories a checkout that has never opened a v3 datastore
- * holds, relative to its `.swamp/`: those of `.swamp/` and, with a
- * namespace, of `.swamp/<namespace>/`, found as v3 setup finds them. Files
- * the checkout keeps as its own (`isJoinOwnFile`: pulled extension
- * sources, temporary files, `.lock` files, run indexes, run logs, the
- * managedConfig lockfile) and the v2 catalog are no records; a dot-named
- * data or method name is a record. Empty when the checkout has
- * v3 state, which is not walked.
+ * files the checkout keeps as its own and the v2 catalog are no records; a
+ * dot-named data or method name is a record; empty when the checkout has v3
+ * state, which is not walked
  */
 export async function preV3CheckoutRecordDirs(
   repoDir: string,
@@ -174,11 +142,8 @@ export async function preV3CheckoutRecordDirs(
 }
 
 /**
- * Refuses the first v3 open of a checkout whose `.swamp/` holds records
- * (swamp-club#3690). Call it before taking the writer lease, restoring a
- * copy, catching up or writing anything for the checkout.
- *
- * @throws V3CheckoutHoldsRecordsError when the checkout holds records
+ * call it before taking the writer lease, restoring a copy, catching up or
+ * writing anything for the checkout
  */
 export async function assertV3CheckoutJoinable(
   repoDir: string,
@@ -190,11 +155,8 @@ export async function assertV3CheckoutJoinable(
   }
 }
 
-/** What {@link movePreV3CheckoutRecords} moved, and where to. */
 export interface MovedPreV3Records {
-  /** The directory the records were moved into, under `.swamp/`. */
   readonly destination: string;
-  /** The record directories moved, relative to `.swamp/` and `destination`. */
   readonly moved: readonly string[];
 }
 
@@ -209,14 +171,9 @@ export function preV3RecordsRunName(now: Date): string {
 }
 
 /**
- * Moves the records of a checkout that has never opened a v3 datastore into
- * a new directory under `.swamp/pre-v3-records/`, keeping their paths
- * relative to `.swamp/`, so the next command joins and catches up
- * (swamp-club#3690). Only records move: the files the checkout keeps as its
- * own under v3 and the v2 catalog stay where they are. A move that fails
- * part way leaves the moved files moved, and running it again moves the
- * rest into a directory of its own. Moves nothing once the checkout has v3
- * state; `destination` is then never created.
+ * only records move; a move that fails part way leaves the moved files moved,
+ * and running it again moves the rest into a directory of its own; moves
+ * nothing once the checkout has v3 state
  */
 export async function movePreV3CheckoutRecords(
   repoDir: string,

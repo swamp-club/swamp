@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * This process's {@link ProcessIdentity}, and the probe that judges another
- * pid by it (swamp-club#3564). The v3 writer records name their writer with
- * the identity; {@link judgeRecordedProcess} decides from it.
- *
- * The identity is resolved once per process: the boot id is read by running
- * `cat` or `sysctl` where Deno refuses `/proc`, so it is asynchronous. Every
- * caller is already asynchronous and awaits {@link localProcess} first.
- *
- * @module
- */
-
 import {
   judgeRecordedProcess,
   type LocalProcess,
@@ -42,10 +30,8 @@ import { processStateOf } from "../runtime/process_ancestry.ts";
 import { currentBootIdentity } from "./boot_identity.ts";
 
 /**
- * Probes `pid` without signalling it beyond {@link isProcessGone}'s
- * harmless one. When its state cannot be read (another user's process
- * behind `hidepid`, an unsupported platform, no libc), it is present as far
- * as {@link isProcessGone} can tell, with no start time.
+ * a process whose state cannot be read (hidepid, unsupported platform, no libc)
+ * counts as present, with no start time
  */
 export function probeProcess(pid: number): ProcessProbe {
   const state = processStateOf(pid);
@@ -58,7 +44,6 @@ export function probeProcess(pid: number): ProcessProbe {
 let resolved: Promise<LocalProcess> | undefined;
 let override: LocalProcess | undefined;
 
-/** This process, as the records it writes name it, and its probe. */
 export function localProcess(): Promise<LocalProcess> {
   if (override !== undefined) return Promise.resolve(override);
   resolved ??= currentBootIdentity().then((bootId) => {
@@ -81,26 +66,16 @@ export function localProcess(): Promise<LocalProcess> {
   return resolved;
 }
 
-/**
- * The hostname a record without an identity is judged by: `local`'s, which
- * a test sets, or this machine's now.
- */
 export function hostnameOf(local: LocalProcess): string {
   return local.hostname?.() ?? Deno.hostname();
 }
 
-/** Judges the writer `recorded` names from this process. */
 export async function judgeRecorded(
   recorded: RecordedProcess,
 ): Promise<ProcessVerdict> {
   return judgeRecordedProcess(recorded, await localProcess());
 }
 
-/**
- * Makes {@link localProcess} answer `local` until it is called with
- * undefined, so a test can play another process, or probe planted pids,
- * without spawning one. Module-wide: a Worker sets its own.
- */
 export function setLocalProcessForTesting(
   local: LocalProcess | undefined,
 ): void {

@@ -18,34 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Where a v3 datastore lives and whether it replicates (swamp-club#3534,
- * Phase 4E): one binding per datastore, which every v3 helper reads instead
- * of deriving the location from a filesystem path and replication from the
- * internal replica setting.
- *
- * Every v3 helper is keyed by a local datastore path. A filesystem v3
- * datastore's is its own directory, which holds its marker, `commits.db`,
- * `_blobs/` and `_control/`, and needs no binding. A v3 datastore on a
- * bucket has no local directory of its own, so it gets one: its **local
- * root**, the checkout's directory for its copy of `commits.db`
- * (`.swamp/_datastore_v3_copies/<key>/`). Its bucket binding is registered
- * under that root, and the helpers find it there:
- *
- * - chunks go through the provider's `storage()`;
- * - the writer lease and the replication lineages go through its writable
- *   datastore-wide control plane (`datastoreWriterLeaseStore`);
- * - it always replicates, to the provider's replica target
- *   (`resolveV3ReplicaSetting`; the internal replica setting still wins in
- *   tests), and lineage paths are collected through `replicaPaths()`;
- * - there is no shared `commits.db`: each checkout keeps its own copy;
- * - signal waits and retention watermarks live in the same control plane,
- *   under the reserved `ns/<namespace>/` prefix (`ns/_/` for a solo
- *   datastore), which no namespace slug can reach.
- *
- * Nothing here runs for a filesystem datastore: its helpers behave exactly
- * as before.
- *
- * @module
+ * a bucket datastore has no local directory, so its local root holds the copy
+ * of commits.db and its binding is registered there. Nothing here runs for a
+ * filesystem datastore
  */
 
 import { createHash } from "node:crypto";
@@ -93,67 +68,41 @@ import {
   type V3ReplicaPaths,
 } from "./litestream/replica_target_resolver.ts";
 
-/**
- * The checkout directory that holds its own copies of replicated v3
- * datastores' `commits.db` (swamp-club#3482), one subdirectory per
- * datastore. A bucket datastore's subdirectory is also its local root.
- */
+/** a bucket datastore's subdirectory is also its local root */
 export const V3_LOCAL_COPIES_DIR = "_datastore_v3_copies";
 
 /**
- * The control-plane prefix a bucket datastore's namespaced records live
- * under: signal waits and retention watermarks, which a filesystem datastore
- * keeps under `<path>/<namespace>/_control/`. The lease (`writer/`), the
- * lineages (`lineage/`) and the format marker sit at the root beside it.
+ * a filesystem datastore keeps these under <path>/<namespace>/_control/; the
+ * lease, lineages and format marker sit at the root beside it
  */
 export const V3_BUCKET_NAMESPACED_PREFIX = "ns";
 
-/**
- * The segment under {@link V3_BUCKET_NAMESPACED_PREFIX} for a datastore with
- * no namespace. A namespace slug starts with a letter or digit, so it can
- * never be this.
- */
+/** a namespace slug starts with a letter or digit, so it can never be this */
 export const V3_BUCKET_SOLO_SEGMENT = "_";
 
 /** How long the marker confirmation may take: no tight deadline. */
 export const V3_MARKER_CONFIRM_TIMEOUT_MS = 60_000;
 
-/** A v3 datastore on a bucket, as the v3 helpers see it. */
 export interface V3BucketBinding {
-  /** The datastore's type, for messages. */
   readonly type: string;
-  /** The local root the helpers key on (resolved). */
   readonly root: string;
-  /** The provider's own replica root, which keys the local root. */
   readonly ownRoot: string;
-  /** The provider's `storage/1` chunk storage. */
   readonly storage: DatastoreStorage;
-  /** The writable datastore-wide control plane: lease and lineages. */
   readonly controlPlane: WritableDatastoreControlPlaneStore;
-  /** Where every writer replicates its copy. */
   readonly replica: V3ReplicaSetting;
-  /** The provider's replica paths, bound to its own replica target. */
   readonly replicaPaths: V3ReplicaPaths | undefined;
   /**
-   * Confirms, once per process, that the datastore's format marker is
-   * present and says format 3 (swamp-club#3534). Runs before this process
-   * takes the writer lease or makes its copy current, so a datastore whose
-   * marker the format guard could not read is touched only once it is
-   * known to be v3.
-   *
-   * @throws DatastoreFormatMismatchError when the marker is missing or says
-   *   another format
+   * runs before this process takes the writer lease or makes its copy current,
+   * so a datastore whose marker the format guard could not read is touched only
+   * once known to be v3
    */
   confirmMarker(): Promise<void>;
 }
 
-/** The bucket bindings of this process, by local root. */
 const bindings = new Map<string, V3BucketBinding>();
 
-/** The locations bound per config object, so a config binds once. */
 let locations = new WeakMap<CustomDatastoreConfig, V3DatastoreLocation>();
 
-/** The bucket binding whose local root is `datastorePath`, if any. */
 export function v3BucketBindingAt(
   datastorePath: string,
 ): V3BucketBinding | undefined {
@@ -161,29 +110,21 @@ export function v3BucketBindingAt(
 }
 
 /**
- * The replica the v3 datastore at `datastorePath` replicates to, or
- * undefined when it does not replicate: a bucket datastore's always; a
- * filesystem datastore's only while the internal replica setting names one.
+ * a bucket datastore's always; a filesystem datastore's only while the internal
+ * replica setting names one
  */
 export function v3ReplicaFor(
   datastorePath: string,
 ): V3ReplicaSetting | undefined {
-  // A copy of serve's log is never replicated: serve's own is
-  // (swamp-club#3985).
+  // a copy of serve's log is never replicated: serve's own is
   if (serveUpstreamAt(datastorePath) !== undefined) return undefined;
   return v3BucketBindingAt(datastorePath)?.replica ?? v3ReplicaSetting();
 }
 
-/** Whether the v3 datastore at `datastorePath` replicates. */
 export function v3ReplicatesAt(datastorePath: string): boolean {
   return v3ReplicaFor(datastorePath) !== undefined;
 }
 
-/**
- * The datastore-wide control plane of the v3 datastore at `datastorePath`:
- * its provider's for a bucket datastore, its own `_control/` directory for a
- * filesystem one.
- */
 export function v3ControlPlaneAt(
   datastorePath: string,
 ): WritableDatastoreControlPlaneStore {
@@ -191,10 +132,6 @@ export function v3ControlPlaneAt(
     new FileSystemControlPlaneStore(resolve(datastorePath));
 }
 
-/**
- * The control plane a bucket datastore's namespaced records live in: its
- * datastore-wide one, under `ns/<namespace>/` (`ns/_/` solo).
- */
 export function v3BucketNamespacedStore(
   binding: V3BucketBinding,
   namespace: string | undefined,
@@ -203,10 +140,8 @@ export function v3BucketNamespacedStore(
 }
 
 /**
- * The namespaced records of a v3 datastore whose datastore-wide control
- * plane is `store`: under `ns/<namespace>/` (`ns/_/` solo), on a bucket and
- * on a filesystem datastore alike. Serve's own control plane lives there in
- * team mode (swamp-club#4096), so every serve node of the datastore sees it.
+ * serve's own control plane lives there in team mode, so every serve node of
+ * the datastore sees it
  */
 export function v3NamespacedStore(
   store: WritableDatastoreControlPlaneStore,
@@ -236,11 +171,6 @@ function prefixedStore(
   };
 }
 
-/**
- * Where the v3 helpers find a v3 datastore: its local datastore path and
- * the layout a checkout commits under. A filesystem datastore's config is
- * one; a bucket datastore's names its local root.
- */
 export interface V3DatastoreLocation {
   readonly path: string;
   readonly namespace?: string;
@@ -249,9 +179,8 @@ export interface V3DatastoreLocation {
 }
 
 /**
- * The bucket datastore's local root in the checkout at `repoDir`: keyed by
- * the provider's own replica root, which names the bucket and prefix, so
- * the internal replica setting tests use never moves it.
+ * keyed by the provider's own replica root, which names the bucket and prefix,
+ * so the internal replica setting tests use never moves it
  */
 export function v3BucketLocalRoot(
   repoDir: string,
@@ -271,14 +200,8 @@ function canonicalDir(path: string): string {
 }
 
 /**
- * Refuses a datastore that cannot host v3 here, in the order setup reports
- * (swamp-club#3534): a provider without every v3 capability, a platform
- * Litestream cannot replicate on (Windows below the pin), and a replica
- * target the provider refuses, as it refuses it. Resolves with the
- * provider's own replica, whatever the internal replica setting says.
- *
- * @throws V3HostingUnsupportedError
- * @throws UserError
+ * checks run in the order setup reports; resolves with the provider's own
+ * replica, whatever the internal replica setting says
  */
 export function assertV3BucketHost(
   provider: DatastoreProvider,
@@ -307,22 +230,10 @@ function lowerFirst(text: string): string {
   return text.length === 0 ? text : text[0].toLowerCase() + text.slice(1);
 }
 
-/** What {@link bindV3BucketDatastore} takes besides the config. */
 export interface BindV3BucketOptions {
-  /** The operating system and architecture Litestream must run on. */
   readonly platform?: { readonly os: string; readonly arch: string };
 }
 
-/**
- * Binds the v3 datastore `config` names on a bucket for the checkout at
- * `repoDir`, once per config object, and returns its location. Refuses a
- * provider that cannot host v3, a platform Litestream cannot replicate on,
- * and a replica target the provider refuses.
- *
- * @throws V3HostingUnsupportedError
- * @throws UserError when replication is unavailable here, or the provider
- *   refuses its replica target
- */
 export function bindV3BucketDatastore(
   repoDir: string,
   config: CustomDatastoreConfig,
@@ -331,8 +242,8 @@ export function bindV3BucketDatastore(
 ): V3DatastoreLocation {
   const known = locations.get(config);
   if (known !== undefined) return known;
-  // The local root stays keyed on the root as written, so no existing copy
-  // moves (swamp-club#3801).
+  // the local root stays keyed on the root as written, so no existing copy
+  // moves
   const ownRoot = replicaRootOf(
     assertV3BucketHost(provider, config.type, options.platform),
   ).value;
@@ -383,7 +294,7 @@ export function bindV3BucketDatastore(
     },
   };
   bindings.set(root, binding);
-  // Its locks are file locks under the same root (swamp-club#3534).
+  // its locks are file locks under the same root
   setV3BucketLockRoot(config, root);
   return rememberLocation(config, root);
 }
@@ -404,25 +315,12 @@ function rememberLocation(
   return location;
 }
 
-/**
- * The location {@link bindV3BucketDatastore} bound for `config`, or
- * undefined when it was not bound in this process.
- */
 export function boundV3BucketLocation(
   config: CustomDatastoreConfig,
 ): V3DatastoreLocation | undefined {
   return locations.get(config);
 }
 
-/**
- * Reads the datastore's format marker through `store` with no tight
- * deadline and requires it to say format 3.
- *
- * @throws DatastoreFormatMismatchError when it is missing or says another
- *   format
- * @throws InvalidDatastoreFormatMarkerError when it is not a marker
- * @throws UnreachableDatastoreFormatMarkerError when it cannot be read
- */
 export async function confirmV3BucketMarker(
   store: Pick<WritableDatastoreControlPlaneStore, "get">,
   datastoreType: string,
@@ -456,7 +354,6 @@ export async function confirmV3BucketMarker(
   }
 }
 
-/** Test seam: forgets every bucket binding of this process. */
 export function resetV3BucketBindingsForTesting(): void {
   bindings.clear();
   locations = new WeakMap();

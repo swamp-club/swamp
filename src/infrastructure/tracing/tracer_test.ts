@@ -42,7 +42,6 @@ import {
 
 Deno.test("getTracer: returns a tracer instance", () => {
   const tracer = getTracer();
-  // Should have startSpan method
   assertEquals(typeof tracer.startSpan, "function");
   assertEquals(typeof tracer.startActiveSpan, "function");
 });
@@ -75,8 +74,6 @@ Deno.test("withSpan: handles non-Error throws", async () => {
       withSpan("test.string.throw", {}, () => Promise.reject("string error")),
   );
 });
-
-// ── withGeneratorSpan tests ─────────────────────────────────────────
 
 async function collectEvents<T extends { kind: string }>(
   gen: AsyncIterable<T>,
@@ -144,11 +141,9 @@ Deno.test("withGeneratorSpan: a consumer break runs the inner finally once, insi
       break;
     }
 
-    // The break has resolved only after the inner finally ran.
     assertEquals(finallyRuns, 1);
     const wrapper = findSpan(recorder.ended, "wrapper");
     assert(isChildOf(findSpan(recorder.ended, "in-finally"), wrapper));
-    // The child ended before the wrapper span did.
     assertEquals(recorder.ended.map((s) => s.name), ["in-finally", "wrapper"]);
     assertEquals(wrapper.status.code, SpanStatusCode.UNSET);
   });
@@ -273,8 +268,6 @@ Deno.test("withGeneratorSpan: forwards an early break with no tracer registered"
   assertEquals(unwound, ["inner", "middle"]);
 });
 
-// ── setActiveSpanAttributes tests ──────────────────────────────────
-
 Deno.test("setActiveSpanAttributes: sets attributes on the span of a withGeneratorSpan body", async () => {
   await withCapturedSpans(async (spans) => {
     async function* inner() {
@@ -324,8 +317,6 @@ Deno.test("activeSpanAttributeSetter: sets attributes on the span active when it
 Deno.test("activeSpanAttributeSetter: does nothing when no span was active", () => {
   activeSpanAttributeSetter()({ "model.name": "none" });
 });
-
-// ── withServerSpan tests ────────────────────────────────────────────
 
 Deno.test("withServerSpan: starts a SERVER span with the given attributes", async () => {
   await withCapturedSpans(async (spans) => {
@@ -397,8 +388,6 @@ Deno.test("withServerSpan: records a thrown error as ERROR and rethrows", async 
   });
 });
 
-// ── withRootSpan tests ──────────────────────────────────────────────
-
 Deno.test("withRootSpan: is a root span even inside an active parent span", async () => {
   await withCapturedSpans(async (spans) => {
     await withSpan("swamp.cli", {}, async () => {
@@ -448,8 +437,6 @@ Deno.test("withRootSpan: records a thrown error as ERROR and rethrows", async ()
   });
 });
 
-// ── runDetached tests ───────────────────────────────────────────────
-
 Deno.test("runDetached: spans started inside begin their own trace", async () => {
   await withCapturedSpans(async (spans) => {
     await withSpan("swamp.cli", {}, async () => {
@@ -489,8 +476,6 @@ Deno.test("runDetached: returns the result and propagates rejections", async () 
     "boom",
   );
 });
-
-// ── withActiveSpan tests ────────────────────────────────────────────
 
 Deno.test("withActiveSpan: spans started inside are children of the span, across awaits", async () => {
   await withCapturedSpans(async (spans) => {
@@ -575,8 +560,6 @@ Deno.test("withActiveSpan: composes CLI phases into one trace under the root", a
   });
 });
 
-// ── bindGeneratorToSpan tests ───────────────────────────────────────
-
 Deno.test("bindGeneratorToSpan: spans started in the generator are children of the bound span", async () => {
   await withRecordedSpans(async (recorder) => {
     const bound = getTracer().startSpan("bound");
@@ -607,7 +590,6 @@ Deno.test("bindGeneratorToSpan: spans started in the generator are children of t
     // consumer or after iteration.
     assertEquals(activeInConsumer, [undefined, undefined]);
     assertEquals(trace.getActiveSpan(), undefined);
-    // The caller owns the span's lifecycle.
     assertEquals(recorder.ended.some((s) => s.name === "bound"), false);
     bound.end();
   });
@@ -650,7 +632,6 @@ Deno.test("bindGeneratorToSpan: propagates an error thrown by the inner generato
     Error,
     "inner failed",
   );
-  // The inner generator already finished by throwing; nothing to forward.
   assertEquals(returnCalls, 0);
 });
 
@@ -676,7 +657,6 @@ Deno.test("bindGeneratorToSpan: a consumer break runs the inner finally once, in
       break;
     }
 
-    // The break has resolved only after the inner finally ran.
     assertEquals(finallyRuns, 1);
     assertEquals(
       findSpan(recorder.ended, "in-finally").parentSpanId,
@@ -730,7 +710,6 @@ Deno.test("bindGeneratorToSpan: a break unwinds nested layers innermost first", 
     runSpan.end();
 
     assertEquals(unwound, ["step", "job", "run"]);
-    // Every span the layers started was ended, and they nest.
     assertEquals(recorder.started.length, recorder.ended.length);
     assertEquals(
       findSpan(recorder.ended, "job").parentSpanId,
@@ -820,8 +799,6 @@ Deno.test("bindGeneratorToSpan: forwards an early break with no tracer registere
 
   assertEquals(unwound, ["inner", "middle"]);
 });
-
-// ── markActiveSpanError tests ──────────────────────────────────────
 
 Deno.test("markActiveSpanError: marks the active span ERROR with the message", async () => {
   await withCapturedSpans(async (spans) => {

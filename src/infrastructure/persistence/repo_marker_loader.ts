@@ -24,14 +24,9 @@ import type {
 } from "./repo_marker_repository.ts";
 
 /**
- * Returns a promise-memoized loader for `.swamp.yaml`. Concurrent callers
- * share a single in-flight read; the file is read at most once per loader
- * lifetime. Scope the loader per-request (one per CLI invocation, one per
- * serve request, one per `WorkflowExecutionService` instance) so that
- * edits to `.swamp.yaml` between requests are picked up.
- *
- * Rejected reads stay cached — marker parse failures are typically
- * permanent (malformed YAML), so re-reading would not recover.
+ * rejected reads stay cached: marker parse failures are typically permanent, so
+ * re-reading would not recover; scope the loader per request so edits are
+ * picked up
  */
 export function createRepoMarkerLoader(
   markerRepo: RepoMarkerRepository,

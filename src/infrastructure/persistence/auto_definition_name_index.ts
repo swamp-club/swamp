@@ -36,11 +36,6 @@ import {
 
 type FoundDefinition = { definition: Definition; type: ModelType };
 
-/**
- * Reads one definition file as a scan of a definitions directory reads it: a
- * {@link YamlDefinitionRepository}'s `readDefinitionFile`. Null for an empty
- * or broken file, which it warns about; an I/O error is raised.
- */
 export type NameIndexFileReader = (
   path: string,
   typeSegments: string[],
@@ -50,22 +45,10 @@ export type NameIndexFileReader = (
 export interface AutoDefinitionNameIndexOptions {
   racyWindowMs?: number;
   now?: () => number;
-  /**
-   * Stats a directory or file, following symlinks: null when it is gone,
-   * undefined when the platform gives no mtime. Defaults to `statRecord`.
-   */
   stat?: (path: string) => Promise<RecordFingerprint | undefined | null>;
 }
 
-/**
- * A file that a lookup by its declared name could not find at its
- * name-derived path: one whose name is not its filename (a legacy
- * `{uuid}.yaml`, a name that is not filename-safe, a mismatched file), one
- * that did not parse, or a symlink, whose target can change without its
- * directory's stat moving.
- */
 interface IrregularFile {
-  /** The name it declared when last read; undefined when it did not parse. */
   name: string | undefined;
   /**
    * Its stat when read, kept only when old enough to rule out a change
@@ -81,43 +64,9 @@ interface ValidationCounts {
 }
 
 /**
- * Which file of one auto-definitions type directory declares which
- * definition name, kept by a {@link YamlDefinitionRepository} between
- * lookups, so a lookup of a name that has no definition yet does not read
- * and parse every file in the directory (swamp-club#3984). Serve looks up a
- * worker's definition by name on each enrollment, and a fleet of ephemeral
- * workers brings a new name each time.
- *
- * Only names and locations are kept, never definitions: {@link find} reads
- * the file it answers with, so the definition is current, and a file that
- * no longer declares the name is read again on the next check.
- *
- * Most files are `<name>.yaml` declaring that name, which a lookup reads
- * directly at its name-derived path; such a file is kept as its filename
- * alone. The rest, which only a scan could find, are kept with the name they
- * declared and are stat'ed on every check, and read again when their stat
- * moved, so a `{uuid}.yaml` whose definition was renamed in place is seen.
- *
- * Each check stats the directory, as {@link DefinitionIdIndex} does. When the
- * stat moved, or was too recent when it was listed to rule out a change
- * within the same clock tick, the directory is listed again, and only the
- * files new to the listing are read. A listing replaces the entries only
- * once it has read the whole directory, so one that fails leaves the index
- * as it was. Overlapping lookups share a check that starts after each of
- * them asked.
- *
- * A lookup whose read of the name-derived file missed, though the index
- * holds that file as declaring the name, reads it again here as a scan
- * would: an I/O error is then raised instead of reported as no definition,
- * so an auto-creating run cannot write a new definition over it.
- *
- * One change is not seen until that file is listed anew, or a lookup of the
- * name it declared before reads it: a `<name>.yaml` declaring its own name,
- * rewritten by something other than `save()` to declare another name (a
- * hand edit, a checkout). `save()` never does this; it moves a renamed
- * definition to its new name's path. Until then a lookup of the new name
- * misses the file, and an auto-creating run creates a second definition of
- * that name.
+ * keeps names and locations only, so a lookup of a missing name avoids reading
+ * every file; a failed listing leaves the index intact; a missed read of an
+ * indexed file is retried so I/O errors surface
  */
 export class AutoDefinitionNameIndex {
   readonly #dir: string;
@@ -128,14 +77,10 @@ export class AutoDefinitionNameIndex {
   readonly #stat: (
     path: string,
   ) => Promise<RecordFingerprint | undefined | null>;
-  /** The directory's stat when listed, when settled as it was taken. */
   #stamp: RecordFingerprint | undefined;
   #listed = false;
-  /** Regular files that declared the name their filename gives. */
   #regular = new Set<string>();
-  /** Every other file, in listing order. */
   #irregular = new Map<string, IrregularFile>();
-  /** A check queued behind the running one, which has not started yet. */
   #waiting: Promise<void> | undefined;
   #tail: Promise<void> = Promise.resolve();
 
@@ -153,11 +98,6 @@ export class AutoDefinitionNameIndex {
     this.#stat = options.stat ?? statRecord;
   }
 
-  /**
-   * The definition declaring `name` in a file other than its name-derived
-   * one, as the first file in name order that declares it, or null. The
-   * caller has already looked at the name-derived file.
-   */
   async find(
     name: string,
   ): Promise<{ definition: Definition; path: string } | null> {
@@ -260,10 +200,6 @@ export class AutoDefinitionNameIndex {
     );
   }
 
-  /**
-   * Lists the directory, reading only files the last listing did not have,
-   * and replaces the entries once every file is accounted for.
-   */
   async #relist(
     stamp: RecordFingerprint | undefined,
     counts: ValidationCounts,
@@ -303,10 +239,6 @@ export class AutoDefinitionNameIndex {
     this.#listed = true;
   }
 
-  /**
-   * Stats each irregular file not read by this check, and reads again each
-   * one whose stat moved or could not be trusted.
-   */
   async #recheckIrregular(
     read: ReadonlySet<string>,
     counts: ValidationCounts,
@@ -347,11 +279,6 @@ export class AutoDefinitionNameIndex {
     }
   }
 
-  /**
-   * Reads one file: "regular" when it is a regular file declaring the name
-   * its filename gives, else how to keep it; null for a regular file gone
-   * since it was listed.
-   */
   async #readFile(
     filename: string,
     isSymlink: boolean,
@@ -390,9 +317,8 @@ export class AutoDefinitionNameIndex {
   }
 
   /**
-   * `stat` when it was old enough, as it was taken at `statAt`, to rule out
-   * a change within the same clock tick, else undefined. A time in the
-   * future is never settled; the ctime counts as well as the mtime.
+   * settled only if old enough to rule out a change within the same clock tick;
+   * a future time is never settled; ctime counts as well as mtime
    */
   #settled(
     stat: RecordFingerprint | undefined,
@@ -406,11 +332,6 @@ export class AutoDefinitionNameIndex {
       : undefined;
   }
 
-  /**
-   * Whether a stored stat, settled when it was taken, still describes what
-   * `current` describes, and is old enough to rule out a change within the
-   * same clock tick.
-   */
   #trusted(
     stored: RecordFingerprint | undefined,
     current: RecordFingerprint | undefined,
@@ -424,10 +345,6 @@ export class AutoDefinitionNameIndex {
   }
 }
 
-/**
- * Whether `path` is a symlink now; null when it is gone, or a directory on
- * its path is no longer one.
- */
 async function liveSymlink(path: string): Promise<boolean | null> {
   try {
     return (await Deno.lstat(path)).isSymlink;

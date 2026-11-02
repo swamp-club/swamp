@@ -31,7 +31,6 @@ Deno.test("assertSafePath", async (t) => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp-safe-path-" });
 
   try {
-    // Set up test directory structure
     const boundary = join(tmpDir, "repo", ".swamp", "outputs");
     await Deno.mkdir(boundary, { recursive: true });
 
@@ -42,7 +41,6 @@ Deno.test("assertSafePath", async (t) => {
       const subdir = join(boundary, "subdir");
       await Deno.mkdir(subdir, { recursive: true });
 
-      // Should not throw
       await assertSafePath(subdir, boundary);
     });
 
@@ -73,7 +71,6 @@ Deno.test("assertSafePath", async (t) => {
       async () => {
         const nonExistent = join(boundary, "does", "not", "exist", "yet");
 
-        // Should not throw — all ancestors are real directories within boundary
         await assertSafePath(nonExistent, boundary);
       },
     );
@@ -109,7 +106,6 @@ Deno.test("assertSafePath", async (t) => {
         await Deno.symlink(realDir, internalLink, { type: "dir" });
 
         try {
-          // Should not throw — symlink stays within the boundary
           await assertSafePath(join(internalLink, "file.txt"), boundary);
         } finally {
           await Deno.remove(internalLink);
@@ -120,7 +116,6 @@ Deno.test("assertSafePath", async (t) => {
     await t.step(
       "boundary directory replaced with symlink throws",
       async () => {
-        // This simulates the original attack: .swamp/outputs is a symlink
         const attackBoundary = join(tmpDir, "repo2", ".swamp", "outputs");
         await Deno.mkdir(join(tmpDir, "repo2", ".swamp"), { recursive: true });
         await Deno.symlink(outsideDir, attackBoundary, { type: "dir" });
@@ -155,9 +150,7 @@ Deno.test("assertSafePath", async (t) => {
           // Using the symlinked dir itself as boundary — both sides resolve
           // through the symlink, so the check passes (this is the bug).
           await assertSafePath(join(attackDir, "file.txt"), attackDir);
-          // ^ Does NOT throw — demonstrating the incorrect boundary choice
 
-          // Using the parent .swamp/ as boundary correctly catches it
           const correctBoundary = join(tmpDir, "repo3", ".swamp");
           await assertRejects(
             () => assertSafePath(join(attackDir, "file.txt"), correctBoundary),

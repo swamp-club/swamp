@@ -18,9 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The Swamp Club inbox API contract (design/surfaces/inbox.md), translated
- * into swamp's own values. Every response is untrusted: text is stripped of
- * terminal escapes here, so no later consumer ever sees the raw form.
+ * responses are untrusted: text is stripped of terminal escapes here so no
+ * later consumer sees the raw form
  */
 
 import { z } from "zod";
@@ -35,13 +34,10 @@ export const MAX_INBOX_KIND_LENGTH = 40;
 export const MAX_INBOX_ACTION_LABEL_LENGTH = 40;
 export const MAX_INBOX_ACTION_COMMAND_LENGTH = 200;
 
-/** The error code swamp-club answers a collective API key with. */
 export const INBOX_REQUIRES_USER = "inbox_requires_user";
 
-/** What `/api/inbox/summary` reports. */
 export interface InboxSummary {
   readonly unread: number;
-  /** The newest unread message's id, upper-case ULID. */
   readonly newestId: string | null;
   readonly newestAt: string | null;
   /**
@@ -56,7 +52,6 @@ export interface InboxAction {
   readonly command: string;
 }
 
-/** One inbox message. */
 export interface InboxMessage {
   /** Upper-case ULID, so "newer than" is a string compare. */
   readonly id: string;
@@ -66,13 +61,11 @@ export interface InboxMessage {
   /** Markdown; newlines and tabs are its only control characters. */
   readonly body: string;
   readonly createdAt: string;
-  /** An `https:` URL. */
   readonly link?: string;
   readonly action?: InboxAction;
   readonly readAt: string | null;
 }
 
-/** One page of `/api/inbox/messages`, newest first. */
 export interface InboxMessagePage {
   readonly messages: InboxMessage[];
   /**
@@ -87,7 +80,6 @@ export interface InboxMessagePage {
   readonly nextCursor: string | null;
 }
 
-/** Which messages `/api/inbox/messages` lists. */
 export type InboxReadStatus = "unread" | "all";
 
 export interface InboxListOptions {
@@ -107,11 +99,8 @@ export type InboxSummaryResult =
     readonly etag: string | null;
   }
   | { readonly kind: "not_modified" }
-  /** 404: the server has no inbox. */
   | { readonly kind: "unsupported" }
-  /** 403 `inbox_requires_user`: a collective key has no inbox. */
   | { readonly kind: "unavailable" }
-  /** 401: the key is unknown or revoked. */
   | { readonly kind: "rejected" }
   | { readonly kind: "backoff"; readonly retryAfterSeconds?: number }
   | { readonly kind: "failed"; readonly reason: string };
@@ -129,29 +118,20 @@ const BODY_CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
  */
 const INVISIBLE_RE =
   /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
-/** {@link INVISIBLE_RE} without the global flag, for a stateless test. */
 const HAS_INVISIBLE_RE = new RegExp(INVISIBLE_RE.source);
 /**
- * The same, less the zero-width non-joiner and joiner (U+200C, U+200D):
- * prose needs them, to join an emoji sequence and to spell Persian and
- * several Indic scripts, and they cannot reorder text. Kept in the body and
- * the title only.
+ * the same less the zero-width non-joiner and joiner: prose needs them for
+ * emoji sequences and Persian and Indic scripts, and they cannot reorder text;
+ * body and title only
  */
 const PROSE_INVISIBLE_RE =
   /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 
-/** Whether the text is a message id: a ULID, in either case. */
 export function isInboxMessageId(text: string): boolean {
   return ULID_RE.test(text);
 }
 
-/**
- * Makes a markdown body safe to print: strips ANSI escape sequences, bidi
- * controls and zero-width characters other than the joiners, and every
- * control character except newline and tab, and normalises line endings to
- * LF.
- */
 export function sanitizeInboxBody(text: string): string {
   return text
     .replace(ANSI_OSC_RE, "")
@@ -162,9 +142,8 @@ export function sanitizeInboxBody(text: string): string {
 }
 
 /**
- * One line of text safe to print, at most `maxLength` code points. Cut on
- * code points, so a character outside the BMP is never split into half a
- * surrogate pair. `invisible` is the set of characters it strips.
+ * cut on code points so a character outside the BMP is never split into half a
+ * surrogate pair
  */
 function sanitizeLine(
   text: string,
@@ -180,15 +159,10 @@ function sanitizeLine(
   return `${codePoints.slice(0, Math.max(0, maxLength - 1)).join("")}…`;
 }
 
-/**
- * Whether a cleaned title shows nothing: empty, or only the zero-width
- * joiners prose keeps, which print as nothing on their own.
- */
 function isBlankTitle(title: string): boolean {
   return title.replace(/[\u200c\u200d]/g, "").trim() === "";
 }
 
-/** Sanitized one-line text, refused when nothing is left. */
 function lineText(maxLength: number, invisible: RegExp = INVISIBLE_RE) {
   return z.string()
     .transform((s) => sanitizeLine(s, maxLength, invisible))
@@ -220,25 +194,17 @@ function parseLink(raw: unknown): string | undefined {
 }
 
 /**
- * A `swamp` command a user can copy safely: `swamp` and words of plain
- * characters. Quotes, `;`, `|`, `&`, `$`, backticks, redirects, globs and
- * `~` are all refused, so the text can never chain or substitute a second
- * command after `swamp`.
+ * plain-character words only: quotes, ; | & $, backticks, redirects, globs and
+ * ~ are refused so the text can never chain or substitute a second command
  */
 const SAFE_SWAMP_COMMAND_RE = /^swamp( [A-Za-z0-9@%+,./:=_-]+)+$/;
 
-/** A slot in an {@link InboxActionCommandShape}, filled by one or more words. */
 export type InboxActionCommandSlot =
-  /** An extension name, `@scope/name`. */
   | "extension"
-  /** A collective slug. */
   | "collective"
-  /** An issue number. */
   | "issue"
-  /** One or more search words, none of them a flag. */
   | "words";
 
-/** A command an action may suggest: fixed words, then at most one slot. */
 export interface InboxActionCommandShape {
   readonly words: readonly string[];
   readonly slot?: InboxActionCommandSlot;
@@ -268,7 +234,6 @@ const SLOT_WORD_RE: Record<InboxActionCommandSlot, RegExp> = {
   words: /^[A-Za-z0-9_][A-Za-z0-9_-]*$/,
 };
 
-/** Whether the words after `swamp` match the shape exactly. */
 function matchesShape(
   words: readonly string[],
   shape: InboxActionCommandShape,
@@ -307,10 +272,9 @@ function parseAction(raw: unknown): InboxAction | undefined {
     return undefined;
   }
   const cleanLabel = sanitizeLine(label, MAX_INBOX_ACTION_LABEL_LENGTH);
-  // Refused rather than stripped: stripping an invisible character could turn
-  // a command that differs from an allowed one into that allowed one. Tested
-  // on the raw text, since cleaning it trims a leading or trailing U+FEFF as
-  // whitespace.
+  // refused rather than stripped, since stripping an invisible character could
+  // turn a disallowed command into an allowed one; tested on raw text because
+  // cleaning trims U+FEFF
   if (HAS_INVISIBLE_RE.test(command)) return undefined;
   const cleanCommand = sanitizeFieldText(command, Number.MAX_SAFE_INTEGER);
   if (
@@ -378,19 +342,16 @@ const readSchema = z.object({ read: z.array(z.unknown()) });
 
 const errorSchema = z.object({ error: z.string() });
 
-/** The summary, or undefined when the body does not match the contract. */
 export function parseInboxSummary(raw: unknown): InboxSummary | undefined {
   const parsed = summarySchema.safeParse(raw);
   return parsed.success ? parsed.data : undefined;
 }
 
-/** The message, or undefined when it does not match the contract. */
 export function parseInboxMessage(raw: unknown): InboxMessage | undefined {
   const parsed = messageSchema.safeParse(raw);
   return parsed.success ? parsed.data : undefined;
 }
 
-/** Every entry that matches the contract; the rest are dropped. */
 export function parseInboxMessages(raw: readonly unknown[]): InboxMessage[] {
   return raw.flatMap((entry) => {
     const message = parseInboxMessage(entry);
@@ -398,10 +359,6 @@ export function parseInboxMessages(raw: readonly unknown[]): InboxMessage[] {
   });
 }
 
-/**
- * The page, or undefined when its envelope does not match the contract. A
- * malformed entry inside a good envelope is dropped, not fatal.
- */
 export function parseInboxMessagePage(
   raw: unknown,
 ): InboxMessagePage | undefined {
@@ -415,17 +372,12 @@ export function parseInboxMessagePage(
   };
 }
 
-/**
- * The string ids a mark-read answer confirms, or undefined when the body does
- * not match the contract.
- */
 export function parseInboxReadIds(raw: unknown): string[] | undefined {
   const parsed = readSchema.safeParse(raw);
   if (!parsed.success) return undefined;
   return parsed.data.read.filter((id): id is string => typeof id === "string");
 }
 
-/** The `error` field of an error body, if there is one. */
 export function parseInboxErrorCode(raw: unknown): string | undefined {
   const parsed = errorSchema.safeParse(raw);
   return parsed.success ? parsed.data.error : undefined;

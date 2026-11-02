@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Hands serve a change a flush quarantined (swamp-club#4195): one serve
- * refused because this checkout's caller lacks a grant it needs. Serve keeps
- * it for an admin to accept; the checkout keeps its own entry until the
- * change lands, whoever lands it.
- *
- * @module
+ * hands serve a change a flush quarantined for a missing grant; serve keeps it
+ * for an admin to accept, and the checkout keeps its own entry until the change
+ * lands, whoever lands it
  */
 
 import type { OutboxEntry } from "../../domain/datastore_v3/commit_outbox.ts";
@@ -35,7 +32,6 @@ import type {
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
 
-/** Thrown for a change too large to hand to serve: it stays here only. */
 export class QuarantineTooLargeError extends Error {
   constructor(bytes: number) {
     super(
@@ -46,13 +42,6 @@ export class QuarantineTooLargeError extends Error {
   }
 }
 
-/**
- * The flush's `quarantined` hook for a serve-mode checkout: reads the
- * entry's chunks from the checkout's chunk cache and deposits the change
- * with serve.
- *
- * @throws QuarantineTooLargeError when the change is past what serve keeps
- */
 export function createQuarantineDeposit(deps: {
   readonly client: Pick<ServeDatastoreClient, "depositQuarantine">;
   readonly chunkCache: Pick<DatastoreStorage, "get">;

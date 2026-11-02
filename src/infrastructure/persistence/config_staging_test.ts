@@ -60,7 +60,6 @@ function prior(name: string | undefined, sha = "a".repeat(64)): PriorFile {
   };
 }
 
-/** Each batch as [partition, kind, intent kind, key, expect] rows. */
 function rows(batches: TypedChange[][]): unknown[][][] {
   return batches.map((batch) =>
     batch.map((change) => {
@@ -232,7 +231,6 @@ Deno.test("definitionSaveBatches: a target that already holds this name is an ed
 });
 
 Deno.test("definitionSaveBatches: an auto-definition carries no precondition, and a move across tiers tombstones the other tier", () => {
-  // An auto-definition renamed in its directory: one partition, one batch.
   assertEquals(
     save("net", "/a/net.yaml", ["/a/vpc.yaml"], {
       "/a/vpc.yaml": prior("vpc"),
@@ -254,7 +252,6 @@ Deno.test("definitionSaveBatches: an auto-definition carries no precondition, an
       ],
     ]],
   );
-  // A managed-config save that removed the auto-definition file.
   assertEquals(
     save("vpc", "/c/vpc.yaml", ["/a/vpc.yaml"], {
       "/c/vpc.yaml": prior("vpc", "d".repeat(64)),
@@ -268,7 +265,6 @@ Deno.test("definitionSaveBatches: an auto-definition carries no precondition, an
       null,
     ]],
   );
-  // An auto-definition save that removed a managed-config file.
   assertEquals(
     save("vpc", "/a/vpc.yaml", ["/c/vpc.yaml"], { "/c/vpc.yaml": prior("vpc") })
       .at(-1),
@@ -435,7 +431,6 @@ Deno.test("readPriorFile: reads bytes, digest and declared fields; a missing pat
     const read = await readPriorFile(path);
     assertEquals(read?.id, "x");
     assertEquals(read?.name, "vpc");
-    // A field that is not a string is not declared.
     assertEquals(read?.type, undefined);
     assertEquals(read?.sha256.length, 64);
     await Deno.writeTextFile(join(dir, "bad.yaml"), ": [unclosed");

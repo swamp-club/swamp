@@ -17,17 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Phase 1.2 pins for the fault context (design/enablers/typed-secrets.md
-// Section 4.3 item 2, and the Phase 1.2 list in Section 11: "A custom function
-// sees, at its start, every fault recorded earlier in the same evaluation,
-// across asynchronous evaluation, so the effect gate in Section 4.5 holds.";
-// "`{S: 1}`, `m[S]` and `S in m` record a fault through a Proxy trap, so a
-// map-key refusal is visible under `||` even though a map literal calls no
-// overload."; "A fault recorded in the ambient context survives absorption by
-// `||`, `&&`, `exists` and `all`, across asynchronous evaluation.").
-//
-// Handlers resolve without timers, and the interleaving test is driven by
-// gates the test releases, so the sanitizers see no pending ops.
+// handlers resolve without timers and the interleaving test is driven by gates
+// the test releases, so the sanitizers see no pending ops
 import { assertEquals, assertInstanceOf, assertThrows } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { Environment, EvaluationError } from "cel-js";
@@ -53,7 +44,6 @@ import {
 
 const s = createSecret("v/k");
 
-/** The refusing environment plus functions that report what they see. */
 function refusingEnvironment(): Environment {
   const env = registerAllowedSet(
     registerSecretType(new Environment(secretEnvironmentOptions())),
@@ -172,7 +162,6 @@ Deno.test(
       ["s == 'x' || true", true, [EQUALS_STRING]],
       ["s == 'x' && false", false, [EQUALS_STRING]],
       ["[1, 2].exists(i, i == 2 || s == 'x')", true, [EQUALS_STRING]],
-      // The predicate refuses for both elements; the second is absorbed.
       ["[1, 2].exists(i, s == 'x' || i == 2)", true, [
         EQUALS_STRING,
         EQUALS_STRING,
@@ -267,9 +256,7 @@ Deno.test(
         result: await env.evaluate(expression, { s, run }),
         faults,
       }));
-    // Run 0 refuses after its gate; run 1 refuses before its gate; run 2
-    // never refuses. Every fault must land in the list of the run that
-    // caused it.
+    // every fault must land in the list of the run that caused it
     const pending = [
       start("gate(run) && (s == 'x' || true) && faultsSeen() == 1", 0n),
       start("(s == 1 || true) && gate(run) && faultsSeen() == 1", 1n),

@@ -22,22 +22,16 @@ import { getLogger } from "@logtape/logtape";
 const logger = getLogger(["process", "job"]);
 
 /**
- * A Windows Job Object holding a spawned command and every process it
- * starts. The job ends them all when its last handle closes, so a swamp
- * process that is killed outright — and Windows has no signal another
- * process can catch, so every stop from outside other than a swamp stop
- * request (`windows_stop_request.ts`) is outright — takes the commands it
- * was running with it (swamp-club#3241).
+ * the job ends every process in it when its last handle closes, so a swamp
+ * killed outright (Windows has no catchable signal) takes its commands with it
  */
 export interface ProcessJob {
-  /** Ends every process in the job, then closes it. */
   terminate(): void;
   /** Closes the job and leaves its processes running: a command that
    *  exited on its own keeps what it deliberately started. */
   release(): void;
 }
 
-/** The kernel32 functions a job needs. Handles are opaque pointers. */
 export interface Kernel32Jobs {
   CreateJobObjectW(attributes: null, name: null): Deno.PointerValue;
   SetInformationJobObject(
@@ -70,24 +64,18 @@ const KERNEL32_SYMBOLS = {
   CloseHandle: { parameters: ["pointer"], result: "i32" },
 } as const;
 
-/** `JobObjectExtendedLimitInformation`. */
 export const EXTENDED_LIMIT_INFORMATION_CLASS = 9;
-/** `sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)` on 64-bit Windows. */
 export const EXTENDED_LIMIT_INFORMATION_SIZE = 144;
-/** Offset of `BasicLimitInformation.LimitFlags` in that struct. */
 export const LIMIT_FLAGS_OFFSET = 16;
 export const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 /** Lets a process that asks for `CREATE_BREAKAWAY_FROM_JOB` leave the job,
  *  as some installers and service launchers do; without it their spawn
  *  fails with access denied. */
 export const JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800;
-/** The limits a step's job starts with. */
 export const STEP_JOB_LIMITS = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
   JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-/** `PROCESS_SET_QUOTA | PROCESS_TERMINATE`, what assigning a job needs. */
 export const JOB_ASSIGN_ACCESS = 0x0100 | 0x0001;
 
-/** A `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` with only `LimitFlags` set. */
 export function extendedLimitInformation(
   limitFlags: number,
 ): Uint8Array<ArrayBuffer> {
@@ -111,10 +99,9 @@ function setLimitFlags(
 }
 
 /**
- * Puts `pid` in a new kill-on-close job. Returns undefined, holding no
- * handle, when any step fails: the command then runs without a job, as it
- * did before. The job handle is not inheritable, so no child keeps the job
- * open after swamp is gone.
+ * undefined, holding no handle, when any step fails, so the command runs
+ * without a job; the handle is not inheritable, so no child keeps the job open
+ * after swamp is gone
  */
 export function createProcessJob(
   kernel32: Kernel32Jobs,
@@ -174,11 +161,6 @@ function loadKernel32(): Kernel32Jobs | null {
   return kernel32Jobs;
 }
 
-/**
- * Puts a spawned command in a kill-on-close job on Windows. Returns
- * undefined elsewhere, where process groups do this job, and wherever a job
- * cannot be made.
- */
 export function attachProcessJob(
   pid: number,
   os: typeof Deno.build.os = Deno.build.os,

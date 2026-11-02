@@ -66,12 +66,10 @@ interface Fixture {
   readonly storage: MemoryStorage;
   readonly chunkStore: ChunkStore;
   readonly dir: string;
-  /** Prepares `commit` as a dead writer at `fence` would have. */
   prepare(
     commit: Commit,
     options?: { unitId?: string; base?: HeadIdentity },
   ): Promise<void>;
-  /** Takes the lease at `fence`, as a writer start does, and recovers. */
   recover(
     fence: number,
     writerAlive?: RecoverCommitOutboxOptions["writerAlive"] | "default",
@@ -122,8 +120,6 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>) {
     await store.close();
     await outbox.close();
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -161,7 +157,6 @@ Deno.test("recoverCommitOutbox: lands an entry whose head is unchanged once, und
     assertEquals(landed.writer, RECOVERER);
     assertEquals(await outbox.hasEntries(), false);
     assertEquals((await outbox.chain())?.floor, 2);
-    // Nothing left: a second recovery lands nothing more.
     assertEquals((await recover(3)).landed, 0);
     assertEquals((await commitsOf(store)).length, 1);
   });
@@ -184,7 +179,6 @@ Deno.test("recoverCommitOutbox: a quarantined entry whose commit an admin accept
     const commit = prepared(1, [await savePut("a", 1)], "t1");
     await prepare(commit);
     await outbox.markState([outboxKeyOf(commit)], "quarantined", "no grant");
-    // The admin's accept lands it under its original txnId.
     await store.append(commit);
     const report = await recover(2);
     assertEquals([report.landed, report.settled, report.accepted], [0, 0, 1]);
@@ -205,7 +199,6 @@ Deno.test("recoverCommitOutbox: drops an entry whose partition moved on, with it
       }),
       { unitId: "u" },
     );
-    // Another writer committed the partition since.
     await store.append(
       modelCommit(1, [await savePut("b", 1)], { txnId: "newer", fence: 1 }),
     );
@@ -220,7 +213,6 @@ Deno.test("recoverCommitOutbox: drops an entry whose partition moved on, with it
   });
 });
 
-/** Records each settle and discard on `outbox`, as `settle:<txnId>`. */
 function recordRemovals(outbox: SqliteCommitOutbox): string[] {
   const calls: string[] = [];
   const settle = outbox.settle.bind(outbox);
@@ -248,8 +240,6 @@ Deno.test("recoverCommitOutbox: a landed or already-landed entry settles; a drop
       [1, ["settle:landed-before", "settle:lands"]],
     );
     calls.length = 0;
-    // A drop was reported: back after a power cut, a run entry dropped with
-    // its unit could land alone.
     await prepare(prepared(3, [await savePut("b", 1)], "t1"), { unitId: "u" });
     await prepare(
       modelCommit(1, [await runPut("r")], {
@@ -273,7 +263,6 @@ Deno.test("recoverCommitOutbox: a landed or already-landed entry settles; a drop
 Deno.test("recoverCommitOutbox: drops an entry another copy's lease came after, and lands nothing", async () => {
   await withFixture(async ({ store, outbox, prepare, recover }) => {
     await prepare(prepared(1, [await savePut("a", 1)], "t1"));
-    // Fence 2 was another copy's: this copy's chain restarts at 3.
     const report = await recover(3);
     assertEquals(report.drops.map((drop) => drop.reason), ["stale-fence"]);
     assertEquals(await commitsOf(store), []);
@@ -288,10 +277,8 @@ Deno.test("recoverCommitOutbox: leaves a live writer's entry past the floor, and
     const report = await recover(2, alive);
     assertEquals([report.landed, report.skipped], [0, 1]);
     assertEquals(await outbox.hasEntries(), true);
-    // The floor rose past it, but a recovery left it: still left alone.
     const next = await recover(3, alive);
     assertEquals([next.skipped, next.drops.length], [1, 0]);
-    // Its writer is gone now: it lands.
     const last = await recover(4);
     assertEquals([last.landed, last.drops.length], [1, 0]);
     assertEquals((await commitsOf(store)).map((c) => c.txnId), ["t1"]);
@@ -303,19 +290,16 @@ Deno.test("recoverCommitOutbox: a left entry whose writer resumes and is refused
     const entry = prepared(1, [await savePut("a", 1)], "t1");
     await prepare(entry);
     const alive = (writer: CommitWriter) => writer.instance === "dead";
-    // Its writer was alive at the recovery: left, and the floor rose.
     assertEquals((await recover(2, alive)).skipped, 1);
     assertEquals(
       (await outbox.entries()).entries.map((e) => e.leftAtFence),
       [2],
     );
-    // The writer resumes; the store refuses its fenced append, and it
-    // discards the entry, as a refused unit does (swamp-club#3506). Left
-    // entries rely on this discard: one that failed would leave a landable
-    // entry, the V3-08 case.
+    // the writer resumes and the store refuses its fenced append; it discards
+    // the entry as a refused unit does. Left entries rely on this: a failed
+    // discard would leave a landable entry
     await assertRejects(() => store.append(entry), WriterFencedError);
     await outbox.discard([outboxKeyOf(entry)]);
-    // The writer is gone now: nothing is left to land.
     const later = await recover(3);
     assertEquals(
       [later.landed, later.settled, later.skipped, later.drops.length],
@@ -331,7 +315,6 @@ Deno.test("recoverCommitOutbox: an entry prepared again after a recovery left it
     await prepare(entry);
     const alive = (writer: CommitWriter) => writer.instance === "dead";
     await recover(2, alive);
-    // The writer, fenced, prepares it again after the recovery, then dies.
     await prepare(entry);
     assertEquals(
       (await outbox.entries()).entries.map((e) => e.leftAtFence),
@@ -348,7 +331,6 @@ Deno.test("recoverCommitOutbox: judges a writer by the identity it prepared unde
   setLocalProcessForTesting({
     pid: 7,
     identity: { ...kernel, startTime: "t-recoverer" },
-    // pid 4242 runs, started at t-live.
     probe: (pid) =>
       pid === 4242
         ? { present: true, zombie: false, startTime: "t-live" }
@@ -385,7 +367,6 @@ Deno.test("recoverCommitOutbox: judges a writer by the identity it prepared unde
 
 Deno.test("recoverCommitOutbox: an entry from a swamp before identities is recovered under the lease, not dropped", async () => {
   await withFixture(async ({ store, prepare, recover }) => {
-    // Prepared with no identity, by a writer on this host that still runs.
     await prepare(
       modelCommit(1, [await savePut("a", 1)], {
         txnId: "t1",
@@ -431,7 +412,6 @@ Deno.test("recoverCommitOutbox: drops an entry naming a chunk a crash left short
       signal,
     );
     await prepare(prepared(1, [await blobPut("a", 1, blob)], "t1"));
-    // Torn: the name survived a power loss, the bytes did not.
     await Deno.truncate(
       join(
         datastore,
@@ -468,7 +448,6 @@ Deno.test("recoverCommitOutbox: a refused entry is dropped with its unit's run e
     await store.append(
       modelCommit(1, [await savePut("a", 1)], { txnId: "first", fence: 1 }),
     );
-    // Prepared on the current head, but its expect no longer holds.
     await prepare(
       prepared(2, [await savePut("a", 1, "again", "absent")], "t2"),
       { unitId: "u" },
@@ -495,8 +474,6 @@ Deno.test("recoverCommitOutbox: a refused entry is dropped with its unit's run e
 Deno.test("recoverCommitOutbox: an entry serve refuses on the caller's access is dropped, as a narrowed grant refuses it on every recovery (swamp-club#4089)", async () => {
   await withFixture(async ({ store, prepare, recover }) => {
     await prepare(prepared(1, [await savePut("a", 1)], "t1"));
-    // Serve's 403 for a forwarded commit, as a grant narrowed since the
-    // write was made answers it.
     store.append = () =>
       Promise.reject(
         new ServeCommitRefusedError(
@@ -514,13 +491,6 @@ Deno.test("recoverCommitOutbox: an entry serve refuses on the caller's access is
   });
 });
 
-// Forwarded resends (swamp-club#4121): a resend never lands on a newer head.
-
-/**
- * Recovers `fixture`'s outbox as a serve-mode checkout does: its store's
- * appends stand in for serve's, and every send is recorded with the lease
- * it names.
- */
 async function recoverForwarded(
   fixture: Fixture,
   fence: number,
@@ -561,11 +531,9 @@ async function recoverForwarded(
 Deno.test("recoverCommitOutbox: a forwarded entry whose head moved is dropped, never sent over the newer record (swamp-club#4121)", async () => {
   await withFixture(async (fixture) => {
     const { store, prepare } = fixture;
-    // Built on an empty partition: a put with no expect.
     await prepare(prepared(1, [await savePut("a", 1, "stale")], "t1"), {
       base: { seq: 0, txnId: undefined },
     });
-    // Another writer's newer record of the same key lands first.
     await store.append(prepared(1, [await savePut("a", 1, "newer")], "other"));
     const { report, sent } = await recoverForwarded(fixture, 2);
     assertEquals(
@@ -617,7 +585,6 @@ Deno.test("recoverCommitOutbox: a forwarded entry is resent naming the lease it 
       fixture,
       2,
       async (commit) => {
-        // Serve no longer holds the lease its writer died with.
         if (first) {
           first = false;
           throw new ServeCommitRejectedError(
@@ -734,9 +701,7 @@ Deno.test("recoverCommitOutbox: an outbox that cannot be read names its path", a
 
 Deno.test("recoverCommitOutbox: an empty recovery raises the floor, so an entry a lease-lost writer prepares after it is overtaken", async () => {
   await withFixture(async ({ store, prepare, recover }) => {
-    // The successor at fence 2 finds nothing to recover.
     assertEquals((await recover(2)).drops, []);
-    // The writer at fence 1, whose lease lapsed, prepares and dies.
     await prepare(prepared(1, [await savePut("a", 1)], "late"));
     const report = await recover(3);
     assertEquals(report.drops.map((drop) => drop.reason), ["overtaken"]);
@@ -768,7 +733,6 @@ Deno.test("recoverCommitOutbox: makes the names of an entry's chunks durable bef
       new Uint8Array(200).map((_, i) => i),
       signal,
     );
-    // Inline content names no chunk: only the blob's are synced.
     await prepare(
       prepared(1, [await blobPut("a", 1, blob), await savePut("b", 1)], "t1"),
     );
@@ -845,7 +809,6 @@ Deno.test("recoverCommitOutbox: a forwarded entry built outside any lease is lef
         ),
       );
     });
-    // The second waits with the first, unsent.
     assertEquals(sends, 1);
     assertEquals(report.drops, []);
     assertEquals(report.skipped, 2);
@@ -853,7 +816,6 @@ Deno.test("recoverCommitOutbox: a forwarded entry built outside any lease is lef
       (await fixture.outbox.entries()).entries.map((e) => e.commit.txnId),
       ["t1", "t2"],
     );
-    // A later recovery, once the lease is gone, lands both.
     const later = await recoverForwarded(fixture, 3);
     assertEquals(later.report.landed, 2);
   });
@@ -888,7 +850,6 @@ Deno.test("recoverCommitOutbox: an offline entry a cut-off flush landed is recor
     });
     await prepare(queued, { base: { seq: 0, txnId: undefined } });
     await outbox.markState([outboxKeyOf(queued)], "offline");
-    // The flush landed it as version 5, then the process ended.
     await store.append(fixtureCommit({
       seq: 1,
       txnId: "t-offline",

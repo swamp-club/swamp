@@ -33,9 +33,8 @@ import {
 import type { AtomicControlPlaneStore } from "./control_plane_signal_wait_store.ts";
 
 /**
- * {@link ContinuationClaimStore} over a {@link ControlPlaneStore}: one record
- * per generation under `continuations/<runId>/<suspensionKey>/`, each created
- * with `putIfAbsent` so the first writer of a generation holds it.
+ * one record per generation, each created with putIfAbsent so the first writer
+ * of a generation holds it
  */
 export class ControlPlaneContinuationClaimStore
   implements ContinuationClaimStore {
@@ -93,16 +92,12 @@ export class ControlPlaneContinuationClaimStore
  */
 export const CONTINUATION_HOLDER_STALE_MS = 90_000;
 
-/** The longest stale TTL a heartbeat is believed about: one day. */
 const HOLDER_STALE_MAX_MS = 86_400_000;
 
 /**
- * What the heartbeats in `store` say of a claim's holder. A serve instance
- * is alive while its heartbeat is recent and dead once it is stale or gone;
- * nothing is known of any other holder, which writes no heartbeat. Stale is
- * judged by the TTL the instance published in its heartbeat, so a local
- * command and a peer agree with the instance's own settings; `staleMs` is
- * for a heartbeat that names none.
+ * a serve instance is alive while its heartbeat is recent, dead once stale or
+ * gone; other holders write none, so nothing is known of them; stale uses the
+ * TTL the heartbeat publishes, staleMs if it names none
  */
 export function heartbeatLiveness(
   store: ControlPlaneStore,
@@ -125,8 +120,8 @@ export function heartbeatLiveness(
     if (bytes === null) return "dead";
     try {
       const record = JSON.parse(new TextDecoder().decode(bytes));
-      // An instance that stopped without pushing its interrupted runs
-      // leaves a stopped record rather than none (swamp-club#3958).
+      // an instance that stopped without pushing its interrupted runs leaves a
+      // stopped record rather than none
       if (typeof record?.stoppedAt === "string") return "dead";
       const at = new Date(record?.heartbeatAt).getTime();
       if (Number.isNaN(at)) return "dead";

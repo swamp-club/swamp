@@ -70,9 +70,9 @@ Deno.test("probeStartServer: any other status means something else owns the port
 });
 
 Deno.test("probeStartServer: a closed port is dead", async () => {
-  // A test running in parallel can bind the freed port before the probe
-  // reaches it, so each attempt frees a new one; a refusal misread as
-  // anything else fails them all (swamp-club#3672).
+  // a parallel test can bind the freed port before the probe reaches it, so
+  // each attempt frees a new one; a refusal misread as anything else fails them
+  // all
   const results: string[] = [];
   for (let attempt = 0; attempt < 5; attempt++) {
     const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
@@ -138,6 +138,5 @@ Deno.test("startProbeTimeoutMs: Windows waits out its retries on a refused conne
   assertEquals(startProbeTimeoutMs("windows"), WINDOWS_START_PROBE_TIMEOUT_MS);
   assertEquals(startProbeTimeoutMs("linux"), START_PROBE_TIMEOUT_MS);
   assertEquals(startProbeTimeoutMs("darwin"), START_PROBE_TIMEOUT_MS);
-  // Windows takes about two seconds to report a refused loopback connect.
   assertEquals(WINDOWS_START_PROBE_TIMEOUT_MS > 2_000, true);
 });

@@ -83,21 +83,16 @@ Deno.test("hasContainerComparison: == and != with no scalar literal operand are"
 
 Deno.test("hasContainerComparison: finds a comparison under every node shape", () => {
   const nested: Array<[string, boolean]> = [
-    // A unary operator holds one node, not a list.
     ["!(x in ['', 'changeme'])", true],
     ["!(x == y)", true],
     ["-(x == y ? 1 : 2) > 0", true],
-    // Map literal values and keys are pairs.
     ["{'k': x in y}", true],
     ["{x == y: 1}", true],
-    // Ternary branches and conditions.
     ["c ? x in y : 1", true],
     ["(x == y) ? 1 : 2", true],
-    // Calls and receiver calls nest their arguments.
     ["size([x == y])", true],
     ["f(1, [2, x in y])", true],
     ["cel.bind(v, s, v == [1])", true],
-    // Macro bodies and ranges.
     ["[1].exists(x, x in y)", true],
     ["[1].map(x, x == [2])", true],
     ["[x in y].all(z, z)", true],

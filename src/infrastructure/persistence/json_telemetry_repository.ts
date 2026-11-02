@@ -29,15 +29,6 @@ import {
   type TelemetryEntryData,
 } from "../../domain/telemetry/telemetry_entry.ts";
 
-/**
- * JSON-based implementation of TelemetryRepository.
- *
- * Stores telemetry entries as JSON files in the directory structure:
- * {repoDir}/.swamp/telemetry/telemetry-{YYYY-MM-DD}-{uuid}.json
- *
- * Each invocation creates a single file (no locking issues).
- * Errors are silently logged to avoid breaking CLI execution.
- */
 export class JsonTelemetryRepository implements TelemetryRepository {
   private readonly baseDir: string;
 
@@ -45,10 +36,6 @@ export class JsonTelemetryRepository implements TelemetryRepository {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.telemetry);
   }
 
-  /**
-   * Saves a telemetry entry to a JSON file.
-   * Never throws - errors are logged silently if SWAMP_DEBUG is set.
-   */
   async save(entry: TelemetryEntry): Promise<void> {
     try {
       const telemetryDir = this.getTelemetryDir();
@@ -60,17 +47,13 @@ export class JsonTelemetryRepository implements TelemetryRepository {
       const json = JSON.stringify(entry.toData(), null, 2);
       await atomicWriteTextFile(path, json);
     } catch (error) {
-      // Silent failure - log only if SWAMP_DEBUG
       if (Deno.env.get("SWAMP_DEBUG")) {
         console.error("[Telemetry] Failed to write:", error);
       }
-      // Never throw - telemetry errors shouldn't break CLI
+      // never throw: telemetry errors must not break the CLI
     }
   }
 
-  /**
-   * Finds all telemetry entries for a given date.
-   */
   async findByDate(date: Date): Promise<TelemetryEntry[]> {
     const entries: TelemetryEntry[] = [];
     const dateStr = date.toISOString().split("T")[0];
@@ -105,16 +88,12 @@ export class JsonTelemetryRepository implements TelemetryRepository {
     return entries;
   }
 
-  /**
-   * Finds all telemetry entries within a date range.
-   */
   async findByDateRange(
     startDate: Date,
     endDate: Date,
   ): Promise<TelemetryEntry[]> {
     const entries: TelemetryEntry[] = [];
 
-    // Iterate through each day in the range
     const current = new Date(startDate);
     current.setUTCHours(0, 0, 0, 0);
 
@@ -131,18 +110,16 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   /**
-   * Deletes flushed telemetry entries older than the given date.
-   * Only removes `.flushed.json` files — unflushed entries are preserved
-   * so they can still be retried on the next invocation.
+   * removes only .flushed.json files; unflushed entries are kept so they can be
+   * retried
    */
   deleteOlderThan(date: Date): Promise<number> {
     return this.deleteByDate(date, true);
   }
 
   /**
-   * Deletes ALL telemetry entries older than the given date, regardless
-   * of flush status. Used as a hard retention cap to prevent unbounded
-   * disk growth when the remote endpoint is permanently unreachable.
+   * hard retention cap regardless of flush status, preventing unbounded disk
+   * growth when the endpoint is permanently unreachable
    */
   deleteAllOlderThan(date: Date): Promise<number> {
     return this.deleteByDate(date, false);
@@ -196,13 +173,9 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   /**
-   * Finds unflushed telemetry entries, sorted oldest first.
-   *
-   * Uses filename-based sorting (date prefix is chronologically sortable)
-   * and stops reading once `limit` entries are collected. This avoids O(n)
-   * file reads when the spool contains thousands of accumulated entries;
-   * with an `endpoint` filter, entries for other endpoints are read and
-   * skipped until the limit is met.
+   * filename sorting (the date prefix sorts chronologically) lets it stop
+   * reading once limit entries are collected, avoiding O(n) reads of a large
+   * spool; other endpoints' entries are read and skipped
    */
   async findUnflushed(
     limit: number,
@@ -257,13 +230,9 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   /**
-   * Marks a telemetry entry as flushed.
-   * By default, deletes the file. If keepFlushed is true, renames to .flushed.json.
-   *
-   * Returns false when the delete or rename fails (a Windows file lock, a
-   * read-only spool, an interrupted rename). The entry then stays on disk and
-   * `findUnflushed` will return it again, so a repeatedly-flushing caller must
-   * use this result to avoid re-sending an entry the endpoint already accepted.
+   * returns false when the delete or rename fails; the entry stays and
+   * findUnflushed returns it again, so a repeatedly-flushing caller must use
+   * this result to avoid re-sending an accepted entry
    */
   async markFlushed(
     entry: TelemetryEntry,
@@ -289,12 +258,9 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   /**
-   * Sets an entry aside as undeliverable by renaming it to
-   * `.quarantined.json`, which `findUnflushed` skips.
-   *
-   * The file is kept rather than deleted so a rejected entry can still be
-   * inspected — the reason an endpoint refuses a payload is usually only
-   * visible in the payload itself.
+   * renamed to .quarantined.json, which findUnflushed skips; kept rather than
+   * deleted since why an endpoint refuses a payload is usually visible only in
+   * the payload
    */
   async quarantine(entry: TelemetryEntry): Promise<void> {
     try {
@@ -304,14 +270,11 @@ export class JsonTelemetryRepository implements TelemetryRepository {
         join(telemetryDir, this.entryFilename(entry, ".quarantined.json")),
       );
     } catch {
-      // Silent failure - quarantining is best-effort. A failure leaves the
-      // entry unflushed, which the caller's own retry accounting handles.
+      // best-effort: a failed quarantine leaves the entry unflushed, which the
+      // caller's own retry accounting handles
     }
   }
 
-  /**
-   * Deletes quarantined entries older than the given date.
-   */
   async deleteQuarantinedOlderThan(date: Date): Promise<number> {
     let deletedCount = 0;
     const cutoffDateStr = date.toISOString().split("T")[0];
@@ -351,9 +314,8 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   /**
-   * Filename for an entry's spool file. The `telemetry-YYYY-MM-DD-` prefix
-   * makes filenames chronologically sortable, which is what lets
-   * `findUnflushed` order by name instead of parsing every file.
+   * the date prefix makes filenames sort chronologically, so findUnflushed
+   * orders by name instead of parsing every file
    */
   private entryFilename(entry: TelemetryEntry, suffix = ".json"): string {
     const date = entry.startedAt.toISOString().split("T")[0];

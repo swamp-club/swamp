@@ -19,16 +19,10 @@
 
 import { UserError } from "../../domain/errors.ts";
 
-/** 3s cap on gh subprocesses so a slow/broken gh install doesn't stall the CLI. */
+/** cap on gh subprocesses so a slow or broken gh install does not stall the CLI */
 const GH_TIMEOUT_MS = 3000;
 
-/** Commander shape so tests can inject a fake without touching real processes. */
 export interface GhCliRunner {
-  /**
-   * Runs `gh <args>`. Writes `stdin` to the subprocess's stdin when provided.
-   * Returns whatever the subprocess emitted, with no throwing — callers
-   * interpret the exit code.
-   */
   run(
     args: string[],
     opts?: { stdin?: string; timeoutMs?: number },
@@ -39,13 +33,10 @@ export interface GhRunResult {
   exitCode: number;
   stdout: string;
   stderr: string;
-  /** True if the subprocess could not be spawned at all (e.g. `gh` not on PATH). */
   spawnFailed?: boolean;
-  /** True if the subprocess was killed by the AbortSignal. */
   timedOut?: boolean;
 }
 
-/** Default runner that shells out to the real `gh` binary via Deno.Command. */
 export const defaultGhRunner: GhCliRunner = {
   async run(args, opts) {
     const timeoutMs = opts?.timeoutMs ?? GH_TIMEOUT_MS;
@@ -87,13 +78,8 @@ export const defaultGhRunner: GhCliRunner = {
 };
 
 /**
- * Returns true when the CLI can shell out to `gh` to post an issue.
- *
- * Fast path: if `GH_TOKEN` (or `GITHUB_TOKEN`) is set, `gh` will use that
- * token without a separate auth check — no subprocess needed.
- *
- * Slow path: run `gh auth status`. Non-zero exit, missing binary, or
- * timeout all resolve to false.
+ * with GH_TOKEN or GITHUB_TOKEN set, gh needs no auth check; otherwise gh auth
+ * status runs, and a non-zero exit, missing binary or timeout means false
  */
 export async function isGhCliAvailable(
   runner: GhCliRunner = defaultGhRunner,
@@ -107,17 +93,9 @@ export async function isGhCliAvailable(
 }
 
 /**
- * Checks whether a repository has GitHub's Private Vulnerability Reporting
- * (PVR) feature enabled.
- *
- * Returns:
- * - `true` when PVR is enabled (security reports should route to the
- *   advisory form);
- * - `false` when PVR is disabled (security reports must NOT be filed as
- *   public issues — caller should refuse cleanly);
- * - `null` when the check itself failed (network, auth scope, rate-limit,
- *   timeout). Callers treat `null` as "fall back to the safer default" —
- *   i.e. still route to the advisory URL and let GitHub tell the user.
+ * false means security reports must not be filed as public issues; null means
+ * the check failed, so fall back to the safer default of routing to the
+ * advisory URL
  */
 export async function checkGithubPvrEnabled(
   ownerRepo: string,
@@ -152,14 +130,9 @@ export interface CreateIssueResult {
 }
 
 /**
- * Creates a GitHub issue via `gh issue create`. The body is piped over
- * stdin so it can be arbitrarily long and doesn't appear in `ps` output.
- *
- * Throws:
- * - `UserError` with "authenticated but not authorised" wording when gh
- *   reports a 401/403. This is distinct from generic subprocess failures
- *   so users get a clear recovery path.
- * - `UserError` with gh's stderr included on any other non-zero exit.
+ * the body goes over stdin so it can be long and stays out of ps output; a
+ * 401/403 gets distinct authenticated-but-not-authorised wording from other
+ * failures
  */
 export async function createGithubIssueViaGh(
   input: CreateIssueInput,
@@ -179,7 +152,6 @@ export async function createGithubIssueViaGh(
     args.push("--label", input.labels.join(","));
   }
 
-  // Larger timeout for create; network round-trip matters here.
   const result = await runner.run(args, {
     stdin: input.body,
     timeoutMs: 15_000,

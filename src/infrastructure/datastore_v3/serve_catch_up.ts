@@ -18,45 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Catch-up from serve for a checkout whose v3 datastore's upstream is serve
- * (swamp-club#3985). The checkout's `commits.db` is a follower copy of
- * serve's commit log: filled from serve's changes feed, never replicated,
- * and storing serve's commits as serve stamped them.
- *
- * Serve filters single commits a caller may not read, so a partition's seqs
- * in the copy can have holes; the follower store accepts them. When a
- * commit arrives past the copy's head + 1, the partition is read from serve
- * first: commits hidden by a grant since changed come back that way, and
- * serve's head for the partition is recorded, which the next commit is
- * built on.
- *
- * The copy follows one serve's log, whatever answers at its address
- * (swamp-club#4049). Each feed catch-up first asks serve for the anchor,
- * the last commit of the last page applied, and each partition catch-up
- * reads from the copy's head commit: serve answering a lower head, or
- * another commit at that seq, is refused with
- * {@link ServeUpstreamDivergedError}. A commit serve withholds from this
- * caller, a partition it may no longer read, and an anchor serve has
- * compacted cannot be checked, and are not refused.
- *
- * A copy whose cursor serve has compacted past (a fresh checkout of a
- * compacted datastore, or one left behind) loads serve's compacted base
- * instead (swamp-club#4006): under the copy's writer lease, paged into a
- * staging file of its own beside the copy, installed in one transaction,
- * and only then recorded in the serve-mode state, so a load cut off leaves
- * the copy as it was or reads as behind the point again and loads once
- * more. The feed then reads on from the point. A partition read that meets
- * a partition compacted past the copy's head reads on from its compacted
- * seq when the base the copy loaded covers serve's point, and loads the
- * base first otherwise: commits compacted away are read only from a base.
- *
- * Serve's replies are untrusted (swamp-club#4062): its address can come
- * from a committed `.swamp.yaml`. A commit outside the copy's namespace,
- * in a feed page or a partition read, refuses the page before any of it
- * is applied, and a page too large for the client to read is asked again
- * at half the limit, down to one commit.
- *
- * @module
+ * the copy is a follower of serve's commit log, never replicated; serve's
+ * replies are untrusted, so a foreign-namespace commit refuses the page
+ * unapplied and a diverging head or anchor is refused
  */
 
 import { join } from "@std/path";
@@ -91,12 +55,9 @@ import { acquireV3WriterLock } from "./v3_writer_lock.ts";
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
 /**
- * The check a copy's serve client runs on every reply
- * (`ServeDatastoreClient.checkLog`): the first log id serve names is
- * recorded as the log the copy follows, and a reply naming another is
- * refused, as is a success naming none (a serve too old to send it). The
- * anchor and head checks below still guard the first contact of a copy
- * made before log ids, and a serve rolled back within the same log.
+ * records the first log id serve names and refuses a reply naming another or
+ * none; the anchor and head checks still guard a copy made before log ids and a
+ * serve rolled back within one log
  */
 export function serveLogCheck(
   state: Pick<ServeUpstreamState, "recordServeLogId">,
@@ -118,22 +79,12 @@ export function serveLogCheck(
   };
 }
 
-/** The shape of a read-access fingerprint serve sends: a short token. */
 const ACCESS_FINGERPRINT = /^[0-9a-z]{1,128}$/;
 
 /**
- * The check a copy's serve client runs on every reply that names the
- * caller's read access (`ServeDatastoreClient.checkAccess`,
- * swamp-club#4089). A fingerprint it has not seen in this process is
- * recorded (`ServeUpstreamState.recordAccessSeen`); the first a copy sees
- * is the one it was built under. When a reply records a mismatch the copy
- * did not have, a warning says once what follows: the next command rebuilds
- * the copy, or, within the cooldown of the last rebuild for access, a
- * command after it. This command goes on, since serve filters its replies
- * under the new access. A mismatch recorded before this command was
- * reported by its binding. It never throws: a value not shaped like a
- * fingerprint is ignored, and a failure to record one only delays the
- * rebuild.
+ * a first-seen fingerprint is recorded and a new mismatch warns once that a
+ * later command rebuilds the copy; this command goes on. Never throws: a
+ * malformed value is ignored, a failed record only delays rebuild
  */
 export function serveAccessCheck(
   state: Pick<ServeUpstreamState, "access" | "recordAccessSeen">,
@@ -174,31 +125,19 @@ export function serveAccessCheck(
 }
 
 /**
- * The most commits one page of a partition read or the changes feed asks
- * serve for. A reply too large to read is asked again at half the limit,
- * down to one commit (swamp-club#4062).
+ * the most commits one page asks serve for; a reply too large to read is asked
+ * again at half the limit, down to one commit
  */
 export const SERVE_PARTITION_PAGE = 1000;
 
-/** The most compacted base entries one page asks serve for. */
 export const SERVE_BASE_PAGE = 1000;
 
-/**
- * How many times a base load starts again when serve's compaction point
- * moves between its pages, before it gives up for this command.
- */
 export const BASE_LOAD_ATTEMPTS = 3;
 
-/**
- * The name every staging file a base load writes in the copy's directory
- * starts with: `base_staging-{uuid}.db`, one per load.
- */
 export const OBSERVED_BASE_STAGING_PREFIX = "base_staging";
 
-/** Base loads in progress in this process, by copy directory. */
 const loadsInProcess = new Map<string, Promise<void>>();
 
-/** What {@link ServeCatchUp} reads from and writes to. */
 export interface ServeCatchUpOptions {
   readonly client: Pick<
     ServeDatastoreClient,
@@ -218,7 +157,6 @@ export interface ServeCatchUpOptions {
     | "recordBaseLoaded"
     | "basePoint"
   >;
-  /** The copy's directory, which a refused divergence names. */
   readonly copyDir: string;
   /**
    * The namespace the copy's commits are in: the v3 datastore's, empty for
@@ -234,13 +172,10 @@ export interface ServeCatchUpOptions {
   readonly lockCopy?: () => Promise<() => Promise<void>>;
 }
 
-/** What one catch-up applied. */
 export interface ServeCatchUpReport {
-  /** Commits appended to the copy. */
   readonly applied: number;
 }
 
-/** Fills a checkout's follower copy from serve: see the module doc. */
 export class ServeCatchUp {
   readonly #client: ServeCatchUpOptions["client"];
   readonly #commitStore: ServeCatchUpOptions["commitStore"];
@@ -248,7 +183,6 @@ export class ServeCatchUp {
   readonly #copyDir: string;
   readonly #namespace: string;
   readonly #lockCopy: () => Promise<() => Promise<void>>;
-  /** One feed catch-up at a time per handle; later callers share it. */
   #feed: Promise<ServeCatchUpReport> | undefined;
 
   constructor(options: ServeCatchUpOptions) {
@@ -323,8 +257,6 @@ export class ServeCatchUp {
           last = commit;
         }
       } catch (error) {
-        // A gap in a partition serve compacted past the copy's base: load
-        // the base, which the feed then reads on from.
         if (
           !(error instanceof ServeCommitsCompactedError) ||
           ++loads > BASE_LOAD_ATTEMPTS
@@ -349,12 +281,6 @@ export class ServeCatchUp {
     }
   }
 
-  /**
-   * Loads serve's compacted base into the copy: see the module doc. A serve
-   * with no base route keeps the refusal `compacted` is. The load starts
-   * again when serve's point moves between pages, at most
-   * {@link BASE_LOAD_ATTEMPTS} times.
-   */
   async #loadBase(
     compacted: ServeCommitsCompactedError,
     signal: AbortSignal,
@@ -494,8 +420,6 @@ export class ServeCatchUp {
         anchor.seq - 1,
         1,
         (at) =>
-          // The copy holds the anchor commit: a follower behind it says so
-          // (swamp-club#4254).
           this.#client.partitionCommits(
             PartitionKey.parse(anchor.partition),
             anchor.seq - 1,
@@ -535,12 +459,6 @@ export class ServeCatchUp {
     }
   }
 
-  /**
-   * Reads `partition` from serve after the copy's head and applies what it
-   * returns, recording serve's head: before a write, and after a stale seq.
-   * The read starts at the copy's head commit, which serve must still hold.
-   * Resolves with serve's head.
-   */
   async catchUpPartition(
     namespace: string,
     partition: PartitionKey,
@@ -602,7 +520,6 @@ export class ServeCatchUp {
     }
   }
 
-  /** The higher of the copy's head and serve's last reported head. */
   async headOf(namespace: string, partition: PartitionKey): Promise<number> {
     const local = (await this.#commitStore.head(namespace, partition)).seq;
     return Math.max(
@@ -611,12 +528,10 @@ export class ServeCatchUp {
     );
   }
 
-  /** Records a head serve reported, as a stale seq's reply carries. */
   recordServeHead(namespace: string, partition: PartitionKey, seq: number) {
     this.#state.recordServeHead(namespace, partition.toString(), seq);
   }
 
-  /** Applies `commit`, reading its partition from serve first on a gap. */
   async #applyInOrder(commit: Commit, signal: AbortSignal): Promise<number> {
     const local =
       (await this.#commitStore.head(commit.namespace, commit.partition))
@@ -639,13 +554,6 @@ export class ServeCatchUp {
     return applied;
   }
 
-  /**
-   * {@link #readPartition} from `after`, or from the partition's compacted
-   * seq when serve compacted past `after` and the base the copy loaded
-   * covers serve's point: the base held what was compacted, so the copy
-   * reads on after it. Otherwise serve's refusal is thrown, for the caller
-   * to load the base.
-   */
   async #readPartitionPastBase(
     namespace: string,
     partition: PartitionKey,
@@ -680,10 +588,9 @@ export class ServeCatchUp {
   }
 
   /**
-   * Pages `partition`'s commits after `after` until serve's head (or
-   * `through`), applying each. Serve's own log has no holes, so a page
-   * filtered to nothing still moves the read on by the page's size. With
-   * `expect`, the copy's head commit, the first page is checked against it.
+   * serve's own log has no holes, so a page filtered to nothing still moves the
+   * read on by the page's size; with `expect`, the first page is checked
+   * against the copy's head commit
    */
   async #readPartition(
     namespace: string,
@@ -699,8 +606,6 @@ export class ServeCatchUp {
     for (;;) {
       signal.throwIfAborted();
       const at = cursor;
-      // The seq the copy holds here, so a follower behind it refuses as
-      // behind instead of answering with a lower head (swamp-club#4254).
       const held = (await this.#commitStore.head(namespace, partition)).seq;
       const read = await pageAtMost(
         `partition ${partition}`,
@@ -794,7 +699,6 @@ export class ServeCatchUp {
   }
 }
 
-/** Removes the staging files a cut-off base load left in `copyDir`. */
 function removeStagingFiles(copyDir: string): void {
   let entries: Deno.DirEntry[];
   try {
@@ -819,11 +723,6 @@ function anchorOf(commit: Commit): ServeFeedAnchor {
   };
 }
 
-/**
- * Reads a page of at most `limit` commits, asking again at half the limit
- * while serve's reply is too large to read, down to one commit, where the
- * refusal stands. Resolves with the limit the page was read at.
- */
 async function pageAtMost<T>(
   route: string,
   cursor: number | string | undefined,
@@ -845,7 +744,6 @@ async function pageAtMost<T>(
   }
 }
 
-/** The refusal of a commit outside the read that asked for it. */
 function foreignCommit(read: string, commit: Commit): Error {
   return new Error(
     `Serve answered ${read} with a commit of ${commit.partition} in ` +

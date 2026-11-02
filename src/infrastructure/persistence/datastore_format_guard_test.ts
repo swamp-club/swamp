@@ -109,9 +109,7 @@ Deno.test("ensureSupportedDatastoreFormat: a config that passed is not read agai
     await ensureSupportedDatastoreFormat("/repo", passed);
 
     await Deno.writeTextFile(path, '{"format":4}');
-    // Same object: checked already in this process.
     await ensureSupportedDatastoreFormat("/repo", passed);
-    // A new object for the same datastore is checked again.
     const fresh: FilesystemDatastoreConfig = { type: "filesystem", path: dir };
     await assertRejects(
       () => ensureSupportedDatastoreFormat("/repo", fresh),
@@ -209,11 +207,6 @@ Deno.test("ensureSupportedDatastoreFormat: a filesystem marker that exists but c
   });
 });
 
-/**
- * A custom datastore config and its fake provider (swamp-club#3534): `read`
- * answers each marker read, in order; the provider declares every v3
- * capability unless `capable` is false.
- */
 function customDatastore(
   read: Array<() => Promise<Uint8Array | null>>,
   options: {
@@ -524,9 +517,6 @@ Deno.test("isV2CustomDatastore: an extension datastore is v2 unless it opened as
   assertEquals(isV2CustomDatastore({ type: "filesystem", path: "/ds" }), false);
 });
 
-// --- swamp-club#3617: a v3 datastore whose marker a crash lost ---
-
-/** Plants a v3 commit log at the datastore root: stat-only, so any bytes. */
 async function plantCommitLog(dir: string): Promise<void> {
   await Deno.writeTextFile(join(dir, "commits.db"), "not opened");
 }

@@ -78,22 +78,19 @@ import { UserError } from "../../domain/errors.ts";
 export interface EvaluatedDefinitionCache {
   definition: Definition;
   /**
-   * Where data sits in the definition, in the coordinates of the raw copy
-   * rehydrate restores (swamp-club#3205). Absent in caches written before
-   * provenance was recorded; `"unreadable"` when present but malformed, which
-   * replay refuses rather than trusting the expressions it holds.
+   * absent in caches written before provenance was recorded; unreadable when
+   * present but malformed, which replay refuses rather than trusting the
+   * expressions it holds
    */
   provenance?: ProvenanceMap | "unreadable";
-  /** Data ranges in persisted text, before vault references are restored. */
   persistedProvenance?: ProvenanceMap | "unreadable";
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
-  /** Where the file holds vault references in place of sensitive values. */
   writtenReferences: readonly WrittenReference[];
   /**
-   * Where the file holds the mask in place of a sensitive argument that did
-   * not come from a vault (swamp-club#3681); a replay refuses these whatever
-   * the type's schema marks at the time. Empty in caches written before.
+   * where the file holds the mask in place of a sensitive argument not from a
+   * vault; a replay refuses these whatever the type's schema marks at the time.
+   * Empty in older caches.
    */
   maskedPaths: readonly MaskedPath[];
   /**
@@ -138,9 +135,9 @@ export function parseEvaluatedDefinitionCache(
       persistedProvenance = "unreadable";
     }
   }
-  // `evaluatedInputs` and `resolvedExpressions` were written by unreleased
-  // builds (swamp-club#3583) and are dropped on read: nothing reads them, and
-  // the definition schema rejects unknown keys.
+  // evaluatedInputs and resolvedExpressions were written by unreleased builds
+  // and are dropped on read: nothing reads them, and the definition schema
+  // rejects unknown keys
   const {
     provenance: _provenance,
     evaluatedInputs: _evaluatedInputs,
@@ -165,16 +162,6 @@ export function parseEvaluatedDefinitionCache(
   };
 }
 
-/**
- * YAML-based repository for evaluated definitions.
- *
- * Stores definitions with CEL expressions already evaluated in the directory structure:
- * {repoDir}/.swamp/definitions-evaluated/{normalized-type}/{name}.yaml
- * (or {uuid}.yaml for legacy/non-filename-safe names).
- *
- * This directory is gitignored as evaluated definitions are derived data
- * that can be regenerated from the source definitions.
- */
 export class YamlEvaluatedDefinitionRepository {
   private readonly baseDir: string;
   private readonly idToActualPath = new Map<DefinitionId, string>();
@@ -183,39 +170,21 @@ export class YamlEvaluatedDefinitionRepository {
     private readonly repoDir: string,
     baseDir?: string,
     private readonly markDirty?: MarkDirtyHook,
-    /**
-     * Tells an evaluated definition a v3 read model could not materialise
-     * from an absent one (swamp-club#3617), so a lookup that finds no
-     * evaluated definition fails loudly on it instead.
-     */
     readonly unreadableContent?: UnreadableContentLookup,
   ) {
     this.baseDir = baseDir ??
       swampPath(repoDir, SWAMP_SUBDIRS.definitionsEvaluated);
   }
 
-  /**
-   * Throws when the datastore recorded the evaluated definition missing at
-   * `path` as unreadable (swamp-club#3617). A file that is simply absent
-   * returns.
-   */
   private async throwIfUnreadable(path: string): Promise<void> {
     const error = await this.unreadableContent?.(path);
     if (error !== undefined) throw error;
   }
 
-  /**
-   * Finds an evaluated definition by its ID.
-   *
-   * @param type - The model type
-   * @param id - The definition ID
-   * @returns The evaluated definition if found, or null
-   */
   async findById(
     type: ModelType,
     id: DefinitionId,
   ): Promise<Definition | null> {
-    // Fast path: try UUID-based filename (legacy)
     const legacyPath = this.getLegacyPath(type, id);
     try {
       const content = await Deno.readTextFile(legacyPath);
@@ -231,7 +200,6 @@ export class YamlEvaluatedDefinitionRepository {
       }
     }
 
-    // Try cached path
     const cachedPath = this.idToActualPath.get(id);
     if (cachedPath && cachedPath !== legacyPath) {
       try {
@@ -245,7 +213,6 @@ export class YamlEvaluatedDefinitionRepository {
       }
     }
 
-    // Slow path: scan all files
     const definitions = (await this.findAllWithProvenance(type)).map((c) =>
       c.definition
     );
@@ -255,12 +222,6 @@ export class YamlEvaluatedDefinitionRepository {
     return null;
   }
 
-  /**
-   * Finds all evaluated definitions of a given type.
-   *
-   * @param type - The model type
-   * @returns Array of evaluated definitions
-   */
   async findAll(type: ModelType): Promise<Definition[]> {
     const definitions = (await this.findAllWithProvenance(type)).map((c) =>
       c.definition
@@ -297,19 +258,11 @@ export class YamlEvaluatedDefinitionRepository {
     return definitions;
   }
 
-  /**
-   * Finds an evaluated definition by its name within a specific type.
-   *
-   * @param type - The model type
-   * @param name - The definition name
-   * @returns The evaluated definition if found, or null
-   */
   async findByName(type: ModelType, name: string): Promise<Definition | null> {
     return (await this.findByNameWithProvenance(type, name))?.definition ??
       null;
   }
 
-  /** Reads definition and provenance from the same cache snapshot. */
   async findByNameWithProvenance(
     type: ModelType,
     name: string,
@@ -344,20 +297,12 @@ export class YamlEvaluatedDefinitionRepository {
     return null;
   }
 
-  /**
-   * Finds an evaluated definition by its name across all model types.
-   *
-   * @param name - The definition name
-   * @returns The definition and its type if found, or null
-   */
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
     const definitionsDir = this.baseDir;
     const found = await this.searchDefinitionByName(definitionsDir, [], name);
     if (found) return found;
-    // The name, under whichever type's directory: one query over the base,
-    // which also finds a type with no directory left (swamp-club#3617).
     for (
       const entry of await unreadableRecordsUnder(
         this.unreadableContent,
@@ -369,9 +314,6 @@ export class YamlEvaluatedDefinitionRepository {
     return null;
   }
 
-  /**
-   * Recursively searches for a definition file by name in nested directory structures.
-   */
   private async searchDefinitionByName(
     currentDir: string,
     pathSegments: string[],
@@ -382,7 +324,6 @@ export class YamlEvaluatedDefinitionRepository {
         const fullPath = join(currentDir, entry.name);
 
         if (entry.isFile && entry.name.endsWith(".yaml")) {
-          // Found a YAML file, check if it matches the name
           const content = await Deno.readTextFile(fullPath);
           const cached = parseEvaluatedDefinitionCache(content);
           if (!cached) continue;
@@ -390,12 +331,10 @@ export class YamlEvaluatedDefinitionRepository {
 
           if (definition.name === name) {
             this.idToActualPath.set(definition.id as DefinitionId, fullPath);
-            // Reconstruct the model type from the path segments
             const typeStr = pathSegments.join("/");
             return { definition, type: ModelType.create(typeStr) };
           }
         } else if (entry.isDirectory) {
-          // Recursively search subdirectories
           const result = await this.searchDefinitionByName(
             fullPath,
             [...pathSegments, entry.name],
@@ -416,11 +355,6 @@ export class YamlEvaluatedDefinitionRepository {
     return null;
   }
 
-  /**
-   * Finds all evaluated definitions across all model types in the repository.
-   *
-   * @returns Array of all evaluated definitions with their types
-   */
   async findAllGlobal(): Promise<
     { definition: Definition; type: ModelType }[]
   > {
@@ -431,9 +365,6 @@ export class YamlEvaluatedDefinitionRepository {
     return results;
   }
 
-  /**
-   * Recursively collects all definition files from nested directory structures.
-   */
   private async collectAllDefinitions(
     currentDir: string,
     pathSegments: string[],
@@ -444,18 +375,15 @@ export class YamlEvaluatedDefinitionRepository {
         const fullPath = join(currentDir, entry.name);
 
         if (entry.isFile && entry.name.endsWith(".yaml")) {
-          // Found a YAML file, add it to results
           const content = await Deno.readTextFile(fullPath);
           const cached = parseEvaluatedDefinitionCache(content);
           if (!cached) continue;
           const { definition } = cached;
 
           this.idToActualPath.set(definition.id as DefinitionId, fullPath);
-          // Reconstruct the model type from the path segments
           const typeStr = pathSegments.join("/");
           results.push({ definition, type: ModelType.create(typeStr) });
         } else if (entry.isDirectory) {
-          // Recursively search subdirectories
           await this.collectAllDefinitions(
             fullPath,
             [...pathSegments, entry.name],
@@ -471,11 +399,9 @@ export class YamlEvaluatedDefinitionRepository {
   }
 
   /**
-   * Throws when a sensitive argument of `definition` holds a literal other
-   * than the mask with no written reference. As in
-   * `YamlDefinitionRepository.save`, the type's schemas come from the
-   * registry, loading extensions if it takes that, and a type no extension
-   * registers has nothing to check against and is let through.
+   * throws when a sensitive argument holds a literal other than the mask with
+   * no written reference; a type no extension registers has nothing to check
+   * against and is let through
    */
   private async refusePlaintextSensitiveArguments(
     type: ModelType,
@@ -500,34 +426,25 @@ export class YamlEvaluatedDefinitionRepository {
     }
   }
 
-  /**
-   * Saves an evaluated definition.
-   *
-   * @param type - The model type
-   * @param definition - The evaluated definition to save
-   */
   async save(
     type: ModelType,
     definition: Definition,
     /**
-     * Where data sits in the raw copy of `definition` (swamp-club#3205).
-     * Required so every writer states it; `undefined` writes the legacy
-     * format, which replays with the raw-text rule alone.
+     * required so every writer states it; undefined writes the legacy format,
+     * which replays with the raw-text rule alone
      */
     provenance: ProvenanceMap | undefined,
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
-    /** The positions `definition` holds the mask at (swamp-club#3681). */
     maskedPaths: readonly MaskedPath[] = [],
     persistedProvenance?: ProvenanceMap,
   ): Promise<void> {
-    // Fail closed before anything is staged or written: a sensitive argument
-    // reaches the cache only as a vault reference or the mask.
+    // fail closed before anything is staged or written: a sensitive argument
+    // reaches the cache only as a vault reference or the mask
     z.array(MaskedPathSchema).parse(maskedPaths);
-    // persistEvaluatedDefinition builds that form, so this never fires for a
-    // writer that goes through it; one that bypasses it fails here instead
-    // of leaking (swamp-club#3681).
+    // persistEvaluatedDefinition builds that form, so a writer going through it
+    // never trips this; one that bypasses it fails here instead of leaking
     await this.refusePlaintextSensitiveArguments(
       type,
       definition,
@@ -566,20 +483,15 @@ export class YamlEvaluatedDefinitionRepository {
           ? maskProvenance(persistedProvenance, maskedPaths).toData()
           : undefined,
       };
-      // Ensure type metadata is always present in persisted YAML
       data.type = type.normalized;
-      // typeVersion is copied verbatim from the source definition by toData().
-      // Evaluated definitions are derived data replayed under --last-evaluated,
-      // so restamping here would reintroduce the staleness masking fixed in the
-      // source repository (swamp-club#900).
-      // Remove undefined values since YAML can't stringify them
+      // typeVersion is copied verbatim from the source definition; evaluated
+      // definitions are replayed under --last-evaluated, so restamping would
+      // mask staleness as in the source repository
       const cleanData = JSON.parse(JSON.stringify(data));
       const content = stringifyYaml(cleanData as Record<string, unknown>);
       await atomicWriteTextFile(targetPath, content);
-      // The paths a removal below actually removed, for their v3 tombstones.
       const removed: string[] = [];
 
-      // Clean up old file if it's at a different path
       const previousPath = this.idToActualPath.get(definition.id);
       if (previousPath && previousPath !== targetPath) {
         try {
@@ -592,7 +504,6 @@ export class YamlEvaluatedDefinitionRepository {
         }
       }
 
-      // Also check legacy UUID path
       const legacyPath = this.getLegacyPath(type, definition.id);
       if (targetPath !== legacyPath && previousPath !== legacyPath) {
         try {
@@ -606,8 +517,8 @@ export class YamlEvaluatedDefinitionRepository {
       }
 
       this.idToActualPath.set(definition.id, targetPath);
-      // On v3 (swamp-club#3256): the evaluated definition is derived, so its
-      // changes carry no precondition.
+      // on v3 the evaluated definition is derived, so its changes carry no
+      // precondition
       await stageTyped(this.markDirty, () => {
         const changes = new ModelChanges(type, definition.id);
         return [
@@ -623,17 +534,8 @@ export class YamlEvaluatedDefinitionRepository {
     });
   }
 
-  /**
-   * Deletes an evaluated definition.
-   *
-   * @param type - The model type
-   * @param id - The definition ID
-   */
   async delete(type: ModelType, id: DefinitionId): Promise<void> {
-    // Lookup, file removal and change staging are measured apart into the
-    // running diagnostic phase, if any.
     const tally = currentDiagnosticTally();
-    // Populate cache so we discover name-based files on a cold instance
     const definition = await tally.measure(
       "lookup",
       () => this.findById(type, id),
@@ -664,7 +566,6 @@ export class YamlEvaluatedDefinitionRepository {
                 await Deno.remove(path);
                 removed.push(path);
 
-                // Clean up empty parent directories
                 const definitionsDir = swampPath(
                   this.repoDir,
                   SWAMP_SUBDIRS.definitionsEvaluated,
@@ -689,20 +590,10 @@ export class YamlEvaluatedDefinitionRepository {
     );
   }
 
-  /**
-   * Generates a new unique ID.
-   */
   nextId(): DefinitionId {
     return createDefinitionId(crypto.randomUUID());
   }
 
-  /**
-   * Returns the file path for an evaluated definition.
-   *
-   * @param type - The model type
-   * @param id - The definition ID
-   * @returns The file path
-   */
   getPath(type: ModelType, id: DefinitionId): string {
     return this.idToActualPath.get(id) ?? this.getLegacyPath(type, id);
   }
@@ -729,10 +620,6 @@ export class YamlEvaluatedDefinitionRepository {
     return join(this.baseDir, type.toDirectoryPath());
   }
 
-  /**
-   * Clears all evaluated definitions.
-   * Used when needing to regenerate all evaluations.
-   */
   async clearAll(): Promise<void> {
     return await withChangeSignalled(this.markDirty, {
       kind: "remove",
@@ -740,8 +627,8 @@ export class YamlEvaluatedDefinitionRepository {
     }, {
       typed: true,
     }, async () => {
-      // On v3, each file's model is read before the removal destroys it, so
-      // the directory removal stages one tombstone per file.
+      // on v3 each file's model is read before the removal destroys it, so the
+      // directory removal stages one tombstone per file
       const tombstones = typedStagingActive(this.markDirty)
         ? await this.tombstonesOfAll()
         : [];
@@ -760,10 +647,9 @@ export class YamlEvaluatedDefinitionRepository {
   }
 
   /**
-   * A tombstone for every evaluated definition file under the base, in its
-   * model's partition: from the raw `type` and `id` the file declares (the
-   * id of a legacy uuid-named file as a fallback), never a schema parse. A
-   * file that names no valid model stages nothing; no repository put it.
+   * built from the raw type and id the file declares (a legacy uuid-named
+   * file's id as fallback), never a schema parse; a file that names no valid
+   * model stages nothing
    */
   private async tombstonesOfAll(): Promise<TypedChange[]> {
     const tombstones: TypedChange[] = [];
@@ -790,7 +676,6 @@ export class YamlEvaluatedDefinitionRepository {
     return tombstones;
   }
 
-  /** The record key of a file under the base. */
   private keyOf(path: string) {
     return keyUnder(SWAMP_SUBDIRS.definitionsEvaluated, this.baseDir, path);
   }

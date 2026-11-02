@@ -61,45 +61,35 @@ import {
 import { resolveCustomProvider } from "./datastore_global_lock.ts";
 
 /**
- * How long the second, uncapped read of an extension datastore's marker may
- * take when the first one timed out or failed and the provider could host v3
- * (swamp-club#3534): long enough for a slow first request and a credentials
- * fetch, short enough that an outage still ends the command.
+ * second, uncapped marker read after a first timeout or failure when the
+ * provider could host v3; covers a slow first request and credentials fetch but
+ * still ends the command in an outage
  */
 export const DATASTORE_FORMAT_UNCAPPED_READ_TIMEOUT_MS = 60_000;
 
 const logger = getLogger(["swamp", "datastore", "format-marker"]);
 
-/** Options for {@link ensureSupportedDatastoreFormat}. */
 export interface DatastoreFormatGuardOptions
   extends ReadDatastoreFormatMarkerOptions {
   /**
-   * The datastore is the directory `swamp datastore setup` was pointed at,
-   * not the repository's own: a lost marker's advice says so
-   * (swamp-club#3617).
+   * the datastore is the directory setup was pointed at, not the repository's
+   * own; a lost marker's advice says so
    */
   readonly setupTarget?: boolean;
 }
 
 /**
- * The v3 commit log's file at a filesystem datastore's root. Named here
- * only to stat it: whether it is there tells a v3 datastore whose marker a
- * crash lost from a v2 one (swamp-club#3617). It is never opened here.
+ * named here only to stat: its presence tells a v3 datastore whose marker a
+ * crash lost from a v2 one; never opened here
  */
 const V3_COMMIT_LOG_FILE = "commits.db";
 
-/**
- * How a filesystem datastore's format marker is lost (swamp-club#3617):
- * missing (`absent`), or a blank file a crash left ({@link isBlankDatastoreFormatMarker}).
- */
 export type LostDatastoreFormatMarker = "absent" | "blank";
 
 /**
- * Whether the filesystem datastore at `datastorePath` is a v3 datastore
- * whose format marker a crash lost (swamp-club#3617): a `commits.db` that is
- * a regular file beside no marker, or beside a blank one. It stats the
- * commit log and never opens it. Undefined otherwise, including when either
- * cannot be looked at.
+ * a commits.db regular file beside no marker or a blank one; it stats the
+ * commit log and never opens it; undefined otherwise, including when either
+ * can't be looked at
  */
 export async function lostDatastoreFormatMarker(
   datastorePath: string,
@@ -128,7 +118,6 @@ export async function lostDatastoreFormatMarker(
   });
 }
 
-/** What {@link lostDatastoreFormatMarker} says, given the marker's read. */
 async function lostMarkerOf(
   datastorePath: string,
   read: DatastoreFormatMarkerRead,
@@ -142,7 +131,6 @@ async function lostMarkerOf(
   return await holdsV3CommitLog(datastorePath) ? lost : undefined;
 }
 
-/** Whether a regular-file `commits.db` is at the datastore's root. */
 async function holdsV3CommitLog(datastorePath: string): Promise<boolean> {
   try {
     return (await Deno.lstat(join(datastorePath, V3_COMMIT_LOG_FILE))).isFile;
@@ -152,62 +140,16 @@ async function holdsV3CommitLog(datastorePath: string): Promise<boolean> {
 }
 
 /**
- * Config objects already checked in this process, whether the check passed
- * or was skipped (a failed read or a datastore that cannot carry a marker),
- * with the engine the check chose, so a degraded remote costs one bounded
- * wait per config, not one per call. A refusal is never recorded.
- * `resolveDatastoreForRepo` returns a fresh config each call and the helpers
- * hand that same object on to `acquireModelLocks`, so one command pays one
- * read, while a newly resolved config is always checked again. Nothing
- * outlives the process: a datastore can be migrated between runs.
+ * configs already checked this process, passed or skipped, with the chosen
+ * engine, so a degraded remote costs one bounded wait per config; refusals are
+ * never recorded; nothing outlives the process
  */
 const guarded = new WeakMap<DatastoreConfig, DatastoreEngine>();
 
 /**
- * Refuses a datastore whose format marker names a format this binary cannot
- * read, before anything is locked, pulled, pushed or written, and returns the
- * engine to open it with (swamp-club#3279). A datastore without a marker is
- * format 2 and passes. A failed read, or a datastore that cannot carry a
- * marker, is logged at debug and passes as v2, unless the config asks for v3,
- * which needs the marker to prove it.
- *
- * The marker decides the engine. A config's `format` key only records what
- * setup chose, and a config that disagrees with its marker is refused
- * rather than trusted either way. An extension datastore opens as v3
- * (swamp-club#3534) only when its provider can host v3:
- *
- * - config 3 and marker 3: v3;
- * - config 3 and no marker, or a marker naming another format: refused;
- * - config 3 and a marker that cannot be read: v3, provisionally. The v3
- *   writer lease and the copy's first refresh read the marker again, with
- *   no tight deadline, before anything touches the datastore
- *   (`confirmV3BucketMarker`), so a hand-edited `format: 3` over a v2
- *   datastore writes nothing there;
- * - an override (`SWAMP_DATASTORE`, `--datastore`) and marker 3: v3; a
- *   `.swamp.yaml` config with no format and marker 3: refused, since a v3
- *   bucket's repos always record `format: 3`;
- * - no config key, a marker that cannot be read, and a provider that could
- *   host v3: read again without the tight deadline, and refused if that
- *   fails too, never opened as v2 on what may be a v3 datastore;
- * - otherwise a marker that cannot be read is skipped as v2, as before.
- *
- * A filesystem datastore whose marker a crash lost beside its v3 commit log
- * (swamp-club#3617, {@link lostDatastoreFormatMarker}) is refused with
- * advice for where it was met: a blank marker as an invalid one, a missing
- * marker as a mismatch under a config that says format 3 and as
- * {@link LostDatastoreFormatMarkerError} otherwise, never opened as v2.
- *
- * @throws UnsupportedDatastoreFormatError when the format is newer
- * @throws InvalidDatastoreFormatMarkerError when the marker is garbled
- * @throws DatastoreFormatMismatchError when config and marker disagree
- * @throws LostDatastoreFormatMarkerError when a v3 datastore's marker is
- *   missing under a config that does not say format 3
- * @throws UnreachableDatastoreFormatMarkerError when an extension datastore
- *   that may be v3 cannot have its marker read
- * @throws V3HostingUnsupportedError when a v3 extension datastore's provider
- *   cannot host v3
- * @throws V3BucketExtensionTooOldError when a v3 extension datastore's
- *   pulled extension is older than V3_BUCKET_MIN_EXTENSION_VERSION
+ * the marker decides the engine; a config that disagrees with it is refused; no
+ * marker means format 2; an unreadable marker passes as v2 unless v3 is
+ * possible, then it is re-read, never opened as v2
  */
 export async function ensureSupportedDatastoreFormat(
   repoDir: string,
@@ -223,10 +165,9 @@ export async function ensureSupportedDatastoreFormat(
     custom && read.kind === "unreadable" && config.format === undefined &&
     config.override === true
   ) {
-    // An override names no format, so it may be v3: a provider that could
-    // host it is read again, never opened as v2 while the marker is
-    // unknown. A `.swamp.yaml` config with no format is v2: setup writes
-    // `format: 3` for every v3 datastore, and clones carry it.
+    // an override names no format so it may be v3: a provider that could host
+    // it is read again, never opened as v2 while the marker is unknown; a
+    // .swamp.yaml config with no format is v2, as setup writes format 3
     provider = await providerOf(config, options);
     if (
       provider !== undefined && missingV3Capabilities(provider).length === 0
@@ -293,15 +234,13 @@ export async function ensureSupportedDatastoreFormat(
       ? engineForFormat(decision.format)
       : "v2";
     const asked = config.format;
-    // A v3 extension datastore whose marker cannot be read now is opened
-    // provisionally: the lease and the copy's refresh confirm the marker
-    // before anything touches the datastore.
+    // a v3 extension datastore whose marker can't be read now opens
+    // provisionally: the lease and the copy's refresh confirm the marker before
+    // anything touches the datastore
     if (custom && asked === 3 && read.kind === "unreadable") engine = "v3";
-    // A `.swamp.yaml` extension config with no format is v2: a v3 bucket's
-    // repos always record `format: 3`, so a marker that says v3 under one
-    // is another datastore's, or a hand edit, and is never opened as v3
-    // (swamp-club#3534). An override carries no format and follows its
-    // marker.
+    // a .swamp.yaml extension config with no format is v2: v3 bucket repos
+    // always record format 3, so a v3 marker under one is another datastore's
+    // or a hand edit, never opened as v3; an override follows its marker
     if (
       custom && asked === undefined && config.override !== true &&
       engine === "v3"
@@ -339,8 +278,8 @@ export async function ensureSupportedDatastoreFormat(
       );
     }
     assertV3Hosting(provider, config.type);
-    // A release older than the minimum lacks swamp-club#3549's guard that
-    // keeps its v2 sync off a v3 bucket (swamp-club#3567).
+    // a release older than the minimum lacks the guard that keeps its v2 sync
+    // off a v3 bucket
     const resolveExtension = options?.resolveExtension ??
       loadedDatastoreExtension;
     const extension = resolveExtension(repoDir, config.type);
@@ -356,16 +295,14 @@ export async function ensureSupportedDatastoreFormat(
 }
 
 /**
- * Records that `config` opens as v3 through serve (swamp-club#3985): its
- * storage is never read here, so its marker is not either. Serve refuses a
- * datastore that is not v3 (`409 datastore_not_v3`), which stands for the
- * marker check, and later guards of the same config answer v3 for free.
+ * its storage is never read here, so neither is its marker; serve refuses a
+ * non-v3 datastore (409 datastore_not_v3), which stands for the marker check,
+ * and later guards of the same config answer v3 free
  */
 export function recordServeUpstreamFormat(config: DatastoreConfig): void {
   guarded.set(config, "v3");
 }
 
-/** The provider of `config`, or undefined when it cannot be resolved. */
 async function providerOf(
   config: CustomDatastoreConfig,
   options: ReadDatastoreFormatMarkerOptions | undefined,
@@ -382,12 +319,6 @@ function reasonOf(read: DatastoreFormatMarkerRead): string {
   return read.error instanceof Error ? read.error.message : String(read.error);
 }
 
-/**
- * The engine {@link ensureSupportedDatastoreFormat} chose for `config`, or
- * `undefined` when this config object has not been checked in this process.
- * Code that builds on a checked config (path resolvers, repository contexts)
- * reads the engine here instead of reading the marker again.
- */
 export function checkedDatastoreEngine(
   config: DatastoreConfig,
 ): DatastoreEngine | undefined {
@@ -395,12 +326,9 @@ export function checkedDatastoreEngine(
 }
 
 /**
- * The engine of `config`, synchronously, for code that builds on a config
- * without checking it first (a path resolver): the checked engine when
- * there is one; for an unchecked filesystem datastore, what its format
- * marker says, read from disk; for an unchecked extension datastore, what
- * its config's `format` key says, since its marker is remote. It never
- * refuses: the format guard does that where a datastore is opened.
+ * synchronous, for unchecked configs such as path resolvers: checked engine,
+ * else the filesystem marker from disk, else an extension config's format key
+ * as its marker is remote; never refuses
  */
 export function datastoreEngineOf(config: DatastoreConfig): DatastoreEngine {
   const known = guarded.get(config) ?? peeked.get(config);
@@ -423,26 +351,16 @@ export function datastoreEngineOf(config: DatastoreConfig): DatastoreEngine {
 }
 
 /**
- * Whether `config` names an extension datastore synced the v2 way: its own
- * sync service, its provider's locks, its sync service's control plane. A
- * v3 extension datastore (swamp-club#3534) is not: it commits through the
- * commit log, as a filesystem v3 datastore does.
- *
- * Not a type guard on purpose: false does not make a config a filesystem
- * one. Pair it with `isCustomDatastoreConfig` to narrow.
+ * true for an extension datastore synced the v2 way; a v3 one commits through
+ * the commit log. Not a type guard on purpose: false doesn't make a config a
+ * filesystem one, so pair with isCustomDatastoreConfig
  */
 export function isV2CustomDatastore(config: DatastoreConfig): boolean {
   return isCustomDatastoreConfig(config) && datastoreEngineOf(config) !== "v3";
 }
 
-/** What {@link datastoreEngineOf} read from disk, per config object. */
 const peeked = new WeakMap<DatastoreConfig, DatastoreEngine>();
 
-/**
- * The engine of the datastore a `.swamp.yaml` datastore block names: v3
- * when the block says `format: 3`; for a filesystem datastore also when its
- * marker does (swamp-club#3279); v2 otherwise.
- */
 export function datastoreBlockEngine(
   repoDir: string,
   block: { type?: string; path?: string; format?: number } | undefined,

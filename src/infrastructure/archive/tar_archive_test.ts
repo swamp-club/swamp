@@ -163,7 +163,6 @@ Deno.test("listTarGzEntries: returns the archive paths without writing to disk",
 
     const bytes = await Deno.readFile(archive);
     const entries = await listTarGzEntries(streamFromBytes(bytes));
-    // The exact set: directory entry "thing/" + file "thing/a.txt"
     assert(entries.includes("thing/a.txt"));
     assert(entries.some((e) => e === "thing/" || e === "thing"));
   });
@@ -172,15 +171,12 @@ Deno.test("listTarGzEntries: returns the archive paths without writing to disk",
 Deno.test({
   name:
     "createTarGz: does not produce AppleDouble (._foo) entries on macOS source trees",
-  // Only meaningful on darwin where BSD tar would otherwise inject them.
-  // Verifies the new code path doesn't introduce any.
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withTempDir(async (root) => {
       const top = join(root, "src", "ext");
       await ensureDir(top);
       await Deno.writeTextFile(join(top, "main.txt"), "real content");
-      // Hand-place an AppleDouble companion to confirm we filter it.
       await Deno.writeTextFile(join(top, "._main.txt"), "fork goo");
 
       const archive = join(root, "out.tar.gz");
@@ -328,9 +324,6 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withTempDir(async (root) => {
-      // Craft an archive where a symlink points outside root,
-      // followed by a file write through that symlink.
-      // The symlink validation should catch this before the file is written.
       const { TarStream } = await import("@std/tar/tar-stream");
       const archivePath = join(root, "bad.tar.gz");
       const file = await Deno.open(archivePath, {
@@ -430,19 +423,16 @@ Deno.test("extractTarGz: applies file mode bits on POSIX", async () => {
 
     const stat = await Deno.stat(join(dst, "ext", "exe.sh"));
     if (Deno.build.os !== "windows") {
-      // Executable bits should round-trip on POSIX.
       assert(
         (stat.mode! & 0o111) !== 0,
         `expected exe bits set; got 0o${(stat.mode! & 0o777).toString(8)}`,
       );
     } else {
-      // On Windows, chmod is a no-op; just assert file exists with content.
       assertEquals(stat.isFile, true);
     }
   });
 });
 
-/** Reads each entry's header mode from a `.tar.gz`, keyed by archive path. */
 async function headerModes(archive: string): Promise<Map<string, number>> {
   const modes = new Map<string, number>();
   const bytes = await Deno.readFile(archive);
@@ -512,7 +502,6 @@ Deno.test({
   },
 });
 
-/** Builds a small `.tar.gz` (one zero-filled file) and its decompressed length. */
 async function buildSizedArchive(
   root: string,
   fileBytes: number,
@@ -595,11 +584,9 @@ Deno.test("listTarGzEntries + extractTarGz: accept an archive whose decompressed
   });
 });
 
-// The tests below read from a real FsFile and fail if a failure path leaves
-// the file handle open. Deno's resource sanitizer does not track FsFile
-// handles, so each test probes the handle with a non-destructive stat, which
-// throws BadResource once the stream has released it. Cancellation reaches
-// the source asynchronously after the error surfaces, so the probe polls.
+// Deno's resource sanitizer does not track FsFile handles, so each test probes
+// the handle with a stat that throws BadResource once released, polling because
+// cancellation arrives asynchronously
 
 async function isReleased(file: Deno.FsFile): Promise<boolean> {
   try {
@@ -683,11 +670,6 @@ handleTest(
   },
 );
 
-/**
- * Writes a `.tar.gz` whose first entry is `firstPath`, followed by 4 MiB of
- * incompressible data. The tail is larger than the stream buffers, so a
- * failure on the first entry leaves most of the file unread.
- */
 async function writeArchiveWithLargeTail(
   path: string,
   firstPath: string,

@@ -23,9 +23,8 @@ import { requestStop } from "./windows_stop_request.ts";
 const logger = getLogger(["process", "kill"]);
 
 /**
- * Verifies that the process at the given PID is a swamp process by
- * inspecting its command line. Returns false if the PID doesn't exist
- * or belongs to a different program — guarding against PID reuse.
+ * guards against PID reuse: false if the PID does not exist or belongs to a
+ * different program
  */
 async function isSwampProcess(pid: number): Promise<boolean> {
   // Windows lacks `ps`; skip verification and trust the caller's PID.
@@ -46,7 +45,6 @@ async function isSwampProcess(pid: number): Promise<boolean> {
   }
 }
 
-/** The pids whose parent is `ppid`; empty when they cannot be listed. */
 export async function findChildPids(ppid: number): Promise<number[]> {
   try {
     if (Deno.build.os === "windows") {
@@ -85,10 +83,9 @@ export async function findChildPids(ppid: number): Promise<number[]> {
 }
 
 /**
- * The start time `ps` reports for each of `pids` still running, keyed by pid.
- * A pid that later reports a different start time belongs to another
- * process. Returns undefined where start times cannot be read (Windows, or
- * `ps` failing), and callers then trust the pids as before.
+ * a pid later reporting a different start time belongs to another process;
+ * undefined where start times cannot be read (Windows, ps failing), and callers
+ * then trust the pids
  */
 async function processStartTimes(
   pids: readonly number[],
@@ -115,11 +112,9 @@ async function processStartTimes(
 }
 
 /**
- * Drops the pids that now belong to another process: those whose start time
- * in `after` differs from the one in `before`. A pid missing from `after` no
- * longer exists and is kept: while its process group lives on, the kernel
- * does not hand the pid out again, so a group kill still reaches the group
- * safely. Without start times on either side, every pid is kept.
+ * a pid missing from after is kept: while its group lives the kernel does not
+ * reuse the pid, so a group kill is safe; without start times on either side
+ * every pid is kept
  */
 export function withoutReusedPids(
   pids: readonly number[],
@@ -146,10 +141,8 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * SIGKILLs the process group led by each of `pids`. Shell steps run as their
- * own group leaders when isolated (see `process_group_policy.ts`), so this
- * reaches the grandchildren a step left behind. A pid that does not lead a
- * group has no group of that id, and the kill fails harmlessly.
+ * isolated shell steps lead their own group, so this reaches grandchildren a
+ * step left behind; a pid that leads no group fails harmlessly
  */
 export function killChildGroups(pids: readonly number[]): void {
   if (Deno.build.os === "windows") return;
@@ -160,7 +153,6 @@ export function killChildGroups(pids: readonly number[]): void {
   }
 }
 
-/** What {@link sendGracefulStop} uses, replaceable in tests. */
 export interface GracefulStopDeps {
   os?: typeof Deno.build.os;
   requestStop?: (pid: number) => boolean;
@@ -168,11 +160,9 @@ export interface GracefulStopDeps {
 }
 
 /**
- * Asks the swamp process `pid` to stop and save its work: SIGTERM on POSIX,
- * a stop request on Windows, where Deno's SIGTERM is `TerminateProcess`. A
- * Windows process that cannot be reached that way is sent SIGTERM anyway,
- * which ends it outright, as before stop requests existed. Returns true when
- * a stop request reached the process.
+ * SIGTERM on POSIX, a stop request on Windows, where SIGTERM is
+ * TerminateProcess; an unreachable Windows process gets SIGTERM anyway, ending
+ * it outright. True when a stop request reached the process
  */
 export function sendGracefulStop(
   pid: number,
@@ -190,12 +180,9 @@ export function sendGracefulStop(
 }
 
 /**
- * The children from the snapshot taken before the stop that are still to be
- * killed once the parent is gone: those not in `current`, the snapshot taken
- * just before a forced kill, less any pid reused during the wait. None after
- * a stop request: the parent ended its own commands, its Job Objects end the
- * rest, and Windows has no start times to tell a reused pid from a child
- * through a wait that can last the whole grace.
+ * none after a stop request: the parent ended its own commands, its Job Objects
+ * end the rest, and Windows has no start times to tell a reused pid from a
+ * child
  */
 export function snapshotChildrenToKill(
   snapshot: readonly number[],
@@ -213,12 +200,8 @@ export function snapshotChildrenToKill(
 }
 
 /**
- * Kills a process tree (parent + children) after verifying the parent is
- * a swamp process. Asks it to stop gracefully ({@link sendGracefulStop}),
- * waits up to {@link maxWaitMs} for exit, then SIGKILL anything still alive.
- *
- * Returns true if the process was found and killed, false if the PID was
- * not a swamp process (PID reuse) or already dead.
+ * stops gracefully, waits up to maxWaitMs, then SIGKILLs what remains; false if
+ * the PID is not a swamp process (PID reuse) or already dead
  */
 export async function killProcessTree(
   pid: number,
@@ -241,7 +224,6 @@ export async function killProcessTree(
 
   const stopRequested = sendGracefulStop(pid);
 
-  // Poll until parent exits or timeout
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline && isProcessAlive(pid)) {
     await new Promise((r) => setTimeout(r, 100));
@@ -282,7 +264,6 @@ export async function killProcessTree(
     }
   }
 
-  // Final wait for everything to be gone
   const finalDeadline = Date.now() + 500;
   while (Date.now() < finalDeadline) {
     const anyAlive = [pid, ...children].some(isProcessAlive);

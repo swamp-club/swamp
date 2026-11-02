@@ -113,7 +113,6 @@ Deno.test("readInstalledExtensionDigest: macOS resource forks are ignored", asyn
 
     const before = await readInstalledExtensionDigest(dir);
 
-    // Dropping a Finder-copy resource fork should not perturb the digest.
     await Deno.writeTextFile(join(dir, "models", "._foo.ts"), "fork");
     await Deno.writeTextFile(join(dir, "._manifest.yaml"), "fork");
 
@@ -125,15 +124,12 @@ Deno.test("readInstalledExtensionDigest: macOS resource forks are ignored", asyn
 Deno.test("readInstalledExtensionDigest: empty directory produces a stable digest", async () => {
   await withTempDir(async (dir) => {
     const digest = await readInstalledExtensionDigest(dir);
-    // Empty-set digest: SHA-256 of the empty string.
     assertEquals(
       digest,
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     );
   });
 });
-
-// ---- nested entry roots (swamp-club#2723) ----
 
 async function writeTree(root: string, files: Record<string, string>) {
   for (const [rel, content] of Object.entries(files)) {
@@ -150,7 +146,6 @@ Deno.test("readInstalledExtensionDigest: a root with no nested entries hashes as
       "models/sub/b.ts": "b\n",
       "manifest.yaml": "name: x\n",
     });
-    // Pinned from the reader before nested-root exclusion existed.
     const golden =
       "3005ac7db2817ffd05b2e940b0660557d5f047810282ae4599569ecb228dd0e6";
     assertEquals(await readInstalledExtensionDigest(dir), golden);
@@ -202,7 +197,6 @@ Deno.test("installedDigestMatches: accepts the legacy whole-tree digest only for
 
     assertEquals(await installedDigestMatches(dir, current!, ["child"]), true);
     assertEquals(await installedDigestMatches(dir, legacy!, ["child"]), true);
-    // With no nested entries there is nothing legacy to accept.
     assertEquals(await installedDigestMatches(dir, current!, []), false);
     assertEquals(await installedDigestMatches(dir, "other", ["child"]), false);
 
@@ -223,9 +217,8 @@ Deno.test("installedDigestMatches: returns null when the root is missing", async
   );
 });
 
-// The lockfile's filesChecksum is shared by every checkout, so the digest
-// of a nested tree must not depend on the OS's path separator. This value
-// was computed on Linux; the same test runs on Windows (swamp-club#3569).
+// the lockfile checksum is shared by every checkout, so a nested tree's digest
+// must not depend on the OS path separator
 Deno.test("readInstalledExtensionDigest: a nested tree hashes the same on every OS", async () => {
   await withTempDir(async (dir) => {
     await Deno.mkdir(join(dir, "models", "_lib"), { recursive: true });

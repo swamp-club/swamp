@@ -33,9 +33,7 @@ interface Fixture {
   catalog: CatalogStore;
   repo: FileSystemUnifiedDataRepository;
   modelId: string;
-  /** Saves `count` versions of `name`, each with JSON content. */
   write: (name: string, count: number) => Promise<void>;
-  /** The directory of one version of `name`. */
   versionDir: (name: string, version: number) => string;
   scan: () => Promise<UnreadableDataVersion[]>;
 }
@@ -81,7 +79,6 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   }
 }
 
-/** Empties a version's files, as an unclean shutdown leaves them. */
 async function truncate(versionDir: string): Promise<void> {
   await Deno.writeFile(join(versionDir, "raw"), new Uint8Array());
   await Deno.writeFile(join(versionDir, "metadata.yaml"), new Uint8Array());
@@ -157,8 +154,6 @@ Deno.test("scanUnreadableVersions: an older unreadable version is reported but n
 Deno.test("scanUnreadableVersions: a version that is not published (an in-flight write) is not reported", async () => {
   await withFixture(async (f) => {
     await f.write("state", 2);
-    // A save that wrote its metadata and stopped: no catalog row, and the
-    // marker still names version 2.
     await Deno.mkdir(f.versionDir("state", 3));
     await Deno.writeFile(
       join(f.versionDir("state", 3), "metadata.yaml"),

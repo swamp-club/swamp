@@ -18,22 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A serve follower applying its leader's commit feed to its own copy of a
- * v3 datastore (swamp-club#4120), in place of restoring the whole published
- * lineage every tick.
- *
- * A replicating datastore gives every node its own copy: the follower
- * appends each commit at the leader's own cursor
- * ({@link SqliteCommitStore.appendFromLeader}), so cursors mean the same
- * commit on every node, then catches its read model up. A datastore that
- * does not replicate has one `commits.db` every node opens: the leader's
- * commits are already in it, so the feed only tells the follower to catch
- * its read model up.
- *
- * Anything the copy cannot take in order throws {@link FeedDivergedError}:
- * the follower stops the feed and restores from the lineage, as before.
- *
- * @module
+ * a replicating datastore gives each node its own copy, appended at the
+ * leader's cursor; otherwise nodes share one commits.db and the feed only
+ * prompts a read model catch-up. Out of order throws FeedDivergedError
  */
 
 import { Commit } from "../../domain/datastore_v3/commit.ts";
@@ -44,13 +31,11 @@ import { type V3DatastoreConfig, v3DatastoreFor } from "./v3_repo_context.ts";
 
 export { FeedDivergedError };
 
-/** One commit of the feed, as the leader sent it. */
 export interface LeaderChange {
   readonly cursor: number;
   readonly commit: unknown;
 }
 
-/** The last cursor this follower's copy holds. */
 export function v3FollowerCopyCursor(
   repoDir: string,
   config: V3DatastoreConfig,
