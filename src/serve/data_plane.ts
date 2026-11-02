@@ -102,14 +102,14 @@ export interface DataPlaneOptions {
 }
 
 export interface WorkerReads {
-  queryData(
+  streamQueryData(
     workerName: string,
     params: QueryDataParams & { dispatchId?: string },
-  ): Promise<unknown[]>;
-  readOutput(
+  ): AsyncIterable<unknown[]>;
+  streamOutputList(
     workerName: string,
     params: ReadOutputParams & { dispatchId?: string },
-  ): Promise<unknown>;
+  ): AsyncIterable<unknown[]>;
 }
 
 const UNKNOWN_SOURCE_IP = "unknown";
@@ -131,21 +131,49 @@ function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
 }
 
-function ndjsonResponse(items: readonly unknown[]): Response {
+/**
+ * pulls the next page only once the current one is sent, so one page is held;
+ * a failure after the first byte closes the body without its trailer, which
+ * the worker reads as a cut-off reply
+ */
+function pagedNdjsonResponse(
+  pages: AsyncIterator<unknown[]>,
+  first: IteratorResult<unknown[]>,
+  onFailure: (error: unknown) => void,
+): Response {
   const encoder = new TextEncoder();
+  let current = first;
   let index = 0;
+  let count = 0;
   const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (index < items.length) {
-        controller.enqueue(
-          encoder.encode(JSON.stringify({ item: items[index++] }) + "\n"),
-        );
+    async pull(controller) {
+      try {
+        while (!current.done && index >= current.value.length) {
+          // drop the sent page before awaiting, so only one page is held
+          current = { done: false, value: [] };
+          index = 0;
+          current = await pages.next();
+        }
+      } catch (error) {
+        onFailure(error);
+        await pages.return?.().catch(() => undefined);
+        controller.close();
+        return;
+      }
+      if (current.done) {
+        controller.enqueue(encoder.encode(JSON.stringify({ count }) + "\n"));
+        controller.close();
         return;
       }
       controller.enqueue(
-        encoder.encode(JSON.stringify({ count: items.length }) + "\n"),
+        encoder.encode(
+          JSON.stringify({ item: current.value[index++] }) + "\n",
+        ),
       );
-      controller.close();
+      count++;
+    },
+    async cancel() {
+      await pages.return?.();
     },
   });
   return new Response(body, {
@@ -658,16 +686,15 @@ export class DataPlane {
   ): Promise<Response> {
     const dispatch = this.#activeDispatch(workerName, dispatchId);
     const params = await this.#workerReadBody(req, QueryDataParamsSchema);
-    const records = await this.#workerRead(
+    return await this.#streamWorkerRead(
       "queryData",
       workerName,
       () =>
-        this.#options.workerReads.queryData(workerName, {
+        this.#options.workerReads.streamQueryData(workerName, {
           ...params,
           dispatchId: dispatch.dispatchId,
         }),
     );
-    return ndjsonResponse(records);
   }
 
   async #readOutputList(
@@ -683,19 +710,41 @@ export class DataPlane {
         "Only list reads (modelType, optionally with definitionId) go through this route",
       );
     }
-    const reply = await this.#workerRead(
+    return await this.#streamWorkerRead(
       "readOutput",
       workerName,
       () =>
-        this.#options.workerReads.readOutput(workerName, {
+        this.#options.workerReads.streamOutputList(workerName, {
           ...params,
           dispatchId: dispatch.dispatchId,
         }),
-    ) as { result: unknown };
-    if (!Array.isArray(reply.result)) {
-      throw new DataPlaneError(500, "Output list read did not return a list");
-    }
-    return ndjsonResponse(reply.result);
+    );
+  }
+
+  /** the first page is read before the response, so a refusal is still a 400 */
+  async #streamWorkerRead(
+    verb: string,
+    workerName: string,
+    open: () => AsyncIterable<unknown[]>,
+  ): Promise<Response> {
+    const { iterator, first } = await this.#workerRead(
+      verb,
+      workerName,
+      async () => {
+        const iterator = open()[Symbol.asyncIterator]();
+        return { iterator, first: await iterator.next() };
+      },
+    );
+    return pagedNdjsonResponse(iterator, first, (error) => {
+      logger.warn(
+        "Worker read {verb} for worker {worker} failed after its reply began: {error}",
+        {
+          verb,
+          worker: workerName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    });
   }
 
   async #readArtifact(

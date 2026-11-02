@@ -44,12 +44,41 @@ import {
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import { RemoteMethod } from "../domain/remote/protocol.ts";
 
+interface StubQueryOptions {
+  limit?: number;
+  after?: { key: string };
+}
+
+/** honours limit and after the way DataQueryService.queryPage does */
+function pagedQuery(
+  results: unknown[],
+  onCall: (options: unknown) => void = () => {},
+) {
+  return (_predicate: string, options?: StubQueryOptions) => {
+    onCall(options);
+    const start = options?.after ? Number(options.after.key) + 1 : 0;
+    const limit = options?.limit ?? Infinity;
+    const page: unknown[] = [];
+    for (let i = start; i < results.length && page.length < limit; i++) {
+      page.push(results[i]);
+    }
+    const lastIndex = start + page.length - 1;
+    return Promise.resolve({
+      results: page,
+      last: page.length > 0
+        ? { key: String(lastIndex), id: ["", "", "", "", lastIndex] }
+        : undefined,
+    });
+  };
+}
+
 function stubRepoContext(
   queryResult: unknown[] = [],
 ): RepositoryContext {
   return {
     dataQueryService: {
       query: () => Promise.resolve(queryResult),
+      queryPage: pagedQuery(queryResult),
       querySync: () => queryResult,
     },
     unifiedDataRepo: {
@@ -765,10 +794,10 @@ function recordingRepoContext(opts: {
   };
   recorded.context = {
     dataQueryService: {
-      query: (_predicate: string, options: unknown) => {
-        recorded.queryOptions.push(options);
-        return Promise.resolve(opts.queryResult ?? []);
-      },
+      queryPage: pagedQuery(
+        opts.queryResult ?? [],
+        (options) => recorded.queryOptions.push(options),
+      ),
     },
     unifiedDataRepo: {
       listVersions: () => Promise.resolve([1, 2]),
@@ -799,6 +828,10 @@ function recordingRepoContext(opts: {
       findAll: (type: ModelType) => {
         recorded.outputReads.push(type.normalized);
         return Promise.resolve([{ id: "out-1" }]);
+      },
+      findPages: async function* (type: ModelType) {
+        recorded.outputReads.push(type.normalized);
+        yield* [[{ id: "out-1" }]];
       },
     },
   } as unknown as RepositoryContext;
@@ -1571,4 +1604,293 @@ Deno.test("resolveSecret: a protocol version 6 dispatch's resource claim is refu
     { value: "s3cret" },
   );
   assertEquals(reads, ["token", "token"]);
+});
+
+function pagedService(
+  recorded: RecordingContext,
+  dispatches?: DispatchRegistry,
+): CapabilityService {
+  return new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: recorded.context,
+    dispatches,
+    createVaultService: () => Promise.reject(new Error("no vault")),
+    readPageSize: 2,
+  });
+}
+
+function records(count: number): unknown[] {
+  return Array.from(
+    { length: count },
+    (_, i) => ({ id: String(i), modelType: "acme/invoices" }),
+  );
+}
+
+async function collectPages(
+  pages: AsyncIterable<unknown[]>,
+): Promise<unknown[][]> {
+  const collected: unknown[][] = [];
+  for await (const page of pages) collected.push(page);
+  return collected;
+}
+
+Deno.test("streamQueryData: pages through the matches sorted by createdAt, each page after the last", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const pages = await collectPages(
+    pagedService(recorded, dispatches).streamQueryData("worker-1", {
+      predicate: "true",
+      options: { loadAttributes: true },
+    }),
+  );
+  assertEquals(pages.map((page) => page.length), [2, 2, 1]);
+  assertEquals(
+    pages.flat().map((r) => (r as { id: string }).id),
+    ["0", "1", "2", "3", "4"],
+  );
+  const calls = recorded.queryOptions as {
+    limit: number;
+    loadAttributes: boolean;
+    sort: { field: string; direction: string };
+    after?: { key: string };
+    excludeModelTypes: string[];
+  }[];
+  assertEquals(calls.length, 3);
+  assertEquals(calls.map((c) => c.after?.key), [undefined, "1", "3"]);
+  for (const call of calls) {
+    assertEquals(call.limit, 2);
+    assertEquals(call.loadAttributes, true);
+    assertEquals(call.sort, { field: "createdAt", direction: "asc" });
+    assertEquals(call.excludeModelTypes.includes("@swamp/grant"), true);
+  }
+});
+
+Deno.test("streamQueryData: a worker limit caps the total across pages", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const pages = await collectPages(
+    pagedService(recorded, dispatches).streamQueryData(
+      "worker-1",
+      { predicate: "true", options: { limit: 3 } },
+    ),
+  );
+  assertEquals(pages.flat().length, 3);
+  assertEquals(
+    (recorded.queryOptions as { limit: number }[]).map((c) => c.limit),
+    [2, 1],
+  );
+});
+
+Deno.test("streamQueryData: a limit of zero or less answers nothing without querying", async () => {
+  for (const limit of [0, -1]) {
+    const dispatches = new DispatchRegistry();
+    withDispatch(dispatches);
+    const recorded = recordingRepoContext({ queryResult: records(5) });
+    const result = await pagedService(recorded, dispatches).queryData(
+      "worker-1",
+      { predicate: "true", options: { limit } },
+    );
+    assertEquals(result, [], `limit ${limit}`);
+    assertEquals(recorded.queryOptions, [], `limit ${limit}`);
+  }
+});
+
+Deno.test("streamQueryData: a fractional limit keeps the unpaged result", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const pages = await collectPages(
+    pagedService(recorded, dispatches).streamQueryData(
+      "worker-1",
+      { predicate: "true", options: { limit: 2.5 } },
+    ),
+  );
+  assertEquals(pages.flat().length, 3);
+});
+
+Deno.test("streamQueryData: refusals are raised before any query runs", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const service = pagedService(recorded, dispatches);
+  await assertRejects(
+    () =>
+      service.streamQueryData("worker-1", {
+        predicate: "true",
+        options: { select: "name" },
+      }).next(),
+    Error,
+    "Select projections",
+  );
+  await assertRejects(
+    () =>
+      service.streamQueryData("worker-1", { predicate: "p".repeat(5000) })
+        .next(),
+    Error,
+    "maximum length",
+  );
+  await assertRejects(
+    () => service.streamQueryData("worker-2", { predicate: "true" }).next(),
+    Error,
+    "no active dispatch",
+  );
+  assertEquals(recorded.queryOptions, []);
+});
+
+Deno.test("streamQueryData: a dispatch released between pages stops the read before the next query", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const pages = pagedService(recorded, dispatches).streamQueryData(
+    "worker-1",
+    { predicate: "true" },
+  );
+  assertEquals(((await pages.next()).value as unknown[]).length, 2);
+  dispatches.unregister("worker-1", "d-1");
+  await assertRejects(() => pages.next(), Error, "dispatch ended");
+  assertEquals(recorded.queryOptions.length, 1);
+});
+
+Deno.test("streamQueryData: a hidden record on a later page fails that page after the earlier ones were yielded", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({
+    queryResult: [...records(2), { id: "g", modelType: "@swamp/grant" }],
+  });
+  const pages = pagedService(recorded, dispatches).streamQueryData(
+    "worker-1",
+    { predicate: "true" },
+  );
+  assertEquals(((await pages.next()).value as unknown[]).length, 2);
+  await assertRejects(() => pages.next(), Error, "not permitted from workers");
+});
+
+Deno.test("streamQueryData: without a dispatch registry it pages to the end with no liveness check", async () => {
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const pages = await collectPages(
+    pagedService(recorded).streamQueryData("worker-1", { predicate: "true" }),
+  );
+  assertEquals(pages.flat().length, 5);
+  assertEquals(recorded.queryOptions.length, 3);
+});
+
+function withOutputPages(
+  recorded: RecordingContext,
+  pages: unknown[][],
+): { pageSizes: number[] } {
+  const seen = { pageSizes: [] as number[] };
+  (recorded.context.outputRepo as unknown as {
+    findPages: (
+      type: ModelType,
+      options: { pageSize: number },
+    ) => AsyncGenerator<unknown[]>;
+  }).findPages = async function* (type, options) {
+    recorded.outputReads.push(type.normalized);
+    seen.pageSizes.push(options.pageSize);
+    yield* pages;
+  };
+  return seen;
+}
+
+Deno.test("streamOutputList: yields each page of outputs and readOutput collects them", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext();
+  const seen = withOutputPages(recorded, [[{ id: "a" }, { id: "b" }], [{
+    id: "c",
+  }]]);
+  const service = pagedService(recorded, dispatches);
+  assertEquals(
+    await collectPages(
+      service.streamOutputList("worker-1", { modelType: "acme/invoices" }),
+    ),
+    [[{ id: "a" }, { id: "b" }], [{ id: "c" }]],
+  );
+  assertEquals(
+    await service.readOutput("worker-1", { modelType: "acme/invoices" }),
+    { result: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+  );
+  assertEquals(seen.pageSizes, [2, 2]);
+});
+
+Deno.test("streamOutputList: a control-plane type yields nothing without reading", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext();
+  withOutputPages(recorded, [[{ id: "a" }]]);
+  assertEquals(
+    await collectPages(
+      pagedService(recorded, dispatches).streamOutputList("worker-1", {
+        modelType: "@swamp/grant",
+      }),
+    ),
+    [],
+  );
+  assertEquals(recorded.outputReads, []);
+});
+
+Deno.test("streamOutputList: a dispatch released between pages stops the read", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext();
+  withOutputPages(recorded, [[{ id: "a" }], [{ id: "b" }]]);
+  const pages = pagedService(recorded, dispatches).streamOutputList(
+    "worker-1",
+    { modelType: "acme/invoices" },
+  );
+  assertEquals((await pages.next()).value, [{ id: "a" }]);
+  dispatches.unregister("worker-1", "d-1");
+  await assertRejects(() => pages.next(), Error, "dispatch ended");
+});
+
+Deno.test("queryData: the control-socket verb reads the whole reply in one sorted query", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const result = await pagedService(recorded, dispatches).queryData(
+    "worker-1",
+    { predicate: "true" },
+  );
+  assertEquals(result.length, 5);
+  const calls = recorded.queryOptions as {
+    limit: number;
+    sort: { field: string; direction: string };
+  }[];
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].limit, Infinity);
+  assertEquals(calls[0].sort, { field: "createdAt", direction: "asc" });
+});
+
+Deno.test("streamQueryData: a dispatch re-registered under the same id between pages stops the read", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const pages = pagedService(recorded, dispatches).streamQueryData(
+    "worker-1",
+    { predicate: "true" },
+  );
+  assertEquals(((await pages.next()).value as unknown[]).length, 2);
+  dispatches.unregister("worker-1", "d-1");
+  withDispatch(dispatches);
+  await assertRejects(() => pages.next(), Error, "dispatch ended");
+  assertEquals(recorded.queryOptions.length, 1);
+});
+
+Deno.test("CapabilityService: a read page size below one pages one record at a time", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(3) });
+  const service = new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: recorded.context,
+    dispatches,
+    createVaultService: () => Promise.reject(new Error("no vault")),
+    readPageSize: 0,
+  });
+  const pages = await collectPages(
+    service.streamQueryData("worker-1", { predicate: "true" }),
+  );
+  assertEquals(pages.map((page) => page.length), [1, 1, 1]);
 });

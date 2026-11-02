@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { CapabilityService } from "./capability_service.ts";
+import { DataPlaneClient } from "../worker/data_plane_client.ts";
 import {
   findSpan,
   isChildOf,
@@ -226,6 +233,15 @@ interface Harness {
   workerReadCalls: { verb: string; workerName: string; params: unknown }[];
 }
 
+async function* pagesOf(...pages: unknown[][]): AsyncGenerator<unknown[]> {
+  yield* pages;
+}
+
+// deno-lint-ignore require-yield
+async function* refusedPages(error: Error): AsyncGenerator<unknown[]> {
+  throw error;
+}
+
 async function withHarness(
   fn: (h: Harness) => Promise<void>,
   options: {
@@ -256,15 +272,15 @@ async function withHarness(
     const firstWrites: string[] = [];
     const workerReadCalls: Harness["workerReadCalls"] = [];
     const workerReads: WorkerReads = {
-      queryData: (workerName, params) => {
+      streamQueryData: (workerName, params) => {
         workerReadCalls.push({ verb: "queryData", workerName, params });
-        return options.workerReads?.queryData?.(workerName, params) ??
-          Promise.resolve([]);
+        return options.workerReads?.streamQueryData?.(workerName, params) ??
+          pagesOf();
       },
-      readOutput: (workerName, params) => {
+      streamOutputList: (workerName, params) => {
         workerReadCalls.push({ verb: "readOutput", workerName, params });
-        return options.workerReads?.readOutput?.(workerName, params) ??
-          Promise.resolve({ result: [] });
+        return options.workerReads?.streamOutputList?.(workerName, params) ??
+          pagesOf();
       },
     };
     const plane = new DataPlane({
@@ -1816,7 +1832,7 @@ Deno.test("DataPlane: /data/query streams each record then a count trailer", asy
         dispatchId: "d-1",
       },
     }]);
-  }, { workerReads: { queryData: () => Promise.resolve(records) } });
+  }, { workerReads: { streamQueryData: () => pagesOf(records) } });
 });
 
 Deno.test("DataPlane: /data/query takes the dispatch from the credential, never the body", async () => {
@@ -1899,8 +1915,8 @@ Deno.test("DataPlane: /data/query passes a capability refusal back sanitized", a
     );
   }, {
     workerReads: {
-      queryData: () =>
-        Promise.reject(
+      streamQueryData: () =>
+        refusedPages(
           new Error("Select projections are not permitted from workers"),
         ),
     },
@@ -1916,8 +1932,8 @@ Deno.test("DataPlane: /data/query passes a capability refusal back sanitized", a
     assert(!text.includes("/home/"));
   }, {
     workerReads: {
-      queryData: () =>
-        Promise.reject(new Error("ENOENT: /home/someone/.swamp/data/x")),
+      streamQueryData: () =>
+        refusedPages(new Error("ENOENT: /home/someone/.swamp/data/x")),
     },
   });
 });
@@ -1947,7 +1963,7 @@ Deno.test("DataPlane: /data/outputs streams a list read with a count trailer", a
       },
     }]);
   }, {
-    workerReads: { readOutput: () => Promise.resolve({ result: outputs }) },
+    workerReads: { streamOutputList: () => pagesOf(outputs) },
   });
 });
 
@@ -1979,15 +1995,185 @@ Deno.test("DataPlane: /data/outputs refuses the single-record read shapes", asyn
   });
 });
 
-Deno.test("DataPlane: /data/outputs fails loudly when the verb returns something other than a list", async () => {
+Deno.test("DataPlane: /data/query streams every page, then one trailer counting them all", async () => {
   await withHarness(async (h) => {
     h.dispatches.register(activeDispatch());
     const response = await h.plane.handle(
-      postJson("/data/outputs", { modelType: "t" }),
+      postJson("/data/query", { predicate: "true" }),
     );
-    assertEquals(response?.status, 500);
-    assertStringIncludes(await response!.text(), "did not return a list");
+    assertEquals(response?.status, 200);
+    assertEquals(ndjsonLines(await response!.text()), [
+      { item: { id: "a" } },
+      { item: { id: "b" } },
+      { item: { id: "c" } },
+      { count: 3 },
+    ]);
   }, {
-    workerReads: { readOutput: () => Promise.resolve({ result: { id: "x" } }) },
+    workerReads: {
+      streamQueryData: () => pagesOf([{ id: "a" }, { id: "b" }], [{ id: "c" }]),
+    },
+  });
+});
+
+const HIDDEN_MARKER = "hidden-grant-bytes";
+
+function capabilityReads(
+  queryResult: unknown[],
+  dispatches: () => DispatchRegistry,
+): Partial<WorkerReads> {
+  let service: CapabilityService | undefined;
+  const capabilities = () =>
+    service ??= new CapabilityService({
+      repoDir: "/tmp/test",
+      repoContext: {
+        dataQueryService: {
+          queryPage: (
+            _predicate: string,
+            options: { limit: number; after?: { key: string } },
+          ) => {
+            const start = options.after ? Number(options.after.key) + 1 : 0;
+            const page = queryResult.slice(start, start + options.limit);
+            const last = start + page.length - 1;
+            return Promise.resolve({
+              results: page,
+              last: page.length > 0
+                ? { key: String(last), id: ["", "", "", "", last] }
+                : undefined,
+            });
+          },
+        },
+      } as unknown as RepositoryContext,
+      dispatches: dispatches(),
+      createVaultService: () => Promise.reject(new Error("no vault")),
+      readPageSize: 2,
+    });
+  return {
+    streamQueryData: (workerName, params) =>
+      capabilities().streamQueryData(workerName, params),
+  };
+}
+
+Deno.test("DataPlane: /data/query ends the body without a trailer when a later page leaks, and never sends the hidden record", async () => {
+  let dispatches: DispatchRegistry | undefined;
+  await withHarness(
+    async (h) => {
+      dispatches = h.dispatches;
+      h.dispatches.register(activeDispatch());
+      const response = await h.plane.handle(
+        postJson("/data/query", { predicate: "true" }),
+      );
+      assertEquals(response?.status, 200);
+      const text = await response!.text();
+      assert(!text.includes(HIDDEN_MARKER), text);
+      assertEquals(ndjsonLines(text), [
+        { item: { id: "a", modelType: "acme/invoices" } },
+        { item: { id: "b", modelType: "acme/invoices" } },
+      ]);
+    },
+    {
+      workerReads: capabilityReads([
+        { id: "a", modelType: "acme/invoices" },
+        { id: "b", modelType: "acme/invoices" },
+        { id: "c", modelType: "acme/invoices" },
+        { id: HIDDEN_MARKER, modelType: "@swamp/grant" },
+      ], () => dispatches!),
+    },
+  );
+});
+
+Deno.test("DataPlane: /data/query ends the body without a trailer when the dispatch is released mid-reply, and the client rejects it as cut off", async () => {
+  let dispatches: DispatchRegistry | undefined;
+  await withHarness(
+    async (h) => {
+      dispatches = h.dispatches;
+      h.dispatches.register(activeDispatch());
+      const client = new DataPlaneClient({
+        baseUrl: "http://dataplane/",
+        credential: () => "good-credential",
+        fetchImpl: async (input, init) => {
+          const response = await h.plane.handle(new Request(input, init));
+          h.dispatches.unregister("w1", "d-1");
+          return response ?? new Response("Not found", { status: 404 });
+        },
+      });
+      await assertRejects(
+        () => client.queryData({ predicate: "true" }),
+        Error,
+        "ended before its trailer",
+      );
+    },
+    {
+      workerReads: capabilityReads([
+        { id: "a", modelType: "acme/invoices" },
+        { id: "b", modelType: "acme/invoices" },
+        { id: "c", modelType: "acme/invoices" },
+      ], () => dispatches!),
+    },
+  );
+});
+
+Deno.test("DataPlane: /data/query reads the next page only once the current one is sent", async () => {
+  let pulls = 0;
+  async function* counted(): AsyncGenerator<unknown[]> {
+    for (
+      const page of [[{ id: "a" }, { id: "b" }, { id: "c" }], [{ id: "d" }]]
+    ) {
+      pulls++;
+      yield page;
+    }
+  }
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/query", { predicate: "true" }),
+    );
+    assertEquals(pulls, 1);
+    const reader = response!.body!.getReader();
+    await reader.read();
+    assertEquals(pulls, 1);
+    while (!(await reader.read()).done) {
+      // drain
+    }
+    assertEquals(pulls, 2);
+  }, { workerReads: { streamQueryData: counted } });
+});
+
+Deno.test("DataPlane: cancelling a /data/outputs body closes the page source", async () => {
+  let closed = false;
+  async function* source(): AsyncGenerator<unknown[]> {
+    try {
+      yield [{ id: "o1" }];
+      yield [{ id: "o2" }];
+    } finally {
+      closed = true;
+    }
+  }
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/outputs", { modelType: MODEL_TYPE.normalized }),
+    );
+    assertEquals(response?.status, 200);
+    await response!.body!.cancel();
+    assertEquals(closed, true);
+  }, { workerReads: { streamOutputList: source } });
+});
+
+Deno.test("DataPlane: a page source that throws when opened is a sanitized 400", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/query", { predicate: "true" }),
+    );
+    assertEquals(response?.status, 400);
+    const text = await response!.text();
+    assertStringIncludes(text, "internal error");
+    assert(!text.includes("/home/"));
+  }, {
+    workerReads: {
+      streamQueryData: () => {
+        throw new Error("ENOENT: /home/someone/.swamp/data/x");
+      },
+    },
   });
 });

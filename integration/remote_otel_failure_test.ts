@@ -89,8 +89,12 @@ Deno.test("remote telemetry: commit followed by lost response preserves write an
         dispatches,
         bundles: new BundleRegistry(),
         workerReads: {
-          queryData: () => Promise.reject(new Error("unused")),
-          readOutput: () => Promise.reject(new Error("unused")),
+          streamQueryData: () => {
+            throw new Error("unused");
+          },
+          streamOutputList: () => {
+            throw new Error("unused");
+          },
         },
         onFirstWrite: () => Promise.resolve(),
         createVaultService: () => Promise.resolve({} as VaultService),

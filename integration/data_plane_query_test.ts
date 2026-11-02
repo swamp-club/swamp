@@ -50,6 +50,8 @@ const WORKER = "w-reader";
 const RECORDS = 24;
 const RECORD_PAD_BYTES = 256 * 1024;
 const OUTPUTS = 40;
+// small enough that every read here spans several pages
+const READ_PAGE_SIZE = 5;
 
 interface Fixture {
   repo: ServeRepo;
@@ -57,6 +59,7 @@ interface Fixture {
   definitionId: string;
   client: DataPlaneClient;
   baseUrl: string;
+  capabilities: CapabilityService;
 }
 
 async function saveGrant(repo: ServeRepo): Promise<void> {
@@ -89,29 +92,39 @@ async function saveGrant(repo: ServeRepo): Promise<void> {
   );
 }
 
+async function saveRecord(
+  repo: ServeRepo,
+  modelId: string,
+  modelName: string,
+  index: number,
+  padBytes = RECORD_PAD_BYTES,
+): Promise<void> {
+  await repo.repoContext.unifiedDataRepo.save(
+    repo.modelType,
+    modelId,
+    Data.create({
+      name: `record-${index}`,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName },
+      ownerDefinition: {
+        ownerType: "model-method",
+        ownerRef: `${repo.modelType.normalized}:${modelId}`,
+      },
+    }),
+    new TextEncoder().encode(
+      JSON.stringify({ index, pad: "p".repeat(padBytes) }),
+    ),
+  );
+}
+
 async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   await withServeRepo(async (repo) => {
     const modelName = `big-${crypto.randomUUID().slice(0, 8)}`;
     const model = await saveModel(repo, modelName);
     for (let i = 0; i < RECORDS; i++) {
-      await repo.repoContext.unifiedDataRepo.save(
-        repo.modelType,
-        model.id,
-        Data.create({
-          name: `record-${i}`,
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "resource", modelName },
-          ownerDefinition: {
-            ownerType: "model-method",
-            ownerRef: `${repo.modelType.normalized}:${model.id}`,
-          },
-        }),
-        new TextEncoder().encode(
-          JSON.stringify({ index: i, pad: "p".repeat(RECORD_PAD_BYTES) }),
-        ),
-      );
+      await saveRecord(repo, model.id, modelName, i);
     }
     for (let i = 0; i < OUTPUTS; i++) {
       const output = ModelOutput.create({
@@ -146,6 +159,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       repoContext: repo.repoContext,
       dispatches,
       createVaultService: noVault,
+      readPageSize: READ_PAGE_SIZE,
     });
     const plane = new DataPlane({
       repoDir: repo.repoDir,
@@ -174,6 +188,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         definitionId: model.id,
         client: new DataPlaneClient({ baseUrl, credential: () => WORKER }),
         baseUrl,
+        capabilities,
       });
     } finally {
       await server.shutdown();
@@ -281,5 +296,53 @@ Deno.test("data plane query: output list reads arrive complete and single-record
       Error,
       "failed (400)",
     );
+  });
+});
+
+Deno.test("data plane query: a reply spanning many pages arrives once each, in createdAt order", async () => {
+  await withFixture(async (f) => {
+    const records = await f.client.queryData({
+      predicate: `modelName == ${JSON.stringify(f.modelName)}`,
+    }) as { name: string; createdAt: string }[];
+    assertEquals(records.length, RECORDS);
+    assertEquals(new Set(records.map((r) => r.name)).size, RECORDS);
+    const createdAt = records.map((r) => r.createdAt);
+    assertEquals(createdAt, [...createdAt].sort());
+  });
+});
+
+Deno.test("data plane query: a worker limit spanning pages returns exactly that many records", async () => {
+  await withFixture(async (f) => {
+    const limit = READ_PAGE_SIZE * 2 + 2;
+    const records = await f.client.queryData({
+      predicate: `modelName == ${JSON.stringify(f.modelName)}`,
+      options: { limit },
+    });
+    assertEquals(records.length, limit);
+  });
+});
+
+Deno.test("data plane query: paging is not a snapshot, so a version written between pages appears after its predecessor", async () => {
+  await withFixture(async (f) => {
+    const seen: { name: string; version: number }[] = [];
+    let wrote = false;
+    for await (
+      const page of f.capabilities.streamQueryData(WORKER, {
+        predicate: `modelName == ${JSON.stringify(f.modelName)}`,
+      })
+    ) {
+      seen.push(...page as { name: string; version: number }[]);
+      if (!wrote) {
+        wrote = true;
+        await saveRecord(f.repo, f.definitionId, f.modelName, 0, 16);
+      }
+    }
+    const first = seen.findIndex((r) => r.name === "record-0");
+    const rewritten = seen.findIndex((r) =>
+      r.name === "record-0" && r.version === 2
+    );
+    assert(first !== -1 && first < READ_PAGE_SIZE, "record-0 v1 on page 1");
+    assert(rewritten > first, "the new version arrives after its predecessor");
+    assertEquals(seen.length, RECORDS + 1);
   });
 });
