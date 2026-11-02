@@ -96,14 +96,14 @@ Deno.test("ShutdownStages.run: a floored stage gets one attempt once the budget 
   assertEquals(unfloored, "timed_out");
 });
 
-Deno.test("ShutdownStages.run: a self-capped stage is awaited, never raced", async () => {
+Deno.test("ShutdownStages.run: an awaited stage is never raced", async () => {
   const timedOut: string[] = [];
   const stages = new ShutdownStages(spentDeadline(), {
     onTimedOut: (stage) => timedOut.push(stage),
   });
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 20);
-  const outcome = await stages.run("v3 replication", () => promise, "self");
+  const outcome = await stages.run("v3 replication", () => promise, "awaited");
   assertEquals(outcome, "done");
   assertEquals(timedOut, []);
 });

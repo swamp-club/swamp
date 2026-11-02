@@ -7741,11 +7741,13 @@ export const serveCommand = new Command()
         shutdownDrainTimeoutMs,
       );
       const stages = new ShutdownStages(shutdownDeadline, {
-        onTimedOut: (stage) => {
+        onTimedOut: (stage, waitedMs) => {
           if (isJson) {
-            console.log(
-              JSON.stringify({ status: "shutdown_stage_timed_out", stage }),
-            );
+            console.log(JSON.stringify({
+              status: "shutdown_stage_timed_out",
+              stage,
+              waitedMs,
+            }));
           }
         },
       });
@@ -7785,7 +7787,7 @@ export const serveCommand = new Command()
           },
         });
         unpushedRunIds = interruptResult.unpushed ?? [];
-      }, "self");
+      }, "awaited");
       if (isJson && unpushedRunIds.length > 0) {
         console.log(JSON.stringify({
           status: "interrupt_push_failed",
@@ -7805,9 +7807,15 @@ export const serveCommand = new Command()
         const service = workerGcService;
         await stages.run("worker GC", () => service.dispose());
       }
+      // on v3 a pass's compaction and chunk sweep must never overlap the
+      // closing compaction and lease release, so it is awaited there
       if (retentionGcService) {
         const service = retentionGcService;
-        await stages.run("retention GC", () => service.dispose());
+        await stages.run(
+          "retention GC",
+          () => service.dispose(),
+          v3Location === undefined ? "left" : "awaited",
+        );
       }
       if (serverTokenGcService) {
         const service = serverTokenGcService;
@@ -7817,18 +7825,22 @@ export const serveCommand = new Command()
       // still be a live instance's.
       if (continuationSweepService) {
         const service = continuationSweepService;
-        await stages.run("continuation sweep", () => service.dispose());
+        await stages.run(
+          "continuation sweep",
+          () => service.dispose(),
+          "awaited",
+        );
       }
       // No promotion during teardown: the lease is released below. Team
       // mode stays on until the datastores close, so a follower still
       // commits nothing.
       if (serveLeadership) {
         const leadership = serveLeadership;
-        await stages.run("leadership", () => leadership.stop());
+        await stages.run("leadership", () => leadership.stop(), "awaited");
       }
       if (serveCommitEffects) {
         const effects = serveCommitEffects;
-        await stages.run("commit effects", () => effects.stop());
+        await stages.run("commit effects", () => effects.stop(), "awaited");
       }
       leaderLink?.close();
       if (heartbeatService) {
@@ -7845,7 +7857,7 @@ export const serveCommand = new Command()
                 STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
               ),
             }),
-          "self",
+          "awaited",
         );
       }
       // Stop revalidation before the gateway it cuts workers off from.
@@ -7885,9 +7897,15 @@ export const serveCommand = new Command()
         "policy snapshot loader",
         () => policySnapshotLoader.dispose(),
       );
+      // a tick's chunk sweep must never overlap the closing compaction and
+      // lease release
       if (v3Maintenance) {
         const maintenance = v3Maintenance;
-        await stages.run("v3 maintenance", () => maintenance.stop());
+        await stages.run(
+          "v3 maintenance",
+          () => maintenance.stop(),
+          "awaited",
+        );
       }
       // no sidecar replacement runs past here; the closing sync and lease
       // release get what the shutdown deadline has left when each starts
@@ -7896,12 +7914,12 @@ export const serveCommand = new Command()
         await stages.run("v3 replication", () =>
           replication.stop({
             waitMs: shutdownDeadline.remaining(V3_UPKEEP_STOP_BOUND_MS),
-          }), "self");
+          }), "awaited");
       }
       setV3ClosingDeadline(shutdownDeadline);
       // final telemetry flush after runs drain so their entries are included;
-      // must come before ac.abort(), which releases server.finished and the
-      // CLI's own teardown flush
+      // before ac.abort(), which releases the CLI's own teardown flush: one cut
+      // off at the deadline may overlap it and resend a batch
       if (telemetryFlushService) {
         const service = telemetryFlushService;
         await stages.run("telemetry flush", () => service.stop(), "floor");

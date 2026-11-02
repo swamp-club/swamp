@@ -1473,21 +1473,27 @@ Otherwise it deletes its heartbeat. On v3 it then stops its sidecar upkeep,
 syncs the replica one last time and releases its writer lease
 (`design/enablers/datastore-litestream.md`), and it exits.
 
-Every stage after the drain takes its bound from one shutdown deadline: the
-drain timeout plus 22 s from SIGTERM (`ShutdownDeadline` in
-`src/serve/shutdown_deadline.ts`, swamp-club#3961), run in turn by
-`ShutdownStages` (`src/serve/shutdown_stages.ts`, swamp-club#4286). A stage
-that only stops background work (the GC services, the continuation sweep, the
-pollers, revalidation, the run-index warm-up, leadership) gets what is left,
-nothing once it is spent. A stage that writes state other processes rely on
-(the datastore API lock release, the final telemetry flush, the audit flush and
-close) gets what is left and at least 0.5 s. The interrupt push, the stopped
-heartbeat and the v3 replication stop are capped by their own arguments and are
-awaited, never cut off, so the closing sync never runs beside a replication
-stop still in flight. A stage still running at the deadline is logged by name
-as a warning and left behind for process exit to end; one past 1 s is logged
-as still waiting, and one that throws is logged without skipping the stages
-after it. Before this, a bucket that held each write 15 s kept a v3 serve
+Every stage after the drain runs in turn through `ShutdownStages`
+(`src/serve/shutdown_stages.ts`, swamp-club#4286) against one shutdown
+deadline: the drain timeout plus 22 s from SIGTERM (`ShutdownDeadline` in
+`src/serve/shutdown_deadline.ts`, swamp-club#3961). A stage that only stops
+background work (worker and server-token GC, the pollers, revalidation, the
+run-index warm-up, and retention GC off v3) gets what is left, nothing once it
+is spent. A stage that writes state other processes rely on (the datastore API
+lock release, the final telemetry flush, the audit flush and close) gets what
+is left and at least 0.5 s. A stage still running at the deadline is logged by
+name as a warning and left behind for process exit to end; one past 1 s is
+logged as still waiting, and one that throws is logged without skipping the
+stages after it. Some stages are awaited, never cut off. The interrupt push,
+the stopped heartbeat and the v3 replication stop cap themselves from the
+deadline. The continuation sweep must finish before the stopped heartbeat, so
+a claim it holds is never a gone instance's. On v3, the maintenance tick,
+retention GC, leadership and commit effects must finish before the closing
+compaction and writer-lease release, which a chunk sweep or promotion still in
+flight must never overlap. Those v3 stages are bounded only by their own
+budgets (the tick's 60 s compaction and 10 min chunk sweep, the retention
+pass's batch boundary), so a v3 serve caught mid-pass can still stop later than
+the deadline. Before this, a bucket that held each write 15 s kept a v3 serve
 shutting down for 97 s with the default 30 s drain, and a background pass
 stalled on a large datastore held shutdown for minutes after the drain. Set
 the pod's `terminationGracePeriodSeconds` above the drain timeout plus about
@@ -1495,7 +1501,8 @@ the pod's `terminationGracePeriodSeconds` above the drain timeout plus about
 grace, up to 2 s for the write fence, the 5 s interrupt push or commit and,
 when that misses, 5 s each for the active-run records and the stopped
 heartbeat, and on v3 the closing sync and lease release from what is left,
-plus up to six 0.5 s floors), and use a `preStop` sleep so traffic leaves the
+plus the 0.5 s floors of the stages above and of the closing sync and lease
+release), and use a `preStop` sleep so traffic leaves the
 Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
 instance drains. After a stop that pushed everything, peers see no heartbeat,
@@ -1569,7 +1576,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   abort the listener. In `--json` mode each phase is emitted as a
   `{ status: "stopping" | "aborting" | "interrupted" | "stopped" }` line, and a
   stage cut off at the shutdown deadline as
-  `{ status: "shutdown_stage_timed_out", stage }`.
+  `{ status: "shutdown_stage_timed_out", stage, waitedMs }`.
 - **Telemetry flush.** The CLI flushes telemetry at process exit, which a daemon
   never reaches. `DaemonTelemetryFlushService` flushes every 60 s, at most 20
   batches per tick. It isolates a batch after 5 consecutive failures and

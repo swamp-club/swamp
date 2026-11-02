@@ -26,9 +26,10 @@ export const SHUTDOWN_SLOW_STAGE_NOTICE_MS = 1_000;
 
 /**
  * "left" gets nothing once the budget is spent, "floor" always gets one short
- * attempt, "self" is capped by its own argument so it is awaited, never raced
+ * attempt, "awaited" is never raced: it caps itself or a later stage must not
+ * overlap it
  */
-export type ShutdownStageBound = "left" | "floor" | "self";
+export type ShutdownStageBound = "left" | "floor" | "awaited";
 
 export type ShutdownStageOutcome = "done" | "failed" | "timed_out";
 
@@ -66,7 +67,7 @@ export class ShutdownStages {
     try {
       const pending = Promise.resolve().then(work).then(() => "done" as const);
       let outcome: "done" | "timed_out";
-      if (bound === "self") {
+      if (bound === "awaited") {
         outcome = await pending;
       } else {
         const waitMs = bound === "floor"

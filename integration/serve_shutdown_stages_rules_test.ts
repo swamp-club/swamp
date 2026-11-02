@@ -56,7 +56,8 @@ function callEnd(source: string, open: number): number {
 Deno.test("serve shutdown: every await after the drain is a bounded ShutdownStages stage", async () => {
   const code = (await Deno.readTextFile(SERVE_COMMAND))
     .split("\n")
-    .map((line) => isCommentLine(line) ? "" : line)
+    // a trailing comment's apostrophe would otherwise open a string to callEnd
+    .map((line) => isCommentLine(line) ? "" : line.replace(/\s\/\/.*$/, ""))
     .join("\n");
   const start = code.indexOf("const shutdown = async () => {");
   assert(start >= 0, "the shutdown closure was not found in serve.ts");
