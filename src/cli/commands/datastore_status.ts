@@ -49,6 +49,16 @@ import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.t
 import { v3DatastoreFor } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import { readExplicitLeases } from "../../infrastructure/datastore_v3/explicit_model_leases.ts";
 import type { DatastoreServeSection } from "../../libswamp/datastores/status.ts";
+import { serveUpstreamAt } from "../../infrastructure/datastore_v3/serve_upstream_registry.ts";
+import {
+  ServeUnreachableError,
+  ServeUpstreamError,
+} from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
+import {
+  ServeFollowerBehindError,
+  ServeNotLeaderError,
+} from "../../domain/datastore_v3/serve_leader.ts";
+import { redactServerUrl } from "../../domain/auth/server_url.ts";
 
 const SERVE_SECTION_TIMEOUT_MS = 5_000;
 
@@ -83,6 +93,55 @@ async function serveSectionOf(
       return { kind: "absent", reason: `serve refused (${error.code})` };
     }
     return { kind: "absent", reason: "serve is unreachable" };
+  }
+}
+
+/**
+ * any answer serve gives an authenticated caller is reachable, including a
+ * retryable refusal while a leader adopts kept leases; an unknown error is
+ * thrown, never reported as health
+ */
+export async function serveUpstreamHealth(
+  serverUrl: string,
+  probe: () => Promise<unknown>,
+  now: () => number = () => performance.now(),
+): Promise<{ healthy: boolean; message: string; latencyMs: number }> {
+  const shown = redactServerUrl(serverUrl) ?? "serve";
+  const started = now();
+  const latency = () => Math.round(now() - started);
+  try {
+    await probe();
+    return {
+      healthy: true,
+      message: `Serve at ${shown} is reachable`,
+      latencyMs: latency(),
+    };
+  } catch (error) {
+    if (
+      error instanceof ServeNotLeaderError ||
+      error instanceof ServeFollowerBehindError
+    ) {
+      return {
+        healthy: true,
+        message: `Serve at ${shown} is reachable (${error.code})`,
+        latencyMs: latency(),
+      };
+    }
+    if (error instanceof ServeUnreachableError) {
+      return {
+        healthy: false,
+        message: `Serve at ${shown} is unreachable`,
+        latencyMs: latency(),
+      };
+    }
+    if (error instanceof ServeUpstreamError) {
+      return {
+        healthy: false,
+        message: `Serve at ${shown} refused (${error.code})`,
+        latencyMs: latency(),
+      };
+    }
+    throw error;
   }
 }
 
@@ -163,6 +222,22 @@ export const datastoreStatusCommand = withRemoteOptions(
       ? {
         // This checkout's copy, not the storage its config names.
         config: resolution.datastoreConfig,
+        verifyHealth: () =>
+          serveUpstreamHealth(serveUpstream.serverUrl, async () => {
+            const binding = serveUpstreamAt(v3Location.path);
+            if (binding === undefined) {
+              throw new Error(
+                "Internal error: the serve upstream is not bound",
+              );
+            }
+            const client = binding.client();
+            try {
+              // Bounded by the client's own per-request timeout.
+              return await client.listLocks("", new AbortController().signal);
+            } finally {
+              client.close();
+            }
+          }),
         listHeldLeases: async () =>
           (await readExplicitLeases(v3Location.path)).map((lease) => ({
             lockKey: lease.lockKey,

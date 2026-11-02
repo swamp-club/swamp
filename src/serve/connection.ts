@@ -1491,8 +1491,9 @@ const RunGcRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     dryRun: z.boolean().optional(),
-    workflowRunRetentionDays: z.number().positive().optional(),
-    outputRetentionDays: z.number().positive().optional(),
+    // 0 is everything older than now, as `run gc --older-than 0m` is locally
+    workflowRunRetentionDays: z.number().nonnegative().optional(),
+    outputRetentionDays: z.number().nonnegative().optional(),
   }).optional(),
 });
 

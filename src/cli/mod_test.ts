@@ -1013,3 +1013,43 @@ Deno.test("runsLocallyWithServeUpstream: a data-plane command in a format-3 chec
     resetServeUpstreamCommandPath();
   }
 });
+
+Deno.test("runsLocallyWithServeUpstream: extension install and pull run in a format-3 checkout; only an explicit --server sends them to serve (swamp-club#4281)", () => {
+  const marker = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    datastore: { type: "filesystem", path: "/ds", format: 3 },
+    serverAddress: "https://serve.example:9090",
+  } as const;
+  const env = (name: string) =>
+    name === "SWAMP_SERVER_URL" ? "https://serve.example:9090" : undefined;
+  try {
+    withMockedEnv({ SWAMP_DATASTORE: undefined }, () => {
+      for (const sub of ["pull", "install"]) {
+        setServeUpstreamCommandPath(["extension", sub]);
+        const local = extractCommandInfo(["extension", sub, "@a/b"]);
+        const runsLocally = runsLocallyWithServeUpstream(marker, local);
+        assertEquals(runsLocally, true, sub);
+        assertEquals(isThinClientCommand(local, env, runsLocally), false, sub);
+        const explicit = extractCommandInfo([
+          "extension",
+          sub,
+          "@a/b",
+          "--server",
+          "https://serve.example:9090",
+        ]);
+        assertEquals(
+          isThinClientCommand(
+            explicit,
+            env,
+            runsLocallyWithServeUpstream(marker, explicit),
+          ),
+          true,
+          sub,
+        );
+      }
+    });
+  } finally {
+    resetServeUpstreamCommandPath();
+  }
+});

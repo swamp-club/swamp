@@ -1887,6 +1887,8 @@ export {
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
   createServeLeaseReleaseDeps,
+  createServeMemberLockReleaseDeps,
+  createServeMemberLockStatusDeps,
   type CustomModelLockSource,
   datastoreLockRelease,
   type DatastoreLockReleaseData,

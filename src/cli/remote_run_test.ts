@@ -24,7 +24,10 @@ import {
   assertThrows,
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
-import { renderError } from "../presentation/output/error_output.ts";
+import {
+  buildErrorJson,
+  renderError,
+} from "../presentation/output/error_output.ts";
 import {
   createTlsHttpClient,
   describeStatuslessFailure,
@@ -438,6 +441,42 @@ Deno.test({
           assertEquals("lockHolderTokens" in payload, false);
         }
       }
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a follower's in-flight refusal keeps inFlight in --json (swamp-club#4281)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: {
+          code: "serve_not_leader",
+          message: "The request may already have run",
+          details: { inFlight: true },
+        },
+      });
+    });
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runModelMethodOverServer({
+            server: server.url,
+            payload: { modelIdOrName: "m", methodName: "run" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      const json = buildErrorJson(error);
+      assertEquals(json.code, "serve_not_leader");
+      assertEquals(json.inFlight, true);
     } finally {
       await server.shutdown();
     }
@@ -3488,4 +3527,16 @@ Deno.test("resolveServeUrl: with implicit routing off only the --server flag rou
     resetImplicitServeRouting();
     resetMarkerServerAddress();
   }
+});
+
+Deno.test("ServerResponseError: serve's inFlight refusal keeps inFlight in --json", () => {
+  const json = buildErrorJson(
+    new ServerResponseError({
+      code: "serve_not_leader",
+      message: "The request may already have run",
+      details: { inFlight: true },
+    }),
+  );
+  assertEquals(json.code, "serve_not_leader");
+  assertEquals(json.inFlight, true);
 });

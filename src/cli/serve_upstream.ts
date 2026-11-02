@@ -75,6 +75,7 @@ export const SERVE_UPSTREAM_LOCAL_FAMILIES: ReadonlySet<string> = new Set([
   "behavior",
   "behaviour",
   "data",
+  "extension",
   "model",
   "report",
   "summarise",
@@ -221,7 +222,11 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
   config: { applies: true, reason: NO_REPO },
   dashboard: { applies: true, reason: APPLIES },
   data: { applies: true, reason: APPLIES },
-  extension: { applies: true, reason: APPLIES },
+  extension: {
+    applies: true,
+    reason:
+      "installs into this checkout, as without serve; only --server installs on serve (swamp-club#4281)",
+  },
   "first-rule": { applies: true, reason: NO_REPO },
   help: { applies: true, reason: NO_REPO },
   inbox: { applies: true, reason: NO_REPO },

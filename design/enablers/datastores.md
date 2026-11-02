@@ -7038,10 +7038,14 @@ With no serve address, the path is exactly today's.
 **Routing.** An address from the environment or `.swamp.yaml` used to send
 every command with a `--server` flag to serve over its WebSocket API. In a
 serve-mode checkout, the data-plane families (`SERVE_UPSTREAM_LOCAL_FAMILIES`:
-`model`, `behavior`, `data`, `workflow`, `vault`, `report`, `summarise`) now
-run locally, with serve as the datastore's upstream (`setImplicitServeRouting`
-in `src/cli/remote_run.ts`, set at startup). Only an explicit `--server` still
-runs them on serve. The control plane (`access`, `audit`, `doctor`,
+`model`, `behavior`, `data`, `extension`, `workflow`, `vault`, `report`,
+`summarise`) now run locally, with serve as the datastore's upstream
+(`setImplicitServeRouting` in `src/cli/remote_run.ts`, set at startup). Only an
+explicit `--server` still runs them on serve. `extension install` and `pull`
+therefore install into the member's checkout, as without serve; the managed
+lockfile change goes through serve like any config write, but serve does not
+get the extension's files, so a step serve runs itself needs `extension pull
+--server` (swamp-club#4281). The control plane (`access`, `audit`, `doctor`,
 `datastore`, …) administers serve itself and keeps that routing. A v2 checkout
 is unchanged.
 
@@ -7422,7 +7426,10 @@ which behaves as above.
   `heldBy` (`caller` or `other`, never who) and `expiresAt`, at most 512 with
   `truncated` past it. A follower refuses it: leases are the leader's.
   `swamp datastore lock status` in a serve-mode checkout reports them as
-  `serve_lease` events.
+  `serve_lease` events, and nothing else: it binds no storage and needs no
+  datastore extension, its datastore-wide lock is reported not held (serve
+  orders a member's writes per behavior), and a serve it cannot reach fails
+  the command (swamp-club#4281).
 - **Explicit leases.** `swamp model lease acquire <behavior> --for
   <duration>` (and `release`, `status`; `swamp behavior lease` too) takes a
   fenced lease for a command's TTL, records it, then renews it with `holdMs`
@@ -7497,7 +7504,11 @@ which behaves as above.
     leave out the leases not adopted yet. A commit is judged again under
     the forwarded-commit lock, where its lease is decided, and so is an
     accepted quarantined change.
-- **Forced release** (swamp-club#4195). `swamp datastore lock release
+- **Forced release** (swamp-club#4195). Without `--behavior`, `swamp
+  datastore lock release --force` on a serve-mode checkout releases nothing
+  (`released: false`, `no lock held`): serve's writer lease is serve's, and a
+  member ends its own leases with `model lease release` (swamp-club#4281).
+  `swamp datastore lock release
   --force --behavior <type/id>` on a serve-mode checkout asks serve to end
   the explicit lease on that behavior, whoever holds it (`DELETE locks`
   with `{lockKey}`, `admin` only). Its record is deleted; no fence is
@@ -8379,7 +8390,8 @@ replaces the refusal:
 **A takeover mid-request.** A forward that never reached the leader (no
 address, connect, DNS or TLS failure) gets today's refusal. One that failed
 after the request was sent gets the same code with `inFlight: true` and a
-message that it may already have run. The follower never retries either.
+message that it may already have run; the CLI's `--json` error carries
+`inFlight: true` too. The follower never retries either.
 The leader's own session closes (4003 revoked, 4002 expired) close the
 client's connection the same way.
 
@@ -10182,7 +10194,11 @@ Full health checks (`DatastoreVerifier.verify()` from `createVerifier()`, or
 `filesystem_datastore_verifier.ts`) run in `swamp datastore status`,
 `swamp datastore setup`, `swamp doctor datastores`, and at `swamp serve`
 startup. `swamp datastore status` shows config, health, latency, directories and
-exclude patterns.
+exclude patterns. In a serve-mode checkout its health is serve's, never the
+storage's: one authenticated `GET locks` through the checkout's binding, where
+any answer (an older serve's 405, a retryable `serve_not_leader` while a leader
+adopts kept leases) is healthy, a refusal is unhealthy naming serve's code, and
+no answer is unreachable; no datastore extension is loaded (swamp-club#4281).
 
 ## Implementation Files
 

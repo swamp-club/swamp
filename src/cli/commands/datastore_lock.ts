@@ -39,6 +39,8 @@ import {
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
   createServeLeaseReleaseDeps,
+  createServeMemberLockReleaseDeps,
+  createServeMemberLockStatusDeps,
   type CustomModelLockSource,
   datastoreLockRelease,
   datastoreLockStatus,
@@ -76,6 +78,34 @@ const datastoreLockStatusCommand = new Command()
     const repoDir = resolveRepoDir(options.repoDir);
     const resolution = await resolveDatastoreForRepo(repoDir);
     const { datastoreConfig: config, engine } = resolution;
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const renderer = createDatastoreLockStatusRenderer(cliCtx.outputMode);
+
+    // a checkout written through serve binds no storage and needs no
+    // datastore extension: its locks are the leases serve holds.
+    if (resolution.serveUpstream !== undefined) {
+      const binding = serveUpstreamAt((await v3LocationOf(resolution)).path);
+      if (binding === undefined) {
+        throw new Error("Internal error: the serve upstream is not bound");
+      }
+      await consumeStream(
+        datastoreLockStatus(
+          ctx,
+          createServeMemberLockStatusDeps(async () => {
+            const client = binding.client();
+            try {
+              // Bounded by the client's own per-request timeout.
+              return await client.listLocks("", new AbortController().signal);
+            } finally {
+              client.close();
+            }
+          }),
+          { datastoreType: config.type, isFilesystemDatastore: false },
+        ),
+        renderer.handlers(),
+      );
+      return;
+    }
 
     // a v3 datastore's cross-process lock is its writer lock; a bucket
     // datastore's is in its control plane, found through its local root.
@@ -116,28 +146,9 @@ const datastoreLockStatusCommand = new Command()
       lockingConfigOf(config),
       customModelLocks,
     );
-    // a checkout written through serve also lists the leases serve holds on
-    // locks it could take.
-    if (resolution.serveUpstream !== undefined) {
-      const binding = serveUpstreamAt((await v3LocationOf(resolution)).path);
-      if (binding !== undefined) {
-        deps.listServeLeases = async () => {
-          const client = binding.client();
-          try {
-            // Bounded by the client's own per-request timeout.
-            return await client.listLocks("", new AbortController().signal);
-          } finally {
-            client.close();
-          }
-        };
-      }
-    }
 
     const isFilesystem = !isCustomDatastoreConfig(config) &&
       config.type === "filesystem";
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const renderer = createDatastoreLockStatusRenderer(cliCtx.outputMode);
 
     await consumeStream(
       datastoreLockStatus(ctx, deps, {
@@ -188,11 +199,25 @@ const datastoreLockReleaseCommand = new Command()
     const repoDir = resolveRepoDir(options.repoDir);
     const resolution = await resolveDatastoreForRepo(repoDir);
     const { datastoreConfig: config, engine } = resolution;
-    const v3 = engine === "v3"
-      ? await v3DatastoreConfigOf(repoDir, config)
-      : undefined;
 
     const modelSpec = options.behavior as string | undefined;
+
+    // a checkout written through serve has no datastore-wide lock to release:
+    // serve's writer lease is serve's, and the caller's own leases end with
+    // `model lease release` or, for an admin, --behavior.
+    if (resolution.serveUpstream !== undefined && !modelSpec) {
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const renderer = createDatastoreLockReleaseRenderer(cliCtx.outputMode);
+      await consumeStream(
+        datastoreLockRelease(ctx, createServeMemberLockReleaseDeps(), {}),
+        renderer.handlers(),
+      );
+      if (cliCtx.outputMode === "log") {
+        cliCtx.logger
+          .info`This checkout writes through serve, which orders writers per behavior. To end a behavior's lease, run swamp model lease release <behavior>, or, as an admin, swamp datastore lock release --force --behavior <type/id>.`;
+      }
+      return;
+    }
 
     let lock;
     if (modelSpec) {
@@ -261,8 +286,10 @@ const datastoreLockReleaseCommand = new Command()
         return;
       }
       lock = await createModelLock(config, parsed.modelType, parsed.modelId);
-    } else if (v3 !== undefined) {
-      lock = v3WriterLockHandle(v3.path);
+    } else if (engine === "v3") {
+      lock = v3WriterLockHandle(
+        (await v3DatastoreConfigOf(repoDir, config)).path,
+      );
     } else {
       lock = await createDatastoreLock(config);
     }
