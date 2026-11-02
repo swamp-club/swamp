@@ -17,15 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { FanOutPolicySchema } from "./fan_out.ts";
 import {
   describePlacement,
   eligibleWorkers,
   hasPlacement,
+  planFanOut,
   type SchedulableWorker,
   scheduleStep,
   unmetPlacement,
 } from "./scheduler.ts";
+import type { PoolWorker } from "./worker_pool.ts";
 
 function worker(
   overrides: Partial<SchedulableWorker> & { name: string },
@@ -573,4 +576,183 @@ Deno.test("placement table: among eligible workers, most free slots wins, then n
   ]);
   // a now has 1 free slot, b and c have 2: name order among the freest.
   assertEquals(busier.kind === "dispatch" ? busier.worker.name : "", "b");
+});
+
+function poolWorker(
+  overrides: Partial<PoolWorker> & { name: string },
+): PoolWorker {
+  return {
+    instanceUuid: `uuid-${overrides.name}`,
+    labels: { role: "web" },
+    platform: "linux",
+    arch: "x86_64",
+    status: "idle",
+    connected: true,
+    ...overrides,
+  };
+}
+
+const defaultPolicy = FanOutPolicySchema.parse({});
+
+Deno.test("planFanOut: gives each matching worker one disposition, in name order", () => {
+  const pool = [
+    poolWorker({ name: "web-05", status: "draining" }),
+    poolWorker({ name: "web-01", status: "busy" }),
+    poolWorker({ name: "web-04", status: "unverified" }),
+    poolWorker({ name: "web-03", status: "idle", connected: false }),
+    poolWorker({ name: "web-02" }),
+    poolWorker({ name: "db-01", labels: { role: "db" } }),
+  ];
+  const plan = planFanOut({ labels: { role: "web" } }, defaultPolicy, pool);
+  assertEquals(plan, {
+    kind: "planned",
+    members: [
+      {
+        worker: "web-01",
+        instanceUuid: "uuid-web-01",
+        disposition: "dispatch",
+      },
+      {
+        worker: "web-02",
+        instanceUuid: "uuid-web-02",
+        disposition: "dispatch",
+      },
+      {
+        worker: "web-03",
+        instanceUuid: "uuid-web-03",
+        disposition: "waiting",
+        reason: "disconnected",
+      },
+      {
+        worker: "web-04",
+        instanceUuid: "uuid-web-04",
+        disposition: "excluded",
+        reason: "unverified",
+      },
+      {
+        worker: "web-05",
+        instanceUuid: "uuid-web-05",
+        disposition: "excluded",
+        reason: "draining",
+      },
+    ],
+    plannedLanes: 3,
+    maxFailures: null,
+  });
+});
+
+Deno.test("planFanOut: offline policy decides a disconnected worker's disposition", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({ name: "b", status: "disconnected", connected: false }),
+  ];
+  const disposition = (offline: "wait" | "skip" | "fail") => {
+    const plan = planFanOut(
+      {},
+      FanOutPolicySchema.parse({ offline }),
+      pool,
+    );
+    if (plan.kind !== "planned") throw new Error("expected a plan");
+    return plan.members[1].disposition;
+  };
+  assertEquals(disposition("wait"), "waiting");
+  assertEquals(disposition("skip"), "skipped");
+  assertEquals(disposition("fail"), "failed");
+});
+
+Deno.test("planFanOut: a disconnected draining or unverified worker is excluded, not offline", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({ name: "b", status: "draining", connected: false }),
+    poolWorker({ name: "c", status: "unverified", connected: false }),
+  ];
+  const plan = planFanOut({}, defaultPolicy, pool);
+  if (plan.kind !== "planned") throw new Error("expected a plan");
+  assertEquals(
+    plan.members.map((m) => [m.worker, m.disposition, m.reason]),
+    [["a", "dispatch", undefined], ["b", "excluded", "draining"], [
+      "c",
+      "excluded",
+      "unverified",
+    ]],
+  );
+});
+
+Deno.test("planFanOut: platform selector uses the scheduler's platform/arch matching", () => {
+  const pool = [
+    poolWorker({ name: "a", platform: "linux", arch: "aarch64" }),
+    poolWorker({ name: "b", platform: "linux", arch: "x86_64" }),
+    poolWorker({ name: "c", platform: "darwin", arch: "aarch64" }),
+  ];
+  const workers = (platform: string) => {
+    const plan = planFanOut({ platform }, defaultPolicy, pool);
+    return plan.kind === "planned" ? plan.members.map((m) => m.worker) : [];
+  };
+  assertEquals(workers("linux"), ["a", "b"]);
+  assertEquals(workers("linux/aarch64"), ["a"]);
+  assertEquals(workers("darwin"), ["c"]);
+});
+
+Deno.test("planFanOut: refuses with no members when fewer than minWorkers are live", () => {
+  const pool = [
+    poolWorker({ name: "a" }),
+    poolWorker({ name: "b", connected: false }),
+    poolWorker({ name: "c", status: "unverified" }),
+  ];
+  assertEquals(
+    planFanOut({}, FanOutPolicySchema.parse({ minWorkers: 3 }), pool),
+    { kind: "refused", reason: "min_workers", live: 2, minWorkers: 3 },
+  );
+  assertEquals(
+    planFanOut({}, FanOutPolicySchema.parse({ minWorkers: 2 }), pool).kind,
+    "planned",
+  );
+  assertEquals(
+    planFanOut(
+      {},
+      FanOutPolicySchema.parse({ minWorkers: 2, offline: "skip" }),
+      pool,
+    ).kind,
+    "refused",
+  );
+});
+
+Deno.test("planFanOut: an empty selector match is refused under the default minWorkers", () => {
+  assertEquals(
+    planFanOut({ labels: { role: "none" } }, defaultPolicy, [
+      poolWorker({ name: "a" }),
+    ]),
+    { kind: "refused", reason: "min_workers", live: 0, minWorkers: 1 },
+  );
+});
+
+Deno.test("planFanOut: resolves a percentage budget against planned lanes only", () => {
+  const pool = [
+    ...["a", "b", "c", "d", "e", "f", "g"].map((name) => poolWorker({ name })),
+    poolWorker({ name: "h", connected: false }),
+    poolWorker({ name: "x", status: "draining" }),
+    poolWorker({ name: "y", status: "unverified" }),
+  ];
+  const plan = planFanOut(
+    {},
+    FanOutPolicySchema.parse({
+      rollout: { batches: [1, "100%"], maxFailures: "25%" },
+    }),
+    pool,
+  );
+  if (plan.kind !== "planned") throw new Error("expected a plan");
+  assertEquals(plan.plannedLanes, 8);
+  assertEquals(plan.maxFailures, 2);
+});
+
+Deno.test("planFanOut: throws when the pool repeats a worker name", () => {
+  assertThrows(
+    () =>
+      planFanOut({}, defaultPolicy, [
+        poolWorker({ name: "a" }),
+        poolWorker({ name: "a", instanceUuid: "other" }),
+      ]),
+    Error,
+    "more than once",
+  );
 });

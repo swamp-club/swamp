@@ -23,6 +23,15 @@
  * is busy
  */
 
+import type {
+  FanOutMember,
+  FanOutPlan,
+  FanOutPolicy,
+  FanOutSelector,
+} from "./fan_out.ts";
+import { hasLane, resolveMaxFailures } from "./fan_out.ts";
+import type { PoolWorker } from "./worker_pool.ts";
+
 export interface StepPlacement {
   target?: string;
   labels?: Record<string, string>;
@@ -78,7 +87,7 @@ export function hasPlacement(placement: StepPlacement | undefined): boolean {
 }
 
 function matchesPlatform(
-  worker: SchedulableWorker,
+  worker: Pick<SchedulableWorker, "platform" | "arch">,
   required: string,
 ): boolean {
   const [platform, arch] = required.split("/");
@@ -89,8 +98,8 @@ function matchesPlatform(
 }
 
 function matchesLabels(
-  worker: SchedulableWorker,
-  required: Record<string, string>,
+  worker: Pick<SchedulableWorker, "labels">,
+  required: Readonly<Record<string, string>>,
 ): boolean {
   return Object.entries(required).every(
     ([key, value]) => worker.labels[key] === value,
@@ -184,4 +193,67 @@ export function scheduleStep(
     return { kind: "queue" };
   }
   return { kind: "dispatch", worker: schedulable[0] };
+}
+
+function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function fanOutMember(
+  worker: PoolWorker,
+  offline: FanOutPolicy["offline"],
+): FanOutMember {
+  const base = { worker: worker.name, instanceUuid: worker.instanceUuid };
+  // last known status beats the connection: draining is leaving, unverified is unproven
+  if (worker.status === "unverified" || worker.status === "draining") {
+    return { ...base, disposition: "excluded", reason: worker.status };
+  }
+  if (!worker.connected || worker.status === "disconnected") {
+    const disposition = offline === "wait"
+      ? "waiting"
+      : offline === "skip"
+      ? "skipped"
+      : "failed";
+    return { ...base, disposition, reason: "disconnected" };
+  }
+  return { ...base, disposition: "dispatch" };
+}
+
+export function planFanOut(
+  selector: FanOutSelector,
+  policy: FanOutPolicy,
+  pool: readonly PoolWorker[],
+): FanOutPlan {
+  // a repeated name breaks the port's contract, so it throws rather than picking one
+  const seen = new Set<string>();
+  for (const worker of pool) {
+    if (seen.has(worker.name)) {
+      throw new Error(`Worker pool lists '${worker.name}' more than once`);
+    }
+    seen.add(worker.name);
+  }
+  const members = pool
+    .filter((worker) =>
+      (selector.labels === undefined ||
+        matchesLabels(worker, selector.labels)) &&
+      (selector.platform === undefined ||
+        matchesPlatform(worker, selector.platform))
+    )
+    .sort((a, b) => byCodeUnit(a.name, b.name))
+    .map((worker) => fanOutMember(worker, policy.offline));
+  const plannedLanes = members.filter(hasLane).length;
+  if (plannedLanes < policy.minWorkers) {
+    return {
+      kind: "refused",
+      reason: "min_workers",
+      live: plannedLanes,
+      minWorkers: policy.minWorkers,
+    };
+  }
+  return {
+    kind: "planned",
+    members,
+    plannedLanes,
+    maxFailures: resolveMaxFailures(policy.rollout?.maxFailures, plannedLanes),
+  };
 }
