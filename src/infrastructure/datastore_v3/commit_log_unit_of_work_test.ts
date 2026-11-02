@@ -1797,3 +1797,185 @@ Deno.test("createCommitLogUnitOfWork: a dropped unit reports the version directo
   assertEquals(seen.dropped.length, drops);
   assertEquals(seen.open, 0);
 });
+
+function withdrawablePut(
+  name: string,
+  text: string,
+  withdrawn: () => boolean,
+) {
+  const change = pendingPut(name, new TextEncoder().encode(text));
+  return { ...change, put: { ...change.put, withdrawn } };
+}
+
+function landedTexts(sink: MemorySink): string[] {
+  return sink.commitsOf(MODEL).flatMap((commit) =>
+    commit.ops.flatMap((op) =>
+      op.kind === "put" && "inline" in op.content
+        ? [atob(op.content.inline)]
+        : []
+    )
+  );
+}
+
+Deno.test("createCommitLogUnitOfWork: a put answering withdrawn lands nothing, and the partitions beside it still commit (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  await uow.stageOp(withdrawablePut("a", "old", () => true));
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r1") });
+  await uow.commit();
+  assertEquals(sink.commitsOf(MODEL), []);
+  assertEquals(sink.commitsOf(runPartition()).length, 1);
+  assertEquals(partitionLockCountForTesting(sink), 0);
+});
+
+Deno.test("createCommitLogUnitOfWork: a put not withdrawn lands, and the question is asked before its store and again under the partition's lock (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  const locksWhenAsked: number[] = [];
+  await uow.stageOp(withdrawablePut("a", "kept", () => {
+    locksWhenAsked.push(partitionLockCountForTesting(sink));
+    return false;
+  }));
+  await uow.commit();
+  assertEquals(landedTexts(sink), ["kept"]);
+  assertEquals(locksWhenAsked, [0, 1]);
+});
+
+Deno.test("createCommitLogUnitOfWork: a put withdrawn while its content was being stored lands nothing (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let withdrawn = false;
+  const read = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const held: ContentSource = () =>
+    ReadableStream.from(
+      (async function* () {
+        yield new TextEncoder().encode("read before the new owner wrote");
+        read.resolve();
+        await release.promise;
+      })(),
+    );
+  const change = pendingPut("a", held);
+  await uow.stageOp({
+    ...change,
+    put: { ...change.put, withdrawn: () => withdrawn },
+  });
+  const checkpoint = uow.checkpoint();
+  await read.promise;
+  withdrawn = true;
+  release.resolve();
+  await checkpoint;
+  await uow.commit();
+  assertEquals(sink.commitsOf(MODEL), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: a retry withdrawn since its failed attempt does not replay the op it kept (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let withdrawn = false;
+  await uow.stageOp(withdrawablePut("a", "stale", () => withdrawn));
+  sink.beforeAppend = () => {
+    throw new Error("connection lost");
+  };
+  await assertRejects(() => uow.checkpoint(), Error, "connection lost");
+  sink.beforeAppend = () => {};
+  withdrawn = true;
+  await uow.commit();
+  assertEquals(sink.commitsOf(MODEL), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: a seq-gap rebuild asks again, so the writer that moved the head can withdraw the put (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let withdrawn = false;
+  await uow.stageOp(withdrawablePut("a", "stale", () => withdrawn));
+  let raced = false;
+  sink.beforeAppend = async () => {
+    if (raced) return;
+    raced = true;
+    withdrawn = true;
+    await sink.append(
+      modelCommit(1, [await savePut("owner", 1)], { txnId: "owner" }),
+    );
+  };
+  await uow.commit();
+  assertEquals(sink.commitsOf(MODEL).map((commit) => commit.txnId), ["owner"]);
+});
+
+Deno.test("createCommitLogUnitOfWork: only the withdrawn put of a group is dropped (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  await uow.stageOp(withdrawablePut("a", "dropped", () => true));
+  await uow.stageOp(withdrawablePut("b", "kept", () => false));
+  await uow.commit();
+  assertEquals(landedTexts(sink), ["kept"]);
+});
+
+Deno.test("createCommitLogUnitOfWork: a put promoted from a child unit keeps its withdrawn predicate (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await child.stageOp(withdrawablePut("a", "stale", () => true));
+  assertEquals(await checkpointFrom(child), true);
+  await child.commit();
+  await root.commit();
+  assertEquals(sink.commitsOf(MODEL), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: a put already withdrawn never reads its source, so a source that would fail cannot fail the commit (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let reads = 0;
+  const failing: ContentSource = () => {
+    reads++;
+    throw new Error("the source now holds another owner's bytes");
+  };
+  const change = pendingPut("a", failing);
+  await uow.stageOp({
+    ...change,
+    put: { ...change.put, withdrawn: () => true },
+  });
+  await uow.commit();
+  assertEquals(reads, 0);
+  assertEquals(sink.commitsOf(MODEL), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: the question is asked after the head read, so an owner landing during that read cannot be built over (swamp-club#4171)", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let withdrawn = false;
+  await uow.stageOp(withdrawablePut("a", "stale", () => withdrawn));
+  sink.beforeHead = () => {
+    withdrawn = true;
+  };
+  await uow.commit();
+  assertEquals(sink.commitsOf(MODEL), []);
+});

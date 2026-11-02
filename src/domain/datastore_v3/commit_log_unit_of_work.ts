@@ -49,6 +49,11 @@ export interface PendingPut {
   readonly expect?: PutExpect;
   readonly content: ContentSource;
   readonly access?: FileAccess;
+  /**
+   * asked under the partition's lock on each append attempt; true drops the put,
+   * since another writer now owns the record it would replace
+   */
+  readonly withdrawn?: () => boolean;
 }
 
 /**

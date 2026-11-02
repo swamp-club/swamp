@@ -18,12 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * once the fence is closed for a run, an executor that outlived the abort grace
- * saves its stale running copy no more over the interrupt
+ * a closed fence stops a late executor saving its stale record over the
+ * interrupt; its commits are withdrawn only once the run is taken over, since a
+ * run the owner closed but left alone must still commit its final record
  */
 
 export interface RunWriteFence {
   isClosed(runId: string): boolean;
+  isTakenOver(runId: string): boolean;
   /**
    * called with a save that passed isClosed in the same tick, so the owner
    * closing the fence can wait for it to land before writing the record itself
@@ -33,5 +35,6 @@ export interface RunWriteFence {
 
 export const OPEN_RUN_WRITE_FENCE: RunWriteFence = {
   isClosed: () => false,
+  isTakenOver: () => false,
   track: (_runId, write) => write,
 };

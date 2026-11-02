@@ -320,6 +320,22 @@ Deno.test("RunSnapshotChanges and evaluated definitions land in the run's and th
   );
 });
 
+Deno.test("RunChanges: a written record carries its withdrawn predicate when given one (swamp-club#4171)", () => {
+  const run = new RunChanges(ID, RUN);
+  const key = recordKeyOf([
+    "workflow-runs",
+    ID,
+    `workflow-run-${RUN}.yaml`,
+  ]);
+  const withdrawn = () => true;
+  const guarded = run.write("run.update", key, bytes("r"), withdrawn);
+  assert("put" in guarded);
+  assertEquals(guarded.put.withdrawn, withdrawn);
+  const plain = run.write("run.update", key, bytes("r"));
+  assert("put" in plain);
+  assertEquals("withdrawn" in plain.put, false);
+});
+
 Deno.test("RunChanges: a run record's puts and tombstone land in the run's partition, with no precondition", () => {
   const run = new RunChanges(ID, RUN);
   assert(run.partition.equals(new RunSnapshotChanges(ID, RUN).partition));

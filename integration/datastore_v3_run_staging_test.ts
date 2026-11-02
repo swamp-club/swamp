@@ -58,6 +58,14 @@ import {
 } from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
 import type { RunCheckpointer } from "../src/domain/workflows/run_checkpointer.ts";
 import { reconcileRefusedRuns } from "../src/infrastructure/datastore_v3/refused_run_records.ts";
+import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
+import {
+  modelPartition,
+  savePut,
+} from "../src/domain/datastore_v3/v3_test_helpers.ts";
+import { ServeRunWriteFence } from "../src/serve/run_write_fence.ts";
+import { WorkflowRunCheckpointer } from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
+import type { CommitLogEngine } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import {
@@ -647,5 +655,205 @@ Deno.test("v3 run staging: with checkpoints, a refused data partition keeps only
     const step = stored?.getJob("main")?.getStep("a");
     assert(step?.status !== "succeeded", "the refused step never succeeds");
     assertEquals(step?.dataArtifacts ?? [], []);
+  });
+});
+
+// separate repositories and roots, as serve's executor and shutdown have
+function takeover(env: V3Env) {
+  const executor = new RunWriter(env, "");
+  const owner = new RunWriter(env, "");
+  const fence = new ServeRunWriteFence();
+  const workflow = plainWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  return {
+    executor,
+    owner,
+    fence,
+    workflow,
+    run,
+    inExecutorRoot: (
+      fn: () => Promise<void>,
+      overrides: { sink?: CommitSink; chunkStore?: ChunkStore } = {},
+    ) =>
+      runInCommitLogRoot(
+        { markDirty: executor.hook },
+        unitOptions(overrides.sink ?? env.store, env.storage, {
+          signal: AbortSignal.timeout(60_000),
+          ...(overrides.chunkStore === undefined
+            ? {}
+            : { chunkStore: overrides.chunkStore }),
+        }),
+        fn,
+      ),
+    shutdown: async () => {
+      await fence.close([run.id]);
+      await owner.run(async () => {
+        const loaded = await owner.repo.findById(
+          workflow.id,
+          createWorkflowRunId(run.id),
+        );
+        assert(loaded !== null, "shutdown loads the run");
+        loaded.interrupt("server_shutdown");
+        await owner.repo.save(workflow.id, loaded);
+        fence.takeOver(run.id);
+      });
+    },
+    committedStatus: async () => {
+      await executor.assertMatches();
+      return (await new YamlWorkflowRunRepository(
+        env.repoDir,
+        undefined,
+        join(env.cacheRoot(""), "workflow-runs"),
+      ).findById(workflow.id, createWorkflowRunId(run.id)))?.status;
+    },
+  };
+}
+
+Deno.test("v3 run takeover: a checkpoint that read the record before shutdown wrote it does not commit over the interrupted record (swamp-club#4171)", async () => {
+  await withAuditedV3Env(async (env) => {
+    const t = takeover(env);
+    // The store is held once the record is read, as a slow bucket holds it.
+    const read = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const chunkStore = new ChunkStore(env.storage);
+    const beginBatch = chunkStore.beginBatch.bind(chunkStore);
+    chunkStore.beginBatch = (namespace) => {
+      const batch = beginBatch(namespace);
+      const commit = batch.commit.bind(batch);
+      batch.commit = async (signal) => {
+        read.resolve();
+        await release.promise;
+        await commit(signal);
+      };
+      return batch;
+    };
+
+    const executing = t.inExecutorRoot(async () => {
+      await t.executor.repo.save(t.workflow.id, t.run, { fence: t.fence });
+      await checkpointFrom(currentUnitOfWork()!);
+    }, { chunkStore });
+    await read.promise;
+    await t.shutdown();
+    release.resolve();
+    await executing;
+
+    assertEquals(await t.committedStatus(), "interrupted");
+    assertEquals(
+      (await t.executor.commitsOf(t.workflow.id, t.run.id)).length,
+      1,
+    );
+  });
+});
+
+Deno.test("v3 run takeover: a checkpoint that failed before shutdown is not replayed by the executor's end commit (swamp-club#4171)", async () => {
+  await withAuditedV3Env(async (env) => {
+    const t = takeover(env);
+    let failing = true;
+    const sink: CommitSink = {
+      append: (commit) =>
+        failing
+          ? Promise.reject(new Error("store briefly unreachable"))
+          : env.store.append(commit),
+      head: (namespace, key) => env.store.head(namespace, key),
+    };
+    const checkpointFailed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+
+    const executing = t.inExecutorRoot(async () => {
+      await t.executor.repo.save(t.workflow.id, t.run, { fence: t.fence });
+      await assertRejects(() => checkpointFrom(currentUnitOfWork()!));
+      checkpointFailed.resolve();
+      await release.promise;
+    }, { sink });
+    await checkpointFailed.promise;
+    failing = false;
+    await t.shutdown();
+    release.resolve();
+    await executing;
+
+    assertEquals(await t.committedStatus(), "interrupted");
+    assertEquals(
+      (await t.executor.commitsOf(t.workflow.id, t.run.id)).length,
+      1,
+    );
+  });
+});
+
+Deno.test("v3 run takeover: a trailing checkpoint that fires after the takeover lands nothing for the run, and the data it carries still commits (swamp-club#4171)", async () => {
+  await withAuditedV3Env(async (env) => {
+    const t = takeover(env);
+    const takenOver = Promise.withResolvers<void>();
+    const trailingStarted = Promise.withResolvers<void>();
+    const trailingDone = Promise.withResolvers<void>();
+    let checkpoints = 0;
+    // The timer's checkpoint waits for the takeover, so it always fires after.
+    const engine = {
+      checkpointOpenUnit: async () => {
+        const nth = ++checkpoints;
+        if (nth === 2) {
+          trailingStarted.resolve();
+          await takenOver.promise;
+        }
+        const unit = currentUnitOfWork();
+        const outcome = unit === undefined
+          ? "no-unit" as const
+          : await checkpointFrom(unit)
+          ? "committed" as const
+          : "no-unit" as const;
+        if (nth === 2) trailingDone.resolve();
+        return outcome;
+      },
+    } as unknown as CommitLogEngine;
+    const checkpointer = new WorkflowRunCheckpointer(
+      { markDirty: t.executor.hook, commitLog: engine },
+      // a clock that stands still makes the second checkpoint arm the timer
+      { intervalMs: 1, now: () => 0 },
+    );
+
+    const executing = t.inExecutorRoot(async () => {
+      await t.executor.repo.save(t.workflow.id, t.run, { fence: t.fence });
+      await checkpointer.checkpoint(t.run);
+      await t.executor.repo.save(t.workflow.id, t.run, { fence: t.fence });
+      // Staged with the save, as a step's data is.
+      await (currentUnitOfWork() as unknown as {
+        stageOp(change: unknown): Promise<void>;
+      }).stageOp({ partition: modelPartition(), op: await savePut("a", 1) });
+      await checkpointer.checkpoint(t.run);
+      assertEquals(checkpoints, 1, "left to the trailing timer");
+      await trailingDone.promise;
+      await checkpointer.close();
+    });
+    await trailingStarted.promise;
+    await t.shutdown();
+    takenOver.resolve();
+    await executing;
+
+    assertEquals(await t.committedStatus(), "interrupted");
+    // The first checkpoint's running record, then shutdown's interrupted one.
+    assertEquals(
+      (await t.executor.commitsOf(t.workflow.id, t.run.id)).length,
+      2,
+    );
+    assertEquals(
+      (await env.store.readPartition("", modelPartition(), 1, 10)).length,
+      1,
+    );
+  });
+});
+
+Deno.test("v3 run takeover: a run shutdown closed but left alone still commits the final record its executor saved (swamp-club#4171)", async () => {
+  await withAuditedV3Env(async (env) => {
+    const t = takeover(env);
+    await t.inExecutorRoot(async () => {
+      t.run.complete();
+      await t.executor.repo.save(t.workflow.id, t.run, { fence: t.fence });
+      // shutdown closes the fence but leaves an ended run alone
+      await t.fence.close([t.run.id]);
+    });
+
+    assertEquals(t.fence.isTakenOver(t.run.id), false);
+    assertEquals(await t.committedStatus(), t.run.status);
+    assert(t.run.status !== "running", "the run's final record is its end");
   });
 });

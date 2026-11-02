@@ -4993,3 +4993,67 @@ Deno.test("YamlWorkflowRunRepository: a stored job-run field it does not know is
     assertEquals("fanOut" in rewritten.jobs[0], false);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository.save: a fence that closes during beforeSave leaves the record and the index as they were, and reports the refusal (swamp-club#4171)", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, uow } = recordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await runInUnitOfWork(uow, () => repo.save(workflow.id, run));
+    const path = repo.getPath(workflow.id, run.id);
+    const before = await Deno.readTextFile(path);
+
+    let closed = false;
+    const waitsClosed: string[] = [];
+    repo.beforeSave = (saving) => {
+      waitsClosed.push(saving.status);
+      closed = true;
+      return Promise.resolve();
+    };
+    run.complete();
+    let refusals = 0;
+    await runInUnitOfWork(uow, () =>
+      repo.save(workflow.id, run, {
+        fence: { isClosed: () => closed, isTakenOver: () => false },
+        onRefused: () => {
+          refusals++;
+        },
+      }));
+    assertEquals(refusals, 1);
+
+    assertEquals(await Deno.readTextFile(path), before);
+    assertEquals(waitsClosed, [run.status]);
+    assertEquals(
+      (await repo.findAllByWorkflowId(workflow.id)).map((r) => r.status),
+      ["running"],
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: an open fence writes, as no fence does (swamp-club#4171)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    let refusals = 0;
+    await repo.save(workflow.id, run, {
+      fence: { isClosed: () => false, isTakenOver: () => false },
+      onRefused: () => {
+        refusals++;
+      },
+    });
+    assertEquals(refusals, 0);
+    assertEquals(
+      (await repo.findById(workflow.id, run.id))?.status,
+      "running",
+    );
+  });
+});

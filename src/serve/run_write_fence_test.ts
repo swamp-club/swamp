@@ -103,3 +103,12 @@ Deno.test("ServeRunWriteFence: a save that fails is still released and its failu
   assertEquals(caught, failure);
   assertEquals(await fenceWarnings(() => fence.close(["a"], 60_000)), []);
 });
+
+Deno.test("ServeRunWriteFence: closing a run does not take it over, and takeOver names only its run (swamp-club#4171)", async () => {
+  const fence = new ServeRunWriteFence();
+  await fence.close(["a", "b"]);
+  assertEquals(fence.isTakenOver("a"), false);
+  fence.takeOver("a");
+  assertEquals(fence.isTakenOver("a"), true);
+  assertEquals(fence.isTakenOver("b"), false);
+});

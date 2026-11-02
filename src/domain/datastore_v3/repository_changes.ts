@@ -459,8 +459,17 @@ export class RunChanges {
     kind: "run.create" | "run.update",
     key: RecordKey,
     content: ContentSource,
+    withdrawn?: () => boolean,
   ): TypedChange {
-    return putChange(this.partition, this.#intentOf(kind), key, content);
+    return putChange(
+      this.partition,
+      this.#intentOf(kind),
+      key,
+      content,
+      undefined,
+      undefined,
+      withdrawn,
+    );
   }
 
   remove(key: RecordKey): TypedChange {
@@ -478,6 +487,7 @@ function putChange(
   content: ContentSource,
   expect?: PutExpect,
   access?: FileAccess,
+  withdrawn?: () => boolean,
 ): TypedChange {
   return {
     partition,
@@ -487,6 +497,7 @@ function putChange(
       content,
       ...(expect === undefined ? {} : { expect }),
       ...(access === undefined ? {} : { access }),
+      ...(withdrawn === undefined ? {} : { withdrawn }),
     },
   };
 }

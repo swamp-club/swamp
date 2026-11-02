@@ -3153,6 +3153,18 @@ read and the append run under a per-partition lock keyed by sink, namespace
 and partition, so two units in one process never take the same seq; the lock
 is released on every outcome and its entry dropped when its queue drains.
 
+A pending put may carry a `withdrawn` predicate (swamp-club#4171). The unit asks
+it before storing the put's content, which it then skips, and under that lock,
+on each attempt to append including a seq-gap rebuild, where it drops the put's
+op when it answers true. The check under the lock is the one that decides. A content read before another owner
+wrote the record, and the op a retry reuses, can therefore never land over that
+owner's commit: a check that came earlier appends first, and a commit that moved
+the head without sharing the lock surfaces as a seq gap, which asks again. A group left with no op commits
+nothing and discards any outbox entry an earlier attempt prepared, and the
+unit does not count its partition as landed. Its stored chunks wait for chunk
+garbage collection, as an abandoned unit's do. Only an executor's run record
+sets the predicate.
+
 **The chunk barrier** (swamp-club#3617). `appendGroup` stores the group's
 content into one `ChunkBatch` (`ChunkStore.beginBatch`) and commits the batch
 before the partition lock: a commit is never prepared or appended while a

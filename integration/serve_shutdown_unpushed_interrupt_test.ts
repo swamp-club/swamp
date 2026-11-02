@@ -655,3 +655,106 @@ Deno.test(
     });
   },
 );
+
+Deno.test(
+  "shutdown interrupting a run whose final save stalls before its write: the late save is refused, so the record stays interrupted (swamp-club#4171)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const wf = Workflow.create({
+        name: `stalled-${crypto.randomUUID()}`,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "build",
+                task: StepTask.model("m", "run"),
+              }),
+            ],
+          }),
+        ],
+      });
+      await new YamlWorkflowRepository(dir).save(wf);
+      const runs = new YamlWorkflowRunRepository(dir);
+      const fence = new ServeRunWriteFence();
+      const controller = new AbortController();
+      const started = Promise.withResolvers<string>();
+      const stalled = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      // Stands for closing the run's signal waits on a slow wait store.
+      runs.beforeSave = async (run) => {
+        if (run.status !== "cancelled") return;
+        stalled.resolve();
+        await release.promise;
+      };
+      const executor: StepExecutor = {
+        execute: async (_step: Step, ctx: StepExecutionContext) => {
+          started.resolve(ctx.workflowRunId);
+          await new Promise((resolve) =>
+            controller.signal.addEventListener("abort", resolve)
+          );
+          throw new DOMException("aborted", "AbortError");
+        },
+      };
+      const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+      try {
+        const service = new WorkflowExecutionService(
+          new YamlWorkflowRepository(dir),
+          runs,
+          dir,
+          executor,
+          undefined,
+          catalogStore,
+        );
+        service.runWriteFence = fence;
+        const drained = (async () => {
+          for await (
+            const _ of service.run(wf.name, { signal: controller.signal })
+          ) {
+            // Drained to the end, as serve's run loop does.
+          }
+        })();
+
+        const runId = await started.promise;
+        controller.abort(new Error("server shutdown"));
+        await stalled.promise;
+
+        const record = async () =>
+          (await runs.findById(
+            createWorkflowId(wf.id),
+            runId as WorkflowRunId,
+          ))?.status;
+        const pushed: (string | undefined)[] = [];
+        const result = await interruptShutdownRuns(
+          [{ runId, kind: "workflow-run", startedAt: new Date() }],
+          {
+            repoContext: {
+              markDirty: () => Promise.resolve(),
+              workflowRunRepo: runs,
+            },
+            // the real close, bounded so the stalled save outlasts it
+            runWriteFence: {
+              close: (runIds) => fence.close(runIds, 1),
+              takeOver: (id) => fence.takeOver(id),
+            },
+            syncService: {
+              pushChanged: async () => {
+                pushed.push(await record());
+                return 1;
+              },
+            },
+          },
+        );
+        assertEquals(result.interrupted, [runId]);
+        assertEquals(pushed, ["interrupted"]);
+
+        release.resolve();
+        await drained;
+
+        assertEquals(await record(), "interrupted");
+      } finally {
+        catalogStore.close();
+      }
+    });
+  },
+);

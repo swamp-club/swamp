@@ -4117,6 +4117,11 @@ Every save of the run the executor is driving goes through its `saveRun`
 owner closes it for a run, as serve's shutdown does for the runs it interrupts,
 the executor stops saving that run's record, so a step that answers after the
 abort cannot put the interrupted record back to `running` (swamp-club#4101).
+The repository asks the fence again just before it writes the file, since
+closing a run's signal waits can stall a save past the owner's wait, and a
+closed fence there writes nothing. Each save's v3 commit is withdrawn if the
+owner has taken the run over by the time it reaches the partition's lock
+(swamp-club#4171).
 A nested workflow's child service shares the parent's fence, but only run ids
 that were closed are refused, and shutdown closes only the top-level runs.
 

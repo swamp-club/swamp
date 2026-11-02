@@ -54,7 +54,10 @@ import {
   type WorkflowRunIndexEntry,
   writeRunIndex,
 } from "./workflow_run_index.ts";
-import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import type {
+  RunSaveOptions,
+  WorkflowRunRepository,
+} from "../../domain/workflows/repositories.ts";
 import type {
   MarkDirtyHook,
   UnreadableContentLookup,
@@ -810,7 +813,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       .map((s) => s.id);
   }
 
-  async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+  async save(
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+    options: RunSaveOptions = {},
+  ): Promise<void> {
+    const { fence } = options;
     await this.beforeSave?.(run);
     const path = this.getPath(workflowId, run.id);
     return await withChangeSignalled(this.markDirty, { kind: "write", path }, {
@@ -837,6 +845,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
       const cleanData = JSON.parse(JSON.stringify(data));
       const content = stringifyYaml(cleanData as Record<string, unknown>);
+      // checked after every await above, any of which can outlast the wait of
+      // the owner closing the fence
+      if (fence?.isClosed(run.id)) {
+        options.onRefused?.();
+        return;
+      }
       await atomicWriteTextFile(path, content);
       // A stream of the file just written: a later save of the run in the
       // same unit supersedes it before it is read.
@@ -845,6 +859,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           created ? "run.create" : "run.update",
           this.keyOf(path),
           async () => (await Deno.open(path)).readable,
+          fence === undefined ? undefined : () => fence.isTakenOver(run.id),
         ),
       ]);
 
