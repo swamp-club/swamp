@@ -1,0 +1,36 @@
+{
+  "notices": {
+    "notices": [
+      {
+        "kind": "trial-ended",
+        "slug": "notice_ended",
+        "name": "notice_ended",
+        "personal": true,
+        "href": "/billing"
+      },
+      {
+        "kind": "seats-exceeded",
+        "plan": "team",
+        "seats": 5,
+        "members": 7,
+        "suggestedPlan": "team",
+        "slug": "notice-add-seats",
+        "name": "Add Seats Crew",
+        "personal": false,
+        "href": "/o/notice-add-seats/billing"
+      },
+      {
+        "kind": "trial-ending",
+        "endsAt": "2026-11-07T12:00:00.000Z",
+        "daysRemaining": 5,
+        "slug": "acme",
+        "name": "Acme",
+        "personal": false,
+        "href": "/o/acme/billing"
+      }
+    ]
+  },
+  "empty": { "notices": [] },
+  "collectiveKey": { "error": "notices_require_user" },
+  "unauthorized": { "error": "Unauthorized" }
+}

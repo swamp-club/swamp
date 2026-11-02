@@ -121,6 +121,17 @@ export {
 } from "./inbox/notice.ts";
 
 export {
+  type AccountNoticeDeps,
+  type AccountNoticePoll,
+  type AccountNoticeView,
+  createAccountNoticeDeps,
+  type CreateAccountNoticeDepsOptions,
+  refreshAccountNotices,
+  showAccountNotice,
+  startAccountNoticePoll,
+} from "./account_notices/notice.ts";
+
+export {
   extractStepArtifacts,
   inputValidationFailed,
   mapWorkflowExecutionEvent,

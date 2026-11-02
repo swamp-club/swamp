@@ -33,6 +33,7 @@ import {
 } from "../../domain/auth/auth_credentials.ts";
 import { InboxCacheKey } from "../../domain/inbox/inbox_state.ts";
 import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
+import { AccountNoticeCacheFileRepository } from "../../infrastructure/account_notices/account_notice_cache_file_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { cancelled, type SwampError } from "../errors.ts";
 
@@ -73,6 +74,10 @@ export interface AuthLogoutDeps {
    * never rejects, since the user is logged out whether or not it went.
    */
   deleteInboxState: (serverUrl: string, apiKey: string) => Promise<void>;
+  deleteAccountNoticeState: (
+    serverUrl: string,
+    apiKey: string,
+  ) => Promise<void>;
   credentialsPath: () => string;
 }
 
@@ -121,6 +126,18 @@ export function createAuthLogoutDeps(
     deleteInboxState: async (serverUrl, apiKey) => {
       try {
         const cache = new InboxCacheFileRepository(options.repo?.configDir);
+        await cache.delete(
+          InboxCacheKey.of(serverUrl, await keyFingerprint(apiKey)),
+        );
+      } catch {
+        // A server URL that does not parse, or a file held open on Windows.
+      }
+    },
+    deleteAccountNoticeState: async (serverUrl, apiKey) => {
+      try {
+        const cache = new AccountNoticeCacheFileRepository(
+          options.repo?.configDir,
+        );
         await cache.delete(
           InboxCacheKey.of(serverUrl, await keyFingerprint(apiKey)),
         );
@@ -219,6 +236,10 @@ export async function* authLogout(
   await deps.deleteCredentials();
   if (credentials.apiKey) {
     await deps.deleteInboxState(credentials.serverUrl, credentials.apiKey);
+    await deps.deleteAccountNoticeState(
+      credentials.serverUrl,
+      credentials.apiKey,
+    );
   }
 
   ctx.logger.debug`Logged out ${credentials.username}`;

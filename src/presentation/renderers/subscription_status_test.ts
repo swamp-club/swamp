@@ -307,3 +307,54 @@ Deno.test("JsonSubscriptionStatusRenderer: intermediate events print nothing", (
   }
   assertEquals(logs, []);
 });
+
+const endingNotice = {
+  kind: "trial-ending" as const,
+  slug: "stack72",
+  name: "stack72",
+  personal: true,
+  billingUrl: "https://swamp-club.com/billing",
+  endsAt: "2026-11-03T00:00:00.000Z",
+  daysRemaining: 9,
+};
+
+Deno.test("LogSubscriptionStatusRenderer: trial notices print between the collectives and the call to action", () => {
+  assertEquals(
+    capture(makeStatus({ notices: [endingNotice] }), "log"),
+    [
+      "stack72 (stack72@example.com) on https://swamp-club.com",
+      "Plan: Team",
+      "Collectives:",
+      "  stack72     trial: 9 days left (ends 2026-11-03)\n" +
+      "  swamp-club  Team  active",
+      "",
+      "ℹ Your Swamp Club trial ends in 9 days (2026-11-03).",
+      "  Choose a plan:  https://swamp-club.com/billing",
+      "",
+      "To manage billing:  swamp subscription start",
+    ].join("\n"),
+  );
+});
+
+Deno.test("JsonSubscriptionStatusRenderer: includes notices when reported, and leaves them out otherwise", () => {
+  const withNotices = JSON.parse(
+    capture(makeStatus({ notices: [endingNotice] }), "json"),
+  );
+  assertEquals(withNotices.notices, [endingNotice]);
+  const without = JSON.parse(capture(makeStatus(), "json"));
+  assertEquals("notices" in without, false);
+});
+
+Deno.test("LogSubscriptionStatusRenderer: a server reporting no subscriptions still shows trial notices, as JSON does", () => {
+  const out = capture(
+    makeStatus({ entitlementsReported: false, notices: [endingNotice] }),
+    "log",
+  );
+  assertEquals(
+    out.endsWith(
+      "ℹ Your Swamp Club trial ends in 9 days (2026-11-03).\n" +
+        "  Choose a plan:  https://swamp-club.com/billing",
+    ),
+    true,
+  );
+});

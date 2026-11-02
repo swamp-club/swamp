@@ -26,6 +26,8 @@ import { AuthRepository } from "../../infrastructure/persistence/auth_repository
 import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 import { InboxCacheKey, InboxState } from "../../domain/inbox/inbox_state.ts";
 import { InboxCacheFileRepository } from "../../infrastructure/inbox/inbox_cache_file_repository.ts";
+import { AccountNoticeCacheFileRepository } from "../../infrastructure/account_notices/account_notice_cache_file_repository.ts";
+import { AccountNoticeState } from "../../domain/account_notices/account_notice_state.ts";
 import {
   authLogout,
   type AuthLogoutDeps,
@@ -45,6 +47,7 @@ function makeDeps(overrides: Partial<AuthLogoutDeps> = {}): AuthLogoutDeps {
     deleteCredentials: () => Promise.resolve(),
     deleteCaches: () => Promise.resolve(),
     deleteInboxState: () => Promise.resolve(),
+    deleteAccountNoticeState: () => Promise.resolve(),
     credentialsPath: () => "/home/test/.config/swamp/auth.json",
     ...overrides,
   };
@@ -518,6 +521,57 @@ Deno.test("authLogout: a login written after the no-login check survives, while 
       );
       assertEquals(exists, false, file);
     }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("authLogout: forgets the key's account notices after its inbox state", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    deleteInboxState: () => {
+      calls.push("inbox");
+      return Promise.resolve();
+    },
+    deleteAccountNoticeState: (serverUrl, apiKey) => {
+      calls.push(`notices ${serverUrl} ${apiKey}`);
+      return Promise.resolve();
+    },
+  });
+  await collect<AuthLogoutEvent>(authLogout(createLibSwampContext(), deps));
+  assertEquals(calls.slice(-2), [
+    "inbox",
+    "notices https://api.example.com swamp_test_key",
+  ]);
+});
+
+Deno.test("createAuthLogoutDeps: deletes only this key's account notices on this server", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configDir = tmpDir;
+    const cache = new AccountNoticeCacheFileRepository(configDir);
+    const fingerprint = await keyFingerprint("swamp_login_key");
+    const mine = InboxCacheKey.of("https://swamp-club.com", fingerprint);
+    const staging = InboxCacheKey.of(
+      "https://staging.swamp-club.com",
+      fingerprint,
+    );
+    const state: AccountNoticeState = {
+      ...AccountNoticeState.empty(),
+      schedule: { lastPolledAt: 1, nextPollAt: null, stop: null },
+    };
+    for (const key of [mine, staging]) await cache.save(key, state);
+
+    const deps = createAuthLogoutDeps({ repo: { configDir } });
+    await deps.deleteAccountNoticeState!(
+      "https://swamp-club.com",
+      "swamp_login_key",
+    );
+
+    assertEquals(await cache.load(mine), AccountNoticeState.empty());
+    assertEquals(await cache.load(staging), state);
+    // A server URL that does not parse never fails logout.
+    await deps.deleteAccountNoticeState!("not a url", "swamp_login_key");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
