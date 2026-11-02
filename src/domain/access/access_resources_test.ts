@@ -19,9 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  isVaultMethod,
   modelAccessResource,
   tagsChanged,
   unresolvedAccessResource,
+  VAULT_METHODS,
   vaultKindResource,
   workflowAccessResource,
 } from "./access_resources.ts";
@@ -101,6 +103,25 @@ Deno.test("vaultKindResource: names the key only when a request names one", () =
     name: "prod",
     key: "db",
   });
+});
+
+Deno.test("vaultKindResource: names the method only when a request names one", () => {
+  assertEquals(vaultKindResource("prod", undefined, "get").fields, {
+    name: "prod",
+    methodName: "get",
+  });
+  assertEquals(vaultKindResource("prod", "db", "put").fields, {
+    name: "prod",
+    key: "db",
+    methodName: "put",
+  });
+});
+
+Deno.test("isVaultMethod: accepts each vault verb and nothing else", () => {
+  for (const method of VAULT_METHODS) assertEquals(isVaultMethod(method), true);
+  for (const other of ["read", "write", "Get", "list", "", "vault.get"]) {
+    assertEquals(isVaultMethod(other), false, other);
+  }
 });
 
 Deno.test("tagsChanged: equal tag sets in any key order are unchanged", () => {

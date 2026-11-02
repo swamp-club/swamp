@@ -35,6 +35,7 @@ import {
   type ResourceKind,
   resourceSelectorMatches,
 } from "../../domain/access/resource_selector.ts";
+import { VAULT_METHODS } from "../../domain/access/access_resources.ts";
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import type { AuditEmitter } from "../../domain/serve_audit/audit_emitter.ts";
 import {
@@ -146,7 +147,7 @@ function deniedByVaultNames(grants: Grant[], request: VaultRequest): boolean {
   return [
     vaultAccessResource("vault"),
     vaultAccessResource(request.vaultName),
-    vaultKindResource(request.vaultName, request.key),
+    vaultKindResource(request.vaultName, request.key, request.method),
   ].some((resource) =>
     decisionOn(grants, request.action, resource)?.effect === "deny"
   );
@@ -167,7 +168,13 @@ function arbGrant(kinds: ResourceKind[]): fc.Arbitrary<Grant> {
       'name == "prod-db"',
       'key == "api"',
     ),
-  }).map(({ subject, effect, actions, kind, pattern, condition }) => ({
+    methods: fc.constantFrom(
+      undefined,
+      undefined,
+      ["put"],
+      ["get", "describe"],
+    ),
+  }).map(({ subject, effect, actions, kind, pattern, condition, methods }) => ({
     id: crypto.randomUUID(),
     subject: { kind: "user" as const, name: subject },
     effect,
@@ -179,6 +186,7 @@ function arbGrant(kinds: ResourceKind[]): fc.Arbitrary<Grant> {
     ...(condition && (kind === "vault" || !condition.startsWith("key"))
       ? { condition }
       : {}),
+    ...(methods ? { methods } : {}),
     state: "active" as const,
     source: "method" as const,
     createdBy: { kind: "user" as const, id: "admin" },
@@ -191,14 +199,20 @@ const arbRequest: fc.Arbitrary<VaultRequest> = fc.record({
   action: arbAction,
   existingKind: fc.constantFrom("all-vaults", "named", "model-admin"),
   key: fc.constantFrom(undefined, "api", "other"),
-}).map(({ vaultName, action, existingKind, key }) => {
+  method: fc.constantFrom(...VAULT_METHODS),
+}).map(({ vaultName, action, existingKind, key, method }) => {
   if (existingKind === "model-admin") {
-    return { vaultName, action: "admin", existing: kindResource("model") };
+    return {
+      vaultName,
+      action: "admin",
+      method,
+      existing: kindResource("model"),
+    };
   }
   const existing = existingKind === "all-vaults"
     ? vaultAccessResource("vault")
     : vaultAccessResource(vaultName);
-  return { vaultName, action, existing, ...(key ? { key } : {}) };
+  return { vaultName, action, method, existing, ...(key ? { key } : {}) };
 });
 
 const SEED_GRANT: Grant = {
@@ -259,7 +273,7 @@ Deno.test("authorizeVaultOrReject: vault grants add allows only from a matching 
         const vaultDecision = decisionOn(
           grants,
           request.action,
-          vaultKindResource(request.vaultName, request.key),
+          vaultKindResource(request.vaultName, request.key, request.method),
         );
         if (now.allowed) {
           assert(today.allowed || vaultDecision?.effect === "allow");
@@ -301,6 +315,41 @@ Deno.test("authorizeVaultOrReject: with vaultGrantAdmits false only today's chec
           return;
         }
         assertEquals(now.allowed, !deniedByVaultNames(grants, request));
+      },
+    ),
+    { numRuns: 1000 },
+  );
+});
+
+Deno.test("authorizeVaultOrReject: a vault grant scoped to some verbs admits exactly those verbs, and a scoped deny refuses exactly those", () => {
+  fc.assert(
+    fc.property(
+      fc.subarray([...VAULT_METHODS]),
+      arbRequest,
+      fc.constantFrom("allow" as const, "deny" as const),
+      (methods, base, effect) => {
+        const request: VaultRequest = {
+          ...base,
+          existing: vaultAccessResource("vault"),
+        };
+        const scoped: Grant = {
+          ...SEED_GRANT,
+          effect,
+          actions: [request.action],
+          resource: { kind: "vault", pattern: request.vaultName },
+          methods,
+        };
+        const unscoped: Grant = {
+          ...SEED_GRANT,
+          id: "unscoped",
+          actions: [request.action],
+          resource: { kind: "vault", pattern: request.vaultName },
+        };
+        const grants = effect === "allow" ? [scoped] : [scoped, unscoped];
+        const named = methods.length === 0 ||
+          (methods as string[]).includes(request.method);
+        const now = runVault(grants, request);
+        assertEquals(now.allowed, effect === "allow" ? named : !named);
       },
     ),
     { numRuns: 1000 },

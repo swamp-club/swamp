@@ -1701,6 +1701,7 @@ export async function handleVaultMigrate(
     !authorizeVaultOrReject(socket, requestId, principal, {
       vaultName: payload.vaultName,
       action: "admin",
+      method: "migrate",
       existing: kindResource("model"),
     }, ctx).allowed
   ) return;

@@ -33,6 +33,9 @@ export interface AccessResource {
   readonly name: string;
   readonly fields: Record<string, unknown>;
   readonly scope?: "kind";
+  // a request whose method cannot be known, which any method of a scoped allow
+  // could have made; set only by datastore commit authorization
+  readonly anyMethod?: true;
 }
 
 /**

@@ -719,6 +719,7 @@ async function checkVaultDefinition(
       !isCallerVaultAuthorized(caller, requestId, {
         vaultName,
         action: "write",
+        method: before === undefined ? "create" : "edit",
         existing: vaultAccessResource(vaultName),
       }, ctx)
     ) {

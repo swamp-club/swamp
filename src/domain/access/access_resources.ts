@@ -94,11 +94,41 @@ export function unresolvedAccessResource(
   return { kind, name: idOrName, fields };
 }
 
-export function vaultKindResource(name: string, key?: string): AccessResource {
+export const VAULT_METHODS = [
+  "get",
+  "describe",
+  "inspect",
+  "list-keys",
+  "read-secret",
+  "audit-trail",
+  "search",
+  "put",
+  "delete",
+  "annotate",
+  "create",
+  "edit",
+  "migrate",
+] as const;
+
+export type VaultMethod = typeof VAULT_METHODS[number];
+
+export function isVaultMethod(value: string): value is VaultMethod {
+  return (VAULT_METHODS as readonly string[]).includes(value);
+}
+
+export function vaultKindResource(
+  name: string,
+  key?: string,
+  methodName?: VaultMethod,
+): AccessResource {
   return {
     kind: "vault",
     name,
-    fields: { name, ...(key !== undefined ? { key } : {}) },
+    fields: {
+      name,
+      ...(key !== undefined ? { key } : {}),
+      ...(methodName !== undefined ? { methodName } : {}),
+    },
   };
 }
 

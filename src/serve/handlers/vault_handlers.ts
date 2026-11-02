@@ -205,6 +205,7 @@ async function authorizeVaultByNameOrId(
   principal: Principal | null,
   vaultNameOrId: string,
   vaultType: string | undefined,
+  method: "get" | "describe",
 ): Promise<{ resolved: { id: string; name: string } | null } | null> {
   const existing = vaultAccessResource("vault");
   if (
@@ -232,6 +233,7 @@ async function authorizeVaultByNameOrId(
     !authorizeVaultOrReject(socket, requestId, principal, {
       vaultName: resolved?.name ?? vaultNameOrId,
       action: "read",
+      method,
       existing,
     }, ctx).allowed
   ) return null;
@@ -268,6 +270,7 @@ export async function handleVaultGet(
     principal,
     payload.vaultNameOrId,
     payload.vaultType,
+    "get",
   );
   if (!authorized) return;
 
@@ -334,6 +337,7 @@ export async function handleVaultPut(
     !authorizeVaultOrReject(socket, requestId, principal, {
       vaultName: payload.vaultName,
       action: refresh ? "admin" : "write",
+      method: "put",
       existing: vaultAccessResource("vault"),
       key: payload.key,
       ...(refresh ? { vaultGrantAdmits: false } : {}),
@@ -453,6 +457,7 @@ export async function handleVaultDelete(
     !authorizeVaultOrReject(socket, requestId, principal, {
       vaultName: payload.vaultName,
       action: "write",
+      method: "delete",
       existing: vaultAccessResource("vault"),
       key: payload.key,
     }, ctx).allowed
@@ -594,6 +599,7 @@ export async function handleVaultDescribe(
     principal,
     payload.vaultNameOrId,
     payload.vaultType,
+    "describe",
   );
   if (!authorized) return;
 
@@ -652,6 +658,7 @@ export async function handleVaultInspect(
   const authorized = authorizeVaultOrReject(socket, requestId, principal, {
     vaultName: payload.vaultName,
     action: "read",
+    method: "inspect",
     existing: vaultAccessResource("vault"),
     key: payload.key,
   }, ctx);
@@ -722,6 +729,7 @@ export async function handleVaultListKeys(
   const authorized = authorizeVaultOrReject(socket, requestId, principal, {
     vaultName,
     action: "read",
+    method: "list-keys",
     existing: vaultAccessResource("vault"),
   }, ctx);
   if (!authorized.allowed) return;
@@ -794,6 +802,7 @@ export async function handleVaultSearch(
     socket,
     principal,
     "read",
+    "search",
     ctx,
     () => admission.existingAllowed,
   );
@@ -850,6 +859,7 @@ export async function handleVaultAnnotate(
   const authorized = authorizeVaultOrReject(socket, requestId, principal, {
     vaultName: payload.vaultName,
     action: "write",
+    method: "annotate",
     existing: vaultAccessResource("vault"),
     key: payload.key,
   }, ctx);
@@ -935,6 +945,7 @@ export async function handleVaultCreate(
     !authorizeVaultOrReject(socket, requestId, principal, {
       vaultName: payload.name,
       action: "write",
+      method: "create",
       existing: vaultAccessResource(payload.name),
     }, ctx).allowed
   ) return;
@@ -1048,6 +1059,7 @@ export async function handleVaultEdit(
     !authorizeVaultOrReject(socket, requestId, principal, {
       vaultName,
       action: "write",
+      method: "edit",
       existing: vaultAccessResource(vaultName),
     }, ctx).allowed
   ) return;
@@ -1079,6 +1091,7 @@ export async function handleVaultEdit(
     authorizeVaultOrReject(socket, requestId, principal, {
       vaultName: name,
       action: "write",
+      method: "edit",
       existing: vaultAccessResource(name),
     }, ctx).allowed;
 
@@ -1197,6 +1210,7 @@ export async function handleVaultAuditTrail(
       !authorizeVaultOrReject(socket, requestId, principal, {
         vaultName: payload.vaultName,
         action: "read",
+        method: "audit-trail",
         existing: vaultAccessResource(payload.vaultName),
       }, ctx).allowed
     ) return;
@@ -1216,6 +1230,7 @@ export async function handleVaultAuditTrail(
       socket,
       principal,
       "read",
+      "audit-trail",
       ctx,
       (vaultName) => dataReadable(vaultAccessResource(vaultName)),
     );
@@ -1277,6 +1292,7 @@ export async function handleVaultReadSecret(
   const authorized = authorizeVaultOrReject(socket, requestId, principal, {
     vaultName: payload.vaultName,
     action: "read",
+    method: "read-secret",
     existing: {
       ...vaultAccessResource(payload.vaultName),
       fields: {

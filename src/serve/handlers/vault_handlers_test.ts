@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { VAULT_METHODS } from "../../domain/access/access_resources.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { dirname, join } from "@std/path";
@@ -1557,6 +1558,98 @@ Deno.test("vault requests: a vault:<name> allow alone allows each request with i
         assertEquals(refusalOf(frames), null, testCase.request);
       }
     }
+  });
+});
+
+function verbOf(testCase: VaultRequestCase): string {
+  return testCase.request.replace(/^vault\./, "").replace(/ \(.*\)$/, "");
+}
+
+Deno.test("vault requests: a vault grant scoped to a request's own verb allows it, and one scoped to any other verb is refused", async () => {
+  await withVaultTableRepo(["prod-db"], async (repo) => {
+    for (const testCase of VAULT_REQUESTS) {
+      if (testCase.vaultGrantAdmits === false) continue;
+      const verb = verbOf(testCase);
+      const target = testCase.target("prod-db");
+      const scoped = (methods: string[]) =>
+        runVaultCase(repo, testCase, [
+          vaultGrant({
+            actions: [testCase.action],
+            resource: { kind: "vault", pattern: target },
+            methods,
+          }),
+        ], "prod-db");
+      assertEquals(refusalOf(await scoped([verb])), null, testCase.request);
+      const others = VAULT_METHODS.filter((m) => m !== verb);
+      assert(refusalOf(await scoped([...others])), testCase.request);
+    }
+  });
+});
+
+Deno.test("vault requests: a put-only grant with read and write allows put and refuses get, describe and delete", async () => {
+  await withVaultTableRepo(["prod-db"], async (repo) => {
+    const putOnly = [
+      vaultGrant({
+        actions: ["read", "write"],
+        resource: { kind: "vault", pattern: "prod-db" },
+        methods: ["put"],
+      }),
+    ];
+    for (const testCase of VAULT_REQUESTS) {
+      const frames = await runVaultCase(repo, testCase, putOnly, "prod-db");
+      if (testCase.request === "vault.put") {
+        assertEquals(refusalOf(frames), null, testCase.request);
+      } else {
+        assert(refusalOf(frames), testCase.request);
+      }
+    }
+  });
+});
+
+Deno.test("vault requests: a vault deny scoped to a verb refuses that verb only", async () => {
+  await withVaultTableRepo(["prod-db"], async (repo) => {
+    for (const testCase of VAULT_REQUESTS) {
+      if (testCase.vaultGrantAdmits === false) continue;
+      const verb = verbOf(testCase);
+      const target = testCase.target("prod-db");
+      const withDeny = (methods: string[]) =>
+        runVaultCase(repo, testCase, [
+          grantOn("data", "*", ALL_ACTIONS),
+          grantOn("model", "*", ["admin"]),
+          vaultGrant({
+            effect: "deny",
+            actions: [testCase.action],
+            resource: { kind: "vault", pattern: target },
+            methods,
+          }),
+        ], "prod-db");
+      assert(refusalOf(await withDeny([verb])), testCase.request);
+      const others = VAULT_METHODS.filter((m) => m !== verb);
+      assertEquals(
+        refusalOf(await withDeny([...others])),
+        null,
+        testCase.request,
+      );
+    }
+  });
+});
+
+Deno.test("handleVaultPut: a vault grant scoped to put never admits refresh options", async () => {
+  await withVaultTableRepo(["prod-db"], async (repo) => {
+    const refresh = VAULT_REQUESTS.find((c) =>
+      c.request === "vault.put (refresh)"
+    )!;
+    const frames = await runVaultCase(repo, refresh, [
+      vaultGrant({
+        actions: ALL_ACTIONS,
+        resource: { kind: "vault", pattern: "prod-db" },
+        methods: ["put"],
+      }),
+    ], "prod-db");
+    assertEquals(
+      refusalOf(frames),
+      "Access denied: user:editor does not have 'admin' on data:vault",
+    );
   });
 });
 

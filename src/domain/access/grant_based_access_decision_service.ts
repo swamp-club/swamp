@@ -174,7 +174,11 @@ function grantMatchesMethods(
 ): boolean {
   if (!grant.methods || grant.methods.length === 0) return true;
   const methodName = resource.fields.methodName;
-  if (typeof methodName !== "string") return true;
+  // a scoped allow covers only requests for its methods; a scoped deny refuses
+  // a request that names no method, so it cannot be stepped around
+  if (typeof methodName !== "string") {
+    return grant.effect === "deny" || resource.anyMethod === true;
+  }
   return grant.methods.includes(methodName);
 }
 
