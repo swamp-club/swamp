@@ -317,14 +317,28 @@ export interface CommitStore {
   /**
    * The partitions of `namespace` whose stored commits or compacted base
    * records name chunk `sha256`, at most `limit` of them, in key order
-   * (swamp-club#3915). Serve authorises a chunk read by them. A chunk that
-   * compaction released is named by none.
+   * (swamp-club#3915), from just past the partition key `after` when one is
+   * given, so a caller pages through them (swamp-club#4260). Serve
+   * authorises a chunk read by them. A chunk that compaction released is
+   * named by none.
    */
   partitionsReferencing(
     namespace: string,
     sha256: string,
     limit: number,
+    after?: string,
   ): Promise<readonly PartitionKey[]>;
+
+  /**
+   * The keys of `partition`'s compacted base records whose blob names chunk
+   * `sha256`, by the rule `Commit.chunkRefs` applies to a put (its parts, or
+   * its own digest when it has none), in key order (swamp-club#4260).
+   */
+  baseRecordKeysNaming(
+    namespace: string,
+    partition: PartitionKey,
+    sha256: string,
+  ): Promise<readonly string[]>;
 
   /**
    * The history a compaction may fold under `retention`, the newest commits

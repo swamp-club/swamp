@@ -218,6 +218,21 @@ Deno.test("ServeDatastoreClient.getChunk: whole, ranged, missing and unsatisfiab
   assertEquals(requests[3].headers.get("range"), "bytes=20-");
 });
 
+Deno.test("ServeDatastoreClient.getChunk: a read serve could not decide is a refusal, never a missing chunk (swamp-club#4260)", async () => {
+  const { client } = clientWith(() =>
+    Response.json({
+      code: "chunk_access_undecided",
+      message: "Whether this chunk may be read could not be decided",
+    }, { status: 503 })
+  );
+  const refused = await assertRejects(
+    () => client.getChunk("a".repeat(64), signal()),
+    ServeUpstreamError,
+  );
+  assertEquals(refused.status, 503);
+  assertEquals(refused.code, "chunk_access_undecided");
+});
+
 Deno.test("ServeDatastoreClient.getChunk: a whole chunk that does not hash to its name is refused", async () => {
   const { client } = clientWith(() =>
     new Response(new TextEncoder().encode("other"), { status: 200 })

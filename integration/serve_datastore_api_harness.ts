@@ -31,7 +31,10 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import { handleDatastoreRequest } from "../src/serve/datastore_api.ts";
+import {
+  handleDatastoreRequest,
+  type VouchBudget,
+} from "../src/serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
 import {
   asTryLock,
@@ -106,6 +109,11 @@ export async function withServer(
     locks?: (
       createLock: (target: LockTarget) => Promise<TryLock>,
     ) => DatastoreLockLeases;
+    /**
+     * The budget each chunk-vouch decision gets, in place of serve's
+     * defaults (swamp-club#4260).
+     */
+    vouchBudget?: () => VouchBudget;
   } = {},
 ): Promise<void> {
   resetRateLimitState();
@@ -175,6 +183,7 @@ export async function withServer(
         ledger,
         locks,
         quarantine,
+        vouchBudget: options.vouchBudget,
         authenticate: (token) => {
           const principalId = TOKENS[token];
           return Promise.resolve(

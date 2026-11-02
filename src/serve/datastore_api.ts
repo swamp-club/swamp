@@ -66,7 +66,6 @@ import {
   baseRecordReadAccessOf,
   type CallerAuthority,
   type CommitRefusal,
-  definitionRecordReadAccessOf,
   partitionReadAccessOf,
   partitionWriteAccessOf,
   type RequiredAccess,
@@ -119,7 +118,6 @@ import {
   PartitionKey,
   partitionOf,
 } from "../domain/datastore_v3/partition_key.ts";
-import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -220,10 +218,67 @@ export const MAX_PAGE = 1000;
 export const MAX_CHANGES_SCAN = 10_000;
 /** The most compacted base entries one base request scans, kept or filtered. */
 export const MAX_BASE_SCAN = 10_000;
-/** The most partitions a chunk read checks the caller against. */
-const MAX_REFERENCING_PARTITIONS = 64;
+/** The referencing partitions a chunk read fetches at a time. */
+const REFERENCING_PARTITIONS_PAGE = 64;
+/** The definition commits a chunk read fetches at a time. */
+const DEFINITION_COMMITS_PAGE = 100;
+/**
+ * The most referencing partitions one request checks the caller against,
+ * over every chunk it asks about (swamp-club#4260).
+ */
+export const MAX_VOUCH_PARTITIONS = 1024;
+/**
+ * The most behavior definition commits one request reads to vouch for
+ * chunks, over every chunk it asks about (swamp-club#4260).
+ */
+export const MAX_VOUCH_COMMITS = 10_000;
+
+/**
+ * Whether a partition the caller may read vouches for a chunk: `undecided`
+ * when the request's budget ran out first (swamp-club#4260).
+ */
+type Vouch = "vouched" | "refused" | "undecided";
+
+/**
+ * The work one request may spend deciding which chunks the caller may
+ * reference, shared by every chunk it asks about, so a `chunks/has` of
+ * {@link MAX_HAS_HASHES} hashes is bounded per request, not per hash.
+ */
+export class VouchBudget {
+  #partitions: number;
+  #commits: number;
+
+  constructor(
+    partitions: number = MAX_VOUCH_PARTITIONS,
+    commits: number = MAX_VOUCH_COMMITS,
+  ) {
+    this.#partitions = partitions;
+    this.#commits = commits;
+  }
+
+  /** Spends one partition check; false once none is left. */
+  spendPartition(): boolean {
+    if (this.#partitions <= 0) return false;
+    this.#partitions--;
+    return true;
+  }
+
+  /** Spends one definition commit read; false once none is left. */
+  spendCommit(): boolean {
+    if (this.#commits <= 0) return false;
+    this.#commits--;
+    return true;
+  }
+}
 /** The most chunk requests one principal has in flight. */
 export const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
+
+/**
+ * A chunk read refused because whether the caller may read it could not be
+ * decided within the request's limits (swamp-club#4260): not an answer
+ * that the chunk is missing.
+ */
+export const CHUNK_ACCESS_UNDECIDED_CODE = "chunk_access_undecided";
 
 /** The principal an unauthenticated server (`--auth-mode none`) stamps. */
 export const ANONYMOUS_PRINCIPAL = "@anonymous";
@@ -246,6 +301,11 @@ export interface DatastoreApiDeps {
    */
   readonly quarantine?: QuarantineStore;
   readonly now?: () => number;
+  /**
+   * The budget each decision of which chunks a caller may reference gets
+   * (swamp-club#4260); {@link VouchBudget}'s defaults when absent.
+   */
+  readonly vouchBudget?: () => VouchBudget;
 }
 
 /** An authenticated caller of the API. */
@@ -598,10 +658,17 @@ class DatastoreApi {
       );
     }
     // Only chunks the caller could reference are answered for: anything
-    // else reads as missing, so the answer reveals no other content.
+    // else reads as missing, so the answer reveals no other content. One
+    // budget covers every hash (swamp-club#4260). A hash it cannot decide
+    // is left out too: only writers ask, before they upload, so absent
+    // makes them send the bytes, which the upload ledger then vouches for.
+    // A reader asks GET chunks, which says undecided rather than missing.
+    const budget = this.#vouchBudget();
     const referable: string[] = [];
     for (const hash of new Set(hashes as string[])) {
-      if (await this.#mayReference(hash)) referable.push(hash);
+      if (await this.#mayReference(hash, budget) === "vouched") {
+        referable.push(hash);
+      }
     }
     const signal = req.signal;
     const storage = this.#v3.storage;
@@ -696,8 +763,18 @@ class DatastoreApi {
       return failure(400, "invalid_request", "Not a SHA-256 hex digest");
     }
     // A chunk the caller may not read is answered as one that does not
-    // exist, so the reply is no oracle for others' content.
-    if (!(await this.#mayReference(sha256))) {
+    // exist, so the reply is no oracle for others' content. One the budget
+    // could not decide is not answered as missing (swamp-club#4260): the
+    // reply names no partition, only that the read was not decided.
+    const vouch = await this.#mayReference(sha256, this.#vouchBudget());
+    if (vouch === "undecided") {
+      return failure(
+        503,
+        CHUNK_ACCESS_UNDECIDED_CODE,
+        "Whether this chunk may be read could not be decided within this request's limits",
+      );
+    }
+    if (vouch === "refused") {
       return failure(404, "not_found", "No such chunk");
     }
     return await this.#withChunkSlot(async () => {
@@ -837,6 +914,7 @@ class DatastoreApi {
     if (await landedForwardedCommit(this.#v3, request) === undefined) {
       await this.#catchUp();
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
+      const possession = this.#vouchBudget();
       content = new ForwardedContentAuthority({
         ctx: this.#deps.ctx,
         v3: this.#v3,
@@ -845,7 +923,9 @@ class DatastoreApi {
         requestId: this.#requestId,
         resolver,
         possesses: async (hash) =>
-          carried.has(hash) || (await this.#mayReference(hash, resolver)),
+          carried.has(hash) ||
+          (await this.#mayReference(hash, possession, resolver) ===
+            "vouched"),
         signal: req.signal,
       });
       const checked = await authorizeCommit(
@@ -883,9 +963,15 @@ class DatastoreApi {
         return { contentChanged: true as const };
       }
       // Proof of possession under the lock too, so a read grant revoked
-      // during the upload no longer vouches for a chunk.
+      // during the upload no longer vouches for a chunk. Its own budget
+      // bounds the work done under the lock (swamp-club#4260); a chunk it
+      // cannot decide is not provided, and the client sends its bytes.
+      const underLock = this.#vouchBudget();
       for (const hash of referenced) {
-        if (carried.has(hash) || (await this.#mayReference(hash, resolver))) {
+        if (
+          carried.has(hash) ||
+          (await this.#mayReference(hash, underLock, resolver) === "vouched")
+        ) {
           continue;
         }
         return { notProvided: hash };
@@ -2089,10 +2175,12 @@ class DatastoreApi {
     // answers a member's own flush, chunk_not_provided, and the flush sends
     // the change again without the restatement; the author is never lent a
     // read they lack.
+    const possession = this.#vouchBudget();
     for (const hash of referencedChunks(ops)) {
       if (
         deposited.has(hash) ||
-        (await this.#mayReference(hash, resolver, author))
+        (await this.#mayReference(hash, possession, resolver, author) ===
+          "vouched")
       ) {
         continue;
       }
@@ -2111,7 +2199,8 @@ class DatastoreApi {
       resolver,
       possesses: async (hash) =>
         deposited.has(hash) ||
-        (await this.#mayReference(hash, resolver, author)),
+        (await this.#mayReference(hash, possession, resolver, author) ===
+          "vouched"),
       signal,
     });
     const checked = await authorizeCommit(
@@ -2417,6 +2506,10 @@ class DatastoreApi {
     }
   }
 
+  #vouchBudget(): VouchBudget {
+    return this.#deps.vouchBudget?.() ?? new VouchBudget();
+  }
+
   #catchUp(): Promise<void> {
     let coalescer = catchUps.get(this.#v3);
     if (coalescer === undefined) {
@@ -2430,12 +2523,16 @@ class DatastoreApi {
   /**
    * Whether the caller may name `sha256` in a commit or read it: it sent
    * it within the grace window, or a partition it may read references it.
+   * Every referencing partition is paged through until one vouches
+   * (swamp-club#4260), within `budget`: a decision the budget cannot finish
+   * is `undecided`, never `refused`, so it is not answered as missing.
    */
   async #mayReference(
     sha256: string,
+    budget: VouchBudget,
     resolver: AggregateResourceResolver = this.#resolver,
     as?: AccessCaller,
-  ): Promise<boolean> {
+  ): Promise<Vouch> {
     if (
       this.#deps.ledger.holds(
         as === undefined ? this.#caller.principal : principalLabelOf(as) ?? "",
@@ -2444,72 +2541,127 @@ class DatastoreApi {
         this.#now(),
       )
     ) {
-      return true;
+      return "vouched";
     }
-    const partitions = await this.#v3.commitStore.partitionsReferencing(
-      this.#namespace,
-      sha256,
-      MAX_REFERENCING_PARTITIONS,
-    );
-    for (const partition of partitions) {
-      const identity = partition.identity;
-      if (
-        identity.kind === "config" && identity.definitionKind === "model"
-          ? await this.#mayReadDefinitionChunk(
-            partition,
-            identity.name,
-            sha256,
-            resolver,
-            as,
-          )
-          : this.#mayRead(
-            await partitionReadAccessOf(partition, resolver),
-            as,
-          )
-      ) {
-        return true;
+    let undecided = false;
+    let after: string | undefined;
+    for (;;) {
+      const partitions = await this.#v3.commitStore.partitionsReferencing(
+        this.#namespace,
+        sha256,
+        REFERENCING_PARTITIONS_PAGE,
+        after,
+      );
+      for (const partition of partitions) {
+        if (!budget.spendPartition()) return "undecided";
+        const identity = partition.identity;
+        const vouch =
+          identity.kind === "config" && identity.definitionKind === "model"
+            ? await this.#mayReadDefinitionChunk(
+              partition,
+              sha256,
+              budget,
+              resolver,
+              as,
+            )
+            : this.#mayRead(
+                await partitionReadAccessOf(partition, resolver),
+                as,
+              )
+            ? "vouched"
+            : "refused";
+        if (vouch === "vouched") return "vouched";
+        if (vouch === "undecided") undecided = true;
       }
+      if (partitions.length < REFERENCING_PARTITIONS_PAGE) break;
+      after = partitions[partitions.length - 1].toString();
     }
-    return false;
+    return undecided ? "undecided" : "refused";
   }
 
   /**
    * Whether a behavior definition's config partition vouches for `sha256`:
-   * a record in it now names the chunk, and the caller may read that record
-   * as the changes feed decides the op that wrote it. Same-named
-   * definitions of several types share the partition, a control-plane one
-   * among them, so the partition as a whole decides nothing (swamp-club#3938).
-   * A read model not yet complete vouches for nothing.
+   * a stored commit in it names the chunk and the caller may read that
+   * commit, as the changes feed and `GET commits` decide it, or a compacted
+   * base record names it and the caller may read that record, as `GET base`
+   * decides it. Same-named definitions of several types share the
+   * partition, a control-plane one among them, so the partition as a whole
+   * decides nothing (swamp-club#3938). History counts, not only what is
+   * live: a member catching up past a superseded version needs its chunk,
+   * and the commit store answers whatever serve's read model is doing
+   * (swamp-club#4260).
    */
   async #mayReadDefinitionChunk(
     partition: PartitionKey,
-    name: string,
     sha256: string,
+    budget: VouchBudget,
     resolver: AggregateResourceResolver,
     as?: AccessCaller,
-  ): Promise<boolean> {
-    let records;
-    try {
-      records = await this.#v3.readModel.liveRecords(
+  ): Promise<Vouch> {
+    const store = this.#v3.commitStore;
+    // A compaction between the commits and the base can move a commit
+    // naming the chunk into the base already read: decided again once, and
+    // refused (closed) if the point moves twice.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const point = await store.compactionPoint();
+      let fromSeq = 1;
+      for (;;) {
+        let page;
+        try {
+          page = await store.readPartition(
+            this.#namespace,
+            partition,
+            fromSeq,
+            DEFINITION_COMMITS_PAGE,
+          );
+        } catch (error) {
+          if (
+            error instanceof CommitsCompactedError &&
+            error.compactedSeq !== undefined &&
+            error.compactedSeq >= fromSeq
+          ) {
+            fromSeq = error.compactedSeq + 1;
+            continue;
+          }
+          throw error;
+        }
+        for (const { commit } of page) {
+          if (!budget.spendCommit()) return "undecided";
+          if (
+            commit.chunkRefs().includes(sha256) &&
+            this.#mayRead(
+              await commitReadAccessOf(partition, commit.ops, resolver),
+              as,
+            )
+          ) {
+            return "vouched";
+          }
+        }
+        if (page.length < DEFINITION_COMMITS_PAGE) break;
+        fromSeq = page[page.length - 1].commit.seq + 1;
+      }
+      const keys = await store.baseRecordKeysNaming(
         this.#namespace,
         partition,
+        sha256,
       );
-    } catch (error) {
-      if (error instanceof ReadModelIncompleteError) return false;
-      throw error;
-    }
-    for (const record of records) {
-      if (
-        record.content.kind === "blob" &&
-        record.content.blob.chunkHashes().includes(sha256) &&
-        this.#mayRead([
-          await definitionRecordReadAccessOf(name, record.key, resolver),
-        ], as)
-      ) {
-        return true;
+      for (const key of keys) {
+        if (
+          this.#mayRead(
+            await baseRecordReadAccessOf(
+              partition,
+              RecordKey.create(key),
+              resolver,
+            ),
+            as,
+          )
+        ) {
+          return "vouched";
+        }
       }
+      if (await store.compactionPoint() === point) return "refused";
     }
-    return false;
+    return "refused";
   }
 
   async #mayReadCommit(

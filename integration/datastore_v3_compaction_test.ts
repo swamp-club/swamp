@@ -715,6 +715,11 @@ class CompactingAfterFirstPage implements CommitStore {
   ) {
     return this.inner.partitionsReferencing(...args);
   }
+  baseRecordKeysNaming(
+    ...args: Parameters<CommitStore["baseRecordKeysNaming"]>
+  ) {
+    return this.inner.baseRecordKeysNaming(...args);
+  }
   compactionStatus(...args: Parameters<CommitStore["compactionStatus"]>) {
     return this.inner.compactionStatus(...args);
   }

@@ -30,6 +30,7 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import {
   handleDatastoreRequest,
   UNRESTRICTED_READ_ACCESS,
+  VouchBudget,
 } from "../src/serve/datastore_api.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
@@ -43,7 +44,10 @@ import {
 } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
+import { ReadModelIncompleteError } from "../src/domain/datastore_v3/read_model.ts";
+import { createDefinitionId } from "../src/domain/definitions/definition.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { grant } from "./serve_request_harness.ts";
 import {
   blobSaveOps,
@@ -1313,5 +1317,411 @@ Deno.test({
         delete (store as { changesSince?: unknown }).changesSince;
       }
     });
+  },
+});
+
+/** Bob reads behaviors matching `pattern` and every behavior's data. */
+function bobReads(pattern: string): Grant[] {
+  return [
+    ...writer(),
+    grant({
+      subject: { kind: "user", name: "bob" },
+      actions: ["read"],
+      resource: { kind: "model", pattern },
+    }),
+    grant({
+      subject: { kind: "user", name: "bob" },
+      actions: ["read"],
+      resource: { kind: "data", pattern: "*" },
+    }),
+  ];
+}
+
+/** `GET chunks/{sha}` and `chunks/has` for `sha`, as `token`'s caller. */
+async function chunkRead(
+  server: Server,
+  sha: string,
+  token = "bob-token",
+): Promise<
+  { status: number; body: Record<string, unknown>; held: unknown[] }
+> {
+  const read = await fetch(`${server.url}/chunks/${sha}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const body = read.status === 200
+    ? (await read.body?.cancel(), {})
+    : await read.json();
+  const has = await fetch(`${server.url}/chunks/has`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ hashes: [sha] }),
+  });
+  return { status: read.status, body, held: (await has.json()).held };
+}
+
+/**
+ * Saves `bytes` as data of `others` behaviors that do not exist, whose ids
+ * sort before any random one, then of `web`: `web`'s partition is the last
+ * referencing the chunk in key order. Only the first commit carries it.
+ */
+async function sharedChunk(
+  server: Server,
+  others: number,
+  bytes: Uint8Array,
+): Promise<string> {
+  const sha = await sha256Hex(bytes);
+  const ids = Array.from(
+    { length: others },
+    (_, i) =>
+      createDefinitionId(
+        `00000000-0000-4000-8000-${i.toString().padStart(12, "0")}`,
+      ),
+  );
+  assert(
+    server.model.id > ids[ids.length - 1],
+    "web's partition sorts last",
+  );
+  ids.push(server.model.id);
+  let first = true;
+  for (const id of ids) {
+    const landed = await post(
+      partitionPath(server, id),
+      "alice-token",
+      commitBody({
+        expectedSeq: 0,
+        txnId: crypto.randomUUID(),
+        ops: await blobSaveOps(server, "out", 1, bytes, id),
+        chunks: first ? [{ sha256: sha, size: bytes.length }] : [],
+      }, first ? [bytes] : []),
+    );
+    assertEquals(landed.status, 200, JSON.stringify(landed.json));
+    first = false;
+  }
+  return sha;
+}
+
+/** The commits path of the behavior definition `name`'s config partition. */
+function configCommitsPath(server: Server, name: string): string {
+  return `${server.url}/partitions/${
+    encodeURIComponent(
+      partitionOf({ kind: "config", definitionKind: "model", name })
+        .toString(),
+    )
+  }/commits`;
+}
+
+/** Creates the definition `name` of `type` as `v1`, then edits it to `v2`. */
+async function supersededDefinition(
+  server: Server,
+  name: string,
+  type: string,
+): Promise<{ v1: string; v2: string; v1Bytes: Uint8Array; id: string }> {
+  const id = crypto.randomUUID();
+  const v1 = definitionYaml(name, type, id);
+  const v2 = new TextEncoder().encode(
+    new TextDecoder().decode(definitionYaml(name, type, id)) + "# v2\n",
+  );
+  const versions = [
+    [0, v1, "definition.create"],
+    [1, v2, "definition.edit"],
+  ] as const;
+  for (const [expectedSeq, content, kind] of versions) {
+    const sha = await sha256Hex(content);
+    const landed = await post(
+      configCommitsPath(server, name),
+      "alice-token",
+      commitBody({
+        expectedSeq,
+        txnId: crypto.randomUUID(),
+        ops: [{
+          kind: "put",
+          intent: { kind, definition: { kind: "model", name } },
+          key: `config/models/${type}/${name}.yaml`,
+          blob: { sha256: sha, size: content.length },
+        }],
+        chunks: [{ sha256: sha, size: content.length }],
+      }, [content]),
+    );
+    assertEquals(landed.status, 200, JSON.stringify(landed.json));
+  }
+  return {
+    v1: await sha256Hex(v1),
+    v2: await sha256Hex(v2),
+    v1Bytes: v1,
+    id,
+  };
+}
+
+Deno.test({
+  name:
+    "datastore API: a chunk referenced by more than 64 partitions is served through the last one the caller may read, and refused as missing when it may read none (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("web"), async (server) => {
+      const sha = await sharedChunk(
+        server,
+        64,
+        new TextEncoder().encode("common"),
+      );
+      const read = await chunkRead(server, sha);
+      assertEquals(read.status, 200);
+      assertEquals(read.held, [sha]);
+    });
+    await withServer(bobReads("nothing-here"), async (server) => {
+      const sha = await sharedChunk(
+        server,
+        64,
+        new TextEncoder().encode("common"),
+      );
+      const read = await chunkRead(server, sha);
+      assertEquals(read.status, 404);
+      assertEquals(read.body, { code: "not_found", message: "No such chunk" });
+      assertEquals(read.held, []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a superseded definition's chunk is served to a reader of its commit, and stays hidden for a control-plane definition (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (
+      const [type, readable] of [
+        ["ordinary", true],
+        ["@swamp/grant", false],
+      ] as const
+    ) {
+      await withServer(bobReads("*"), async (server) => {
+        const typeName = type === "ordinary"
+          ? server.modelType.normalized
+          : type;
+        const { v1, v2 } = await supersededDefinition(
+          server,
+          "shared",
+          typeName,
+        );
+        for (const sha of [v1, v2]) {
+          const read = await chunkRead(server, sha);
+          assertEquals(read.status, readable ? 200 : 404, type);
+          assertEquals(read.held, readable ? [sha] : [], type);
+        }
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a superseded definition's chunk is vouched for through the compacted base and the commits after it (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      const type = server.modelType.normalized;
+      const { v1, v2, id } = await supersededDefinition(
+        server,
+        "shared",
+        type,
+      );
+      // Folds v1's commit into the base; v2 is superseded by v3, stored.
+      const store = server.v3.commitStore;
+      const point = (await store.changesSince(0, 1))[0].cursor;
+      const fence = store.writerFence();
+      await store.compactHistory(point, fence === undefined ? {} : { fence });
+      const v3 = new TextEncoder().encode(
+        new TextDecoder().decode(definitionYaml("shared", type, id)) +
+          "# v3\n",
+      );
+      const v3Sha = await sha256Hex(v3);
+      const landed = await post(
+        configCommitsPath(server, "shared"),
+        "alice-token",
+        commitBody({
+          expectedSeq: 2,
+          txnId: crypto.randomUUID(),
+          ops: [{
+            kind: "put",
+            intent: {
+              kind: "definition.edit",
+              definition: { kind: "model", name: "shared" },
+            },
+            key: `config/models/${type}/shared.yaml`,
+            blob: { sha256: v3Sha, size: v3.length },
+          }],
+          chunks: [{ sha256: v3Sha, size: v3.length }],
+        }, [v3]),
+      );
+      assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      for (const sha of [v1, v2, v3Sha]) {
+        assertEquals((await chunkRead(server, sha)).status, 200, sha);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a definition chunk is answered while serve's read model is incomplete, which the chunk path never asks (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      const { v2 } = await supersededDefinition(
+        server,
+        "shared",
+        server.modelType.normalized,
+      );
+      // As after a restart, a restore or a takeover: the index is not
+      // complete, for every caller.
+      const readModel = server.v3.readModel as {
+        liveRecords: (...args: unknown[]) => Promise<unknown>;
+      };
+      const original = readModel.liveRecords;
+      let asked = 0;
+      readModel.liveRecords = () => {
+        asked++;
+        return Promise.reject(new ReadModelIncompleteError());
+      };
+      try {
+        for (const token of ["bob-token", "alice-token"]) {
+          const read = await chunkRead(server, v2, token);
+          assertEquals(read.status, 200, token);
+          assertEquals(read.held, [v2], token);
+        }
+        assertEquals(asked, 0);
+      } finally {
+        readModel.liveRecords = original;
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit naming a superseded definition's chunk it may read is vouched for without carrying it (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger({ graceMs: 1 });
+    await withServer(writer(), async (server) => {
+      const { v1, v1Bytes } = await supersededDefinition(
+        server,
+        "shared",
+        server.modelType.normalized,
+      );
+      await waitFor(
+        () => !ledger.holds("user:caller", "_default", v1, Date.now()),
+        "the upload's grace window to end",
+      );
+      const named = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops: await blobSaveOps(server, "copy", 1, v1Bytes),
+          chunks: [],
+        }),
+      );
+      assertEquals(named.status, 200, JSON.stringify(named.json));
+    }, ledger);
+  },
+});
+
+/** A budget that counts what it allowed. */
+class CountingBudget extends VouchBudget {
+  partitionsSpent = 0;
+  override spendPartition(): boolean {
+    const spent = super.spendPartition();
+    if (spent) this.partitionsSpent++;
+    return spent;
+  }
+}
+
+Deno.test({
+  name:
+    "datastore API: past the request's vouch budget a chunk read is undecided, a 503 that names no partition, and has leaves it out; the work stops at the budget (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const budgets: CountingBudget[] = [];
+    let limit = 3;
+    const vouchBudget = () => {
+      const budget = new CountingBudget(limit, 100);
+      budgets.push(budget);
+      return budget;
+    };
+    await withServer(
+      bobReads("web"),
+      async (server) => {
+        // Five partitions reference the chunk; bob may read only the last.
+        const sha = await sharedChunk(
+          server,
+          4,
+          new TextEncoder().encode("common"),
+        );
+        budgets.length = 0;
+        const read = await fetch(`${server.url}/chunks/${sha}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(read.status, 503);
+        const body = await read.json();
+        assertEquals(body.code, "chunk_access_undecided");
+        assert(!JSON.stringify(body).includes("model"), JSON.stringify(body));
+        // Two hashes in one has share one budget: the second gets none.
+        const has = await fetch(`${server.url}/chunks/has`, {
+          method: "POST",
+          headers: { authorization: "Bearer bob-token" },
+          body: JSON.stringify({ hashes: [sha, sha.replace(/^./, "0")] }),
+        });
+        assertEquals((await has.json()).held, []);
+        assertEquals(budgets.map((budget) => budget.partitionsSpent), [3, 3]);
+        // A budget that reaches the last partition serves it.
+        limit = 5;
+        const served = await chunkRead(server, sha);
+        assertEquals(served.status, 200);
+        assertEquals(served.held, [sha]);
+      },
+      new UploadLedger(),
+      { vouchBudget },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a chunk has leaves out is carried by the commit naming it, which lands (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      writer(),
+      async (server) => {
+        const bytes = new TextEncoder().encode("carried");
+        const sha = await sha256Hex(bytes);
+        const has = await fetch(`${server.url}/chunks/has`, {
+          method: "POST",
+          headers: { authorization: "Bearer alice-token" },
+          body: JSON.stringify({ hashes: [sha] }),
+        });
+        assertEquals((await has.json()).held, []);
+        const landed = await post(
+          partitionPath(server),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: await blobSaveOps(server, "out", 1, bytes),
+            chunks: [{ sha256: sha, size: bytes.length }],
+          }, [bytes]),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      },
+      new UploadLedger(),
+      { vouchBudget: () => new VouchBudget(0, 0) },
+    );
   },
 });
