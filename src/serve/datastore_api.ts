@@ -765,19 +765,21 @@ class DatastoreApi {
     // A chunk the caller may not read is answered as one that does not
     // exist, so the reply is no oracle for others' content. One the budget
     // could not decide is not answered as missing (swamp-club#4260): the
-    // reply names no partition, only that the read was not decided.
-    const vouch = await this.#mayReference(sha256, this.#vouchBudget());
-    if (vouch === "undecided") {
-      return failure(
-        503,
-        CHUNK_ACCESS_UNDECIDED_CODE,
-        "Whether this chunk may be read could not be decided within this request's limits",
-      );
-    }
-    if (vouch === "refused") {
-      return failure(404, "not_found", "No such chunk");
-    }
+    // reply names no partition, only that the read was not decided. The
+    // decision runs inside the chunk slot, so a principal's concurrent
+    // reads bound the work it can start.
     return await this.#withChunkSlot(async () => {
+      const vouch = await this.#mayReference(sha256, this.#vouchBudget());
+      if (vouch === "undecided") {
+        return failure(
+          503,
+          CHUNK_ACCESS_UNDECIDED_CODE,
+          "Whether this chunk may be read could not be decided within this request's limits",
+        );
+      }
+      if (vouch === "refused") {
+        return failure(404, "not_found", "No such chunk");
+      }
       const bytes = await this.#v3.storage.get(
         this.#storageNamespace,
         sha256,
@@ -914,7 +916,18 @@ class DatastoreApi {
     if (await landedForwardedCommit(this.#v3, request) === undefined) {
       await this.#catchUp();
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
+      // Possession is decided once, before the content check reads any of
+      // it, so a chunk the budget cannot decide is answered as not
+      // provided (the client sends its bytes) rather than refused as
+      // content (swamp-club#4260).
       const possession = this.#vouchBudget();
+      const vouched = new Set<string>();
+      for (const hash of referenced) {
+        if (carried.has(hash)) continue;
+        const vouch = await this.#mayReference(hash, possession, resolver);
+        if (vouch === "vouched") vouched.add(hash);
+        else if (vouch === "undecided") return chunkNotProvided(hash);
+      }
       content = new ForwardedContentAuthority({
         ctx: this.#deps.ctx,
         v3: this.#v3,
@@ -923,8 +936,8 @@ class DatastoreApi {
         requestId: this.#requestId,
         resolver,
         possesses: async (hash) =>
-          carried.has(hash) ||
-          (await this.#mayReference(hash, possession, resolver) ===
+          carried.has(hash) || vouched.has(hash) ||
+          (await this.#mayReference(hash, this.#vouchBudget(), resolver) ===
             "vouched"),
         signal: req.signal,
       });
@@ -1007,13 +1020,7 @@ class DatastoreApi {
         "This commit's model lease is not held: take the lock again and retry",
       );
     }
-    if ("notProvided" in landed) {
-      return failure(
-        403,
-        "chunk_not_provided",
-        `The commit names chunk ${landed.notProvided}, which it neither carries nor may read`,
-      );
-    }
+    if ("notProvided" in landed) return chunkNotProvided(landed.notProvided);
     if ("ok" in landed) return refusalResponse(landed);
     const { result } = landed;
     this.#deps.ledger.release(this.#storageNamespace, referenced);
@@ -2175,13 +2182,18 @@ class DatastoreApi {
     // answers a member's own flush, chunk_not_provided, and the flush sends
     // the change again without the restatement; the author is never lent a
     // read they lack.
+    // Decided once per hash: the content check below reads these, so it
+    // never spends the budget again on a chunk this loop vouched for
+    // (swamp-club#4260).
     const possession = this.#vouchBudget();
+    const vouched = new Set<string>();
     for (const hash of referencedChunks(ops)) {
+      if (deposited.has(hash)) continue;
       if (
-        deposited.has(hash) ||
-        (await this.#mayReference(hash, possession, resolver, author) ===
-          "vouched")
+        await this.#mayReference(hash, possession, resolver, author) ===
+          "vouched"
       ) {
+        vouched.add(hash);
         continue;
       }
       throw new ServeUpstreamError(
@@ -2198,9 +2210,13 @@ class DatastoreApi {
       requestId: this.#requestId,
       resolver,
       possesses: async (hash) =>
-        deposited.has(hash) ||
-        (await this.#mayReference(hash, possession, resolver, author) ===
-          "vouched"),
+        deposited.has(hash) || vouched.has(hash) ||
+        (await this.#mayReference(
+          hash,
+          this.#vouchBudget(),
+          resolver,
+          author,
+        ) === "vouched"),
       signal,
     });
     const checked = await authorizeCommit(
@@ -2604,28 +2620,39 @@ class DatastoreApi {
     // refused (closed) if the point moves twice.
     for (let attempt = 0; attempt < 2; attempt++) {
       const point = await store.compactionPoint();
-      let fromSeq = 1;
-      for (;;) {
+      // Newest first: the live version's chunk is in the latest commit
+      // that wrote its key, so the common read spends little of the budget,
+      // and only an old superseded version can run it out.
+      let end = (await store.head(this.#namespace, partition)).seq;
+      while (end >= 1) {
+        let start = Math.max(1, end - DEFINITION_COMMITS_PAGE + 1);
         let page;
         try {
           page = await store.readPartition(
             this.#namespace,
             partition,
-            fromSeq,
-            DEFINITION_COMMITS_PAGE,
+            start,
+            end - start + 1,
           );
         } catch (error) {
           if (
-            error instanceof CommitsCompactedError &&
-            error.compactedSeq !== undefined &&
-            error.compactedSeq >= fromSeq
+            !(error instanceof CommitsCompactedError) ||
+            error.compactedSeq === undefined || error.compactedSeq < start
           ) {
-            fromSeq = error.compactedSeq + 1;
-            continue;
+            throw error;
           }
-          throw error;
+          // Everything at or below the compacted seq is in the base.
+          if (error.compactedSeq >= end) break;
+          start = error.compactedSeq + 1;
+          page = await store.readPartition(
+            this.#namespace,
+            partition,
+            start,
+            end - start + 1,
+          );
         }
-        for (const { commit } of page) {
+        for (let i = page.length - 1; i >= 0; i--) {
+          const { commit } = page[i];
           if (!budget.spendCommit()) return "undecided";
           if (
             commit.chunkRefs().includes(sha256) &&
@@ -2637,8 +2664,7 @@ class DatastoreApi {
             return "vouched";
           }
         }
-        if (page.length < DEFINITION_COMMITS_PAGE) break;
-        fromSeq = page[page.length - 1].commit.seq + 1;
+        end = start - 1;
       }
       const keys = await store.baseRecordKeysNaming(
         this.#namespace,
@@ -3241,6 +3267,18 @@ function bearerToken(req: Request): string | null {
   ) return null;
   const token = header.slice(BEARER_PREFIX_LEN);
   return token.length > 0 ? token : null;
+}
+
+/**
+ * A commit naming a chunk it neither carries nor was vouched for: the client
+ * sends the commit again with the chunk's bytes.
+ */
+function chunkNotProvided(hash: string | undefined): Response {
+  return failure(
+    403,
+    "chunk_not_provided",
+    `The commit names chunk ${hash}, which it neither carries nor may read`,
+  );
 }
 
 function failure(status: number, code: string, message: string): Response {

@@ -808,13 +808,13 @@ export class SqliteCommitStore implements CommitStore {
       `SELECT DISTINCT r.record_key AS record_key
         FROM base_records AS r
         LEFT JOIN json_each(
-          CASE WHEN json_type(r.blob, '$.parts') = 'array'
+          CASE WHEN json_valid(r.blob) AND json_type(r.blob, '$.parts') = 'array'
             THEN json_extract(r.blob, '$.parts') ELSE '[]' END
         ) AS part
         WHERE r.namespace = ? AND r.partition = ?
           AND r.blob IS NOT NULL AND json_valid(r.blob)
-          AND (part.value IS NULL OR part.type = 'object')
-          AND (CASE WHEN part.value IS NULL
+          AND (part.key IS NULL OR part.type = 'object')
+          AND (CASE WHEN part.key IS NULL
             THEN json_extract(r.blob, '$.sha256')
             ELSE json_extract(part.value, '$.sha256')
           END) = ?

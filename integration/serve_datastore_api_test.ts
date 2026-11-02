@@ -1725,3 +1725,82 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "datastore API: a definition's history is read newest first, so its current version is vouched for within a budget an old version runs out (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      bobReads("*"),
+      async (server) => {
+        const { v1, v2 } = await supersededDefinition(
+          server,
+          "shared",
+          server.modelType.normalized,
+        );
+        // One commit read per request: v2's commit is the newest.
+        const current = await chunkRead(server, v2);
+        assertEquals(current.status, 200);
+        assertEquals(current.held, [v2]);
+        const old = await fetch(`${server.url}/chunks/${v1}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(old.status, 503);
+        assertEquals((await old.json()).code, "chunk_access_undecided");
+      },
+      new UploadLedger(),
+      { vouchBudget: () => new VouchBudget(1024, 1) },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a content-checked put naming a chunk the budget cannot decide is answered chunk_not_provided, not refused as content (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger({ graceMs: 1 });
+    await withServer(
+      writer(),
+      async (server) => {
+        const type = server.modelType.normalized;
+        const { v1, v1Bytes } = await supersededDefinition(
+          server,
+          "shared",
+          type,
+        );
+        await waitFor(
+          () => !ledger.holds("user:caller", "_default", v1, Date.now()),
+          "the upload's grace window to end",
+        );
+        // A revert of shared to v1, naming v1's chunk without carrying it.
+        const named = await post(
+          configCommitsPath(server, "shared"),
+          "alice-token",
+          commitBody({
+            expectedSeq: 2,
+            txnId: crypto.randomUUID(),
+            ops: [{
+              kind: "put",
+              intent: {
+                kind: "definition.edit",
+                definition: { kind: "model", name: "shared" },
+              },
+              key: `config/models/${type}/shared.yaml`,
+              blob: { sha256: v1, size: v1Bytes.length },
+            }],
+            chunks: [],
+          }),
+        );
+        assertEquals(named.status, 403, JSON.stringify(named.json));
+        assertEquals(named.json.code, "chunk_not_provided");
+        // No commit reads at all: undecided whatever order history is read in.
+      },
+      ledger,
+      { vouchBudget: () => new VouchBudget(1024, 0) },
+    );
+  },
+});

@@ -6758,7 +6758,9 @@ is still vouched for to a caller who may read the commit that named it, so
 a member catching up past a superseded version gets its chunk
 (swamp-club#4260). The decision reads the commit store, never serve's read
 model, so a read model still catching up (after a restart, a restore or a
-takeover) refuses no chunk. A compaction between the commits and the base
+takeover) refuses no chunk. History is read newest first, so the live
+version's chunk costs little of the budget and only an old superseded one can
+run it out. A compaction between the commits and the base
 being read is decided again once, and refused if the point moves twice.
 
 **The compacted base** (swamp-club#4006). A checkout whose feed cursor is
