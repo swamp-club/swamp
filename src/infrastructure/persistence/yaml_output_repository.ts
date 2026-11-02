@@ -225,6 +225,7 @@ interface ListedOutput {
 async function chooseReadable<T extends ListedOutput>(
   listed: T[],
   selectReadable: SelectReadableOutputs | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<T[]> {
   if (selectReadable === undefined) return listed;
   const keys: OutputKey[] = [];
@@ -258,6 +259,7 @@ async function chooseReadable<T extends ListedOutput>(
         at++;
       } while (at < listed.length && performance.now() < until);
     },
+    signal,
   );
   if (indexing !== undefined) await indexing;
   const readable = keys.length === 0 ? [] : await selectReadable(keys);
@@ -274,6 +276,7 @@ async function chooseReadable<T extends ListedOutput>(
         at++;
       } while (at < listed.length && performance.now() < until);
     },
+    signal,
   );
   if (filtering !== undefined) await filtering;
   return kept;
@@ -951,8 +954,14 @@ export class YamlOutputRepository implements OutputRepository {
         waiting: 0,
         settled: false,
       };
-      // Handled here: an aborted sort has no caller left to see it reject.
-      sorted.then(() => created.settled = true, () => created.settled = true);
+      // Handled here: an aborted sort has no caller left to see it reject, and
+      // a sort that failed must not answer the next caller on this listing.
+      sorted.then(() => created.settled = true, () => {
+        created.settled = true;
+        if (this.listingOrders.get(listing) === created) {
+          this.listingOrders.delete(listing);
+        }
+      });
       order = created;
       this.listingOrders.set(listing, order);
     }
@@ -1012,7 +1021,11 @@ export class YamlOutputRepository implements OutputRepository {
           ) {
             const files = ordered.slice(examined, examined + chunk);
             examined += files.length;
-            const picked = await chooseReadable(files, selectReadable);
+            const picked = await chooseReadable(
+              files,
+              selectReadable,
+              signal,
+            );
             chosen = [...chosen.slice(chosenAt), ...picked];
             chosenAt = 0;
             chunk *= 2;
@@ -1056,7 +1069,7 @@ export class YamlOutputRepository implements OutputRepository {
       signal,
     );
     return {
-      chosen: await chooseReadable(listing.value, selectReadable),
+      chosen: await chooseReadable(listing.value, selectReadable, signal),
       joined: listing.joined,
     };
   }

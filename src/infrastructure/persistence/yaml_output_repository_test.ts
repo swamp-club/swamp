@@ -5069,12 +5069,12 @@ Deno.test("YamlOutputRepository.findHistoryNewestFirst: warns only about this de
 
 /**
  * the length of each array sorted with the newest-first comparator; with
- * `onFirst`, the first such sort calls it, then spends its slice, so a sort of
- * more than one run must yield before it can go on
+ * `onSort`, each such sort calls it with its count, and the first then spends
+ * its slice, so a sort of more than one run must yield before it can go on
  */
 async function withNewestFirstSorts<T>(
   fn: (sorts: readonly number[]) => Promise<T>,
-  onFirst?: () => void,
+  onSort?: (count: number) => void,
 ): Promise<T> {
   const sort = Array.prototype.sort;
   const sorts: number[] = [];
@@ -5084,8 +5084,8 @@ async function withNewestFirstSorts<T>(
   ): U[] {
     if (compare?.name === "newestFileFirst") {
       sorts.push(this.length);
-      if (onFirst !== undefined && sorts.length === 1) {
-        onFirst();
+      onSort?.(sorts.length);
+      if (onSort !== undefined && sorts.length === 1) {
         const spent = performance.now() + 10;
         while (performance.now() < spent) {
           // Spend the slice, as a long run would.
@@ -5142,18 +5142,26 @@ Deno.test(
 
       const controller = new AbortController();
       const reason = new DOMException("request cancelled", "AbortError");
+      let leavingSettled = false;
+      let waitingAtAbort: boolean | undefined;
       await withNewestFirstSorts(async (sorts) => {
         const staying = repo.findGlobalNewestFirst({ since });
         const leaving = repo.findGlobalNewestFirst(
           { since },
           controller.signal,
-        );
+        ).finally(() => leavingSettled = true);
         assertEquals(await assertRejects(() => leaving), reason);
+        assertEquals(waitingAtAbort, true);
 
         const read = await staying;
         assertEquals((await read.next(2000)).length, 1100);
         assertEquals(sorts, [1024, 76]);
-      }, () => controller.abort(reason));
+      }, (count) => {
+        // The second run comes after the first yielded, once both reads wait.
+        if (count !== 2) return;
+        waitingAtAbort = !leavingSettled;
+        controller.abort(reason);
+      });
     });
   },
 );
@@ -5183,7 +5191,9 @@ Deno.test(
         const later = await repo.findGlobalNewestFirst({ since });
         assertEquals((await later.next(2000)).length, 1100);
         assertEquals(sorts, [1024, 1024, 76]);
-      }, () => controller.abort(reason));
+      }, (count) => {
+        if (count === 1) controller.abort(reason);
+      });
     });
   },
 );
@@ -5238,6 +5248,35 @@ Deno.test(
         found.every((entry) => entry.output.definitionId === readable),
         true,
       );
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: a sort that fails fails the reads waiting on it, and a later read sorts afresh",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      await disableOutputSummaries(dir);
+      await saveHistory(repo, createDefinitionId(crypto.randomUUID()), 1100);
+      const since = new Date(Date.now() - HOUR_MS);
+      const failure = new Error("sort failed");
+
+      await withNewestFirstSorts(async (sorts) => {
+        const reads = [
+          repo.findGlobalNewestFirst({ since }),
+          repo.findGlobalNewestFirst({ since }),
+        ];
+        for (const read of reads) {
+          assertEquals(await assertRejects(() => read), failure);
+        }
+
+        const later = await repo.findGlobalNewestFirst({ since });
+        assertEquals((await later.next(2000)).length, 1100);
+        assertEquals(sorts, [1024, 1024, 76]);
+      }, (count) => {
+        if (count === 1) throw failure;
+      });
     });
   },
 );
