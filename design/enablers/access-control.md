@@ -150,7 +150,7 @@ stored as `swamp/grant` behavior instances with state `active` or `revoked`.
 | `actions`   | `Action[]`            | One or more of `run`, `read`, `write`, `admin` |
 | `resource`  | string                | Resource selector (`workflow:@acme/*`)         |
 | `condition` | string (optional)     | CEL over resource fields and principal context |
-| `methods`   | string[] (optional)   | Limit to these methods (omit for all)          |
+| `methods`   | string[] (optional)   | Limit to these methods (omit for all; see [Method scope](#method-scope)) |
 | `state`     | `active` \| `revoked` | Only `active` grants are evaluated             |
 | `source`    | string                | Where the grant came from (see below)          |
 
@@ -739,8 +739,9 @@ action, resource) triple:
 
 1. **Resolve subjects**: the principal itself, local groups, IdP groups.
 2. **Collect candidates**: every grant whose subject is in the list.
-3. **Filter**: keep grants matching the resource selector, the action and the
-   method name (when the grant has a `methods` list). Implied actions count:
+3. **Filter**: keep grants matching the resource selector, the action and,
+   when the grant has a `methods` list, the request's method (see
+   [Method scope](#method-scope)). Implied actions count:
    `run` implies `approve` and `signal`, and `write` implies `tag`, each except
    for allow grants when the server requires an explicit grant for that action.
 4. **Partition**: split into deny and allow grants.
@@ -774,6 +775,46 @@ e.g. `!("trigger" in tags) || tags.trigger != "webhook"`. In a mixed-version
 fleet, instances older than the service principal skip `service:` grants when
 loading policy; they also do not authorize trigger runs.
 
+### Method scope
+
+A grant's `methods` list scopes it to requests that name one of those methods.
+An allow with a `methods` list matches only a request whose method is in the
+list; a request that names no method is not admitted by it. A deny with a
+`methods` list refuses a request whose method is in the list, and every request
+that names no method, so a scoped deny cannot be stepped around by a request
+that names none. A grant without `methods`, or with an empty list, is unscoped.
+
+Which requests name a method:
+
+- **Behaviors**: a method run, its cancel and attach, `model.method.describe`,
+  and reads of what one run produced (`model.output.get`, `.data`, `.logs`,
+  `model.method.history.get`, `.logs`, and output, history and usage search
+  items). `model.get`, create, edit, delete, retag, validate and evaluate name
+  none, so a scoped allow on a behavior does not let its holder read or change
+  the definition.
+- **Vaults**: every vault request names its verb, the request type without
+  `vault.`: `get`, `describe`, `inspect`, `list-keys`, `read-secret`,
+  `audit-trail`, `search`, `put`, `delete`, `annotate`, `create`, `edit`
+  (rename and repair included) and `migrate`. Vault operations in a serve run
+  use `get`, `list-keys`, `put`, `delete`, `annotate`, `describe` (annotation
+  and refresh-hook reads) and `edit` (refresh-hook changes), so a `put`-only
+  grant never sets a refresh hook.
+- **Access**: a run of a control-plane or admin-only behavior names its method,
+  so `allow admin access:* methods: [create]` admits running the grant
+  behavior's `create` and nothing else; admin checks that are not a method run
+  (restricted commands, the admin fallback) name none.
+- **Workflows and data** never name a method.
+
+Datastore commits that a run saves (`data.save`, `data.append`, `output.save`)
+and partition uploads name no method, but any method a scoped run allow covers
+could have made them, so they are decided as any method
+(`AccessResource.anyMethod`, set only in
+`src/domain/datastore_v3/commit_authorization.ts`).
+
+`swamp access grant create` refuses `methods` on a workflow or data grant and a
+vault method that is not a vault verb. A grant file or stored grant with them
+still loads, with a warning, and its allow matches nothing.
+
 ### Condition evaluation
 
 Grant conditions are CEL expressions evaluated in the sealed grant-condition
@@ -795,8 +836,7 @@ The same variable list (`src/domain/access/condition_fields.ts`) serves grant
 validation and the runtime evaluator. `methodName` is a request field: only
 method requests (a method run, its cancel and attach, output and method-run
 items) carry it, and a request without one evaluates it as `""`, so a condition
-on it simply does not match; a grant's `methods` list is matched the same way
-as before. A vault's `key` is a request field too: the secret a request names
+on it simply does not match. A vault's `key` is a request field too: the secret a request names
 (`put`, `read-secret`, `delete`, ...), `""` on one that names none. `collective` and `owner` are declared but serve does not supply them
 yet: a deny that references them refuses every request of its kind, an allow
 never matches, and loading the policy logs a warning naming each such grant.
@@ -1166,7 +1206,8 @@ Every vault request is authorized on `vault:<name>` with its own action:
 `get`, `describe`, `inspect`, `list-keys`, `read-secret` and `audit-trail` are
 `read`; `put`, `delete`, `annotate`, `create` and `edit` (rename and repair
 included) are `write`; `put` with refresh options and `migrate` are `admin`.
-For a vault named N:
+Each request also names its verb, which a vault grant's `methods` list matches
+(see [Method scope](#method-scope)). For a vault named N:
 
 1. A deny for the action that matches `data:vault`, `data:N` or `vault:N`
    refuses.
@@ -1198,7 +1239,8 @@ triggered the run: `vault.get(...)` expressions in definitions, workflows and
 method inputs, method code using `context.vaultService`, sensitive outputs and
 their read-back, and data queries that resolve vault references. `get`, `list`,
 annotation and refresh-hook reads are `read`; `put`, `delete`, and annotation
-and refresh-hook changes are `write`. For vault N and action A:
+and refresh-hook changes are `write`. Each is also judged with its vault verb
+(see [Method scope](#method-scope)). For vault N and action A:
 
 1. **Reserved vaults** (`_`-prefixed, such as `_token-secrets`) are refused in
    every serve run unless the principal holds `admin` on `access:*`, whatever
@@ -1512,6 +1554,8 @@ swamp access can-i --action run --on model:@acme/my-model --method read --server
 
 It returns the matching grant decision and exits 0 for allow and 1 for deny.
 With `--method`, the JSON response echoes the tested method in a `method` field.
+`swamp access check` takes `--method` the same way, locally and with
+`--server`; for a vault the method is the vault verb.
 
 **List all permissions**: omit `--action` and `--on` to see every grant that
 applies to the caller across all resource kinds:
