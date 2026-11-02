@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// MUST be first: configures the TLS trust store before any other module is
-// evaluated. Deno caches its root store on the first TLS handshake, which a
-// heavy dependency (AWS SDK, OpenTelemetry, …) can trigger at import time —
-// before main()'s body runs. See tls_trust_bootstrap.ts for the full rationale.
+// must be first: Deno caches its root TLS store on the first handshake, which a
+// heavy dependency can trigger at import time
 import "./src/infrastructure/runtime/tls_trust_bootstrap.ts";
 import { runCli } from "./src/cli/mod.ts";
 import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
@@ -56,14 +54,11 @@ import {
 } from "./src/infrastructure/runtime/bundle_probe_host.ts";
 
 if (import.meta.main) {
-  // A v3 writer's Litestream supervisor (swamp-club#3416) runs none of the
-  // CLI: no environment, tracing, auth gate or telemetry.
   if (isSupervisorInvocation(Deno.args)) {
     Deno.exit(await runSupervisorMain(Deno.args));
   }
-  // A probe host imports extension bundles for a parent swamp, so nothing
-  // a bundle does at import runs in the parent (swamp-club#3494). It reads
-  // the parent's SWAMP_BUILD_VERSION, so it runs before that is set below.
+  // a probe host reads the parent's SWAMP_BUILD_VERSION, so it runs before that
+  // is set below
   if (isBundleProbeHostInvocation(Deno.args)) {
     Deno.exit(await runBundleProbeHost(VERSION));
   }
@@ -80,7 +75,6 @@ if (import.meta.main) {
   try {
     await runWithParentTrace(parentCtx, () => runCli(Deno.args));
   } catch (error) {
-    // Release datastore lock if still held (safety net for uncaught errors)
     await flushDatastoreSync();
     const outputMode = getOutputModeFromArgs(Deno.args);
     await initializeLogging({
@@ -97,11 +91,8 @@ if (import.meta.main) {
     await shutdownExecutionMetrics();
   }
 
-  // Explicit exit so fire-and-forget promises (background update check,
-  // telemetry cleanup) can never keep the event loop alive after the CLI
-  // finishes. Telemetry flush is awaited inside runCli before reaching here.
-  // On the error path, exit with the error's code. Otherwise Deno.exit()
-  // with no arg honors Deno.exitCode set by commands (e.g. exitCode=1 on
-  // workflow/method failure). Do NOT pass 0 — it overwrites the failure code.
+  // explicit exit so background promises cannot keep the event loop alive; no
+  // arg honors Deno.exitCode set by commands, so never pass 0, which overwrites
+  // a failure code
   Deno.exit(errorExitCode);
 }
