@@ -384,6 +384,15 @@ export function pageOf(
   };
 }
 
+/** The page, counted from 0, that holds the row named `name`, or null. */
+export function pageContaining(
+  rows: readonly SessionRow[],
+  name: string,
+): number | null {
+  const at = rows.findIndex((r) => r.name === name);
+  return at < 0 ? null : Math.floor(at / SESSION_PAGE_SIZE);
+}
+
 /**
  * Reads a `data.get` reply for one session. Never throws: content that is
  * absent, not UTF-8 or not JSON reads as an invalid record, with a note that

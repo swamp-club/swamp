@@ -44,7 +44,14 @@ import {
   ListTotalsRow,
   SessionStats,
 } from "./agent_sessions/SessionOverview.tsx";
-import { turnKey, TurnWaterfall } from "./agent_sessions/TurnWaterfall.tsx";
+import {
+  callRowId,
+  type RevealCall,
+  subagentBoxId,
+  turnHeadId,
+  turnKey,
+  TurnWaterfall,
+} from "./agent_sessions/TurnWaterfall.tsx";
 import { CallInspector } from "./agent_sessions/CallInspector.tsx";
 
 const [edits, long, child, headless] = fixtureSessions();
@@ -67,6 +74,7 @@ function waterfall(
   record = long,
   open: string[] = [],
   openSubagents: string[] = [],
+  reveal: RevealCall | null = null,
 ) {
   return renderToStaticMarkup(
     <TurnWaterfall
@@ -74,6 +82,8 @@ function waterfall(
       filter={{ kind: "all" }}
       openTurns={new Set(open)}
       onToggleTurn={noop}
+      onRevealTurn={noop}
+      reveal={reveal}
       selected={null}
       onSelect={noop}
       openSubagents={new Set(openSubagents)}
@@ -257,6 +267,8 @@ Deno.test("TurnWaterfall: a finding's calls take the finding's colour; the rest 
       }}
       openTurns={new Set([turnKey(edits.id, turn.n)])}
       onToggleTurn={noop}
+      onRevealTurn={noop}
+      reveal={null}
       selected={null}
       onSelect={noop}
       openSubagents={new Set()}
@@ -361,4 +373,56 @@ Deno.test("CallInspector: an unlabeled call reads as not classified; a cut one s
     />,
   );
   assertStringIncludes(cut, "Cut to 1000 characters");
+});
+
+Deno.test("SessionsTable: the list scrolls in its own box, compact while a session is open", () => {
+  const list = rows();
+  const closed = renderToStaticMarkup(
+    <SessionsTable
+      rows={list}
+      openName={null}
+      onOpen={noop}
+      sort={{ key: "started", dir: "desc" }}
+      onSort={noop}
+    />,
+  );
+  assertStringIncludes(closed, 'class="table-wrap as-list-box"');
+  assertStringIncludes(closed, 'data-compact="false"');
+  const open = renderToStaticMarkup(
+    <SessionsTable
+      rows={list}
+      openName={list[0].name}
+      onOpen={noop}
+      sort={{ key: "started", dir: "desc" }}
+      onSort={noop}
+    />,
+  );
+  assertStringIncludes(open, 'data-compact="true"');
+});
+
+Deno.test("TurnWaterfall: every jump target has an id, and a subagent takes focus", () => {
+  const link = long.turns.find((t) =>
+    t.calls.some((c) => c.subagentSessionId)
+  )!;
+  const key = turnKey(long.id, link.n);
+  const html = waterfall(long, [key], [child.id]);
+  assertStringIncludes(html, `id="${turnHeadId(key)}"`);
+  assertStringIncludes(html, `id="${callRowId(long.id, link.calls[0].id)}"`);
+  assertStringIncludes(
+    html,
+    `id="${subagentBoxId(child.id)}" class="as-subagent" tabindex="-1"`,
+  );
+});
+
+Deno.test("TurnWaterfall: revealing a call in a busy turn scrolls its rows to it", () => {
+  const busy = long.turns.find((t) => t.calls.length > 100)!;
+  const last = busy.calls[busy.calls.length - 1];
+  const html = waterfall(long, [turnKey(long.id, busy.n)], [], {
+    sessionId: long.id,
+    callId: last.id,
+    nonce: 1,
+  });
+  // The first render draws the top rows; the scroll happens after mount.
+  assertStringIncludes(html, `aria-rowcount="${busy.calls.length}"`);
+  assertStringIncludes(html, 'class="virtual-rows"');
 });

@@ -605,9 +605,11 @@
   margin-bottom: 16px;
 }
 
-.as-totals /* The inspector docks to the bottom of the window, full width, so the
-   turns keep their width; it scrolls on its own. */ /* `.panel.` so these win over the shared panel rule. Over the turns, a
-   band of page background, the accent edge and a shadow keep it apart. */ .panel.as-inspector {
+/* The inspector docks to the bottom of the window, full width, so the
+   turns keep their width; it scrolls on its own. `.panel.` so these win over
+   the shared panel rule. Over the turns, a band of page background, the
+   accent edge and a shadow keep it apart. */
+.panel.as-inspector {
   position: sticky;
   bottom: 0;
   z-index: 5;
@@ -1011,4 +1013,95 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Bounded scroll areas: the list and the open session's turns scroll on
+   their own, so neither pushes the other off screen. */
+.as-list-box {
+  max-height: min(30rem, 55dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.as-list-box[data-compact="true"] {
+  max-height: min(13rem, 35dvh);
+}
+
+.as-list-box thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+/* Sized to the window above the docked inspector, whose height the page
+   measures into --as-inspector-h. */
+.as-turns-box {
+  --as-jump-margin: 48px;
+  margin-top: 10px;
+  min-height: 12rem;
+  max-height: calc(100dvh - var(--as-inspector-h, 0px) - 64px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.as-turns-box > .as-timeline > .as-tl-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+
+/* Jump targets land below the sticky strip. */
+.as-turns-box .as-turn-head,
+.as-turns-box .as-subagent,
+.as-turns-box .as-call {
+  scroll-margin-top: var(--as-jump-margin);
+}
+
+.as-session {
+  scroll-margin-top: 8px;
+}
+
+.as-session:focus,
+.as-subagent:focus {
+  outline: none;
+}
+
+.as-session:focus-visible,
+.as-subagent:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.virtual-rows {
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 768px) {
+  .as-list-box {
+    max-height: min(22rem, 50dvh);
+  }
+
+  .as-list-box[data-compact="true"] {
+    max-height: min(10rem, 30dvh);
+  }
+
+  /* Clear the sticky mobile top bar too. */
+  .as-turns-box {
+    --as-jump-margin: 60px;
+    max-height: calc(100dvh - var(--as-inspector-h, 0px) - 72px);
+  }
+
+  .as-session {
+    scroll-margin-top: 60px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .as-list-box,
+  .as-turns-box,
+  .virtual-rows {
+    scroll-behavior: auto;
+  }
 }

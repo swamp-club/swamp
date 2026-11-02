@@ -35,6 +35,7 @@ import {
   formatSessionSort,
   listPayload,
   listPredicate,
+  pageContaining,
   pageOf,
   parseDetailReply,
   parseListReply,
@@ -310,4 +311,17 @@ Deno.test("parseDetailReply: reads a record, and skips what is not one without t
   });
   assertEquals(older.kind === "skipped" && older.reason, "older");
   assertEquals(parseDetailReply(undefined).kind, "skipped");
+});
+
+Deno.test("pageContaining: the page holding a row, or null when it is not listed", () => {
+  const rows = Array.from({ length: 120 }, (_, i) => ({
+    name: `s-${i}`,
+    modelName: "m",
+    startedAt: "",
+    headless: false,
+  } satisfies SessionRow));
+  assertEquals(pageContaining(rows, "s-0"), 0);
+  assertEquals(pageContaining(rows, `s-${SESSION_PAGE_SIZE}`), 1);
+  assertEquals(pageContaining(rows, "s-119"), 2);
+  assertEquals(pageContaining(rows, "missing"), null);
 });

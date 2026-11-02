@@ -311,6 +311,12 @@ with a Preview chip. Its requests are in
   session still opens.
 - **Large turns.** A turn with more than 100 calls draws only the rows in
   view.
+- **Scrolling.** The list and the open session's turns scroll in their own
+  boxes; the list shrinks while a session is open, and the call inspector
+  docks below the turns. Opening a session, a turn, a subagent or a finding's
+  calls, or clicking the strip, scrolls that section to the top and moves
+  focus to it, without smooth scrolling under reduced motion. Closing what a
+  jump opened returns to where it started.
 
 ## Access
 

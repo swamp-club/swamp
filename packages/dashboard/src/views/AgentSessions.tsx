@@ -19,11 +19,12 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   filterRows,
   formatSessionSort,
   type HeadlessFilter,
+  pageContaining,
   pageOf,
   parseSessionSort,
   repoLabel,
@@ -39,6 +40,13 @@ import { LoadError } from "../components/LoadError.tsx";
 import { Pager } from "../components/Pager.tsx";
 import { listTotals } from "../lib/agent_session_view.ts";
 import { pluralize } from "../lib/format.ts";
+import {
+  jumpToId,
+  type Place,
+  placeOf,
+  returnTo,
+  scrollParent,
+} from "../lib/jump.ts";
 import { ListTotalsRow } from "./agent_sessions/SessionOverview.tsx";
 import { SessionDetail } from "./agent_sessions/SessionDetail.tsx";
 import { SessionsTable } from "./agent_sessions/SessionsTable.tsx";
@@ -49,6 +57,8 @@ const HEADLESS_FILTERS: Array<[HeadlessFilter, string]> = [
   ["interactive", "Interactive"],
   ["headless", "Headless"],
 ];
+
+const SESSION_BOX_ID = "as-session";
 
 function parseHeadless(raw: string | null): HeadlessFilter {
   return raw === "interactive" || raw === "headless" ? raw : "all";
@@ -114,6 +124,48 @@ export function AgentSessions() {
   );
   const shown = pageOf(rows, page);
   const open = sessions.list.rows.find((r) => r.name === openName) ?? null;
+
+  // The open session's row stays on the page shown: after older sessions
+  // load, a sort or filter change, or a deep link. Paging by hand is left be.
+  const openPage = openName === null ? null : pageContaining(rows, openName);
+  useEffect(() => {
+    if (openPage !== null && openPage !== shown.page) setPage(openPage);
+  }, [openName, sessions.list.rows, sort, headless, repo]);
+
+  const sessionBox = useRef<HTMLElement>(null);
+  const [jumpNonce, setJumpNonce] = useState(0);
+  // The jump waits for the session to render: while it loads the page is
+  // too short to scroll it to the top. A deep link starts pending.
+  const jumpPending = useRef(openName !== null);
+  const onSettled = () => {
+    if (!jumpPending.current) return;
+    jumpPending.current = false;
+    setJumpNonce((n) => n + 1);
+  };
+  const before = useRef<Place | null>(null);
+  const [returning, setReturning] = useState<Place | null>(null);
+  useEffect(() => (jumpNonce > 0 ? jumpToId(SESSION_BOX_ID) : undefined), [
+    jumpNonce,
+  ]);
+  useLayoutEffect(() => {
+    if (!returning) return;
+    returnTo(returning);
+    setReturning(null);
+  }, [returning]);
+
+  const openSession = (row: { name: string }) => {
+    const main = scrollParent(sessionBox.current) ??
+      document.querySelector<HTMLElement>("main.main");
+    if (row.name === openName) {
+      setOpenName(null);
+      if (before.current) setReturning(before.current);
+      before.current = null;
+      return;
+    }
+    if (before.current === null) before.current = placeOf([main]);
+    setOpenName(row.name);
+    jumpPending.current = true;
+  };
 
   return (
     <>
@@ -232,8 +284,7 @@ export function AgentSessions() {
               setSort(next);
               setPage(0);
             }}
-            onOpen={(row) =>
-              setOpenName(row.name === openName ? null : row.name)}
+            onOpen={openSession}
           />
         )}
         <Pager
@@ -244,7 +295,17 @@ export function AgentSessions() {
         />
       </div>
 
-      {open && <SessionDetail key={open.name} row={open} />}
+      {open && (
+        <section
+          id={SESSION_BOX_ID}
+          ref={sessionBox}
+          className="as-session"
+          tabIndex={-1}
+          aria-label="Open session"
+        >
+          <SessionDetail key={open.name} row={open} onSettled={onSettled} />
+        </section>
+      )}
     </>
   );
 }
