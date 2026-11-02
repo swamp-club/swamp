@@ -414,11 +414,19 @@ rather than erroring.
       "workflowName": "my-workflow",
       "status": "succeeded",
       "startedAt": "2025-01-15T10:30:00Z",
-      "duration": 5
+      "duration": 5,
+      "inputs": { "commit": "b3ff3a8a" },
+      "inputsOmitted": ["payload"]
     }
   ]
 }
 ```
+
+An input whose JSON value is over 1 KiB (or past 8 KiB for the run) is left out
+of a search row's `inputs` and named in `inputsOmitted` instead; this applies to
+`workflow run search` too. Read the full value with
+`swamp workflow history get <runId> --json`. `--input` and `--filter` still
+match omitted values exactly.
 
 ### Get Latest Run
 

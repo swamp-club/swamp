@@ -23,10 +23,14 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
-import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../src/domain/workflows/workflow_id.ts";
 import {
   getIndexPath,
-  INDEX_SCHEMA_VERSION,
+  type WorkflowRunIndex,
+  writeRunIndex,
 } from "../src/infrastructure/persistence/workflow_run_index.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
@@ -73,7 +77,7 @@ async function repoOf(workflows: number, runs: number): Promise<Repo> {
     await workflowRepo.save(workflow);
     const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     await Deno.mkdir(runsDir, { recursive: true });
-    const entries: Record<string, unknown> = {};
+    const entries: WorkflowRunIndex = {};
     for (let r = 0; r < runs; r++) {
       const id = crypto.randomUUID();
       const start = now - Math.floor(Math.random() * 90 * DAY_MS);
@@ -94,10 +98,7 @@ async function repoOf(workflows: number, runs: number): Promise<Repo> {
       );
       if (w === 0 && r === 0) runId = id;
     }
-    await Deno.writeTextFile(
-      getIndexPath(runsDir),
-      JSON.stringify({ version: INDEX_SCHEMA_VERSION, entries }),
-    );
+    await writeRunIndex(runsDir, entries);
     // Old enough that the run index cache keeps what it reads.
     const settled = new Date(now - 60_000);
     await Deno.utime(getIndexPath(runsDir), settled, settled);
@@ -112,6 +113,11 @@ function depsOn(dir: string): WorkflowRunSearchDeps {
   return {
     findAllWorkflows: () => workflowRepo.findAllListings(),
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
+    runInputsOf: (workflowId, runId) =>
+      runRepo.findPersistedInputs(
+        createWorkflowId(workflowId),
+        createWorkflowRunId(runId),
+      ),
   };
 }
 

@@ -38,6 +38,7 @@ import {
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { chunkEnd } from "./ndjson_chunks.ts";
 import { inTimeSlices } from "./scan_permits.ts";
 
 const logger = getLogger(["output-repo", "summaries"]);
@@ -51,14 +52,6 @@ export const OUTPUT_SUMMARIES_DIR = "_output_summaries";
 const SCHEMA_VERSION = "v1";
 
 const SHARD_SUFFIX = ".ndjson";
-
-/**
- * chunked so decoding a shard neither holds the event loop nor hits V8's string
- * limit
- */
-const SHARD_CHUNK_BYTES = 1024 * 1024;
-
-const NEWLINE = 10;
 
 const CLEARED_MARKER = "cleared";
 
@@ -107,15 +100,6 @@ async function shardText(rows: readonly OutputSummaryRow[]): Promise<string> {
     },
   );
   return text;
-}
-
-function chunkEnd(content: Uint8Array, start: number): number {
-  const limit = start + SHARD_CHUNK_BYTES;
-  if (limit >= content.length) return content.length;
-  const last = content.lastIndexOf(NEWLINE, limit - 1);
-  if (last >= start) return last + 1;
-  const next = content.indexOf(NEWLINE, limit);
-  return next === -1 ? content.length : next + 1;
 }
 
 export function shardDayOf(stamp: string): string {

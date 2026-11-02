@@ -346,3 +346,32 @@ Deno.test("runsWithin: since is inclusive, until exclusive", () => {
     [{ startedAt: "2026-10-02T00:00:00Z" }],
   );
 });
+
+Deno.test("compareRuns: an omitted input reads as omitted and is never shown as unchanged", () => {
+  const rows = compareRuns(
+    { run: run({ runId: "a", inputs: { n: 1 }, inputsOmitted: ["body"] }) },
+    { run: run({ runId: "b", inputs: { n: 1 }, inputsOmitted: ["body"] }) },
+  ).filter((r) => r.section === "Inputs");
+
+  assertEquals(rows.map((r) => [r.label, r.a, r.b, r.differs]), [
+    ["body", "(omitted)", "(omitted)", true],
+    ["n", "1", "1", false],
+  ]);
+});
+
+Deno.test("compareRuns: once fetched, the full runs' inputs are compared", () => {
+  const rows = compareRuns(
+    {
+      run: run({ runId: "a", inputsOmitted: ["body"] }),
+      inputs: { body: "same" },
+    },
+    {
+      run: run({ runId: "b", inputsOmitted: ["body"] }),
+      inputs: { body: "same" },
+    },
+  ).filter((r) => r.section === "Inputs");
+
+  assertEquals(rows.map((r) => [r.label, r.a, r.b, r.differs]), [
+    ["body", "same", "same", false],
+  ]);
+});

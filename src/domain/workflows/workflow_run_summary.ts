@@ -52,6 +52,68 @@ export interface WorkflowRunSummary {
    */
   waitingOnRun?: NestedRunRef[];
   waitsOnlyOnNestedRuns?: boolean;
+  /** keys whose values only the run's record holds: inputs lacks them */
+  inputsOmitted?: string[];
+}
+
+export const INDEXED_INPUT_MAX_BYTES = 1024;
+export const INDEXED_INPUTS_MAX_BYTES = 8 * 1024;
+
+export interface IndexedInputs {
+  inputs: Record<string, unknown>;
+  omitted: string[];
+}
+
+const utf8 = new TextEncoder();
+
+function encodedBytes(value: unknown): number | undefined {
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? undefined : utf8.encode(json).length;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * what a run's summary may carry wherever every run's summary is held at once:
+ * a run's inputs are unbounded, so a listing that kept them all would grow with
+ * the bytes of its history rather than its runs
+ */
+export function boundIndexedInputs(
+  inputs: Readonly<Record<string, unknown>>,
+): IndexedInputs {
+  const kept: Record<string, unknown> = {};
+  const omitted: string[] = [];
+  let total = 0;
+  for (const [key, value] of Object.entries(inputs)) {
+    const bytes = encodedBytes(value);
+    if (
+      bytes === undefined || bytes > INDEXED_INPUT_MAX_BYTES ||
+      total + bytes > INDEXED_INPUTS_MAX_BYTES
+    ) {
+      omitted.push(key);
+      continue;
+    }
+    // a key named __proto__ is an input like any other, not a prototype
+    Object.defineProperty(kept, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    total += bytes;
+  }
+  return { inputs: kept, omitted };
+}
+
+/** the summary as a listing holds it, whether read from the index or a record */
+export function boundSummaryInputs(
+  summary: WorkflowRunSummary,
+): WorkflowRunSummary {
+  const { inputs, omitted } = boundIndexedInputs(summary.inputs);
+  if (omitted.length === 0) return summary;
+  return { ...summary, inputs, inputsOmitted: omitted };
 }
 
 /**

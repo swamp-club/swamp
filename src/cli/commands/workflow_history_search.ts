@@ -144,6 +144,11 @@ export async function workflowHistorySearchAction(
     // inline step outputs runs out of memory on workflows with a large history
     findAllRunsByWorkflowId: (id) =>
       runRepo.findAllSummariesFromIndex(createWorkflowId(id)),
+    runInputsOf: (workflowId, runId) =>
+      runRepo.findPersistedInputs(
+        createWorkflowId(workflowId),
+        createWorkflowRunId(runId),
+      ),
     retentionWatermarks: repoContext.retentionWatermarks,
   };
 

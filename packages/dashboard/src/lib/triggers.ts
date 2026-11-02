@@ -65,6 +65,8 @@ export interface TriggerRun {
   duration?: number;
   triggerSource?: string;
   inputs?: Record<string, unknown>;
+  /** inputs too large to list; only the full run carries their values */
+  inputsOmitted?: string[];
   failedStep?: string;
   failureReason?: string;
   stepProgress?: { completed: number; total: number };
@@ -422,7 +424,11 @@ export interface RunDetailJob {
 export interface CompareSide {
   run: TriggerRun;
   jobs?: RunDetailJob[] | null;
+  /** the full run's inputs, which hold the values the search item omits */
+  inputs?: Record<string, unknown> | null;
 }
+
+const OMITTED = "(omitted)";
 
 export interface CompareRow {
   section: "Run" | "Inputs" | "Steps";
@@ -496,19 +502,33 @@ export function compareRuns(a: CompareSide, b: CompareSide): CompareRow[] {
     run("Failure", a.run.failureReason ?? "—", b.run.failureReason ?? "—");
   }
 
-  const ia = a.run.inputs ?? {};
-  const ib = b.run.inputs ?? {};
-  const inputKeys = [...new Set([...Object.keys(ia), ...Object.keys(ib)])]
-    .sort();
+  const sideInputs = (side: CompareSide) =>
+    side.inputs ? { values: side.inputs, omitted: new Set<string>() } : {
+      values: side.run.inputs ?? {},
+      omitted: new Set(side.run.inputsOmitted ?? []),
+    };
+  const ia = sideInputs(a);
+  const ib = sideInputs(b);
+  const inputKeys = [
+    ...new Set([
+      ...Object.keys(ia.values),
+      ...Object.keys(ib.values),
+      ...ia.omitted,
+      ...ib.omitted,
+    ]),
+  ].sort();
   for (const key of inputKeys) {
-    const va = valueText(ia[key]);
-    const vb = valueText(ib[key]);
+    const unknownA = ia.omitted.has(key);
+    const unknownB = ib.omitted.has(key);
+    const va = unknownA ? OMITTED : valueText(ia.values[key]);
+    const vb = unknownB ? OMITTED : valueText(ib.values[key]);
     rows.push({
       section: "Inputs",
       label: key,
       a: va,
       b: vb,
-      differs: va !== vb,
+      // a value not yet fetched is never shown as unchanged
+      differs: unknownA || unknownB || va !== vb,
     });
   }
 

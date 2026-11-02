@@ -183,10 +183,12 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
 
    These finders read run statuses from the per-workflow run index
    (`.runs-index.json`, `src/infrastructure/persistence/workflow_run_index.ts`),
-   so a wrong entry hides a run from them. Index updates of one workflow are
-   queued within a process (`withIndexQueue`), because the index is read,
-   changed and written back whole and two saves would otherwise write back
-   each other's old entries. An entry that disagrees with a record loaded by
+   so a wrong entry hides a run from them. A save appends its run's line to
+   the index (see "Run Index and Run Search" in
+   [workflows](../primitives/workflows.md)). Index updates of one workflow are
+   queued within a process (`withIndexQueue`), because a compaction reads the
+   index and replaces it whole, and would otherwise drop a line appended while
+   it read. An entry that disagrees with a record loaded by
    run id is corrected on that read, which covers a record another process or
    a datastore pull replaced. The correction re-reads the record inside the
    queue and writes from that, never from the reader's copy, so a save that
@@ -196,7 +198,7 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    was built from (mtime, size, and ctime and inode where the platform has
    them); doctor stats every record, reads only those whose fingerprint
    differs or that have no entry, and writes an index only when an entry was
-   wrong (swamp-club#3051). A save fingerprints its entry only when the file
+   wrong or a line was torn (swamp-club#3051). A save fingerprints its entry only when the file
    still holds what it wrote, so a record another writer replaced in between
    is left to be read by the next verification.
 

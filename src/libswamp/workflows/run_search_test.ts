@@ -77,6 +77,7 @@ function makeDeps(
       ]),
     runIndexOf: async (id: string) =>
       RunIndexSnapshot.of(await findAllRunsByWorkflowId(id)),
+    runInputsOf: () => Promise.resolve(undefined),
     ...rest,
   };
 }
@@ -712,4 +713,140 @@ Deno.test("workflowRunSearch: records a long query on the span cut to 256 charac
     assertEquals(search.attributes["search.query"], "q".repeat(256));
     assertEquals(search.attributes["workflow_runs.returned"], 0);
   });
+});
+
+function omittingRuns(): (id: string) => Promise<WorkflowRunSummary[]> {
+  return (id) =>
+    Promise.resolve(
+      id === "wf-1"
+        ? [
+          {
+            ...makeRun({
+              id: "run-big-a",
+              workflowId: "recorded-elsewhere",
+              workflowName: "deploy",
+              status: "succeeded",
+              startedAt: new Date(now - 1000),
+              inputs: { region: "eu" },
+            }),
+            inputsOmitted: ["intent"],
+          },
+          {
+            ...makeRun({
+              id: "run-big-b",
+              workflowId: "wf-1",
+              workflowName: "deploy",
+              status: "succeeded",
+              startedAt: new Date(now - 2000),
+              inputs: { region: "us" },
+            }),
+            inputsOmitted: ["intent"],
+          },
+        ]
+        : [],
+    );
+}
+
+const RECORDED_INPUTS: Record<string, Record<string, unknown>> = {
+  "run-big-a": { region: "eu", intent: "ship it" },
+  "run-big-b": { region: "us", intent: "hold" },
+};
+
+function recordReader() {
+  const calls: Array<[string, string]> = [];
+  return {
+    calls,
+    runInputsOf: (workflowId: string, runId: string) => {
+      calls.push([workflowId, runId]);
+      return Promise.resolve(RECORDED_INPUTS[runId]);
+    },
+  };
+}
+
+Deno.test("workflowRunSearch: an --input filter on an omitted key matches the value its record holds", async () => {
+  const reader = recordReader();
+  const deps = makeDeps({
+    findAllRunsByWorkflowId: omittingRuns(),
+    runInputsOf: reader.runInputsOf,
+  });
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {
+      inputs: { intent: "ship it" },
+    }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+
+  assertEquals(completed.data.results.map((r) => r.runId), ["run-big-a"]);
+  assertEquals(completed.total, 1);
+  // The record is read under the workflow that listed the run, never the id
+  // its index entry records.
+  assertEquals(reader.calls.sort(), [
+    ["wf-1", "run-big-a"],
+    ["wf-1", "run-big-b"],
+  ]);
+  assertEquals(completed.data.results[0].inputs, { region: "eu" });
+  assertEquals(completed.data.results[0].inputsOmitted, ["intent"]);
+});
+
+Deno.test("workflowRunSearch: an --input filter on a kept key never reads a record", async () => {
+  const reader = recordReader();
+  const deps = makeDeps({
+    findAllRunsByWorkflowId: omittingRuns(),
+    runInputsOf: reader.runInputsOf,
+  });
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {
+      inputs: { region: "us" },
+    }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+
+  assertEquals(completed.data.results.map((r) => r.runId), ["run-big-b"]);
+  assertEquals(reader.calls, []);
+});
+
+Deno.test("workflowRunSearch: a run the caller may not read never has its record read", async () => {
+  const reader = recordReader();
+  const deps = makeDeps({
+    findAllRunsByWorkflowId: omittingRuns(),
+    runInputsOf: reader.runInputsOf,
+    isReadable: () => Promise.resolve(false),
+  });
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {
+      inputs: { intent: "ship it" },
+    }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+
+  assertEquals(completed.data.results, []);
+  assertEquals(reader.calls, []);
+});
+
+Deno.test("workflowRunSearch: an omitted-key filter matches nothing for a run whose record is gone", async () => {
+  const deps = makeDeps({
+    findAllRunsByWorkflowId: omittingRuns(),
+    runInputsOf: () => Promise.resolve(undefined),
+  });
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {
+      inputs: { intent: "ship it" },
+    }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+
+  assertEquals(completed.data.results, []);
+  assertEquals(completed.total, 0);
 });

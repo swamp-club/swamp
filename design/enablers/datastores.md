@@ -3763,7 +3763,8 @@ The record key is the file's path under the namespace root:
 - Removals find runs by directory and file name. A workflow or run id that
   is not a UUID stages nothing (no repository put it), so GC never aborts on
   a stray file. A record a hook-less write truncated is still tombstoned.
-- Run logs and the run indexes (`.runs-index.json`) are local-only: the
+- Run logs and the run indexes (`.runs-index.json`, and the
+  `.runs-index.lock` beside each) are local-only: the
   executor writes the log under the repository's own `.swamp`, whatever the
   datastore, and the indexes are a local cache. Neither stages anything;
   run GC and `deleteAllByWorkflowId` remove logs where runs write them
@@ -5724,7 +5725,8 @@ leave every checkout with the same records.
   stderr stays one JSON document (swamp-club#3902).
   Never touched are the checkout's own files (`isCheckoutLocalKey`), each
   named exactly: an atomic write's temporary file (`.<uuid>.tmp`), a `.lock`
-  file, a workflow's run index (`workflow-runs/<id>/.runs-index.json`), the
+  file, a workflow's run index and its lock
+  (`workflow-runs/<id>/.runs-index.json` and `.runs-index.lock`), the
   auto-definition creation locks (`auto-definitions/.auto-definition-create/`),
   macOS's `.DS_Store`, run logs, and pulled extension sources and their install staging under
   managed config (`config/pulled-extensions`); also files the datastore's

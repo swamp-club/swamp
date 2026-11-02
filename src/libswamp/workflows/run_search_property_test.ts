@@ -181,6 +181,7 @@ function depsOf(fixture: Fixture, hidden: string[]): WorkflowRunSearchDeps {
         ),
       ),
     isReadable: (_id, name) => Promise.resolve(!hidden.includes(name)),
+    runInputsOf: () => Promise.resolve(undefined),
   };
 }
 

@@ -36,6 +36,7 @@ import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { RunIndexCache, type RunIndexStamp } from "./run_index_cache.ts";
 import { SharedIndexRead } from "./shared_index_read.ts";
 import {
+  appendRunIndexLines,
   countYamlRunFiles,
   deleteRunIndex,
   fingerprintMatches,
@@ -45,9 +46,14 @@ import {
   isIndexStale,
   isYamlRunFile,
   listDirEntries,
+  needsCompaction,
   type ReadIndexResult,
   readRunIndex,
+  readRunIndexHeader,
   type RecordFingerprint,
+  removeRunIndexFiles,
+  runIndexFilesExist,
+  type RunIndexLine,
   statRecord,
   withIndexQueue,
   type WorkflowRunIndex,
@@ -86,6 +92,8 @@ import {
   type WorkflowRunData,
 } from "../../domain/workflows/workflow_run.ts";
 import {
+  boundIndexedInputs,
+  boundSummaryInputs,
   parseWorkflowRunSummary,
   type WorkflowRunSummary,
 } from "../../domain/workflows/workflow_run_summary.ts";
@@ -393,7 +401,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           // jobs/output subtree in `parseYaml`'s result is dropped and GC'd.
           const parsed = parseYaml(content);
           if (!parsed) continue;
-          summaries.push(parseWorkflowRunSummary(parsed));
+          summaries.push(boundSummaryInputs(parseWorkflowRunSummary(parsed)));
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) continue;
           throw error;
@@ -983,7 +991,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
 
     const localDir = this.getLocalIndexDir(workflowId);
-    await deleteRunIndex(localDir);
+    if (localDir === dir) {
+      await deleteRunIndex(localDir);
+    } else {
+      await withIndexQueue(localDir, () => removeRunIndexFiles(localDir));
+    }
 
     // run logs are written repo-local whichever datastore holds the records, so
     // remove them here too when the records live elsewhere
@@ -1435,6 +1447,25 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
+   * the persisted form (vault references, never values); undefined for a run
+   * whose record is gone or cannot be read, so one bad record fails no search
+   */
+  async findPersistedInputs(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const run = await this.findById(workflowId, runId);
+      return run ? run.toPersistedData().inputs ?? {} : undefined;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      logger
+        .warn`Could not read run ${runId} of workflow ${workflowId} to match its inputs: ${reason}`;
+      return undefined;
+    }
+  }
+
+  /**
    * reused while a stat of the index file and records directory shows no
    * change; an abort stops only this caller's wait, and a shared load stops
    * once no reader remains, without publishing a partial index
@@ -1572,7 +1603,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const yamlCount = countYamlRunFiles(entries);
     if (yamlCount === 0) return null;
 
-    const result = await open(() => readRunIndex(indexDir));
+    const result = await open(() => readRunIndex(indexDir, signal));
     if (!result || isIndexStale(result, yamlCount)) {
       return await this.repairIndex(runsDir, indexDir, signal);
     }
@@ -1617,7 +1648,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
             const files = await listDirEntries(runsDir);
             const count = countYamlRunFiles(files);
             if (count === 0) return null;
-            const result = await readRunIndex(indexDir);
+            const result = await readRunIndex(indexDir, sharedSignal);
             if (!result || result.version !== INDEX_SCHEMA_VERSION) {
               return await this.rebuildIndexUnqueued(
                 runsDir,
@@ -1633,15 +1664,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               sharedSignal,
             );
             let written = true;
-            if (
-              await this.reconcileSuspects(
-                runsDir,
-                entries,
-                suspects,
-                sharedSignal,
-                tally,
-              )
-            ) {
+            const changed = await this.reconcileSuspects(
+              runsDir,
+              entries,
+              suspects,
+              sharedSignal,
+              tally,
+            );
+            // A torn line is dropped only by rewriting the index, or every
+            // read would repair it again.
+            if (changed || result.damaged) {
               sharedSignal.throwIfAborted();
               try {
                 await ensureDir(indexDir);
@@ -1709,7 +1741,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return;
     }
     const suspects = await this.findSuspectRecords(runsDir, seen.entries);
-    if (suspects.size === 0) return;
+    if (suspects.size === 0 && !seen.damaged) return;
     await withIndexQueue(indexDir, async () => {
       // Decided again from the index as it is now: a save queued ahead of
       // this has already written its own entry, which must be kept.
@@ -1719,9 +1751,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         return;
       }
       const entries = result.entries;
-      if (!(await this.reconcileSuspects(runsDir, entries, suspects))) {
-        return;
-      }
+      const changed = await this.reconcileSuspects(runsDir, entries, suspects);
+      if (!changed && !result.damaged) return;
       try {
         await writeRunIndex(indexDir, entries);
       } catch (error) {
@@ -1898,9 +1929,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * queued per index file: the index is read, changed and written back whole,
-   * so two saves of different runs would otherwise each write back the other's
-   * old entry
+   * appends the run's line without reading the index, so a save costs the same
+   * whatever the history; queued per index file so a compaction never drops a
+   * line appended while it read
    */
   private async updateIndexEntry(
     workflowId: WorkflowId,
@@ -1912,28 +1943,64 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     await withIndexQueue(indexDir, async () => {
       try {
         await ensureDir(indexDir);
-        const result = await readRunIndex(indexDir);
-        if (result && result.version !== INDEX_SCHEMA_VERSION) {
-          // Stale schema — delete so the next read rebuilds from YAML.
-          // Merging would promote old entries to the new version without
-          // populating fields they're missing.
-          await deleteRunIndex(indexDir);
-          return;
-        }
-        const existing = result?.entries ?? {};
         const summary = parseWorkflowRunSummary(run.toPersistedData());
         // Fingerprinted only while the file still holds what this save
         // wrote: another writer may have replaced it since, and an entry
         // with no fingerprint is read and corrected by verifyIndexes.
         const record = await fingerprintIfContent(path, written);
-        existing[run.id] = indexEntryOf(summary, record);
-        await writeRunIndex(indexDir, existing);
+        await this.appendIndexLines(
+          this.getRunsDir(workflowId),
+          indexDir,
+          [{ id: run.id, entry: indexEntryOf(summary, record) }],
+          true,
+        );
       } catch (error) {
         logger
           .warn`Failed to update run index, deleting for rebuild: ${error}`;
         await deleteRunIndex(indexDir);
       }
     });
+  }
+
+  /**
+   * runs inside the index queue. An index of another schema is deleted rather
+   * than appended to: its entries lack the fields this version writes
+   */
+  private async appendIndexLines(
+    runsDir: string,
+    indexDir: string,
+    lines: RunIndexLine[],
+    create: boolean,
+  ): Promise<void> {
+    const appended = await appendRunIndexLines(indexDir, lines, { create });
+    if (appended.kind === "stale") {
+      await deleteRunIndex(indexDir);
+    } else if (appended.kind === "appended" && needsCompaction(appended)) {
+      await this.compactIndexUnqueued(runsDir, indexDir);
+    }
+  }
+
+  /**
+   * a damaged index is checked against its records first, as the repair pass
+   * does, so a torn line does not make every later save read it again
+   */
+  private async compactIndexUnqueued(
+    runsDir: string,
+    indexDir: string,
+  ): Promise<void> {
+    const result = await readRunIndex(indexDir);
+    if (!result || result.version !== INDEX_SCHEMA_VERSION) return;
+    if (result.damaged) {
+      try {
+        const suspects = await this.findSuspectRecords(runsDir, result.entries);
+        await this.reconcileSuspects(runsDir, result.entries, suspects);
+      } catch (error) {
+        logger
+          .warn`Not compacting the damaged run index ${indexDir}, which the next read repairs: ${error}`;
+        return;
+      }
+    }
+    await writeRunIndex(indexDir, result.entries);
   }
 
   /**
@@ -1948,26 +2015,29 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   ): Promise<void> {
     const indexDir = this.getLocalIndexDir(workflowId);
     this.runIndexCache.delete(workflowId);
+    if (!await runIndexFilesExist(indexDir)) return;
     await withIndexQueue(indexDir, async () => {
       try {
-        const result = await readRunIndex(indexDir);
-        if (!result) return;
-        if (
-          result.version !== INDEX_SCHEMA_VERSION ||
-          countYamlRunFiles(await listDirEntries(runsDir)) === 0
-        ) {
+        if (countYamlRunFiles(await listDirEntries(runsDir)) === 0) {
+          await removeRunIndexFiles(indexDir);
+          return;
+        }
+        const header = await readRunIndexHeader(indexDir);
+        if (header === null) return;
+        if (header.version !== INDEX_SCHEMA_VERSION) {
           await deleteRunIndex(indexDir);
           return;
         }
-        let changed = false;
+        const removed: RunIndexLine[] = [];
         for (const runId of runIds) {
-          if (!(runId in result.entries)) continue;
           const path = join(runsDir, `workflow-run-${runId}.yaml`);
           if (await statRecord(path) !== null) continue;
-          delete result.entries[runId];
-          changed = true;
+          removed.push({ id: runId, removed: true });
         }
-        if (changed) await writeRunIndex(indexDir, result.entries);
+        // a removal line for a run never indexed replays as nothing
+        if (removed.length > 0) {
+          await this.appendIndexLines(runsDir, indexDir, removed, false);
+        }
       } catch (error) {
         logger
           .warn`Failed to drop removed runs from run index, deleting for rebuild: ${error}`;
@@ -1999,11 +2069,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         const result = await readRunIndex(indexDir);
         if (!current || !result || !indexEntryDiffers(result, current)) return;
         const summary = parseWorkflowRunSummary(current.toPersistedData());
-        result.entries[current.id] = indexEntryOf(
-          summary,
-          sameFingerprint(before, after),
-        );
-        await writeRunIndex(indexDir, result.entries);
+        await this.appendIndexLines(this.getRunsDir(workflowId), indexDir, [{
+          id: current.id,
+          entry: indexEntryOf(summary, sameFingerprint(before, after)),
+        }], false);
       });
     } catch (error) {
       logger.warn`Failed to repair run index entry for ${run.id}: ${error}`;
@@ -2080,6 +2149,7 @@ function indexEntryOf(
 function summaryToIndexEntry(
   summary: WorkflowRunSummary,
 ): WorkflowRunIndexEntry {
+  const { inputs, omitted } = boundIndexedInputs(summary.inputs);
   return {
     status: summary.status,
     workflowId: summary.workflowId,
@@ -2087,7 +2157,8 @@ function summaryToIndexEntry(
     startedAt: summary.startedAt?.toISOString(),
     completedAt: summary.completedAt?.toISOString(),
     tags: summary.tags,
-    inputs: summary.inputs as Record<string, unknown>,
+    inputs,
+    ...(omitted.length > 0 ? { inputsOmitted: omitted } : {}),
     instanceId: summary.instanceId,
     triggerSource: summary.triggerSource,
     failedStep: summary.failedStep,
@@ -2123,6 +2194,16 @@ function indexEntryLinks(
   };
 }
 
+function indexedInputsOmitted(
+  entry: WorkflowRunIndexEntry,
+): string[] | undefined {
+  const omitted = entry.inputsOmitted;
+  return Array.isArray(omitted) && omitted.length > 0 &&
+      omitted.every((key) => typeof key === "string")
+    ? omitted
+    : undefined;
+}
+
 function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
   const summaries: WorkflowRunSummary[] = [];
   for (const [id, entry] of Object.entries(index)) {
@@ -2142,6 +2223,7 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
       stepProgress: entry.stepProgress,
       awaitingResume: entry.awaitingResume,
       ...indexEntryLinks(entry),
+      inputsOmitted: indexedInputsOmitted(entry),
     });
   }
   return summaries.sort((a, b) => {

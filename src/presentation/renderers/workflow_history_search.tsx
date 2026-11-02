@@ -36,6 +36,7 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { writeReapedRunsLine } from "./workflow_run_search.tsx";
+import { inputPairs } from "./run_input_pairs.ts";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "gray",
@@ -139,10 +140,10 @@ class InkWorkflowHistorySearchRenderer
                 " ",
               )
               : "";
-            const inputStr = item.inputs
-              ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`)
-                .join(" ")
-              : "";
+            // matched on listed values only, so "omitted" matches no run
+            const inputStr = Object.entries(item.inputs ?? {})
+              .map(([k, v]) => `${k}=${String(v)}`)
+              .join(" ");
             return `${item.workflowName} ${item.runId} ${item.status} ${tagStr} ${inputStr}`
               .trim();
           },
@@ -205,11 +206,7 @@ function renderHistoryResultLine(
   const tagStr = item.tags && Object.keys(item.tags).length > 0
     ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
     : "";
-  const inputStr = item.inputs && Object.keys(item.inputs).length > 0
-    ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
-      ", ",
-    )
-    : "";
+  const inputStr = inputPairs(item).join(", ");
 
   return (
     <Text>
@@ -274,11 +271,7 @@ function renderHistoryPreview(
         <Text key="tags" dimColor wrap="truncate-end">tags: {tagStr}</Text>,
       );
     }
-    const previewInputStr = item.inputs && Object.keys(item.inputs).length > 0
-      ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
-        ", ",
-      )
-      : "";
+    const previewInputStr = inputPairs(item).join(", ");
     if (previewInputStr) {
       lines.push(
         <Text key="inputs" dimColor wrap="truncate-end">
@@ -386,11 +379,7 @@ function renderHistoryScrollback(
     if (tagStr) {
       lines.push(`tags: ${tagStr}`);
     }
-    const scrollInputStr = item.inputs && Object.keys(item.inputs).length > 0
-      ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
-        ", ",
-      )
-      : "";
+    const scrollInputStr = inputPairs(item).join(", ");
     if (scrollInputStr) {
       lines.push(`inputs: ${scrollInputStr}`);
     }

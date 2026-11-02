@@ -33,12 +33,15 @@ import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { SCAN_CONCURRENCY, SEARCH_SCAN_SHARE } from "./scan_permits.ts";
 import {
   getIndexPath,
+  INDEX_COMPACTION_FLOOR_BYTES,
   INDEX_SCHEMA_VERSION,
   readRunIndex,
   withIndexQueue,
+  writeRunIndex,
 } from "./workflow_run_index.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { INDEXED_INPUT_MAX_BYTES } from "../../domain/workflows/workflow_run_summary.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
@@ -842,13 +845,12 @@ Deno.test(
         repo.getPath(workflow.id, fresh.id),
         join(runsDir, "workflow-run-not-a-uuid.yaml"),
       );
-      const indexPath = getIndexPath(runsDir);
-      const stored = JSON.parse(await Deno.readTextFile(indexPath));
+      const stored = (await readRunIndex(runsDir))!;
       stored.entries["not-a-uuid"] = {
         ...stored.entries[fresh.id],
         startedAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
       };
-      await Deno.writeTextFile(indexPath, JSON.stringify(stored));
+      await writeRunIndex(runsDir, stored.entries);
 
       const cutoff = new Date(Date.now() - 60 * 60 * 1000);
       const { reads } = await trackScanOpens(
@@ -2855,10 +2857,7 @@ Deno.test("verifyIndexes: reads and fingerprints entries written without a finge
     for (const entry of Object.values(legacy?.entries ?? {})) {
       delete entry.record;
     }
-    await Deno.writeTextFile(
-      getIndexPath(indexDir),
-      JSON.stringify({ version: legacy?.version, entries: legacy?.entries }),
-    );
+    await writeRunIndex(indexDir, legacy?.entries ?? {});
 
     await repo.verifyIndexes();
 
@@ -2883,10 +2882,7 @@ Deno.test("verifyIndexes: treats a malformed fingerprint as none", async () => {
       status: "succeeded",
       record: "junk" as unknown as typeof entries[string]["record"],
     };
-    await Deno.writeTextFile(
-      getIndexPath(indexDir),
-      JSON.stringify({ version: index?.version, entries }),
-    );
+    await writeRunIndex(indexDir, entries);
 
     await repo.verifyIndexes();
 
@@ -3196,6 +3192,30 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the repo-local log
   });
 });
 
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: makes no local index directory or lock file for records in another datastore with no local index", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const old = await saveFinishedRun(repo, workflow);
+    await saveFinishedRun(repo, workflow);
+    const path = join(storeDir, workflow.id, `workflow-run-${old.id}.yaml`);
+    const data = parseYaml(await Deno.readTextFile(path)) as Record<
+      string,
+      unknown
+    >;
+    const longAgo = new Date(Date.now() - 400 * 86_400_000).toISOString();
+    data.startedAt = longAgo;
+    data.completedAt = longAgo;
+    await Deno.writeTextFile(path, stringifyYaml(data));
+    await backdate(path, 400 * 86_400_000);
+    await Deno.remove(localRunsDir(repoDir, workflow.id), { recursive: true });
+
+    const result = await repo.deleteOlderThan(RETENTION_CUTOFF());
+
+    assertEquals(result.deletedRunIds, [old.id]);
+    assertEquals(await pathExists(localRunsDir(repoDir, workflow.id)), false);
+  });
+});
+
 Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the repo-local log of an unparseable record in another datastore", async () => {
   await withRepoAndStore(async (repoDir, storeDir, repo) => {
     const workflowId = crypto.randomUUID();
@@ -3439,9 +3459,9 @@ for (const missing of [true, false]) {
 
       const release = Promise.withResolvers<void>();
       const held = withIndexQueue(indexDir, () => release.promise);
-      const original = Deno.readTextFile;
+      const original = Deno.readFile;
       let observed = 0;
-      Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+      Deno.readFile = async (...args: Parameters<typeof original>) => {
         try {
           return await original(...args);
         } finally {
@@ -3486,7 +3506,7 @@ for (const missing of [true, false]) {
         release.resolve();
         await held;
         await Promise.allSettled(reading);
-        Deno.readTextFile = original;
+        Deno.readFile = original;
       }
     });
   });
@@ -3503,9 +3523,9 @@ Deno.test("repairIndex: cancelling the first queued reader does not cancel its p
     const release = Promise.withResolvers<void>();
     const held = withIndexQueue(indexDir, () => release.promise);
     const abort = new AbortController();
-    const original = Deno.readTextFile;
+    const original = Deno.readFile;
     let observed = 0;
-    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+    Deno.readFile = async (...args: Parameters<typeof original>) => {
       try {
         return await original(...args);
       } finally {
@@ -3533,7 +3553,7 @@ Deno.test("repairIndex: cancelling the first queued reader does not cancel its p
       release.resolve();
       await held;
       await Promise.allSettled([rejected, peer]);
-      Deno.readTextFile = original;
+      Deno.readFile = original;
     }
   });
 });
@@ -3542,10 +3562,7 @@ async function dropIndexEntries(indexDir: string, runIds: string[]) {
   const result = await readRunIndex(indexDir);
   const entries = { ...result!.entries };
   for (const id of runIds) delete entries[id];
-  await Deno.writeTextFile(
-    getIndexPath(indexDir),
-    JSON.stringify({ version: INDEX_SCHEMA_VERSION, entries }),
-  );
+  await writeRunIndex(indexDir, entries);
 }
 
 Deno.test("repairIndex: cancelling a snapshot initiator preserves both snapshot and repair followers (swamp-club#3857)", async () => {
@@ -3565,9 +3582,9 @@ Deno.test("repairIndex: cancelling a snapshot initiator preserves both snapshot 
     const release = Promise.withResolvers<void>();
     const held = withIndexQueue(indexDir, () => release.promise);
     const abort = new AbortController();
-    const original = Deno.readTextFile;
+    const original = Deno.readFile;
     let observed = 0;
-    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+    Deno.readFile = async (...args: Parameters<typeof original>) => {
       try {
         return await original(...args);
       } finally {
@@ -3599,7 +3616,7 @@ Deno.test("repairIndex: cancelling a snapshot initiator preserves both snapshot 
       release.resolve();
       await held;
       await Promise.allSettled(reading);
-      Deno.readTextFile = original;
+      Deno.readFile = original;
     }
   });
 });
@@ -3624,9 +3641,9 @@ Deno.test("repairIndex: different record directories never share a repair throug
     await Deno.remove(indexPath);
     const release = Promise.withResolvers<void>();
     const held = withIndexQueue(indexDir, () => release.promise);
-    const original = Deno.readTextFile;
+    const original = Deno.readFile;
     let observed = 0;
-    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+    Deno.readFile = async (...args: Parameters<typeof original>) => {
       try {
         return await original(...args);
       } finally {
@@ -3647,7 +3664,7 @@ Deno.test("repairIndex: different record directories never share a repair throug
       release.resolve();
       await held;
       await Promise.allSettled([first, second]);
-      Deno.readTextFile = original;
+      Deno.readFile = original;
     }
   });
 });
@@ -3665,9 +3682,9 @@ Deno.test("repairIndex: a writer queued between readers separates their validati
     await dropIndexEntries(indexDir, [added.id]);
     const release = Promise.withResolvers<void>();
     const held = withIndexQueue(indexDir, () => release.promise);
-    const original = Deno.readTextFile;
+    const original = Deno.readFile;
     let observed = 0;
-    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+    Deno.readFile = async (...args: Parameters<typeof original>) => {
       try {
         return await original(...args);
       } finally {
@@ -3686,7 +3703,7 @@ Deno.test("repairIndex: a writer queued between readers separates their validati
         const writer = withIndexQueue(indexDir, async () => {
           const current = (await readRunIndex(indexDir))!;
           current.entries[finished.id] = staleEntry;
-          await Deno.writeTextFile(indexPath, JSON.stringify(current));
+          await writeRunIndex(indexDir, current.entries);
         });
         reading.push(writer);
         const second = repo.findAllSummariesFromIndex(workflow.id);
@@ -3715,7 +3732,7 @@ Deno.test("repairIndex: a writer queued between readers separates their validati
       release.resolve();
       await held;
       await Promise.allSettled(reading);
-      Deno.readTextFile = original;
+      Deno.readFile = original;
     }
   });
 });
@@ -3747,9 +3764,9 @@ Deno.test("repairIndex: cancelling every queued reader leaves the index untouche
     const release = Promise.withResolvers<void>();
     const held = withIndexQueue(indexDir, () => release.promise);
     const controllers = [new AbortController(), new AbortController()];
-    const original = Deno.readTextFile;
+    const original = Deno.readFile;
     let observed = 0;
-    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+    Deno.readFile = async (...args: Parameters<typeof original>) => {
       try {
         return await original(...args);
       } finally {
@@ -3792,7 +3809,7 @@ Deno.test("repairIndex: cancelling every queued reader leaves the index untouche
       release.resolve();
       await held;
       await Promise.allSettled(reading);
-      Deno.readTextFile = original;
+      Deno.readFile = original;
     }
   });
 });
@@ -3810,9 +3827,9 @@ Deno.test("repairIndex: a shared parse failure reaches every reader and the next
     await Deno.remove(indexPath);
     const release = Promise.withResolvers<void>();
     const held = withIndexQueue(indexDir, () => release.promise);
-    const original = Deno.readTextFile;
+    const original = Deno.readFile;
     let observed = 0;
-    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+    Deno.readFile = async (...args: Parameters<typeof original>) => {
       try {
         return await original(...args);
       } finally {
@@ -3840,7 +3857,7 @@ Deno.test("repairIndex: a shared parse failure reaches every reader and the next
       release.resolve();
       await held;
       await Promise.allSettled(failed);
-      Deno.readTextFile = original;
+      Deno.readFile = original;
     }
   });
 });
@@ -3882,13 +3899,10 @@ Deno.test("getValidatedIndex: a count mismatch also corrects an entry whose reco
     replaced.interruptOrphaned("test");
     await repo.save(workflow.id, replaced);
     const result = await readRunIndex(indexDir);
-    await Deno.writeTextFile(
-      getIndexPath(indexDir),
-      JSON.stringify({
-        version: INDEX_SCHEMA_VERSION,
-        entries: { ...result!.entries, [replaced.id]: runningEntry },
-      }),
-    );
+    await writeRunIndex(indexDir, {
+      ...result!.entries,
+      [replaced.id]: runningEntry,
+    });
     assertEquals(
       (await repo.findAllSummariesFromIndex(workflow.id))[0].status,
       "running",
@@ -3935,19 +3949,23 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
     const held = withIndexQueue(indexDir, async () => {
       await new Promise<void>((resolve) => release = resolve);
       const result = await readRunIndex(indexDir);
-      landed = JSON.stringify({
-        version: INDEX_SCHEMA_VERSION,
-        entries: { ...result!.entries, [second.id]: secondEntry },
+      await writeRunIndex(indexDir, {
+        ...result!.entries,
+        [second.id]: secondEntry,
       });
-      await Deno.writeTextFile(indexPath, landed);
+      landed = await Deno.readTextFile(indexPath);
       await Deno.utime(indexPath, past, past);
     });
 
     const original = Deno.readTextFile;
+    const originalReadFile = Deno.readFile;
     let indexReads = 0;
     let recordReads = 0;
-    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+    Deno.readFile = ((...args: Parameters<typeof originalReadFile>) => {
       if (String(args[0]) === indexPath) indexReads++;
+      return originalReadFile(...args);
+    }) as typeof originalReadFile;
+    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
       if (/workflow-run-[^/\\]*\.yaml$/.test(String(args[0]))) recordReads++;
       return original(...args);
     }) as typeof original;
@@ -3967,6 +3985,7 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
       assertEquals(recordReads, 0);
     } finally {
       Deno.readTextFile = original;
+      Deno.readFile = originalReadFile;
     }
     assertEquals((await Deno.stat(indexPath)).mtime?.getTime(), past.getTime());
     assertEquals(await Deno.readTextFile(indexPath), landed);
@@ -3988,13 +4007,10 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
     finished.interruptOrphaned("test");
     await repo.save(workflow.id, finished);
     const result = await readRunIndex(indexDir);
-    await Deno.writeTextFile(
-      indexPath,
-      JSON.stringify({
-        version: INDEX_SCHEMA_VERSION,
-        entries: { ...result!.entries, [finished.id]: runningEntry },
-      }),
-    );
+    await writeRunIndex(indexDir, {
+      ...result!.entries,
+      [finished.id]: runningEntry,
+    });
 
     const [added] = await saveRunningRuns(repo, workflow, 1);
     const addedEntry = (await readRunIndex(indexDir))!.entries[added.id];
@@ -4004,18 +4020,15 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
     const held = withIndexQueue(indexDir, async () => {
       await new Promise<void>((resolve) => release = resolve);
       const current = await readRunIndex(indexDir);
-      await Deno.writeTextFile(
-        indexPath,
-        JSON.stringify({
-          version: INDEX_SCHEMA_VERSION,
-          entries: { ...current!.entries, [added.id]: addedEntry },
-        }),
-      );
+      await writeRunIndex(indexDir, {
+        ...current!.entries,
+        [added.id]: addedEntry,
+      });
     });
 
-    const original = Deno.readTextFile;
+    const original = Deno.readFile;
     let indexReads = 0;
-    Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+    Deno.readFile = ((...args: Parameters<typeof original>) => {
       if (String(args[0]) === indexPath) indexReads++;
       return original(...args);
     }) as typeof original;
@@ -4034,7 +4047,7 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
       );
       assert(summaries.some((s) => s.id === added.id));
     } finally {
-      Deno.readTextFile = original;
+      Deno.readFile = original;
     }
     const entries = (await readRunIndex(indexDir))!.entries;
     assertEquals(entries[finished.id].status, "interrupted");
@@ -5054,6 +5067,193 @@ Deno.test("YamlWorkflowRunRepository.save: an open fence writes, as no fence doe
     assertEquals(
       (await repo.findById(workflow.id, run.id))?.status,
       "running",
+    );
+  });
+});
+
+Deno.test("save: appends the run's line to the index without rewriting it", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const indexPath = getIndexPath(indexDir);
+    const before = await Deno.readTextFile(indexPath);
+    const inode = (await Deno.stat(indexPath)).ino;
+
+    run.interruptOrphaned("test");
+    await repo.save(workflow.id, run);
+
+    const after = await Deno.readTextFile(indexPath);
+    assert(after.startsWith(before), "the earlier lines are kept as written");
+    assertEquals(after.slice(before.length).trimEnd().split("\n").length, 1);
+    assertEquals((await Deno.stat(indexPath)).ino, inode);
+    assertEquals(
+      (await readRunIndex(indexDir))!.entries[run.id].status,
+      "interrupted",
+    );
+  });
+});
+
+Deno.test("save: the compaction bound is read from the index, so a fresh repository appends until the file doubles", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const [run] = await saveRunningRuns(
+      new YamlWorkflowRunRepository(dir),
+      workflow,
+      1,
+    );
+    const entry = (await readRunIndex(indexDir))!.entries[run.id];
+    const entries: Record<string, typeof entry> = { [run.id]: entry };
+    for (let i = 0; i < 2000; i++) {
+      entries[`filler-${i}`] = { ...entry, inputs: { n: "f".repeat(200) } };
+    }
+    await writeRunIndex(indexDir, entries);
+    const indexPath = getIndexPath(indexDir);
+    const compacted = await Deno.readTextFile(indexPath);
+    assert(compacted.length > INDEX_COMPACTION_FLOOR_BYTES);
+
+    run.interruptOrphaned("test");
+    await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
+    assert((await Deno.readTextFile(indexPath)).startsWith(compacted));
+
+    const filler = `${
+      JSON.stringify({ id: "filler-0", entry: entries["filler-0"] })
+    }\n`;
+    await Deno.writeTextFile(indexPath, filler.repeat(2500), { append: true });
+    run.complete();
+    await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
+
+    const rewritten = await Deno.readTextFile(indexPath);
+    assertEquals(rewritten.trimEnd().split("\n").length, 2002);
+    assertEquals(
+      (await readRunIndex(indexDir))!.entries[run.id].status,
+      run.status,
+    );
+  });
+});
+
+Deno.test("save: a large input stays in the record and the index lists its key as omitted", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const intent = "i".repeat(INDEXED_INPUT_MAX_BYTES * 4);
+    const run = WorkflowRun.create(workflow);
+    run.captureInputs({ region: "eu", intent });
+    run.start();
+    await repo.save(workflow.id, run);
+
+    const entry = (await readRunIndex(localRunsDir(dir, workflow.id)))!
+      .entries[run.id];
+    assertEquals(entry.inputs, { region: "eu" });
+    assertEquals(entry.inputsOmitted, ["intent"]);
+    const [summary] = await repo.findAllSummariesFromIndex(workflow.id);
+    assertEquals(summary.inputs, { region: "eu" });
+    assertEquals(summary.inputsOmitted, ["intent"]);
+    const snapshot = await repo.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.size, 1);
+    const stored = await repo.findById(workflow.id, run.id);
+    assertEquals(stored?.toPersistedData().inputs, { region: "eu", intent });
+  });
+});
+
+Deno.test("findAllSummariesByWorkflowId: a summary read from its record bounds its inputs as the index does", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.captureInputs({ body: "b".repeat(INDEXED_INPUT_MAX_BYTES * 2) });
+    run.start();
+    await repo.save(workflow.id, run);
+
+    const [summary] = await repo.findAllSummariesByWorkflowId(workflow.id);
+
+    assertEquals(summary.inputs, {});
+    assertEquals(summary.inputsOmitted, ["body"]);
+  });
+});
+
+Deno.test("getValidatedIndex: a legacy JSON index is rebuilt from the records in the new form", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveRunningRuns(repo, workflow, 2);
+    const indexDir = localRunsDir(dir, workflow.id);
+    const entries = (await readRunIndex(indexDir))!.entries;
+    await Deno.writeTextFile(
+      getIndexPath(indexDir),
+      JSON.stringify({ version: 4, entries }),
+    );
+
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+
+    assertEquals(
+      summaries.map((s) => s.id).sort(),
+      runs.map((r) => r.id).sort(),
+    );
+    const rebuilt = await readRunIndex(indexDir);
+    assertEquals(rebuilt?.version, INDEX_SCHEMA_VERSION);
+    assertEquals(Object.keys(rebuilt!.entries).length, 2);
+  });
+});
+
+Deno.test("getValidatedIndex: a torn line is repaired and dropped from the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const indexDir = localRunsDir(dir, workflow.id);
+    await Deno.writeTextFile(getIndexPath(indexDir), '{"id":"x","en', {
+      append: true,
+    });
+
+    const summaries = await repo.findAllSummariesFromIndex(workflow.id);
+
+    assertEquals(summaries.map((s) => s.id), [run.id]);
+    assertEquals((await readRunIndex(indexDir))?.damaged, undefined);
+  });
+});
+
+Deno.test("findPersistedInputs: a record that does not parse reads as no inputs rather than failing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    await Deno.writeTextFile(repo.getPath(workflow.id, run.id), "status: [");
+
+    assertEquals(
+      await repo.findPersistedInputs(workflow.id, run.id),
+      undefined,
+    );
+  });
+});
+
+Deno.test("save: compacting a damaged index past the bound repairs it, so later saves only append", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const indexPath = getIndexPath(indexDir);
+    await Deno.writeTextFile(indexPath, "torn\n", { append: true });
+    const entry = (await readRunIndex(indexDir))!.entries[run.id];
+    const filler = `${JSON.stringify({ id: run.id, entry })}\n`;
+    await Deno.writeTextFile(
+      indexPath,
+      filler.repeat(Math.ceil(INDEX_COMPACTION_FLOOR_BYTES / filler.length)),
+      { append: true },
+    );
+
+    run.interruptOrphaned("test");
+    await repo.save(workflow.id, run);
+
+    const repaired = await readRunIndex(indexDir);
+    assertEquals(repaired?.damaged, undefined);
+    assertEquals(repaired?.entries[run.id].status, "interrupted");
+    assertEquals(
+      (await Deno.readTextFile(indexPath)).trimEnd().split("\n").length,
+      2,
     );
   });
 });

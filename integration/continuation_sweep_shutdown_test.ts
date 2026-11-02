@@ -121,9 +121,9 @@ Deno.test({
       // repair is queued in the same chain of microtasks that ends the read,
       // so once the read has settled and `waitFor` polls again, the repair is
       // queued behind the holder, ahead of anything this test queues next.
-      const original = Deno.readTextFile;
+      const original = Deno.readFile;
       let indexReadSettled = false;
-      Deno.readTextFile = ((...args: Parameters<typeof original>) => {
+      Deno.readFile = ((...args: Parameters<typeof original>) => {
         const read = original(...args);
         if (String(args[0]) === indexPath) {
           read.then(
@@ -143,7 +143,7 @@ Deno.test({
         // Resolves while the other reader still holds the queue.
         await service.dispose();
       } finally {
-        Deno.readTextFile = original;
+        Deno.readFile = original;
         holder.resolve();
         await held;
       }

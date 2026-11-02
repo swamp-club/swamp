@@ -85,7 +85,10 @@ export function isCheckoutLocalKey(segments: readonly string[]): boolean {
   const name = segments.at(-1) ?? "";
   if (ATOMIC_WRITE_TEMP.test(name) || name === ".lock") return true;
   if (name === ".DS_Store") return true;
-  if (segments[0] === "workflow-runs" && name === ".runs-index.json") {
+  if (
+    segments[0] === "workflow-runs" &&
+    (name === ".runs-index.json" || name === ".runs-index.lock")
+  ) {
     return true;
   }
   if (

@@ -164,6 +164,7 @@ Deno.test("refusedKeyReason: no record key reaches the read model's state direct
 Deno.test("isCheckoutLocalKey: dot paths, run logs and pulled extension sources are the checkout's own (swamp-club#3299)", () => {
   const local = [
     "workflow-runs/w1/.runs-index.json",
+    "workflow-runs/w1/.runs-index.lock",
     "config/.lock",
     "data/t/m/.0f4e2a6c-1b3d-4c5e-8f90-a1b2c3d4e5f6.tmp",
     "data/t/m/.lock",
@@ -200,6 +201,7 @@ Deno.test("isCheckoutLocalKey: dot-named data, methods and other dot files are r
     "data/t/m/.0f.tmp",
     "data/t/m/.lock.d/1/raw",
     "config/.runs-index.json",
+    "config/.runs-index.lock",
     "definitions-evaluated/.auto-definition-create/t.yaml",
   ];
   for (const key of committed) {

@@ -3307,14 +3307,68 @@ therefore costs a stat per record and one record read, not a read of every
 record (swamp-club#3407). A record another writer replaced is still corrected,
 as a rebuild would have corrected it. The stats are made even when the counts
 agree again by the time the queue is reached, as they usually do since a save
-writes its record before its entry: index updates are queued only within one
-process, so a save in another process can overwrite an entry with the status
-and fingerprint of an earlier write of its record, leaving the count unchanged,
-and the next read that sees a mismatch corrects it (swamp-club#3452; the race
+writes its record before its entry: a save writes its record before it takes
+the index lock, so a save in another process can overwrite an entry with the
+status and fingerprint of an earlier write of its record, leaving the count
+unchanged, and the next read that sees a mismatch corrects it (swamp-club#3452; the race
 itself is swamp-club#3455). A replacement that leaves the count unchanged
 otherwise waits for `swamp run doctor` (`verifyIndexes`), or for a read of
 that run. An index of another schema version is rebuilt from every record
 (`YamlWorkflowRunRepository`).
+
+**Append-only lines.** The file is a header line, `{"version":5,
+"compactedBytes":N}`, then one JSON line per change: `{"id", "entry"}` or
+`{"id", "removed": true}`, the last line for a run winning (lab #4235, #4224).
+A save appends its run's line without reading the index, so its cost does not
+grow with the workflow's history; it used to parse and rewrite every entry,
+which stalled serve's event loop for seconds and, past V8's string limit of
+about 512 MB, could not be written at all. Retention, GC and a datastore pull
+append removal lines the same way. Once a save leaves the file larger than
+both 256 KiB and twice the `compactedBytes` its header records, it compacts
+the index in the same queue slot: one line per live run. The bound lives in
+the file, so a new CLI process or a restarted serve compacts at most once per
+doubling. A repair or rebuild, which has read every entry already, writes the
+compacted form. Every change to the index (an append, a compaction, a repair
+or a rebuild) runs in the index queue, which serializes it within the process
+and holds an exclusive OS lock on `.runs-index.lock` beside the index across
+processes: a compaction replaces the file by rename, and without the lock a
+line another process appended after the compaction read would be lost, leaving
+a run's status stale with the count unchanged. Where the lock file cannot be
+made, as in a read-only checkout, the change runs unlocked, since the index
+cannot be replaced there either; any other failure to lock runs it unlocked
+with a warning. A lock file another user made, which this process cannot
+write, is locked through a read handle. A datastore pull or run GC that drops
+entries skips a workflow with no local index rather than make its directory
+and lock file.
+When a workflow's last run is removed, the
+lock's holder removes the lock file with the index, so the emptied directory
+can go; a process holds the lock only once the path still names the file it
+locked, and otherwise locks the new one. Readers take no lock. The file is
+decoded 1 MiB at a time and parsed in 4 ms slices of the event loop. A line that does not parse, as from a torn append, marks
+the index stale, and the repair rewrites it once it has checked every record's
+fingerprint. A file whose first line, within 4 KiB, is not a version 5 header
+is an older index: it is reported stale without being decoded and rebuilt
+from the records, so the first read after an upgrade reads every record once.
+An older binary on the same checkout cannot parse the new file and rebuilds
+its own, so the two rebuild in turn while both run.
+
+**Inputs a summary may carry.** A run's inputs are unbounded, so an entry
+keeps only values whose JSON encoding is at most 1 KiB, in key order until the
+kept values reach 8 KiB, and lists the other keys in `inputsOmitted`
+(`boundIndexedInputs`, `src/domain/workflows/workflow_run_summary.ts`). A
+summary read from a record when there is no usable index is bounded the same
+way. Run search and history search rows carry the bounded inputs and
+`inputsOmitted`; the full values stay in the run's record, for `workflow
+history get <runId>`. An `--input` filter on an omitted key, and a
+history `--filter` whose CEL expression names `inputs` on a run with omitted
+keys, read that run's record (`runInputsOf`) and match exactly as before. An
+`--input` reads the record only of a run that passed every other check; a
+`--filter` cannot be split, so it reads the record of every listed run with
+omitted keys. Either way a record is read only for a run the caller may read,
+under the workflow whose directory listed the run, never the id its entry
+records. Records are read a few at a time and each is judged and let go, and
+its values are compared, never returned. A record that cannot be read matches
+nothing.
 
 Readers whose repairs wait behind the same index work share one validation
 pass, including approvals and run selection (swamp-club#3857). The group closes

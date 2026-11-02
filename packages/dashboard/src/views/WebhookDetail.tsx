@@ -72,9 +72,13 @@ function useRunJobs(runId: string | undefined) {
     { workflowIdOrName: runId ?? "" },
     { enabled: runId !== undefined },
   );
-  const run = error ? null : extractObject<{ jobs?: RunDetailJob[] }>(data);
+  const run = error ? null : extractObject<{
+    jobs?: RunDetailJob[];
+    inputs?: Record<string, unknown>;
+  }>(data);
   return {
     jobs: run?.jobs ?? null,
+    inputs: run ? run.inputs ?? {} : null,
     loading: runId !== undefined && data === null && error === null,
   };
 }
@@ -125,11 +129,11 @@ export function WebhookDetail(
     () =>
       runA && runB
         ? compareRuns(
-          { run: runA, jobs: jobsA.jobs },
-          { run: runB, jobs: jobsB.jobs },
+          { run: runA, jobs: jobsA.jobs, inputs: jobsA.inputs },
+          { run: runB, jobs: jobsB.jobs, inputs: jobsB.inputs },
         )
         : [],
-    [runA, runB, jobsA.jobs, jobsB.jobs],
+    [runA, runB, jobsA.jobs, jobsB.jobs, jobsA.inputs, jobsB.inputs],
   );
 
   const counts = summary.totals;

@@ -19,14 +19,24 @@
 
 import { join, resolve } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { markErrorPaths } from "../../domain/errors.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { chunkEnd } from "./ndjson_chunks.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { inTimeSlices } from "./scan_permits.ts";
 
 export const RUNS_INDEX_FILENAME = ".runs-index.json";
+export const RUNS_INDEX_LOCK_FILENAME = ".runs-index.lock";
 
 // Bump when WorkflowRunIndexEntry gains or removes fields so that
 // old on-disk indices are rebuilt instead of serving stale data.
-export const INDEX_SCHEMA_VERSION = 4;
+export const INDEX_SCHEMA_VERSION = 5;
+
+/** the current header is the first line; a legacy index is one line of any length */
+const HEADER_MAX_BYTES = 4096;
+
+/** below this an index is not worth compacting, whatever it last compacted to */
+export const INDEX_COMPACTION_FLOOR_BYTES = 256 * 1024;
 
 const RUN_FILE_PREFIX = "workflow-run-";
 const RUN_FILE_SUFFIX = ".yaml";
@@ -50,6 +60,7 @@ export interface WorkflowRunIndexEntry {
   parentRun?: unknown;
   waitingOnRun?: unknown;
   waitsOnlyOnNestedRuns?: boolean;
+  inputsOmitted?: unknown;
   /**
    * stat of the record file the entry was built from, so a replaced record is
    * told apart without reading it; an entry without a valid one is checked by
@@ -78,6 +89,25 @@ export function getIndexPath(workflowRunsDir: string): string {
 export interface ReadIndexResult {
   entries: WorkflowRunIndex;
   version: number;
+  /**
+   * a line did not parse, so an append was torn and an entry may be older than
+   * its record
+   */
+  damaged?: boolean;
+}
+
+/**
+ * the index is a header line then one line per change, the last line for a run
+ * winning; a removal line drops the run
+ */
+export type RunIndexLine =
+  | { id: string; entry: WorkflowRunIndexEntry }
+  | { id: string; removed: true };
+
+export interface RunIndexHeader {
+  version: number;
+  /** bytes of entry lines the last compacted write produced */
+  compactedBytes: number;
 }
 
 /**
@@ -148,60 +178,295 @@ export async function dropRunIndexEntries(
   const root = swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
   for (const [workflowId, runIds] of runsByWorkflow) {
     const indexDir = join(root, workflowId);
-    await withIndexQueue(indexDir, async () => {
-      const result = await readRunIndex(indexDir);
-      if (!result || result.version !== INDEX_SCHEMA_VERSION) return;
-      let dropped = false;
-      for (const runId of runIds) {
-        if (Object.hasOwn(result.entries, runId)) {
-          delete result.entries[runId];
-          dropped = true;
+    // one index that cannot be changed must not fail the pull for the rest
+    try {
+      // queuing would make the directory and lock file of a workflow with no index
+      if (await readRunIndexHeader(indexDir) === null) continue;
+      await withIndexQueue(indexDir, async () => {
+        const appended = await appendRunIndexLines(
+          indexDir,
+          [...runIds].map((id) => ({ id, removed: true })),
+          { create: false },
+        );
+        if (appended.kind === "appended" && needsCompaction(appended)) {
+          await compactRunIndex(indexDir);
         }
-      }
-      if (dropped) await writeRunIndex(indexDir, result.entries);
-    });
+      });
+    } catch (error) {
+      getSwampLogger(["workflow-runs", "index"])
+        .warn`Could not drop runs another writer changed from the run index of ${indexDir}; history search may show their old status until the index is rebuilt: ${error}`;
+    }
   }
 }
 
+const utf8 = new TextEncoder();
+
+function headerOf(line: string): RunIndexHeader {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return { version: 0, compactedBytes: 0 };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { version: 0, compactedBytes: 0 };
+  }
+  const fields = parsed as Record<string, unknown>;
+  if (fields.version !== INDEX_SCHEMA_VERSION) {
+    return { version: 0, compactedBytes: 0 };
+  }
+  const compacted = fields.compactedBytes;
+  return {
+    version: INDEX_SCHEMA_VERSION,
+    compactedBytes: typeof compacted === "number" && compacted >= 0
+      ? compacted
+      : 0,
+  };
+}
+
+function headerInBytes(content: Uint8Array): {
+  header: RunIndexHeader;
+  bodyStart: number;
+} {
+  const newline = content.subarray(0, HEADER_MAX_BYTES).indexOf(10);
+  if (newline === -1) {
+    return { header: { version: 0, compactedBytes: 0 }, bodyStart: 0 };
+  }
+  const line = new TextDecoder().decode(content.subarray(0, newline));
+  return { header: headerOf(line), bodyStart: newline + 1 };
+}
+
+/**
+ * anything but a v5 header reads as version 0 without reading further, so a
+ * legacy index of any size is never decoded
+ */
+export async function readRunIndexHeader(
+  workflowRunsDir: string,
+): Promise<RunIndexHeader | null> {
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(getIndexPath(workflowRunsDir), { read: true });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+  try {
+    const buffer = new Uint8Array(HEADER_MAX_BYTES);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const read = await file.read(buffer.subarray(filled));
+      if (read === null) break;
+      filled += read;
+    }
+    return headerInBytes(buffer.subarray(0, filled)).header;
+  } finally {
+    file.close();
+  }
+}
+
+function setEntry(
+  entries: WorkflowRunIndex,
+  id: string,
+  entry: WorkflowRunIndexEntry,
+): void {
+  // a run id is read from an untrusted file, so __proto__ stays an own key
+  Object.defineProperty(entries, id, {
+    value: entry,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
+/** the index is not trusted: a line that is not a change marks it damaged */
+function applyLine(entries: WorkflowRunIndex, line: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return false;
+  }
+  const { id, entry, removed } = parsed as Record<string, unknown>;
+  if (typeof id !== "string" || id === "") return false;
+  if (removed === true) {
+    delete entries[id];
+    return true;
+  }
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return false;
+  }
+  setEntry(entries, id, entry as WorkflowRunIndexEntry);
+  return true;
+}
+
+/**
+ * decoded a chunk at a time and parsed in slices of the event loop, so a large
+ * index neither holds up other requests nor hits V8's string limit
+ */
 export async function readRunIndex(
   workflowRunsDir: string,
+  signal?: AbortSignal,
 ): Promise<ReadIndexResult | null> {
-  const path = getIndexPath(workflowRunsDir);
+  let content: Uint8Array;
   try {
-    const content = await Deno.readTextFile(path);
-    const parsed = JSON.parse(content);
-    if (
-      typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
-    ) {
-      return null;
+    const peeked = await readRunIndexHeader(workflowRunsDir);
+    if (peeked && peeked.version !== INDEX_SCHEMA_VERSION) {
+      return { entries: {}, version: peeked.version };
     }
-    if (
-      typeof parsed.version === "number" &&
-      parsed.entries !== undefined &&
-      typeof parsed.entries === "object" &&
-      !Array.isArray(parsed.entries)
-    ) {
-      return {
-        entries: parsed.entries as WorkflowRunIndex,
-        version: parsed.version,
-      };
-    }
-    // Unversioned legacy format — return entries with version 0
-    return { entries: parsed as WorkflowRunIndex, version: 0 };
+    content = await Deno.readFile(getIndexPath(workflowRunsDir));
   } catch {
     return null;
   }
+  // The file may have been replaced since its header was read.
+  const { header, bodyStart } = headerInBytes(content);
+  if (header.version !== INDEX_SCHEMA_VERSION) {
+    return { entries: {}, version: header.version };
+  }
+  const entries: WorkflowRunIndex = {};
+  const decoder = new TextDecoder();
+  let damaged = false;
+  let decodedTo = bodyStart;
+  let chunk: string[] = [];
+  let next = 0;
+  const more = () => next < chunk.length || decodedTo < content.length;
+  const parseNext = () => {
+    if (next === chunk.length) {
+      const end = chunkEnd(content, decodedTo);
+      try {
+        chunk = decoder.decode(content.subarray(decodedTo, end)).split("\n");
+      } catch {
+        chunk = [];
+        damaged = true;
+      }
+      next = 0;
+      decodedTo = end;
+      return;
+    }
+    const line = chunk[next++];
+    if (line.length === 0) return;
+    if (!applyLine(entries, line)) damaged = true;
+  };
+  await inTimeSlices(
+    more,
+    (until) => {
+      do {
+        parseNext();
+      } while (more() && performance.now() < until);
+    },
+    signal,
+  );
+  return damaged
+    ? { entries, version: INDEX_SCHEMA_VERSION, damaged }
+    : { entries, version: INDEX_SCHEMA_VERSION };
 }
 
+function headerLine(compactedBytes: number): string {
+  return `${
+    JSON.stringify({ version: INDEX_SCHEMA_VERSION, compactedBytes })
+  }\n`;
+}
+
+async function linesText(lines: readonly RunIndexLine[]): Promise<string> {
+  let text = "";
+  let next = 0;
+  await inTimeSlices(
+    () => next < lines.length,
+    (until) => {
+      do {
+        text += `${JSON.stringify(lines[next++])}\n`;
+      } while (next < lines.length && performance.now() < until);
+    },
+  );
+  return text;
+}
+
+/** the compacted form: one line per run, replacing the file whole */
 export async function writeRunIndex(
   workflowRunsDir: string,
   index: WorkflowRunIndex,
 ): Promise<void> {
-  const path = getIndexPath(workflowRunsDir);
-  await atomicWriteTextFile(
-    path,
-    JSON.stringify({ version: INDEX_SCHEMA_VERSION, entries: index }),
+  const body = await linesText(
+    Object.entries(index).map(([id, entry]) => ({ id, entry })),
   );
+  await atomicWriteTextFile(
+    getIndexPath(workflowRunsDir),
+    headerLine(utf8.encode(body).length) + body,
+  );
+}
+
+async function endsWithNewline(path: string): Promise<boolean> {
+  const file = await Deno.open(path, { read: true });
+  try {
+    if ((await file.stat()).size === 0) return true;
+    await file.seek(-1, Deno.SeekMode.End);
+    const last = new Uint8Array(1);
+    await file.read(last);
+    return last[0] === 10;
+  } finally {
+    file.close();
+  }
+}
+
+export type AppendResult =
+  | { kind: "appended"; size: number; compactedBytes: number }
+  | { kind: "absent" }
+  | { kind: "stale" };
+
+/**
+ * one write per call, so a run's change costs its own line whatever the
+ * history; an index of another version is left for the caller to remove
+ */
+export async function appendRunIndexLines(
+  workflowRunsDir: string,
+  lines: readonly RunIndexLine[],
+  options: { create: boolean },
+): Promise<AppendResult> {
+  const path = getIndexPath(workflowRunsDir);
+  const header = await readRunIndexHeader(workflowRunsDir);
+  if (header === null) {
+    if (!options.create) return { kind: "absent" };
+    const body = await linesText(lines);
+    const bytes = utf8.encode(body).length;
+    await atomicWriteTextFile(path, headerLine(bytes) + body);
+    return {
+      kind: "appended",
+      size: (await Deno.stat(path)).size,
+      compactedBytes: bytes,
+    };
+  }
+  if (header.version !== INDEX_SCHEMA_VERSION) return { kind: "stale" };
+  // a torn tail would otherwise swallow this run's line along with it
+  const lead = await endsWithNewline(path) ? "" : "\n";
+  await Deno.writeTextFile(path, lead + await linesText(lines), {
+    append: true,
+  });
+  return {
+    kind: "appended",
+    size: (await Deno.stat(path)).size,
+    compactedBytes: header.compactedBytes,
+  };
+}
+
+export function needsCompaction(
+  result: { size: number; compactedBytes: number },
+): boolean {
+  return result.size >
+    Math.max(INDEX_COMPACTION_FLOOR_BYTES, 2 * result.compactedBytes);
+}
+
+/**
+ * runs inside the index queue; a damaged index is left for the repair pass,
+ * which checks its entries against their records before writing
+ */
+export async function compactRunIndex(workflowRunsDir: string): Promise<void> {
+  const result = await readRunIndex(workflowRunsDir);
+  if (!result || result.version !== INDEX_SCHEMA_VERSION || result.damaged) {
+    return;
+  }
+  await writeRunIndex(workflowRunsDir, result.entries);
 }
 
 export async function deleteRunIndex(
@@ -248,6 +513,7 @@ export function isIndexStale(
   yamlFileCount: number,
 ): boolean {
   return result.version !== INDEX_SCHEMA_VERSION ||
+    result.damaged === true ||
     Object.keys(result.entries).length !== yamlFileCount;
 }
 
@@ -265,9 +531,149 @@ export function indexQueueGeneration(
 }
 
 /**
- * serializes read-modify-write of an index per directory in this process; a
- * failed fn does not hold up later ones, and fn must not queue on the same
- * directory
+ * the index is replaced by rename, so other processes are held off by a lock
+ * on a file that never is; where the lock file cannot be made the index cannot
+ * be replaced either, since its atomic write stages a file beside it
+ */
+async function withIndexFileLock<T>(
+  workflowRunsDir: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let lock: Deno.FsFile | undefined;
+  try {
+    lock = await acquireIndexFileLock(workflowRunsDir);
+  } catch (error) {
+    const logger = getSwampLogger(["workflow-runs", "index"]);
+    if (cannotWriteHere(error)) {
+      logger
+        .debug`Changing the run index of ${workflowRunsDir} without its lock: ${error}`;
+    } else {
+      logger
+        .warn`Changing the run index of ${workflowRunsDir} without its lock, so a change another process makes to it meanwhile may be lost until the index is next repaired: ${error}`;
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    lock?.close();
+  }
+}
+
+function cannotWriteHere(error: unknown): boolean {
+  return error instanceof Deno.errors.PermissionDenied ||
+    error instanceof Deno.errors.NotADirectory ||
+    error instanceof Deno.errors.NotCapable ||
+    (typeof error === "object" && error !== null && "code" in error &&
+      error.code === "EROFS");
+}
+
+const LOCK_ATTEMPTS = 5;
+
+/**
+ * its holder may remove the lock file, so a lock is held only once its path
+ * still names the file locked; a waiter on a removed file tries a new one
+ */
+async function acquireIndexFileLock(
+  workflowRunsDir: string,
+): Promise<Deno.FsFile> {
+  const path = join(workflowRunsDir, RUNS_INDEX_LOCK_FILENAME);
+  for (let attempt = 1;; attempt++) {
+    const lock = await openLockFile(workflowRunsDir, path);
+    if (lock !== null) {
+      try {
+        await lock.lock(true);
+        if (await namesFile(path, lock)) return lock;
+      } catch (error) {
+        lock.close();
+        throw error;
+      }
+      lock.close();
+    }
+    if (attempt === LOCK_ATTEMPTS) {
+      throw markErrorPaths(
+        new Error(`the lock file ${path} kept being removed or replaced`),
+        [path],
+      );
+    }
+  }
+}
+
+/** null when the directory went between its creation and the open */
+async function openLockFile(
+  workflowRunsDir: string,
+  path: string,
+): Promise<Deno.FsFile | null> {
+  try {
+    await Deno.mkdir(workflowRunsDir, { recursive: true });
+    return await Deno.open(path, { read: true, write: true, create: true });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+    // a lock file another user made can still be locked through a read handle
+    try {
+      return await Deno.open(path, { read: true });
+    } catch {
+      throw error;
+    }
+  }
+}
+
+/**
+ * a file index is unique within a volume; where there is none, a file made
+ * since shows a new creation time
+ */
+async function namesFile(path: string, file: Deno.FsFile): Promise<boolean> {
+  const held = await file.stat();
+  let named: Deno.FileInfo;
+  try {
+    named = await Deno.stat(path);
+  } catch (error) {
+    // Windows refuses to stat a removed file whose name waits on other handles
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.PermissionDenied
+    ) return false;
+    throw error;
+  }
+  if (named.dev !== held.dev) return false;
+  if (held.ino !== null && named.ino !== null) return named.ino === held.ino;
+  return named.birthtime?.getTime() === held.birthtime?.getTime();
+}
+
+/** false where a queued change could only make the directory and lock file */
+export async function runIndexFilesExist(
+  workflowRunsDir: string,
+): Promise<boolean> {
+  for (const name of [RUNS_INDEX_FILENAME, RUNS_INDEX_LOCK_FILENAME]) {
+    try {
+      await Deno.lstat(join(workflowRunsDir, name));
+      return true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * runs inside the index queue, for a directory left with no runs: the lock file
+ * goes with the index, removed by its holder
+ */
+export async function removeRunIndexFiles(
+  workflowRunsDir: string,
+): Promise<void> {
+  await deleteRunIndex(workflowRunsDir);
+  try {
+    await Deno.remove(join(workflowRunsDir, RUNS_INDEX_LOCK_FILENAME));
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
+/**
+ * serializes read-modify-write of an index per directory, in this process by
+ * queue and across processes by file lock; a failed fn does not hold up later
+ * ones, and fn must not queue on the same directory
  */
 export async function withIndexQueue<T>(
   workflowRunsDir: string,
@@ -275,7 +681,9 @@ export async function withIndexQueue<T>(
 ): Promise<T> {
   const key = getIndexPath(resolve(workflowRunsDir));
   // A queued tail never rejects, so `fn` runs whatever happened before it.
-  const run = (indexQueues.get(key) ?? Promise.resolve()).then(fn);
+  const run = (indexQueues.get(key) ?? Promise.resolve()).then(() =>
+    withIndexFileLock(workflowRunsDir, fn)
+  );
   const tail = run.then(() => {}, () => {});
   indexQueues.set(key, tail);
   try {

@@ -47,6 +47,8 @@ export interface WorkflowRunSearchItem {
   duration?: number;
   tags?: Record<string, string>;
   inputs?: Record<string, unknown>;
+  /** inputs too large to list: only the run's record holds their values */
+  inputsOmitted?: string[];
   instanceId?: string;
   triggerSource?: string;
   failedStep?: string;
@@ -106,12 +108,21 @@ export interface WorkflowRunSearchDeps {
    * name. Asked once per distinct pair. Without it every run is readable.
    */
   isReadable?(workflowId: string, workflowName: string): Promise<boolean>;
+  /** workflowId is the workflow that listed the run, never its entry's id */
+  runInputsOf(
+    workflowId: string,
+    runId: string,
+  ): Promise<Readonly<Record<string, unknown>> | undefined>;
   /**
    * where retention records how far it has reaped; with it the listing says
    * older runs have been reaped
    */
   retentionWatermarks?: RetentionWatermarkRepository;
 }
+
+type RunSelectionDeps =
+  & Pick<WorkflowRunSearchDeps, "runIndexOf" | "isReadable">
+  & Partial<Pick<WorkflowRunSearchDeps, "runInputsOf">>;
 
 export interface WorkflowRunSearchInput {
   query?: string;
@@ -258,8 +269,12 @@ function runPredicate(
   }
   if (filter.inputs) {
     const entries = Object.entries(filter.inputs);
+    // An omitted key is decided from the record once the cheap checks pass.
     checks.push((run) =>
-      entries.every(([k, v]) => String(run.summary.inputs?.[k]) === v)
+      entries.every(([k, v]) =>
+        run.summary.inputsOmitted?.includes(k) ||
+        String(run.summary.inputs?.[k]) === v
+      )
     );
   }
   if (filter.query) {
@@ -322,7 +337,7 @@ function candidates(
  * the whole history
  */
 export function selectWorkflowRuns(
-  deps: Pick<WorkflowRunSearchDeps, "runIndexOf" | "isReadable">,
+  deps: RunSelectionDeps,
   workflows: ReadonlyArray<{ id: string }>,
   filter: WorkflowRunFilter,
 ): Promise<WorkflowRunSelection> {
@@ -333,8 +348,40 @@ export function selectWorkflowRuns(
   );
 }
 
+/**
+ * reads the record only of a run that already passed every other check and
+ * the readability check, and compares, never returns, what it holds
+ */
+async function confirmOmittedInputs(
+  deps: RunSelectionDeps,
+  workflowId: string,
+  runs: RunIndexRun[],
+  wanted: Readonly<Record<string, string>>,
+): Promise<RunIndexRun[]> {
+  const entries = Object.entries(wanted);
+  const unsure = runs.filter((run) =>
+    entries.some(([key]) => run.summary.inputsOmitted?.includes(key))
+  );
+  if (unsure.length === 0) return runs;
+  const runInputsOf = deps.runInputsOf;
+  if (!runInputsOf) {
+    throw new Error("An --input filter on an omitted input needs runInputsOf");
+  }
+  const confirmed = new Set(
+    await collectBounded(unsure, RUN_FANOUT_CONCURRENCY, async (run) => {
+      const inputs = await runInputsOf(workflowId, run.summary.id);
+      return inputs !== undefined &&
+          entries.every(([k, v]) => String(inputs[k]) === v)
+        ? [run]
+        : [];
+    }),
+  );
+  const decided = new Set(unsure);
+  return runs.filter((run) => !decided.has(run) || confirmed.has(run));
+}
+
 async function selectRuns(
-  deps: Pick<WorkflowRunSearchDeps, "runIndexOf" | "isReadable">,
+  deps: RunSelectionDeps,
   workflows: ReadonlyArray<{ id: string }>,
   filter: WorkflowRunFilter,
   span: Span,
@@ -383,6 +430,15 @@ async function selectRuns(
         readable.get(
           JSON.stringify([run.summary.workflowId, run.summary.workflowName]),
         )
+      );
+      if (runs.length === 0) continue;
+    }
+    if (filter.inputs) {
+      runs = await confirmOmittedInputs(
+        deps,
+        workflow.id,
+        runs,
+        filter.inputs,
       );
       if (runs.length === 0) continue;
     }
@@ -573,6 +629,9 @@ export async function* workflowRunSearch(
         const inputs = run.inputs && Object.keys(run.inputs).length > 0
           ? structuredClone(run.inputs)
           : undefined;
+        const inputsOmitted = run.inputsOmitted
+          ? [...run.inputsOmitted]
+          : undefined;
         const nested = nestedWaitsOf(run);
 
         return {
@@ -585,6 +644,7 @@ export async function* workflowRunSearch(
           duration: runDuration(entry),
           tags,
           inputs,
+          inputsOmitted,
           instanceId: run.instanceId,
           triggerSource: run.triggerSource,
           failedStep: run.failedStep,
