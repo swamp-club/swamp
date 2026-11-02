@@ -59,10 +59,12 @@ import {
 } from "../src/domain/models/method_execution_service.ts";
 import type { MethodContext } from "../src/domain/models/model.ts";
 import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
-import { getRunLogger } from "../src/infrastructure/logging/logger.ts";
 
 import "../src/domain/models/models.ts";
-import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import {
+  getRunLogger,
+  initializeLogging,
+} from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
 
@@ -669,8 +671,7 @@ Deno.test({
         );
         assertEquals(remoteOutputsOf(noWrite), []);
 
-        // through the method execution path a placed step takes, the outputs
-        // become the error's handles as an in-process failure's do
+        // as an in-process failure's do
         setRemoteStepDispatcher(orchestrator.dispatchService);
         try {
           const definition = Definition.create({

@@ -2452,6 +2452,16 @@ export class DefaultStepExecutor implements StepExecutor {
           );
         }
 
+        // before handleMethodFailure, which adds the handles to savedArtifacts
+        // and may throw before returning
+        for (const version of writtenVersionsOf(error)) {
+          failedRemoteWrites.push(version);
+        }
+        if (remoteOutputsOf(error).length > 0) {
+          for (const handle of recoveredDataHandles(error)) {
+            unpublishedRemoteHandles.add(`${handle.dataId}@${handle.version}`);
+          }
+        }
         await this.handleMethodFailure({
           task: narrowedTask,
           ctx,
@@ -2471,14 +2481,6 @@ export class DefaultStepExecutor implements StepExecutor {
           output,
           savedArtifacts,
         });
-        for (const version of writtenVersionsOf(error)) {
-          failedRemoteWrites.push(version);
-        }
-        if (remoteOutputsOf(error).length > 0) {
-          for (const handle of recoveredDataHandles(error)) {
-            unpublishedRemoteHandles.add(`${handle.dataId}@${handle.version}`);
-          }
-        }
         stepFailed = true;
         // the step's failure, its events and the run record read the message
         // from what is thrown here
