@@ -584,7 +584,22 @@ write. The model's methods stay the interface for `swamp behavior run` and
 still run each transition at the same cost however many leases the instance
 holds: an update method's deleted-resource check stops at the first live
 resource rather than reading every lease the `leases` instance keeps
-(swamp-club#3755). The CLI:
+(swamp-club#3755).
+
+Pending-dispatch transitions are written the same way by
+`PendingDispatchLedger` (`src/serve/pending_dispatch_ledger.ts`): a step's
+`enqueue` when it starts waiting for a worker, and its `mark_dispatched`,
+`timeout` or `cancel` when it stops. It applies the pure functions in
+`pending_dispatch_model.ts` that the methods also use, in a root unit of work
+with no push, and falls back to the method run until the `pending` definition
+exists. Transitions that arrive while that one fallback is creating the
+definition wait for it and then write directly, so a fresh repository's first
+burst of queued steps costs one output record, not one per step. Before
+swamp-club#4292 each transition was a method run, so a saturated pool wrote
+about two output records per queued step. The step does not wait for its
+queue transitions, so one can start after the dispatching run's root ended;
+its write then goes to the datastore's hook, or on a v3 datastore commits on
+its own. The CLI:
 
 ```bash
 swamp worker token create <name> --duration <dur>   # mint; prints the credential once
@@ -710,7 +725,8 @@ swamp-club#4285 those grew with the number of dispatches. Until a worker's
 definition exists a change runs as the method, which resolves it. The method
 stays the interface for `swamp behavior run`. Its outputs expire after a day
 (`outputLifetime: "1d"`), which also bounds the backlog older serves left
-behind.
+behind. The `swamp/pending-dispatch` methods declare the same lifetime for
+the outputs left from before `PendingDispatchLedger`.
 
 **Worker, token and bookkeeping reaping:** `WorkerGcService` runs on the serve
 side 5 minutes after serve starts and then hourly (default grace period 24 h),

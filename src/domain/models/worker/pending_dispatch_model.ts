@@ -73,11 +73,10 @@ export function pendingDataName(queueId: string): string {
   return `pending-${queueId}`;
 }
 
-async function readPendingDispatch(
-  context: MethodContext,
+export function parseStoredPendingDispatch(
   queueId: string,
-): Promise<PendingDispatch> {
-  const raw = await context.readResource!(pendingDataName(queueId));
+  raw: unknown,
+): PendingDispatch {
   if (raw === null) {
     throw new Error(`Pending dispatch '${queueId}' does not exist`);
   }
@@ -97,24 +96,79 @@ const EnqueueArgsSchema = z.object({
   queuedAt: z.string().datetime(),
 });
 
-async function enqueue(
-  args: z.infer<typeof EnqueueArgsSchema>,
-  context: MethodContext,
-): Promise<MethodResult> {
-  const existing = await context.readResource!(
-    pendingDataName(args.queueId),
-  );
+export type EnqueuePendingArgs = z.infer<typeof EnqueueArgsSchema>;
+
+export type PendingDispatchEnd =
+  | { state: "dispatched"; dispatchId: string; endedAt: string }
+  | {
+    state: Extract<
+      PendingDispatchState,
+      "timed_out" | "cancelled" | "orphaned"
+    >;
+    endedAt: string;
+  };
+
+export const PENDING_DISPATCH_END_METHODS: Readonly<
+  Record<PendingDispatchEnd["state"], string>
+> = {
+  dispatched: "mark_dispatched",
+  timed_out: "timeout",
+  cancelled: "cancel",
+  orphaned: "orphan",
+};
+
+// the methods and serve's PendingDispatchLedger both apply these, so their records match
+export function startPendingDispatch(
+  args: EnqueuePendingArgs,
+  existing: unknown,
+): PendingDispatch {
   if (existing !== null) {
     throw new Error(`Pending dispatch '${args.queueId}' already exists`);
   }
-  const record: PendingDispatch = {
-    ...args,
-    state: "waiting",
-  };
+  return { ...args, state: "waiting" };
+}
+
+export function endedPendingDispatch(
+  record: PendingDispatch,
+  end: PendingDispatchEnd,
+): PendingDispatch | null {
+  if (TERMINAL_PENDING_DISPATCH_STATES.has(record.state)) return null;
+  return { ...record, ...end };
+}
+
+async function enqueue(
+  args: EnqueuePendingArgs,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const record = startPendingDispatch(
+    args,
+    await context.readResource!(pendingDataName(args.queueId)),
+  );
   const handle = await context.writeResource!(
     "dispatch",
     pendingDataName(args.queueId),
     record,
+  );
+  return { dataHandles: [handle] };
+}
+
+async function writeEnded(
+  queueId: string,
+  end: PendingDispatchEnd,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const updated = endedPendingDispatch(
+    parseStoredPendingDispatch(
+      queueId,
+      await context.readResource!(pendingDataName(queueId)),
+    ),
+    end,
+  );
+  if (updated === null) return { dataHandles: [] };
+  const handle = await context.writeResource!(
+    "dispatch",
+    pendingDataName(queueId),
+    updated,
   );
   return { dataHandles: [handle] };
 }
@@ -125,26 +179,15 @@ const MarkDispatchedArgsSchema = z.object({
   endedAt: z.string().datetime(),
 });
 
-async function markDispatched(
+function markDispatched(
   args: z.infer<typeof MarkDispatchedArgsSchema>,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const record = await readPendingDispatch(context, args.queueId);
-  if (TERMINAL_PENDING_DISPATCH_STATES.has(record.state)) {
-    return { dataHandles: [] };
-  }
-  const updated: PendingDispatch = {
-    ...record,
+  return writeEnded(args.queueId, {
     state: "dispatched",
     dispatchId: args.dispatchId,
     endedAt: args.endedAt,
-  };
-  const handle = await context.writeResource!(
-    "dispatch",
-    pendingDataName(args.queueId),
-    updated,
-  );
-  return { dataHandles: [handle] };
+  }, context);
 }
 
 const EndPendingArgsSchema = z.object({
@@ -155,26 +198,11 @@ const EndPendingArgsSchema = z.object({
 function endPending(
   state: Extract<PendingDispatchState, "timed_out" | "cancelled" | "orphaned">,
 ) {
-  return async (
+  return (
     args: z.infer<typeof EndPendingArgsSchema>,
     context: MethodContext,
-  ): Promise<MethodResult> => {
-    const record = await readPendingDispatch(context, args.queueId);
-    if (TERMINAL_PENDING_DISPATCH_STATES.has(record.state)) {
-      return { dataHandles: [] };
-    }
-    const updated: PendingDispatch = {
-      ...record,
-      state,
-      endedAt: args.endedAt,
-    };
-    const handle = await context.writeResource!(
-      "dispatch",
-      pendingDataName(args.queueId),
-      updated,
-    );
-    return { dataHandles: [handle] };
-  };
+  ): Promise<MethodResult> =>
+    writeEnded(args.queueId, { state, endedAt: args.endedAt }, context);
 }
 
 export const pendingDispatchModel: ModelDefinition = defineModel({
@@ -194,30 +222,36 @@ export const pendingDispatchModel: ModelDefinition = defineModel({
       kind: "create",
       arguments: EnqueueArgsSchema,
       execute: enqueue,
+      // serve writes these via PendingDispatchLedger; this bounds direct runs and its fallback
+      outputLifetime: "1d",
     },
     mark_dispatched: {
       description: "The step was dispatched to a worker",
       kind: "update",
       arguments: MarkDispatchedArgsSchema,
       execute: markDispatched,
+      outputLifetime: "1d",
     },
     timeout: {
       description: "The step timed out waiting for a worker",
       kind: "update",
       arguments: EndPendingArgsSchema,
       execute: endPending("timed_out"),
+      outputLifetime: "1d",
     },
     cancel: {
       description: "The step was cancelled while waiting",
       kind: "update",
       arguments: EndPendingArgsSchema,
       execute: endPending("cancelled"),
+      outputLifetime: "1d",
     },
     orphan: {
       description: "Boot reconciliation: no matching queue episode found",
       kind: "update",
       arguments: EndPendingArgsSchema,
       execute: endPending("orphaned"),
+      outputLifetime: "1d",
     },
   },
 });

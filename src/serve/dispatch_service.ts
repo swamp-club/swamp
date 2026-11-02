@@ -36,10 +36,7 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { EndedLeaseState } from "../domain/models/worker/step_lease_model.ts";
-import {
-  PENDING_DISPATCH_INSTANCE_NAME,
-  PENDING_DISPATCH_MODEL_TYPE,
-} from "../domain/models/worker/pending_dispatch_model.ts";
+import { PENDING_DISPATCH_END_METHODS } from "../domain/models/worker/pending_dispatch_model.ts";
 import {
   captureEnvironmentSnapshot,
 } from "../domain/remote/environment_snapshot.ts";
@@ -90,6 +87,12 @@ import {
   StepLeaseLedger,
   type StepLeaseStore,
 } from "./step_lease_ledger.ts";
+import {
+  methodRunnerPendingDispatchStore,
+  PendingDispatchLedger,
+  type PendingDispatchStore,
+  type ServePendingDispatchEnd,
+} from "./pending_dispatch_ledger.ts";
 
 export { hasPlacement };
 
@@ -200,6 +203,7 @@ export class DispatchService {
   readonly #queueTimeoutMs: number;
   readonly #runModelMethod: ModelMethodRunner;
   readonly #stepLeases: StepLeaseStore;
+  readonly #pendingDispatches: PendingDispatchStore;
   readonly #captureEnvironment: () => Record<string, string>;
   #gateway: DispatchGateway | null = null;
   #onDispatchEnd: ((dispatchId: string) => void) | null = null;
@@ -235,6 +239,12 @@ export class DispatchService {
       : new StepLeaseLedger(
         options.repoContext,
         methodRunnerLeaseStore(this.#runModelMethod),
+      );
+    this.#pendingDispatches = options.runModelMethod
+      ? methodRunnerPendingDispatchStore(options.runModelMethod)
+      : new PendingDispatchLedger(
+        options.repoContext,
+        methodRunnerPendingDispatchStore(this.#runModelMethod),
       );
     this.#captureEnvironment = options.captureEnvironment ??
       (() =>
@@ -343,36 +353,43 @@ export class DispatchService {
         kind: "queued",
         requirement: describePlacement(request.placement),
       });
-      currentQueueId = crypto.randomUUID();
-      this.#pendingTransition("enqueue", {
-        queueId: currentQueueId,
-        target: request.placement.target,
-        labels: request.placement.labels,
-        platform: request.placement.platform,
-        workflowName: request.workflowName,
-        jobName: request.jobName,
-        stepName: request.stepName,
-        modelType: request.modelType.normalized,
-        methodName: request.methodName,
-        queuedAt: new Date().toISOString(),
-      });
+      const queueId = crypto.randomUUID();
+      currentQueueId = queueId;
+      this.#pendingTransition("enqueue", queueId, (pending) =>
+        pending.enqueue({
+          queueId,
+          target: request.placement.target,
+          labels: request.placement.labels,
+          platform: request.placement.platform,
+          workflowName: request.workflowName,
+          jobName: request.jobName,
+          stepName: request.stepName,
+          modelType: request.modelType.normalized,
+          methodName: request.methodName,
+          queuedAt: new Date().toISOString(),
+        }));
     };
 
     const endQueue = (
-      method: "mark_dispatched" | "timeout" | "cancel",
-      extra?: Record<string, unknown>,
+      end:
+        | { state: "dispatched"; dispatchId: string }
+        | { state: "timed_out" | "cancelled" },
     ) => {
       if (currentQueueId === null) return;
       const queueId = currentQueueId;
       currentQueueId = null;
-      this.#pendingTransition(method, {
-        queueId,
+      const ended: ServePendingDispatchEnd = {
+        ...end,
         endedAt: new Date().toISOString(),
-        ...extra,
-      });
+      };
+      this.#pendingTransition(
+        PENDING_DISPATCH_END_METHODS[end.state],
+        queueId,
+        (pending) => pending.end(queueId, ended),
+      );
     };
 
-    const onAbort = () => endQueue("cancel");
+    const onAbort = () => endQueue({ state: "cancelled" });
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
     let affinitySlot: Promise<string | undefined> | null = null;
@@ -501,14 +518,15 @@ export class DispatchService {
             releaseReservation,
           );
           lastDispatchId = result.dispatchId;
-          endQueue("mark_dispatched", { dispatchId: result.dispatchId });
+          endQueue({ state: "dispatched", dispatchId: result.dispatchId });
           return result;
         } catch (error) {
           if (error instanceof WorkerLostError) {
             // before the pin binds, no other step of the group ran on the lost
             // worker, so a no-write first step re-dispatches below
             if (affinityKey && (pinnedWorker || error.hadWrites)) {
-              endQueue("mark_dispatched", {
+              endQueue({
+                state: "dispatched",
                 dispatchId: error.dispatchId ?? "unknown",
               });
               throw withWrittenVersions(
@@ -517,7 +535,8 @@ export class DispatchService {
               );
             }
             if (error.hadWrites) {
-              endQueue("mark_dispatched", {
+              endQueue({
+                state: "dispatched",
                 dispatchId: error.dispatchId ?? "unknown",
               });
               throw withWrittenVersions(
@@ -533,7 +552,8 @@ export class DispatchService {
               "Worker {worker} lost a no-write dispatch; re-scheduling",
               { worker: workerName },
             );
-            endQueue("mark_dispatched", {
+            endQueue({
+              state: "dispatched",
               dispatchId: error.dispatchId ?? "unknown",
             });
             attemptWorker = undefined;
@@ -562,7 +582,8 @@ export class DispatchService {
                 "Worker {worker} was {code} on dispatch; re-scheduling step",
                 { worker: workerName, code: refusal },
               );
-              endQueue("mark_dispatched", {
+              endQueue({
+                state: "dispatched",
                 dispatchId: lastDispatchId ?? "unknown",
               });
               continue;
@@ -581,7 +602,8 @@ export class DispatchService {
               "Worker {worker} reported {code} on dispatch; re-queueing step",
               { worker: workerName, code: refusal },
             );
-            endQueue("mark_dispatched", {
+            endQueue({
+              state: "dispatched",
               dispatchId: lastDispatchId ?? "unknown",
             });
             await observeExecutionWork(
@@ -603,9 +625,9 @@ export class DispatchService {
           error instanceof Error &&
           error.message.startsWith("Timed out waiting for a worker")
         ) {
-          endQueue("timeout");
+          endQueue({ state: "timed_out" });
         } else {
-          endQueue("cancel");
+          endQueue({ state: "cancelled" });
         }
       }
       throw error;
@@ -1247,24 +1269,18 @@ export class DispatchService {
 
   #pendingTransition(
     methodName: string,
-    inputs: Record<string, unknown>,
+    queueId: string,
+    transition: (pending: PendingDispatchStore) => Promise<void>,
   ): void {
     // control-plane bookkeeping chained from inside the dispatching run must
     // not be held to that run's vault scope
     const run = () =>
-      withoutVaultAccess(() =>
-        this.#runModelMethod({
-          typeArg: PENDING_DISPATCH_MODEL_TYPE.normalized,
-          definitionName: PENDING_DISPATCH_INSTANCE_NAME,
-          methodName,
-          inputs,
-        })
-      );
+      withoutVaultAccess(() => transition(this.#pendingDispatches));
     // ordered per queue entry: each is its own record
     this.#transitions.run(
       `pending_dispatch.${methodName}`,
       run,
-      `pending:${String(inputs.queueId)}`,
+      `pending:${queueId}`,
     ).catch(() => {});
   }
 
