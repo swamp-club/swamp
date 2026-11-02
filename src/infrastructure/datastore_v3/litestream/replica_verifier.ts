@@ -20,8 +20,10 @@
 /**
  * The writer's check of its own replica (swamp-club#3935): the sidecar
  * restores its lineage at the TXID the writer last acknowledged, exactly as
- * a reader's restore would, into a private temp file it then deletes, and
- * records the verdict in `replica-verify.json`.
+ * a reader's restore would, into a temp file beside `commits.db` it then
+ * deletes, and records the verdict in `replica-verify.json`. Beside the
+ * copy, not under `/tmp`: on the copy's own filesystem, never a tmpfs
+ * holding a second copy of the commit log in memory (swamp-club#4261).
  *
  * Only a restore that fails SQLite's integrity check is a broken lineage.
  * One that could not run (the replica unreachable, past
@@ -31,7 +33,6 @@
  * @module
  */
 
-import { join } from "@std/path";
 import type { ReplicaVerification } from "../../../domain/datastore_v3/replica_verification.ts";
 import {
   restoreAndCheck,
@@ -40,6 +41,8 @@ import {
 import {
   readCopyState,
   type ReplicationPaths,
+  verifyTempFiles,
+  verifyTempPath,
   writeReplicaVerification,
 } from "./replication_files.ts";
 import type { LitestreamReplicaType } from "./sidecar_env.ts";
@@ -74,6 +77,11 @@ export interface VerifyReplicaRequest {
   readonly signal: AbortSignal;
   /** {@link VERIFY_DEADLINE_MS} when absent. */
   readonly deadlineMs?: number;
+  /**
+   * The replica's newest snapshot when the check started, recorded in the
+   * verdict (swamp-club#4261); absent when it was not known.
+   */
+  readonly snapshotTxid?: string;
 }
 
 /**
@@ -91,8 +99,11 @@ export async function verifyReplica(
   if (copy === undefined || copy.lineageFence !== lineageFence) {
     return undefined;
   }
-  // The private directory: nobody else can read the restored commits.
-  const temp = join(paths.privateDir, `verify-${crypto.randomUUID()}.db`);
+  // Beside the copy, in the directory only this user may use (swamp-club#4261).
+  const temp = verifyTempPath(paths);
+  const snapshot = request.snapshotTxid !== undefined
+    ? { snapshotTxid: request.snapshotTxid }
+    : {};
   try {
     let verdict: ReplicaVerification;
     try {
@@ -116,6 +127,7 @@ export async function verifyReplica(
         txid: copy.txid,
         checkedAt: new Date(request.now()).toISOString(),
         ok: true,
+        ...snapshot,
       };
     } catch (error) {
       if (!(error instanceof V3RestoredDatabaseCorruptError)) throw error;
@@ -125,13 +137,14 @@ export async function verifyReplica(
         checkedAt: new Date(request.now()).toISOString(),
         ok: false,
         error: shortened(error.message),
+        ...snapshot,
       };
     }
     await writeReplicaVerification(paths, verdict);
     return verdict;
   } finally {
     // Litestream restores into `<temp>.tmp`, left behind when stopped.
-    for (const file of [temp, `${temp}-wal`, `${temp}-shm`, `${temp}.tmp`]) {
+    for (const file of verifyTempFiles(temp)) {
       await Deno.remove(file).catch(() => {});
     }
   }

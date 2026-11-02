@@ -890,7 +890,9 @@ child in the supervisor's process group. Litestream starts with
 - Beside `commits.db`, in `.commits.db-replication/`, only non-secret shared
   files: `supervisor.lock`, `presence.json` (the pidfile: pids, uid, hostname,
   the supervisor's process identity, lineage fence), `replace-<pid>` marks,
-  `use.lock` and `lineage.json`. The directory and the pidfile are trusted
+  `use.lock` and `lineage.json`; and, while a replica check runs, its
+  restored `verify-<uuid>.db`, which holds what `commits.db` beside it does
+  (swamp-club#4261). The directory and the pidfile are trusted
   only when this user owns them. A sidecar is this machine's by the
   supervisor's process identity (`sameKernel`: boot id and pid namespace),
   never by the hostname, which a DHCP renewal can change under a live
@@ -1801,29 +1803,87 @@ can use the datastore. So the sidecar's supervisor restores its own lineage,
 the way a reader does: at the TXID in `copy.json` (the writer's last
 published head), falling back to the latest state when compaction merged
 that TXID's files away, with the same integrity and schema checks, into a
-temp file in the private directory that it then deletes. It records the
-verdict in `replica-verify.json` beside `lineage.json`: the lineage, the
-TXID, when, and whether it restored.
+temp file beside `commits.db` that it then deletes. It records the verdict
+in `replica-verify.json` beside `lineage.json`: the lineage, the TXID,
+when, whether it restored, and (since swamp-club#4261) the newest snapshot
+the replica held when the check started.
 
-- **When.** Only when the writer has acknowledged a TXID the last verdict on
-  this lineage does not cover; at most once every 10 minutes; and once more
-  before the sidecar idles out, if anything was acknowledged since. The
-  check runs beside the tick loop, never inside a command, so no command
-  waits for it. An idle sidecar does not stop while a check runs, and a stop
-  request cancels it.
+- **When (swamp-club#4261).** Only when the writer has acknowledged a TXID
+  the last verdict on this lineage does not cover, and only on one of these
+  triggers:
+  - **a new lineage:** no verdict on it yet;
+  - **a new snapshot:** the replica's newest level-9 snapshot is not the one
+    the last verdict recorded. The sidecar learns it from
+    `litestream ltx -level 9 -json`, one LIST request, at most every 15
+    minutes and only while something is uncovered. Litestream 0.5.17 writes
+    a snapshot when a lineage starts and then at most once per UTC day, on
+    the first compaction tick past midnight (a sidecar's startup tick
+    included). A listing that fails or prints something unexpected leaves
+    the snapshot unknown, and an unknown snapshot is never a new one;
+  - **idle exit:** a sidecar about to idle out lists the snapshots once
+    more and checks only if one of the other triggers holds. New
+    acknowledgements alone never start a check there, so a developer's run
+    of CLI sidecars, each idling out after 5 minutes, does not bring the
+    10-minute cost back;
+  - **the backstop:** 4 hours (`REPLICA_VERIFY_BACKSTOP_MS`) since the
+    recorded verdict's `checkedAt`. It counts from the record, not from the
+    sidecar's start, so a new sidecar does not check just because it
+    started. This is what bounds a serve that writes all day.
+
+  A sidecar never starts a second check within the backstop of its own last
+  one unless a new snapshot appeared since, so one whose check ended without
+  a verdict still reaches its idle exit. The check runs beside the tick
+  loop, never inside a command, so no command waits for it. An idle sidecar
+  does not stop while a check or a listing runs, and a stop request cancels
+  either.
+- **Why not on every compacted level.** A compaction is not a merge whose
+  damage the last check already saw. When Litestream builds an L1, L2 or L3
+  file it writes new bytes, then deletes the smaller files it merged; from
+  then on a restore reads through the new file, not the ones the last check
+  read. So a fault in the compactor itself shows only on a restore through
+  the new level, and the last check does not cover it. Checking on every
+  compacted level is still too dear: L3 alone is written hourly, about 24
+  full restores a day, which gives back most of what dropping the
+  10-minute timer saves. The trade is accepted with a bounded window:
+  damage a compaction introduces is found within the 4-hour backstop, and
+  until then the writer holds an intact copy from which a lineage found
+  broken restarts (swamp-club#3935's rule). Data is at risk only if the
+  writer's own copy is lost inside that window. For a serve that writes
+  all day this cuts the checks from about 144 a day to about 6, plus one
+  per daily snapshot.
 - **What counts as broken.** Only a restore SQLite refuses: rows from its
   integrity check, or the check itself failing with `SQLITE_CORRUPT` or
   `SQLITE_NOTADB`, which is how a badly damaged file answers. A restore that
   could not run (the bucket unreachable, or past the check's 30-minute
   deadline, the same as a reader's restore) records nothing and is tried
-  again after the interval: restarting a lineage over a network failure
+  again after the backstop or a new snapshot: restarting a lineage over a
+  network failure
   would upload a full snapshot for nothing. A SQLite error counts by its
   primary result code, so extended codes such as `SQLITE_CORRUPT_INDEX` are
   corruption too.
 - **What it costs.** One full restore per check: the whole database
-  downloaded from the bucket, about the size of `commits.db`, and written to
-  the private directory under `/tmp/swamp-<uid>`, which on a host whose
-  `/tmp` is a tmpfs holds it in memory until the check deletes it.
+  downloaded from the bucket, about the size of `commits.db`. Measured with
+  `scripts/measure_v3_replica_check.ts` (Litestream 0.5.17, a freshly
+  replicated lineage, through a counting proxy; bytes and requests carry
+  over to real buckets, times do not):
+
+  | Backend        | `commits.db` | Downloaded | Requests | Time  | Litestream peak RSS | Temp file |
+  | -------------- | ------------ | ---------- | -------- | ----- | ------------------- | --------- |
+  | S3 (ministack) | 11.5 MB      | 10.6 MB    | 2 GET    | 0.4 s | 41 MB               | 11.5 MB   |
+  | S3 (ministack) | 116.2 MB     | 106.8 MB   | 2 GET    | 1.1 s | 47 MB               | 116.2 MB  |
+  | GCS (fake-gcs) | 11.5 MB      | 10.6 MB    | 2 GET    | 0.3 s | 39 MB               | 11.5 MB   |
+  | GCS (fake-gcs) | 116.2 MB     | 106.8 MB   | 2 GET    | 1.2 s | 46 MB               | 116.2 MB  |
+
+  A lineage with compacted levels adds a GET per file the restore reads;
+  the bytes stay about the size of the database. The integrity check runs
+  in the supervisor and did not grow its memory measurably. A snapshot
+  listing is one GET of 1–1.5 KB, about 20 ms. The temp file is written
+  beside `commits.db` as `verify-<uuid>.db`, on the copy's own filesystem,
+  never under `/tmp`, where a tmpfs would hold a second copy of the commit
+  log in memory. It is removed after a pass, a failure, an error or a
+  cancelled check, and a new supervisor removes any a killed check left. A
+  volume too full for it fails the check with an error, which records no
+  verdict, so it never restarts a lineage.
 
 **Recovery is a new lineage from the writer's copy.** The copy holds every
 commit the writer acknowledged, so a full snapshot of it replaces the broken

@@ -381,6 +381,48 @@ export async function clearReplacementMarks(
   }
 }
 
+/** The prefix of a replica check's restored temp file. */
+const VERIFY_TEMP_PREFIX = "verify-";
+
+/**
+ * A new temp path for a replica check's restore (swamp-club#4261): in the
+ * shared directory beside `commits.db`, on the copy's own filesystem.
+ */
+export function verifyTempPath(
+  paths: Pick<ReplicationPaths, "sharedDir">,
+): string {
+  return join(
+    paths.sharedDir,
+    `${VERIFY_TEMP_PREFIX}${crypto.randomUUID()}.db`,
+  );
+}
+
+/** Every file a restore into `temp` may leave. */
+export function verifyTempFiles(temp: string): string[] {
+  return [temp, `${temp}-wal`, `${temp}-shm`, `${temp}.tmp`];
+}
+
+const VERIFY_TEMP_NAME =
+  /^verify-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.db(-wal|-shm|\.tmp)?$/;
+
+/**
+ * Removes what a replica check killed mid-restore left beside the copy
+ * (swamp-club#4261). Only a new supervisor calls it, under the supervisor
+ * lock, so no check of this copy is running. The listing is read whole
+ * before anything is removed.
+ */
+export async function clearVerifyLeftovers(
+  paths: Pick<ReplicationPaths, "sharedDir">,
+): Promise<void> {
+  const leftovers: string[] = [];
+  for await (const entry of Deno.readDir(paths.sharedDir)) {
+    if (entry.isFile && VERIFY_TEMP_NAME.test(entry.name)) {
+      leftovers.push(join(paths.sharedDir, entry.name));
+    }
+  }
+  for (const file of leftovers) await Deno.remove(file).catch(() => {});
+}
+
 /** Reads `lineage.json`; an unreadable record restarts the lineage. */
 export async function readLineage(
   paths: Pick<ReplicationPaths, "lineage">,

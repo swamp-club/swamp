@@ -31,12 +31,14 @@ import {
 } from "./replication_supervisor.ts";
 import {
   ensureSharedDir,
+  readCopyState,
   readPresence,
   type ReplicationPaths,
   replicationPathsFor,
   writeCopyState,
   writeReplicaVerification,
 } from "./replication_files.ts";
+import { REPLICA_VERIFY_BACKSTOP_MS } from "../../../domain/datastore_v3/replica_verification.ts";
 
 const UNIX = Deno.build.os !== "windows";
 
@@ -80,8 +82,9 @@ interface Harness {
 
 function harness(
   honours: readonly Deno.Signal[] = ["SIGTERM", "SIGKILL"],
+  startMs: number = Date.now(),
 ): Harness {
-  let time = Date.now();
+  let time = startMs;
   const start = time;
   const pending: { atMs: number; fn: () => Promise<void> | void }[] = [];
   const child = new FakeChild(honours);
@@ -454,6 +457,205 @@ Deno.test({
         "stop-requested",
       );
       assertEquals(signal?.aborted, true);
+    });
+  },
+});
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const txidOf = (n: number) => n.toString(16).padStart(16, "0");
+
+/**
+ * A fake check that records a passing verdict at the harness's time, the
+ * way the real one does, and counts the restores it stands for.
+ */
+function recordingVerify(
+  h: Harness,
+  paths: ReplicationPaths,
+  calls: SupervisorVerifyRequest[],
+): SupervisorDeps["verifyReplica"] {
+  return async (request) => {
+    calls.push(request);
+    const copy = await readCopyState(paths);
+    await writeReplicaVerification(paths, {
+      lineageFence: request.lineageFence,
+      txid: copy!.txid,
+      checkedAt: new Date(h.now()).toISOString(),
+      ok: true,
+      ...(request.snapshotTxid !== undefined
+        ? { snapshotTxid: request.snapshotTxid }
+        : {}),
+    });
+  };
+}
+
+/**
+ * A serve-shaped sidecar (swamp-club#4261): never idle, its writer
+ * acknowledging a new TXID every minute for `hours`, then asked to stop.
+ * `snapshotAt` gives the replica's newest snapshot at a time past the start.
+ * Resolves with the restores and snapshot listings it ran.
+ */
+async function serveDay(
+  dir: string,
+  hours: number,
+  snapshotAt: (elapsedMs: number) => string | undefined,
+): Promise<{ restores: SupervisorVerifyRequest[]; polls: number }> {
+  const { options, paths } = await verifySetup(dir, txidOf(1));
+  const h = harness();
+  const start = h.now();
+  const restores: SupervisorVerifyRequest[] = [];
+  let polls = 0;
+  h.deps.verifyReplica = recordingVerify(h, paths, restores);
+  h.deps.readSnapshotTxid = () => {
+    polls++;
+    return Promise.resolve(snapshotAt(h.now() - start));
+  };
+  let stop!: () => void;
+  h.deps.stopRequested = new Promise((resolve) => stop = resolve);
+  for (let m = 1; m < hours * 60; m++) {
+    h.at(m * MINUTE, () =>
+      writeCopyState(paths, {
+        replicaRoot: "file:/r",
+        lineageFence: 3,
+        txid: txidOf(1 + m),
+      }));
+  }
+  h.at(hours * HOUR, () => stop());
+  assertEquals(
+    await runReplicationSupervisor(
+      { ...options, tickMs: MINUTE, idleMs: 100 * HOUR },
+      h.deps,
+    ),
+    "stop-requested",
+  );
+  return { restores, polls };
+}
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a serve that writes all day restores once for its lineage and then once per backstop, not on a timer (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { restores, polls } = await serveDay(dir, 12, () => txidOf(1));
+      // The new lineage, then the 4-hour backstop at hours 4 and 8; the
+      // stop comes before hour 12's. A 10-minute timer ran 72.
+      assertEquals(restores.length, 3);
+      // One listing per 15 minutes at most, and none more.
+      assert(polls <= 12 * 4 + 1, `${polls} listings`);
+      assertEquals(restores[0].snapshotTxid, txidOf(1));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a new snapshot is checked before the backstop (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { restores } = await serveDay(
+        dir,
+        3,
+        (elapsed) => elapsed < HOUR ? txidOf(1) : txidOf(50),
+      );
+      // The new lineage, then the snapshot written at hour 1.
+      assertEquals(restores.length, 2);
+      assertEquals(restores[1].snapshotTxid, txidOf(50));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a replica whose snapshots cannot be listed is still checked at the backstop (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { restores } = await serveDay(dir, 9, () => undefined);
+      // The new lineage, then hours 4 and 8.
+      assertEquals(restores.length, 3);
+      assertEquals(restores[0].snapshotTxid, undefined);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a covered lineage lists nothing and restores nothing (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options, paths } = await verifySetup(dir);
+      await writeReplicaVerification(paths, {
+        lineageFence: 3,
+        txid: "0000000000000005",
+        checkedAt: new Date().toISOString(),
+        ok: true,
+      });
+      const h = harness();
+      let polls = 0;
+      const restores: SupervisorVerifyRequest[] = [];
+      h.deps.verifyReplica = recordingVerify(h, paths, restores);
+      h.deps.readSnapshotTxid = () => {
+        polls++;
+        return Promise.resolve(txidOf(9));
+      };
+      assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
+      assertEquals(polls, 0);
+      assertEquals(restores.length, 0);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a working day of CLI sidecars that each idle out after 5 minutes restores per trigger, not per exit (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options, paths } = await verifySetup(dir, txidOf(1));
+      const restores: SupervisorVerifyRequest[] = [];
+      let polls = 0;
+      let time = Date.now();
+      const dayStart = time;
+      let sidecars = 0;
+      let txid = 1;
+      // Each command acknowledges a new TXID, then its sidecar idles out.
+      while (time - dayStart < 8 * HOUR) {
+        await writeCopyState(paths, {
+          replicaRoot: "file:/r",
+          lineageFence: 3,
+          txid: txidOf(++txid),
+        });
+        const h = harness(["SIGTERM", "SIGKILL"], time);
+        h.deps.verifyReplica = recordingVerify(h, paths, restores);
+        h.deps.readSnapshotTxid = () => {
+          polls++;
+          return Promise.resolve(txidOf(1));
+        };
+        assertEquals(
+          await runReplicationSupervisor(
+            { ...options, tickMs: 10_000, idleMs: 5 * MINUTE },
+            h.deps,
+          ),
+          "idle",
+        );
+        sidecars++;
+        // The next command a minute after this sidecar stopped.
+        time = h.now() + MINUTE;
+      }
+      assert(sidecars >= 60, `${sidecars} sidecars`);
+      // The new lineage and the backstop at hours 4 and 8 at most, against
+      // one restore per idle exit before swamp-club#4261.
+      assert(
+        restores.length <= 1 + Math.ceil(8 * HOUR / REPLICA_VERIFY_BACKSTOP_MS),
+        `${restores.length} restores over ${sidecars} sidecars`,
+      );
+      assert(restores.length >= 2);
+      // A listing per sidecar at most: once when it first sees something
+      // uncovered, once when it goes idle.
+      assert(polls <= 2 * sidecars, `${polls} listings`);
     });
   },
 });

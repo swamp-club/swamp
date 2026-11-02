@@ -48,6 +48,7 @@ import {
   writeReplicaVerification,
 } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import { verifyReplica } from "../src/infrastructure/datastore_v3/litestream/replica_verifier.ts";
+import { readNewestSnapshotTxid } from "../src/infrastructure/datastore_v3/litestream/replica_snapshot.ts";
 import { lineageRegistryFor } from "../src/infrastructure/datastore_v3/litestream/v3_copy.ts";
 import {
   closeV3Datastores,
@@ -68,6 +69,46 @@ import {
 } from "./datastore_v3_litestream_helpers.ts";
 
 const ignore = SIDECAR_TESTS_IGNORED;
+
+/**
+ * Every replica-check temp file beside the copy or in the private
+ * directory (swamp-club#4261).
+ */
+async function verifyLeftovers(
+  paths: { sharedDir: string; privateDir: string },
+): Promise<string[]> {
+  const found: string[] = [];
+  for (const dir of [paths.sharedDir, paths.privateDir]) {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (entry.name.startsWith("verify-")) found.push(join(dir, entry.name));
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  return found;
+}
+
+/**
+ * Writes the config a sidecar replicating lineage `fence` runs with, as the
+ * supervisor does, and returns its path.
+ */
+async function sidecarConfig(
+  env: ReplicationEnv,
+  paths: Awaited<ReturnType<ReplicationEnv["paths"]>>,
+  fence: number,
+): Promise<string> {
+  await ensurePrivateDir(paths);
+  await Deno.writeTextFile(
+    paths.config,
+    `dbs:\n  - path: "${paths.commitsDb}"\n    replica:\n      type: file\n      path: "${
+      replicaPathFor(env.replicaRoot, fence)
+    }"\n`,
+    { mode: 0o600 },
+  );
+  return paths.config;
+}
 
 /** Waits for the env's sidecar to idle out, so nothing writes its lineage. */
 async function sidecarGone(env: ReplicationEnv): Promise<void> {
@@ -129,9 +170,11 @@ async function breakLineage(
     stderr: "null",
   }).spawn();
   try {
+    // Up to its snapshot (swamp-club#4261): a new snapshot is what starts
+    // the writer's next check.
     await waitFor(
-      async () => (await ltxFiles(replica)).length > 0,
-      "Litestream to replicate the broken copy",
+      async () => (await ltxFiles(join(replica, "ltx", "9"))).length > 0,
+      "Litestream to replicate and snapshot the broken copy",
       { timeoutMs: 15_000 },
     );
   } finally {
@@ -211,10 +254,22 @@ Deno.test({
         { timeoutMs: 20_000 },
       );
       await sidecarGone(env);
+      // Restored beside the copy, and nothing left there or under /tmp.
+      assertEquals(await verifyLeftovers(paths), []);
 
       const txid = await breakLineage(env, first);
       const copy = (await readCopyState(paths))!;
       await writeCopyState(paths, { ...copy, txid });
+      // The broken lineage carries a new snapshot, which is what starts this
+      // check under swamp-club#4261's rule; it still finds the damage.
+      const snapshot = await readNewestSnapshotTxid({
+        binary: LITESTREAM_BINARY!,
+        config: await sidecarConfig(env, paths, first),
+        source: paths.commitsDb,
+        replicaType: "file",
+        signal: AbortSignal.timeout(30_000),
+      });
+      assert(snapshot !== undefined);
       const verdict = await verifyReplica({
         paths,
         lineageFence: first,
@@ -222,9 +277,12 @@ Deno.test({
         binary: LITESTREAM_BINARY!,
         now: () => Date.now(),
         signal: AbortSignal.timeout(30_000),
+        snapshotTxid: snapshot,
       });
       assertEquals(verdict?.ok, false);
       assertStringIncludes(verdict!.error!, "integrity check");
+      assertEquals(verdict?.snapshotTxid, snapshot);
+      assertEquals(await verifyLeftovers(paths), []);
 
       // The next writer restarts from its intact copy, at its own fence.
       await writeCommand(env, 2);
@@ -247,6 +305,37 @@ Deno.test({
         ),
         commitCount(paths.commitsDb),
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replica check: the real sidecar lists its replica's snapshot and records the one its check read through (swamp-club#4261)",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await writeCommand(env, 3);
+      const paths = await env.paths();
+      await waitFor(
+        async () => (await readReplicaVerification(paths))?.ok === true,
+        "the sidecar to check its new lineage",
+        { timeoutMs: 20_000 },
+      );
+      // Its first listing can run before Litestream writes the lineage's
+      // first snapshot. Then the next acknowledgement is checked once that
+      // snapshot is seen, at the latest when the sidecar goes idle.
+      if ((await readReplicaVerification(paths))?.snapshotTxid === undefined) {
+        await writeCommand(env, 1);
+      }
+      await waitFor(
+        async () =>
+          (await readReplicaVerification(paths))?.snapshotTxid !== undefined,
+        "a check that read through the lineage's snapshot",
+        { timeoutMs: 20_000 },
+      );
+      await sidecarGone(env);
+      assertEquals(await verifyLeftovers(paths), []);
     });
   },
 });
@@ -397,6 +486,137 @@ Deno.test({
         );
       }
       assertEquals(await readReplicaVerification(paths), undefined);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replica check: the restore goes beside commits.db, not under /tmp, and a restore that fails or is cancelled leaves nothing (swamp-club#4261)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const dir = await Deno.realPath(
+      await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-verify-where-" }),
+    );
+    try {
+      const commitsDb = join(dir, "ds", "commits.db");
+      await Deno.mkdir(dirname(commitsDb));
+      const paths = await replicationPathsFor(commitsDb, join(dir, "priv"));
+      await ensureSharedDir(paths);
+      await ensurePrivateDir(paths);
+      await writeCopyState(paths, {
+        replicaRoot: "file:/r",
+        lineageFence: 2,
+        txid: "0000000000000005",
+      });
+      // A Litestream that records where it was told to restore, writes the
+      // files a stopped restore leaves, then fails or stalls.
+      const recorded = join(dir, "restore-target");
+      const stub = (tail: string) =>
+        `#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\n` +
+        `echo "$2" > "${recorded}"\n` +
+        `touch "$2" "$2.tmp" "$2-wal" "$2-shm"\n${tail}\n`;
+      const failing = join(dir, "litestream-fails");
+      await Deno.writeTextFile(failing, stub("echo boom >&2; exit 1"));
+      const stalling = join(dir, "litestream-stalls");
+      await Deno.writeTextFile(stalling, stub("exec sleep 3600"));
+      for (const file of [failing, stalling]) await Deno.chmod(file, 0o755);
+
+      for (
+        const [binary, deadlineMs] of [[failing, 30_000], [
+          stalling,
+          500,
+        ]] as const
+      ) {
+        await Deno.remove(recorded).catch(() => {});
+        await assertRejects(() =>
+          verifyReplica({
+            paths,
+            lineageFence: 2,
+            replicaType: "file",
+            binary,
+            now: () => Date.now(),
+            signal: new AbortController().signal,
+            deadlineMs,
+          })
+        );
+        const target = (await Deno.readTextFile(recorded)).trim();
+        assertEquals(dirname(target), paths.sharedDir);
+        assertEquals(await verifyLeftovers(paths), []);
+        // No verdict: a restore that could not run never restarts a lineage.
+        assertEquals(await readReplicaVerification(paths), undefined);
+      }
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "v3 replica check: the snapshot listing reads the pinned Litestream's newest snapshot from a real replica (swamp-club#4261)",
+  ignore,
+  async fn() {
+    const dir = await Deno.realPath(
+      await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-verify-ltx-" }),
+    );
+    try {
+      const db = join(dir, "commits.db");
+      const conn = new DatabaseSync(db);
+      try {
+        conn.exec("PRAGMA journal_mode = WAL; CREATE TABLE t (x BLOB);");
+        conn.exec("INSERT INTO t VALUES (randomblob(4096));");
+      } finally {
+        conn.close();
+      }
+      const replica = join(dir, "replica");
+      const config = join(dir, "litestream.yml");
+      await Deno.writeTextFile(
+        config,
+        `dbs:\n  - path: "${db}"\n    replica:\n      type: file\n      path: "${replica}"\n`,
+      );
+      const child = new Deno.Command(LITESTREAM_BINARY!, {
+        args: ["replicate", "-config", config],
+        stdout: "null",
+        stderr: "null",
+      }).spawn();
+      try {
+        await waitFor(
+          async () => (await ltxFiles(join(replica, "ltx", "9"))).length > 0,
+          "Litestream to write the lineage's first snapshot",
+          { timeoutMs: 15_000 },
+        );
+      } finally {
+        child.kill("SIGTERM");
+        await child.status;
+      }
+      const newest = (await ltxFiles(join(replica, "ltx", "9")))
+        .map((name) => name.split("-")[1].replace(".ltx", ""))
+        .sort()
+        .at(-1);
+      assertEquals(
+        await readNewestSnapshotTxid({
+          binary: LITESTREAM_BINARY!,
+          config,
+          source: db,
+          replicaType: "file",
+          signal: AbortSignal.timeout(30_000),
+        }),
+        newest,
+      );
+      // A replica it cannot list reads as unknown.
+      assertEquals(
+        await readNewestSnapshotTxid({
+          binary: LITESTREAM_BINARY!,
+          config: join(dir, "missing.yml"),
+          source: db,
+          replicaType: "file",
+          signal: AbortSignal.timeout(30_000),
+        }),
+        undefined,
+      );
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
