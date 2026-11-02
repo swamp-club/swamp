@@ -45,6 +45,7 @@ import {
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import { ReadModelIncompleteError } from "../src/domain/datastore_v3/read_model.ts";
+import { CommitsCompactedError } from "../src/domain/datastore_v3/commit_store.ts";
 import { createDefinitionId } from "../src/domain/definitions/definition.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
@@ -1885,5 +1886,53 @@ Deno.test({
         },
       },
     );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a definition chunk whose history is compacted again mid-read is undecided, and the reply names no partition (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      const { v1 } = await supersededDefinition(
+        server,
+        "shared",
+        "@swamp/grant",
+      );
+      // Every partition read finds its first commit compacted, retried or
+      // not, and the compaction point moves each time it is looked at.
+      const store = server.v3.commitStore as {
+        readPartition: (...args: unknown[]) => Promise<unknown>;
+        compactionPoint: () => Promise<number>;
+      };
+      const read = store.readPartition;
+      const compactionPoint = store.compactionPoint;
+      let point = 0;
+      // Each read is refused as compacted through the seq it starts at, so
+      // the retry from just past it is refused again.
+      store.readPartition = (...args: unknown[]) =>
+        Promise.reject(
+          new CommitsCompactedError(
+            ++point,
+            "compacted meanwhile",
+            args[2] as number,
+          ),
+        );
+      store.compactionPoint = () => Promise.resolve(++point);
+      try {
+        const reply = await fetch(`${server.url}/chunks/${v1}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(reply.status, 503);
+        const body = await reply.json();
+        assertEquals(body.code, "chunk_access_undecided");
+        assert(!JSON.stringify(body).includes("shared"), JSON.stringify(body));
+      } finally {
+        store.readPartition = read;
+        store.compactionPoint = compactionPoint;
+      }
+    });
   },
 });

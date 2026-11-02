@@ -1102,7 +1102,7 @@ Deno.test("SqliteCommitStore.partitionsReferencing: compaction keeps a partition
 });
 
 Deno.test("SqliteCommitStore.partitionsReferencing: pages in key order from just past `after` (swamp-club#4260)", async () => {
-  await withStore(async (store) => {
+  await withStore(async (store, path) => {
     await store.append(
       modelCommit(1, [await blobPut("x", 1, TWO_CHUNKS)], { fence: 1 }),
     );
@@ -1138,6 +1138,13 @@ Deno.test("SqliteCommitStore.partitionsReferencing: pages in key order from just
     assertEquals(
       await store.partitionsReferencing("acme", hash("d"), 5, ""),
       [],
+    );
+    // A returned key prints as the stored text, so it pages exactly.
+    assertEquals(
+      chunkPartitions(path)
+        .filter((row) => row.sha256 === hash("d"))
+        .map((row) => row.partition),
+      all,
     );
   });
 });

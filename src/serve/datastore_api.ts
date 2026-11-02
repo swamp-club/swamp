@@ -2645,12 +2645,20 @@ class DatastoreApi {
           // Everything at or below the compacted seq is in the base.
           if (error.compactedSeq >= end) break;
           start = error.compactedSeq + 1;
-          page = await store.readPartition(
-            this.#namespace,
-            partition,
-            start,
-            end - start + 1,
-          );
+          try {
+            page = await store.readPartition(
+              this.#namespace,
+              partition,
+              start,
+              end - start + 1,
+            );
+          } catch (again) {
+            // Compacted again meanwhile: on to the base, and the moved
+            // compaction point below decides again or answers undecided.
+            // Never thrown on: its message names the partition.
+            if (again instanceof CommitsCompactedError) break;
+            throw again;
+          }
         }
         for (let i = page.length - 1; i >= 0; i--) {
           const { commit } = page[i];

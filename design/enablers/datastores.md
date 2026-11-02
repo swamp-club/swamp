@@ -6715,7 +6715,10 @@ the caller may read vouches for it or they run out. The work is bounded per
 request, not per chunk: one budget of 1,024 partition checks and 10,000
 behavior definition commits read covers every chunk a request asks about,
 so a `chunks/has` of 1,024 hashes costs no more than one read of a chunk
-named by a thousand partitions. A chunk the budget cannot decide is not
+named by a thousand partitions. Each partition checked also costs a few
+unbudgeted store reads (a page of keys, a partition head, the compaction
+point, and one config partition's base records, a handful at most). A chunk
+the budget cannot decide is not
 answered as missing:
 
 - `GET chunks/{sha256}` answers 503 `chunk_access_undecided`, naming no
