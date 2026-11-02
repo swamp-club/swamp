@@ -559,9 +559,10 @@ export interface V3Datastore {
   readonly serveCopyId?: string;
   /**
    * nothing while the read model is complete; otherwise waits up to lockWaitMs
-   * for the catch-up in progress, then catches up itself if still incomplete
+   * for the catch-up in progress, then catches up itself if still incomplete,
+   * unless the live writer `writerPid` left it so
    */
-  catchUpUnlessComplete(lockWaitMs: number): Promise<void>;
+  catchUpUnlessComplete(lockWaitMs: number, writerPid?: number): Promise<void>;
   /**
    * the outbox note and the store fence share no transaction; the note lets the
    * next record tell this copy's fence from another copy's if the record is
@@ -1221,10 +1222,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         },
       }
       : {}),
-    async catchUpUnlessComplete(lockWaitMs) {
+    async catchUpUnlessComplete(lockWaitMs, writerPid) {
       await catchUpFromServe(lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUpUnlessComplete(lifetime.signal, lockWaitMs)
+        readModel.catchUpUnlessComplete(lifetime.signal, lockWaitMs, writerPid)
       );
     },
     async raiseWriterFence(fence) {

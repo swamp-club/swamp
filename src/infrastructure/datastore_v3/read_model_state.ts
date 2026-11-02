@@ -361,6 +361,7 @@ export interface AppliedCommit {
 
 export class ReadModelState {
   readonly #db: DatabaseSync;
+  readonly #pid: number;
   readonly #selectMeta: StatementSync;
   readonly #upsertMeta: StatementSync;
   readonly #selectApplied: StatementSync;
@@ -389,8 +390,9 @@ export class ReadModelState {
    */
   #foldedKeys: Map<string, Set<string>> | undefined;
 
-  private constructor(db: DatabaseSync) {
+  private constructor(db: DatabaseSync, pid: number) {
     this.#db = db;
+    this.#pid = pid;
     this.#selectMeta = db.prepare("SELECT value FROM meta WHERE key = ?");
     this.#upsertMeta = db.prepare(
       "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -452,7 +454,11 @@ export class ReadModelState {
     );
   }
 
-  static open(path: string): ReadModelState {
+  /** `pid` is recorded when this connection clears the complete mark */
+  static open(
+    path: string,
+    options: { readonly pid?: number } = {},
+  ): ReadModelState {
     ensureDirSync(dirname(path));
     const db = new DatabaseSync(path);
     try {
@@ -463,7 +469,7 @@ export class ReadModelState {
       if (mode?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
       db.exec("PRAGMA synchronous=FULL");
       migrate(db);
-      return new ReadModelState(db);
+      return new ReadModelState(db, options.pid ?? Deno.pid);
     } catch (error) {
       db.close();
       throw error;
@@ -478,6 +484,12 @@ export class ReadModelState {
     return this.#meta("complete") === 1;
   }
 
+  /** undefined once complete, or when an older swamp cleared the mark */
+  incompletePid(): number | undefined {
+    if (this.isComplete()) return undefined;
+    return this.#meta("incomplete_pid");
+  }
+
   /**
    * Records that a catch-up reached the end of the change feed. The removal
    * candidates a reset kept, and any names an unfinished load touched, are
@@ -486,6 +498,7 @@ export class ReadModelState {
   markComplete(): void {
     this.#transaction(() => {
       this.#upsertMeta.run("complete", 1);
+      this.#db.exec("DELETE FROM meta WHERE key = 'incomplete_pid';");
       this.#db.exec(
         "DELETE FROM load_touched_keys; DELETE FROM load_touched_names;",
       );
@@ -827,6 +840,7 @@ export class ReadModelState {
         "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM materialised_keys; DELETE FROM meta; DELETE FROM unsynced_keys; DELETE FROM unsynced_boot; DELETE FROM unreadable_records; DELETE FROM written_files;",
       );
       this.#upsertMeta.run("catalog_generation", catalogGeneration);
+      this.#upsertMeta.run("incomplete_pid", this.#pid);
     });
   }
 
@@ -1093,6 +1107,7 @@ export class ReadModelState {
         this.#upsertUnsyncedBoot.run(unsynced.boot);
       }
       this.#upsertMeta.run("cursor", point);
+      this.#upsertMeta.run("incomplete_pid", this.#pid);
     });
   }
 

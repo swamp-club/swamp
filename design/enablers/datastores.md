@@ -3985,6 +3985,29 @@ releases, up to the lock timeout, then finishes the catch-up if the read model
 is still incomplete. A wait that runs out fails with
 `datastore_v3_read_model_busy` (exit 75) and reads nothing.
 
+The writer itself can leave the read model incomplete mid-command: a reset
+(a regenerated catalog) or a compacted-base load ahead of a partition catch-up
+clears the complete mark, and only a catch-up of the whole feed sets it again.
+That was not cut short, and replaying the feed then would put older commits
+over files the writer is still writing (swamp-club#4277). So the reset and the
+base load record the pid of the process that cleared the mark
+(`incomplete_pid`, an integer in the state's `meta`, so no schema change), and
+the end of a whole-feed catch-up removes it. A reader whose lock wait ends on
+a read model the live writer left incomplete (the pid in the writer-checkout
+record) reads the files as they are. Any other incomplete state is finished as
+before. The pid alone is enough: a writer catches up in full under the lock
+when its command starts, so an incomplete state older than the writer is
+completed before a reader can see that writer. After that only the writer, or
+a reader alive at the same time with another pid, can leave one. Two processes
+in different pid namespaces sharing a checkout could share a pid. A reader then
+reads the files as they are, which is the rule above for a live writer and
+never a replay over one. A live writer's own catch-up can also fail partway
+after its base load, such as serve's on a network error: serve keeps running,
+and the mark stays cleared under its pid. Readers then read the files as they
+are, which may lag the feed for other partitions until the writer's next
+catch-up of the whole feed succeeds. That trade is deliberate: finishing it
+would mean replaying over a writer that is still writing.
+
 Each effect is idempotent, so catching up again from the unchanged cursor
 redoes the effects of a crash anywhere. That is not always a repair on its
 own: a replay can overwrite the only good copy of a chunk the datastore lost
@@ -4279,7 +4302,33 @@ each cache root on the same device takes the result:
 - `list`: a spelling reaches it but `realPath` echoes the spelling given (as
   on HFS+, which stores names decomposed), the probe failed, or the root is
   on another device. The spelling on disk is read from the directory
-  listings, each segment matched as listed or case-folded and composed.
+  listings, each segment matched as listed or case-folded and composed. A
+  directory that cannot be listed (`PermissionDenied`, such as a `chmod 300`
+  directory that can be entered but not read) has its keys taken as spelt,
+  with one warning per directory per read model. One that is gone by the time
+  it is listed (`NotFound`) is taken the same way: nothing can alias a name
+  under it. Neither stops a catch-up (swamp-club#4277).
+
+The fold only finds candidates: the keys other than this one whose spelling
+folds to the file's, present or decided in the same commit. The filesystem
+decides. The file is another key's only when one candidate's path reaches the
+same file, with the same device and inode (the volume's file index on
+Windows). That matters in `list` mode, which cannot tell whether the root
+folds. A case-sensitive root on another device keeps `vpc/1/raw` and
+`VPC/1/raw` as two files, and is not reported as an alias (swamp-club#4277).
+
+Two differences from the filesystem's own comparison are accepted.
+`foldSpelling` lower-cases rather than applying Unicode case folding, so it
+keeps apart a few spellings APFS and NTFS join: `σ` and final `ς`, `ſ` and
+`s`, `ß` and `ss` on APFS. That never overwrites another key's file. In
+`canonical` mode the spelling on disk is the one that created the file, which
+folds to its own key. In `list` mode a segment the fold matches to no listed
+name makes the guard skip the key as aliased, which leaves its file unwritten.
+Tests pin both for `σ`/`ς` and `ſ`/`s`. A symlinked directory is read as its
+target in `canonical` mode and as the link's name in `list` mode. Both modes
+reach the same verdict for a link inside the root (pinned by a test in all
+three modes), and a link whose target leaves the root is refused as path
+traversal before this check runs. swamp creates no symlinks in a cache root.
 
 Listings are cached for one apply page and dropped whenever a write adds a
 name, so a replay over files already on disk lists each directory once at
@@ -5991,7 +6040,15 @@ leader election and followers").
   `datastore_v3_storage_unreachable` (exit 75) on a network failure and
   `datastore_v3_replication_unavailable` otherwise, both saying nothing was
   changed. One decision at the boundary covers every place the error is
-  thrown.
+  thrown. A sidecar serve lost and could not replace never hides commits
+  (swamp-club#4277). The owed set is per process, and only serve's upkeep adds
+  to it, after serve's first writer hold recorded the mark. Every commit serve
+  makes after that moves the mark, so a failed close with owed commits keeps
+  `datastore_v3_replication_unconfirmed`. An owed datastore with an unmoved
+  mark has nothing unconfirmed. The replication tests pin both cases. A later
+  command whose closing sync fails reports only its own changes: an earlier
+  command's unreplicated commits were reported unconfirmed by that command,
+  and they replicate with the next sync that succeeds.
 - A root's refusal-settling checkpoint before its commit is not retried once it
   fails reaching the storage (swamp-club#3802): it can meet no refusal then, and
   each retry waited out the same upload retries, about 2 s apiece.

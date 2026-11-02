@@ -2363,3 +2363,88 @@ Deno.test("read model: an unreadable-record lookup made during a page waits for 
     }
   });
 });
+
+const OTHER_MODEL_ID = "7a2b3c4d-5e6f-4a70-8b8c-9d0e1f2a3b4c";
+const OTHER_PARTITION = partitionOf({
+  kind: "model",
+  type: MODEL_TYPE,
+  id: OTHER_MODEL_ID,
+});
+const OTHER_LATEST = `data/${MODEL_TYPE.normalized}/${OTHER_MODEL_ID}/x/latest`;
+
+function otherLatestPut(version: number) {
+  return putOp({
+    intent: createIntent({
+      kind: "data.save",
+      name: "x",
+      version,
+      model: modelRef(MODEL_TYPE, OTHER_MODEL_ID),
+    }),
+    key: RecordKey.create(OTHER_LATEST),
+    inline: base64(String(version)),
+  });
+}
+
+// compacted at 2: the other model's second save lies past the point
+async function appendTwoPartitions(env: V3Env): Promise<void> {
+  const commits: [PartitionKey, Op[]][] = [
+    [PARTITION, [await savePut("a", 1), versionOp("a", 1)]],
+    [OTHER_PARTITION, [await otherLatestPut(1)]],
+    [PARTITION, [await savePut("b", 1), versionOp("b", 1)]],
+    [OTHER_PARTITION, [await otherLatestPut(2)]],
+  ];
+  const seqs = new Map<PartitionKey, number>();
+  for (const [partition, ops] of commits) {
+    const seq = (seqs.get(partition) ?? 0) + 1;
+    seqs.set(partition, seq);
+    await env.store.append(commitOf({ seq, partition, namespace: "", ops }));
+  }
+  await env.store.compactHistory(2);
+}
+
+Deno.test("read model: a reader never replays over a live writer that left the index incomplete with a base load of its own (swamp-club#4277)", async () => {
+  await withV3Env(async (env) => {
+    await appendTwoPartitions(env);
+    const WRITER_PID = 1_000_001;
+    const writer = env.openReadModel({ pid: WRITER_PID });
+    const reader = env.openReadModel({ pid: 1_000_002 });
+    try {
+      await writer.catchUpPartition("", PARTITION, signal());
+      // the writer's command, still running, writes past every commit
+      const latest = join(swampPath(env.repoDir), ...OTHER_LATEST.split("/"));
+      await Deno.writeTextFile(latest, "3");
+      assertEquals(
+        await reader.catchUpUnlessComplete(signal(), 1_000, WRITER_PID),
+        false,
+        "the reader read the files as they are",
+      );
+      assertEquals(await Deno.readTextFile(latest), "3");
+    } finally {
+      await writer.close();
+      await reader.close();
+    }
+  });
+});
+
+Deno.test("read model: an index another process left incomplete is still caught up while a different process writes the checkout (swamp-club#4277)", async () => {
+  await withV3Env(async (env) => {
+    await appendTwoPartitions(env);
+    const gone = env.openReadModel({ pid: 1_000_003 });
+    try {
+      await gone.catchUpPartition("", PARTITION, signal());
+    } finally {
+      await gone.close();
+    }
+    const latest = join(swampPath(env.repoDir), ...OTHER_LATEST.split("/"));
+    const reader = env.openReadModel({ pid: 1_000_002 });
+    try {
+      assertEquals(
+        await reader.catchUpUnlessComplete(signal(), 1_000, 1_000_001),
+        true,
+      );
+    } finally {
+      await reader.close();
+    }
+    assertEquals(await Deno.readTextFile(latest), "2");
+  });
+});

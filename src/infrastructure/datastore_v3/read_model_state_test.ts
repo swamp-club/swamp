@@ -207,3 +207,30 @@ Deno.test("ReadModelState.presentKeysFoldedTo: keeps in step with applied files,
     }
   });
 });
+
+Deno.test("ReadModelState.incompletePid: names the process whose reset or base load cleared the complete mark, until a catch-up completes (swamp-club#4277)", async () => {
+  await withStatePath((path) => {
+    const writer = ReadModelState.open(path, { pid: 41 });
+    try {
+      assertEquals(writer.incompletePid(), undefined);
+      writer.reset(1);
+      assertEquals(writer.incompletePid(), 41);
+      writer.markComplete();
+      assertEquals(writer.incompletePid(), undefined);
+      writer.finishLoad(3);
+      assertEquals(writer.incompletePid(), 41);
+    } finally {
+      writer.close();
+    }
+    const reader = ReadModelState.open(path, { pid: 42 });
+    try {
+      assertEquals(reader.incompletePid(), 41);
+      reader.reset(2);
+      assertEquals(reader.incompletePid(), 42);
+      reader.markComplete();
+      assertEquals(reader.incompletePid(), undefined);
+    } finally {
+      reader.close();
+    }
+  });
+});

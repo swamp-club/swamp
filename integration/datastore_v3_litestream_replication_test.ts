@@ -32,6 +32,7 @@ import {
 import {
   V3ChunkCollectionDeferredError,
   V3ReplicationError,
+  V3ReplicationUnavailableError,
 } from "../src/domain/datastore_v3/litestream_replication.ts";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -54,7 +55,9 @@ import {
   confirmV3CommandReplicated,
   ensureV3CopyCurrent,
   holdV3Writer,
+  reportedV3Failure,
   startV3ReplicationUpkeep,
+  v3CommandCommits,
   v3DatastoreFor,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
@@ -578,6 +581,57 @@ Deno.test({
     });
   },
 });
+
+for (const committed of [true, false]) {
+  Deno.test({
+    name: committed
+      ? "v3 replication: serve's commits a lost sidecar left unconfirmed are reported unconfirmed when its close fails, never as nothing changed (swamp-club#4277)"
+      : "v3 replication: serve that committed nothing before its sidecar was lost owes no commit, and its failed close says nothing changed (swamp-club#4277)",
+    ignore,
+    async fn() {
+      await withReplicationEnv(async (env) => {
+        await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
+        const first = (await presenceOf(env))!;
+        const upkeep = startV3ReplicationUpkeep(env.repoDir, env.config, {
+          probeIntervalMs: 200,
+        });
+        let attempts = 0;
+        setV3ReplicationForTesting({
+          privateRoot: env.privateRoot,
+          timings: TEST_TIMINGS,
+          resolveBinary: () => {
+            attempts++;
+            return Promise.reject(new Error("offline"));
+          },
+        });
+        try {
+          hostLitestreamProcesses.signalGroup(first.supervisorPid, "SIGKILL");
+          await waitFor(
+            () => attempts > 0,
+            "the probe's replacement to try a start",
+          );
+          // owed from here: only commits made now can be unconfirmed
+          if (committed) await commitIn(env, 1);
+        } finally {
+          await upkeep.stop();
+        }
+        // read before the close, as the CLI teardown does
+        const commits = v3CommandCommits();
+        const error = await assertRejects(
+          () => closeV3Datastores(),
+          V3ReplicationError,
+        );
+        const reported = reportedV3Failure(error, commits, { closing: true });
+        if (committed) {
+          assertEquals(reported, error, "saved locally, not replicated");
+        } else {
+          assertEquals(commits.committed, false);
+          assert(reported instanceof V3ReplicationUnavailableError);
+        }
+      });
+    },
+  });
+}
 
 const S3_ENDPOINT = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_ENDPOINT");
 
