@@ -32,6 +32,7 @@ import {
 } from "../src/domain/access/grant_file_reconciler.ts";
 import { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loader.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
+import { atomicWriteTextFile } from "../src/infrastructure/persistence/atomic_write.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -111,16 +112,18 @@ Deno.test("GrantsDirectoryPoller: instances mounting one --grants-dir at differe
     await a.start();
     await b.start();
     try {
-      await Deno.writeTextFile(join(mountA, "deny.yaml"), DENY_YAML);
+      // Written atomically: a 20 ms poll can read a truncated file as empty,
+      // and that reconcile would end the wait with no grant (swamp-club#4270).
+      await atomicWriteTextFile(join(mountA, "deny.yaml"), DENY_YAML);
       await waitFor(() => reconciles.a >= 1, "instance A to reconcile");
       assertEquals(creations.length, 1);
       assertEquals(await activeDenies(), ["file:grants-dir/deny.yaml deny"]);
 
-      await Deno.writeTextFile(join(mountB, "deny.yaml"), DENY_YAML);
+      await atomicWriteTextFile(join(mountB, "deny.yaml"), DENY_YAML);
       await waitFor(() => reconciles.b >= 1, "instance B to reconcile");
       assertEquals(await activeDenies(), ["file:grants-dir/deny.yaml deny"]);
 
-      await Deno.writeTextFile(
+      await atomicWriteTextFile(
         join(mountA, "deny.yaml"),
         `${DENY_YAML}# touched\n`,
       );

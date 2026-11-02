@@ -27,6 +27,7 @@ import {
   withCapturedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { withSpan } from "../../infrastructure/tracing/mod.ts";
+import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { GrantsDirectoryPoller } from "./grants_directory_poller.ts";
 import type { FileGrantStore } from "./grant_file_reconciler.ts";
 import type { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
@@ -753,6 +754,7 @@ Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-file
       async () => {
         await Deno.writeTextFile(externalFile, "");
       },
+      () => store.written.get("deny-1")?.state === "revoked",
     );
 
     assertEquals(store.written.get("deny-1")?.state, "revoked");
@@ -776,11 +778,179 @@ Deno.test("GrantsDirectoryPoller: revokes the grants of an emptied --grants-dir 
       async () => {
         await Deno.writeTextFile(externalFile, "  \n");
       },
+      () => store.written.get("deny-1")?.state === "revoked",
     );
 
     assertEquals(store.written.get("deny-1")?.state, "revoked");
   });
 });
+
+// Both kinds of external source a truncate-then-write can catch mid-edit
+// (swamp-club#4272).
+const EXTERNAL_SOURCES = [
+  {
+    kind: "--grants-file",
+    source: "file:grants-file",
+    setup: async (dir: string) => {
+      const path = join(dir, "grants-file.yaml");
+      await Deno.writeTextFile(path, DENY_GRANT_YAML);
+      return { path, options: { externalGrantsFile: path } };
+    },
+  },
+  {
+    kind: "--grants-dir",
+    source: "file:grants-dir/deny.yaml",
+    setup: async (dir: string) => {
+      const externalGrantsDir = join(dir, "external");
+      await ensureDir(externalGrantsDir);
+      const path = join(externalGrantsDir, "deny.yaml");
+      await Deno.writeTextFile(path, DENY_GRANT_YAML);
+      return { path, options: { externalGrantsDir } };
+    },
+  },
+];
+
+for (const { kind, source, setup } of EXTERNAL_SOURCES) {
+  Deno.test(`GrantsDirectoryPoller: a ${kind} file rewritten after one empty read keeps its grants, and its next empty read is held again`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+      ]);
+      let commits = 0;
+      let revokedAtSecondCommit: boolean | undefined;
+      const pollCycles = (spans: readonly { name: string }[]) =>
+        spans.filter((s) => s.name === "swamp.serve.poll").length;
+      await withCapturedSpans(async (spans) => {
+        const poller = new GrantsDirectoryPoller({
+          grantsDir,
+          ...options,
+          fileGrantStore: store,
+          policySnapshotLoader: createMockLoader().loader,
+          pollIntervalMs: 20,
+          commitReconcile: async (reconcile) => {
+            await reconcile();
+            commits++;
+            if (commits === 1) {
+              // The writer finishes before the next poll can look again.
+              await atomicWriteTextFile(path, DENY_GRANT_YAML);
+            } else if (commits === 2) {
+              revokedAtSecondCommit = store.written.has("deny-1");
+            }
+          },
+        });
+        await poller.start();
+        try {
+          await atomicWriteTextFile(path, "");
+          await waitFor(() => commits >= 1, "the empty read");
+          // Polls that see the old content again, so the hold has ended.
+          const seen = pollCycles(spans);
+          await waitFor(() => pollCycles(spans) >= seen + 2, "two more polls");
+          assertEquals(commits, 1);
+          assertEquals(store.written.has("deny-1"), false);
+
+          await atomicWriteTextFile(path, "");
+          await waitFor(() => commits >= 2, "the next empty read");
+          assertEquals(revokedAtSecondCommit, false);
+        } finally {
+          await poller.stop();
+        }
+      });
+    });
+  });
+
+  Deno.test(`GrantsDirectoryPoller: an emptied ${kind} file is revoked on the second poll, not the first, while other files still reconcile`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+        storedGrant("team-1", "file:team.yaml"),
+      ]);
+      // Started so that holds apply; each reconcileNow then acts as one poll.
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 3_600_000,
+      });
+      await poller.start();
+      try {
+        await atomicWriteTextFile(path, "");
+        await poller.reconcileNow();
+        assertEquals(store.written.has("deny-1"), false);
+        // team.yaml no longer exists, so its grant is revoked during the hold.
+        assertEquals(store.written.get("team-1")?.state, "revoked");
+
+        await poller.reconcileNow();
+        assertEquals(store.written.get("deny-1")?.state, "revoked");
+      } finally {
+        await poller.stop();
+      }
+    });
+  });
+
+  Deno.test(`GrantsDirectoryPoller: a follower's deferred poll counts as the first empty read of a ${kind} file`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+      ]);
+      let leads = false;
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 3_600_000,
+        commitReconcile: async (reconcile) => {
+          if (!leads) return "deferred";
+          await reconcile();
+        },
+      });
+      await poller.start();
+      try {
+        await atomicWriteTextFile(path, "");
+        await poller.reconcileNow();
+        assertEquals(store.written.size, 0);
+
+        leads = true;
+        await poller.reconcileNow();
+        assertEquals(store.written.get("deny-1")?.state, "revoked");
+      } finally {
+        await poller.stop();
+      }
+    });
+  });
+
+  Deno.test(`GrantsDirectoryPoller: reconcileNow without a running timer revokes an emptied ${kind} file at once, as no later poll would`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      await Deno.writeTextFile(path, "");
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+      ]);
+      // Never started: a node in manual reload mode that takes the lead.
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 3_600_000,
+      });
+      await poller.reconcileNow();
+      assertEquals(store.written.get("deny-1")?.state, "revoked");
+    });
+  });
+}
 
 Deno.test("GrantsDirectoryPoller: runs store writes and the snapshot reload inside commitReconcile", async () => {
   await withTempDir(async (dir) => {
@@ -813,7 +983,9 @@ Deno.test("GrantsDirectoryPoller: runs store writes and the snapshot reload insi
         },
       },
       async () => {
-        await Deno.writeTextFile(
+        // Atomic: this test stops at the first reconcile, and a truncated file
+        // would make that one with no writes.
+        await atomicWriteTextFile(
           join(grantsDir, "team.yaml"),
           VALID_GRANT_YAML,
         );

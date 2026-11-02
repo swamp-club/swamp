@@ -367,10 +367,17 @@ Under `--grant-reload auto`, the poller does what a restart would do with the
 same files. Where startup refuses to start, the source keeps its stored grants
 unchanged and the error is logged: a file with a YAML or schema error, an
 unreadable file, and a missing or unreadable `--grants-file` or `--grants-dir`
-(for example an unmounted volume). Other files still reconcile. Where startup
-accepts the input, its grants are revoked as before: a deleted or emptied
-file, an emptied `--grants-file`, and a missing repository `grants/`
-directory.
+(for example an unmounted volume). An emptied file in the repository `grants/`
+directory is a schema error, so it keeps its grants too. Other files still
+reconcile. Where startup accepts the input, its grants are revoked: a deleted
+file and a missing repository `grants/` directory at once, and an emptied
+`--grants-file` or `--grants-dir` file once two consecutive polls have read it
+as empty. A rewrite in place reads as empty between its truncate and its write,
+and a single such read must not drop a deny. So revoking an emptied file can
+take up to two poll intervals. A node with no running poller, in manual reload
+mode, revokes it on the one reconcile it runs on taking the lead. Replace grant
+files atomically: a partial write that happens to parse reconciles as what it
+contains.
 
 Implementation: `src/domain/access/grant_file.ts`,
 `src/domain/access/grant_file_reconciler.ts`.

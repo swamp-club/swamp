@@ -94,6 +94,8 @@ export class GrantsDirectoryPoller {
   #contentHash: string = "";
   #pendingReconcile: Promise<void> = Promise.resolve();
   #reconciling = false;
+  /** External sources that read as empty on the last poll. */
+  #sourcesSeenEmpty = new Set<string>();
 
   constructor(options: GrantsDirectoryPollerOptions) {
     this.#grantsDir = options.grantsDir;
@@ -158,7 +160,12 @@ export class GrantsDirectoryPoller {
     this.#reconciling = true;
     try {
       const newHash = await this.#computeContentHash();
-      if (newHash === this.#contentHash) return;
+      if (newHash === this.#contentHash) {
+        // A file held back as empty that got its old content back reads as no
+        // change, and must not count as seen empty when it next empties.
+        this.#sourcesSeenEmpty.clear();
+        return;
+      }
 
       logger.info`Grants directory change detected, reconciling`;
 
@@ -172,6 +179,7 @@ export class GrantsDirectoryPoller {
       const parsed = new Map<string, ParsedGrantSource>();
       const unavailable = new Set<string>();
       let externalDirUnavailable = false;
+      const emptySources = new Set<string>();
 
       const grantFileResults = await readGrantFiles(
         this.#grantsDir,
@@ -206,6 +214,8 @@ export class GrantsDirectoryPoller {
               entries: load.file.result.entries,
             });
           }
+        } else {
+          emptySources.add(GRANTS_FILE_SOURCE_NAME);
         }
       }
 
@@ -231,7 +241,10 @@ export class GrantsDirectoryPoller {
               unavailable.add(file.sourceName);
               continue;
             }
-            if (file.result === null) continue;
+            if (file.result === null) {
+              emptySources.add(file.sourceName);
+              continue;
+            }
             if (file.result.errors.length > 0) {
               this.#logUnavailable(file.path, file.result.errors);
               unavailable.add(file.sourceName);
@@ -243,6 +256,21 @@ export class GrantsDirectoryPoller {
             });
           }
         }
+      }
+
+      // A file being rewritten in place reads as empty between its truncate and
+      // its write, so one empty read is not enough to revoke its grants, which
+      // would fail open for a deny (swamp-club#4272). The next poll revokes
+      // them if it is still empty. Without a running timer there is no next
+      // poll, so a reconcileNow applies what it reads.
+      const heldEmpty = this.#timer === null
+        ? []
+        : [...emptySources].filter((s) => !this.#sourcesSeenEmpty.has(s));
+      this.#sourcesSeenEmpty = emptySources;
+      for (const source of heldEmpty) {
+        logger
+          .warn`Grant source ${source} reads as empty, keeping its stored grants until the next poll confirms it`;
+        unavailable.add(source);
       }
 
       // Resolved after every source is read, so a pin is forgotten only when
@@ -288,7 +316,8 @@ export class GrantsDirectoryPoller {
       // Deferred (a serve follower, which writes nothing): the change is not
       // applied, so the next poll tries it again.
       if (committed === "deferred") return;
-      this.#contentHash = newHash;
+      // A held source is not applied, so the next poll must look at it again.
+      if (heldEmpty.length === 0) this.#contentHash = newHash;
     } catch (error) {
       logger.error`Grants directory poll failed: ${error}`;
     } finally {
