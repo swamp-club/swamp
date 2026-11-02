@@ -621,25 +621,29 @@ Deno.test({
         )).names,
       ).length;
       assert(floorBytes > SERVE_REPLY_MAX_BYTES, `${floorBytes} bytes`);
+      // The commits above skip serve's commit path, so serve would project
+      // all 7,000 versions into its read model inside the first lock call.
+      // That projection, not the floor, is what slows down under the
+      // parallel suite (swamp-club#4298): it runs here, before the client
+      // calls, and serve's own catch-up then finds nothing new.
+      await server.v3.catchUp();
       const client = new ServeDatastoreClient({
         baseUrl: new URL(server.url).origin,
         token: "alice-token",
       });
+      const signal = new AbortController().signal;
       try {
         const reply = await client.acquireLock(
           modelKey(server),
           30_000,
           0,
-          AbortSignal.timeout(30_000),
+          signal,
         );
         assert(reply.acquired, JSON.stringify(reply));
         assertEquals(reply.lease.floor?.map((marks) => marks.name), names);
-        const listing = await client.listLocks("", AbortSignal.timeout(30_000));
+        const listing = await client.listLocks("", signal);
         assertEquals(listing?.leases.length, 1);
-        await client.releaseLock(
-          reply.lease.leaseId,
-          AbortSignal.timeout(30_000),
-        );
+        await client.releaseLock(reply.lease.leaseId, signal);
       } finally {
         client.close?.();
       }
