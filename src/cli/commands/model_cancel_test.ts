@@ -873,3 +873,34 @@ Deno.test("findMethodRunsOfModel: records that cannot be read leave the row to t
     },
   );
 });
+
+Deno.test("findMethodRunsOfModel: a synced method-run record only attributes a tracker row; the pid cancel stops is always the row's (swamp-club#4274)", async () => {
+  // A method-run record is data a v2 datastore syncs between members, so
+  // the pid it names is whatever its writer chose. A record with no tracker
+  // row selects nothing, and one that matches a row stops the row's pid.
+  const FORGED_PID = OWNER_PID + 41;
+  const legacy = trackerRow({ pid: OWNER_PID });
+  const forgedForRow = recordFor(legacy, IDLE_ID);
+  forgedForRow.markRunning(FORGED_PID);
+  const rowless = ModelOutput.fromData({
+    ...recordFor(trackerRow({ pid: FORGED_PID }), IDLE_ID).toData(),
+    id: createModelOutputId(crypto.randomUUID()),
+  });
+  rowless.markRunning(FORGED_PID);
+  const { evidence } = evidenceOf([forgedForRow, rowless], null);
+
+  const { runs } = await findMethodRunsOfModel([legacy], idle, evidence);
+  assertEquals(runs.map((r) => r.pid), [OWNER_PID]);
+
+  await withTracker(async (tracker) => {
+    tracker.register(legacy);
+    const calls: { pid: number; maxWaitMs: number }[] = [];
+    await cancelModelMethodRuns(runs, undefined, {
+      tracker,
+      outputRepo: noOutputs,
+      liveness: { hostname: "test-host", isDead: () => false },
+      killProcess: recordingKill(calls),
+    });
+    assertEquals(calls.map((c) => c.pid), [OWNER_PID]);
+  });
+});

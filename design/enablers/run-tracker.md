@@ -237,7 +237,10 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    workflow-run record passes over too: the resume's first save records the
    same pid and instance id, and the row is handed over, and its heartbeat
    started, right after it, before the resume prepares. So `workflow cancel`
-   stops the live resume, and serve's boot reapers find either a running row
+   stops the live resume (it stops only a pid a row from this host vouches
+   for, never one a synced or forwarded run record alone names; see
+   "Which process cancel stops" in `design/primitives/workflows.md`,
+   swamp-club#4274), and serve's boot reapers find either a running row
    or, with no row, a live pid, and leave it alone. A resume that fails before
    execution restores the record, stops the heartbeat and returns the row to
    its prior status and reason, so a settled row stays settled; the row keeps the failed resume's pid and hostname, which
