@@ -93,6 +93,7 @@ import {
   isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 import {
   findLiteralSensitiveGlobalArgs,
   LITERAL_SENSITIVE_GLOBAL_ARG_CODE,
@@ -107,6 +108,21 @@ import {
 } from "../../domain/events/types.ts";
 
 const logger = getLogger(["definition-repo"]);
+
+/** a point-in-time view over one scan of every definition file */
+export interface DefinitionByIdSnapshot {
+  /** what findById returns on a fresh repository, its errors included */
+  find(type: ModelType, id: DefinitionId): Definition | null;
+  declaresType(id: DefinitionId, type: ModelType): boolean;
+}
+
+interface SnapshotFile {
+  readonly dir: string;
+  readonly isSymlink: boolean;
+  readonly read:
+    | { definition: Definition | null }
+    | { error: unknown };
+}
 
 export class YamlDefinitionRepository implements DefinitionRepository {
   private readonly baseDir: string;
@@ -248,7 +264,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           const entryPath = join(typeDir, entry.name);
           try {
-            const data = await readDefinitionData(entryPath);
+            const data = await readDefinitionData(entryPath, id);
             if (!data) continue;
             const definition = Definition.fromData(data);
             if (definition.id === id) {
@@ -787,6 +803,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     name: string,
     primary: boolean,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
+    // models/ is hand-written, so only auto-definitions are filtered
+    const mustContain = !primary && isUuid(name) ? name : undefined;
     try {
       for (const entry of await readDirSorted(currentDir)) {
         const fullPath = join(currentDir, entry.name);
@@ -798,7 +816,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             if (entry.isSymlink) {
               await assertSafePath(fullPath, this.repoDir);
             }
-            const data = await readDefinitionData(fullPath);
+            const data = await readDefinitionData(fullPath, mustContain);
             if (!data) continue;
             const definition = Definition.fromData(data);
 
@@ -923,6 +941,121 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       );
     }
     return found;
+  }
+
+  /**
+   * the scan keeps a definition whose declared type is invalid, records no
+   * paths or hints, and ignores unreadableContent
+   */
+  async snapshotById(): Promise<DefinitionByIdSnapshot> {
+    const roots = [this.baseDir, this.secondaryBaseDir].filter((dir) =>
+      dir !== undefined
+    );
+    const byPath = new Map<string, SnapshotFile>();
+    const byId = new Map<string, SnapshotFile[]>();
+    for (const root of roots) {
+      await this.collectSnapshotFiles(root, byPath, byId);
+    }
+    const definitionAt = (path: string, id: DefinitionId) => {
+      const file = byPath.get(path);
+      if (!file) return null;
+      // as findById's read of an id-named file: errors are raised
+      if ("error" in file.read) {
+        if (file.read.error instanceof Deno.errors.NotFound) return null;
+        throw file.read.error;
+      }
+      return file.read.definition?.id === id ? file.read.definition : null;
+    };
+    const firstIn = (
+      dir: string,
+      id: DefinitionId,
+      allowSymlinks: boolean,
+    ): Definition | null => {
+      for (const file of byId.get(id) ?? []) {
+        if (file.dir !== dir || (file.isSymlink && !allowSymlinks)) continue;
+        if ("definition" in file.read) return file.read.definition;
+      }
+      return null;
+    };
+    return {
+      find: (type, id) => {
+        const primaryDir = this.getTypeDir(type);
+        const found = definitionAt(join(primaryDir, `${id}.yaml`), id) ??
+          firstIn(primaryDir, id, true);
+        if (found || !this.secondaryBaseDir) return found;
+        const autoDir = this.getTypeDir(type, this.secondaryBaseDir);
+        return definitionAt(join(autoDir, `${id}.yaml`), id) ??
+          firstIn(autoDir, id, false);
+      },
+      declaresType: (id, type) =>
+        (byId.get(id) ?? []).some((file) => {
+          if (!("definition" in file.read)) return false;
+          const declared = file.read.definition?.type;
+          if (declared === undefined) return false;
+          try {
+            return ModelType.create(declared).normalized === type.normalized;
+          } catch {
+            return false;
+          }
+        }),
+    };
+  }
+
+  private async collectSnapshotFiles(
+    dir: string,
+    byPath: Map<string, SnapshotFile>,
+    byId: Map<string, SnapshotFile[]>,
+  ): Promise<void> {
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await readDirSorted(dir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory) {
+        await this.collectSnapshotFiles(path, byPath, byId);
+        continue;
+      }
+      if (!(entry.isFile || entry.isSymlink) || !entry.name.endsWith(".yaml")) {
+        continue;
+      }
+      let read: SnapshotFile["read"];
+      try {
+        if (entry.isSymlink) await assertSafePath(path, this.repoDir);
+        const data = await readDefinitionData(path);
+        read = { definition: data ? Definition.fromData(data) : null };
+      } catch (error) {
+        if (isIoError(error)) {
+          throw markErrorPaths(
+            new UserError(
+              `Failed to read definition file ${path}: ${
+                error instanceof Error ? error.message : error
+              }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+            ),
+            [path, ...errorPaths(error)],
+          );
+        }
+        read = { error };
+        if (!(error instanceof Deno.errors.NotFound)) {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.warn`Skipping broken definition file ${path}: ${msg}`;
+        }
+      }
+      const file: SnapshotFile = {
+        dir,
+        isSymlink: entry.isSymlink,
+        read,
+      };
+      byPath.set(path, file);
+      if ("definition" in read && read.definition) {
+        const owners = byId.get(read.definition.id) ?? [];
+        owners.push(file);
+        byId.set(read.definition.id, owners);
+      }
+    }
   }
 
   private async collectAllDefinitions(
@@ -1593,11 +1726,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
 async function readDefinitionData(
   path: string,
+  mustContain?: string,
 ): Promise<DefinitionData | null> {
   const tally = currentDiagnosticTally();
   const content = await tally.measure("read", () => Deno.readTextFile(path));
   tally.add("files_read");
   if (tally.recording) tally.add("bytes_read", utf8ByteLength(content));
+  // can turn a YAML-escaped needle into a miss, never into a wrong match
+  if (mustContain !== undefined && !content.includes(mustContain)) return null;
   return tally.measureSync(
     "parse",
     () => parseYaml(content),

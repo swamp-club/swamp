@@ -4080,3 +4080,335 @@ Deno.test("YamlDefinitionRepository.findByIdFromIndex: a miss still fails on an 
     );
   });
 });
+
+function plainDefinitionYaml(
+  id: string,
+  name: string,
+  type?: string,
+): string {
+  return `${type === undefined ? "" : `type: ${JSON.stringify(type)}\n`}id: ${
+    JSON.stringify(id)
+  }\nname: ${
+    JSON.stringify(name)
+  }\nversion: 1\ntags: {}\nglobalArguments: {}\nmethods: {}\n`;
+}
+
+// a double-quoted YAML scalar with the first dash escaped; a digit's escape
+// ends in the digit, so its text would still contain the value
+function escapedYamlScalar(value: string): string {
+  const dash = value.indexOf("-");
+  return `"${value.slice(0, dash)}\\u002d${value.slice(dash + 1)}"`;
+}
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal: a UUID name parses only the auto-definitions that contain it", async () => {
+  await withTempDir(async (dir) => {
+    const { primaryDir, secondaryDir, sharedRepo } = autoDefinitionFixture(
+      dir,
+    );
+    const autoTypeDir = join(secondaryDir, testType.toDirectoryPath());
+    await ensureDir(autoTypeDir);
+    for (let i = 0; i < 4; i++) {
+      await Deno.writeTextFile(
+        join(autoTypeDir, `other-${i}.yaml`),
+        plainDefinitionYaml(crypto.randomUUID(), `other-${i}`),
+      );
+    }
+    const uuidName = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(autoTypeDir, "stored-elsewhere.yaml"),
+      plainDefinitionYaml(crypto.randomUUID(), uuidName),
+    );
+
+    const found = await sharedRepo().findByNameGlobal(uuidName);
+    assertEquals(found?.definition.name, uuidName);
+
+    const tally = new PhaseTally(true);
+    const missing = await withDiagnosticTally(
+      "output_search",
+      tally,
+      () => sharedRepo().findByNameGlobal(crypto.randomUUID()),
+    );
+    assertEquals(missing, null);
+    const attributes = tally.attributes();
+    assertEquals(attributes["swamp.diagnostic.files_read"], 5);
+    assertEquals(attributes["swamp.diagnostic.parse_work_ms"], undefined);
+
+    const escapedName = crypto.randomUUID();
+    const escaped = plainDefinitionYaml(crypto.randomUUID(), "x").replace(
+      'name: "x"',
+      `name: ${escapedYamlScalar(escapedName)}`,
+    );
+    await Deno.writeTextFile(join(autoTypeDir, "escaped.yaml"), escaped);
+    assertEquals(await sharedRepo().findByNameGlobal(escapedName), null);
+
+    const primaryTypeDir = join(primaryDir, testType.toDirectoryPath());
+    await ensureDir(primaryTypeDir);
+    await Deno.writeTextFile(join(primaryTypeDir, "escaped.yaml"), escaped);
+    assertEquals(
+      (await sharedRepo().findByNameGlobal(escapedName))?.definition.name,
+      escapedName,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById: the auto-definition scan parses only the files that contain the id", async () => {
+  await withTempDir(async (dir) => {
+    const { secondaryDir, sharedRepo } = autoDefinitionFixture(dir);
+    const autoTypeDir = join(secondaryDir, testType.toDirectoryPath());
+    await ensureDir(autoTypeDir);
+    for (let i = 0; i < 4; i++) {
+      await Deno.writeTextFile(
+        join(autoTypeDir, `other-${i}.yaml`),
+        plainDefinitionYaml(crypto.randomUUID(), `other-${i}`),
+      );
+    }
+    const id = crypto.randomUUID() as DefinitionId;
+    await Deno.writeTextFile(
+      join(autoTypeDir, "by-name.yaml"),
+      plainDefinitionYaml(id, "by-name"),
+    );
+    assertEquals(
+      (await sharedRepo().findById(testType, id))?.name,
+      "by-name",
+    );
+
+    const escapedId = crypto.randomUUID() as DefinitionId;
+    await Deno.writeTextFile(
+      join(autoTypeDir, "escaped.yaml"),
+      plainDefinitionYaml(crypto.randomUUID(), "escaped").replace(
+        /^id: .*$/m,
+        `id: ${escapedYamlScalar(escapedId)}`,
+      ),
+    );
+    assertEquals(await sharedRepo().findById(testType, escapedId), null);
+  });
+});
+
+interface SnapshotFixture {
+  repoDir: string;
+  primaryDir: string;
+  secondaryDir: string;
+  repo: () => YamlDefinitionRepository;
+}
+
+function snapshotFixture(dir: string): SnapshotFixture {
+  const repoDir = join(dir, "repo");
+  const primaryDir = join(repoDir, "models");
+  const secondaryDir = join(repoDir, ".swamp", "auto-definitions");
+  return {
+    repoDir,
+    primaryDir,
+    secondaryDir,
+    repo: () =>
+      new YamlDefinitionRepository(
+        repoDir,
+        undefined,
+        primaryDir,
+        secondaryDir,
+      ),
+  };
+}
+
+async function writeAt(path: string, content: string): Promise<void> {
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(path, content);
+}
+
+async function assertSnapshotMatchesFindById(
+  fixture: SnapshotFixture,
+  types: ModelType[],
+  ids: string[],
+): Promise<void> {
+  const snapshot = await fixture.repo().snapshotById();
+  for (const type of types) {
+    for (const raw of ids) {
+      const id = raw as DefinitionId;
+      const expected = await fixture.repo().findById(type, id);
+      const actual = snapshot.find(type, id);
+      assertEquals(
+        actual?.toData() ?? null,
+        expected?.toData() ?? null,
+        `${type.normalized} ${id}`,
+      );
+    }
+  }
+}
+
+Deno.test("YamlDefinitionRepository.snapshotById: finds what a fresh findById finds", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = snapshotFixture(dir);
+    const { primaryDir, secondaryDir } = fixture;
+    const t = testType.toDirectoryPath();
+    const otherType = ModelType.create("test/other");
+    const ids = Array.from({ length: 9 }, () => crypto.randomUUID());
+    const [plain, legacy, autoNamed, autoLegacy, badType, nested, retyped] =
+      ids;
+
+    await writeAt(
+      join(primaryDir, t, "plain.yaml"),
+      plainDefinitionYaml(plain, "plain"),
+    );
+    await writeAt(
+      join(primaryDir, t, `${legacy}.yaml`),
+      plainDefinitionYaml(legacy, "legacy"),
+    );
+    await writeAt(
+      join(secondaryDir, t, "legacy-copy.yaml"),
+      plainDefinitionYaml(legacy, "legacy-copy"),
+    );
+    await writeAt(
+      join(secondaryDir, t, "plain-copy.yaml"),
+      plainDefinitionYaml(plain, "plain-copy"),
+    );
+    await writeAt(
+      join(secondaryDir, t, "auto-named.yaml"),
+      plainDefinitionYaml(autoNamed, "auto-named"),
+    );
+    await writeAt(
+      join(secondaryDir, t, `${autoLegacy}.yaml`),
+      plainDefinitionYaml(autoLegacy, "auto-legacy"),
+    );
+    await writeAt(
+      join(secondaryDir, t, "bad-type.yaml"),
+      plainDefinitionYaml(badType, "bad-type", "/"),
+    );
+    await writeAt(
+      join(primaryDir, t, "sub", "nested.yaml"),
+      plainDefinitionYaml(nested, "nested"),
+    );
+    await writeAt(
+      join(primaryDir, otherType.toDirectoryPath(), "retyped.yaml"),
+      plainDefinitionYaml(retyped, "retyped", "Test.Example"),
+    );
+    // a definition named with another's id, at that id's legacy path
+    await writeAt(
+      join(primaryDir, t, `${autoNamed}.yaml`),
+      plainDefinitionYaml(crypto.randomUUID(), autoNamed),
+    );
+    await writeAt(join(primaryDir, t, "empty.yaml"), "");
+
+    await assertSnapshotMatchesFindById(fixture, [testType, otherType], ids);
+
+    const snapshot = await fixture.repo().snapshotById();
+    assertEquals(snapshot.find(testType, badType as DefinitionId)?.type, "/");
+    assertEquals(
+      snapshot.declaresType(retyped as DefinitionId, testType),
+      true,
+    );
+    assertEquals(
+      snapshot.declaresType(retyped as DefinitionId, otherType),
+      false,
+    );
+    assertEquals(
+      snapshot.declaresType(badType as DefinitionId, testType),
+      false,
+    );
+    assertEquals(snapshot.declaresType(plain as DefinitionId, testType), false);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.snapshotById: an id-named file that does not read raises as findById does", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = snapshotFixture(dir);
+    const t = testType.toDirectoryPath();
+    const yamlBroken = crypto.randomUUID() as DefinitionId;
+    const schemaBroken = crypto.randomUUID() as DefinitionId;
+    const brokenUnderName = crypto.randomUUID() as DefinitionId;
+    await writeAt(
+      join(fixture.primaryDir, t, `${yamlBroken}.yaml`),
+      `id: ${yamlBroken}\nname: [unterminated\n`,
+    );
+    await writeAt(
+      join(fixture.secondaryDir, t, `${schemaBroken}.yaml`),
+      `id: ${schemaBroken}\nversion: 1\n`,
+    );
+    await writeAt(
+      join(fixture.secondaryDir, t, "broken.yaml"),
+      `id: ${brokenUnderName}\nname: [unterminated\n`,
+    );
+
+    const snapshot = await fixture.repo().snapshotById();
+    for (const id of [yamlBroken, schemaBroken]) {
+      const expected = await assertRejects(() =>
+        fixture.repo().findById(testType, id)
+      );
+      const actual = assertThrows(() => snapshot.find(testType, id));
+      assertEquals(
+        (actual as Error).message,
+        (expected as Error).message,
+      );
+    }
+    assertEquals(
+      await fixture.repo().findById(testType, brokenUnderName),
+      null,
+    );
+    assertEquals(snapshot.find(testType, brokenUnderName), null);
+  });
+});
+
+Deno.test({
+  name:
+    "YamlDefinitionRepository.snapshotById: treats symlinks as findById does, refusing one that leaves the repository",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const fixture = snapshotFixture(dir);
+      const t = testType.toDirectoryPath();
+      const [inPrimary, inAuto, outside, autoLegacy] = Array.from(
+        { length: 4 },
+        () => crypto.randomUUID(),
+      );
+      const targets = join(fixture.repoDir, "targets");
+      await writeAt(
+        join(targets, "in-primary.yaml"),
+        plainDefinitionYaml(inPrimary, "in-primary"),
+      );
+      await writeAt(
+        join(targets, "in-auto.yaml"),
+        plainDefinitionYaml(inAuto, "in-auto"),
+      );
+      await writeAt(
+        join(targets, "auto-legacy.yaml"),
+        plainDefinitionYaml(autoLegacy, "auto-legacy"),
+      );
+      await writeAt(
+        join(dir, "outside", "out.yaml"),
+        plainDefinitionYaml(outside, "out"),
+      );
+      await ensureDir(join(fixture.primaryDir, t));
+      await ensureDir(join(fixture.secondaryDir, t));
+      await Deno.symlink(
+        join(targets, "in-primary.yaml"),
+        join(fixture.primaryDir, t, "link.yaml"),
+        { type: "file" },
+      );
+      await Deno.symlink(
+        join(targets, "in-auto.yaml"),
+        join(fixture.secondaryDir, t, "link.yaml"),
+        { type: "file" },
+      );
+      await Deno.symlink(
+        join(targets, "auto-legacy.yaml"),
+        join(fixture.secondaryDir, t, `${autoLegacy}.yaml`),
+        { type: "file" },
+      );
+      await Deno.symlink(
+        join(dir, "outside", "out.yaml"),
+        join(fixture.primaryDir, t, "out.yaml"),
+        { type: "file" },
+      );
+      await Deno.symlink(
+        join(dir, "gone.yaml"),
+        join(fixture.primaryDir, t, "dangling.yaml"),
+        { type: "file" },
+      );
+
+      await assertSnapshotMatchesFindById(fixture, [testType], [
+        inPrimary,
+        inAuto,
+        outside,
+        autoLegacy,
+      ]);
+    });
+  },
+});

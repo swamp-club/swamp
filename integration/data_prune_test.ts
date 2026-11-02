@@ -23,7 +23,7 @@
  * model search
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { Data } from "../src/domain/data/data.ts";
@@ -45,6 +45,10 @@ import {
   swampPath,
 } from "../src/infrastructure/persistence/paths.ts";
 import { createDataPruneDeps } from "../src/libswamp/data/prune.ts";
+import {
+  PhaseTally,
+  withDiagnosticTally,
+} from "../src/domain/diagnostics/diagnostic_phase.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
 import { namespaceFromResolver } from "../src/infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
@@ -529,5 +533,155 @@ Deno.test("Data Prune: serve control-plane types are NOT pruned (swamp-club#1749
       1,
       "grant data must survive prune",
     );
+  });
+});
+
+async function writeDefinitionFile(
+  root: string,
+  typeDir: string,
+  fileName: string,
+  content: string,
+): Promise<void> {
+  const dir = join(root, ...typeDir.split("/"));
+  await ensureDir(dir);
+  await Deno.writeTextFile(join(dir, fileName), content);
+}
+
+function definitionYaml(id: string, name: string, type?: string): string {
+  return `${
+    type === undefined ? "" : `type: ${JSON.stringify(type)}\n`
+  }id: ${id}\nname: ${name}\nversion: 1\ntags: {}\nglobalArguments: {}\nmethods: {}\n`;
+}
+
+function openDataRepo(repoDir: string): FileSystemUnifiedDataRepository {
+  return new FileSystemUnifiedDataRepository(
+    repoDir,
+    undefined,
+    new CatalogStore(join(repoDir, "_catalog.db")),
+  );
+}
+
+Deno.test("Data Prune: a retyped definition left in its old directory keeps data under the type it declares", async () => {
+  await withTempDir(async (repoDir) => {
+    const autoRoot = swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
+    const oldType = ModelType.create("test/old-type");
+    const newType = ModelType.create("test/new-type");
+    const id = crypto.randomUUID();
+    // spelled unlike its normalized form, so the match must normalize
+    await writeDefinitionFile(
+      autoRoot,
+      oldType.toDirectoryPath(),
+      "retyped.yaml",
+      definitionYaml(id, "retyped", "Test.New-Type"),
+    );
+    const dataRepo = openDataRepo(repoDir);
+    await writeData(dataRepo, oldType, id, "before", 1);
+    await writeData(dataRepo, newType, id, "after", 2);
+
+    const orphans = await createDataPruneDeps(repoDir).findOrphanedData();
+
+    assertEquals(
+      orphans.map((o) => [o.type.toDirectoryPath(), o.modelId]),
+      [[oldType.toDirectoryPath(), id]],
+    );
+  });
+});
+
+Deno.test("Data Prune: an invalid declared type aborts the prune and deletes nothing", async () => {
+  await withTempDir(async (repoDir) => {
+    const autoRoot = swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
+    const type = ModelType.create("test/prune");
+    const id = crypto.randomUUID();
+    await writeDefinitionFile(
+      autoRoot,
+      type.toDirectoryPath(),
+      "bad-type.yaml",
+      definitionYaml(id, "bad-type", "/"),
+    );
+    const dataRepo = openDataRepo(repoDir);
+    await writeData(dataRepo, type, id, "state", 2);
+    const deps = createDataPruneDeps(repoDir);
+
+    await assertRejects(
+      () => deps.deleteOrphanedData({ dryRun: false }),
+      Error,
+      "normalization resulted in empty string",
+    );
+    assertEquals((await dataRepo.listVersions(type, id, "state")).length, 2);
+  });
+});
+
+Deno.test("Data Prune: a broken definition stored under its name leaves its data orphaned, a broken id-named one aborts", async () => {
+  await withTempDir(async (repoDir) => {
+    const autoRoot = swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
+    const type = ModelType.create("test/prune");
+    const namedId = crypto.randomUUID();
+    await writeDefinitionFile(
+      autoRoot,
+      type.toDirectoryPath(),
+      "broken.yaml",
+      `id: ${namedId}\nname: [unterminated\n`,
+    );
+    const dataRepo = openDataRepo(repoDir);
+    await writeData(dataRepo, type, namedId, "state", 1);
+
+    const orphans = await createDataPruneDeps(repoDir).findOrphanedData();
+    assertEquals(orphans.map((o) => o.modelId), [namedId]);
+
+    const legacyId = crypto.randomUUID();
+    await writeDefinitionFile(
+      join(repoDir, "models"),
+      type.toDirectoryPath(),
+      `${legacyId}.yaml`,
+      `id: ${legacyId}\nname: [unterminated\n`,
+    );
+    await writeData(dataRepo, type, legacyId, "state", 1);
+
+    await assertRejects(() =>
+      createDataPruneDeps(repoDir).deleteOrphanedData({ dryRun: false })
+    );
+    assertEquals(
+      (await dataRepo.listVersions(type, namedId, "state")).length,
+      1,
+    );
+  });
+});
+
+Deno.test("Data Prune: each pass looks definitions up from when it starts, reading each file once", async () => {
+  await withTempDir(async (repoDir) => {
+    const autoRoot = swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
+    const type = ModelType.create("test/prune");
+    const dataRepo = openDataRepo(repoDir);
+    const deps = createDataPruneDeps(repoDir);
+
+    const ids = Array.from({ length: 5 }, () => crypto.randomUUID());
+    for (const [i, id] of ids.entries()) {
+      await writeDefinitionFile(
+        autoRoot,
+        type.toDirectoryPath(),
+        `auto-${i}.yaml`,
+        definitionYaml(id, `auto-${i}`),
+      );
+      await writeData(dataRepo, type, id, "state", 1);
+    }
+    const lateId = crypto.randomUUID();
+    await writeData(dataRepo, type, lateId, "state", 1);
+
+    const tally = new PhaseTally(true);
+    const first = await withDiagnosticTally(
+      "output_search",
+      tally,
+      () => deps.findOrphanedData(),
+    );
+    assertEquals(first.map((o) => o.modelId), [lateId]);
+    assertEquals(tally.attributes()["swamp.diagnostic.files_read"], ids.length);
+
+    await writeDefinitionFile(
+      autoRoot,
+      type.toDirectoryPath(),
+      "late.yaml",
+      definitionYaml(lateId, "late"),
+    );
+    assertEquals(await deps.findOrphanedData(), []);
   });
 });
