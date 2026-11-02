@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
@@ -284,6 +284,9 @@ export class CatalogStore {
   private readonly dbPath: string;
   private readonly writeTracker?: SharedDatastoreWriteTracker;
   private closed = false;
+  // statements of the current connection only: one prepared on a closed
+  // connection throws when run
+  #statements = new Map<string, StatementSync>();
 
   constructor(dbPath: string, options: CatalogStoreOptions = {}) {
     this.dbPath = dbPath;
@@ -301,6 +304,17 @@ export class CatalogStore {
     const db = new DatabaseSync(path);
     db.exec("PRAGMA busy_timeout=5000");
     return db;
+  }
+
+  // only for statements run with run() or get(): reusing one resets it, which
+  // would cut short a live iterate()
+  #prepareCached(sql: string): StatementSync {
+    let stmt = this.#statements.get(sql);
+    if (stmt === undefined) {
+      stmt = this.db.prepare(sql);
+      this.#statements.set(sql, stmt);
+    }
+    return stmt;
   }
 
   /**
@@ -483,7 +497,7 @@ export class CatalogStore {
    * one-latest-per-name invariant atomically
    */
   upsert(row: CatalogRow): void {
-    const stmt = this.db.prepare(`
+    const stmt = this.#prepareCached(`
       INSERT OR REPLACE INTO catalog (
         namespace, type_normalized, model_id, data_name, id, version, is_latest, is_step_latest, model_name,
         spec_name, data_type, content_type, lifetime, garbage_collection, lifecycle, owner_type,
@@ -552,7 +566,7 @@ export class CatalogStore {
       "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
     const stepScope = "(step_name = ? OR ? = '' OR step_name = '')";
     const scope = [row.step_name, row.step_name];
-    const higherFlagged = this.db.prepare(
+    const higherFlagged = this.#prepareCached(
       `SELECT 1 FROM catalog
        WHERE ${groupWhere} AND version > ?
          AND (is_latest = 1 OR is_step_latest = 1)
@@ -561,18 +575,18 @@ export class CatalogStore {
     // not filtered on flags: a superseded model-method row holds neither flag
     // yet outranks lower step rows, as in computeLatestFlags; a pending row
     // counts too, and flags agree once it is promoted or rolled back
-    const higherInScope = this.db.prepare(
+    const higherInScope = this.#prepareCached(
       `SELECT 1 FROM catalog
        WHERE ${groupWhere} AND version > ? AND ${stepScope}
        LIMIT 1`,
     ).get(...group, row.version, ...scope);
     const isLatest = higherFlagged ? 0 : 1;
     const isStepLatest = isLatest || !higherInScope ? 1 : 0;
-    this.db.prepare(
+    this.#prepareCached(
       `UPDATE catalog SET is_latest = 0
        WHERE ${groupWhere} AND version < ? AND is_latest = 1`,
     ).run(...group, row.version);
-    this.db.prepare(
+    this.#prepareCached(
       `UPDATE catalog SET is_step_latest = 0
        WHERE ${groupWhere} AND version < ? AND ${stepScope}
          AND is_step_latest = 1`,
@@ -767,14 +781,14 @@ export class CatalogStore {
     modelId: string,
     dataName: string,
   ): void {
-    const stmt = this.db.prepare(
+    const stmt = this.#prepareCached(
       "DELETE FROM catalog WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
     );
     stmt.run(namespace, typeNormalized, modelId, dataName);
   }
 
   recordRename(row: RenameForwardRow): void {
-    this.db.prepare(
+    this.#prepareCached(
       `INSERT OR REPLACE INTO catalog_renames (
          namespace, type_normalized, model_id, data_name, renamed_to
        ) VALUES (?, ?, ?, ?, ?)`,
@@ -793,7 +807,7 @@ export class CatalogStore {
     modelId: string,
     dataName: string,
   ): void {
-    this.db.prepare(
+    this.#prepareCached(
       "DELETE FROM catalog_renames WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
     ).run(namespace, typeNormalized, modelId, dataName);
   }
@@ -1494,7 +1508,7 @@ export class CatalogStore {
     versions: readonly number[],
     computeFlags: (rows: CatalogRow[]) => void,
   ): void {
-    const stmt = this.db.prepare(
+    const stmt = this.#prepareCached(
       `DELETE FROM catalog
        WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
     );
@@ -1529,6 +1543,7 @@ export class CatalogStore {
     // handle, then drop the stale WAL/SHM sidecars of the old file before the
     // rename so they cannot shadow the new database.
     this.db.close();
+    this.#statements.clear();
     this.removeDbFiles(this.dbPath, { keepMain: true });
     let swapError: unknown;
     try {
@@ -1735,7 +1750,7 @@ export class CatalogStore {
     _computeFlags: (rows: CatalogRow[]) => void,
   ): void {
     const group = [namespace, typeNormalized, modelId, dataName];
-    this.db.prepare(RECOMPUTE_GROUP_FLAGS_SQL).run(
+    this.#prepareCached(RECOMPUTE_GROUP_FLAGS_SQL).run(
       ...group,
       ...group,
       ...group,
@@ -1781,6 +1796,7 @@ export class CatalogStore {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.#statements.clear();
     this.db.close();
   }
 }
