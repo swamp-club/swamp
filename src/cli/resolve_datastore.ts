@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resolves the datastore configuration from multiple sources.
- *
- * Priority: SWAMP_DATASTORE env var > CLI --datastore arg > .swamp.yaml config > default
- *
- * Env var format:
- *   - `SWAMP_DATASTORE=filesystem:/path/to/dir`
- *   - `SWAMP_DATASTORE=@scope/type:{"key":"value"}`
- *
- * Legacy `s3:bucket/prefix` format is auto-remapped to the `@swamp/s3-datastore` extension.
- *
- * Default: filesystem datastore at `{repoDir}/.swamp/` (full backward compatibility)
+ * priority: SWAMP_DATASTORE env > CLI --datastore > .swamp.yaml > default
+ * (filesystem at {repoDir}/.swamp/). Legacy s3:bucket/prefix is remapped to the
+ * @swamp/s3-datastore extension
  */
 
 import { isAbsolute, join, resolve } from "@std/path";
@@ -60,10 +52,8 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * Resolves `managedConfig` when it arrives as a string expression from YAML.
- * YAML parses `managedConfig: "${{ env.VAR }}"` as a string, not a boolean.
- * Resolves env-only (no vault gate needed since this value IS the vault gate).
- * Strict boolean parsing: only "true" and "1" map to true.
+ * YAML parses managedConfig: "${{ env.VAR }}" as a string. Resolved env-only,
+ * since this value is the vault gate. Strict: only "true" and "1" map to true
  */
 async function resolveManagedConfig(
   raw: boolean | string | undefined,
@@ -85,9 +75,6 @@ interface ResolvedDatastoreFields {
   hydrationStrategy?: "full" | "lazy";
 }
 
-/**
- * Resolves expressions in datastore-level fields that sit outside `config`.
- */
 async function resolveDatastoreFields(
   ds: {
     namespace?: string;
@@ -111,11 +98,7 @@ async function resolveDatastoreFields(
   return resolved as ResolvedDatastoreFields;
 }
 
-/**
- * The datastore block's `durable` setting (swamp-club#4017), as the
- * resolved config carries it: absent when the block does not set it.
- * Anything but a boolean is refused.
- */
+/** absent when the block does not set it; anything but a boolean is refused */
 function durableField(
   ds: { durable?: unknown },
 ): { durable?: boolean } {
@@ -135,19 +118,16 @@ export function datastoreBasePath(config: DatastoreConfig): string {
 
 export { RENAMED_DATASTORE_TYPES };
 
-/** Options for resolving a datastore config. */
 export interface ResolveDatastoreOptions {
   /**
-   * When false, never auto-resolve a missing datastore extension: only
-   * already-installed extensions are used. Defaults to true.
+   * when false, never auto-resolve a missing datastore extension; only
+   * installed ones are used. Defaults to true
    */
   autoResolve?: boolean;
   /**
-   * The datastore is written through serve (swamp-club#3985): an extension
-   * datastore's type is neither resolved nor installed and its provider is
-   * never built, since its storage is never read. Given the datastore's
-   * namespace, it answers the checkout's local root for the datastore,
-   * which stands for the provider's paths.
+   * serve writes the datastore, so an extension datastore's type is never
+   * resolved or installed and no provider is built; given the namespace this
+   * returns the checkout's local root standing for the provider's paths
    */
   serveUpstreamRoot?: (namespace: string | undefined) => string;
 }
@@ -156,15 +136,6 @@ function autoResolverFor(options?: ResolveDatastoreOptions) {
   return options?.autoResolve === false ? null : getAutoResolver();
 }
 
-/**
- * Parses the SWAMP_DATASTORE env var format into a DatastoreConfig.
- *
- * @param envValue - The env var value (e.g., "filesystem:/path" or "s3:bucket/prefix")
- * @param repoId - The repo ID for S3 cache path
- * @param repoDir - The repository root directory (for custom datastore path resolution)
- * @param options - Resolution options (e.g. installed-only)
- * @returns Parsed DatastoreConfig
- */
 export async function parseDatastoreEnvVar(
   envValue: string,
   repoId?: string,
@@ -190,7 +161,6 @@ export async function parseDatastoreEnvVar(
     return { type: "filesystem", path: absPath };
   }
 
-  // Remap renamed types (e.g., "s3" → "@swamp/s3-datastore")
   const renamedTo = RENAMED_DATASTORE_TYPES[type];
   if (renamedTo) {
     logger.warn(
@@ -198,13 +168,11 @@ export async function parseDatastoreEnvVar(
         `Update your SWAMP_DATASTORE env var to use the new name.`,
     );
 
-    // Parse "s3:bucket/prefix" shorthand into config JSON
     if (type === "s3") {
       const slashIdx = value.indexOf("/");
       const bucket = slashIdx === -1 ? value : value.slice(0, slashIdx);
       const prefix = slashIdx === -1 ? undefined : value.slice(slashIdx + 1);
 
-      // Ensure lazy-loaded extensions are loaded before auto-resolve
       await datastoreTypeRegistry.ensureLoaded();
       await resolveDatastoreType(renamedTo, autoResolverFor(options));
 
@@ -253,15 +221,12 @@ export async function parseDatastoreEnvVar(
     type = renamedTo;
   }
 
-  // Ensure lazy-loaded extensions are loaded before auto-resolve
   await datastoreTypeRegistry.ensureLoaded();
 
-  // Auto-resolve extension types (only fires if type is genuinely missing)
   if (type.startsWith("@")) {
     await resolveDatastoreType(type, autoResolverFor(options));
   }
 
-  // Custom datastore type: value is JSON config
   await datastoreTypeRegistry.ensureTypeLoaded(type);
   const typeInfo = datastoreTypeRegistry.get(type);
   if (!typeInfo) {
@@ -317,27 +282,11 @@ export async function parseDatastoreEnvVar(
       | "full"
       | "lazy"
       | undefined,
-    // Not persisted in the repo: no `format` key says what it is
-    // (swamp-club#3534).
+    // not persisted in the repo, so no `format` key says what it is
     override: true,
   };
 }
 
-/**
- * Resolves the datastore configuration.
- *
- * Priority:
- * 1. SWAMP_DATASTORE environment variable
- * 2. CLI --datastore argument
- * 3. .swamp.yaml datastore config
- * 4. Default: filesystem at {repoDir}/.swamp/
- *
- * @param marker - The repo marker data (may be null)
- * @param cliArg - Optional CLI --datastore argument
- * @param repoDir - The repository root directory
- * @param options - Resolution options (e.g. installed-only)
- * @returns Resolved DatastoreConfig
- */
 export async function resolveDatastoreConfig(
   marker: RepoMarkerData | null,
   cliArg?: string,
@@ -360,18 +309,15 @@ export async function resolveDatastoreConfig(
     repoId = resolvedRepoId;
   }
 
-  // 1. Environment variable takes highest priority
   const envDatastore = Deno.env.get("SWAMP_DATASTORE");
   if (envDatastore) {
     return await parseDatastoreEnvVar(envDatastore, repoId, repoDir, options);
   }
 
-  // 2. CLI argument
   if (cliArg) {
     return await parseDatastoreEnvVar(cliArg, repoId, repoDir, options);
   }
 
-  // 3. .swamp.yaml datastore config
   if (marker?.datastore) {
     const ds = marker.datastore;
     const dsType = ds.type;
@@ -400,7 +346,6 @@ export async function resolveDatastoreConfig(
       };
     }
 
-    // Remap renamed types (e.g., "s3" → "@swamp/s3-datastore")
     const renamedTo = RENAMED_DATASTORE_TYPES[dsType];
     if (renamedTo) {
       logger.warn(
@@ -408,14 +353,12 @@ export async function resolveDatastoreConfig(
           `Update your .swamp.yaml to use the new name.`,
       );
 
-      // Ensure lazy-loaded extensions are loaded before auto-resolve
       await datastoreTypeRegistry.ensureLoaded();
       await resolveDatastoreType(renamedTo, autoResolverFor(options));
 
       await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
       if (typeInfo?.createProvider) {
-        // Build config from the S3-specific YAML fields
         let config: Record<string, unknown> = {};
         if (ds.bucket) config.bucket = ds.bucket;
         if (ds.prefix) config.prefix = ds.prefix;
@@ -464,7 +407,6 @@ export async function resolveDatastoreConfig(
         };
       }
 
-      // Extension not available — error out
       throw new UserError(
         `S3 datastore requires the @swamp/s3-datastore extension. ` +
           `Install it with: swamp extension pull @swamp/s3-datastore`,
@@ -496,18 +438,15 @@ export async function resolveDatastoreConfig(
       };
     }
 
-    // Ensure lazy-loaded extension datastores are loaded before checking
-    // the registry. Without this, the registry appears empty after PR #1050's
-    // lazy loading change, causing the auto-resolver to fire unnecessarily
-    // and write progress JSON to stdout — corrupting --json output.
+    // without this the registry looks empty under lazy loading, so the
+    // auto-resolver fires needlessly and writes progress JSON to stdout,
+    // corrupting --json output
     await datastoreTypeRegistry.ensureLoaded();
 
-    // Auto-resolve extension types (only fires if type is genuinely missing)
     if (dsType.startsWith("@")) {
       await resolveDatastoreType(dsType, autoResolverFor(options));
     }
 
-    // Custom datastore type from YAML config
     await datastoreTypeRegistry.ensureTypeLoaded(dsType);
     const typeInfo = datastoreTypeRegistry.get(dsType);
     if (!typeInfo) {
@@ -565,17 +504,14 @@ export async function resolveDatastoreConfig(
     };
   }
 
-  // 4. Default: filesystem at {repoDir}/.swamp/
   const defaultPath = repoDir ? join(repoDir, ".swamp") : ".swamp";
   return { type: "filesystem", path: defaultPath };
 }
 
 /**
- * The config tier path of the datastore the repo uses now, resolved the
- * way startup resolves the managed config base, or undefined when that
- * datastore cannot be resolved. Resolution is installed-only, so asking
- * never installs an extension. Datastore setup uses it to tell whether the
- * repo's `.swamp/config` is the config tier (swamp-club#2837).
+ * resolution is installed-only, so asking never installs an extension;
+ * datastore setup uses it to tell whether the repo's `.swamp/config` is the
+ * config tier
  */
 export async function resolveConfigTierPath(
   repoDir: string,
@@ -595,10 +531,6 @@ export async function resolveConfigTierPath(
   }
 }
 
-/**
- * Checks whether a datastore with a namespace has un-migrated root-level data.
- * Returns the list of root-level directories found, or empty if no issue.
- */
 export async function checkUnmigratedNamespaceData(
   config: DatastoreConfig,
 ): Promise<string[]> {

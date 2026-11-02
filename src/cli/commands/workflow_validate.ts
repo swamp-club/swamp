@@ -93,10 +93,9 @@ export const workflowValidateCommand = withRemoteOptions(
       outputMode: cliCtx.outputMode,
     });
 
-  // Hot-load pulled/local extensions so step-input validation can resolve
-  // their model types. Without this, pulled extension types are skipped as
-  // "not resolved" and the step silently passes (parity with `type describe`
-  // and `model validate`, which both call ensureLoaded before resolving).
+  // hot-load pulled and local extensions so step-input validation resolves
+  // their model types; otherwise they are skipped as not resolved and the step
+  // silently passes
   await modelRegistry.ensureLoaded();
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });

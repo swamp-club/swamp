@@ -91,13 +91,11 @@ import type { ModelCreateResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior create`. */
 export const BEHAVIOR_CREATE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior create",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model create`. */
 export const MODEL_CREATE_SYNTAX: CommandSyntax = {
   invocation: "swamp model create",
   surface: "model",
@@ -135,7 +133,6 @@ export function createModelCreateCommand(syntax: CommandSyntax) {
         "create",
       ]);
 
-      // Parse --global-arg options (needed for both local and remote paths)
       const globalArgEntries: string[] = options.globalArg ?? [];
       const globalArguments = globalArgEntries.length > 0
         ? await parseKeyValueInputs(globalArgEntries)
@@ -213,7 +210,6 @@ export function createModelCreateCommand(syntax: CommandSyntax) {
 
 export const modelCreateCommand = createModelCreateCommand(MODEL_CREATE_SYNTAX);
 
-/** The subcommands of `model`, in registration order. */
 export interface ModelChildren {
   readonly cancel: ReturnType<typeof createModelCancelCommand>;
   readonly create: ReturnType<typeof createModelCreateCommand>;
@@ -229,17 +225,14 @@ export interface ModelChildren {
   readonly type: ReturnType<typeof createModelTypeCommand>;
 }
 
-/** The legacy spelling: `swamp model`. */
 export const MODEL_SYNTAX: CommandSyntax = {
   invocation: "swamp model",
   surface: "model",
 };
 
 /**
- * Builds the `model` group for one CLI surface (swamp-club#3330). Children
- * not passed are built fresh from `syntax`; Cliffy reparents a command
- * attached under a second parent, so two surfaces must never share an
- * instance.
+ * children not passed are built fresh from syntax; Cliffy reparents a command
+ * attached under a second parent, so two surfaces must never share an instance.
  */
 export function createModelCommand(
   syntax: CommandSyntax,

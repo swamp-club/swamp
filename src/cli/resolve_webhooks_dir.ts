@@ -19,22 +19,15 @@
 
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 
-/**
- * Resolves the webhooks directory path.
- * Priority: SWAMP_WEBHOOKS_DIR env var > .swamp.yaml config > default "extensions/webhooks"
- */
 export function resolveWebhooksDir(marker: RepoMarkerData | null): string {
-  // Environment variable takes highest priority
   const envWebhooksDir = Deno.env.get("SWAMP_WEBHOOKS_DIR");
   if (envWebhooksDir) {
     return envWebhooksDir;
   }
 
-  // Then .swamp.yaml config
   if (marker?.webhooksDir) {
     return marker.webhooksDir;
   }
 
-  // Default
   return "extensions/webhooks";
 }

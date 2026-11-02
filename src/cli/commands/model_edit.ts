@@ -73,10 +73,6 @@ import type { ModelEditResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Returns the YAML piped to `model edit --server`, or refuses naming the
- * command as the user typed it on this surface.
- */
 export function requireModelEditContent(
   content: string | null,
   syntax: CommandSyntax,
@@ -84,13 +80,11 @@ export function requireModelEditContent(
   return requireRemoteEditContent(content, syntax.invocation);
 }
 
-/** The preferred spelling: `swamp behavior edit`. */
 export const BEHAVIOR_EDIT_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior edit",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model edit`. */
 export const MODEL_EDIT_SYNTAX: CommandSyntax = {
   invocation: "swamp model edit",
   surface: "model",
@@ -171,7 +165,6 @@ export function createModelEditCommand(syntax: CommandSyntax) {
         logger: cliCtx.logger,
       });
 
-      // Interactive search mode when no argument provided
       if (!modelIdOrName) {
         if (cliCtx.outputMode === "json") {
           throw new UserError(
@@ -233,10 +226,9 @@ export function createModelEditCommand(syntax: CommandSyntax) {
               ),
           ), `the behavior definition "${editIdOrName}"`);
 
-      // A stored definition is edited on a copy and saved like a piped
-      // edit, so the edit is committed (swamp-club#4107). Opening the editor
-      // loads the definition (swamp-club#4097); a change another member lands
-      // while it is open refuses the save.
+      // a stored definition is edited on a copy and saved like a piped edit, so
+      // the edit is committed; opening the editor loads the definition, and a
+      // change another member lands meanwhile refuses the save.
       const file = stdinContent === null
         ? await resolveModelEditFile(libCtx, deps, { modelIdOrName })
         : null;
@@ -283,8 +275,8 @@ export function createModelEditCommand(syntax: CommandSyntax) {
         return;
       }
 
-      // A stale stdin edit, a rename's included, is refused before it
-      // writes; opening the editor loads the definition (swamp-club#4097).
+      // a stale stdin edit, a rename's included, is refused before it writes;
+      // opening the editor loads the definition.
       const target = await findDefinitionByIdOrName(
         repoContext.definitionRepo,
         modelIdOrName,

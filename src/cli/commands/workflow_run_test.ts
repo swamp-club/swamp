@@ -25,7 +25,6 @@ import { WorkflowNameType } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { upgradeAuthorizationHeaders } from "./remote_token_test_helpers.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
@@ -47,11 +46,6 @@ Deno.test("workflowRunCommand has --server option", async () => {
   assertEquals(serverOpt !== undefined, true);
 });
 
-/**
- * In-process serve endpoint streaming the given run events followed by a
- * `done` frame — enough to drive the command's streaming --server path
- * without a subprocess.
- */
 function runEventServer(
   events: Record<string, unknown>[],
 ): { url: string; shutdown: () => Promise<void> } {
@@ -77,7 +71,6 @@ function runEventServer(
   };
 }
 
-/** Runs `workflow run --server` against a scripted run result; returns Deno.exitCode. */
 async function runWorkflowRunAgainst(
   run: Record<string, unknown>,
 ): Promise<number> {
@@ -126,9 +119,6 @@ Deno.test({
   },
 });
 
-// ── --detach (swamp-club#1090) ─────────────────────────────────────────
-
-/** Parses `workflow run deploy <args>` through a root command with --json. */
 async function parseWorkflowRun(args: string[]): Promise<void> {
   const { workflowRunCommand } = await import("./workflow_run.ts");
   const root = new Command()
@@ -247,8 +237,6 @@ Deno.test({
     }
   },
 });
-
-// ── SWAMP_SERVER_TOKEN_FILE binding (swamp-club#4012) ──────────────────
 
 Deno.test({
   name:

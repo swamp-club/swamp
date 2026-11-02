@@ -34,7 +34,6 @@ Deno.test("LockfileRepository.removeEntry removes entry and preserves others", a
     const repoSecond = await LockfileRepository.create(lockfilePath);
     await repoSecond.writeEntry("@test/second", "2.0.0", ["b.yaml"]);
 
-    // Remove the first one via a fresh instance.
     const repoRm = await LockfileRepository.create(lockfilePath);
     await repoRm.removeEntry("@test/first");
 
@@ -56,7 +55,6 @@ Deno.test("LockfileRepository.removeEntry handles non-existent extension gracefu
     const repo = await LockfileRepository.create(lockfilePath);
     await repo.writeEntry("@test/first", "1.0.0", ["a.yaml"]);
 
-    // Removing a non-existent entry should not throw.
     await repo.removeEntry("@test/nonexistent");
 
     const content = await Deno.readTextFile(lockfilePath);
@@ -73,7 +71,6 @@ Deno.test("LockfileRepository.removeEntry handles missing JSON file", async () =
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
     const repo = await LockfileRepository.create(lockfilePath);
-    // Should not throw even when file doesn't exist.
     await repo.removeEntry("@test/nonexistent");
 
     const content = await Deno.readTextFile(lockfilePath);

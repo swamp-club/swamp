@@ -87,21 +87,17 @@ import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
-// Re-exported for existing importers; they live with SWAMP_SUBDIRS.
 export { isBundleArtifactPath, isPulledSkillPath };
 
-/** Whether a repo-relative path lies under one of the given dirs. */
 function isUnderAny(path: string, dirs: readonly string[]): boolean {
   const normalized = path.replaceAll("\\", "/");
   return dirs.some((dir) => normalized.startsWith(`${dir}/`));
 }
 
 /**
- * Registry deadline shared by every call one auto-install makes, the
- * extension and each dependency it pulls. Below the install-lock wait, so
- * a process holding the lock always releases it before a waiter gives up,
- * with room left for the local extract and bundle work the deadline does
- * not cover (swamp-club#3656).
+ * registry deadline shared by every call one auto-install makes; below the
+ * install-lock wait so a lock holder always releases before a waiter gives up,
+ * leaving room for local extract and bundle work.
  */
 export const AUTO_RESOLVE_INSTALL_DEADLINE_MS = 150_000;
 
@@ -122,41 +118,33 @@ interface InstallerAdapterConfig {
     channel?: string,
     signal?: AbortSignal,
   ) => Promise<string | null>;
-  /** Full path to the upstream_extensions.json lockfile. */
   lockfilePath: string;
   repoDir: string;
   denoRuntime: DenoRuntime;
   datastoreResolver?: DatastorePathResolver;
   /**
-   * Also hot-load datastore extensions found on disk, as the startup
-   * datastore loader does in managedConfig repos on an extension-backed
-   * datastore (swamp-club#2483).
+   * also hot-load datastore extensions found on disk, as the startup datastore
+   * loader does in managedConfig repos on an extension-backed datastore.
    */
   datastoresOnDisk?: boolean;
   /**
-   * The resolved (team) lockfile, read on each call because the managed
-   * config base can resolve after the adapter is created. When it names a
-   * different file from `lockfilePath`, an extension's pinned version and
-   * checksum come from both files, the resolved entry winning, so
-   * auto-resolve still installs the team's pin (#465). Installs are still
-   * recorded in `lockfilePath` (swamp-club#2483).
+   * read per call since the managed base can resolve late; when it differs from
+   * lockfilePath, pins come from both files with the resolved entry winning;
+   * installs still record in lockfilePath
    */
   resolvedLockfilePath?: () => string | undefined;
   /**
-   * W1b/(a-2) wiring: shared ExtensionRepository used by hotLoadModels
-   * to attach user extensions whose base type was just registered, and
-   * passed through to every loader's constructor so internal
-   * catalog operations route through the repository. Optional
-   * so existing callers that do not need the attach retry can omit it.
+   * shared ExtensionRepository used by hotLoadModels to attach user extensions
+   * whose base type was just registered; optional for callers that do not need
+   * the attach retry.
    */
   repository?: ExtensionRepository;
 }
 
 /**
- * The pulled datastore dirs the auto-resolve hot-load reads: those the
- * lockfile lists and, when `datastoresOnDisk` is set, every datastore
- * extension found on disk, deduped and sorted to match the startup
- * datastore loader (swamp-club#2483).
+ * the pulled datastore dirs the hot-load reads: those the lockfile lists plus,
+ * with datastoresOnDisk, every on-disk datastore extension, deduped and sorted
+ * to match the startup loader.
  */
 export async function hotLoadDatastoreDirs(
   lockfilePath: string,
@@ -178,10 +166,6 @@ export async function hotLoadDatastoreDirs(
   return pulledDirs.sort();
 }
 
-/**
- * Creates an ExtensionInstallerPort adapter that uses the CLI extension pull
- * infrastructure and user model/vault loaders.
- */
 export function createAutoResolveInstallerAdapter(
   config: InstallerAdapterConfig,
 ): ExtensionInstallerPort {
@@ -196,7 +180,6 @@ export function createAutoResolveInstallerAdapter(
     repository,
   } = config;
 
-  // The resolved (team) lockfile, when installs are recorded elsewhere.
   const separateResolvedLockfilePath = (): string | undefined => {
     const resolvedPath = config.resolvedLockfilePath?.();
     return resolvedPath === undefined ||
@@ -205,7 +188,6 @@ export function createAutoResolveInstallerAdapter(
       : resolvedPath;
   };
 
-  // The lockfile entry that pins an extension's version and checksum.
   const findPinnedEntry = async (
     extensionName: string,
   ): Promise<UpstreamExtensionEntry | null> => {
@@ -224,47 +206,22 @@ export function createAutoResolveInstallerAdapter(
     async inspectInstallation(
       extensionName: string,
     ): Promise<InstallationInspection> {
-      // Inspection states: missing / intact / truncated / legacy.
-      //
-      // The lockfile is the source of truth for "which files should be
-      // present". `installExtension` writes the lockfile entry in lockstep
-      // with the file copy at the end of install, so the two stay
-      // paired — if they drift, that's a bug in install, not here.
-      //
-      // - missing: no lockfile entry, or no lockfile-declared source files
-      //   remain when the per-extension directory is absent. A clean install
-      //   should proceed.
-      // - truncated: lockfile + directory both present, but one or more
-      //   listed source files are absent on disk (swamp-club#133). The
-      //   tree is broken; surface a distinct error with `--force`
-      //   recovery.
-      // - intact: everything lined up. If the type still failed to
-      //   register, either a source failed to load (user edits — issue
+      // the lockfile is the source of truth for which files should be present,
+      // written in lockstep with the file copy, so drift is an install bug;
+      // truncated means listed sources are absent on disk
       //   #121's "never overwrite" guard applies) or the installed
-      //   version does not provide the type (swamp-club#2476);
-      //   `loadFailures` tells the resolver which.
-      //
-      // Bundle artifacts under .swamp/{bundles,vault-bundles,
-      // datastore-bundles,report-bundles,webhook-bundles}/ are excluded
-      // from the truncation check because they are regenerable build
-      // output, not source. Clearing the bundle cache (a normal hygiene
-      // operation) must not flip the inspection to truncated and steal
-      // the user-WIP path from issue #121.
-      //
-      // Skill dirs the entry records are current-layout wherever they are,
-      // and install writes the skill back into them, so a surviving one
-      // never makes the install legacy (swamp-club#3727). They still count
-      // as missing for the truncation check.
+      // bundle artifacts are excluded from the truncation check because they
+      // are regenerable build output; clearing the bundle cache must not flip
+      // inspection to truncated
       const entry = await findPinnedEntry(extensionName);
       if (!entry) return { state: "missing" };
-      // A lockfile entry exists; carry its pinned version so the installer's
-      // progress output reports the version that will actually be installed
-      // (the install path pins to it) rather than registry-latest.
+      // a lockfile entry exists; carry its pinned version so progress output
+      // reports the version that will actually be installed, not
+      // registry-latest.
       const pulledRoot = resolvePulledExtensionsRoot(repoDir);
       const path = join(pulledRoot, extensionName);
-      // Pre-anchor lockfile entries (grandfather path in
-      // UpstreamExtensionEntry) may omit `files`. Treat an absent or
-      // empty list as having no surviving legacy source.
+      // pre-anchor lockfile entries may omit files; treat absent or empty as no
+      // surviving legacy source.
       const files = entry.files ?? [];
       const skillDirs = recordedSkillsDirs(files);
       const existingFiles: string[] = [];
@@ -318,16 +275,14 @@ export function createAutoResolveInstallerAdapter(
       const pinnedFiles = (pinnedEntry?.files ?? []).map((f) =>
         f.replaceAll("\\", "/")
       );
-      // A pinned entry's skills go back where it records them, so the
-      // reinstall keeps its skill paths and prunes none of them
-      // (swamp-club#3727). Otherwise they go to the pulled skills dir.
+      // a pinned entry's skills go back where it records them, so the reinstall
+      // keeps and prunes none of their paths; otherwise they go to the pulled
+      // skills dir.
       const recordedDirs = recordedSkillsDirs(pinnedFiles);
       const pulledSkillsDirs = [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)];
       const skillsDirs = recordedDirs.length > 0
         ? recordedDirs.map((dir) => join(repoDir, dir))
         : pulledSkillsDirs;
-      // A skill conflict the pinned entry records: the conflict is that
-      // skill's root, and the entry lists the root or files under it.
       const isRecordedSkill = (path: string) =>
         isUnderAny(path, recordedDirs) &&
         pinnedFiles.some((f) => f === path || f.startsWith(`${path}/`));
@@ -373,23 +328,17 @@ export function createAutoResolveInstallerAdapter(
           : await installExtension(ref, installCtx);
       }
 
-      // force: false so installExtension raises ConflictError rather than
-      // silently overwriting any existing files. The service's
-      // inspectInstallation check normally prevents reaching this point
-      // when the extension is already on disk (intact or truncated); the
-      // ConflictError catch below is defence-in-depth for races between
-      // inspect and install that the per-type re-entrancy guard in the
-      // resolver cannot cover (e.g. two types resolving the same
-      // extension concurrently).
+      // Force false so installExtension raises ConflictError rather than
+      // overwrite files; the catch below guards races between inspect and
+      // install.
       try {
         const result = await runInstall(false);
         if (!result) return null;
         return { version: result.version };
       } catch (error) {
         if (error instanceof ConflictError) {
-          // Stale bundle output is regenerable, and a shared skill dir is
-          // merged into with a warning (swamp-club#2494), as is a skill the
-          // pinned entry records (swamp-club#3727). Any other conflict means
+          // stale bundle output is regenerable, and a shared or pinned-entry
+          // skill dir is merged into with a warning. Any other conflict means
           // real files are in the way.
           const conflicts = error.conflicts.map((p) => p.replaceAll("\\", "/"));
           const bundleConflicts = conflicts.filter(isBundleArtifactPath);
@@ -421,12 +370,9 @@ export function createAutoResolveInstallerAdapter(
       }
     },
 
-    // Hot-load walks every pulled extension's per-type subtree (via
-    // enumeratePulledExtensionDirs). Under issue 120's per-extension
-    // layout, each extension owns .swamp/pulled-extensions/<ext-name>/,
-    // so there is no single shared directory to pass to the loader.
-    // skipAlreadyRegistered lets the newly-installed extension's types
-    // register while already-loaded types stay put.
+    // hot-load walks every pulled extension's own subtree, since there is no
+    // shared directory; skipAlreadyRegistered lets new types register while
+    // loaded ones stay put.
     async hotLoadModels() {
       const pulledDirs = await enumeratePulledExtensionDirs(
         lockfilePath,
@@ -449,20 +395,14 @@ export function createAutoResolveInstallerAdapter(
         additionalDirs: rest,
       });
 
-      // Attach any user extensions in extensions/models/ whose base type
-      // was just registered. loadModels Pass 1 fully-registers new bases
-      // via modelRegistry.register (not lazy), so ensureTypeLoaded would
-      // short-circuit and loadSingleType's extension-attach loop would
-      // never run. Walk the catalog's extension rows and attach any whose
-      // base is now fully loaded. Idempotent (issue 123).
+      // attach user extensions whose base type was just registered: loadModels
+      // registers new bases eagerly, so ensureTypeLoaded would short-circuit
+      // and the attach loop would never run. Idempotent.
       if (repository && result.loaded.length > 0) {
         const pendingBases = new Set<string>();
         for (
           const row of repository.findByKind("extension")
         ) {
-          // Validation-failed rows (swamp-club#209) have empty
-          // extends_type so they fall out of this set naturally — the
-          // explicit emptiness check below already filters them.
           if (row.extends_type) pendingBases.add(row.extends_type);
         }
         for (const type of pendingBases) {
@@ -568,10 +508,8 @@ export function createAutoResolveInstallerAdapter(
       return webhookTypeRegistry.has(normalizedType);
     },
 
-    // Read from the catalog, since hot-loaded types are registered without
-    // the providing extension's name (swamp-club#3911). Rows carry the
-    // symlink-resolved source path, which differs from the configured root
-    // when the repo sits under a symlink (macOS /tmp), so look under both.
+    // Read from the catalog, since hot-loaded types are registered without the
+    // extension's name. Rows hold the symlink-resolved path, so check both.
     registeredModelCount(extensionName: string): number | undefined {
       if (!repository) return undefined;
       const pulledRoot = resolvePulledExtensionsRoot(repoDir);
@@ -612,9 +550,9 @@ export function createAutoResolveInstallerAdapter(
 }
 
 /**
- * Lock serializing auto-installs across processes sharing a repository
- * (swamp-club#2571). Repo-wide rather than per-extension: an install also
- * installs its dependencies, which another extension may share.
+ * lock serializing auto-installs across processes sharing a repository;
+ * repo-wide because an install also installs dependencies another extension may
+ * share.
  */
 const EXTENSION_INSTALL_LOCK_KEY = ".extension-install.lock";
 /**
@@ -624,7 +562,6 @@ const EXTENSION_INSTALL_LOCK_KEY = ".extension-install.lock";
 export const EXTENSION_INSTALL_LOCK_MAX_WAIT_MS = 180_000;
 const EXTENSION_INSTALL_LOCK_RETRY_INTERVAL_MS = 100;
 
-/** Catalog row states that mean a source failed to load (as in doctor). */
 const FAILED_SOURCE_STATES: ReadonlySet<string> = new Set([
   "BundleBuildFailed",
   "ValidationFailed",
@@ -632,12 +569,9 @@ const FAILED_SOURCE_STATES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether any catalog row for a source under `extensionDir` is in a failed
- * state. Matches by path rather than extension_name: failed pulled sources
- * can be recorded under a placeholder identity (swamp-club#2505). The
- * trailing "/" keeps `@x/foo` from matching `@x/foo-bar`, and the
- * `startsWith` re-check discards rows that SQL LIKE matched only because
- * `_` or `%` in the name acted as a wildcard.
+ * matches by path, not extension_name, since failed pulled sources can sit
+ * under a placeholder identity; the trailing / keeps @x/foo from matching
+ * @x/foo-bar, startsWith discards LIKE hits via _ or %
  */
 function hasFailedSourceUnder(
   repository: ExtensionRepository,
@@ -651,10 +585,6 @@ function hasFailedSourceUnder(
   );
 }
 
-/**
- * Creates an AutoResolveOutputPort adapter that renders auto-resolution
- * events to the terminal in log or JSON mode.
- */
 export function createAutoResolveOutputAdapter(
   mode: OutputMode,
 ): AutoResolveOutputPort {

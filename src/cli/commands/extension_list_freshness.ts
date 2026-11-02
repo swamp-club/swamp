@@ -27,34 +27,21 @@ import {
 import { checkExtensionVersion } from "../../domain/extensions/extension_update_service.ts";
 import type { EnrichedExtensionListEntry } from "../../presentation/renderers/extension_list.ts";
 
-/** Dependencies for the freshness composer. */
 export interface ExtensionListFreshnessDeps {
-  /** Look up the latest version for an extension. Return null on failure. */
   getLatestVersion: (
     name: string,
     channel?: string,
   ) => Promise<string | null>;
-  /** Cache repository for the 24h check cooldown. */
   cacheRepository: ExtensionUpdateCheckRepository;
-  /** Returns the current time. Injected for testability. */
   now: () => Date;
-  /** Maximum in-flight registry calls. */
   concurrency: number;
 }
 
 /**
- * Enriches a list of installed extensions with freshness data.
- *
- * Reads the 24h cache; for any stale entries, queries the registry in
- * parallel with bounded concurrency. Cache writes are aggregated into a
- * single atomic write at the end. On registry failure, the cache is
- * stamped with `latestVersion: installedVersion` to suppress retries for
- * 24h, and the in-memory enriched entry receives `updateStatus: "unknown_offline"`
- * with `latestVersion: null` so JSON consumers can distinguish "didn't
- * try" (fields absent on the bare entry) from "tried and failed".
- *
- * Caller is responsible for the outer try/catch to degrade to a bare
- * list on unexpected throws.
+ * on registry failure the cache is stamped latestVersion: installedVersion to
+ * suppress retries for 24h, and the entry gets unknown_offline with
+ * latestVersion null, so JSON consumers can tell "didn't try" from "tried and
+ * failed".
  */
 export async function enrichExtensionList(
   entries: ExtensionListEntry[],
@@ -65,7 +52,6 @@ export async function enrichExtensionList(
   const cache = await deps.cacheRepository.read();
   const now = deps.now();
 
-  // Determine which entries need a registry call.
   type StaleTarget = {
     index: number;
     name: string;
@@ -75,8 +61,8 @@ export async function enrichExtensionList(
   const stale: StaleTarget[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
-    // `extension update` cannot act on an auto-resolved entry, so it is
-    // not offered one (swamp-club#2483).
+    // extension update cannot act on an auto-resolved entry, so it is not
+    // offered one.
     if (e.autoResolved) continue;
     if (isExtensionCheckStale(cache, e.name, now, e.channel)) {
       stale.push({
@@ -88,7 +74,6 @@ export async function enrichExtensionList(
     }
   }
 
-  // Result map: index → in-memory unknown_offline marker, when applicable.
   type FetchResult = {
     index: number;
     name: string;
@@ -96,11 +81,8 @@ export async function enrichExtensionList(
     latestVersion: string | null;
     failed: boolean;
   };
-  // Per-target worker. The deps contract is that getLatestVersion
-  // returns null on failure rather than throwing — but we wrap in a
-  // try/catch anyway so a misbehaving deps implementation can't break
-  // the composer. Either path results in failed=true and a cache stamp
-  // suppressing 24h retries.
+  // deps return null on failure, but a throwing implementation must not break
+  // the composer; either way the cache is stamped to suppress retries for 24h.
   const fetched: FetchResult[] = await runBounded(
     stale,
     deps.concurrency,
@@ -129,14 +111,11 @@ export async function enrichExtensionList(
     },
   );
 
-  // Mutate cache map in-memory; ONE atomic write at the end.
   const checkedAtIso = now.toISOString();
   for (const r of fetched) {
     const key = extensionCacheKey(r.name, r.channel);
     cache[key] = {
       checkedAt: checkedAtIso,
-      // On registry failure, stamp with installedVersion to suppress
-      // retries for 24h.
       latestVersion: r.latestVersion ?? entries[r.index].version,
     };
   }
@@ -144,14 +123,9 @@ export async function enrichExtensionList(
     await deps.cacheRepository.write(cache);
   }
 
-  // Build the enriched entries. Source of latest version:
-  //   - For freshly-fetched entries: the fetch result (or null if failed).
-  //   - For cache-fresh entries: the cache value.
-  //   - For never-checked entries (no cache, no fetch): no enrichment.
-  // The "stale and failed THIS run" case gets unknown_offline so the
-  // caller can render the failure-to-fetch state distinctly. Stamped
-  // entries served from a fresh cache appear up_to_date for 24h — see
-  // design/primitives/extensions.md for the user-visible 24h-window semantics.
+  // a stale entry that failed this run gets unknown_offline so the failure
+  // renders distinctly; stamped entries served from a fresh cache appear
+  // up_to_date for 24h.
   const fetchedByIndex = new Map<number, FetchResult>(
     fetched.map((r) => [r.index, r]),
   );
@@ -184,13 +158,8 @@ export async function enrichExtensionList(
 }
 
 /**
- * Runs `worker` over `items` with at most `concurrency` workers in flight
- * at once. Workers are contracted to translate their own failures into
- * success values (e.g. returning null) — if a worker throws unexpectedly,
- * the slot's slot-runner records `undefined` for that index and continues.
- * The composer's outer try/catch handles higher-level degradation.
- *
- * Internal helper; not exported from libswamp.
+ * workers must turn their own failures into values; if one throws, the slot
+ * records undefined for that index and continues.
  */
 async function runBounded<T, R>(
   items: T[],
@@ -218,8 +187,6 @@ async function runBounded<T, R>(
   return results;
 }
 
-/** Default concurrency for the freshness composer. */
 export const DEFAULT_FRESHNESS_CONCURRENCY = 4;
 
-// Re-export for convenience in tests.
 export type { ExtensionUpdateCheckMap };

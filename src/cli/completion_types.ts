@@ -29,35 +29,11 @@ import { modelRegistry } from "../domain/models/model.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 
 /**
- * Custom Cliffy types for shell completion support.
- *
- * These types extend Cliffy's Type<string> to provide dynamic tab-completion
- * for model names, workflow names, and model types based on repository contents.
- *
- * ## Cliffy Type Inference Limitation
- *
- * When using custom types with Cliffy's `.arguments()`, the type inference
- * returns `unknown` instead of `string` for the action handler parameters.
- * This is a known Cliffy limitation. The workaround is to add a
- * `@ts-expect-error` comment before the `.action()` call:
- *
- * ```typescript
- * .arguments("<name:model_name>")
- * // @ts-expect-error - Cliffy custom type returns unknown instead of string
- * .action(async function (options, name: string) { ... })
- * ```
- *
- * ## Repository Directory
- *
- * Completions use "." (current working directory) as the repository path.
- * This is intentional - shell completions run from the user's CWD, and
- * completions should reflect the models/workflows in that directory.
+ * completions use the current directory as the repository because shell
+ * completions run from the user's CWD; custom Cliffy types infer unknown for
+ * action parameters, so the action needs @ts-expect-error
  */
 
-/**
- * Custom type for model name arguments with shell completion support.
- * Parses as string but provides completion for model names.
- */
 export class ModelNameType extends Type<string> {
   override parse({ value }: { value: string }): string {
     return value;
@@ -77,10 +53,6 @@ export class ModelNameType extends Type<string> {
   }
 }
 
-/**
- * Custom type for workflow name arguments with shell completion support.
- * Parses as string but provides completion for workflow names.
- */
 export class WorkflowNameType extends Type<string> {
   override parse({ value }: { value: string }): string {
     return value;
@@ -91,7 +63,6 @@ export class WorkflowNameType extends Type<string> {
       const cwd = ".";
       const yamlRepo = new YamlWorkflowRepository(cwd);
 
-      // Try to read marker for extension workflows dir
       let extensionRepo: ExtensionWorkflowRepository | null = null;
       try {
         const markerRepo = new RepoMarkerRepository();
@@ -121,10 +92,6 @@ export class WorkflowNameType extends Type<string> {
   }
 }
 
-/**
- * Custom type for model type arguments with shell completion support.
- * Parses as string but provides completion for registered model types.
- */
 export class ModelTypeType extends Type<string> {
   override parse({ value }: { value: string }): string {
     return value;
@@ -137,12 +104,8 @@ export class ModelTypeType extends Type<string> {
 }
 
 /**
- * The completion type names and the type each one parses with. The behavior
- * spellings (swamp-club#3410) sit beside the model ones: commands in the
- * `swamp behavior` tree name `behavior_name` and `behavior_type`, the
- * `swamp model` tree keeps `model_name` and `model_type`, and installed
- * completion scripts call whichever name they were generated with, so every
- * name stays registered.
+ * behavior and model spellings are both registered, since installed completion
+ * scripts call whichever name they were generated with
  */
 const COMPLETION_TYPES: ReadonlyArray<readonly [string, () => Type<string>]> = [
   ["model_name", () => new ModelNameType()],
@@ -152,21 +115,14 @@ const COMPLETION_TYPES: ReadonlyArray<readonly [string, () => Type<string>]> = [
   ["behavior_type", () => new ModelTypeType()],
 ];
 
-/** The completion type names {@link registerCompletionTypes} registers. */
 export const COMPLETION_TYPE_NAMES: readonly string[] = COMPLETION_TYPES.map((
   [name],
 ) => name);
 
-/** A command that global types can be registered on. */
 interface GlobalTypeRegistrar {
   globalType(name: string, handler: Type<string>): unknown;
 }
 
-/**
- * Registers every completion type on `command` as a global type and returns
- * it. The CLI root and every test root that mounts real commands use this,
- * so a command naming any completion type parses under each of them.
- */
 export function registerCompletionTypes<T extends GlobalTypeRegistrar>(
   command: T,
 ): T {

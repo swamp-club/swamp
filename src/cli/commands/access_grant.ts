@@ -175,10 +175,8 @@ const accessGrantCreateCommand = new Command()
         .filter(Boolean)
       : undefined;
 
-    // The grant model refuses these inputs only after the run has saved its
-    // definition, so check them first and leave nothing behind for a refused
-    // grant (swamp-club#3182). The model still checks them itself, so through
-    // --server this only spares the server a request it would refuse.
+    // check inputs before the run saves a definition, so a refused grant leaves
+    // nothing behind; the model still checks them itself.
     try {
       checkGrantCreateInputs({
         subject: options.subject as string,
@@ -431,8 +429,8 @@ const accessGrantListCommand = new Command()
           type: "access.grant.list",
           payload: {
             subject: options.subject as string | undefined,
-            // The canonical spelling, so a server that predates the behavior
-            // spelling of a selector (swamp-club#3334) still reads it.
+            // sent in the canonical spelling so a server that predates the
+            // behavior spelling still reads it.
             resource: options.on !== undefined
               ? canonicalResourceSelectorString(options.on as string)
               : undefined,

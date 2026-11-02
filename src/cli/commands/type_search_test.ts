@@ -21,10 +21,8 @@ import { assertEquals } from "@std/assert";
 import type { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("typeSearchCommand module loads", async () => {
@@ -48,9 +46,9 @@ Deno.test("typeSearchCommand is registered as subcommand of modelTypeCommand", a
 });
 
 Deno.test("typeSearchCommand accepts --repo-dir for agentic-flow consistency", async () => {
-  // type search reads only the global extension catalog and does not
-  // require an initialized repo, but the option is accepted so agents
-  // can pass it uniformly across all swamp commands. (swamp-club#235)
+  // type search reads only the global extension catalog and needs no
+  // initialized repo, but accepts the option so agents can pass it uniformly
+  // across commands
   const { typeSearchCommand } = await import("./type_search.ts");
   const names = typeSearchCommand.getOptions().map((o) => o.name);
   if (!names.includes("repo-dir")) {

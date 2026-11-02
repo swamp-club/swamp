@@ -21,34 +21,9 @@ import type { AnyCommand } from "./cli_schema.ts";
 import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
 
 /**
- * Whether the auth gate runs for an invocation: `exempt` or `gated`.
- *
- * Exempt are:
- *   - bare `swamp` (prints help) and any line Cliffy will answer with help or
- *     version output instead of running a command;
- *   - the bare `auth` group, `auth login`, `auth logout` and `auth whoami`,
- *     the path to a credential;
- *   - commands that touch no swamp feature: `help` (the structured `--help`
- *     agents read), `completions` (shell rc files run it at every shell
- *     start), `version` (as `--version` is) and `update` (a blocked user, or
- *     a CI host after a signing-key rotation, must be able to install the
- *     release that fixes it);
- *   - `start`, the first command a new user runs. It signs the user in
- *     itself, as the first thing its page asks for, and refuses every
- *     workspace-changing operation (repo init and upgrade, importing a repo,
- *     enrolling agents, launching an agent) until they are signed in, so a
- *     new user's first screen is never the gate's "requires a
- *     swamp-club.com account" block. Its workspaces may be imported repos
- *     anywhere on disk, not only folders Swamp created.
- * `worker connect` is `enrollment`: gated, except that a worker without a
- * credential may instead pass on the serve that enrolls it
- * (design/surfaces/auth-gate.md, "Remote workers"). Everything else is
- * gated.
- *
- * The decision is made against the real command tree — the same declarations
- * Cliffy parses — never a guess from token positions. A guess once took
- * `swamp --log init` for bare `swamp`, because it did not know `--log` takes
- * no value, and let `init` run unauthenticated.
+ * decided against the real command tree Cliffy parses, never guessed from token
+ * positions, which could mistake `swamp --log init` for bare `swamp` and run
+ * init unauthenticated.
  */
 export type AuthGateTiming = "exempt" | "gated" | "enrollment";
 
@@ -58,10 +33,6 @@ const EXEMPT_AUTH_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "whoami",
 ]);
 
-/**
- * Top-level commands exempt from the gate, with their subcommands: those
- * that touch no swamp feature, and `start`, which signs the user in itself.
- */
 const UNGATED_COMMANDS: ReadonlySet<string> = new Set([
   "help",
   "completions",
@@ -81,8 +52,8 @@ export function authGateTiming(
   tree: AnyCommand,
   args: readonly string[],
 ): AuthGateTiming {
-  // The raw resolution, not the recorded form: `swamp behavior …` must be
-  // walked in the behavior tree it was typed in (swamp-club#3411).
+  // use the raw resolution, not the recorded form: `swamp behavior ...` must be
+  // walked in the behavior tree it was typed in.
   const resolved = resolveTelemetryInvocation(tree, [...args], []);
   const path = resolved.commandPath ?? [];
   // `args` holds the command words after the subcommand plus positionals, so
@@ -104,7 +75,6 @@ export function authGateTiming(
   return "gated";
 }
 
-/** The commands from the root to the resolved leaf. */
 function commandChain(tree: AnyCommand, path: readonly string[]): AnyCommand[] {
   const chain = [tree];
   let current: AnyCommand | undefined = tree;
@@ -137,10 +107,9 @@ function takesValue(chain: readonly AnyCommand[], key: string): boolean {
 }
 
 /**
- * True when a help or version flag on the line is one Cliffy will act on.
- * It errs toward gating: a token that follows any option taking a value
- * (required or optional) may be that value, and a name some command on the
- * path declares as its own option is that option, not help.
+ * true when a help or version flag is one Cliffy will act on; errs toward
+ * gating: a token after any value-taking option may be that value, and a name a
+ * command on the path declares as its own option is that option, not help.
  */
 function answersWithHelpOrVersion(
   tree: AnyCommand,

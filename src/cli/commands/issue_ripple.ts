@@ -45,20 +45,13 @@ import { loadIdentity } from "../load_identity.ts";
 type AnyOptions = any;
 
 /**
- * Editor template for ripples. Comment lines (HTML markers) are stripped
- * by {@link parseRippleContent}, so the hint disappears once the user
- * writes their actual content. Kept on a single line so the per-line
- * filter strips it without needing to handle multi-line comments.
+ * kept on a single line so the per-line comment filter strips it without
+ * handling multi-line comments.
  */
 export const RIPPLE_TEMPLATE =
   `<!-- Write your ripple in markdown. Lines starting with '<!--' are stripped. Save and close to post; leave blank to cancel. -->
 `;
 
-/**
- * Parse ripple content from the editor. Strips HTML comment lines and
- * trims whitespace. Returns null when the result is empty (treated as a
- * cancellation).
- */
 export function parseRippleContent(content: string): string | null {
   const cleaned = content
     .split("\n")
@@ -154,7 +147,6 @@ export const issueRippleCommand = new Command()
       }
     }
 
-    // Redact sensitive content before submission.
     if (options.redact === false) {
       renderRedactionSkipped(ctx.outputMode);
     } else {

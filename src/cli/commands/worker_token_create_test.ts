@@ -22,10 +22,8 @@ import { Command } from "@cliffy/command";
 import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("workerTokenCreateCommand module loads", async () => {
@@ -99,7 +97,6 @@ Deno.test("workerTokenCreateCommand: --vault help and example say it needs --ser
     o.name === "vault"
   );
   assertStringIncludes(vaultOpt!.description, "only with --server");
-  // swamp-club#2422: omitting --vault on the server means _token-secrets.
   assertStringIncludes(vaultOpt!.description, "defaults to _token-secrets");
   const vaultExamples = workerTokenCreateCommand.getExamples().filter((e) =>
     e.description.includes("--vault")

@@ -64,10 +64,8 @@ function resolveServerUrl(): string {
 }
 
 /**
- * Filter a status array down to "outdated" rows: anything that is not
- * up_to_date is rendered (so users see not_found and failed too), but
- * the exit code only fails on update_available — see
- * `hasUpdateAvailable` in the renderer payload.
+ * anything not up_to_date renders, but the exit code fails only on
+ * update_available.
  */
 export function filterOutdated(
   statuses: ExtensionUpdateStatus[],
@@ -81,23 +79,9 @@ export function filterOutdated(
 }
 
 /**
- * `swamp extension outdated`
- *
- * Wraps the existing extensionUpdate generator with checkOnly=true,
- * filters out up_to_date entries for display, and exits with code 1
- * if and only if at least one extension has status update_available.
- * not_found and failed statuses are rendered inline as informational
- * but do NOT fail the exit code (CI gate `swamp extension outdated &&
- * deploy` should fail only on a clear newer-version-exists signal,
- * not on transient registry errors).
- *
- * Note on concurrency: this command wraps the existing
- * libswamp/extensions/update.ts:extensionUpdate generator which
- * iterates installed extensions sequentially (loop at line 133).
- * `swamp extension list --check-updates` uses a parallel composer
- * (concurrency=4); the inconsistency is intentional. `outdated`
- * mirrors `extension update --check` so the two behave identically;
- * making them diverge would surprise users of `update --check`.
+ * exits 1 only on update_available; not_found and failed render but do not
+ * fail, so a CI gate ignores transient registry errors. Sequential like
+ * extension update --check on purpose.
  */
 export const extensionOutdatedCommand = withRemoteOptions(
   new Command()

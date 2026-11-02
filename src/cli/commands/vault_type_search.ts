@@ -69,8 +69,7 @@ export async function vaultTypeSearchAction(
         payload: { query },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker
     const renderer = createVaultTypeSearchRenderer(effectiveMode, {
       interactive: false,
     });
@@ -97,7 +96,6 @@ export async function vaultTypeSearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected vault type: ${selected.type}`;
-    // Both log and json modes output the vault type as JSON
     console.log(JSON.stringify(selected, null, 2));
   } else {
     ctx.logger.debug`Search cancelled`;

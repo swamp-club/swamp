@@ -139,7 +139,6 @@ export const workflowEditCommand = withRemoteOptions(
       logger: cliCtx.logger,
     });
 
-    // Interactive search mode when no argument provided
     if (!workflowIdOrName) {
       if (cliCtx.outputMode === "json") {
         throw new UserError(
@@ -193,10 +192,9 @@ export const workflowEditCommand = withRemoteOptions(
             ),
         ), `the workflow definition "${editIdOrName}"`);
 
-    // A stored workflow is edited on a copy and saved like a piped edit, so
-    // the edit is committed (swamp-club#4107). Opening the editor loads the
-    // workflow (swamp-club#4097); a change another member lands while it is
-    // open refuses the save.
+    // a stored workflow is edited on a copy and saved like a piped edit so it
+    // is committed; a change another member lands while the editor is open
+    // refuses the save
     const file = stdinContent === null
       ? await resolveWorkflowEditFile(libCtx, deps, { workflowIdOrName })
       : null;
@@ -265,8 +263,8 @@ export const workflowEditCommand = withRemoteOptions(
       return;
     }
 
-    // A stale stdin edit, a rename's included, is refused before it
-    // writes; opening the editor loads the workflow (swamp-club#4097).
+    // a stale stdin edit, a rename's included, is refused before it writes;
+    // opening the editor loads the workflow
     const target = await repoContext.workflowRepo.findByName(workflowIdOrName)
       .catch(() => null) ??
       await repoContext.workflowRepo.findById(

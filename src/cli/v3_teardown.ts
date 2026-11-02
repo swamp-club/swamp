@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How the CLI's teardown closes the v3 datastores it opened.
- *
- * @module
- */
-
 import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
 import {
   CommitUnreachableError,
@@ -39,16 +33,9 @@ import {
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 /**
- * Closes the v3 datastores after a command that succeeded. Commits a sync
- * could not confirm fail the command (swamp-club#3416): they are saved, but
- * not yet replicated; a command that committed nothing reports what
- * {@link reportedV3Failure} makes of it instead. Any other failure is only
- * logged: the command's work is committed, and the writer lock's TTL
- * expires if its release failed.
- *
- * @throws V3ReplicationError
- * @throws V3StorageUnreachableError
- * @throws V3ReplicationUnavailableError
+ * commits a sync could not confirm fail the command: they are saved but not yet
+ * replicated. Any other failure is only logged: the command's work is committed
+ * and the writer lock's TTL expires if its release failed
  */
 export async function closeV3DatastoresAfterSuccess(
   close: () => Promise<void> = closeV3Datastores,
@@ -68,14 +55,9 @@ export async function closeV3DatastoresAfterSuccess(
 }
 
 /**
- * Closes the v3 datastores after a command that failed, best effort, and
- * resolves with the error the command reports: `error`, as
- * {@link reportedV3Failure} words it. When it failed because the
- * datastore's storage could not be reached, the close is told so
- * (swamp-club#3759, swamp-club#3802): it gives the closing sync a short
+ * best effort. When storage could not be reached the close gets a short sync
  * deadline and stops waiting on compaction, recovery and lease retries that
- * cannot succeed, so the error is not delayed by them. What the sync would
- * confirm replicates with the next write either way.
+ * cannot succeed; what the sync would confirm replicates with the next write
  */
 export async function closeV3DatastoresAfterFailure(
   error: unknown,
@@ -94,13 +76,8 @@ export async function closeV3DatastoresAfterFailure(
   return reported;
 }
 
-/** How far {@link failedReachingStorage} follows `cause` links. */
 const MAX_CAUSE_DEPTH = 8;
 
-/**
- * Whether `error`, or an error it wraps, says the datastore's storage could
- * not be reached.
- */
 function failedReachingStorage(error: unknown): boolean {
   let current = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {

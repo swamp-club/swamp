@@ -30,25 +30,16 @@ import {
   warnWithheldTokenFile,
 } from "./remote_run.ts";
 
-/** Whether serve is a command's datastore upstream, and why. */
-/** The words of the command this process runs, as typed: set at startup. */
 let currentCommandPath: readonly string[] = [];
 
-/**
- * Records the command words `runInvocation` parsed, for
- * {@link resolveServeUpstream}'s callers in the repo context, which are
- * reached from inside each command's action.
- */
 export function setServeUpstreamCommandPath(path: readonly string[]): void {
   currentCommandPath = [...path];
 }
 
-/** The command words recorded at startup; empty in-process (tests, serve). */
 export function serveUpstreamCommandPath(): readonly string[] {
   return currentCommandPath;
 }
 
-/** Test seam: forgets the recorded command words. */
 export function resetServeUpstreamCommandPath(): void {
   currentCommandPath = [];
 }
@@ -59,10 +50,9 @@ export interface ServeUpstreamDecision {
 }
 
 /**
- * A top-level command family's answer. With `subcommands`, the family's own
- * `applies` is the answer for the bare group and for any subcommand the map
- * does not list; the rules test requires every registered subcommand to be
- * listed, so that default only covers the group's own help output.
+ * with `subcommands`, the family's own `applies` answers for the bare group and
+ * unlisted subcommands; the rules test requires every subcommand listed, so it
+ * only covers the group's help output
  */
 export interface ServeUpstreamFamilyRule extends ServeUpstreamDecision {
   readonly subcommands?: Readonly<Record<string, ServeUpstreamDecision>>;
@@ -72,23 +62,14 @@ const APPLIES = "reads or writes the repository like any other command";
 const NO_REPO = "opens no repository; the answer is moot";
 
 /**
- * The one table that says which commands use serve as their v3 datastore
- * upstream when the checkout has a serve address. Keyed by the top-level
- * word as typed, so aliases (`behaviour`, `summarize`) have their own rows.
- * `integration/serve_upstream_rules_test.ts` fails when a registered
- * top-level command, alias, or `datastore` subcommand has no row here.
- *
- * Excluded commands bind the datastore's storage directly, as they do
- * without a serve address.
+ * the one table saying which commands use serve as their v3 datastore upstream,
+ * keyed by the top-level word as typed so aliases have their own rows; excluded
+ * commands bind storage directly
  */
 /**
- * The command families that, in a v3 checkout written through serve, run
- * locally with serve as their datastore's upstream even though they also
- * have a `--server` flag (swamp-club#3985): the data plane, whose records
- * the datastore holds. An address from the environment or `.swamp.yaml`
- * no longer sends them to serve over its WebSocket API; an explicit
- * `--server` still does. The control plane (`access`, `audit`, `doctor`,
- * `datastore`, …) keeps that routing: it administers serve itself.
+ * data-plane families run locally with serve as upstream despite a --server
+ * flag: an address from the environment or .swamp.yaml does not send them to
+ * serve, an explicit --server does
  */
 export const SERVE_UPSTREAM_LOCAL_FAMILIES: ReadonlySet<string> = new Set([
   "behavior",
@@ -103,21 +84,14 @@ export const SERVE_UPSTREAM_LOCAL_FAMILIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Control-plane subcommands that, in a v3 checkout written through serve,
- * still run locally (swamp-club#4195): `datastore status` reports the
- * checkout's own copy and the work it saved offline, which serve cannot
- * see, and adds serve's own section when serve answers. An explicit
- * `--server` still sends it to serve. Keyed `"<command> <subcommand>"`.
+ * `datastore status` runs locally: it reports the checkout's own copy and
+ * offline-saved work serve cannot see, and adds serve's section when serve
+ * answers; an explicit `--server` still sends it to serve
  */
 export const SERVE_UPSTREAM_LOCAL_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "datastore status",
 ]);
 
-/**
- * Whether the command at `commandPath` runs locally with serve as its v3
- * datastore's upstream rather than on serve: a data-plane family, or one
- * of {@link SERVE_UPSTREAM_LOCAL_SUBCOMMANDS}, that serve mode applies to.
- */
 export function serveUpstreamRunsLocally(
   commandPath: readonly string[],
 ): boolean {
@@ -139,7 +113,6 @@ const DECIDED_ON_SERVE =
 export const SERVE_UPSTREAM_COMMANDS: Readonly<
   Record<string, ServeUpstreamFamilyRule>
 > = {
-  // --- excluded ---
   serve: {
     applies: false,
     reason: "serve is the upstream; it owns the storage binding itself",
@@ -238,7 +211,6 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
       workflows: { applies: true, reason: APPLIES },
     },
   },
-  // --- applies ---
   access: { applies: true, reason: APPLIES },
   agent: { applies: true, reason: APPLIES },
   audit: { applies: true, reason: APPLIES },
@@ -300,12 +272,8 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
 };
 
 /**
- * Whether the command at `commandPath` uses serve as its v3 datastore
- * upstream. `commandPath` is the command words as typed: the top-level
- * command and, when there is one, its subcommand (what
- * `extractCommandInfo` returns as `command` and `subcommand`); words past
- * the second are ignored. An empty path or a word the table does not know
- * answers false, which keeps today's direct storage binding.
+ * an empty path or a word the table does not know answers false, which keeps
+ * the direct storage binding; words past the second are ignored
  */
 export function serveUpstreamAppliesTo(
   commandPath: readonly string[],
@@ -326,47 +294,18 @@ export function serveUpstreamAppliesTo(
   return family.applies;
 }
 
-/** What {@link resolveServeUpstream} takes. */
 export interface ResolveServeUpstreamOptions {
-  /** The engine the datastore's format marker chose. */
   engine: DatastoreEngine;
-  /** The invocation's command words; see {@link serveUpstreamAppliesTo}. */
   commandPath: readonly string[];
-  /**
-   * The repository marker's serverAddress, when the caller has it. Without
-   * it, the address cached from the marker at startup is used.
-   */
   markerServerAddress?: string;
-  /** Test seam; defaults to the servers.json repository. */
   credentialRepository?: ServerCredentialRepository;
-  /** Test seam; defaults to `SWAMP_CA_CERT` (see `getEnvCaCerts`). */
   getCaCerts?: () => readonly string[] | undefined;
 }
 
 /**
- * The serve this invocation uses as its v3 datastore upstream, or
- * `undefined` when there is none: the engine is not v3, the command binds
- * storage on purpose (see {@link SERVE_UPSTREAM_COMMANDS}), or no serve
- * address is configured (`SWAMP_SERVE_URL`, `SWAMP_SERVER_URL`, the
- * marker's serverAddress).
- *
- * The token comes only from sources bound to the address, so a token meant
- * for one server is never sent to another:
- *
- * 1. `SWAMP_SERVER_TOKEN_FILE`, only when `SWAMP_SERVE_URL` or
- *    `SWAMP_SERVER_URL` is set and normalizes to the resolved address.
- *    A marker-only address never reads it; when no other source supplies
- *    a token either, it warns once that the file was not sent
- *    ({@link warnWithheldTokenFile}).
- * 2. The credential repository: `SWAMP_SERVER_TOKEN` when
- *    `SWAMP_SERVER_URL` normalizes to the address, else the stored
- *    credential for the address in servers.json.
- *
- * No token is not an error: a serve with `--auth-mode none` needs none,
- * and one that does answers 401, which carries the login hint.
- *
- * @throws {UserError} when the address is not a valid http(s) or ws(s) URL,
- *   or a bound token file cannot be read.
+ * the token comes only from sources bound to the address, so a token meant for
+ * one server is never sent to another; no token is not an error: serve with
+ * `--auth-mode none` needs none and others answer 401 with the login hint
  */
 export async function resolveServeUpstream(
   opts: ResolveServeUpstreamOptions,
@@ -404,7 +343,6 @@ export async function resolveServeUpstream(
   });
 }
 
-/** The `SWAMP_SERVER_TOKEN_FILE` token when it is bound to `key`. */
 async function boundTokenFileToken(key: string): Promise<string | undefined> {
   const tokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
   if (!tokenFile) return undefined;

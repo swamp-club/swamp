@@ -111,13 +111,11 @@ export async function modelMethodHistoryGetAction(
   cliCtx.logger.debug("Model method history get command completed");
 }
 
-/** The preferred spelling: `swamp behavior history get`. */
 export const BEHAVIOR_HISTORY_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior history get",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model method history get`. */
 export const MODEL_METHOD_HISTORY_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history get",
   surface: "model",

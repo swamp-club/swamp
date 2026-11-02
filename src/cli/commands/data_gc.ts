@@ -103,8 +103,6 @@ export const dataGcCommand = withRemoteOptions(
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
-  // Pushes and releases the global lock when the command ends, as the
-  // teardown flush did (swamp-club#3055).
   await runInCoordinatorRoot(repoContext, async () => {
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createDataGcDeps(
@@ -116,7 +114,6 @@ export const dataGcCommand = withRemoteOptions(
       marker?.garbageCollection,
     ).retentionMs("data");
 
-    // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
     if (
       cliCtx.outputMode === "log" && !options.yes && !options.force &&
       !options.dryRun
@@ -140,7 +137,6 @@ export const dataGcCommand = withRemoteOptions(
       }
     }
 
-    // Phase 2: Execute GC
     const renderer = createDataGcRenderer(cliCtx.outputMode);
     await consumeStream(
       dataGc(ctx, deps, { dryRun: !!options.dryRun, dataRetentionMs }),

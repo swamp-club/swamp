@@ -135,8 +135,8 @@ export const extensionUpdateCommand = withRemoteOptions(
     return;
   }
 
-  // 1. Validate repo (lightweight — no datastore resolution, so updating
-  // the repo's own datastore extension doesn't circular-fail; see #445)
+  // lightweight: no datastore resolution, so updating the repo's own datastore
+  // extension does not fail circularly.
   const { repoDir, marker } = await requireRepoMarker(
     resolveRepoDir(options.repoDir),
   );
@@ -153,23 +153,22 @@ export const extensionUpdateCommand = withRemoteOptions(
   let lockfileTransaction: LockfileTransaction | undefined;
   let fallbackLockfile = false;
   if (options.check) {
-    // Read-only: no guard, but say when the answer comes from the in-repo
-    // fallback rather than the datastore's lockfile, because the datastore
-    // extension could not be installed (swamp-club#2483).
+    // read-only: no guard, but say when the answer comes from the in-repo
+    // fallback because the datastore extension could not be installed.
     await ensureManagedConfigBase(repoDir, marker);
     lockfilePath = resolveManagedConfigPaths(repoDir, marker).lockfilePath;
     fallbackLockfile = isExtensionBackedDatastore(marker) &&
       !isManagedConfigBaseResolved(repoDir);
   } else {
-    // Refuses to record into a guessed managed config base, except when
-    // updating the repo's own datastore extension by name (#445).
+    // refuses to record into a guessed managed config base, except when
+    // updating the repo's own datastore extension by name.
     const target = await resolveManagedLockfileForWrite(repoDir, marker, {
       exemptTargets: extensionName ? [extensionName] : [],
       extensionLookup: createExtensionRegistryLookup(serverUrl, identity),
     });
     lockfilePath = target.lockfilePath;
-    // Updates are made against the datastore's lockfile and published as
-    // they land (swamp-club#2838).
+    // updates are made against the datastore's lockfile and published as they
+    // land.
     lockfileTransaction = createManagedLockfileTransaction(
       repoDir,
       marker,
@@ -177,9 +176,8 @@ export const extensionUpdateCommand = withRemoteOptions(
     );
   }
 
-  // Per-extension models/workflows/vaults/datastores/reports
-  // destinations are derived inside installExtension from the
-  // extension's scoped name. Only skillsDir is tool-dependent.
+  // per-extension destinations are derived inside installExtension from the
+  // extension's scoped name; only skillsDir is tool-dependent.
   const tools = marker?.tools?.length ? marker.tools : ["claude"];
   const skillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
 
@@ -190,13 +188,9 @@ export const extensionUpdateCommand = withRemoteOptions(
     primarySkillsDirRelative,
   );
 
-  // 4. Wire deps — inject installExtension from CLI layer
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  // W2 (commit 3): construct shared denoRuntime + repository so each
-  // upgrade routes through InstallExtensionService and phase 8 fires
-  // (catalog populated synchronously, I-Repo-1 fires on collision,
-  // rollback to the previous version). The catalog stays open for the
-  // duration of the bulk update — closed in the finally block.
+  // Shared denoRuntime and repository so each upgrade routes through
+  // InstallExtensionService; the catalog stays open for the bulk update.
   const denoRuntime = new EmbeddedDenoRuntime();
   const mountedSourceDirs = await resolveMountedSourceDirs(repoDir);
   const catalog = new ExtensionCatalogStore(
@@ -212,10 +206,8 @@ export const extensionUpdateCommand = withRemoteOptions(
         version: string,
         channel?: string,
       ) => {
-        // Construct a fresh InstallContext per upgrade — captures a
-        // current snapshot of the lockfile per the
-        // InstallContext.lockfileRepository single-use rule. Reusing one
-        // context across multiple installs would expose stale state.
+        // a fresh InstallContext per upgrade: its lockfileRepository is
+        // single-use, and reusing one across installs would expose stale state.
         const installCtx = await createInstallContext(serverUrl, {
           logger: cliCtx.logger,
           lockfilePath,
@@ -225,20 +217,18 @@ export const extensionUpdateCommand = withRemoteOptions(
           identity,
           channel,
         });
-        // Build a fresh ExtensionRepository per upgrade so its lockfile
-        // snapshot lines up with the InstallContext's. Catalog is
-        // shared across the bulk run for atomicity-of-each-upgrade.
+        // a fresh ExtensionRepository per upgrade so its lockfile snapshot
+        // lines up with the InstallContext's; the catalog is shared across the
+        // bulk run.
         const repository = new ExtensionRepository({
           catalog,
           lockfileRepository: installCtx.lockfileRepository,
           repoRoot: repoDir,
           mountedSourceDirs,
         });
-        // W2 (commit 5): route through UpgradeExtensionService for
-        // explicit upgrade-intent at the call site. Internally this
-        // delegates to InstallExtensionService whose phase 8
-        // tombstones the prior version atomically (saveAll is one
-        // SQLite txn).
+        // UpgradeExtensionService delegates to InstallExtensionService, whose
+        // phase 8 tombstones the prior version atomically (saveAll is one
+        // SQLite transaction).
         return await new UpgradeExtensionService({
           denoRuntime,
           repository,
@@ -247,7 +237,6 @@ export const extensionUpdateCommand = withRemoteOptions(
       },
     });
 
-    // 5. Execute and render
     const renderer = createExtensionUpdateRenderer(cliCtx.outputMode);
     await withManagedLockfileTransaction(
       lockfileTransaction,

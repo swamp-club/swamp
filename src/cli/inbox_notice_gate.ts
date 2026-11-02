@@ -33,7 +33,6 @@ import { postCommandNoticesAllowed } from "./context.ts";
  * command decide alike.
  */
 
-/** The slow commands that poll, as `swamp model` paths. */
 const POLLING_COMMANDS: readonly (readonly string[])[] = [
   ["workflow", "run"],
   ["model", "method", "run"],
@@ -41,11 +40,6 @@ const POLLING_COMMANDS: readonly (readonly string[])[] = [
   ["extension", "push"],
 ];
 
-/**
- * Command groups that never show the notice: the inbox itself, the
- * subscription and the path to a credential, and the long-running commands
- * whose stderr nobody reads.
- */
 const NOTICE_EXCLUDED_GROUPS: ReadonlySet<string> = new Set([
   "inbox",
   "subscription",
@@ -60,13 +54,11 @@ function samePath(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((word, i) => word === b[i]);
 }
 
-/** Whether a run of this command polls the inbox in the background. */
 export function pollsInbox(commandPath: readonly string[]): boolean {
   const path = behaviorTwinPath(commandPath);
   return POLLING_COMMANDS.some((polling) => samePath(polling, path));
 }
 
-/** Whether this command may print the inbox notice after it finishes. */
 export function showsInboxNotice(
   commandPath: readonly string[],
   gateTiming: AuthGateTiming,
@@ -81,11 +73,6 @@ function switchedOn(value: string | undefined): boolean {
     value !== "false";
 }
 
-/**
- * True when `CI` or `SWAMP_NO_INBOX_NOTICE` is set to anything but an empty
- * string, `0` or `false`, as `SWAMP_NO_UPDATE_CHECK` is read. Either turns
- * off both the poll and the notice.
- */
 export function inboxNoticeDisabledByEnv(
   get: (name: string) => string | undefined = (name) => Deno.env.get(name),
 ): boolean {
@@ -95,9 +82,7 @@ export function inboxNoticeDisabledByEnv(
 export interface InboxNoticeRun {
   readonly commandPath: readonly string[];
   readonly gateTiming: AuthGateTiming;
-  /** Whether the auth gate passed this run on its own credential. */
   readonly gatePassed: boolean;
-  /** Whether a swamp above this process started it. */
   readonly nested: boolean;
   readonly disabledByEnv: boolean;
 }
@@ -135,21 +120,14 @@ export function commandSucceeded(exitCode: number): boolean {
 
 export interface FinishInboxNoticeOptions {
   readonly poll: InboxPoll | null;
-  /** Whether this run may print the notice at all. */
   readonly notice: boolean;
   readonly outputMode: OutputMode;
   readonly quiet: boolean;
-  /** False on the error path: a failed command's output ends with its error. */
   readonly succeeded: boolean;
   readonly show: () => Promise<InboxNotice | null>;
   readonly write?: (line: string) => void;
 }
 
-/**
- * The inbox's part of teardown. Always settles and saves the poll, then
- * prints the notice only after a command that succeeded, in log mode without
- * `-q`. Never throws.
- */
 export async function finishInboxNotice(
   options: FinishInboxNoticeOptions,
 ): Promise<void> {

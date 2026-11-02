@@ -331,7 +331,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** `daemon enable` options with Cliffy's defaults applied. */
 function enableOptions(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {

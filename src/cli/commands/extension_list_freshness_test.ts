@@ -87,7 +87,7 @@ Deno.test("enrichExtensionList: cache hit makes no registry calls", async () => 
         return Promise.resolve("should-not-be-called");
       },
       cacheRepository: cache,
-      now: () => new Date("2026-05-01T00:00:01.000Z"), // 1s later, fresh
+      now: () => new Date("2026-05-01T00:00:01.000Z"),
       concurrency: 4,
     },
   );
@@ -100,7 +100,7 @@ Deno.test("enrichExtensionList: cache hit makes no registry calls", async () => 
 Deno.test("enrichExtensionList: stale cache triggers fetch and ONE aggregate write", async () => {
   const cache = new InMemoryCacheRepo({
     "@ns/foo": {
-      checkedAt: "2026-04-01T00:00:00.000Z", // 30 days old → stale
+      checkedAt: "2026-04-01T00:00:00.000Z",
       latestVersion: "2026.03.01.1",
     },
   });
@@ -175,9 +175,7 @@ Deno.test("enrichExtensionList: registry failure stamps cache and marks unknown_
     },
   );
   assertEquals(cache.writes, 1);
-  // Cache stamped with installedVersion to suppress 24h retry
   assertEquals(cache.data["@ns/foo"].latestVersion, "2026.03.01.1");
-  // In-memory entry distinguishes "tried and failed" from cache-fresh
   assertEquals(result[0].latestVersion, null);
   assertEquals(result[0].updateStatus, "unknown_offline");
 });
@@ -187,10 +185,9 @@ Deno.test("enrichExtensionList: worker-throws degrades to unknown_offline (does 
   const result = await enrichExtensionList(
     [baseEntry("@ns/throws", "2026.03.01.1")],
     {
-      // Production wires a try/catch and returns null on failure. This test
-      // simulates a worker that escapes its own try/catch — the runBounded
-      // helper must still record SOMETHING and the composer must degrade
-      // gracefully rather than rejecting the whole list.
+      // production wires a try/catch and returns null on failure; this
+      // simulates a worker that escapes it, which runBounded and the composer
+      // must still degrade through gracefully
       getLatestVersion: () => {
         throw new Error("simulated unexpected throw");
       },
@@ -199,8 +196,6 @@ Deno.test("enrichExtensionList: worker-throws degrades to unknown_offline (does 
       concurrency: 4,
     },
   );
-  // Composer treats undefined fetch result like a registry failure:
-  // unknown_offline status, cache stamped to suppress 24h retry.
   assertEquals(result.length, 1);
   assertEquals(result[0].updateStatus, "unknown_offline");
   assertEquals(result[0].latestVersion, null);
@@ -208,7 +203,6 @@ Deno.test("enrichExtensionList: worker-throws degrades to unknown_offline (does 
 });
 
 Deno.test("enrichExtensionList: concurrency cap respects bound", async () => {
-  // Track concurrent in-flight calls; assert the max never exceeds the cap.
   const cap = 2;
   let inFlight = 0;
   let maxInFlight = 0;
@@ -216,12 +210,11 @@ Deno.test("enrichExtensionList: concurrency cap respects bound", async () => {
     { length: 8 },
     (_, i) => baseEntry(`@ns/ext-${i}`, "2026.01.01.1"),
   );
-  const cache = new InMemoryCacheRepo({}); // all stale → all fetched
+  const cache = new InMemoryCacheRepo({});
   await enrichExtensionList(entries, {
     getLatestVersion: async () => {
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
-      // Release the event loop a few times to let other callers race in.
       await new Promise((r) => setTimeout(r, 5));
       inFlight--;
       return "2026.01.01.1";

@@ -28,21 +28,18 @@ import { quoteShellWord } from "../../domain/shell_word.ts";
 import type { CommandContext } from "../context.ts";
 import { formatCommandTarget } from "../remote_run.ts";
 
-// The commands in these follow-ups go through writeOutput, not the logger:
-// LogTape quotes interpolated values and the pretty sink wraps long lines,
-// and either breaks a copy-pasted command (swamp-club#2977). JSON mode prints
-// none of them, and `--quiet` hides them as it hides the logger's lines.
+// these follow-ups go through writeOutput, not the logger: LogTape quotes
+// interpolated values and the pretty sink wraps long lines, either of which
+// breaks a copy-pasted command. JSON mode prints none, and --quiet hides them.
 
-/** A command that ran through serve, and the `--server` flag it was given. */
 export interface ThroughServe {
   server?: string;
 }
 
 /**
- * The command that resumes `parent`. Through serve, both runs live on the
- * server this command reached, so its target replaces the `--server <url>`
- * placeholder serve puts in `resumeCommand` (it cannot know the address the
- * client used).
+ * through serve, both runs live on the server this command reached, so its
+ * target replaces the --server <url> placeholder in resumeCommand, which cannot
+ * know the address the client used.
  */
 export function parentResumeCommand(
   parent: AwaitingParentData,
@@ -55,7 +52,6 @@ export function parentResumeCommand(
     : parent.resumeCommand;
 }
 
-/** The command that cancels `child`, with the same target as above. */
 function detachedCancelCommand(
   child: DetachedNestedRunData,
   remote?: ThroughServe,
@@ -67,10 +63,6 @@ function detachedCancelCommand(
     : child.cancelCommand;
 }
 
-/**
- * Warns about each nested run a cancel or reject left unfinished, with the
- * command that cancels it.
- */
 export function renderDetachedNestedRuns(
   cliCtx: CommandContext,
   detached: readonly DetachedNestedRunData[],
@@ -90,11 +82,6 @@ export function renderDetachedNestedRuns(
   }
 }
 
-/**
- * Reports what became of the nested runs an ended run waited on: the ones
- * cancelled with it, the running ones asked to stop, and the ones left
- * unfinished with the command that cancels each (swamp-club#2867).
- */
 export function renderNestedCascade(
   cliCtx: CommandContext,
   nested: Partial<NestedCascadeResult>,
@@ -112,7 +99,6 @@ export function renderNestedCascade(
   renderDetachedNestedRuns(cliCtx, nested.detachedNestedRuns ?? [], remote);
 }
 
-/** Names the parent run still waiting on this run, with its resume command. */
 export function renderAwaitingParent(
   cliCtx: CommandContext,
   parent: AwaitingParentData,

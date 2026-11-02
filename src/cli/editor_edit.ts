@@ -25,23 +25,17 @@ import type { EditorSessionResult } from "../libswamp/editor_session.ts";
 
 type EditedCopy = Extract<EditorSessionResult, { status: "edited" }>;
 
-/** How a kept copy can be retried, in the words of the command at hand. */
 export interface EditedCopyHints {
-  /** The command a copy is piped into to retry, when a piped edit can. */
   retry?: string;
-  /** The command that loads the current version after a conflict. */
   reload?: string;
-  /** What to do with the copy when no piped command can retry it. */
   manual?: string;
 }
 
 /**
- * Saves an edit made in the editor with `save`, which runs the same path a
- * piped edit takes (swamp-club#4107). On success the temp copy is removed.
- * When the save throws, the copy is kept and the error names it with how to
- * retry from it, so nothing typed in the editor is lost. After a stale-edit
- * conflict the retry is refused until the current version is loaded, so the
- * hint says to load it first.
+ * when the save throws the copy is kept and the error names it with how to
+ * retry, so nothing typed is lost; after a stale-edit conflict the retry is
+ * refused until the current version is loaded, so the hint says to load it
+ * first
  */
 export async function saveEditedCopy(
   edit: EditedCopy,

@@ -19,22 +19,15 @@
 
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 
-/**
- * Resolves the datastores directory path.
- * Priority: SWAMP_DATASTORES_DIR env var > .swamp.yaml config > default "extensions/datastores"
- */
 export function resolveDatastoresDir(marker: RepoMarkerData | null): string {
-  // Environment variable takes highest priority
   const envDatastoresDir = Deno.env.get("SWAMP_DATASTORES_DIR");
   if (envDatastoresDir) {
     return envDatastoresDir;
   }
 
-  // Then .swamp.yaml config
   if (marker?.datastoresDir) {
     return marker.datastoresDir;
   }
 
-  // Default
   return "extensions/datastores";
 }

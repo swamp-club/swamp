@@ -73,7 +73,6 @@ type AnyOptions = any;
 
 const DEFAULT_GRACE_PERIOD = "24h";
 
-/** --yes skips the prune prompt; --force is its alias (swamp-club#1290). */
 export function skipsPruneConfirmation(
   options: { yes?: boolean; force?: boolean },
 ): boolean {
@@ -284,8 +283,8 @@ export const workerPruneCommand = withRemoteOptions(
     }
   }
 
-  // Each deletion marks its own path, so the push deletes those files from
-  // the remote (swamp-club#2513). It runs only once the prune completed.
+  // each deletion marks its own path so the push deletes those files from the
+  // remote; it runs only once the prune completed
   await runCommandInRootUnit(
     repoContext,
     {

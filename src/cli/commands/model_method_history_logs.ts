@@ -50,13 +50,11 @@ import type { ModelMethodHistoryLogsResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior history logs`. */
 export const BEHAVIOR_HISTORY_LOGS_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior history logs",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model method history logs`. */
 export const MODEL_METHOD_HISTORY_LOGS_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history logs",
   surface: "model",

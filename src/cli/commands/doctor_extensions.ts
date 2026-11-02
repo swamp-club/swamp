@@ -17,25 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp doctor extensions` — runs ensureLoaded() across all five user
-// extension registries, captures load failures via the issue-177
-// emitter, and emits a per-registry pass/fail report.
-//
-// Relies on `doctor` not being in NON_REPO_COMMANDS — see
-// `cli/mod.ts:NON_REPO_COMMANDS` (the constant lives near line 191).
-// Without that, configureStartupExtensions never runs and the
-// registries' ensureLoaded would be no-ops.
-//
-// Caller does NOT need to call resetState/resetLoadedFlag — the
-// service handles that ordering as the first steps of its async
-// generator.
-//
-// Note: the managed config resolution below may warm
-// `datastoreTypeRegistry`'s `ensureLoaded()` BEFORE the service runs. The
-// service then calls `resetLoadedFlag()` and `ensureLoaded()` again. The
-// double-run is intentional — the second run is what the user sees in the
-// report — and it is consistent with how registries that the CLI
-// bootstrap already warmed get re-loaded.
+// relies on doctor not being in NON_REPO_COMMANDS, else ensureLoaded is a
+// no-op. Managed config resolution may warm datastoreTypeRegistry first; the
+// service reloads it, and that second run is what the report shows.
 
 import { Command } from "@cliffy/command";
 import { bold, dim } from "@std/fmt/colors";
@@ -118,11 +102,9 @@ import { ProcessBundleProber } from "../../infrastructure/runtime/process_bundle
 type AnyOptions = any;
 
 /**
- * Why the catalog rescan and repairs must be skipped, or undefined when they
- * can run. With the managed config base unresolved, the only lockfile is the
- * in-repo guess: a rescan against it would tombstone every team extension's
- * rows, and repairs would write where the datastore never sees them. The
- * command then reports diagnostics only (swamp-club#2483).
+ * with the managed config base unresolved the only lockfile is the in-repo
+ * guess: a rescan would tombstone every team extension's rows and repairs would
+ * write where the datastore never sees them.
  */
 export function rescanSkippedFor(
   repoDir: string,
@@ -139,20 +121,15 @@ export function rescanSkippedFor(
   }
 }
 
-/** What one `doctor extensions --repair` re-pull did. */
 export interface RepullOutcome {
   repaired: boolean;
-  /** The pull installed, but its lockfile change did not reach the datastore. */
   unpublished?: ManagedLockfileUnpublishedError;
 }
 
 /**
- * Runs one repair re-pull. `prepare` reads the pin (which may fetch the
- * datastore's lockfile, and may fail) and returns the pull. Only a failed
- * publish from the pull itself counts as repaired: the extension was
- * installed and its change recorded, and the caller raises the publish
- * error after the report (swamp-club#2838). Any other failure, including
- * one from `prepare`, is logged and counts as not repaired.
+ * only a failed publish from the pull itself counts as repaired (installed and
+ * recorded; the caller raises the error after the report). Any other failure,
+ * including prepare's, is logged and counts as not repaired.
  */
 export async function runRepull(
   name: string,
@@ -182,13 +159,6 @@ export async function runRepull(
     return { repaired: false };
   }
 }
-
-/**
- * `swamp doctor extensions` — re-runs the extension loaders across
- * all five user registries and reports any load failures. Exits
- * non-zero on any failure so the command composes into CI preflight
- * checks.
- */
 
 export const doctorExtensionsCommand = withRemoteOptions(
   new Command()
@@ -256,7 +226,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
       (async function* () {
         yield {
           kind: "completed" as const,
-          // A server older than swamp-club#2562 sends no memberCollisions.
+          // an older server sends no memberCollisions.
           report: {
             ...remoteReport,
             memberCollisions: remoteReport.memberCollisions ?? [],
@@ -278,28 +248,22 @@ export const doctorExtensionsCommand = withRemoteOptions(
   const needsPrompt = repair && !dryRun && !skipConfirm &&
     cliCtx.outputMode === "log";
 
-  // Fails loudly outside a swamp repo. This does not resolve the
-  // datastore: diagnostics must still run when the managed config base
-  // cannot be resolved (swamp-club#2483).
+  // fails loudly outside a repo; does not resolve the datastore, since
+  // diagnostics must run when the managed config base cannot be resolved.
   const { repoDir, marker } = await requireRepoMarker(
     resolveRepoDir(options.repoDir),
   );
 
-  // Resolve lockfile path early so the rescan repository's
-  // empty-version fallback has lockfile entries available. (Hoisted
-  // from the post-rescan section per ADV-2 resolution; the same
-  // values are reused below for orphan detection.) A missing datastore
-  // extension is auto-installed, as for other commands; the rescan and
-  // repairs are skipped only when that fails.
+  // resolve the lockfile path early so the rescan repository's empty-version
+  // fallback has entries; a missing datastore extension is auto-installed, and
+  // rescan and repairs are skipped only if that fails.
   await ensureManagedConfigBase(repoDir, marker);
   const { lockfilePath } = resolveManagedConfigPaths(repoDir, marker);
   const extensionBacked = isExtensionBackedDatastore(marker);
   const rescanSkipped = rescanSkippedFor(repoDir, marker, repair);
 
-  // A single shared catalog connection for all doctor phases
-  // (reconcile, aggregate state, repair, re-pull). Previous code
-  // opened up to 4 separate connections to the same SQLite file,
-  // which contributed to cross-process lock contention.
+  // one shared catalog connection for all doctor phases; separate connections
+  // to the same SQLite file caused cross-process lock contention.
   const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
   const sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
 
@@ -321,9 +285,8 @@ export const doctorExtensionsCommand = withRemoteOptions(
         });
         rescanRepo.invalidateAll();
         const denoRuntime = new EmbeddedDenoRuntime();
-        // Same treatment of on-disk datastore extensions and the transitional
-        // in-repo auto-resolve lockfile as the startup reconcile
-        // (swamp-club#2483).
+        // same treatment of on-disk datastore extensions and the in-repo
+        // auto-resolve lockfile as the startup reconcile.
         const reconciler = new ReconcileFromDiskService({
           denoRuntime,
           repository: rescanRepo,
@@ -397,10 +360,6 @@ export const doctorExtensionsCommand = withRemoteOptions(
       },
     ];
 
-    // Resolve skills paths so the orphan-detection phase can walk the
-    // per-extension roots referenced by the lockfile. (lockfilePath /
-    // marker / repoPath / modelsDir / absoluteModelsDir are hoisted
-    // above the rescan call earlier in this function.)
     const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const absoluteSkillsDirs = resolveUniqueLocalSkillsDirs(repoDir, tools);
     // detectOrphanFiles wants repo-relative skills dirs so it can
@@ -425,9 +384,8 @@ export const doctorExtensionsCommand = withRemoteOptions(
     });
 
     const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
-    // A repair re-pull can rewrite the lockfile; it is made against the
-    // datastore's lockfile and published as it lands, like the other
-    // extension writers (swamp-club#2838).
+    // a repair re-pull can rewrite the lockfile; it is made against the
+    // datastore's lockfile and published as it lands.
     let unpublishedRepair: ManagedLockfileUnpublishedError | undefined;
     const lockfileTransaction = repair && !rescanSkipped && !dryRun
       ? createManagedLockfileTransaction(repoDir, marker, {
@@ -467,7 +425,6 @@ export const doctorExtensionsCommand = withRemoteOptions(
             ...extensionMemberDoctorDeps(sharedCatalog),
             runRepair: repair && !rescanSkipped
               ? async (aggregateReport) => {
-                // In interactive mode without --force, preview first and prompt.
                 if (needsPrompt) {
                   const preview = await repairExtensions({
                     aggregateReport,
@@ -524,14 +481,9 @@ export const doctorExtensionsCommand = withRemoteOptions(
                       repoDir,
                       { identity },
                     );
-                    // Repair restores what the lockfile pins, not whatever
-                    // the registry currently calls latest — pulling latest
-                    // here rewrites the entry and destroys the pin
-                    // (swamp-club#2150). Extensions with no entry have
-                    // nothing to pin to, so they still resolve latest. The
-                    // pin is read from the datastore's lockfile, not a stale
-                    // cache, or the repair would publish an old version over
-                    // another checkout's upgrade (swamp-club#2838).
+                    // Repair restores what the lockfile pins, not registry
+                    // latest, which would destroy the pin; extensions with no
+                    // entry resolve latest.
                     await refreshManagedLockfile(pullLockfileRepo);
                     const pinnedVersion =
                       pullLockfileRepo.getEntry(name)?.version ?? null;

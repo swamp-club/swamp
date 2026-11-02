@@ -66,16 +66,14 @@ export const datastoreCompactCommand = new Command()
         outputMode: cliCtx.outputMode,
       });
 
-    // Pushes and releases the global lock when the command ends, as the
-    // teardown flush did (swamp-club#3055).
     await runInCoordinatorRoot(repoContext, async () => {
       // Use the centralized catalog-path helper — the catalog is repo-local and
       // its location must match createCatalogStore exactly, never be recomputed.
       const dbPath = catalogDbPath(repoDir, datastoreResolver);
 
-      // Compact through the repo context's own store: vacuum renames the
-      // catalog file into place, which Windows refuses while a second
-      // connection in this process holds it open (swamp-club#3167).
+      // compact through the repo context's own store: vacuum renames the
+      // catalog into place, which Windows refuses while a second connection in
+      // this process holds it open.
       const deps: DatastoreCompactDeps = {
         checkpoint: () => repoContext.catalogStore.checkpoint(),
         vacuum: () => repoContext.catalogStore.vacuum(),

@@ -28,10 +28,8 @@ import { vaultCreateCommand } from "./vault_create.ts";
 import { vaultListKeysCommand } from "./vault_list_keys.ts";
 import { VERSION } from "./version.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

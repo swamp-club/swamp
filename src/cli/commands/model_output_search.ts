@@ -64,11 +64,6 @@ import type { ModelOutputSearchResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure that fetches full model output detail data.
- * This bridges the presentation layer to the libswamp modelOutputGet application
- * service, capturing its deps.
- */
 function createOutputFetchPreview(
   getDeps: ModelOutputGetDeps,
 ): (item: ModelOutputSearchItem) => Promise<ModelOutputGetData> {
@@ -115,8 +110,7 @@ export async function modelOutputSearchAction(
         payload: { query },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker.
     const renderer = createModelOutputSearchRenderer(
       interactiveOutputMode(ctx),
       undefined,
@@ -151,8 +145,8 @@ export async function modelOutputSearchAction(
       repoContext.definitionRepo.findAllIncludingAutoGlobal(),
   };
 
-  // The list reads outputs through the datastore, so the preview and the
-  // selected-run lookup must too (swamp-club#3743).
+  // the list reads outputs through the datastore, so the preview and the
+  // selected-run lookup must too.
   const getDeps = () =>
     createModelOutputGetDeps(
       repoDir,
@@ -191,13 +185,11 @@ export async function modelOutputSearchAction(
   ctx.logger.debug("Model output search command completed");
 }
 
-/** The preferred spelling: `swamp behavior output search`. */
 export const BEHAVIOR_OUTPUT_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior output search",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model output search`. */
 export const MODEL_OUTPUT_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp model output search",
   surface: "model",

@@ -49,12 +49,10 @@ import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.t
 type AnyOptions = any;
 
 /**
- * Makes swamp serve the owner of a v3 datastore (swamp-club#4063): from then
- * on a checkout that writes the datastore's storage directly is refused,
- * and writes go through serve. Through a running serve (`--server`, or the
- * serve address the environment or .swamp.yaml names) serve writes the
- * claim under its own writer lease; otherwise this command takes the lease
- * itself, so run it in serve's checkout while serve is stopped.
+ * after a claim, direct storage writes are refused and go through serve.
+ * Through a running serve it writes the claim under its lease; otherwise this
+ * command takes the lease, so run it in serve's checkout while serve is
+ * stopped.
  */
 export const datastoreClaimCommand = withRemoteOptions(
   new Command()

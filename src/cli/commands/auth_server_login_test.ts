@@ -21,10 +21,8 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("authServerLoginCommand: --server option is not required", async () => {

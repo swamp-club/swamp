@@ -78,7 +78,6 @@ export const extensionUnyankCommand = new Command()
     const ref = parseExtensionRef(extension);
     const resolvedVersion = version ?? ref.version ?? null;
 
-    // Validate --channel if provided
     const channel = (options.channel as string | undefined) ?? null;
     if (
       channel !== null &&

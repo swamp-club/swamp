@@ -20,12 +20,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("datastoreSetupCommand module loads", async () => {
   const { datastoreSetupCommand } = await import("./datastore_setup.ts");
-  // The name is set by the parent command when registering; verify it exists
   assertEquals(typeof datastoreSetupCommand.getName(), "string");
 });
 
@@ -54,13 +52,10 @@ Deno.test("datastoreSetupCommand has s3 deprecated subcommand", async () => {
 
 Deno.test("datastoreSetupCommand has parent action for interactive mode", async () => {
   const { datastoreSetupCommand } = await import("./datastore_setup.ts");
-  // Verify the command has an action set (parent interactive wizard)
-  // by checking the command description matches
   assertEquals(
     datastoreSetupCommand.getDescription(),
     "Configure a datastore for this repository",
   );
-  // The parent command should have 3 subcommands
   const commands = datastoreSetupCommand.getCommands();
   const names = commands.map((c) => c.getName()).sort();
   assertEquals(names, ["extension", "filesystem", "s3"]);

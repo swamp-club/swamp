@@ -44,15 +44,13 @@ import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import { z } from "zod";
 
-// Import models barrel so command/shell is registered and doesn't
-// collide with user-fixture registrations in these tests.
+// import the models barrel so command/shell is registered and does not collide
+// with user-fixture registrations
 import "../domain/models/models.ts";
 
-// Stub DenoRuntime — the adapter constructs a real UserModelLoader
-// internally, which requires a DenoRuntime. We return a bogus path so
-// any bundling attempt fails cleanly (the loader records the failure in
-// `result.failed` rather than throwing). The tests care about the
-// enumerate → primary/rest plumbing, not about actual bundling.
+// bundling fails cleanly against a bogus path and is recorded in
+// `result.failed`; the tests care about the enumerate to primary/rest plumbing,
+// not bundling
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/false"),
   getDenoEnv: () => Deno.env.toObject(),
@@ -65,7 +63,6 @@ const stubCallbacks = {
   getChecksum: () => Promise.resolve(null),
 };
 
-/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
 function makeRepoForCatalog(
   catalog: ExtensionCatalogStore,
   repoRoot: string,
@@ -103,17 +100,9 @@ async function seedLockfile(
   return lockfilePath;
 }
 
-// Regression test locking in the auto-resolver hot-load plumbing added
-// alongside issue 120's per-extension layout. Pre-120, hot-load walked
-// `.swamp/pulled-extensions/<type>/` — a single flat dir. After 120,
-// that dir doesn't exist; each extension owns
-// `.swamp/pulled-extensions/<ext-name>/<type>/`. The adapter must use
-// `enumeratePulledExtensionDirs` to discover per-extension dirs and
-// pass them to the loader as (primary, additionalDirs).
-//
-// If the adapter regresses to the old flat-dir pattern, these tests
-// will catch it: enumerate won't return paths, the pre-loader early
-// returns fire, and the recorded behavior changes.
+// each extension owns `.swamp/pulled-extensions/<ext-name>/<type>/`, so the
+// adapter must discover dirs via `enumeratePulledExtensionDirs` and pass them
+// to the loader as (primary, additionalDirs)
 
 Deno.test("auto_resolver_adapters: hotLoadModels returns 0 when lockfile missing", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
@@ -140,9 +129,6 @@ Deno.test("auto_resolver_adapters: hotLoadModels returns 0 when lockfile missing
 Deno.test("auto_resolver_adapters: hotLoadModels returns 0 when lockfile has entries but no on-disk dirs", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Lockfile references an extension whose per-extension models dir
-    // does not exist on disk. enumeratePulledExtensionDirs filters
-    // those out, so the adapter must not attempt to load.
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/never-installed": [
         ".swamp/pulled-extensions/@fake/never-installed/models/foo.ts",
@@ -165,11 +151,8 @@ Deno.test("auto_resolver_adapters: hotLoadModels returns 0 when lockfile has ent
 Deno.test("auto_resolver_adapters: hotLoadModels reaches the loader for each installed per-extension dir", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Seed two extensions whose per-extension models subtrees exist on
-    // disk. We don't care that the .ts files are real models — the
-    // stub DenoRuntime makes bundling fail, which is fine. What we're
-    // proving is that the adapter reaches the loader rather than
-    // early-returning.
+    // the stub DenoRuntime makes bundling fail; what is proven is that the
+    // adapter reaches the loader instead of early-returning
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/a": [".swamp/pulled-extensions/@fake/a/models/foo.ts"],
       "@fake/b": [".swamp/pulled-extensions/@fake/b/models/bar.ts"],
@@ -178,11 +161,6 @@ Deno.test("auto_resolver_adapters: hotLoadModels reaches the loader for each ins
     for (const name of ["@fake/a", "@fake/b"]) {
       const dir = join(tmpDir, ".swamp/pulled-extensions", name, "models");
       await ensureDir(dir);
-      // Minimal source — export const model is the loader's pre-check.
-      // Bundling will fail against /usr/bin/false, but that's recorded
-      // in result.failed, not thrown. The adapter's returned count is
-      // 0 (nothing successfully loaded) which is exactly what we want
-      // to assert: the adapter reached the loader without error.
       await Deno.writeTextFile(
         join(dir, name === "@fake/a" ? "foo.ts" : "bar.ts"),
         "export const model = {};",
@@ -196,10 +174,6 @@ Deno.test("auto_resolver_adapters: hotLoadModels reaches the loader for each ins
       denoRuntime: stubDenoRuntime,
     });
 
-    // Returns a number (not a throw). With a stub deno that can't
-    // bundle, result.loaded is 0. The value itself is less important
-    // than the fact that the call completed — that's what proves the
-    // enumerate → primary/rest plumbing doesn't crash.
     const loaded = await adapter.hotLoadModels();
     assertEquals(typeof loaded, "number");
     assertEquals(loaded, 0);
@@ -214,7 +188,6 @@ Deno.test("auto_resolver_adapters: hotLoadVaults is a no-op when no pulled vault
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
     });
-    // Seed models dir but NOT a vaults dir — enumerate should skip.
     await ensureDir(
       join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models"),
     );
@@ -226,19 +199,13 @@ Deno.test("auto_resolver_adapters: hotLoadVaults is a no-op when no pulled vault
       denoRuntime: stubDenoRuntime,
     });
 
-    // Should not throw — return value is void.
     await adapter.hotLoadVaults();
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-// inspectInstallation regression tests. Locks in the tri-state return
-// added for swamp-club#133 (truncated-tree detection) and preserves the
 // #121 coverage that the auto-resolver adapter must refuse to silently
-// overwrite on-disk extensions — intact trees still report back as
-// 'intact' so the resolver emits the "local edits" error instead of
-// reinstalling.
 
 async function seedPulledTree(
   repoDir: string,
@@ -299,10 +266,8 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns missing when exte
 Deno.test("auto_resolver_adapters: inspectInstallation returns missing when directory is absent", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Lockfile lists the extension, but the on-disk directory was
-    // removed. Returning "intact" here would make the resolver surface
-    // a confusing "already installed but failed" error when the files
-    // are actually gone — a clean reinstall is correct.
+    // returning "intact" for a removed directory would surface a confusing
+    // "already installed but failed" error; a clean reinstall is correct
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/deleted-on-disk": [
         ".swamp/pulled-extensions/@fake/deleted-on-disk/models/x.ts",
@@ -316,8 +281,8 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns missing when dire
     });
 
     const result = await adapter.inspectInstallation("@fake/deleted-on-disk");
-    // Carries the pinned version so the install progress line reports the
-    // version that will actually be installed (swamp-club#465).
+    // carries the pinned version so the install progress line reports the
+    // version that will actually be installed
     assertEquals(result, { state: "missing", lockedVersion: "2026.01.01.1" });
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
@@ -348,8 +313,8 @@ Deno.test("auto_resolver_adapters: inspectInstallation preserves legacy files ou
   }
 });
 
-// swamp-club#3727: a recorded skill dir is current-layout wherever it
-// is, so one surviving the per-extension dir is not a legacy install.
+// a recorded skill dir is current-layout wherever it is, so one surviving the
+// per-extension dir is not a legacy install
 for (
   const skillPath of [
     ".claude/skills/kept-skill",
@@ -525,9 +490,6 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns truncated when on
 Deno.test("auto_resolver_adapters: inspectInstallation collects every missing file", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Directory exists (so we get past the stat check) but every
-    // declared file is missing. The returned `missing` array must list
-    // all of them, not truncate to the first miss.
     const declared = [
       ".swamp/pulled-extensions/@fake/empty/manifest.yaml",
       ".swamp/pulled-extensions/@fake/empty/models/a.ts",
@@ -560,8 +522,6 @@ Deno.test("auto_resolver_adapters: inspectInstallation collects every missing fi
 Deno.test("auto_resolver_adapters: inspectInstallation returns intact when lockfile entry has no files", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Edge case: an extension recorded with an empty file list. Nothing
-    // to verify, so the tree is vacuously intact.
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/no-files": [],
     });
@@ -585,11 +545,6 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns intact when lockf
   }
 });
 
-// swamp-club#2476: an intact install reports whether any of its sources
-// failed to load, so the resolver can tell local edits apart from an
-// installed version that simply lacks the requested type.
-
-/** Seeds an intact pulled tree and a catalog holding the given rows. */
 async function inspectWithCatalogRows(
   tmpDir: string,
   extensionName: string,
@@ -704,11 +659,8 @@ Deno.test("auto_resolver_adapters: inspectInstallation ignores rows matched only
   }
 });
 
-// Regression for the bundle-cache false-positive: clearing
-// .swamp/bundles/ (or any sibling *-bundles cache) must not flip the
-// inspection to truncated. The lockfile lists bundles alongside source,
-// but bundles are regenerable build artifacts — their absence does not
-// indicate a broken install. See the follow-up to swamp-club#133.
+// bundles are regenerable build artifacts, so clearing a bundle cache must not
+// flip the inspection to truncated
 Deno.test("auto_resolver_adapters: inspectInstallation ignores absent bundle artifacts and stays intact", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
@@ -722,7 +674,6 @@ Deno.test("auto_resolver_adapters: inspectInstallation ignores absent bundle art
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/with-bundles": [sourceRel, ...bundleRels],
     });
-    // Source on disk; every bundle deliberately absent.
     await seedPulledTree(tmpDir, "@fake/with-bundles", [sourceRel]);
 
     const adapter = createAutoResolveInstallerAdapter({
@@ -757,9 +708,6 @@ Deno.test("auto_resolver_adapters: inspectInstallation reports truncated only fo
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/mixed": [keptManifest, goneSource, goneBundle],
     });
-    // Manifest stays; source removed; bundle never written. Only the
-    // missing source file should appear in `missing` — the bundle is
-    // filtered out before the stat check.
     await seedPulledTree(tmpDir, "@fake/mixed", [keptManifest]);
 
     const adapter = createAutoResolveInstallerAdapter({
@@ -794,15 +742,12 @@ Deno.test("auto_resolver_adapters: hotLoadDatastores is a no-op when no pulled d
       denoRuntime: stubDenoRuntime,
     });
 
-    // Empty lockfile for datastores perspective (no datastore dir
-    // exists for @fake/ext). Should not throw.
     await adapter.hotLoadDatastores();
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-/** Writes a resolved (team) lockfile outside the repo's own lockfile. */
 async function seedResolvedLockfile(
   repoDir: string,
   entries: Record<string, { version: string; checksum?: string }>,
@@ -956,7 +901,6 @@ Deno.test("auto_resolver_adapters: install treats a dependency in the resolved l
   }
 });
 
-/** A packed extension archive with one skill and the given dependencies. */
 async function packExtension(
   name: string,
   version: string,
@@ -984,8 +928,8 @@ async function packExtension(
 }
 
 Deno.test("auto_resolver_adapters: the install deadline ends before a waiter gives up on the lock", () => {
-  // At least 30s is left for the local extract and bundle work, which the
-  // registry deadline does not bound.
+  // leaves room for the local extract and bundle work, which the registry
+  // deadline does not bound
   assertEquals(
     EXTENSION_INSTALL_LOCK_MAX_WAIT_MS - AUTO_RESOLVE_INSTALL_DEADLINE_MS >=
       30_000,
@@ -1040,7 +984,6 @@ Deno.test("auto_resolver_adapters: install shares one registry deadline across a
     assertEquals(deadline instanceof AbortSignal, true);
     assertEquals(calls.every((c) => c.signal === deadline), true);
 
-    // A second install gets a deadline of its own.
     const before = calls.length;
     await adapter.install(dep).catch(() => {});
     const later = calls.slice(before);
@@ -1060,8 +1003,6 @@ Deno.test("auto_resolver_adapters: a forced re-run after a skill conflict keeps 
     const version = "2026.01.01.1";
     const lockfilePath = await seedLockfile(repoDir, {});
     const archive = await packExtension(name, version, [], skill);
-    // A skill dir already on disk makes the first run raise a conflict the
-    // adapter retries with force.
     const skillDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills, skill);
     await ensureDir(skillDir);
     await Deno.writeTextFile(join(skillDir, "SKILL.md"), "old");
@@ -1091,7 +1032,6 @@ Deno.test("auto_resolver_adapters: a forced re-run after a skill conflict keeps 
     const result = await adapter.install(name);
 
     assertEquals(result?.version, version);
-    // Both runs made registry calls, all under the one deadline.
     assertEquals(signals.length, 6);
     assertEquals(signals.every((s) => s === signals[0]), true);
   } finally {
@@ -1099,10 +1039,6 @@ Deno.test("auto_resolver_adapters: a forced re-run after a skill conflict keeps 
   }
 });
 
-/**
- * Writes a pulled datastore extension root under `rootSegments`: a manifest
- * whose name matches its path, plus one datastore source.
- */
 async function seedDatastoreExtension(
   repoDir: string,
   rootSegments: string[],
@@ -1195,10 +1131,9 @@ Deno.test("auto_resolver_adapters: hotLoadWebhooks is a no-op when no pulled web
   }
 });
 
-// Issue 123 regression tests: hotLoadModels must retry user-extension
-// attachment against the shared catalog after a newly-installed base
-// registers. These tests verify the guards — the integration test
-// covers the positive "attach fires" path end-to-end.
+// hotLoadModels must retry user-extension attachment against the shared catalog
+// after a newly-installed base registers; these tests verify the guards, the
+// integration test covers the positive path
 
 function makeStubBase(typeNormalized: string): ModelDefinition {
   return {
@@ -1215,8 +1150,7 @@ function makeStubBase(typeNormalized: string): ModelDefinition {
 Deno.test("auto_resolver_adapters: hotLoadModels tolerates catalog being undefined", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Pre-issue-123 callers pass no catalog. Keep that path working so
-    // the adapter is drop-in for older configurations.
+    // callers that pass no catalog must keep working
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
     });
@@ -1231,7 +1165,6 @@ Deno.test("auto_resolver_adapters: hotLoadModels tolerates catalog being undefin
       lockfilePath,
       repoDir: tmpDir,
       denoRuntime: stubDenoRuntime,
-      // catalog omitted — legacy signature
     });
 
     assertEquals(typeof (await adapter.hotLoadModels()), "number");
@@ -1264,9 +1197,6 @@ Deno.test("auto_resolver_adapters: hotLoadModels skips catalog walk when catalog
       repository: makeRepoForCatalog(catalog, tmpDir),
     });
 
-    // With stub deno the loader fails to bundle — result.loaded is 0,
-    // so the catalog walk never runs. The important bit is that the
-    // adapter returns a number rather than throwing over the new code.
     assertEquals(await adapter.hotLoadModels(), 0);
     catalog.close();
   } finally {
@@ -1289,11 +1219,8 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk skips types whose 
     );
 
     const catalog = new ExtensionCatalogStore(dbPath);
-    // Plant an extension row pointing at a base that is NOT in
-    // modelRegistry. The guard (!!modelRegistry.get(type)) must skip
-    // it so nothing calls attachPendingExtensionsForType — that would
-    // either throw or warn, neither of which we want for unknown
-    // bases.
+    // an extension row pointing at a base not in modelRegistry must be skipped
+    // by the guard, or attachPendingExtensionsForType would throw or warn
     catalog.upsert({
       type_normalized: unknownBase,
       kind: "extension",
@@ -1316,9 +1243,6 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk skips types whose 
       repository: makeRepoForCatalog(catalog, tmpDir),
     });
 
-    // Primary assertion: the call completes cleanly. If the guard
-    // weren't in place, attachPendingExtensionsForType would attempt
-    // to import the nonexistent bundle and surface a warning.
     assertEquals(typeof (await adapter.hotLoadModels()), "number");
     catalog.close();
   } finally {
@@ -1326,9 +1250,8 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk skips types whose 
   }
 });
 
-// swamp-club#2050: isBundleArtifactPath must recognise every bundle
-// stores so the auto-resolver can distinguish bundle-only ConflictErrors
-// (safe to force-overwrite) from source-file conflicts (user WIP).
+// bundle-only ConflictErrors are safe to force-overwrite while source-file
+// conflicts are user work in progress, so every bundle store must be recognised
 
 Deno.test("isBundleArtifactPath: recognises every bundle store", () => {
   assertEquals(isBundleArtifactPath(".swamp/bundles/abc123/x.js"), true);
@@ -1392,14 +1315,9 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk attempts attach wh
       "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
     });
     await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models"));
-    // The adapter's loadModels reaches the bundling step; with stub
-    // deno that returns /usr/bin/false, bundling records a failure and
-    // result.loaded is 0 — so the catalog walk is skipped by the
-    // `result.loaded.length > 0` guard. We register a base manually
-    // and plant an extension pointing at a bogus bundle so that if the
-    // guard ever regressed to always-run, this test would fail with a
-    // bundle-import error. The test passing confirms the
-    // loaded.length > 0 guard is in place.
+    // with the stub deno bundling fails, so result.loaded is 0 and the
+    // `result.loaded.length > 0` guard skips the catalog walk; a bogus bundle
+    // row makes this fail if the guard regressed to always run
     await Deno.writeTextFile(
       join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models/foo.ts"),
       "export const model = {};",
@@ -1418,9 +1336,6 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk attempts attach wh
       source_fingerprint: "",
     });
 
-    // Register a fake base directly so !!modelRegistry.get(baseType)
-    // is truthy. Without the loaded.length > 0 gate we would import
-    // the bogus bundle and log a warning.
     try {
       modelRegistry.register(makeStubBase(baseType));
     } catch {
@@ -1442,9 +1357,9 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk attempts attach wh
   }
 });
 
-// swamp-club#2494: skills land in a dir shared across extensions, so a
-// same-named skill from another extension raises a ConflictError on its
-// dir. Auto-install retries those with force, as it does stale bundles.
+// skills land in a dir shared across extensions, so a same-named skill from
+// another extension raises a ConflictError on its dir; auto-install retries
+// those with force, as it does stale bundles
 
 Deno.test("isPulledSkillPath: recognises pulled skill dirs only", () => {
   assertEquals(isPulledSkillPath(".swamp/pulled-extensions/skills/foo"), true);
@@ -1638,8 +1553,8 @@ Deno.test("auto_resolver_adapters: withInstallLock releases the lock when fn thr
 });
 
 Deno.test("auto_resolver_adapters: withInstallLock serializes installs from separate adapters on one repo", async () => {
-  // Two adapters stand in for two processes sharing the repo
-  // (swamp-club#2571): their critical sections must never interleave.
+  // two adapters stand in for two processes sharing the repo; their critical
+  // sections must never interleave
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const events: string[] = [];
@@ -1663,7 +1578,6 @@ Deno.test("auto_resolver_adapters: withInstallLock serializes installs from sepa
   }
 });
 
-/** An extension archive shipping skills whose SKILL.md files read "x". */
 async function buildSkillArchive(
   name: string,
   version: string,
@@ -1698,9 +1612,9 @@ async function readEntryFiles(
   return lockfile[name].files;
 }
 
-// swamp-club#3727: reinstalling a pinned entry puts its skill back in
-// the dir the entry records, so the entry keeps its skill path and the
-// commit prunes nothing, whether or not the skill dir survived.
+// reinstalling a pinned entry puts its skill back in the dir the entry records,
+// so the entry keeps its skill path and the commit prunes nothing, whether or
+// not the skill dir survived
 for (const skillSurvives of [true, false]) {
   Deno.test(
     `auto_resolver_adapters: install writes a pinned entry's skill back into its recorded dir (skill dir ${
@@ -1956,8 +1870,8 @@ Deno.test("auto_resolver_adapters: install keeps a new dependency's skill out of
 });
 
 Deno.test("auto_resolver_adapters: registeredModelCount counts the extension's registered behavior types only", async () => {
-  // swamp-club#3911: another caller may have loaded the types, so the count
-  // comes from the catalog and the registry, not from this hot-load.
+  // another caller may have loaded the types, so the count comes from the
+  // catalog and the registry, not from this hot-load
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   const loaded = `@fake/count-${crypto.randomUUID()}`;
   const catalog = new ExtensionCatalogStore(
@@ -1984,7 +1898,6 @@ Deno.test("auto_resolver_adapters: registeredModelCount counts the extension's r
       });
     const root = ".swamp/pulled-extensions";
     row(loaded, "model", `${root}/@fake/count/models/a.ts`);
-    // Indexed but unregistered, another kind, and a sibling extension.
     row(
       `@fake/gone-${crypto.randomUUID()}`,
       "model",
@@ -2010,8 +1923,8 @@ Deno.test("auto_resolver_adapters: registeredModelCount counts the extension's r
 });
 
 Deno.test("auto_resolver_adapters: registeredModelCount finds rows stored under the symlink-resolved repo path", async () => {
-  // A repo reached through a symlink (macOS /tmp) has catalog rows under the
-  // resolved path; the count must not drop to 0 (swamp-club#3911).
+  // a repo reached through a symlink (macOS /tmp) has catalog rows under the
+  // resolved path; the count must not drop to 0
   const realDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   const linkParent = await Deno.makeTempDir({ prefix: "swamp_test_link_" });
   const linkDir = join(linkParent, "repo");

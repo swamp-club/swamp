@@ -184,9 +184,8 @@ export const accessTokenMintCommand = withRemoteOptions(
     { vaultsDir },
   );
 
-  // One critical section per token name: pull, mint, push. A first mint has
-  // no definition and so no model lock; this lock is what stops two of them
-  // interleaving (swamp-club#2482).
+  // one critical section per token name: a first mint has no model lock, so
+  // this lock stops two mints interleaving.
   await withServerTokenLock(datastoreConfig, name, async () => {
     if (syncService) {
       await syncService.pullChanged({ namespace });
@@ -265,9 +264,8 @@ export const accessTokenMintCommand = withRemoteOptions(
 
         if (syncService) {
           await root.stage({ kind: "bulk", reason: "access token mint" });
-          // Published here, before the read-back below, through the root's
-          // checkpoint (swamp-club#3053). When a model lock is held, the root's
-          // lock push publishes again when the command ends.
+          // published here before the read-back; with a model lock held, the
+          // root's lock push publishes again at the end.
           await root.checkpoint();
 
           repoContext.catalogStore.invalidate();

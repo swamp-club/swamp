@@ -30,7 +30,6 @@ import { loadIdentity } from "../load_identity.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { apiKeySourceName } from "../../infrastructure/persistence/api_key_source.ts";
 
-/** Resolve server URL: env var > default */
 function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
@@ -80,9 +79,6 @@ export const authLoginCommand = new Command()
 
     const serverUrl: string = options.club ?? resolveServerUrl();
 
-    // Decide which flow to use:
-    // - stdin flow if --username/--password provided, --no-browser, or non-TTY
-    // - browser flow otherwise
     const stdinIsTerminal = isStdinTty();
     const useStdinFlow = options.username || options.password ||
       options.browser === false || !stdinIsTerminal;

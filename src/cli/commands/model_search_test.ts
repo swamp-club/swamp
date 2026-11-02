@@ -21,10 +21,8 @@ import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { ModelSearchItem } from "../../libswamp/models/search.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("modelSearchCommand module loads", async () => {
@@ -63,7 +61,6 @@ Deno.test("model list alias has --all option", async () => {
   assertEquals(allOption !== undefined, true);
 });
 
-// filterModels tests
 Deno.test("filterModels returns all models when query is empty", async () => {
   const { filterModels } = await import(
     "../../presentation/renderers/model_search.tsx"

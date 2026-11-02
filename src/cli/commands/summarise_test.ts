@@ -20,10 +20,8 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("summariseCommand module loads", async () => {
@@ -52,8 +50,8 @@ Deno.test("summariseCommand has --limit option (opt-in, no default)", async () =
   const options = summariseCommand.getOptions();
   const limit = options.find((o) => o.name === "limit");
   assertEquals(limit !== undefined, true);
-  // Default is unlimited — no `default` set on the option, preserving the
-  // pre-issue-240 JSON shape for callers who don't opt in.
+  // default is unlimited: no `default` on the option, which keeps the JSON
+  // shape for callers who do not opt in
   assertEquals(limit!.default, undefined);
 });
 

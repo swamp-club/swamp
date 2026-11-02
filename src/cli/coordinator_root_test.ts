@@ -29,7 +29,6 @@ import { runInCoordinatorRoot } from "./coordinator_root.ts";
 
 await initializeLogging({});
 
-/** A sync service whose push runs `push`, counting its calls. */
 function countingService(
   push: () => Promise<number> = () => Promise.resolve(0),
 ) {

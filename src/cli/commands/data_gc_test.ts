@@ -20,7 +20,6 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("dataGcCommand - has correct name", async () => {
@@ -59,8 +58,8 @@ Deno.test("dataGcCommand - has force option", async () => {
 });
 
 Deno.test("dataGcCommand - help text includes a --json non-interactive example", async () => {
-  // swamp-club#235 — agentic users need to discover that JSON mode
-  // bypasses the interactive prompt without reading source.
+  // agentic users need to discover that JSON mode bypasses the interactive
+  // prompt without reading source
   const { dataGcCommand } = await import("./data_gc.ts");
   const examples = dataGcCommand.getExamples().map((e) => e.description);
   const hasJsonExample = examples.some((d) => d.toLowerCase().includes("json"));

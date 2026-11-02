@@ -70,9 +70,6 @@ import { auditReportCommand } from "./audit_report.ts";
 import { auditRotateKeyCommand } from "./audit_rotate_key.ts";
 import { auditVerifyCommand } from "./audit_verify.ts";
 
-/**
- * Reads all of stdin as a string.
- */
 async function readStdin(): Promise<string> {
   const decoder = new TextDecoder();
   const chunks: string[] = [];
@@ -85,11 +82,8 @@ async function readStdin(): Promise<string> {
 }
 
 /**
- * Reads hook input for the given tool.
- *
- * Kiro IDE passes postToolUse data via the USER_PROMPT environment variable
- * rather than stdin. We check USER_PROMPT first for kiro, falling back to
- * stdin for kiro-cli compatibility. All other tools read from stdin.
+ * kiro IDE passes postToolUse data in USER_PROMPT rather than stdin; fall back
+ * to stdin for kiro-cli.
  */
 function readHookInput(tool: HookTool): Promise<string> {
   if (tool === "kiro") {
@@ -99,21 +93,11 @@ function readHookInput(tool: HookTool): Promise<string> {
   return readStdin();
 }
 
-/**
- * Where a hook invocation came from, used to pick the repository its audit
- * row belongs to. Environment and process state are passed in rather than
- * read here so resolution stays deterministic under test.
- */
 export interface AuditHookTarget {
-  /** The `--repo-dir` option on the hook command, if any. */
   explicitRepoDir?: string;
-  /** The `cwd` field from the hook payload (may be empty or relative). */
   hookCwd?: string;
-  /** The value of `SWAMP_REPO_DIR`, if set. */
   envRepoDir?: string;
-  /** The hook process's working directory. */
   processCwd: string;
-  /** Finds the nearest initialized repo at or above a directory. */
   findRepo?: (startDir: string) => string | null;
 }
 
@@ -126,16 +110,9 @@ function hasRepoMarker(dir: string): boolean {
 }
 
 /**
- * Resolves the initialized swamp repository an audit hook row belongs to.
- *
- * An explicit `--repo-dir` is used as given, like every other command: if it
- * is not an initialized repo the result is `null`. Otherwise these are tried in
- * order: the hook payload cwd walked up to the nearest `.swamp.yaml`,
- * `SWAMP_REPO_DIR`, then the process cwd walked up the same way. Returns
- * `null` when none of them is an initialized repo, so the hook never creates a
- * `.swamp/` directory outside a repository.
- *
- * @internal Exported for testing
+ * an explicit --repo-dir is used as given (null if not a repo); else the hook
+ * cwd, SWAMP_REPO_DIR, then the process cwd, each walked up to .swamp.yaml.
+ * Null means no .swamp/ is created outside a repo.
  */
 export function resolveAuditRepoDir(target: AuditHookTarget): string | null {
   const findRepo = target.findRepo ?? findAncestorRepoDir;
@@ -161,14 +138,7 @@ export function resolveAuditRepoDir(target: AuditHookTarget): string | null {
   return findRepo(target.processCwd);
 }
 
-/**
- * The number of days the repository at `repoDir` keeps CLI audit data: its
- * `garbageCollection` audit retention in whole days (rounded up), or
- * {@link DEFAULT_AUDIT_RETENTION_DAYS} when unset or when `.swamp.yaml`
- * cannot be read. Never throws: it runs inside the audit hook.
- *
- * @internal Exported for testing
- */
+/** never throws: it runs inside the audit hook. */
 export async function resolveRepoAuditRetentionDays(
   repoDir: string,
 ): Promise<number> {
@@ -187,17 +157,6 @@ export async function resolveRepoAuditRetentionDays(
   }
 }
 
-/**
- * Appends a hook's bash command entry to the audit log of the repository
- * {@link resolveAuditRepoDir} picks. Writes nothing when no initialized
- * repository is found.
- *
- * @param options.cleanup Delete audit data older than the repo's audit
- *   retention after the append (default `true`). The cleanup is awaited and
- *   its failures are only logged.
- * @returns Whether the entry was recorded.
- * @internal Exported for testing
- */
 export async function recordHookEntry(
   entry: BashCommandEntry,
   target: AuditHookTarget,
@@ -220,7 +179,6 @@ export async function recordHookEntry(
   return true;
 }
 
-/** Valid values for the --tool option */
 const VALID_HOOK_TOOLS: HookTool[] = [
   "claude",
   "cursor",
@@ -231,13 +189,6 @@ const VALID_HOOK_TOOLS: HookTool[] = [
   "antigravity",
 ];
 
-/**
- * `swamp audit record --from-hook`
- *
- * Reads hook JSON from stdin and appends to the audit log.
- * Must never throw - this runs as a PostToolUse/PostToolUseFailure hook
- * and errors would disrupt the user's workflow.
- */
 export const auditRecordCommand = new Command()
   .name("record")
   .description("Record a bash command from a hook")
@@ -266,7 +217,6 @@ export const auditRecordCommand = new Command()
       const raw = JSON.parse(input) as Record<string, unknown>;
       const normalized = normalizeHookInput(tool, raw);
 
-      // Skip non-shell tool invocations
       if (!normalized) {
         return;
       }
@@ -298,14 +248,8 @@ export const auditRecordCommand = new Command()
   });
 
 /**
- * `swamp audit`
- *
- * View a merged timeline of swamp operations vs direct CLI commands.
- * Also serves as the parent command for `swamp audit record`.
- *
- * Hidden from help. `hidden()` must stay ahead of the subcommand chain: Cliffy
- * applies it to the command the chain last selected, so calling it after
- * `.command(...)` hides that subcommand instead of `audit`.
+ * hidden() must stay ahead of the subcommand chain: Cliffy applies it to the
+ * command last selected.
  */
 export const auditCommand = withRemoteOptions(
   new Command()
@@ -363,7 +307,6 @@ export const auditCommand = withRemoteOptions(
     outputMode: ctx.outputMode,
   });
 
-  // Check if the configured tool supports audit hooks
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
   const configuredTool = resolvePrimaryTool(marker);

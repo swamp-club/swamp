@@ -30,7 +30,6 @@ import {
   type NestedCascade,
 } from "../libswamp/workflows/nested_cascade.ts";
 
-/** What a local command's cascade reads and writes. */
 export interface LocalNestedCascadeDeps {
   workflowRepo: Pick<WorkflowRepository, "findById">;
   runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
@@ -41,10 +40,8 @@ export interface LocalNestedCascadeDeps {
 }
 
 /**
- * The cascade of a local command (swamp-club#2867): it cancels the suspended
- * nested runs an ended run waited on. A child a serve instance owns is left
- * to that instance, and a child another local process is running is left to
- * its own cancel; both are reported with the command that cancels them.
+ * a child a serve instance owns, or another local process is running, is left
+ * to its owner and reported with the command that cancels it
  */
 export function localNestedCascade(
   deps: LocalNestedCascadeDeps,

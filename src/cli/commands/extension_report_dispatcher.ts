@@ -54,19 +54,15 @@ import {
 } from "../../infrastructure/process/gh_cli.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 
-/** Issue type (re-exported for the dispatcher API). */
 export type ReportType = "bug" | "feature" | "security";
 
-/** Output mode, mirrors CommandContext.outputMode. */
 export type OutputMode = "log" | "json";
 
-/** Refusal reasons the dispatcher can emit. */
 export type RefusalReason =
   | "not-pulled"
   | "no-repository"
   | "pvr-disabled";
 
-/** Result of {@link resolveExtensionTarget}. */
 export type ExtensionTarget =
   | {
     kind: "swamp-lab";
@@ -88,7 +84,6 @@ export type ExtensionTarget =
     guidance: string;
   };
 
-/** Result of {@link dispatchRepositoryReport}. */
 export type RepositoryDispatchResult =
   | {
     kind: "handoff";
@@ -99,11 +94,8 @@ export type RepositoryDispatchResult =
     preparedTitle: string;
     preparedBody: string;
     fallbackIssueUrl?: string;
-    /** True when a PVR check was attempted and failed (timeout / auth). */
     pvrCheckFailed?: boolean;
-    /** True when no PVR check was attempted (gh unavailable). */
     pvrCheckSkipped?: boolean;
-    /** True for security with PVR confirmed disabled (rare path — never). */
     nonGithubWarning?: string;
   }
   | {
@@ -112,27 +104,17 @@ export type RepositoryDispatchResult =
     guidance: string;
   };
 
-/** Injectable dependencies for the dispatcher — tests pass fakes. */
 export interface DispatcherDeps {
   ghRunner?: GhCliRunner;
   env?: { get(key: string): string | undefined };
-  /** openBrowser replacement. No-op returning success is a valid test stub. */
   openBrowser?: (url: string) => Promise<void>;
-  /** Optional logger used for the default writeLog when tests don't inject one. */
   logger?: Logger;
-  /**
-   * Log-mode stdout sink for the prepared title/body. Default writes to
-   * the logger at info level. Tests pass a collector.
-   */
   writeLog?: (text: string) => void;
 }
 
 /**
- * Resolves the CLI-side target for a report against `extensionName`.
- *
- * Does not talk to the network — repository-side checks (e.g. PVR) are
- * the dispatcher's job and happen later. Refusals produced here are the
- * "local" variety (not installed, no repo declared).
+ * does no network work; repository-side checks such as PVR come later in the
+ * dispatcher. Refusals here are local: not installed, no repo declared.
  */
 export async function resolveExtensionTarget(
   repoDir: string,
@@ -229,13 +211,9 @@ export interface DispatchRepositoryReportInput {
 }
 
 /**
- * Dispatches a report against a third-party (non-@swamp) extension to
- * the publisher's declared repository. Owns the gh/browser selection,
- * the security-specific PVR routing, and the PVR-disabled refusal.
- *
- * Key invariant: when `type === "security"` and PVR is confirmed
- * DISABLED, this function returns a refusal — it MUST NOT create a
- * public issue. That would silently publish a vulnerability.
+ * when type is security and PVR is confirmed disabled this returns a refusal
+ * and must not create a public issue, which would silently publish a
+ * vulnerability.
  */
 export async function dispatchRepositoryReport(
   target: Extract<ExtensionTarget, { kind: "repository" }>,
@@ -245,7 +223,7 @@ export async function dispatchRepositoryReport(
   const openBrowserFn = deps.openBrowser ?? openBrowser;
   const writeLog = deps.writeLog ?? ((text) => {
     if (deps.logger) deps.logger.info(text);
-    else console.log(text); // fallback, tests should always pass writeLog
+    else console.log(text);
   });
 
   const preparedBody = assembleExtensionReportBody(
@@ -382,7 +360,6 @@ async function dispatchSecurity(
 ): Promise<RepositoryDispatchResult> {
   const { parsed } = target;
 
-  // GitHub: PVR-aware routing. Never silently publishes a vuln.
   if (parsed.provider === "github" && parsed.ownerRepo) {
     const ghAvailable = await isGhCliAvailable(deps.ghRunner, deps.env);
     const advisoryUrl = buildGithubAdvisoryUrl(parsed.ownerRepo);
@@ -419,10 +396,9 @@ async function dispatchSecurity(
     );
 
     if (pvr === false) {
-      // SECURITY GUARDRAIL: never fall back to a public issue when PVR
-      // is confirmed disabled. Users may forward this message to the
-      // publisher — include both the reporter action (contact publisher)
-      // and the publisher action (enable PVR).
+      // never fall back to a public issue when PVR is confirmed disabled; the
+      // message names both the reporter action and the publisher action, since
+      // users may forward it.
       return {
         kind: "refused",
         reason: "pvr-disabled",
@@ -443,9 +419,8 @@ async function dispatchSecurity(
       };
     }
 
-    // PVR enabled or check failed: route to the advisory form. When the
-    // check failed, the fallbackIssueUrl lets the user decide after
-    // GitHub responds; don't auto-file a public issue under any path.
+    // PVR enabled or check failed: route to the advisory form; fallbackIssueUrl
+    // lets the user decide, and a public issue is never auto-filed.
     printHandoffStdout(
       writeLog,
       input.outputMode,

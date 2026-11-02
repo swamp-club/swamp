@@ -134,9 +134,7 @@ import {
   closeV3DatastoresAfterSuccess,
 } from "./v3_teardown.ts";
 
-// Import datastore types barrel to trigger built-in datastore registration
 import "../domain/datastore/datastore_types.ts";
-// Import builtin reports to trigger registration
 import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
@@ -290,7 +288,6 @@ import type {
 } from "../domain/repo/swamp_sources.ts";
 import { discoverManifestCrossKindDirs } from "../domain/extensions/manifest_cross_kind_discovery.ts";
 
-// Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
 
 // Import and re-export — the canonical definitions live in
@@ -326,12 +323,6 @@ export { resolveWebhooksDir };
 
 const logger = getLogger(["swamp", "cli"]);
 
-/**
- * Resolves the log level.
- * Priority: SWAMP_LOG_LEVEL env var > .swamp.yaml config > undefined (caller uses default)
- *
- * @internal Exported for testing
- */
 export function resolveLogLevel(
   marker: RepoMarkerData | null,
 ): string | undefined {
@@ -341,24 +332,12 @@ export function resolveLogLevel(
   return undefined;
 }
 
-/**
- * Checks whether telemetry is disabled via .swamp.yaml config.
- *
- * @internal Exported for testing
- */
 export function isTelemetryDisabledByConfig(
   marker: RepoMarkerData | null,
 ): boolean {
   return marker?.telemetryDisabled === true;
 }
 
-/**
- * Checks whether telemetry is disabled via the SWAMP_NO_TELEMETRY or the
- * cross-tool DO_NOT_TRACK environment variable. For either, any value other
- * than "0", "false", or empty string disables telemetry.
- *
- * @internal Exported for testing
- */
 export function isTelemetryDisabledByEnv(): boolean {
   return isOptOutEnvSet("SWAMP_NO_TELEMETRY") || isOptOutEnvSet("DO_NOT_TRACK");
 }
@@ -369,30 +348,18 @@ function isOptOutEnvSet(name: string): boolean {
   return val !== "0" && val !== "false" && val !== "";
 }
 
-/** Inputs to {@link isTelemetryOptedOut} read from disk and the invocation. */
 export interface TelemetryOptOutSources {
-  /** The repo marker, or null when no marker resolved for the repo dir. */
   marker: RepoMarkerData | null;
-  /** The user-level `telemetry.yaml` `disabled` setting. */
   userDisabled: boolean;
   /** The repo dir came from `--repo-dir` or `SWAMP_REPO_DIR`, not the cwd. */
   explicitRepoDir: boolean;
-  /** The command operates on a repo (see {@link isRepoScopedCommand}). */
   repoScoped: boolean;
 }
 
 /**
- * Whether the repo marker or the user's settings opt this invocation out of
- * telemetry. The `--no-telemetry` flag and the opt-out env vars are checked
- * before this, at the pre-parse gate in `runInvocation`.
- *
- * Every source can only opt out: the user-level setting applies inside repos
- * as well as outside, and no repo setting can turn it back on. A repo-scoped
- * command pointed at an explicit repo dir with no marker is also opted out —
- * that repo's own opt-out and endpoint are unknown, so nothing is recorded
- * rather than guessing.
- *
- * @internal Exported for testing
+ * every source can only opt out. a repo-scoped command with an explicit repo
+ * dir and no marker is opted out too, since that repo's own opt-out and
+ * endpoint are unknown
  */
 export function isTelemetryOptedOut(sources: TelemetryOptOutSources): boolean {
   if (sources.userDisabled) return true;
@@ -401,24 +368,14 @@ export function isTelemetryOptedOut(sources: TelemetryOptOutSources): boolean {
     sources.repoScoped;
 }
 
-/**
- * Checks whether update checks are disabled via SWAMP_NO_UPDATE_CHECK environment variable.
- * Any value other than "0", "false", or empty string disables update checks.
- *
- * @internal Exported for testing
- */
 export function isUpdateCheckDisabledByEnv(): boolean {
   const val = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
   if (val === undefined) return false;
   return val !== "0" && val !== "false" && val !== "";
 }
 
-/**
- * Commands that are never run inside a swamp repo and therefore
- * never need extension loader setup.
- */
 const NON_REPO_COMMANDS = new Set([
-  "", // no command = show help
+  "",
   "help",
   "version",
   "completions",
@@ -437,12 +394,6 @@ const NON_REPO_COMMANDS = new Set([
   "workspace",
 ]);
 
-/**
- * Whether a command operates on a swamp repo. Repo-less commands and
- * `repo init` — whose own run writes the marker — are not repo-scoped.
- *
- * @internal Exported for testing
- */
 export function isRepoScopedCommand(
   commandInfo: Pick<CommandInvocationData, "command" | "subcommand">,
 ): boolean {
@@ -451,11 +402,8 @@ export function isRepoScopedCommand(
 }
 
 /**
- * Whether this invocation is `swamp config set telemetry.collection disabled`.
- * The opt-out is read before the command writes it, so without this the
- * command that opts out would itself be recorded and sent.
- *
- * @internal Exported for testing
+ * the opt-out is read before the command writes it, so without this the
+ * opting-out command would itself be recorded and sent
  */
 export function isTelemetryOptOutInvocation(
   commandInfo: Pick<CommandInvocationData, "command" | "subcommand">,
@@ -469,12 +417,8 @@ export function isTelemetryOptOutInvocation(
 }
 
 /**
- * Whether this invocation records no telemetry. `swamp completions` runs at
- * every shell start (rc files source its script) and on every Tab press
- * (`completions complete`), and the shell waits for stdout to close — so it
- * must not wait on the telemetry flush at teardown (swamp-club#4083).
- *
- * @internal Exported for testing
+ * completions runs at every shell start and Tab press and the shell waits for
+ * stdout to close, so it must not wait on the telemetry flush at teardown
  */
 export function isTelemetryExemptCommand(
   commandInfo: Pick<CommandInvocationData, "command">,
@@ -483,85 +427,37 @@ export function isTelemetryExemptCommand(
 }
 
 /**
- * Checks whether a command may need the extension loader infrastructure.
- * Returns false for commands that never operate inside a swamp repo.
- *
- * Note: this does NOT control when extensions are actually loaded — that
- * is determined lazily by each command calling registry.ensureLoaded().
- * This only controls whether the loader functions are *configured* on the
- * registries.
- *
- * @internal Exported for testing
+ * does not control when extensions load (each command's registry.ensureLoaded()
+ * does), only whether the loader functions are configured on the registries
  */
-/** Options for {@link configureStartupExtensions}. */
 export interface StartupExtensionOptions {
   repoDir: string;
   marker: RepoMarkerData | null;
   resolvedSources: ResolvedSourceDirs[];
-  /**
-   * Collects warnings raised before logging is initialised; emitted once
-   * logging starts.
-   */
   deferredWarnings: DeferredWarning[];
   quiet?: boolean;
   extensionsDir?: string;
-  /**
-   * The command runs against a remote `swamp serve` instance. Skips the
-   * eager managed config resolution for extension-backed datastores.
-   */
   thinClient?: boolean;
   /**
-   * The command promises to leave the repository untouched unless it loads
-   * extensions (swamp-club#3139). Opens the extension catalog on first use,
-   * and leaves the managed config resolution for extension-backed
-   * datastores, the reconcile and the missing-source-files check to the
-   * first loader that runs.
+   * the command leaves the repo untouched unless it loads extensions: the
+   * catalog opens on first use, and managed config resolution, reconcile and
+   * the missing-files check wait for the first loader
    */
   deferCatalog?: boolean;
-  /** Reads `SWAMP_DATASTORE`; injectable for tests. */
   readDatastoreEnv?: DatastoreEnvReader;
   /**
-   * Drops a warning the command should not see (swamp-club#1762). Applied
-   * to warnings the deferred reconcile logs directly; warnings collected at
-   * startup are filtered by the caller.
+   * drops a warning the command should not see; applies only to warnings the
+   * deferred reconcile logs directly, the caller filters those collected at
+   * startup
    */
   suppressWarning?: (warning: DeferredWarning) => boolean;
-  /** Test seam: replaces the datastore-kind loader. */
   datastoreLoader?: () => Promise<void>;
 }
 
 /**
- * Configures the extension loaders on every registry, and resolves the
- * managed config base first so no loader captures a guessed lockfile path
- * (swamp-club#2483).
- *
- * Sequence:
- * 1. Register the repo's managed status (the in-repo fallback, recorded as
- *    unresolved), so the pulled-extensions root is right from the start.
- * 2. For a managedConfig repo on an extension-backed datastore, install a
- *    datastore-kind loader that finds datastore extensions on disk, without
- *    any lockfile.
- * 3. Resolve the managed config base once, with installed extensions only:
- *    always for filesystem datastores (cheap), and for extension-backed ones
- *    unless the command is a thin client.
- * 4. Configure the model, vault, report and webhook loaders (and the
- *    datastore loader for other repos) with a lockfile path read when they
- *    load. A loader that finds the base still unresolved resolves it first,
- *    once per process, installed-only.
- * 5. Run reconcile and the missing-source-files check only once the base is
- *    resolved (or the repo does not need it); if startup had to skip them,
- *    they run once, best-effort, when a loader first finds it resolved.
- *
- * With `deferCatalog`, steps 3 (for extension-backed datastores) and 5 wait
- * for the first loader as well, and the catalog is not opened before then.
- *
- * Until swamp-club#2495, auto-resolved installs in an extension-backed repo
- * are recorded in the in-repo `.swamp/config/upstream_extensions.json`;
- * loaders, the reconcile orphan rule and the missing-files check read those
- * entries alongside the resolved lockfile.
- *
- * @returns A disposer that closes the catalog handles (for tests; the CLI
- *   process exits instead).
+ * resolves the managed config base before configuring loaders so none captures
+ * a guessed lockfile path. with deferCatalog, resolution for extension-backed
+ * datastores and the reconcile wait for the first loader
  */
 export async function configureStartupExtensions(
   options: StartupExtensionOptions,
@@ -581,14 +477,9 @@ export async function configureStartupExtensions(
     ? repoDir
     : rebaseOntoRepoDir(extensionsDir, repoDir);
 
-  // Every extension — including already-pulled repo bundles — is loaded
-  // through an embedded runtime that lives under the user's home directory
-  // (~/.swamp). When neither HOME nor USERPROFILE is set (common for
-  // service managers like systemd that start swamp serve without HOME), that
-  // resolution throws deep inside each loader and surfaces as five
-  // misleading "Failed to load user X extensions" warnings, followed by
-  // "Unknown model type" at run time. Detect the condition once, up front,
-  // and emit a single actionable warning instead.
+  // extensions load through an embedded runtime under the home dir; without
+  // HOME or USERPROFILE (e.g. systemd) each loader would fail with misleading
+  // warnings, so warn once up front
   if (!homeDirectoryIsSet()) {
     deferredWarnings.push({
       kind: "extensions",
@@ -629,8 +520,8 @@ export async function configureStartupExtensions(
   const kindDirs = new Map<ExtensionKind, string[]>([
     ["models", [
       resolveAbsoluteKindDir(resolveModelsDir),
-      // The behavior-spelled sibling of the default models directory
-      // (swamp-club#3338); discovery skips it when it does not exist.
+      // the behavior-spelled sibling of the default models directory; discovery
+      // skips it when it does not exist
       ...(behaviorsDir === undefined
         ? []
         : [resolve(effectiveExtDir, behaviorsDir)]),
@@ -674,7 +565,6 @@ export async function configureStartupExtensions(
       readDatastoreEnv,
     );
 
-    // 1. Record managed status before anything asks for the pulled root.
     resolveManagedConfigPaths(repoDir, marker);
 
     // 2. The datastore extension must load before the base can resolve, so
@@ -708,10 +598,8 @@ export async function configureStartupExtensions(
       );
     }
 
-    // 3. Resolve the base, installed-only. A failed attempt is remembered
-    // for this process so each loader does not rerun the datastore index
-    // pass; anything that resolves the base later (requireInitializedRepo*,
-    // an extension command) is seen through the registry.
+    // installed-only; a failed attempt is remembered for this process so each
+    // loader does not rerun the datastore index pass
     let resolutionFailed = false;
     const ensureResolvedForLoaders = async (): Promise<void> => {
       if (!extensionBacked || resolutionFailed) return;
@@ -733,7 +621,6 @@ export async function configureStartupExtensions(
     const baseReady = () =>
       !extensionBacked || isManagedConfigBaseResolved(repoDir);
 
-    // 4. Loaders read the lockfile path when they load.
     const lockfilePathNow = () =>
       resolveManagedConfigPaths(repoDir, marker).lockfilePath;
     const localLockfileFor = (lockfilePath: string) =>
@@ -781,8 +668,6 @@ export async function configureStartupExtensions(
         await ensureResolvedForLoaders();
         if (!isManagedConfigBaseResolved(repoDir)) return undefined;
       }
-      // A datastore written through serve never reaches its extension, on
-      // this path as on the command's (swamp-club#3985).
       const serveOptions = serveUpstreamConfigOptions(
         repoDir,
         await serveUpstreamOf(marker),
@@ -800,25 +685,24 @@ export async function configureStartupExtensions(
           ) as DatastorePathResolver
         )
         .catch(() => {
-          // An extension-backed repo retries once its base resolves, and the
-          // retry is installed-only. Elsewhere the failure is kept for the
-          // process, so each loader does not re-run the network auto-resolve.
+          // an extension-backed repo retries once its base resolves,
+          // installed-only; elsewhere the failure is kept so each loader does
+          // not re-run the network auto-resolve
           if (extensionBacked) resolverPromise = undefined;
           return undefined;
         });
       return resolverPromise;
     };
 
-    // 5. Reconcile and the missing-files check. Reconcile returns false
-    // when the lockfile cannot be read; the missing-files check reads the
-    // same file, so it is skipped rather than repeating the warning.
+    // reconcile returns false when the lockfile cannot be read; the
+    // missing-files check reads the same file, so it is skipped rather than
+    // repeating the warning
     const runReconcile = async (): Promise<boolean> => {
       const lockfilePath = lockfilePathNow();
       let loaded: Awaited<ReturnType<typeof repositoryFor>>;
       try {
         loaded = await repositoryFor(lockfilePath);
       } catch (error) {
-        // The read error already names the lockfile.
         logger.warn`Skipping extension catalog repair: ${
           error instanceof Error ? error.message : String(error)
         }`;
@@ -849,9 +733,8 @@ export async function configureStartupExtensions(
       await reconciler.execute();
       return true;
     };
-    // Skip local filesystem checks when commands route to a remote serve
-    // instance — the local repo may be a thin checkout whose lockfile
-    // references files that only exist on the server.
+    // skip local file checks when routing to a remote serve: a thin checkout's
+    // lockfile references files that exist only on the server
     const checkLocalFiles = !Deno.env.get("SWAMP_SERVE_URL");
     const checkMissing = (report: (warning: DeferredWarning) => void) => {
       const lockfilePath = lockfilePathNow();
@@ -863,23 +746,19 @@ export async function configureStartupExtensions(
       );
     };
 
-    // Reconcile counts as done only once it has read the lockfile; an
-    // unreadable one (caught mid-rewrite by a sync) is retried on a later
-    // load rather than skipped for the rest of the process.
+    // reconcile counts as done only once it has read the lockfile; an
+    // unreadable one (caught mid-rewrite by a sync) is retried on a later load
     let reconciled = false;
     if (baseReady() && !deferCatalog) {
-      // A failed repair must not fail every command, or doctor extensions
-      // and extension rm, which fix the state, become unreachable
-      // (swamp-club#2702). It is marked done so the deferred path does not
-      // repeat it this process; the populated markers stay unset, so the
-      // next process retries.
+      // a failed repair must not fail every command, or doctor extensions and
+      // extension rm become unreachable. it is marked done for this process;
+      // the populated markers stay unset so the next process retries
       let repaired = false;
       try {
         reconciled = await runReconcile();
         repaired = reconciled;
       } catch (error) {
         reconciled = true;
-        // Error messages usually end in a period; drop it before the hint.
         const reason = (error instanceof Error ? error.message : String(error))
           .replace(/\.$/, "");
         logger
@@ -1041,17 +920,14 @@ export async function configureStartupExtensions(
 }
 
 /**
- * True when the command runs against a remote `swamp serve` instance: the
- * `--server` flag, or `SWAMP_SERVE_URL` / `SWAMP_SERVER_URL`. `swamp serve`
- * itself never counts, and a `serverAddress` in `.swamp.yaml` is not
- * considered here (such checkouts still resolve at startup).
+ * true when the command runs against a remote serve: --server, or
+ * SWAMP_SERVE_URL / SWAMP_SERVER_URL. serve itself never counts, and a
+ * serverAddress in .swamp.yaml is not considered (such checkouts still resolve
+ * at startup)
  */
 /**
- * Whether this invocation runs locally with serve as its v3 datastore's
- * upstream (swamp-club#3985): a data-plane command in a format-3 checkout.
- * `--detach` asks serve to keep a run going, which only a run on serve can
- * do, so an address from the environment or `.swamp.yaml` still sends it
- * there.
+ * --detach asks serve to keep a run going, which only a run on serve can do, so
+ * an address from the environment or .swamp.yaml still sends it there
  */
 export function runsLocallyWithServeUpstream(
   marker: RepoMarkerData | null,
@@ -1066,8 +942,8 @@ export function isThinClientCommand(
   commandInfo: { command: string; optionKeys: string[] },
   readEnv: (name: string) => string | undefined = (name) => Deno.env.get(name),
   /**
-   * The command runs locally with serve as its v3 datastore's upstream
-   * (swamp-club#3985): only an explicit `--server` makes it a thin client.
+   * the command runs locally with serve as its v3 datastore's upstream: only an
+   * explicit --server makes it a thin client
    */
   servesUpstreamLocally = false,
 ): boolean {
@@ -1078,10 +954,8 @@ export function isThinClientCommand(
 }
 
 /**
- * True for `swamp serve check-config`, which promises to leave the repository
- * untouched: startup must not create or refresh the extension catalog for it
- * (swamp-club#3139). The catalog is still opened if the command loads
- * extensions, as it does to read a token secrets key from its vault.
+ * check-config promises to leave the repo untouched, so startup does not create
+ * or refresh the catalog; it still opens if the command loads extensions
  */
 export function defersExtensionCatalog(
   commandInfo: Pick<CommandInvocationData, "command" | "subcommand">,
@@ -1091,10 +965,9 @@ export function defersExtensionCatalog(
 }
 
 /**
- * The lockfile the auto-resolver records installs in. Until swamp-club#2495,
- * a managedConfig repo on an extension-backed datastore records them in the
- * in-repo lockfile, never the datastore's (which pulls would overwrite).
- * Pins are still read from the datastore's lockfile once the base resolves.
+ * a managedConfig repo on an extension-backed datastore records auto-resolved
+ * installs in the in-repo lockfile, never the datastore's, which pulls would
+ * overwrite; pins still come from the datastore's
  */
 export function resolveAutoResolverLockfilePath(
   repoDir: string,
@@ -1106,10 +979,6 @@ export function resolveAutoResolverLockfilePath(
     : resolveManagedConfigPaths(repoDir, marker).lockfilePath;
 }
 
-/**
- * Configures the global extension auto-resolver for a given repository.
- * Exported so commands that switch repositories at runtime can reconfigure.
- */
 export function configureExtensionAutoResolver(
   repoDir: string,
   marker: RepoMarkerData | null,
@@ -1165,8 +1034,8 @@ export function configureExtensionAutoResolver(
             ? resolveManagedConfigPaths(repoDir, marker).lockfilePath
             : undefined,
         repository: new ExtensionRepository({
-          // Opened by the first install, so a command that resolves
-          // nothing does not create the catalog (swamp-club#3139).
+          // opened by the first install, so a command that resolves nothing
+          // does not create the catalog
           catalog: new ExtensionCatalogStore(
             swampPath(repoDir, "_extension_catalog.db"),
             { openOnFirstUse: true },
@@ -1194,12 +1063,9 @@ export function commandNeedsLoaderSetup(args: string[]): boolean {
 }
 
 /**
- * Checks whether the command is `audit record` (the PostToolUse hook).
- * Hook commands need the fastest possible startup and must never exit
- * non-zero from infrastructure code — they skip telemetry, update
- * checks, and all post-parse teardown.
- *
- * @internal Exported for testing
+ * hook commands need the fastest startup and must never exit non-zero from
+ * infrastructure code, so they skip telemetry, update checks and post-parse
+ * teardown
  */
 export function isHookCommand(
   commandInfo: CommandInvocationData,
@@ -1209,9 +1075,8 @@ export function isHookCommand(
 }
 
 /**
- * True for the dispatch runner (`swamp worker exec-dispatch`), a child the
- * worker spawns per dispatch. It skips CLI teardown: a dispatch records no
- * CLI telemetry and runs no update check, as when it ended with Deno.exit.
+ * a child the worker spawns per dispatch; it skips CLI teardown, recording no
+ * telemetry and running no update check
  */
 export function isDispatchRunnerCommand(
   commandInfo: CommandInvocationData,
@@ -1220,7 +1085,6 @@ export function isDispatchRunnerCommand(
     commandInfo.subcommand === "exec-dispatch";
 }
 
-/** A deferred warning message to emit after logging is initialized. */
 export interface DeferredWarning {
   kind:
     | "model"
@@ -1238,7 +1102,6 @@ export interface DeferredWarning {
 const MISSING_PULLED_EXTENSIONS_MARKER =
   "pulled extension(s) have missing source files";
 
-/** @internal Exported for testing */
 export function shouldSuppressMissingExtensionsWarning(
   commandInfo: CommandInvocationData,
   warning: DeferredWarning,
@@ -1250,10 +1113,8 @@ export function shouldSuppressMissingExtensionsWarning(
 }
 
 /**
- * Detects the "neither HOME nor USERPROFILE is set" failure raised by the
- * home-directory path helpers. Used to suppress the misleading per-kind
- * loader warnings in favour of the single actionable warning emitted by
- * {@link configureStartupExtensions}.
+ * used to suppress the misleading per-kind loader warnings in favour of the
+ * single one from configureStartupExtensions
  */
 function isMissingHomeError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("home directory");
@@ -1264,7 +1125,6 @@ function throwOnTransientLoadFailures(
     { file: string; error: string; originalError?: unknown }
   >,
   kind: string,
-  /** `kind` in model words, when it differs (swamp-club#3437). */
   modelKind: string = kind,
 ): void {
   const transient = failures.filter((f) =>
@@ -1286,10 +1146,6 @@ function throwOnTransientLoadFailures(
   );
 }
 
-/**
- * Load user models from configured directory.
- * Uses the bundle catalog for lazy per-bundle loading when available.
- */
 async function loadUserModels(
   repoDir: string,
   marker: RepoMarkerData | null,
@@ -1330,25 +1186,14 @@ async function loadUserModels(
       localLockfilePath,
     );
 
-    // Set type loader on the registry for on-demand loading.
-    // The lazy entry carries bundle/source paths from the catalog index,
-    // avoiding a redundant SQLite read inside loadSingleType.
+    // the lazy entry carries bundle/source paths from the catalog index,
+    // avoiding a redundant SQLite read inside loadSingleType
     modelRegistry.setTypeLoader(async (type, lazyEntry) => {
       await loader.loadSingleType(type, lazyEntry);
     });
 
-    // Build the index: reads catalog + mtime scan for freshness.
-    // If catalog is populated, only rebundles changed files.
-    // If not populated (first run), bundles without importing (indexOnly).
-    // Always scans for staleness so users never see stale data.
-    // Load order: local > sources > pulled (sources override pulled).
-    // pulledDirs is one entry per installed extension — the loader walks
-    // each extension's subtree independently so file-name collisions across
-    // sibling extensions can't bleed into each other.
-    // extensions/behaviors/ loads beside extensions/models/ at the same
-    // local tier while the models directory is the default
-    // (swamp-club#3338). Passed only when it exists, so a repo without one
-    // keeps its catalog's source-dirs fingerprint.
+    // load order: local > sources > pulled; pulledDirs has one entry per
+    // extension so file-name collisions cannot bleed across extensions
     const behaviorsDir = await existingBehaviorsDir(extBase, marker);
     const result = await loader.buildIndex(
       absoluteModelsDir,
@@ -1361,23 +1206,19 @@ async function loadUserModels(
 
     throwOnTransientLoadFailures(result.failed, "behavior", "model");
 
-    // Built-in and other eagerly registered types skip the type loader, so
-    // their extensions attach through this hook instead (swamp-club#2846).
-    // Wired once the index is built, so an attach never reads a partial
-    // catalog.
+    // built-in and eagerly registered types skip the type loader, so their
+    // extensions attach through this hook, wired once the index is built so an
+    // attach never reads a partial catalog
     modelRegistry.setExtensionAttacher((type) =>
       loader.attachPendingExtensionsForType(type)
     );
-    // For long-lived processes (swamp serve) to pick up edited local
-    // models (swamp-club#3284). The behaviors dir and the pulled dirs are
-    // resolved again on each pass: the scan drops catalog rows of every
-    // source it does not see, so it must walk the same dirs a fresh index
-    // would. The behaviors dir is watched even before it exists, so
-    // creating it counts as an edit.
+    // lets long-lived processes pick up edited local models. dirs are resolved
+    // again on each pass because the scan drops catalog rows of sources it does
+    // not see; the behaviors dir is watched before it exists
     const behaviorsCandidate = resolveBehaviorsDir(marker);
-    // The refresher loads what it refreshes, in a long-lived process: it
-    // imports in-process, so an edited add-on to a type already in use is
-    // attached straight away. Probing is for indexing (swamp-club#3374).
+    // the refresher imports in-process in a long-lived process, so an edited
+    // add-on to a type already in use attaches straight away; probing is only
+    // for indexing
     modelRegistry.setSourceRefresher(
       createLocalModelRefresher(
         new ExtensionLoader(
@@ -1448,10 +1289,6 @@ async function loadUserModels(
   }
 }
 
-/**
- * Load user vault implementations from configured directory.
- * Uses the bundle catalog for lazy per-bundle loading when available.
- */
 async function loadUserVaults(
   repoDir: string,
   marker: RepoMarkerData | null,
@@ -1820,11 +1657,6 @@ async function loadUserWebhooks(
   }
 }
 
-/**
- * A lockfile entry's tracked file paths, read defensively: an entry that is
- * not an object, or whose `files` is not a list, tracks nothing, and
- * non-string paths are dropped.
- */
 function trackedSourceFiles(entry: unknown): string[] {
   if (typeof entry !== "object" || entry === null) return [];
   const { files } = entry as { files?: unknown };
@@ -1834,16 +1666,9 @@ function trackedSourceFiles(entry: unknown): string[] {
 }
 
 /**
- * Check if upstream_extensions.json has entries whose source files are
- * missing from disk. This catches cases where pulled extensions weren't
- * restored (e.g. after git clone without running `swamp extension install`).
- *
- * Entries found only in the transitional in-repo auto-resolve lockfile
- * (`localLockfilePath`) are reported separately: `swamp extension install`
- * restores only the resolved lockfile, and the auto-resolver reinstalls such
- * an extension once its directory is gone. One already gone entirely is
- * awaiting that reinstall and is not reported.
- * A missing lockfile is normal and silent; an unreadable one warns.
+ * entries found only in the in-repo lockfile are reported separately, since
+ * extension install restores only the resolved one; an entry already gone
+ * entirely awaits the auto-resolver and is not reported
  */
 async function checkForMissingPulledExtensions(
   repoDir: string,
@@ -1855,7 +1680,6 @@ async function checkForMissingPulledExtensions(
   try {
     installed = await readInstalledEntries(lockfilePath, localLockfilePath);
   } catch (error) {
-    // The read error already names the lockfile.
     logger.warn`Cannot check pulled extensions: ${
       error instanceof Error ? error.message : String(error)
     }`;
@@ -1864,11 +1688,9 @@ async function checkForMissingPulledExtensions(
   const { entries, localOnly } = installed;
   if (Object.keys(entries).length === 0) return;
 
-  // Check for any missing source files (skip bundle artifacts — they're
-  // regenerable cache output). Uses the same isBundleArtifactPath filter
-  // as inspectInstallation in auto_resolver_adapters.ts. The check is
-  // advisory: a malformed entry is skipped, and anything else that goes
-  // wrong warns rather than failing startup.
+  // skips bundle artifacts (regenerable cache), with the same filter as
+  // inspectInstallation. advisory: a malformed entry is skipped and anything
+  // else that goes wrong warns rather than failing startup
   const missing: Array<{ name: string; file: string }> = [];
   try {
     for (const [name, entry] of Object.entries(entries)) {
@@ -1879,7 +1701,7 @@ async function checkForMissingPulledExtensions(
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) {
             missing.push({ name, file });
-            break; // One missing file is enough to flag this extension
+            break;
           }
         }
       }
@@ -1914,10 +1736,9 @@ async function checkForMissingPulledExtensions(
     });
   }
   if (local.length > 0) {
-    // Pulling would record the extension in the team's lockfile, so the
-    // remedy is to let the auto-resolver reinstall it. Each extension's
-    // paths name everything to delete, skill dirs included: anything left
-    // makes the auto-resolver treat the extension as installed.
+    // pulling would record the extension in the team's lockfile, so the remedy
+    // is an auto-resolver reinstall. all of an extension's paths, skill dirs
+    // included, must go or the auto-resolver treats it as installed
     const toRemove = local.map(({ name }) => {
       const paths = pathsToRemoveForReinstall(repoDir, name, entries);
       return paths.length > 0 ? `${name}: ${paths.join(", ")}` : name;
@@ -1967,17 +1788,10 @@ async function checkForSupersededSkills(
   }
 }
 
-/** Default telemetry endpoint */
 const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp-club.com";
 
-/** Telemetry endpoint used when auth serverUrl is a localhost address */
 const LOCALHOST_TELEMETRY_ENDPOINT = "http://localhost:8080";
 
-/**
- * Checks whether the given URL points to a localhost address.
- *
- * @internal Exported for testing
- */
 export function isLocalhostUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -1990,17 +1804,9 @@ export function isLocalhostUrl(url: string): boolean {
 }
 
 /**
- * Resolves the telemetry endpoint.
- * Priority: SWAMP_TELEMETRY_ENDPOINT env > .swamp.yaml telemetryEndpoint >
- * localhost auto-detect from auth serverUrl > default
- *
- * The env override is an operator escape hatch that applies to every repo in the
- * process regardless of marker. It exists for hosts whose auth serverUrl is a
- * non-localhost name the auto-detect can't recognize — e.g. a container on a
- * compose network reaching the server as `app:5173` — so all invocations route
- * to a local telemetry service without pinning each repo's `.swamp.yaml`.
- *
- * @internal Exported for testing
+ * the env override is an operator escape hatch applying to every repo
+ * regardless of marker, for hosts whose auth serverUrl is a non-localhost name
+ * auto-detect cannot recognize (e.g. a compose network host app:5173)
  */
 export function resolveTelemetryEndpoint(
   markerEndpoint: string | undefined,
@@ -2018,17 +1824,9 @@ export function resolveTelemetryEndpoint(
 import { resolveTrustedCollectives } from "../libswamp/extensions/trust.ts";
 
 /**
- * Initialize the telemetry service for this invocation.
- *
- * Telemetry is global: every run spools to the single user-level directory
- * ({@link globalTelemetryDir}) whether or not it happened inside a swamp repo.
- * A repo marker, when present, only *enriches* the event (repoId, configured
- * tools, datastore, endpoint, keepFlushed) and can opt the repo out; it no
- * longer gates telemetry or selects the spool. The user-level opt-out at
- * `<config>/telemetry.yaml` applies to every run, inside a repo or not
- * (see {@link isTelemetryOptedOut}).
- *
- * Returns null only when telemetry is disabled for this run.
+ * telemetry is global: every run spools to the single user-level directory. a
+ * repo marker only enriches the event and can opt the repo out; the user-level
+ * opt-out applies to every run. null only when disabled
  */
 async function initTelemetryService(
   repoDir: string,
@@ -2051,8 +1849,6 @@ async function initTelemetryService(
       return null;
     }
 
-    // Enrichment fields default to the repo-less state; a marker decorates the
-    // event with repo-specific detail when the run happened inside a repo.
     let repoId: string | undefined;
     let configuredAiTools: string[] | undefined;
     let externalDatastore = false;
@@ -2062,7 +1858,6 @@ async function initTelemetryService(
     let keepFlushed = false;
 
     if (marker) {
-      // Lazy-migrate repoId if missing
       repoId = marker.repoId;
       if (!repoId) {
         repoId = crypto.randomUUID();
@@ -2070,8 +1865,8 @@ async function initTelemetryService(
         await markerRepo.write(repoPath, marker);
       }
 
-      // Resolve expressions in repoId (local variable only — marker is not
-      // mutated so the expression text survives future writes).
+      // local variable only: the marker is not mutated so the expression text
+      // survives future writes
       if (repoId) {
         try {
           const resolved = await resolveDatastoreExpressions(
@@ -2104,12 +1899,10 @@ async function initTelemetryService(
       keepFlushed = marker.telemetryKeepFlushed ?? false;
     }
 
-    // Resolve user-level identity (lazy-creates ~/.config/swamp/identity.json)
     const identityRepo = new UserIdentityRepository();
     const userId = await identityRepo.getUserId();
 
-    // Try loading auth credentials for authenticated telemetry
-    // (loaded before telemetry endpoint resolution for localhost auto-detect)
+    // loaded before telemetry endpoint resolution for localhost auto-detect
     let authToken: string | null = null;
     let authServerUrl: string | null = null;
     try {
@@ -2125,10 +1918,8 @@ async function initTelemetryService(
       // Auth file unreadable — continue without auth
     }
 
-    // Drain any telemetry stranded in a home-as-repo legacy spool
-    // (~/.swamp/telemetry) so it flushes with this run (swamp-club#1214).
-    // Best-effort on top of the never-throw contract: migration must not
-    // trip the outer catch and disable telemetry for the run.
+    // best-effort: migrating a legacy home-as-repo spool must not trip the
+    // outer catch and disable telemetry for the run
     try {
       await migrateHomeRepoTelemetry();
     } catch {
@@ -2152,9 +1943,8 @@ async function initTelemetryService(
       authServerUrl,
       Deno.env.get("SWAMP_TELEMETRY_ENDPOINT"),
     );
-    // Entries are stamped with the endpoint resolved here and only ever
-    // flushed to it, so a later run elsewhere (outside the repo, or in a repo
-    // with a different endpoint) cannot send them to its own endpoint.
+    // entries are stamped with the endpoint resolved here and only flushed to
+    // it, so a later run elsewhere cannot send them to its own endpoint
     const service = new TelemetryService(
       repository,
       VERSION,
@@ -2180,10 +1970,8 @@ async function initTelemetryService(
 }
 
 /**
- * Registers every top-level command, and `help` last, on the root command.
- *
- * Kept free of invocation state so the real command tree can be built outside
- * `runInvocation` — the telemetry redaction fitness test walks it.
+ * kept free of invocation state so the real command tree can be built outside
+ * runInvocation; the telemetry redaction fitness test walks it
  */
 export function registerCommands(cli: AnyCommand): void {
   cli
@@ -2228,9 +2016,8 @@ export function registerCommands(cli: AnyCommand): void {
 }
 
 /**
- * The values to scrub exactly from this invocation's error message. Never
- * throws: the working directory may have been deleted during the command, and
- * a failure here must not replace the error being recorded.
+ * never throws: the working directory may have been deleted during the command,
+ * and a failure here must not replace the error being recorded
  */
 function knownSensitiveValues(
   redactedValues: readonly string[],
@@ -2248,9 +2035,8 @@ function knownSensitiveValues(
 }
 
 /**
- * Records a failed invocation and flushes it at once — the process is about
- * to exit, so nothing later would send it. Shared by the outer catch and the
- * auth gate's early block, so a failure is recorded one way.
+ * flushes at once because the process is about to exit; shared by the outer
+ * catch and the auth gate's early block so a failure is recorded one way
  */
 async function recordAndFlushError(
   telemetryCtx: TelemetryContext,
@@ -2266,8 +2052,8 @@ async function recordAndFlushError(
     sensitiveValues,
   );
 
-  // distinct_id is required by the sender (see success path). Skip the
-  // flush if neither userId nor repoId resolved.
+  // distinct_id is required by the sender; skip the flush if neither userId nor
+  // repoId resolved
   const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
   if (distinctId) {
     const sender = new HttpTelemetrySender(
@@ -2285,10 +2071,6 @@ async function recordAndFlushError(
   }
 }
 
-/**
- * Clears the per-invocation state runCli sets up. The outer finally calls it;
- * so does the auth gate when it ends a run before that try is entered.
- */
 function endInvocation(): void {
   // runCli is the single setter and must be the single clearer.
   clearActiveTelemetryService();
@@ -2298,8 +2080,8 @@ function endInvocation(): void {
 }
 
 /**
- * The root help text. It states the error contract every command shares, so
- * a command's own help lists only the codes it adds (swamp-club#3834).
+ * states the error contract every command shares, so a command's own help lists
+ * only the codes it adds
  */
 export const ROOT_DESCRIPTION = `AI Native Automation CLI
 
@@ -2324,23 +2106,18 @@ Exit codes, shared by every command:
 A command that adds codes of its own lists them in its help.`;
 
 /**
- * The root command with its global types and options, and no invocation
- * state. runInvocation adds the global action; the auth gate resolves which
- * command a line runs against the same declarations, so its decision and
- * Cliffy's parse can never disagree about an option's arity.
+ * no invocation state: the auth gate resolves commands against the same
+ * declarations, so its decision and Cliffy's parse never disagree about an
+ * option's arity
  */
 export function createRootCommand(colorEnabled: boolean): AnyCommand {
   return registerCompletionTypes(
     new Command()
       .name("swamp")
       .version(VERSION)
-      // Cliffy's help generator force-enables colour while it renders
-      // (`setColorEnabled(this.options.colors)`, defaulting to true), so unlike
-      // the version option it ignores the policy applyColorPolicy set — `NO_COLOR` only
-      // won because @std/fmt refuses to re-enable when Deno.noColor is set.
-      // Handing it the decision is the one way help honours `--no-color` and a
-      // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
-      // parent.
+      // Cliffy's help generator force-enables colour and ignores
+      // applyColorPolicy, so it is handed the decision for help to honour
+      // --no-color and a piped stdout; subcommands inherit it
       .help({ colors: colorEnabled })
       .description(ROOT_DESCRIPTION),
   )
@@ -2364,12 +2141,8 @@ export function createRootCommand(colorEnabled: boolean): AnyCommand {
 }
 
 /**
- * The command tree without the invocation's global action — enough to
- * resolve a telemetry invocation for a run blocked before the real tree is
- * built. registerCommands is kept free of invocation state for this.
- *
- * Call it before the real cli registers its commands: the instances are
- * shared, and Cliffy re-parents each to the tree that registers it last.
+ * call before the real cli registers its commands: the instances are shared and
+ * Cliffy re-parents each to the tree that registers it last
  */
 export function buildCommandTree(): AnyCommand {
   const tree = createRootCommand(false);
@@ -2377,10 +2150,7 @@ export function buildCommandTree(): AnyCommand {
   return tree;
 }
 
-/**
- * The whoami response the auth gate already fetched this run, or a fresh
- * one. Saves a CI run (which checks its signin token live) a second call.
- */
+/** saves a CI run, which checks its signin token live, a second call */
 async function gateWhoamiOr(
   outcome: AuthGateOutcome | undefined,
   serverUrl: string,
@@ -2394,11 +2164,9 @@ async function gateWhoamiOr(
 }
 
 /**
- * Runs the weekly proof refresh the gate scheduled, if any. Best effort and
- * bounded by its own timeout: it never changes the run that already passed.
- * It runs at teardown, so a long-running `serve` or `worker` refreshes only
- * when it exits; they are re-gated on restart (design/surfaces/auth-gate.md,
- * Non-goals).
+ * best effort and bounded by its own timeout; it runs at teardown, so a
+ * long-running serve or worker refreshes only on exit and is re-gated on
+ * restart
  */
 async function runGateRefresh(
   outcome: AuthGateOutcome | undefined,
@@ -2412,9 +2180,8 @@ async function runGateRefresh(
 }
 
 /**
- * Refuses `SWAMP_MODELS_DIR` and `SWAMP_BEHAVIORS_DIR` set to different
- * non-empty values (swamp-club#3410): the two spellings name one setting, so
- * swamp will not guess which one was meant.
+ * the two spellings name one setting, so swamp will not guess which one was
+ * meant
  */
 export function assertModelsDirEnvConsistent(): void {
   const conflict = modelsDirEnvConflict();
@@ -2422,29 +2189,23 @@ export function assertModelsDirEnvConsistent(): void {
 }
 
 export async function runCli(args: string[]): Promise<void> {
-  // Rewrite `model @type method run` → `model method run @type` before
-  // Cliffy parses the command tree. Must happen before any arg inspection.
+  // must happen before Cliffy parses the command tree and before any arg
+  // inspection
   const { rewriteDirectTypeArgs } = await import("./arg_rewriter.ts");
   args = rewriteDirectTypeArgs(args);
 
-  // Extract command info once the args are final — nothing reassigns `args`
-  // below this point. It feeds span attributes, hook detection and stdout
-  // routing (recorded telemetry is resolved against the command tree instead,
-  // see `resolveTelemetryInvocation`),
-  // and it is also how `--no-color` is found: a real parse that tracks the flag
-  // wherever it appears and skips option values, rather than a bare scan.
+  // extracted once args are final. also how --no-color is found: a real parse
+  // that tracks the flag wherever it appears and skips option values, not a
+  // bare scan
   const commandInfo = extractCommandInfo(args);
-  // Which commands take serve as their v3 datastore upstream is decided by
-  // these words (swamp-club#3985).
   setServeUpstreamCommandPath(
     [commandInfo.command, commandInfo.subcommand].filter((
       word,
     ): word is string => typeof word === "string" && word !== ""),
   );
 
-  // swamp.cli is the root span of the whole invocation — bootstrap, the
-  // command, and teardown all nest under it, so one invocation is one trace
-  // (swamp-club#2617).
+  // root span of the whole invocation: bootstrap, the command and teardown nest
+  // under it so one invocation is one trace
   await withSpan("swamp.cli", {
     "swamp.command": commandInfo.command,
     "swamp.subcommand": commandInfo.subcommand ?? "",
@@ -2459,11 +2220,9 @@ async function runInvocation(
   args: string[],
   commandInfo: CommandInvocationData,
 ): Promise<void> {
-  // Decide colour here, before anything can print. Cliffy answers `--version`
-  // and `--help` during parsing and exits without ever reaching
-  // `globalAction`, so a decision made in there — as it once was — could not
-  // reach them, and `swamp --version | cat` carried escape sequences into
-  // whatever captured it (swamp-club#2414).
+  // decide colour before anything prints: Cliffy answers --version and --help
+  // during parsing without reaching globalAction, so a decision made there
+  // could not reach them
   const colorEnabled = applyColorPolicy(
     commandInfo.globalOptions.includes("--no-color"),
   );
@@ -2476,18 +2235,14 @@ async function runInvocation(
     await cleanupStaleBinary(Deno.execPath());
   }
 
-  // Capture start time for telemetry
   const startTime = new Date();
 
-  // Pre-parse --repo-dir so startup functions use the correct repository
   const repoDir = getRepoDirFromArgs(args);
 
-  // Pre-parse --extensions-dir for split code-plane/data-plane scenarios
   const extensionsDir = getExtensionsDirFromArgs(args);
 
-  // Pre-parse --club-api-key-file so every credential load below (telemetry,
-  // identity and scopes, the extension auto-resolver) uses the same
-  // collective key as the serve command that declares the flag.
+  // every credential load below (telemetry, identity, auto-resolver) must use
+  // the same collective key as the serve command that declares the flag
   const clubApiKeyFile = getClubApiKeyFileFromArgs(args, commandInfo);
   if (clubApiKeyFile !== undefined) {
     setApiKeyFileOverride(clubApiKeyFile);
@@ -2527,25 +2282,21 @@ async function runInvocation(
     }
   }
 
-  // Pre-parse check for telemetry disable flag
   const telemetryDisabled = isTelemetryDisabled(args) ||
     isTelemetryDisabledByEnv() ||
     isTelemetryOptOutInvocation(commandInfo, args) ||
     isTelemetryExemptCommand(commandInfo);
 
-  // Hook commands (audit record --from-hook) run as PostToolUse hooks and
-  // must be as fast as possible. Skip all non-essential startup and teardown
-  // to avoid infrastructure errors causing non-zero exit.
+  // hook commands run as PostToolUse hooks and must be fast: skip non-essential
+  // startup and teardown so infrastructure errors cannot cause a non-zero exit
   const hookMode = isHookCommand(commandInfo);
 
-  // SWAMP_MODELS_DIR and its behavior spelling SWAMP_BEHAVIORS_DIR naming
-  // different directories is refused once, here (swamp-club#3410). Hook
-  // mode must not fail, so it runs on the SWAMP_MODELS_DIR value.
+  // conflicting SWAMP_MODELS_DIR and SWAMP_BEHAVIORS_DIR are refused once,
+  // here; hook mode must not fail, so it runs on the SWAMP_MODELS_DIR value
   if (!hookMode) assertModelsDirEnvConsistent();
 
   const bootstrapSpan = getTracer().startSpan("swamp.cli.bootstrap");
 
-  // Initialize telemetry service (only if in a swamp repo)
   let telemetryCtx: TelemetryContext | null = null;
   if (!telemetryDisabled && !hookMode) {
     telemetryCtx = await initTelemetryService(
@@ -2555,9 +2306,8 @@ async function runInvocation(
     );
   }
 
-  // Surface the active service for command actions that emit child
-  // telemetry (e.g. workflow_run wiring into libswamp). Cleared in the
-  // outer try/finally below regardless of how the invocation ends.
+  // surfaces the active service for command actions that emit child telemetry;
+  // cleared in the outer finally however the invocation ends
   if (telemetryCtx) {
     setActiveTelemetryService(telemetryCtx.service);
     // `swamp serve` reaches the teardown flush below only at process exit,
@@ -2565,22 +2315,13 @@ async function runInvocation(
     setActiveTelemetryContext(telemetryCtx);
   }
 
-  // The auth gate (design/surfaces/auth-gate.md): every subcommand needs a
-  // swamp-club account. It runs before the repo marker, extension loaders and
-  // auto-resolver, so a blocked run loads no extensions; only telemetry
-  // setup has run. Which command a line runs, and whether Cliffy will answer
-  // it with help or version output, is resolved against the real command
-  // tree, never guessed. Hook mode (always `audit record`, always gated)
-  // skips building the tree, checks locally only and, when blocked, records
-  // nothing and exits 0 so an agent session is not broken.
-  //
-  // buildCommandTree must run before registerCommands(cli) below: the
-  // command instances are shared, and Cliffy re-parents an instance to
-  // whichever tree registers it last, so the real cli must register last.
+  // buildCommandTree must run before registerCommands(cli) because Cliffy
+  // re-parents shared instances to the last tree; hook mode checks locally and,
+  // when blocked, records nothing and exits 0
   const commandTree = hookMode ? undefined : buildCommandTree();
-  // A process that does not own the config dir (a system daemon running as
-  // root against the enabling user's dir) reads it but never writes it, so
-  // it leaves no root-owned files the user's own runs cannot read back.
+  // a process that does not own the config dir (e.g. a root system daemon)
+  // reads it but never writes it, leaving no root-owned files the user's own
+  // runs cannot read
   const configDirOwned = processOwnsConfigDir();
   const gateTiming = commandTree ? authGateTiming(commandTree, args) : "gated";
   let gateOutcome: AuthGateOutcome | undefined;
@@ -2628,11 +2369,9 @@ async function runInvocation(
       }
       gateOutcome = { kind: "block", reason: { kind: "no_credential" } };
     }
-    // A `worker connect` with no credential may pass on the serve that
-    // enrolls it instead (design/surfaces/auth-gate.md, "Remote workers"):
-    // its `no_credential` block waits for enrollment, where the command
-    // checks the serve's pass before it takes any work. Every other block
-    // stands.
+    // a worker connect with no credential may pass on the serve that enrolls
+    // it, so its no_credential block waits for enrollment; every other block
+    // stands
     const deferred = gateOutcome.kind === "block" &&
       gateTiming === "enrollment" &&
       gateOutcome.reason.kind === "no_credential";
@@ -2660,10 +2399,7 @@ async function runInvocation(
   // process's pid and its ancestor chain down to any swamp it starts.
   processLockHolderMarker.publish();
 
-  // What this run does with the inbox (design/surfaces/inbox.md): slow
-  // commands poll it in the background, and eligible commands print the
-  // notice from the cache. Decided after publish, so a nested run sees the
-  // chain it inherited.
+  // decided after publish, so a nested run sees the chain it inherited
   const inbox = inboxNoticeEligibility({
     commandPath: commandTree
       ? resolveTelemetryInvocation(commandTree, args, []).commandPath ?? []
@@ -2674,9 +2410,8 @@ async function runInvocation(
     disabledByEnv: inboxNoticeDisabledByEnv(),
   });
 
-  // Read marker once for log level, extension loading, auto-resolver,
-  // and serverAddress cache. Hook commands skip this — null marker gives
-  // default "info" log level and no serverAddress fallback.
+  // hook commands skip this: a null marker gives the default info log level and
+  // no serverAddress fallback
   let marker: RepoMarkerData | null = null;
   if (!hookMode) {
     try {
@@ -2688,16 +2423,12 @@ async function runInvocation(
     }
   }
   setMarkerServerAddress(marker?.serverAddress);
-  // A v3 checkout written through serve runs its data-plane commands here,
-  // with serve as the datastore's upstream: only an explicit --server sends
-  // them to serve (swamp-club#3985).
+  // a v3 checkout written through serve runs its data-plane commands here with
+  // serve as upstream: only an explicit --server sends them to serve
   setImplicitServeRouting(!runsLocallyWithServeUpstream(marker, commandInfo));
 
-  // Read extension sources (additional extension directories from
-  // .swamp-sources.yaml). Resolved once and shared across all loaders.
-  // Relative paths resolve against the repo's place in the git main
-  // working tree, so worktrees see the same sibling sources as the main
-  // checkout.
+  // relative paths resolve against the repo's place in the git main working
+  // tree, so worktrees see the same sibling sources as the main checkout
   let resolvedSources: ResolvedSourceDirs[] = [];
   if (!hookMode) {
     const sourcesConfig = await readSwampSources(repoDir);
@@ -2705,8 +2436,8 @@ async function runInvocation(
       const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(
         repoDir,
       );
-      // Logging starts only after Cliffy parses: keep the warning for a
-      // source still resolved against the git root (swamp-club#4027).
+      // logging starts only after Cliffy parses, so buffer the warning for a
+      // source still resolved against the git root
       if (legacyBaseDir !== undefined) await bufferStartupWarnings();
       const expanded = await expandSourcePaths(
         sourcesConfig,
@@ -2721,20 +2452,17 @@ async function runInvocation(
     }
   }
 
-  // Configure lazy extension loaders on each registry.
-  // Extensions are NOT loaded here — they load on first access when a
-  // command calls registry.ensureLoaded() via its dep factory.
-  // Warnings are logged directly by the loaders (logging is initialized
-  // by the time ensureLoaded() runs inside command .action() handlers).
+  // extensions are not loaded here but on first access, when a command calls
+  // registry.ensureLoaded(); loaders log warnings directly since logging is
+  // initialized by then
   const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsLoaderSetup(args) && marker !== null) {
     await withActiveSpan(
       bootstrapSpan,
       () =>
         withSpan("swamp.cli.configure_extension_loaders", {}, async () => {
-          // Loader warnings raised while resolving the managed config base
-          // below would otherwise be dropped: logging starts only after Cliffy
-          // parses.
+          // loader warnings raised while resolving the managed config base
+          // would be dropped otherwise: logging starts only after Cliffy parses
           await bufferStartupWarnings();
           await configureStartupExtensions({
             repoDir,
@@ -2755,7 +2483,6 @@ async function runInvocation(
         }),
     );
 
-    // Suppress missing-pulled-extensions warning during extension install (swamp-club#1762)
     for (let i = deferredWarnings.length - 1; i >= 0; i--) {
       if (
         shouldSuppressMissingExtensionsWarning(commandInfo, deferredWarnings[i])
@@ -2765,13 +2492,9 @@ async function runInvocation(
     }
   }
 
-  // Resolve identity and scopes for collective API key users
-  // (--club-api-key-file, SWAMP_API_KEY_FILE or SWAMP_API_KEY). Calls whoami only
-  // when the cache is stale (first use, key rotation, or missing scopes for
-  // a collective token). Scopes are set directly from the response to avoid
-  // cache round-trip issues with --unstable-bundle module duplication.
-  // Must run before the authCollectives read so the first invocation gets
-  // cached collectives for extension trust.
+  // whoami is called only when the cache is stale. scopes are set from the
+  // response to avoid cache round-trip issues with --unstable-bundle module
+  // duplication. must run before the authCollectives read
   let uncachedCollectives: string[] | undefined;
   if (!hookMode && hasApiKeySource()) {
     try {
@@ -2831,7 +2554,6 @@ async function runInvocation(
     }
   }
 
-  // Load cached auth collectives and scopes for membership-based trust
   let authCollectives: string[] | undefined;
   if (!hookMode) {
     try {
@@ -2847,7 +2569,6 @@ async function runInvocation(
     }
   }
 
-  // Create auto-resolver for trusted collectives (merging membership collectives)
   if (!hookMode) {
     const autoResolverIdentity = await loadIdentity();
     setAuthenticated(Boolean(autoResolverIdentity.bearerToken));
@@ -2865,9 +2586,9 @@ async function runInvocation(
     );
   }
 
-  // Cliffy's own reading of -q, for the notices printed after the command
-  // (swamp-club#2257). Set before any command action runs. Startup code that
-  // fires before parsing has only the isQuietFromArgs pre-parse.
+  // Cliffy's own reading of -q, for the notices printed after the command;
+  // startup code that fires before parsing has only the isQuietFromArgs
+  // pre-parse
   let quietRequested = false;
 
   const cli = createRootCommand(colorEnabled)
@@ -2880,17 +2601,9 @@ async function runInvocation(
       setServeOfflineOutputMode(outputMode);
       enableV3RecoveryProgress();
 
-      // The colour switch was already flipped at the top of `runCli`. This
-      // value feeds the two things that are not the switch: the `NO_COLOR` that
-      // child processes inherit, and the log sink selection below. Both stay
-      // keyed on the flag and the environment, never on stdout.
-      //
-      // `prettyOutput` deliberately asks about *stdin*, not stdout. For the
-      // value-on-stdout commands the log records go to stderr, which is often a
-      // terminal while stdout is a pipe; deriving this from stdout would drop
-      // the pretty sink for every piped run and unwind swamp-club#2254 (see the
-      // comment in logger.ts beside the pretty sink). The pretty sink colours
-      // through `@std/fmt`, so the colour switch decides its colours too.
+      // Feeds the NO_COLOR that children inherit and the log sink choice.
+      // prettyOutput asks about stdin, not stdout, since log records go to
+      // stderr.
       const noColor = options.color === false ||
         Deno.env.get("NO_COLOR") !== undefined;
       if (noColor) {
@@ -2898,8 +2611,6 @@ async function runInvocation(
       }
       const prettyOutput = !noColor && isStdinTty();
 
-      // Derive log level: --quiet → error, --log-level → parsed,
-      // SWAMP_LOG_LEVEL env var / .swamp.yaml logLevel → parsed, default → info
       let logLevel: "trace" | "debug" | "info" | "warning" | "error" | "fatal" =
         "info";
       if (options.quiet) {
@@ -2924,14 +2635,11 @@ async function runInvocation(
         noColor,
         forceLog: forceLog || verbose,
         quiet: options.quiet ?? false,
-        // Commands whose stdout carries a value, not prose, keep log output off
-        // it entirely — otherwise `-v` corrupts whatever the caller is piping
-        // (swamp-club#2254). `commandInfo` is the parse done above for
-        // telemetry; see stdout_contract.ts.
+        // commands whose stdout carries a value keep log output off it
+        // entirely, or -v corrupts whatever the caller pipes
         stderrOnly: isValueOnlyStdoutCommand(commandInfo),
       });
 
-      // Emit deferred warnings now that logging is initialized
       for (const warning of deferredWarnings) {
         if (
           warning.kind === "extensions" || warning.kind === "skills" ||
@@ -2954,13 +2662,9 @@ async function runInvocation(
 
   registerCommands(cli);
 
-  // Resolve the telemetry invocation against the real command tree, before
-  // parsing — the recording below needs it whether the parse succeeds or
-  // throws. Redaction is decided per declared argument, see
-  // telemetry_invocation.ts (swamp-club#2817).
-  // The raw values it redacts are kept only in memory, to scrub them exactly
-  // from an error message below; they are never recorded. A `swamp behavior`
-  // invocation is recorded in its `swamp model` form (swamp-club#3411).
+  // resolved against the real command tree before parsing, since recording
+  // needs it whether the parse succeeds or throws. raw redacted values stay in
+  // memory only, to scrub them from an error message; they are never recorded
   const redactedValues: string[] = [];
   const telemetryInvocation = toRecordedInvocation(
     resolveTelemetryInvocation(cli, args, redactedValues),
@@ -2968,9 +2672,8 @@ async function runInvocation(
 
   bootstrapSpan.end();
 
-  // Started inside the try, so both teardown paths settle it: startup code
-  // above can throw outside it. One set of deps serves the poll and the
-  // notice; the poll alone needs the client identity.
+  // started inside the try so both teardown paths settle it. one set of deps
+  // serves the poll and the notice; only the poll needs the client identity
   let inboxDeps: InboxNoticeDeps | null = null;
   let inboxPoll: InboxPoll | null = null;
   try {
@@ -2983,8 +2686,8 @@ async function runInvocation(
       inboxPoll = await startInboxPoll(inboxDeps);
     }
 
-    // Cliffy would take the token after an empty `--title=` as its value
-    // (swamp-club#3542), so reject the empty value before it parses.
+    // Cliffy would take the token after an empty --title= as its value, so
+    // reject the empty value before it parses
     const emptyOption = findEmptyOptionValue(cli, args);
     if (emptyOption !== undefined) {
       throw new UserError(`Missing value for option "${emptyOption}".`);
@@ -2992,26 +2695,20 @@ async function runInvocation(
 
     await cli.parse(args);
 
-    // Hook commands exit immediately — no teardown needed. The action's
-    // own try/catch handles all errors; skipping teardown prevents
-    // infrastructure failures (telemetry flush, update checks) from
-    // causing a non-zero exit that disrupts the user's coding session.
-    // The dispatch runner skips it too, and returns so swamp.cli ends.
-    // Neither is eligible for the inbox poll; one that became eligible would
-    // have to settle it before returning here.
+    // hook commands skip teardown so infrastructure failures cannot cause a
+    // non-zero exit; the dispatch runner skips it too. Neither polls the inbox;
+    // one that did would have to settle it before returning
     if (hookMode || isDispatchRunnerCommand(commandInfo)) return;
 
-    // Flush datastore sync (push to S3 + release lock)
     await withSpan("swamp.cli.teardown", {}, async () => {
       await flushDatastoreSync();
-      // After the command's locks are released, before the v3 writer hold
-      // ends: the pass takes the lock itself, and compacts v3 history as
-      // the writer (swamp-club#3473). At most hourly; never fails the run.
+      // after the command's locks are released, before the v3 writer hold ends:
+      // the pass takes the lock itself and compacts v3 history as the writer.
+      // never fails the run
       await runRetentionAtCommandEnd();
       await closeV3DatastoresAfterSuccess();
       await runGateRefresh(gateOutcome);
 
-      // Record successful invocation
       if (telemetryCtx) {
         try {
           await telemetryCtx.service.recordSuccess(
@@ -3019,9 +2716,9 @@ async function runInvocation(
             startTime,
           );
 
-          // distinct_id is required by the sender. For repo-less runs it is
-          // the global userId; if neither userId nor repoId resolved, skip the
-          // flush and leave the entry spooled for a future run.
+          // distinct_id is required by the sender; if neither userId nor repoId
+          // resolved, skip the flush and leave the entry spooled for a future
+          // run
           const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
           if (distinctId) {
             const sender = new HttpTelemetrySender(
@@ -3056,11 +2753,8 @@ async function runInvocation(
         }
       }
 
-      // Re-register the macOS autoupdate job once per installed version:
-      // launchd can refuse to start a binary that replaced itself until the
-      // job is registered again (swamp-club#3007). Writes no output, so it
-      // runs in every output mode. Never from `update`: under --background
-      // the process is the job itself.
+      // Re-register the macOS autoupdate job once per installed version, as
+      // launchd can refuse a binary that replaced itself. Never from update.
       let schedulerRefreshed = false;
       if (!isDevBuild(VERSION) && commandInfo.command !== "update") {
         const refresh = await refreshAutoupdateSchedulerIfOwed(
@@ -3068,7 +2762,6 @@ async function runInvocation(
           VERSION,
         );
         schedulerRefreshed = refresh.outcome === "refreshed";
-        // A failed attempt is retried after 24h, so this shows at most daily.
         if (
           refresh.outcome === "failed" &&
           postCommandNoticesAllowed(getOutputModeFromArgs(args), quietRequested)
@@ -3095,7 +2788,6 @@ async function runInvocation(
           inboxDeps ? showInboxNotice(inboxDeps) : Promise.resolve(null),
       });
 
-      // Proactive update notification (after telemetry, before exit)
       if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
         const outputMode = getOutputModeFromArgs(args);
         const commandName = commandInfo.command;
@@ -3126,7 +2818,6 @@ async function runInvocation(
               let prefsChanged = false;
               const updatedPrefs = { ...prefs };
 
-              // Show post-autoupdate notice once after background upgrade
               if (prefs.notifiedVersion !== VERSION) {
                 const lastUpdate = entries.findLast((e) =>
                   e.outcome === "updated" && e.versionAfter
@@ -3140,8 +2831,6 @@ async function runInvocation(
                 prefsChanged = true;
               }
 
-              // Warn if background autoupdate is failing due to permissions
-              // (throttled to at most once per 24h to avoid alarm fatigue)
               const lastEntry = entries.length > 0
                 ? entries[entries.length - 1]
                 : null;
@@ -3164,11 +2853,9 @@ async function runInvocation(
                 }
               }
 
-              // Warn when autoupdate has silently stopped checking — the
-              // update banner below is suppressed while autoupdate is on, so
-              // a dead scheduler is otherwise invisible (swamp-club#3007).
-              // Throttled to once per 24h; skipped right after a refresh,
-              // which starts a fresh check.
+              // the update banner is suppressed while autoupdate is on, so a
+              // dead scheduler is otherwise invisible; throttled, and skipped
+              // right after a refresh, which starts a fresh check
               const now = new Date();
               if (
                 lastEntry && shouldWarnStaleAutoupdate({
@@ -3190,8 +2877,8 @@ async function runInvocation(
               }
 
               if (prefsChanged && configDirOwned) {
-                // Merge onto a fresh read so a concurrent scheduler refresh's
-                // fields are not rolled back (swamp-club#3007).
+                // merge onto a fresh read so a concurrent scheduler refresh's
+                // fields are not rolled back
                 await prefsRepo.write(
                   withNoticeFields(await prefsRepo.read(), updatedPrefs),
                 );
@@ -3223,19 +2910,15 @@ async function runInvocation(
       }
     });
   } catch (error) {
-    // Release datastore lock even on failure (don't leave locks stuck).
-    // flushDatastoreSync() can now throw (SyncTimeoutError propagates on
-    // the push path — see swamp#1216), so we swallow errors here: the
-    // original command error must take precedence, and telemetry
-    // recording below must still run. Per-entry cleanup on
-    // flushDatastoreSync failure is handled inside the coordinator.
+    // release the datastore lock even on failure. flushDatastoreSync can throw,
+    // so errors are swallowed: the original command error takes precedence and
+    // telemetry recording below must still run
     try {
       await flushDatastoreSync();
     } catch {
       // Best effort — don't shadow the original error.
     }
-    // A command that committed nothing is not told its changes are saved
-    // (swamp-club#3882).
+    // a command that committed nothing is not told its changes are saved
     const reported = await closeV3DatastoresAfterFailure(error);
 
     // The command already ran, so a proof due its weekly refresh still
@@ -3254,7 +2937,6 @@ async function runInvocation(
       show: () => Promise.resolve(null),
     });
 
-    // Record error invocation and flush before re-throwing
     if (telemetryCtx && reported instanceof Error) {
       await recordAndFlushError(
         telemetryCtx,
@@ -3266,8 +2948,6 @@ async function runInvocation(
     }
     throw reported;
   } finally {
-    // Always clear the module-scoped service handle when the CLI
-    // invocation finishes.
     endInvocation();
   }
 }

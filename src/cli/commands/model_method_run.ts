@@ -145,37 +145,26 @@ import {
 type AnyOptions = any;
 
 /**
- * Where the publish of a run's data and its locks report: the run's own
- * category reaches only its log file unless `--log` is passed, and the
- * publish runs after the method has finished writing it (swamp-club#3934).
+ * the run's own category reaches only its log file unless --log is passed, and
+ * the publish runs after the method has finished writing it.
  */
 const publishLogger = getSwampLogger(["datastore", "lock"]);
 
 /**
- * The text that differs between the CLI surfaces a method run is reachable
- * from. Everything else about the command — arguments, options, the action —
- * is identical: `swamp model method run` and `swamp behavior run` are two
- * spellings of one invocation, not two commands (swamp-club#3265).
+ * everything else about the command is identical: model method run and behavior
+ * run are two spellings of one invocation.
  */
 export interface RunCommandSyntax {
-  /** Renders `swamp … <model> <method>` for a named definition. */
   readonly invocation: (model: string, method: string) => string;
-  /** Renders `swamp … @<type> … <method> <name>` for direct type execution. */
   readonly directInvocation: (
     type: string,
     method: string,
     name: string,
   ) => string;
-  /** Which tree the command is mounted in; picks the log-mode wording. */
   readonly surface: CommandSurface;
-  /**
-   * The preferred spelling as a full example invocation, set only on the
-   * legacy syntax; listed as the last `--help` example.
-   */
   readonly preferred?: string;
 }
 
-/** The preferred spelling: `swamp behavior run [@type]`. */
 export const BEHAVIOR_RUN_SYNTAX: RunCommandSyntax = {
   invocation: (model, method) => `swamp behavior run ${model} ${method}`,
   directInvocation: (type, method, name) =>
@@ -183,7 +172,6 @@ export const BEHAVIOR_RUN_SYNTAX: RunCommandSyntax = {
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model [@type] method run`. */
 export const MODEL_METHOD_RUN_SYNTAX: RunCommandSyntax = {
   invocation: (model, method) => `swamp model method run ${model} ${method}`,
   directInvocation: (type, method, name) =>
@@ -192,7 +180,6 @@ export const MODEL_METHOD_RUN_SYNTAX: RunCommandSyntax = {
   preferred: BEHAVIOR_RUN_SYNTAX.invocation("my-server", "getSystemInfo"),
 };
 
-/** The `--help` examples, written once and rendered for each surface. */
 function examples(
   s: RunCommandSyntax,
 ): ReadonlyArray<readonly [string, string]> {
@@ -237,9 +224,8 @@ function examples(
 }
 
 /**
- * Builds a method-run command for one CLI surface. Each call returns a new
- * Cliffy `Command`: Cliffy reparents a command instance when it is attached
- * under a second parent, so the two surfaces must never share one.
+ * Cliffy reparents a command instance attached under a second parent, so the
+ * two surfaces must never share one.
  */
 export function createModelMethodRunCommand(syntax: RunCommandSyntax) {
   const target = runTargetArgument(syntax.surface);
@@ -423,8 +409,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           outputMode: ctx.outputMode,
         });
 
-        // A run against a serve-mode checkout sees what other callers
-        // commit while it runs (swamp-club#4120).
+        // a run against a serve-mode checkout sees what other callers commit
+        // while it runs.
         watchV3ServeFeeds();
         const evaluationCheck = options.lastEvaluated === true
           ? await checkLastEvaluation(
@@ -472,12 +458,10 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             literal: options.literalInputs === true,
           });
 
-          // Parse runtime tags
           const runtimeTags = options.tag
             ? parseTags(options.tag as string[])
             : undefined;
 
-          // Load all extension registries needed for method execution in parallel
           await Promise.all([
             modelRegistry.ensureLoaded(),
             vaultTypeRegistry.ensureLoaded(),
@@ -617,17 +601,16 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             modelIdOrName,
           );
           let modelLocks: ModelLockResult | undefined;
-          // Set when a read or list run takes its model's lock only to
-          // publish what it wrote (swamp-club#3934).
+          // set when a read or list run takes its model's lock only to publish
+          // what it wrote.
           let publishModel: { modelType: string; modelId: string } | undefined;
           if (preResult) {
             const model = {
               modelType: preResult.type.normalized,
               modelId: preResult.definition.id,
             };
-            // A serve-mode checkout working offline judges the run before it
-            // starts: one that changes things needs the behavior's lease
-            // (swamp-club#4195).
+            // a serve-mode checkout working offline judges the run before it
+            // starts: one that changes things needs the behavior's lease.
             await assertOfflineRunAllowed(datastoreConfig, {
               ...model,
               behaviorName: preResult.definition.name,
@@ -653,8 +636,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               );
               if (lockResult.synced) repoContext.catalogStore.invalidate();
               modelLocks = lockResult;
-              // A lapsed lease at serve cancels the run, as a signal would:
-              // its cause names the lapse (swamp-club#4121).
+              // a lapsed lease at serve cancels the run, as a signal would; its
+              // cause names the lapse.
               cancelOnLeaseLost(lockResult.leaseLost, abort);
             } else if (lockMode === "publish") {
               if (
@@ -673,7 +656,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
 
           const initiatedBy = await resolveCliInitiatedBy();
 
-          // Build the list of input sets to iterate over
           const inputSets: Record<string, unknown>[] = stdinItems
             ? stdinItems.map((item) =>
               Object.keys(cliInputs).length > 0
@@ -682,10 +664,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             )
             : [cliInputs];
 
-          // What each run wrote, for the locks' push to publish
-          // (swamp-club#3146).
+          // what each run wrote, for the locks' push to publish.
           const written: WrittenVersion[] = [];
-          // What each input set's run wrote, for its held JSON result.
           const writtenByRun: WrittenVersion[][] = inputSets.map(() => []);
           let runIndex = 0;
           let methodFailed = false;
@@ -699,15 +679,14 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               if (outcome === "failed") methodFailed = true;
             },
           };
-          // The versions a read or list run's publish left on this host,
-          // which do not fail the run (swamp-club#3934).
+          // the versions a read or list run's publish left on this host, which
+          // do not fail the run.
           const unpublished: {
             written: WrittenVersion;
             reason: UnpublishedVersionView["reason"];
           }[] = [];
           const versionKey = (w: WrittenVersion) =>
             JSON.stringify([w.modelType, w.modelId, w.dataName, w.version]);
-          /** Lists what `model`'s versions not yet listed were left as. */
           const leaveUnpublished = (
             model: { modelType: string; modelId: string },
             reason: UnpublishedVersionView["reason"],
@@ -747,14 +726,14 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           };
           const locks = modelLocks;
           const publishTo = publishModel;
-          // Why a read or list run's publish failed, other than a conflict,
-          // which is only logged (swamp-club#3934).
+          // why a read or list run's publish failed, other than a conflict,
+          // which is only logged.
           let publishFailure: { error: unknown } | undefined;
           // Set once every input set ran and succeeded: only then does a
           // failed publish fail the command; otherwise it is logged.
           let runSucceeded = false;
-          // In JSON mode a read or list run's result waits for its publish,
-          // so it can name the versions left unpublished (swamp-club#3934).
+          // in JSON mode a read or list run's result waits for its publish, so
+          // it can name the versions left unpublished.
           const holdResults = ctx.outputMode === "json" &&
             publishTo !== undefined;
           const heldResults: {
@@ -782,16 +761,15 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           const finished = await runCommandInRootUnit(
             repoContext,
             {
-              // Progress streams in log mode; the result waits for the
-              // commit (swamp-club#3759).
+              // progress streams in log mode; the result waits for the commit.
               output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
               push: locks ? () => pushWritten(locks) : publishTo
                 ? async () => {
                   if (written.length === 0) return;
                   try {
-                    // Never waits on a writer (swamp-club#1992): when another
-                    // run holds the lock, the next run that takes it on this
-                    // host publishes what this one wrote (swamp-club#3934).
+                    // never waits on a writer: when another run holds the lock,
+                    // the next run that takes it on this host publishes what
+                    // this one wrote.
                     const publishLocks = await acquirePublishLocksOrDefer(
                       datastoreConfig,
                       publishTo,
@@ -825,12 +803,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       }
                     }
                   } catch (error) {
-                    // Another clone wrote the same version number while this
-                    // run was unlocked: the method's work is done, so when the
-                    // rest of its data was published a read or list run does
-                    // not fail over it. Every run's summary reports write a
-                    // version, so failing would fail any read that overlaps
-                    // another clone's run (swamp-club#3934).
+                    // Another clone wrote the same version while this run was
+                    // unlocked; the work is done, so a read or list run does
+                    // not fail over it.
                     let cause: unknown = error;
                     if (error instanceof DataVersionConflictError) {
                       publishLogger.warn(
@@ -853,14 +828,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       // decides the run, as it would without the conflict.
                       cause = error.publishFailure;
                     }
-                    // Credentials the datastore refuses, such as read-only
-                    // ones, never stopped a read before its data was
-                    // published (swamp-club#3934), whether the refusal comes
-                    // taking the lock, pulling under it or pushing: the data
-                    // stays on this host, and nothing is recorded for a later
-                    // lock, which the same credentials would be refused
-                    // again. Only a refusal degrades; an unreachable
-                    // datastore still fails.
+                    // A refusal of the credentials degrades: data stays on this
+                    // host and nothing is recorded for a later lock. An
+                    // unreachable datastore still fails.
                     if (isDatastoreAuthorizationError(cause)) {
                       publishLogger.warn(
                         "The datastore refused this host's credentials, so this run's data was not published to it and stays on this host only; a read or list run publishes what it writes, so its credentials must be able to read and write the behavior's data on the datastore: {error}",
@@ -1012,13 +982,13 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               }
             },
           ).catch((error) => {
-            // The method ran before its commit failed (swamp-club#3759).
+            // the method ran before its commit failed.
             throw error instanceof CommitUnreachableError
               ? error.afterStepsRan()
               : error;
           })
-            // A held JSON result names what the publish left unpublished.
-            // Rendered whichever way the root ended; a render failure never
+            // a held JSON result names what the publish left unpublished;
+            // rendered whichever way the root ended, and a render failure never
             // replaces the error the command is already failing with.
             .then(
               async (value) => {
@@ -1077,9 +1047,8 @@ export const modelMethodRunCommand = createModelMethodRunCommand(
 );
 
 /**
- * The run syntax of the `run` subcommand of a `method` group reached as
- * `syntax`. The legacy `swamp model method run` names a direct type before
- * `method` instead, so its group is built with MODEL_METHOD_RUN_SYNTAX.
+ * the legacy model method run names a direct type before method instead, so its
+ * group is built with MODEL_METHOD_RUN_SYNTAX.
  */
 function methodRunSyntax(syntax: CommandSyntax): RunCommandSyntax {
   const run = subcommandSyntax(syntax, "run").invocation;
@@ -1091,23 +1060,20 @@ function methodRunSyntax(syntax: CommandSyntax): RunCommandSyntax {
   };
 }
 
-/** The subcommands of `model method`, in registration order. */
 export interface ModelMethodChildren {
   readonly run: ReturnType<typeof createModelMethodRunCommand>;
   readonly describe: ReturnType<typeof createModelMethodDescribeCommand>;
   readonly history: ReturnType<typeof createModelMethodHistoryCommand>;
 }
 
-/** The legacy spelling: `swamp model method`. */
 export const MODEL_METHOD_SYNTAX: CommandSyntax = {
   invocation: "swamp model method",
   surface: "model",
 };
 
 /**
- * Builds the `method` group for one CLI surface. Children not passed are
- * built fresh from `syntax`; Cliffy reparents a command attached under a
- * second parent, so two surfaces must never share an instance.
+ * Cliffy reparents a command attached under a second parent, so two surfaces
+ * must never share an instance.
  */
 export function createModelMethodCommand(
   syntax: CommandSyntax,
@@ -1144,11 +1110,6 @@ export const modelMethodCommand = createModelMethodCommand(
   },
 );
 
-/**
- * The --server branch: dispatch the method run through a `swamp serve`
- * server and render the streamed events with the same renderer a local run
- * uses. No local repository is required.
- */
 async function runMethodViaServer(
   server: string,
   options: AnyOptions,
@@ -1202,12 +1163,9 @@ async function runMethodViaServer(
   );
 
   try {
-    // An older server ignores literalInputs and evaluates the inputs, so the
-    // flag is only sent to one that says it honours it (swamp-club#3205). The
-    // probe costs one extra request, and only under --literal-inputs; it must
-    // not be dropped, or the flag would fail open against an old server. It
-    // runs inside the try so the shutdown handler is always disposed, and
-    // under the run's signal so --timeout bounds it too.
+    // an older server ignores literalInputs, so the flag goes only to one that
+    // says it honours it; dropping the probe would fail open. It runs inside
+    // the try, under the run's signal so --timeout bounds it
     if (literalInputs) {
       const version = await requestServerResponse<
         { version: string; capabilities?: string[] }

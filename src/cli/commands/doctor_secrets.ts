@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp doctor secrets` — read-only scan that reports model definitions
-// whose `sensitive: true` global arguments hold a cleartext literal value
-// (left on disk before the at-rest guard, or arriving via datastore sync,
-// which copies definition YAML byte-for-byte and bypasses the save-time
-// guard). Reporting only: it prints value-free vault remediation guidance and
-// exits non-zero when a leak is found so CI can gate on it.
+// read-only scan for sensitive global arguments holding a cleartext literal,
+// left from before the at-rest guard or arriving via datastore sync, which
+// bypasses the save-time guard; exits non-zero on leak
 
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -99,7 +96,6 @@ export const doctorSecretsCommand = withRemoteOptions(
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
-  // Same gate as the other doctor subcommands — fails loudly outside a repo.
   await resolveDatastoreForRepo(repoDir);
 
   const libCtx = createLibSwampContext();

@@ -65,7 +65,6 @@ Deno.test("config set: rejects invalid cadence", async () => {
       (error as Error).message,
       "Invalid value for update.cadence",
     );
-    // Nothing is written for a rejected value.
     assertEquals(await Array.fromAsync(Deno.readDir(dir)), []);
   });
 });
@@ -104,7 +103,6 @@ Deno.test("config set telemetry.collection: keeps a hand-written opt-out readabl
     );
     assertEquals((await repo.read()).disabled, true);
 
-    // get and list read the same file without throwing.
     await configCommand.parse(["get", "telemetry.collection"]);
     await configCommand.parse(["list"]);
   });
@@ -119,7 +117,6 @@ Deno.test("config set telemetry.collection: rejects values other than enabled|di
       (error as Error).message,
       "Invalid value for telemetry.collection",
     );
-    // Nothing is written for a rejected value.
     const exists = await Deno.stat(join(dir, "telemetry.yaml")).then(
       () => true,
       () => false,
@@ -137,7 +134,6 @@ Deno.test("config set workspaces.dir: stores the folder's real path, and default
     );
     await configCommand.parse(["set", "workspaces.dir", folder]);
     assertEquals((await repo.read()).dir, await Deno.realPath(folder));
-    // Only its own file: the update scheduler is never touched.
     assertEquals(
       (await Array.fromAsync(Deno.readDir(dir))).map((e) => e.name).sort(),
       ["dev", "workspaces.yaml"],

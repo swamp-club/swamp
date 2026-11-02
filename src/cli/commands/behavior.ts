@@ -69,36 +69,15 @@ import {
 } from "./model_lease.ts";
 import { BEHAVIOR_TYPE_SYNTAX, createModelTypeCommand } from "./model_type.ts";
 
-/** The preferred spelling of the group: `swamp behavior`. */
 export const BEHAVIOR_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior",
   surface: "behavior",
 };
 
-/**
- * `swamp behavior run <model> <method>` — the preferred way to invoke a model
- * method (swamp-club#3265).
- *
- * `behavior` is the product term for a model (design/primitives/behaviors.md),
- * not a new primitive: this leaf is built by the same factory as `swamp model
- * method run` and delegates to the same application path, so the serve
- * protocol, the audit action `model.method.run`, locks, run tracking and data
- * ownership are untouched.
- */
 export const behaviorRunCommand = createModelMethodRunCommand(
   BEHAVIOR_RUN_SYNTAX,
 );
 
-/**
- * `swamp behavior …` — the preferred spelling of every `swamp model …`
- * command (swamp-club#3331). Each subcommand is a fresh instance from the
- * same factory as its legacy twin, built from a behavior syntax: the
- * arguments, options and action are the twin's, and only the help text and
- * the log-mode wording say behavior. JSON output, errors and the serve
- * protocol are identical. There is no `method` level: `run`, `describe` and
- * `history` sit directly under the group. The British spelling `behaviour`
- * is an alias of the group.
- */
 export const behaviorCommand = new Command()
   .name("behavior")
   .alias("behaviour")

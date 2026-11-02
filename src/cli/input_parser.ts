@@ -22,14 +22,9 @@ import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { homeDirectory } from "../infrastructure/persistence/paths.ts";
 import { deepMerge } from "../domain/inputs/input_merge.ts";
 
-// Re-export coerceInputTypes from domain layer for backward compatibility
 export { coerceInputTypes } from "../domain/inputs/input_coercion.ts";
-// Re-export deepMerge from domain layer for backward compatibility
 export { deepMerge } from "../domain/inputs/input_merge.ts";
 
-/**
- * Merges the hidden --arg alias with --input, giving --input precedence.
- */
 export function mergeInputArgs(
   options: { arg?: string[]; input?: string[] },
 ): string[] | undefined {
@@ -40,22 +35,11 @@ export function mergeInputArgs(
   return merged.length > 0 ? merged : undefined;
 }
 
-/**
- * Result of parsing inputs.
- */
 export interface ParsedInputs {
   inputs: Record<string, unknown>;
   source: "json" | "yaml-file" | "key-value" | "combined" | "none";
 }
 
-/**
- * Sets a value at a dot-separated key path in an object.
- * Creates intermediate objects as needed.
- *
- * @example
- * setNestedValue({}, "server.host", "localhost")
- * // → { server: { host: "localhost" } }
- */
 export function setNestedValue(
   obj: Record<string, unknown>,
   keyPath: string,
@@ -77,36 +61,23 @@ export function setNestedValue(
   current[parts[parts.length - 1]] = value;
 }
 
-// Scoped identifier: @namespace/name with optional sub-segments.
-// Segments are alphanumeric + hyphens/underscores; no dots (which
-// would indicate a file extension). Distinguishes @hivemq/base-images
-// from @path/to/file.txt.
+// scoped @namespace/name with no dots (a dot means a file extension), so
+// @hivemq/base-images is not read as @path/to/file.txt
 const SCOPED_IDENTIFIER_RE =
   /^@[a-zA-Z][a-zA-Z0-9_-]*\/[a-zA-Z0-9][a-zA-Z0-9_\/-]*$/;
 
-/**
- * Returns true when the value looks like a scoped identifier
- * (e.g. `@hivemq/base-images`, `@swamp/aws/ec2/vpc`) rather than
- * a file path.
- */
 export function isScopedIdentifier(value: string): boolean {
   return SCOPED_IDENTIFIER_RE.test(value);
 }
 
-/**
- * Resolves a file reference value (prefixed with @) to its file contents.
- * Supports tilde expansion for home directory paths.
- */
 async function resolveFileValue(
   key: string,
   filePath: string,
 ): Promise<string> {
   let resolvedPath = filePath;
   if (resolvedPath.startsWith("~/")) {
-    // Try HOME (POSIX) then USERPROFILE (Windows). When neither is set,
-    // intentionally fall through with the literal `~/...` path so the
-    // downstream `Deno.readTextFile` produces a "file not found" error
-    // referencing the unexpanded path. Stream 0 pins this behavior.
+    // with neither HOME nor USERPROFILE set, keep the literal ~/ path so the
+    // read error names the unexpanded path
     try {
       resolvedPath = homeDirectory() + resolvedPath.slice(1);
     } catch {
@@ -136,22 +107,9 @@ async function resolveFileValue(
 }
 
 /**
- * Parses an array of key=value strings into a nested object.
- *
- * - Dot notation creates nested objects: `server.host=localhost`
- * - Values starting with `@` read file contents: `key=@path/to/file`
- * - Scoped identifiers (`@scope/name`) pass through literally
- * - Escaped `@` with `\@` produces a literal `@`: `key=\@literal`
- * - Splits on first `=` only, so values can contain `=`
- * - `:json` suffix on the leaf segment of the key parses the value as
- *   JSON: `keywords:json=["a","b"]`, `server.config:json={"port":8080}`.
- *   The `@file` and `\@literal` interactions are bypassed when `:json`
- *   is set — the value is read as a literal JSON string. JSON parse
- *   failures are hard errors.
- *
- * With `literal`, every value is kept exactly as given: a leading `@` is
- * never read as a file path and `\@` keeps its backslash, so text the caller
- * did not write cannot make swamp read a file (swamp-club#3205).
+ * with literal, values are kept verbatim: a leading @ is never read as a file,
+ * so text the caller did not write cannot make swamp read a file. :json
+ * bypasses the @file and \@ handling
  */
 export async function parseKeyValueInputs(
   entries: string[],
@@ -174,9 +132,6 @@ export async function parseKeyValueInputs(
 
     const rawValue: string = entry.slice(eqIndex + 1);
 
-    // Detect a `:json` suffix on the LEAF segment of a dot-notation
-    // path. e.g. `server.config:json` → leaf `config:json` → leaf
-    // `config` with JSON-typed value; `keywords:json` → `keywords`.
     const jsonSuffix = ":json";
     const dotIndex = key.lastIndexOf(".");
     const leaf = dotIndex >= 0 ? key.slice(dotIndex + 1) : key;
@@ -206,10 +161,8 @@ export async function parseKeyValueInputs(
     }
 
     if (value.startsWith("\\@")) {
-      // Escaped @ — use literal value without the backslash
       value = value.slice(1);
     } else if (value.startsWith("@") && !isScopedIdentifier(value)) {
-      // File reference — read file contents (but not scoped identifiers)
       const filePath = value.slice(1);
       value = await resolveFileValue(key, filePath);
     }
@@ -220,16 +173,10 @@ export async function parseKeyValueInputs(
   return result;
 }
 
-/**
- * Detects whether input strings represent JSON (backward compat) or key=value pairs.
- */
 function isJsonInput(entries: string[]): boolean {
   return entries.length === 1 && entries[0].trimStart().startsWith("{");
 }
 
-/**
- * Parses a YAML input file and returns the parsed object.
- */
 async function parseInputFile(
   inputFile: string,
 ): Promise<Record<string, unknown>> {
@@ -257,29 +204,13 @@ async function parseInputFile(
   }
 }
 
-/**
- * Parses input values from CLI options.
- *
- * Supports three input methods:
- * - `--input '{"key": "value"}'` — JSON object (backward compat, detected by leading `{`)
- * - `--input key=value` — repeatable key=value pairs with dot-notation nesting
- * - `--input-file file.yaml` — YAML file
- *
- * When both `--input-file` and key=value `--input` are provided, the file
- * provides base values and key=value pairs act as overrides (deep merged).
- *
- * @param options - CLI options containing input or inputFile
- * @returns Parsed inputs and their source
- */
 export async function parseInputs(options: {
   input?: string | string[];
   inputFile?: string;
-  /** Keep key=value values verbatim; see {@link parseKeyValueInputs}. */
   literal?: boolean;
 }): Promise<ParsedInputs> {
   const inputEntries = normalizeInputOption(options.input);
 
-  // JSON mode: single string starting with `{` — backward compat
   if (inputEntries.length > 0 && isJsonInput(inputEntries)) {
     try {
       const parsed = JSON.parse(inputEntries[0]);
@@ -301,7 +232,6 @@ export async function parseInputs(options: {
     }
   }
 
-  // Key-value mode (possibly combined with --input-file)
   if (inputEntries.length > 0) {
     const kvInputs = await parseKeyValueInputs(inputEntries, {
       literal: options.literal,
@@ -321,7 +251,6 @@ export async function parseInputs(options: {
     };
   }
 
-  // --input-file only
   if (options.inputFile) {
     const fileInputs = await parseInputFile(options.inputFile);
     return {
@@ -336,10 +265,6 @@ export async function parseInputs(options: {
   };
 }
 
-/**
- * Normalizes the --input option value to an array of strings.
- * Handles both the old single-string form and the new collected array form.
- */
 function normalizeInputOption(
   input: string | string[] | undefined,
 ): string[] {
@@ -352,7 +277,6 @@ function normalizeInputOption(
   return [input];
 }
 
-// Detects JSON object/array, NDJSON, or YAML; returns one record per item.
 export function parseStdinContent(
   content: string,
 ): Record<string, unknown>[] {
@@ -363,7 +287,6 @@ export function parseStdinContent(
     );
   }
 
-  // Try JSON parse first (handles both array and object)
   try {
     const parsed = JSON.parse(trimmed);
     if (Array.isArray(parsed)) {
@@ -387,10 +310,8 @@ export function parseStdinContent(
     );
   } catch (error) {
     if (error instanceof UserError) throw error;
-    // JSON parse failed — try NDJSON
   }
 
-  // Try NDJSON: multiple lines, each a JSON object
   const lines = trimmed.split("\n").filter((l) => l.trim() !== "");
   if (lines.length > 1) {
     try {
@@ -409,11 +330,9 @@ export function parseStdinContent(
       return records;
     } catch (error) {
       if (error instanceof UserError) throw error;
-      // NDJSON parse failed — try YAML
     }
   }
 
-  // Try YAML
   try {
     const parsed = parseYaml(trimmed);
     if (

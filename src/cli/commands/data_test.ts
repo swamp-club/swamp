@@ -20,10 +20,8 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("dataCommand module loads", async () => {
@@ -48,8 +46,6 @@ Deno.test("dataCommand has all subcommands registered", async () => {
 });
 
 Deno.test("dataCommand is registered in CLI mod", async () => {
-  // This imports the CLI module to verify dataCommand is registered
   const mod = await import("../mod.ts");
-  // If module loads without error, command is registered
   assertEquals(typeof mod.runCli, "function");
 });

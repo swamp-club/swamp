@@ -56,9 +56,6 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Prompts user for vault name in interactive mode.
- */
 async function promptVaultName(): Promise<string> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -161,7 +158,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
 
-    // Get vault name - prompt if not provided (stays in CLI)
     let vaultName = vaultNameArg;
     if (!vaultName) {
       if (cliCtx.outputMode === "json") {
@@ -175,7 +171,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
       }
     }
 
-    // Parse --config JSON (stays in CLI as input parsing)
     let config: Record<string, unknown> | undefined;
     if (options.config) {
       try {
@@ -208,8 +203,6 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createVaultCreateDeps(repoDir);
 
-    // Ask for required config fields the type needs and the command line
-    // did not supply, rather than failing (swamp-club#3003).
     if (canPromptForConfig(cliCtx.outputMode)) {
       const fields = await describeVaultTargetConfig(deps, vaultType);
       if (fields) {
@@ -239,8 +232,8 @@ than the server's defaults. Leave them out and the server's defaults are used.`,
             config,
             repoDir,
             auditReads: options.auditReads,
-            // A local user owns this host, so the vault may name its own key
-            // source; over --server the server chooses it (swamp-club#2690).
+            // a local user owns this host, so the vault may name its own key
+            // source; over --server the server chooses it
             trustKeySource: true,
           }),
           renderer.handlers(),

@@ -36,12 +36,10 @@ import {
   modelMethodRunCommand,
 } from "./model_method_run.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
 
-/** The command at `path` (words after the group) under `group`. */
 function at(group: AnyCommand, path: string): AnyCommand {
   let command = group;
   for (const word of path.split(" ")) {
@@ -55,7 +53,6 @@ function at(group: AnyCommand, path: string): AnyCommand {
 const behaviorTree = behaviorCommand as unknown as AnyCommand;
 const modelTree = modelCommand as unknown as AnyCommand;
 
-/** Every command path under `group`, as words after the group, depth first. */
 function commandPaths(group: AnyCommand, prefix = ""): string[] {
   return group.getCommands(true).flatMap((child: AnyCommand) => {
     const path = `${prefix}${child.getName()}`;
@@ -63,17 +60,14 @@ function commandPaths(group: AnyCommand, prefix = ""): string[] {
   });
 }
 
-/** The `swamp behavior` path a `swamp model` path is the legacy twin of. */
 function behaviorPathOf(modelPath: string): string {
   return modelPath.replace(/^method /, "");
 }
 
 /**
- * Each `swamp behavior` command and the path of its legacy twin under
- * `swamp model`, derived from the two trees rather than listed by hand, so a
- * command added to one tree only cannot slip past the twin checks. `run`,
- * `describe` and `history` come from under `model method`; there is no
- * `method` level under `behavior`.
+ * derived from the two trees rather than listed by hand, so a command added to
+ * one tree only cannot slip past the twin checks; `run`, `describe` and
+ * `history` come from under `model method`
  */
 const TWINS: ReadonlyArray<readonly [behavior: string, model: string]> =
   commandPaths(modelTree)
@@ -81,17 +75,16 @@ const TWINS: ReadonlyArray<readonly [behavior: string, model: string]> =
     .map((path) => [behaviorPathOf(path), path] as const);
 
 /**
- * A command's declared arguments. Argument names follow the spelling
- * (swamp-club#3409), so with `asBehavior` a legacy name is read with
- * `model` swapped for `behavior` before it is compared.
+ * argument names follow the spelling, so with `asBehavior` a legacy name is
+ * read with `model` swapped for `behavior` before it is compared
  */
 function argumentSignature(cmd: AnyCommand, asBehavior = false): string[] {
   return cmd.getArguments().map((
     arg: { name: string; type: string; optional?: boolean },
   ) => {
     const name = asBehavior ? arg.name.replace("model", "behavior") : arg.name;
-    // The behavior tree completes through behavior_name and behavior_type
-    // (swamp-club#3410), the same completions as model_name and model_type.
+    // the behavior tree completes through behavior_name and behavior_type, the
+    // same completions as model_name and model_type
     const type = asBehavior
       ? arg.type.replace(/^model_(name|type)$/, "behavior_$1")
       : arg.type;
@@ -106,9 +99,8 @@ function optionFlags(cmd: AnyCommand): string[] {
 }
 
 /**
- * The action a command runs. Cliffy keeps it on the command's settings and
- * has no public getter; integration/json_mode_conformance_test.ts reads it
- * the same way.
+ * Cliffy has no public getter for a command's action;
+ * integration/json_mode_conformance_test.ts reads it the same way
  */
 function actionHandler(cmd: unknown): unknown {
   return (cmd as { settings?: { actionHandler?: unknown } }).settings
@@ -263,7 +255,7 @@ Deno.test("model commands: list the preferred spelling as their last example", (
   for (const [behaviorPath, modelPath] of TWINS) {
     const legacy = at(modelTree, modelPath);
     const examples = examplesOf(legacy);
-    if (examples.length === 0) continue; // the model, method and type groups
+    if (examples.length === 0) continue;
     const last = examples[examples.length - 1];
     assertEquals(last.name, PREFERRED_SPELLING_EXAMPLE, modelPath);
     assertStringIncludes(
@@ -271,7 +263,6 @@ Deno.test("model commands: list the preferred spelling as their last example", (
       `swamp behavior ${behaviorPath}`,
       modelPath,
     );
-    // Only the last example is the preferred spelling.
     assertEquals(
       examples.filter((e) => e.name === PREFERRED_SPELLING_EXAMPLE).length,
       1,
@@ -375,7 +366,6 @@ Deno.test("behaviorCommand: the CLI schema lists the full subtree", () => {
   }
 });
 
-/** A root mirroring runCli's wiring: both groups, the model_name type, --json. */
 function root(): AnyCommand {
   return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")

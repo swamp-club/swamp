@@ -122,8 +122,6 @@ seconds.`,
     { vaultsDir },
   );
 
-  // Per-model lock around the state transition — mirrors
-  // `swamp model method run`.
   const preResult = await findDefinitionByIdOrName(
     repoContext.definitionRepo,
     name,
@@ -189,9 +187,8 @@ seconds.`,
 
       if (syncService) {
         await root.stage({ kind: "bulk", reason: "worker token revoke" });
-        // Published here through the root's checkpoint (swamp-club#3053).
-        // When a model lock is held, the root's lock push publishes again when
-        // the command ends.
+        // published here through the root's checkpoint; with a model lock held
+        // the root's lock push publishes again at command end
         await root.checkpoint();
       }
     },

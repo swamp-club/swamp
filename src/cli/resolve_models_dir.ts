@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Moved to infrastructure so libswamp can resolve lockfile paths
-// (swamp-club#2723); re-exported here for existing CLI and serve callers.
+// lives in infrastructure so libswamp can resolve lockfile paths; re-exported
+// for existing CLI and serve callers
 export {
   existingBehaviorsDir,
   resolveBehaviorsDir,

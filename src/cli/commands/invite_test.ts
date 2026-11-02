@@ -33,8 +33,8 @@ Deno.test("inviteCommand: exposes link, and nothing else", () => {
   assertNotEquals(link, undefined);
   assertEquals(link?.getName(), "link");
 
-  // The `first-rule` egg moved to the top level (`swamp first-rule`), so it is
-  // not reachable here even when typed in full — hidden commands included.
+  // the `first-rule` egg is top level (`swamp first-rule`), so it is not
+  // reachable here even typed in full, hidden commands included
   assertEquals(inviteCommand.getCommand("first-rule", true), undefined);
 
   const listed = inviteCommand.getCommands(false).map((c) => c.getName());
@@ -42,9 +42,8 @@ Deno.test("inviteCommand: exposes link, and nothing else", () => {
 });
 
 Deno.test("inviteCommand: takes no positional arguments", () => {
-  // A pure group, like `swamp issue`. The earlier `[email]` positional was
-  // withdrawn rather than left advertising an unbuilt feature; this pins that
-  // decision so it is not reintroduced by accident.
+  // a pure group like `swamp issue`: a positional would advertise an unbuilt
+  // feature
   assertEquals(inviteCommand.getArguments().length, 0);
 });
 

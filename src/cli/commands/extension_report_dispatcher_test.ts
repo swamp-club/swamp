@@ -75,7 +75,6 @@ async function makeRepo(
   opts: { includeSources?: boolean; lockedVersion?: string } = {},
 ): Promise<string> {
   const repo = await Deno.makeTempDir({ prefix: "swamp_dispatch_" });
-  // Minimal repo marker (empty file is fine).
   await Deno.writeTextFile(join(repo, ".swamp.yaml"), "repo: {}\n");
   await Deno.mkdir(join(repo, ".swamp"), { recursive: true });
 
@@ -86,7 +85,6 @@ async function makeRepo(
       join(extDir, "manifest.yaml"),
       manifestContent,
     );
-    // Write a minimal lockfile so version lookups succeed.
     const modelsDir = join(repo, "extensions", "models");
     await Deno.mkdir(modelsDir, { recursive: true });
     const lockfile = join(modelsDir, "upstream_extensions.json");
@@ -118,8 +116,6 @@ function fakeRunner(
     },
   };
 }
-
-// ---- resolveExtensionTarget ----
 
 Deno.test("resolveExtensionTarget: not-pulled refusal when manifest is missing", async () => {
   const repo = await makeRepo("@adam/cfgmgmt", null);
@@ -203,8 +199,6 @@ Deno.test("resolveExtensionTarget: rejects malformed extension names early", asy
     await Deno.remove(repo, { recursive: true });
   }
 });
-
-// ---- dispatchRepositoryReport: bug/feature branches ----
 
 function makeRepoTarget(
   repositoryUrl = "https://github.com/adam/cfgmgmt",
@@ -400,8 +394,6 @@ Deno.test("dispatchRepositoryReport: json mode does NOT print to writeLog", asyn
   assertEquals(logs.length, 0);
 });
 
-// ---- dispatchRepositoryReport: security branch (table-driven) ----
-
 type SecurityCase = {
   name: string;
   ghAvailable: boolean;
@@ -500,8 +492,8 @@ for (const tc of SECURITY_CASES) {
     );
 
     assertEquals(result.kind, tc.expectedKind);
-    // SECURITY INVARIANT: no public issue should ever be created on the
-    // security path. createIssueCalls MUST be empty across every case.
+    // no public issue is ever created on the security path: createIssueCalls
+    // must be empty in every case
     assertEquals(
       createIssueCalls.length,
       0,
@@ -536,7 +528,6 @@ for (const tc of SECURITY_CASES) {
 }
 
 Deno.test("dispatchRepositoryReport: PVR disabled never files a public issue (invariant)", async () => {
-  // Belt-and-suspenders test — asserts the security guardrail explicitly.
   const createIssueCalls: string[][] = [];
   const runner = fakeRunner((args) => {
     if (args[0] === "auth") {

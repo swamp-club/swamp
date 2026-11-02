@@ -200,7 +200,6 @@ export const workflowResumeCommand = withRemoteOptions(
         options,
       );
 
-      // Parse override inputs for the remote path (mirrors local logic).
       const stdinContent = options.stdin ? await readStdin() : null;
       let stdinInputs: Record<string, unknown> = {};
       if (stdinContent !== null) {
@@ -247,10 +246,9 @@ export const workflowResumeCommand = withRemoteOptions(
         ? abortOnTimeout(abort, timeoutMs)
         : undefined;
       try {
-        // An older server ignores fromJob and resets the --from step in every
-        // job that has it, so --job is only sent to one that says it honours
-        // it (swamp-club#3815). The probe runs only under --job, inside the
-        // try so --timeout bounds it and the shutdown handler is disposed.
+        // an older server ignores fromJob and resets the --from step in every
+        // job that has it, so --job is sent only to one that says it honours
+        // it; the probe runs inside the try so --timeout bounds it
         if (options.job !== undefined) {
           const version = await requestServerResponse<
             { version: string; capabilities?: string[] }
@@ -334,12 +332,9 @@ export const workflowResumeCommand = withRemoteOptions(
       ? deepMerge(stdinInputs, cliInputs)
       : cliInputs;
 
-    // Use the datastore-aware repositories from the RepositoryContext so the
-    // suspended-run lookup and the resumed-run persistence (this runRepo is
-    // also handed to WorkflowExecutionService below) resolve the same
-    // workflow-runs path the run was written to. Constructing
-    // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
-    // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
+    // use the datastore-aware repositories from the RepositoryContext:
+    // constructing YamlWorkflowRunRepository(repoDir) would bind to repo-local
+    // .swamp/workflow-runs and miss runs in a configured datastore
     const repoDir = unlocked.repoDir;
     // A run's evaluated snapshot, read from the datastore-resolved path
     // ExecutionService writes it to, settles a run this command cancels.
@@ -391,7 +386,6 @@ export const workflowResumeCommand = withRemoteOptions(
       }
     }
 
-    // A step whose lease at serve lapses cancels the run (swamp-club#4121).
     const stepLeaseLost = new AbortController();
     const stepLockHook = workflowStepLockHook(
       repoDir,
@@ -578,11 +572,9 @@ export const workflowResumeCommand = withRemoteOptions(
       },
     });
 
-    // Keep the process alive on Ctrl-C so resume() can record the run as
-    // cancelled, as `workflow run` does. Without this, the datastore sync
-    // coordinator's SIGINT handler exits 130 first and strands the run at
-    // running (swamp-club#2430). Both are process-global, so they are taken
-    // directly before the try whose finally releases them.
+    // keep the process alive on Ctrl-C so resume() can record the cancel:
+    // otherwise the sync coordinator's SIGINT handler exits 130 and strands the
+    // run at running; both are process-global
     const exitSuppress = suppressSyncExitOnSignal();
     const shutdownHandle = registerShutdownHandler({
       handler: () => abort.abort(),
@@ -605,7 +597,6 @@ export const workflowResumeCommand = withRemoteOptions(
               await pushNamespace(syncService, namespace);
             }
             : undefined,
-          // Progress streams in log mode; the result waits for the commit.
           output: cliCtx.outputMode === "log" ? "live-until-outcome" : "held",
           onCleanupError: (pushErr) => {
             cliCtx.logger
@@ -629,9 +620,6 @@ export const workflowResumeCommand = withRemoteOptions(
                 if (error instanceof UserError) {
                   throw error;
                 }
-                // Anything else is unexpected. Keep the original error, stack
-                // included, at debug level, then report it as one classified line —
-                // the code serve sends for a failed resume.
                 cliCtx.logger.debug`Workflow resume failed: ${error}`;
                 const message = error instanceof Error
                   ? error.message
@@ -682,15 +670,13 @@ export const workflowResumeCommand = withRemoteOptions(
       );
     } catch (error) {
       await runCheckpointer.restoreUncommittedRuns(() => runTracker, error);
-      // The dropped final save left index entries no commit backs
-      // (swamp-club#3802).
+      // a dropped final save leaves index entries no commit backs
       if (error instanceof RunPartlyCommittedError) {
         await removeStaleRunIndexes(repoDir);
         await removeStaleOutputSummaries(repoDir);
       }
-      // The run's steps ran before its commit failed (swamp-club#3759).
-      // A run cut while a step ran needs that step acknowledged to be
-      // recovered (swamp-club#3882).
+      // the run's steps ran before its commit failed; a run cut while a step
+      // ran needs that step acknowledged to be recovered
       const worded = withRunUnknownSteps(
         error,
         (runId) => runCheckpointer.committedUnknownSteps(runId),
@@ -707,8 +693,8 @@ export const workflowResumeCommand = withRemoteOptions(
     }
     if (!finished) return;
 
-    // A nested run that finished leaves its parent waiting: name the next
-    // command (swamp-club#2736). Best effort: the resume is already saved.
+    // a nested run that finished leaves its parent waiting: name the next
+    // command. Best effort: the resume is already saved
     if (run.parentRun !== undefined) {
       const finished = await runRepo.findById(workflow.id, run.id)
         .catch(() => null);

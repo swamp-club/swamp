@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Every mark crosses buildMarkDirtyHook, and the datastore refactor keeps it
-// in the legacy adapter (swamp-club#2862). These properties pin its path
-// mapping over generated paths under the cache root and the repo's .swamp.
+// every mark crosses buildMarkDirtyHook; these properties pin its path mapping
+// over generated paths under the cache root and the repo's .swamp
 
 import { assert, assertEquals } from "@std/assert";
 import { isAbsolute, join, resolve } from "@std/path";

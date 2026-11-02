@@ -24,10 +24,8 @@ import {
   WorkflowNameType,
 } from "./completion_types.ts";
 
-// Import models barrel to ensure model types are registered
 import "../domain/models/models.ts";
 
-// ModelNameType tests
 Deno.test("ModelNameType.parse returns the input value unchanged", () => {
   const type = new ModelNameType();
   const result = type.parse({ value: "my-model" });
@@ -48,14 +46,10 @@ Deno.test("ModelNameType.parse handles special characters", () => {
 
 Deno.test("ModelNameType.complete returns empty array when not in a swamp repo", async () => {
   const type = new ModelNameType();
-  // Running from a directory without a swamp repo should return empty array
-  // (graceful degradation)
   const result = await type.complete();
-  // Result depends on whether we're in a swamp repo, but should not throw
   assertEquals(Array.isArray(result), true);
 });
 
-// WorkflowNameType tests
 Deno.test("WorkflowNameType.parse returns the input value unchanged", () => {
   const type = new WorkflowNameType();
   const result = type.parse({ value: "my-workflow" });
@@ -76,14 +70,10 @@ Deno.test("WorkflowNameType.parse handles special characters", () => {
 
 Deno.test("WorkflowNameType.complete returns empty array when not in a swamp repo", async () => {
   const type = new WorkflowNameType();
-  // Running from a directory without a swamp repo should return empty array
-  // (graceful degradation)
   const result = await type.complete();
-  // Result depends on whether we're in a swamp repo, but should not throw
   assertEquals(Array.isArray(result), true);
 });
 
-// ModelTypeType tests
 Deno.test("ModelTypeType.parse returns the input value unchanged", () => {
   const type = new ModelTypeType();
   const result = type.parse({ value: "swamp/echo" });
@@ -106,10 +96,8 @@ Deno.test("ModelTypeType.complete returns registered model types", async () => {
   const type = new ModelTypeType();
   const result = await type.complete();
 
-  // Should return an array of strings
   assertEquals(Array.isArray(result), true);
 
-  // Should include known registered types
   assertEquals(result.includes("command/shell"), true);
 });
 
@@ -117,6 +105,5 @@ Deno.test("ModelTypeType.complete returns registered types", async () => {
   const type = new ModelTypeType();
   const result = await type.complete();
 
-  // Should include registered types (command/shell is built-in)
   assertEquals(result.includes("command/shell"), true);
 });

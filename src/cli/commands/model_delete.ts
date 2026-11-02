@@ -71,13 +71,11 @@ import { promptConfirmation } from "../prompt_helpers.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior delete`. */
 export const BEHAVIOR_DELETE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior delete",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model delete`. */
 export const MODEL_DELETE_SYNTAX: CommandSyntax = {
   invocation: "swamp model delete",
   surface: "model",
@@ -168,7 +166,7 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
           } not found: ${modelIdOrName}`,
         );
       }
-      // Before outputs or data are touched (swamp-club#4097).
+      // checked before outputs or data are touched.
       await assertConfigEditCurrent(
         repoContext,
         "model",
@@ -235,7 +233,6 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
               );
               const force = !!options.force;
 
-              // Phase 1: Preview — gather what will be affected (under lock)
               let preview;
               try {
                 preview = await modelDeletePreview(ctx, deps, {
@@ -252,7 +249,6 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
                 throw error;
               }
 
-              // Block if referenced by workflows
               if (preview.referencingWorkflows.length > 0) {
                 throw new UserError(
                   `${
@@ -266,7 +262,6 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
                 );
               }
 
-              // Block if data artifacts exist and no --force
               if (preview.dataArtifactCount > 0 && !force) {
                 throw new UserError(
                   `${
@@ -276,7 +271,6 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
                 );
               }
 
-              // Phase 2: Prompt (CLI concern)
               if (cliCtx.outputMode === "log" && !force && !options.yes) {
                 let deleteDetails = "";
                 if (preview.outputCount > 0) {
@@ -301,7 +295,6 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
                 }
               }
 
-              // Phase 3: Execute mutation
               const renderer = createModelDeleteRenderer(
                 cliCtx.outputMode,
                 syntax.surface,

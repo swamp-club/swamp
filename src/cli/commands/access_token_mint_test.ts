@@ -22,10 +22,8 @@ import { Command } from "@cliffy/command";
 import { UserError } from "../../domain/errors.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("accessTokenMintCommand: module loads", async () => {

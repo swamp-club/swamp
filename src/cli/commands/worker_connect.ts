@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * `swamp worker connect` — the dial-home entry (see
- * design/enablers/remote-execution.md). Deliberately repo-less: a worker carries no
- * repository, datastore, vault, or extension state; it is a binary, a
- * token, and a URL. No RepositoryContext is constructed here.
+ * deliberately repo-less: a worker carries no repository, datastore, vault or
+ * extension state, so no RepositoryContext is built here
  */
 
 import { Command } from "@cliffy/command";

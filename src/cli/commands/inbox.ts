@@ -53,22 +53,15 @@ type AnyOptions = any;
 
 type Logger = ReturnType<typeof createContext>["logger"];
 
-/**
- * What the inbox commands' actions call. `createInboxCommand` takes them so
- * tests can drive the actions with stubs.
- */
 export interface InboxCommandDeps {
   stdinIsTty: () => boolean;
   stdoutIsTty: () => boolean;
-  /** Opens the interactive inbox. */
   runInbox: (logger: Logger, input: InboxListInput) => Promise<void>;
-  /** Prints a page of messages, marking nothing read. */
   listInbox: (
     logger: Logger,
     outputMode: OutputMode,
     input: InboxListInput,
   ) => Promise<void>;
-  /** Prints the message with this id, or else the next one, and marks it read. */
   readInbox: (
     logger: Logger,
     outputMode: OutputMode,
@@ -77,11 +70,9 @@ export interface InboxCommandDeps {
 }
 
 /**
- * Whether `swamp inbox` opens the interactive inbox: only in log mode with
- * both stdin and stdout on a terminal. `interactiveOutputMode` does not fit
- * here: it checks stdin alone and falls back to JSON, while piped
- * `swamp inbox` must keep printing its plain list. `swamp inbox read` never
- * opens it.
+ * interactiveOutputMode does not fit here: it checks stdin alone and falls back
+ * to JSON, while piped swamp inbox must keep printing its plain list. swamp
+ * inbox read never opens it.
  */
 export function inboxInteractiveApplies(
   outputMode: OutputMode,
@@ -91,11 +82,6 @@ export function inboxInteractiveApplies(
   return outputMode === "log" && stdinIsTty && stdoutIsTty;
 }
 
-/**
- * Opens the inbox over the first page of messages. It marks read in the
- * background while open, loads older pages as the user reaches them, and
- * once closed prints what was read and marked.
- */
 async function runInbox(
   logger: Logger,
   input: InboxListInput,
@@ -186,7 +172,6 @@ const defaultInboxCommandDeps: InboxCommandDeps = {
   readInbox,
 };
 
-/** Builds `swamp inbox` and its `read` subcommand over these dependencies. */
 export function createInboxCommand(deps: InboxCommandDeps) {
   const readCommand = new Command()
     .name("read")

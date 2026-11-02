@@ -59,10 +59,6 @@ import { findLatestItemsFromCatalog } from "../../infrastructure/persistence/cat
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure for the data search picker.
- * Reads data content from disk for display in the preview pane.
- */
 function createDataFetchPreview(
   dataRepo: FileSystemUnifiedDataRepository,
   repoDir: string,
@@ -77,7 +73,6 @@ function createDataFetchPreview(
     );
     const contentPath = toRelativePath(repoDir, absoluteContentPath);
 
-    // Only read text content for preview
     const isText = item.contentType.startsWith("text/") ||
       item.contentType === "application/json" ||
       item.contentType === "application/yaml" ||
@@ -106,9 +101,6 @@ function createDataFetchPreview(
   };
 }
 
-/**
- * Fetches and displays full data details after selection from interactive search.
- */
 async function displayDataDetail(
   item: DataSearchItem,
   dataRepo: FileSystemUnifiedDataRepository,
@@ -117,7 +109,6 @@ async function displayDataDetail(
 ): Promise<void> {
   const modelType = ModelType.create(item.modelType);
 
-  // Re-fetch full Data entity
   const data = await dataRepo.findByName(
     modelType,
     item.modelId,
@@ -137,7 +128,6 @@ async function displayDataDetail(
     data.version,
   );
 
-  // Build DataGetData for display
   const output: DataGetData = {
     id: data.id,
     name: data.name,
@@ -157,7 +147,6 @@ async function displayDataDetail(
     contentPath: toRelativePath(repoDir, absoluteContentPath),
   };
 
-  // Fetch raw content for display
   const rawContent = await dataRepo.getContent(
     modelType,
     item.modelId,
@@ -238,8 +227,8 @@ export const dataSearchCommand = withRemoteOptions(
 ).action(async function (options: AnyOptions, query?: string) {
   const ctx = createContext(options as GlobalOptions, ["data", "search"]);
   const effectiveMode = interactiveOutputMode(ctx);
-  // The behavior spellings (swamp-club#3410) in the stored model form, so the
-  // local search and a serve filter on the same value.
+  // the behavior spellings in the stored model form, so the local search and a
+  // serve filter on the same value.
   const model = options.behavior as string | undefined;
   const ownerType = options.ownerType === undefined
     ? undefined
@@ -276,8 +265,7 @@ export const dataSearchCommand = withRemoteOptions(
         },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker.
     const renderer = createDataSearchRenderer(effectiveMode, undefined, {
       interactive: false,
     });
@@ -306,7 +294,6 @@ export const dataSearchCommand = withRemoteOptions(
   const dataQueryService = repoContext.dataQueryService;
   const catalogStore = repoContext.catalogStore;
 
-  // Parse --tag values into Record<string, string>
   const parsedTags = options.tag
     ? parseTags(options.tag as string[])
     : undefined;
@@ -346,7 +333,6 @@ export const dataSearchCommand = withRemoteOptions(
 
   const selected = renderer.selectedItem();
   if (selected) {
-    // In JSON mode, display full data detail after selection
     if (effectiveMode === "json") {
       await displayDataDetail(selected, dataRepo, repoDir, effectiveMode);
     }

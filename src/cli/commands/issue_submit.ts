@@ -18,15 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Shared submission logic for `swamp issue bug`, `feature`, and `security`.
- *
- * Split into two phases so the auth check happens BEFORE the editor opens:
- * 1. resolveDestination() — check auth, prompt if needed, return where to send
- * 2. submitIssue() — send the issue to the resolved destination
- *
- * When `--extension` is supplied, submitIssue additionally resolves the
- * extension target (pulled/sourced/no-repo refusal vs @swamp-lab vs
- * third-party repository) and dispatches accordingly.
+ * split in two phases so the auth check happens before the editor opens:
+ * resolveDestination, then submitIssue.
  */
 
 import type { CommandContext } from "../context.ts";
@@ -69,11 +62,7 @@ import {
 import { collectReporterContext } from "../../infrastructure/process/reporter_context_collector.ts";
 import { VERSION } from "./version.ts";
 
-/**
- * `value` unchanged, or a UserError naming `flag` when it is empty or only
- * whitespace. swamp-club refuses a blank title or body, so the request is
- * never sent (swamp-club#3542).
- */
+/** swamp-club refuses a blank title or body, so the request is never sent. */
 export function requireNonBlank(flag: string, value: string): string {
   if (value.trim() === "") {
     throw new UserError(`${flag} must not be empty or only whitespace.`);
@@ -81,21 +70,10 @@ export function requireNonBlank(flag: string, value: string): string {
   return value;
 }
 
-/**
- * Where a report's title and body come from: both flags, or the editor
- * (with the `--title` value already in its Title section when only
- * `--title` was given).
- */
 export type ReportTextSource =
   | { kind: "flags"; title: string; body: string }
   | { kind: "editor"; prefilledTitle?: string };
 
-/**
- * Decides how `swamp issue bug`, `feature` and `security` collect the title
- * and body from `--title` and `--body`. Throws a UserError for combinations
- * that can't be submitted, naming the flag that is missing
- * (swamp-club#3576).
- */
 export function resolveReportText(
   options: { title?: string; body?: string },
   outputMode: OutputMode,
@@ -135,11 +113,6 @@ export function resolveReportText(
   return { kind: "editor" };
 }
 
-/**
- * `template` with `title` on the line under its `## Title` comment, where the
- * report parsers read the title from. Returns `template` unchanged when
- * `title` is undefined.
- */
 export function prefillTitle(template: string, title?: string): string {
   if (title === undefined) {
     return template;
@@ -151,9 +124,8 @@ export function prefillTitle(template: string, title?: string): string {
 }
 
 /**
- * The Lab source chosen with `--source`, or undefined when it was not given.
- * Refuses a source alongside `--extension`, which routes a report elsewhere,
- * and `--email`, which has nowhere to carry it.
+ * refuses a source alongside --extension, which routes a report elsewhere, and
+ * --email, which has nowhere to carry it.
  */
 export function resolveIssueSource(
   options: { source?: string; extension?: string; email?: boolean },
@@ -170,7 +142,6 @@ export function resolveIssueSource(
   return parseIssueFilingSource(options.source);
 }
 
-/** Extension target after refusals have been thrown — never "refused". */
 export type UsableExtensionTarget = Exclude<
   ExtensionTarget,
   { kind: "refused" }
@@ -178,18 +149,15 @@ export type UsableExtensionTarget = Exclude<
 
 const SUPPORT_EMAIL = "support@swamp-club.com";
 
-/** The resolved submission destination. */
 export type SubmitDestination =
   | { method: "lab"; credentials: AuthCredentials }
   | { method: "email" }
   | { method: "abort" };
 
 /**
- * Resolve where to send the issue BEFORE collecting content.
- * Call this before opening the editor so the user isn't surprised.
- *
- * `labOnly` is for a report that email cannot carry, such as one with a chosen
- * source: it is refused rather than offered the email fallback.
+ * call before opening the editor so the user isn't surprised. labOnly is for a
+ * report email cannot carry: it is refused rather than offered the email
+ * fallback.
  */
 export async function resolveDestination(
   ctx: CommandContext,
@@ -207,7 +175,6 @@ export async function resolveDestination(
     throw notLoggedInError(true);
   }
 
-  // Not logged in — prompt (interactive only)
   if (ctx.outputMode === "json") {
     throw notLoggedInError(forExtension);
   }
@@ -222,26 +189,18 @@ export interface SubmitIssueInput {
   type: "bug" | "feature" | "security";
   title: string;
   body: string;
-  /** The Lab source chosen with `--source`. Unset files with the default. */
   source?: IssueFilingSource;
-  /**
-   * Skip automatic redaction (--no-redact). For reporters who have
-   * deliberately sanitized their content and need it submitted as written.
-   */
   noRedact?: boolean;
   /**
-   * Pre-resolved `@swamp/*` target (from {@link resolveExtensionOrRefuse}).
-   * Only passed on the `@swamp/*` extension path — third-party targets
-   * use {@link dispatchExtensionRepositoryReport} directly and never
-   * reach submitIssue.
+   * only passed on the @swamp/* path; third-party targets use
+   * dispatchExtensionRepositoryReport and never reach submitIssue.
    */
   swampLabTarget?: Extract<UsableExtensionTarget, { kind: "swamp-lab" }>;
 }
 
 /**
- * The error for a report that needs Lab auth the user doesn't have.
- * `--email` is only suggested when it can be used — it is rejected
- * alongside `--extension` and `--source`.
+ * --email is only suggested when it can be used: it is rejected alongside
+ * --extension and --source.
  */
 function notLoggedInError(emailRefused: boolean): UserError {
   return new UserError(
@@ -251,7 +210,6 @@ function notLoggedInError(emailRefused: boolean): UserError {
   );
 }
 
-/** Build a mailto: URL with pre-filled subject and body using RFC 6068 percent-encoding. */
 export function buildMailtoUrl(
   type: "bug" | "feature" | "security",
   title: string,
@@ -262,10 +220,6 @@ export function buildMailtoUrl(
   return `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${encodedBody}`;
 }
 
-/**
- * Prompt the user to choose between logging in or sending email.
- * Returns "login" or "email".
- */
 async function promptLoginOrEmail(): Promise<"login" | "email"> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -289,10 +243,7 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
   return "login";
 }
 
-/**
- * Builds the error for a report swamp could not file. The reason becomes
- * the error code so `--json` callers can branch on it.
- */
+/** the reason becomes the error code so --json callers can branch on it. */
 function refusalError(
   extensionName: string,
   reason: RefusalReason,
@@ -305,13 +256,8 @@ function refusalError(
 }
 
 /**
- * Extension pre-flight: resolves the target and returns a usable target
- * for the caller to act on. Throws a UserError when the report can't be
- * filed against the extension.
- *
- * Call this BEFORE {@link resolveDestination} — refusals and repository
- * handoffs don't need Lab auth, so auth-checking the user up-front would
- * spuriously fail commands that were never going to touch the Lab.
+ * call before resolveDestination: refusals and repository handoffs need no Lab
+ * auth, so checking it first would fail commands that never touch the Lab.
  */
 export async function resolveExtensionOrRefuse(
   extensionName: string,
@@ -324,11 +270,6 @@ export async function resolveExtensionOrRefuse(
   return target;
 }
 
-/**
- * Dispatches a report to the publisher's declared repository via gh or
- * browser handoff, then renders the completion event. Used by all three
- * subcommands once the body has been collected.
- */
 export async function dispatchExtensionRepositoryReport(
   ctx: CommandContext,
   target: Extract<UsableExtensionTarget, { kind: "repository" }>,
@@ -342,7 +283,6 @@ export async function dispatchExtensionRepositoryReport(
     {},
 ): Promise<void> {
   const { confirm, ...dispatcherDeps } = deps;
-  // Redact sensitive content before dispatching to a third-party repo.
   let title = input.title;
   let body = input.body;
   if (input.noRedact) {
@@ -397,15 +337,6 @@ export async function dispatchExtensionRepositoryReport(
   );
 }
 
-/**
- * Submit an issue to the already-resolved destination. Called after
- * title/body are collected for the plain (non-extension) path and for
- * the `@swamp/*` extension path (both of which need Lab auth).
- *
- * For the plain path, `input.extensionName` is unset.
- * For the `@swamp/*` path, `input.extensionName` is set and libswamp
- * appends extension metadata to the body.
- */
 export async function submitIssue(
   ctx: CommandContext,
   destination: SubmitDestination,
@@ -419,7 +350,6 @@ export async function submitIssue(
     throw notLoggedInError(input.swampLabTarget !== undefined);
   }
 
-  // Redact sensitive content before any submission path.
   if (input.noRedact) {
     renderRedactionSkipped(ctx.outputMode);
   } else {
@@ -471,7 +401,6 @@ export async function submitIssue(
     return;
   }
 
-  // Lab submission (both plain and @swamp-extension paths).
   const identity = await loadIdentity();
   const client = new SwampClubClient(
     destination.credentials.serverUrl,
@@ -490,8 +419,6 @@ export async function submitIssue(
     },
   };
 
-  // @swamp path: populate the extension metadata so libswamp assembles
-  // the body with Extension: / Upstream repository: / Environment lines.
   const labInput = input.swampLabTarget
     ? {
       type: input.type,

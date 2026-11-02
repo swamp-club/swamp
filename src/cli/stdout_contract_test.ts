@@ -44,7 +44,6 @@ Deno.test("isValueOnlyStdoutCommand: only the listed commands claim stdout", () 
     false,
   );
 
-  // The groups themselves print help, which is prose.
   assertEquals(isValueOnlyStdoutCommand({ command: "invite" }), false);
   assertEquals(isValueOnlyStdoutCommand({ command: "vault" }), false);
 
@@ -64,10 +63,9 @@ Deno.test("isValueOnlyStdoutCommand: only the listed commands claim stdout", () 
 });
 
 Deno.test("isValueOnlyStdoutCommand: holds across the argv forms callers actually type", () => {
-  // Driven through extractCommandInfo rather than hand-built objects, because
-  // that is how runCli reaches this predicate. The two were reasoned about
-  // separately once, and a parser bug on `--log-level=debug invite link`
-  // silently disabled the whole fix while every hand-written case passed.
+  // driven through extractCommandInfo, as runCli reaches this predicate: a
+  // parser bug on --log-level=debug invite link could disable the whole fix
+  // while hand-written cases pass
   const valueOnly = [
     ["invite", "link"],
     ["invite", "link", "-v"],

@@ -28,7 +28,6 @@ import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml
 import { vaultCreateCommand } from "./vault_create.ts";
 import { VERSION } from "./version.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});

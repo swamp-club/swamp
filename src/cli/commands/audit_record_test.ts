@@ -47,8 +47,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 /**
- * Ancestor lookup bounded to `root`, standing in for `findAncestorRepoDir`
- * so tests never shell out to git or escape the temp directory.
+ * ancestor lookup bounded to `root`, standing in for `findAncestorRepoDir` so
+ * tests never shell out to git or escape the temp directory
  */
 function findRepoWithin(root: string): (startDir: string) => string | null {
   return (startDir) => {

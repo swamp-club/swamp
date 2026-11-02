@@ -26,19 +26,9 @@ import {
 import { resetWithheldTokenFiles } from "../../domain/auth/server_login_hint.ts";
 
 /**
- * Runs a remote-capable command against an in-process serve that records the
- * `Authorization` header of each WebSocket upgrade, with
- * `SWAMP_SERVER_TOKEN_FILE` set and no environment address or stored
- * credential. `.swamp.yaml`'s serverAddress names that serve.
- *
- * `run` gets the serve's URL and parses the command; pass `--server` from it
- * or leave the address to the marker. The command's own failure (the serve
- * ends every request at once) is ignored: only the headers matter.
- *
- * `withEnv` is the caller's `withMockedEnv`: this file is not a `_test.ts`
- * file, so it may not import the test helper itself.
- *
- * @returns the Authorization header of each upgrade, `null` when none was sent.
+ * the command's own failure (the serve ends every request at once) is ignored:
+ * only the headers matter. withEnv is the caller's withMockedEnv, since this
+ * file is not a _test.ts file and may not import the helper.
  */
 export async function upgradeAuthorizationHeaders(
   tokenFileContent: string,

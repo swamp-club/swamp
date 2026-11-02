@@ -59,10 +59,6 @@ import { parseLabels } from "./vault_annotate.ts";
 
 const vaultLogger = getSwampLogger(["vault", "put"]);
 
-/**
- * Parses a KEY=VALUE string into key and value parts.
- * Handles values that contain = signs.
- */
 export function parseKeyValue(
   input: string,
 ): { key: string; value: string } | null {
@@ -81,9 +77,6 @@ export function parseKeyValue(
   return { key, value };
 }
 
-/**
- * Resolves a key and value from a CLI argument and optional stdin content.
- */
 export function resolveKeyValue(
   argument: string,
   stdinContent: string | null,
@@ -229,7 +222,6 @@ When using --server, the value must be passed as a positional argument or KEY=VA
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    // Parse key/value from arguments
     let key: string;
     let value: string;
 
@@ -378,7 +370,6 @@ When using --server, the value must be passed as a positional argument or KEY=VA
       }
     }
 
-    // Phase 2: Prompt on overwrite
     if (
       preview.secretExists && cliCtx.outputMode === "log" && !options.yes &&
       !options.force
@@ -398,7 +389,6 @@ When using --server, the value must be passed as a positional argument or KEY=VA
       }
     }
 
-    // Phase 3: Execute mutation
     const renderer = createVaultPutRenderer(cliCtx.outputMode);
     await consumeStream(
       vaultPut(ctx, deps, {

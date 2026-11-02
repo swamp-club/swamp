@@ -46,10 +46,6 @@ const SEARCH_ISSUE_STATUSES = [
   "closed",
 ] as const;
 
-/**
- * Throws a UserError for a `--type`, `--status` or `--limit` value the Lab
- * would refuse, so the request is never sent (swamp-club#3577).
- */
 export function validateIssueSearchOptions(
   options: { type?: string; status?: string; limit?: number },
 ): void {

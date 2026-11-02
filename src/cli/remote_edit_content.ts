@@ -20,9 +20,8 @@
 import { UserError } from "../domain/errors.ts";
 
 /**
- * Returns the YAML piped to an edit command run with `--server`, or throws
- * when nothing was piped. An editor would open on the server host, not here,
- * so stdin is the only way to edit remotely.
+ * an editor would open on the server host, not here, so piped stdin is the only
+ * way to edit remotely
  */
 export function requireRemoteEditContent(
   content: string | null,

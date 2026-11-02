@@ -59,7 +59,6 @@ import {
 import { UserError } from "../domain/errors.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
-  // Ensure env var is not set
   withMockedEnv(
     { SWAMP_MODELS_DIR: undefined, SWAMP_BEHAVIORS_DIR: undefined },
     () => {
@@ -293,8 +292,6 @@ Deno.test("resolveWorkflowsDir env var takes priority over default", () => {
   });
 });
 
-// --- isLocalhostUrl tests ---
-
 Deno.test("isLocalhostUrl returns true for http://localhost", () => {
   assertEquals(isLocalhostUrl("http://localhost"), true);
 });
@@ -326,8 +323,6 @@ Deno.test("isLocalhostUrl returns false for invalid URL", () => {
 Deno.test("isLocalhostUrl returns false for empty string", () => {
   assertEquals(isLocalhostUrl(""), false);
 });
-
-// --- resolveTelemetryEndpoint tests ---
 
 Deno.test("resolveTelemetryEndpoint returns marker endpoint when set", () => {
   const result = resolveTelemetryEndpoint(
@@ -377,8 +372,6 @@ Deno.test("resolveTelemetryEndpoint ignores an empty env override", () => {
   const result = resolveTelemetryEndpoint("https://marker.endpoint", null, "");
   assertEquals(result, "https://marker.endpoint");
 });
-
-// --- isUpdateCheckDisabledByEnv tests ---
 
 Deno.test("isUpdateCheckDisabledByEnv returns false when env var is not set", () => {
   withMockedEnv({ SWAMP_NO_UPDATE_CHECK: undefined }, () => {
@@ -486,8 +479,6 @@ Deno.test("commandNeedsLoaderSetup returns true for model type search with globa
   );
 });
 
-// isHookCommand tests
-
 Deno.test("isDispatchRunnerCommand: true only for worker exec-dispatch", () => {
   assertEquals(
     isDispatchRunnerCommand(extractCommandInfo(["worker", "exec-dispatch"])),
@@ -547,8 +538,6 @@ Deno.test("isHookCommand: returns false for empty args", () => {
     false,
   );
 });
-
-// shouldSuppressMissingExtensionsWarning tests
 
 const missingPulledWarning: DeferredWarning = {
   kind: "extensions",
@@ -659,8 +648,6 @@ Deno.test("resolveAutoResolverLockfilePath: records in the in-repo lockfile on a
   );
 });
 
-// ── defersExtensionCatalog (swamp-club#3139) ────────────────────────────────
-
 Deno.test("defersExtensionCatalog: serve check-config defers the catalog", () => {
   assertEquals(
     defersExtensionCatalog(extractCommandInfo(["serve", "check-config"])),
@@ -691,8 +678,6 @@ Deno.test("defersExtensionCatalog: serve and other commands open the catalog at 
     );
   }
 });
-
-// ── isThinClientCommand (swamp-club#2483) ───────────────────────────────────
 
 const noEnv = () => undefined;
 
@@ -777,7 +762,6 @@ Deno.test("isTelemetryOptedOut: any source opts out and none turns it back on", 
   const optedOutMarker = { ...marker, telemetryDisabled: true };
 
   const cases = [
-    // Nothing opts out.
     { marker, userDisabled: false, explicit: false, scoped: true, out: false },
     {
       marker: null,
@@ -786,7 +770,6 @@ Deno.test("isTelemetryOptedOut: any source opts out and none turns it back on", 
       scoped: true,
       out: false,
     },
-    // The user setting applies inside a repo as well as outside one.
     { marker, userDisabled: true, explicit: false, scoped: true, out: true },
     {
       marker: null,
@@ -795,7 +778,6 @@ Deno.test("isTelemetryOptedOut: any source opts out and none turns it back on", 
       scoped: false,
       out: true,
     },
-    // The repo marker opts out whatever the user setting is.
     {
       marker: optedOutMarker,
       userDisabled: false,
@@ -810,7 +792,6 @@ Deno.test("isTelemetryOptedOut: any source opts out and none turns it back on", 
       scoped: true,
       out: true,
     },
-    // An explicit repo dir with no marker opts a repo-scoped command out...
     {
       marker: null,
       userDisabled: false,
@@ -818,7 +799,6 @@ Deno.test("isTelemetryOptedOut: any source opts out and none turns it back on", 
       scoped: true,
       out: true,
     },
-    // ...but not a repo-less command or repo init.
     {
       marker: null,
       userDisabled: false,
@@ -826,7 +806,6 @@ Deno.test("isTelemetryOptedOut: any source opts out and none turns it back on", 
       scoped: false,
       out: false,
     },
-    // An explicit repo dir that resolves a marker is an ordinary repo run.
     { marker, userDisabled: false, explicit: true, scoped: true, out: false },
   ];
   for (const c of cases) {

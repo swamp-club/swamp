@@ -33,21 +33,9 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 type AnyOptions = any;
 
 /**
- * Builds the invite-link command under a given name and command path.
- *
- * Called twice: once as the documented `swamp invite link`, and once as the
- * top-level `swamp first-rule`, which is registered hidden. An alias would
- * have worked mechanically, but Cliffy prints aliases in help ("link,
- * first-rule"), and an easter egg listed in help is not one — so `first-rule`
- * is a hidden command instead. Both share this body, so they cannot drift.
- *
- * `path` is the invocation as typed: it names the command for tracing and
- * spells the examples, so the egg's own `--help` never tells you to run
- * something else.
- *
- * Both names are listed in `src/cli/stdout_contract.ts`, which keeps log
- * output off stdout for them. Renaming either one means updating that list —
- * `integration/stdout_contract_rules_test.ts` fails if you forget.
+ * built twice, as invite link and as hidden top-level first-rule: an alias
+ * would show in help, and an easter egg listed in help is not one. Both names
+ * are listed in stdout_contract.ts; renaming either means updating that list.
  */
 function buildInviteLinkCommand(name: string, path: string[]): Command {
   const invocation = ["swamp", ...path].join(" ");
@@ -60,10 +48,9 @@ function buildInviteLinkCommand(name: string, path: string[]): Command {
       const ctx = createContext(options as GlobalOptions, path);
 
       const credentials = await new AuthRepository().load();
-      // Unlike `swamp issue get`, there is no anonymous form of this endpoint —
-      // the recruit link is identity-scoped. Fail before the round trip, and
-      // name both credential sources so a CI caller is not sent to an
-      // interactive login it cannot run.
+      // there is no anonymous form of this endpoint (the link is
+      // identity-scoped): fail before the round trip, naming both credential
+      // sources so CI is not sent to an interactive login.
       if (!credentials?.apiKey) {
         throw new UserError(
           'Not logged in. Run "swamp auth login", or set SWAMP_API_KEY, to get your recruit link.',
@@ -92,17 +79,11 @@ function buildInviteLinkCommand(name: string, path: string[]): Command {
     });
 }
 
-/** The documented command: `swamp invite link`. */
 export const inviteLinkCommand = buildInviteLinkCommand("link", [
   "invite",
   "link",
 ]);
 
-/**
- * The same command under its easter-egg name, mounted at the top level as
- * `swamp first-rule` and registered hidden so it stays out of help, shell
- * completions and the `swamp help --json` schema.
- */
 export const firstRuleCommand = buildInviteLinkCommand("first-rule", [
   "first-rule",
 ]).hidden();

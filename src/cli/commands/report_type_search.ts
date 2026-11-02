@@ -66,8 +66,7 @@ export async function reportTypeSearchAction(
         payload: { query },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker.
     const renderer = createReportTypeSearchRenderer(
       interactiveOutputMode(ctx),
       { interactive: false },

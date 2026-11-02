@@ -242,7 +242,6 @@ export const issueEditCommand = new Command()
       }
     }
 
-    // Redact sensitive content before submission.
     if (options.redact === false) {
       renderRedactionSkipped(ctx.outputMode);
     } else {

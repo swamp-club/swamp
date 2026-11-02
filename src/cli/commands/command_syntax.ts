@@ -19,30 +19,18 @@
 
 import type { CommandSurface } from "../../presentation/command_surface.ts";
 
-/**
- * The per-surface text of a CLI command: how a user types it. A command
- * built from a factory renders its `--help` examples, its description and
- * any hints that name the command from this value, so the same command is
- * mounted under more than one spelling (`swamp model …` and `swamp behavior
- * …`; swamp-club#3330, swamp-club#3331) without the text of one surface
- * naming the other.
- */
 export interface CommandSyntax {
-  /** The words a user types to reach the command, e.g. `swamp model get`. */
   readonly invocation: string;
-  /** Which tree the command is mounted in; picks the log-mode wording. */
   readonly surface: CommandSurface;
   /**
-   * The preferred spelling of this command, as a full example invocation
-   * (`swamp behavior get my-server`). Set only on legacy syntaxes; the
-   * factory then adds it as the last `--help` example.
+   * set only on legacy syntaxes; the factory adds it as the last --help
+   * example.
    */
   readonly preferred?: string;
 }
 
 /**
- * The syntax of the subcommand `word` mounted under `parent`. It keeps the
- * parent's surface; a preferred spelling is per command, so it is not
+ * keeps the parent's surface; the preferred spelling is per command and not
  * inherited.
  */
 export function subcommandSyntax(
@@ -55,56 +43,28 @@ export function subcommandSyntax(
   };
 }
 
-/**
- * The name of the positional argument that names a definition on `surface`:
- * `model_id_or_name` or `behavior_id_or_name`. Argument names show in
- * `--help` and `swamp help`, so they follow the spelling (swamp-club#3409);
- * the legacy name is unchanged.
- */
 export function definitionArgument(surface: CommandSurface): string {
   return `${surface}_id_or_name`;
 }
 
-/**
- * The name of the run target argument on `surface`: `model_or_type` or
- * `behavior_or_type`.
- */
 export function runTargetArgument(surface: CommandSurface): string {
   return `${surface}_or_type`;
 }
 
-/**
- * The name of the argument that takes an output id or a definition name on
- * `surface`: `output_id_or_model_name` or `output_id_or_behavior_name`.
- */
 export function outputArgument(surface: CommandSurface): string {
   return `output_id_or_${surface}_name`;
 }
 
-/**
- * The completion type of an argument that names a definition on `surface`:
- * `model_name` or `behavior_name` (swamp-club#3410). Both are registered
- * with the same completion (src/cli/completion_types.ts).
- */
 export function definitionNameType(surface: CommandSurface): string {
   return `${surface}_name`;
 }
 
-/**
- * The completion type of an argument that names a behavior type on
- * `surface`: `model_type` or `behavior_type` (swamp-club#3410).
- */
 export function typeNameType(surface: CommandSurface): string {
   return `${surface}_type`;
 }
 
-/** The `--help` example title for a legacy command's preferred spelling. */
 export const PREFERRED_SPELLING_EXAMPLE = "Preferred spelling";
 
-/**
- * Adds the preferred-spelling example to `command` when `syntax` has one.
- * Call after the command's own examples, so it is listed last.
- */
 export function withPreferredExample<
   T extends { example(name: string, description: string): unknown },
 >(command: T, syntax: Pick<CommandSyntax, "preferred">): T {
@@ -115,17 +75,13 @@ export function withPreferredExample<
 }
 
 /**
- * The module a factory-built command was defined in, keyed on the command
- * instance. A command built by a factory and mounted only inside a tree is
- * not exported by its defining module, so architecture tests that trace a
- * command back to its source read this instead
- * (integration/json_mode_conformance_test.ts).
+ * a factory-built command mounted only inside a tree is not exported, so
+ * architecture tests trace it back to its source through this.
  */
 export const DEFINING_MODULE: unique symbol = Symbol.for(
   "swamp.cli.commandDefiningModule",
 );
 
-/** Records `moduleUrl` (the factory's `import.meta.url`) on `command`. */
 export function recordDefiningModule<T extends object>(
   command: T,
   moduleUrl: string,
@@ -137,7 +93,6 @@ export function recordDefiningModule<T extends object>(
   return command;
 }
 
-/** The module URL recorded on `command`, if a factory built it. */
 export function definingModuleOf(command: object): string | undefined {
   const value = (command as { [DEFINING_MODULE]?: unknown })[DEFINING_MODULE];
   return typeof value === "string" ? value : undefined;

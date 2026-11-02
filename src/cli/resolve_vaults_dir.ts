@@ -19,22 +19,15 @@
 
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 
-/**
- * Resolves the vaults directory path.
- * Priority: SWAMP_VAULTS_DIR env var > .swamp.yaml config > default "extensions/vaults"
- */
 export function resolveVaultsDir(marker: RepoMarkerData | null): string {
-  // Environment variable takes highest priority
   const envVaultsDir = Deno.env.get("SWAMP_VAULTS_DIR");
   if (envVaultsDir) {
     return envVaultsDir;
   }
 
-  // Then .swamp.yaml config
   if (marker?.vaultsDir) {
     return marker.vaultsDir;
   }
 
-  // Default
   return "extensions/vaults";
 }

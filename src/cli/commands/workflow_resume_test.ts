@@ -21,16 +21,10 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
 
-/**
- * In-process serve endpoint streaming the given run events followed by a
- * `done` frame — enough to drive the command's streaming --server path
- * without a subprocess.
- */
 function runEventServer(
   events: Record<string, unknown>[],
 ): { url: string; shutdown: () => Promise<void> } {
@@ -56,10 +50,6 @@ function runEventServer(
   };
 }
 
-/**
- * A serve that answers `server.version` with `capabilities` (none when
- * undefined) and records each `workflow.resume` payload it receives.
- */
 function versionedResumeServer(capabilities: string[] | undefined): {
   url: string;
   shutdown: () => Promise<void>;
@@ -128,7 +118,6 @@ async function resumeFromJobOverServer(url: string): Promise<void> {
   ]);
 }
 
-/** Runs `workflow resume` against a scripted run result; returns Deno.exitCode. */
 async function runWorkflowResumeAgainst(
   run: Record<string, unknown>,
 ): Promise<number> {

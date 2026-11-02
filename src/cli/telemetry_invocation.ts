@@ -32,26 +32,16 @@ import {
 } from "./behavior_twin.ts";
 import { GLOBAL_OPTIONS } from "./telemetry_integration.ts";
 
-/** Placeholder recorded in place of a redacted positional. */
 export const REDACTED = "<REDACTED>";
 
 /**
- * Declared argument names whose values are sent as typed.
- *
- * Telemetry policy (swamp-club#2817): names, ids, queries and types are not
- * sensitive — they are how a user refers to things, not the things
- * themselves. Filesystem paths and input values are sensitive, and so is
- * everything after `data query`, whose predicate can embed literal values.
- *
- * Only names listed here are sent. Any argument name not listed — including
- * one added later — is redacted, and
- * `integration/telemetry_redaction_rules_test.ts` fails until it is classified
- * here or in {@link REDACTED_ARGUMENTS}.
+ * names, ids, queries and types are how a user refers to things and are sent;
+ * paths, input values and everything after data query are sensitive; an
+ * unlisted name is redacted
  */
 export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
-  // The `swamp behavior …` spellings of model_id_or_name, model_or_type and
-  // output_id_or_model_name (swamp-club#3409): the same values, classified
-  // the same way.
+  // the `swamp behavior` spellings of model_id_or_name, model_or_type and
+  // output_id_or_model_name, classified the same way
   "behavior_id_or_name",
   "behavior_or_type",
   "collective",
@@ -91,9 +81,8 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Declared argument names whose values are always redacted: paths, URLs,
- * input values, the `data query` predicate, access groups and principals, and
- * free-form pass-through arguments.
+ * always redacted: paths, URLs, input values, the `data query` predicate,
+ * access groups and principals, and free-form pass-through arguments
  */
 export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   // The hidden shell-completion command's action, called by completion scripts.
@@ -116,27 +105,20 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Arguments that name commands (`help [command...]`). A value is sent only
- * while it resolves as a command word walking the tree from the root — people
- * paste whole command lines after `help`, secrets and predicates included —
- * and everything from the first non-command word on is redacted.
+ * a value is sent only while it resolves as a command word walking the tree
+ * from the root; people paste whole command lines after `help`, secrets
+ * included, so everything from the first non-command word on is redacted
  */
 export const COMMAND_WORD_ARGUMENTS: ReadonlySet<string> = new Set([
   "command",
 ]);
 
-/** Recorded in place of an option key that is neither declared nor option-shaped. */
 export const UNKNOWN_OPTION = "<UNKNOWN_OPTION>";
 
 /**
- * Whether a positional declared as `argName` is sent under `commandPath`.
- *
- * Two names depend on the command:
- * - `key` is a config setting name under `swamp config` — system-defined — but
- *   a secret's name under `swamp vault`, which is an input value.
- * - Every positional under `swamp access group` names a group or a member, and
- *   both are redacted — `access group create <name>` declares the group as a
- *   plain `name`.
+ * `key` is a config setting name under `swamp config` (system-defined) but a
+ * secret's name under `swamp vault`; every positional under `swamp access
+ * group` names a group or member and is redacted
  */
 export function isSentArgument(
   argName: string,
@@ -148,34 +130,9 @@ export function isSentArgument(
 }
 
 /**
- * Resolves the telemetry invocation for `args` by walking the real command
- * tree rooted at `root`, rather than guessing from token positions.
- *
- * - Command words are recorded at any depth. `commandPath` holds their
- *   canonical names (aliases resolved). `command`, `subcommand` and the
- *   command words in `args` keep the spelling as typed, because swamp-club
- *   scores XP and quests on `command`/`subcommand` and an alias can score
- *   differently from its canonical name. `subcommand` is only ever a command
- *   word.
- * - Positionals are matched to the leaf command's declared arguments and sent
- *   or redacted by argument name (see {@link SENT_ARGUMENTS}).
- * - Option values are never recorded; only option keys are.
- *
- * Anything that cannot be matched — an unknown option's value, an unknown
- * command, a positional beyond the declared arguments — is redacted, because
- * this also records invocations that failed to parse. When fewer positionals
- * are given than the command requires, the index mapping cannot be trusted
- * (`vault put KEY=VALUE` would put the secret in the vault-name slot), so
- * every positional is redacted.
- *
- * `command`, `subcommand` and `args` keep the shape swamp-club already
- * consumes: `args` is the command words after the subcommand followed by the
- * positionals, so `model method run m x` is still `args: ["run", "m", "x"]`.
- *
- * The result describes the command as typed: a `swamp behavior …` invocation
- * resolves under the behavior group. The auth gate relies on that path
- * (auth_gate_exemptions.ts). What telemetry records is this result passed
- * through {@link toRecordedInvocation}.
+ * command and subcommand keep the typed spelling since swamp-club scores on
+ * them and an alias can differ; anything unmatched is redacted, and with fewer
+ * positionals than required all are
  */
 export function resolveTelemetryInvocation(
   root: AnyCommand,
@@ -206,7 +163,6 @@ export function resolveTelemetryInvocation(
     const arg = args[i];
 
     if (arg === "--") {
-      // Everything after `--` is literal pass-through.
       for (let j = i + 1; j < args.length; j++) {
         positionals.push(REDACTED);
         sensitiveValues.push(args[j]);
@@ -224,7 +180,7 @@ export function resolveTelemetryInvocation(
       if (eq === -1 && optionConsumesNext(current, key, args[i + 1])) {
         if (findOption(current, key) === undefined) positionsUntrusted = true;
         sensitiveValues.push(args[i + 1]);
-        i++; // The value is never recorded.
+        i++;
       }
       i++;
       continue;
@@ -254,10 +210,9 @@ export function resolveTelemetryInvocation(
   const declared = unknownCommand ? [] : current.getArguments();
   const required = declared.filter((a) => !a.optional).length;
   const underfilled = positionals.length < required;
-  // With `missing` declared arguments not given, positional i may really
-  // belong to any of declared[i..i+missing] — `vault put DB_PASSWORD hunter2`
-  // is `<vault_name> <key>` or `<key> <value>`. Send it only if every
-  // candidate slot is sent.
+  // with `missing` declared arguments not given, positional i may belong to any
+  // of declared[i..i+missing] (`vault put DB_PASSWORD hunter2`); send it only
+  // if every candidate slot is sent
   const missing = Math.max(0, declared.length - positionals.length);
   const commandWords = commandWordFlags(root, positionals);
   const recordedPositionals = positionals.map((value, index) => {
@@ -272,7 +227,6 @@ export function resolveTelemetryInvocation(
     if (value === REDACTED) return REDACTED;
     const last = declared.length - 1;
     if (index > last && !declared.at(-1)?.variadic) return REDACTED;
-    // Beyond the last slot, a variadic argument repeats.
     const first = Math.min(index, last);
     for (let slot = first; slot <= Math.min(first + missing, last); slot++) {
       const name = declared[slot].name;
@@ -299,20 +253,9 @@ export function resolveTelemetryInvocation(
 }
 
 /**
- * The invocation telemetry records for a resolved one (swamp-club#3411).
- *
- * `swamp behavior …` and `swamp behaviour …` are recorded exactly as the
- * equivalent `swamp model …` invocation is, so one command counts the same
- * however it was typed: `command` becomes `model`, `commandPath` becomes the
- * model path, and for `run`, `describe` and `history` `subcommand` becomes
- * `method` with the typed word moved to the front of `args` —
- * `behavior run m x` records as `model method run m x` does. The typed root
- * word is kept in `commandSpelling`. A `swamp model …` invocation gets
- * `commandSpelling: "model"` and is otherwise unchanged; every other group
- * is returned unchanged, without the field.
- *
- * Applied only where invocations are recorded, never to what the auth gate
- * reads.
+ * swamp behavior and behaviour record as the equivalent swamp model invocation
+ * so one command counts the same however typed; the typed root word is kept in
+ * commandSpelling
  */
 export function toRecordedInvocation(
   resolved: CommandInvocationData,
@@ -344,10 +287,6 @@ export function toRecordedInvocation(
   return recorded;
 }
 
-/**
- * For each positional, whether it and every positional before it resolve as
- * command words walking the tree from the root.
- */
 function commandWordFlags(root: AnyCommand, positionals: string[]): boolean[] {
   let cursor: AnyCommand | undefined = root;
   return positionals.map((value) => {
@@ -361,15 +300,9 @@ function hasNoArguments(command: AnyCommand): boolean {
 }
 
 /**
- * Whether the option spelled `key` (e.g. `--repo-dir`, `-v`, `--no-color`)
- * takes the next token as its value.
- *
- * An option the tree does not know consumes the next token when it does not
- * look like an option: it may be a mistyped `--input secret=x`, and sending
- * the value as a positional would leak it.
- *
- * Shared with the empty option value check (empty_option_value.ts), which
- * walks argv the same way — a change here changes what that check skips.
+ * an unknown option consumes the next token unless it looks like an option,
+ * since a mistyped --input secret=x would leak the value as a positional;
+ * empty_option_value.ts walks argv the same way
  */
 export function optionConsumesNext(
   command: AnyCommand,
@@ -401,9 +334,9 @@ export function optionConsumesNext(
 }
 
 /**
- * The option key to record. A declared option is recorded as typed. Anything
- * else is recorded as {@link UNKNOWN_OPTION}: a mistyped `--inptu` and a value
- * such as `--sk-live-abc123` typed where no option expects one look the same.
+ * anything not declared is recorded as UNKNOWN_OPTION: a mistyped `--inptu` and
+ * a value like `--sk-live-abc123` typed where no option expects one look the
+ * same
  */
 function optionKeyToRecord(command: AnyCommand, key: string): string {
   if (
@@ -423,12 +356,6 @@ function isCombinedShortFlags(command: AnyCommand, key: string): boolean {
   });
 }
 
-/**
- * The option spelled `key` (`--repo-dir`, `-v`, `--no-color`) on `command`,
- * including global options inherited from its parents.
- *
- * Shared with the empty option value check (empty_option_value.ts).
- */
 export function findOption(command: AnyCommand, key: string) {
   const name = key.replace(/^--?/, "");
   return command.getOption(name, true) ??
@@ -437,7 +364,6 @@ export function findOption(command: AnyCommand, key: string) {
       : undefined);
 }
 
-/** Where this invocation ran, for {@link buildKnownSensitiveValues}. */
 export interface InvocationLocations {
   cwd: string;
   home?: string;
@@ -445,14 +371,9 @@ export interface InvocationLocations {
 }
 
 /**
- * The values an error message is scrubbed of exactly, before any pattern
- * runs: every value the invocation redacted, each also resolved to its
- * absolute form (errors usually print the resolved path), plus the
- * working, home and repo directories. Bare numbers and booleans are dropped —
- * they would erase unrelated text.
- *
- * Used only to scrub the message of the invocation that produced them; never
- * persisted.
+ * scrubbed exactly before patterns run: every redacted value (also absolute),
+ * plus working, home and repo directories; bare numbers and booleans are
+ * dropped as they would erase unrelated text
  */
 export function buildKnownSensitiveValues(
   sensitiveValues: readonly string[],

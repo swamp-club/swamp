@@ -329,12 +329,8 @@ const CONNECT_OPTION_DELIVERY: Record<string, string> = {
   "--data-plane-url": "arg",
   "--no-reconnect": "arg",
 };
-// worker connect options the daemon deliberately does not offer.
 const CONNECT_ONLY_OPTIONS: string[] = [];
-// daemon enable options that configure the service itself.
 const DAEMON_ONLY_OPTIONS = ["--user"];
-// Environment variables worker connect reads that have no flag; daemon
-// enable carries them from the enabling shell.
 const CONNECT_ENV_WITHOUT_FLAG = [
   "SWAMP_ORCHESTRATOR_URL",
   "SWAMP_SERVE_EXTRA_HEADERS",

@@ -136,11 +136,9 @@ import { watchV3ServeFeeds } from "../../infrastructure/datastore_v3/v3_repo_con
 type AnyOptions = any;
 
 /**
- * The step lock hook a CLI workflow run or resume gives its execution
- * service: each step takes its model's lock, pulls, and pushes what it wrote
- * when it ends. The run's steps share one in-process sync gate, as a serve
- * process's runs do, so a lock's last publish attempt runs with no other step
- * of the run syncing (swamp-club#3860).
+ * each step takes its model's lock, pulls, and pushes what it wrote; steps
+ * share one in-process sync gate, as in a serve process, so a lock's last
+ * publish attempt runs with no other step syncing
  */
 export function workflowStepLockHook(
   repoDir: string,
@@ -148,7 +146,6 @@ export function workflowStepLockHook(
   datastoreConfig: DatastoreConfig,
   syncService: DatastoreSyncService | undefined,
   syncGate: SyncGate = createSyncGate(),
-  /** Cancels the run when a step's lease at serve lapses (swamp-club#4121). */
   onLeaseLost?: (reason: unknown) => void,
 ): StepLockHook {
   const hook = createStepLockHook(
@@ -160,9 +157,8 @@ export function workflowStepLockHook(
     createLockProgressWriter,
     onLeaseLost,
   );
-  // A serve-mode checkout working offline judges each step before it
-  // starts: one that changes things needs its behavior's lease
-  // (swamp-club#4195).
+  // a serve-mode checkout working offline judges each step before it starts:
+  // one that changes things needs its behavior's lease
   return async (modelType, modelId, step) => {
     if (step !== undefined) {
       await assertOfflineRunAllowed(datastoreConfig, {
@@ -319,7 +315,6 @@ export const workflowRunCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
     ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
 
-    // Validate flag combinations early, before local/server branch
     let failOnSeverity: AssertSeverity | undefined;
     if (options.failOn) {
       const parsed = AssertSeveritySchema.safeParse(options.failOn);
@@ -378,7 +373,6 @@ export const workflowRunCommand = new Command()
       return;
     }
 
-    // First try unlocked to resolve workflow and model references
     const unlocked = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
@@ -428,15 +422,14 @@ export const workflowRunCommand = new Command()
         : options.inputFile as string | undefined,
     });
 
-    // Parse runtime tags
     const runtimeTags = options.tag
       ? parseTags(options.tag as string[])
       : undefined;
 
     const repoDir = unlocked.repoDir;
     const repoContext = unlocked.repoContext;
-    // A run against a serve-mode checkout sees what other callers commit
-    // while it runs (swamp-club#4120).
+    // a run against a serve-mode checkout sees what other callers commit while
+    // it runs
     watchV3ServeFeeds();
     // A run's evaluated snapshot, read from the datastore-resolved path
     // ExecutionService writes it to, settles a run this command cancels.
@@ -445,7 +438,6 @@ export const workflowRunCommand = new Command()
       unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
     );
 
-    // A step whose lease at serve lapses cancels the run (swamp-club#4121).
     const stepLeaseLost = new AbortController();
     const stepLockHook = workflowStepLockHook(
       repoDir,
@@ -476,7 +468,6 @@ export const workflowRunCommand = new Command()
               await pushNamespace(syncService, namespace);
             }
             : undefined,
-          // Progress streams in log mode; the result waits for the commit.
           output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
           onCleanupError: (pushErr) => {
             ctx.logger
@@ -489,7 +480,6 @@ export const workflowRunCommand = new Command()
           try {
             const runRepo = repoContext.workflowRunRepo;
 
-            // Load all extension registries needed for workflow execution in parallel
             await Promise.all([
               modelRegistry.ensureLoaded(),
               vaultTypeRegistry.ensureLoaded(),
@@ -653,9 +643,9 @@ export const workflowRunCommand = new Command()
                     ? Promise.resolve(evaluationCheck.cache)
                     : evaluatedWorkflowRepo.findByNameWithProvenance(name),
                 runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
-                // The suspended nested runs a superseded run waited on are
-                // cancelled with it (swamp-club#2867). The tracker is opened
-                // for the cascade alone: it reads each child's owner there.
+                // the suspended nested runs a superseded run waited on are
+                // cancelled with it; the tracker is opened for the cascade
+                // alone, which reads each child's owner there
                 cascade: async (superseded) => {
                   const tracker = RunTrackerStore.fromSwampDir(
                     swampPath(repoDir),
@@ -692,7 +682,6 @@ export const workflowRunCommand = new Command()
               ? baseLibCtx.withTimeout(timeoutMs)
               : baseLibCtx;
 
-            // Build the list of input sets to iterate over
             const inputSets: Record<string, unknown>[] = stdinItems
               ? stdinItems.map((item) =>
                 Object.keys(cliInputs).length > 0
@@ -845,15 +834,13 @@ export const workflowRunCommand = new Command()
       } finally {
         tracker?.close();
       }
-      // The dropped final save left index entries no commit backs
-      // (swamp-club#3802).
+      // a dropped final save leaves index entries no commit backs
       if (error instanceof RunPartlyCommittedError) {
         await removeStaleRunIndexes(repoDir);
         await removeStaleOutputSummaries(repoDir);
       }
-      // The run's steps ran before its commit failed (swamp-club#3759).
-      // A run cut while a step ran needs that step acknowledged to be
-      // recovered (swamp-club#3882).
+      // the run's steps ran before its commit failed; a run cut while a step
+      // ran needs that step acknowledged to be recovered
       const worded = withRunUnknownSteps(
         error,
         (runId) => runCheckpointer.committedUnknownSteps(runId),
@@ -873,10 +860,8 @@ export const workflowRunCommand = new Command()
   .command("search", workflowRunSearchCommand);
 
 /**
- * The --server branch: dispatch the run through a `swamp serve` server and
- * render the streamed events with the same renderer a local run uses. No
- * local repository is required — the server owns the repo, locks, and
- * scheduling (including worker placement).
+ * dispatches the run through a swamp serve server, which owns the repo, locks
+ * and scheduling; no local repository is required
  */
 async function runWorkflowViaServer(
   ctx: ReturnType<typeof createContext>,

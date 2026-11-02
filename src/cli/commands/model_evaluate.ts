@@ -60,13 +60,11 @@ import type { ModelEvaluateResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** The preferred spelling: `swamp behavior evaluate`. */
 export const BEHAVIOR_EVALUATE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior evaluate",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model evaluate`. */
 export const MODEL_EVALUATE_SYNTAX: CommandSyntax = {
   invocation: "swamp model evaluate",
   surface: "model",
@@ -129,7 +127,6 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
         return;
       }
 
-      // If --all flag or no argument, evaluate all definitions (global lock)
       if (options.all || !modelIdOrName) {
         const { repoDir, repoContext, datastoreResolver } =
           await requireInitializedRepo({
@@ -137,8 +134,6 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
             outputMode: cliCtx.outputMode,
           });
 
-        // Pushes and releases the global lock when the command ends, as the
-        // teardown flush did (swamp-club#3055).
         await runInCoordinatorRoot(repoContext, async () => {
           const ctx = createLibSwampContext({ logger: cliCtx.logger });
           const deps = createModelEvaluateDeps(
@@ -163,7 +158,6 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
         return;
       }
 
-      // Single model evaluation — use per-model lock
       const {
         repoDir,
         repoContext,
@@ -175,7 +169,6 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
         outputMode: cliCtx.outputMode,
       });
 
-      // Pre-lookup for lock target
       const lookupResult = await findDefinitionByIdOrName(
         repoContext.definitionRepo,
         modelIdOrName,
@@ -190,7 +183,6 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
 
       const { definition, type } = lookupResult;
 
-      // Acquire per-model lock (for S3, also pulls model-scoped files)
       const lockResult = await acquireModelLocks(
         datastoreConfig,
         [

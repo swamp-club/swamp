@@ -36,10 +36,6 @@ export function parseLabels(
   return labels;
 }
 
-/**
- * Parses SWAMP_WORKER_LABELS — the comma-joined form `worker daemon enable`
- * writes into the service — back into labels.
- */
 export function parseCommaSeparatedLabels(
   envValue: string,
 ): Record<string, string> {
@@ -80,10 +76,6 @@ export function validateMaxDispatches(maxDispatches: number): void {
   }
 }
 
-/**
- * Parses a --concurrency value: a positive integer, or "auto" for the CPU
- * count of the machine running the worker (min 1).
- */
 export function parseConcurrency(raw: string): number {
   if (raw === "auto") {
     return Math.max(1, navigator.hardwareConcurrency ?? 1);

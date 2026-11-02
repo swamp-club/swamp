@@ -23,11 +23,8 @@ import { stripAnsiCode } from "@std/fmt/colors";
 // deno-lint-ignore no-explicit-any
 type AnyCommand = Command<any>;
 
-/** How a positional argument or an option value completes. */
 interface ValueCompletion {
-  /** The Cliffy completion action passed to `completions complete`. */
   action: string;
-  /** True when the value is a path: PowerShell's own path completion runs. */
   file: boolean;
 }
 
@@ -39,7 +36,6 @@ interface CommandEntry {
 
 interface OptionEntry {
   flags: string[];
-  /** True when the option requires a value, so the next word is that value. */
   takesValue: boolean;
   value?: ValueCompletion;
   description: string;
@@ -50,7 +46,6 @@ interface ArgumentEntry extends ValueCompletion {
 }
 
 interface TreeNode {
-  /** The command path below the main command, `""` for the main command. */
   path: string;
   commands: CommandEntry[];
   options: OptionEntry[];
@@ -58,14 +53,9 @@ interface TreeNode {
 }
 
 /**
- * Generates a PowerShell completion script for `cmd`, which is registered for
- * `name` and `name.exe`. Cliffy 1.x has no PowerShell generator, so swamp owns
- * this one. Like Cliffy's bash, fish and zsh scripts, it embeds the command
- * tree (hidden commands and options left out) and asks
- * `<name> completions complete <action> <path>` for dynamic values such as
- * model and workflow names. Unlike the bash and fish scripts it also offers
- * command aliases. The script only uses Windows PowerShell 5.1 syntax, so it
- * loads in 5.1 and in PowerShell 7.
+ * swamp owns this generator because Cliffy has none; hidden commands and
+ * options are left out, and the script uses only Windows PowerShell 5.1 syntax
+ * so it loads in 5.1 and 7.
  */
 export function generatePowerShellCompletions(
   name: string,
@@ -126,10 +116,8 @@ function collectNodes(cmd: AnyCommand, path: string, into: TreeNode[]): void {
 }
 
 /**
- * The completion for `arg`. The action is kept only when `cmd` has a
- * completion registered for it (a completing type such as `model_name`, or
- * `.complete()`), so a TAB on a plain `string` argument does not start swamp
- * just to get nothing back.
+ * keep the action only when cmd has a completion registered for it, so TAB on a
+ * plain string argument does not start swamp for nothing.
  */
 function valueCompletion(cmd: AnyCommand, arg: Argument): ValueCompletion {
   const type = cmd.getType(arg.type);
@@ -143,7 +131,6 @@ function firstLine(text: string): string {
   return stripAnsiCode(text).split("\n")[0].trim();
 }
 
-/** A PowerShell single-quoted string literal: only `'` needs escaping. */
 function quote(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -183,14 +170,9 @@ function renderNode(node: TreeNode): string {
 }
 
 /**
- * The completer. It walks the words before the cursor to find the command
- * path, skipping options and their values, then completes the word under the
- * cursor. Dynamic values come from the repository (model and workflow names),
- * so they only ever become CompletionResult text, never code, and a value
- * with whitespace or a PowerShell metacharacter (curly quotes included) is
- * inserted single-quoted, escaped by PowerShell's own CodeGeneration helper.
- * Commands and flags match case-sensitively, as Cliffy parses them.
- * Returning nothing lets PowerShell fall back to path completion.
+ * dynamic values only ever become CompletionResult text, never code; values
+ * with whitespace or metacharacters are inserted single-quoted. Returning
+ * nothing lets PowerShell fall back to path completion.
  */
 const COMPLETER =
   `  # PowerShell also reads the curly quotes U+2018-U+201E as quote characters.
@@ -319,7 +301,6 @@ const COMPLETER =
 
   Register-ArgumentCompleter -Native -CommandName @($commandName, ($commandName + '.exe')) -ScriptBlock $completer`;
 
-/** `swamp completions powershell`: prints the PowerShell completion script. */
 export const powerShellCompletionsCommand = new Command()
   .description(
     `Generate shell completions for PowerShell.

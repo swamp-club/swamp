@@ -22,12 +22,8 @@ import { MODEL_GROUP_WORD } from "./behavior_twin.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
 
 /**
- * The spelling a command's messages use, from the raw CLI arguments
- * (swamp-club#3437): `model` when the command word is `model`, and
- * `behavior` for `swamp behavior …`, its `behaviour` alias and every other
- * command. Read from the arguments rather than from the matched command so
- * errors raised before a command's action runs (repo checks, the auth gate)
- * get it too.
+ * read from the raw arguments, not the matched command, so errors raised before
+ * a command's action runs get the same spelling.
  */
 export function commandSurfaceFromArgs(
   args: readonly string[],

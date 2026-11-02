@@ -20,7 +20,6 @@
 import { assertEquals, assertStrictEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("model search has list as a native alias", async () => {

@@ -58,16 +58,8 @@ const CONFIG_KEYS: Record<string, { description: string; values?: string[] }> =
     },
   };
 
-/** What `workspaces.dir` shows when no folder is set. */
 const WORKSPACES_DIR_DEFAULT = "default";
 
-/**
- * The folder a `workspaces.dir` value names, absolute and as it really is,
- * or undefined for "default".
- *
- * @throws {UserError} when it isn't an existing folder (see
- *   `resolveChosenFolder`)
- */
 async function workspacesDirValue(raw: string): Promise<string | undefined> {
   const typed = raw.trim();
   if (typed === WORKSPACES_DIR_DEFAULT) return undefined;
@@ -155,7 +147,6 @@ const configSetCommand = new Command()
       );
     }
 
-    // Like telemetry, a plain user-level file: no scheduler, no root check.
     if (key === "workspaces.dir") {
       const dir = await workspacesDirValue(value);
       await new WorkspacePreferencesFileRepository().write(

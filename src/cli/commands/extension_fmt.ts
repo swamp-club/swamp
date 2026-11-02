@@ -75,14 +75,14 @@ export const extensionFmtCommand = new Command()
     const cliCtx = createContext(options, ["extension", "fmt"]);
     cliCtx.logger.debug`Starting extension fmt`;
 
-    // The repo context opens the resolved repo dir; the extension's files
-    // resolve and report under the spelling the user gave, as push and
-    // quality do (swamp-club#3536).
+    // the repo context opens the resolved repo dir; the extension's files
+    // resolve and report under the spelling the user gave, as push and quality
+    // do.
     const storageRepoDir = resolveRepoDir(options.repoDir);
     const repoDir = repoDirAsGiven(options.repoDir, storageRepoDir);
-    // Arguments resolve as before, against the process cwd and the
-    // resolved repo dir, so `..` means what it means to every other tool;
-    // the results are then spelled under the given repo dir.
+    // arguments resolve against the process cwd and the resolved repo dir, so
+    // `..` means what it means to every other tool; the results are then
+    // spelled under the given repo dir.
     const resolvedExtensionsDir = resolveExtensionsDir(options.extensionsDir);
     const extensionsDir = resolvedExtensionsDir === undefined
       ? undefined
@@ -131,7 +131,6 @@ export const extensionFmtCommand = new Command()
       lenientSources: true,
     });
 
-    // 3. Combine all files and filter to .ts
     const allFiles = [
       ...allModelFiles,
       ...allVaultFiles,
@@ -142,7 +141,6 @@ export const extensionFmtCommand = new Command()
     ];
     const tsFiles = allFiles.filter((f) => f.endsWith(".ts"));
 
-    // 4. Create deps, input, renderer and run generator
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createExtensionFmtDeps();
     const renderer = createExtensionFmtRenderer(cliCtx.outputMode);
@@ -157,7 +155,6 @@ export const extensionFmtCommand = new Command()
       renderer.handlers(),
     );
 
-    // 5. Throw if quality checks failed
     if (!renderer.passed()) {
       throw new UserError(renderer.failureMessage());
     }

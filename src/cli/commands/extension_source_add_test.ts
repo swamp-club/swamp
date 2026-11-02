@@ -41,8 +41,6 @@ async function withRepo(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -51,10 +49,8 @@ async function withRepo(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 /**
- * Adds an unexpanded glob source (allowed before its directories exist) with
- * `--only only`, and returns the `.swamp-sources.yaml` it writes. `~` resolves
- * to a home directory under `dir`, so the glob never walks the real home,
- * where another process can remove a directory mid-walk (swamp-club#3694).
+ * `~` resolves to a home directory under `dir`, so the glob never walks the
+ * real home, where another process can remove a directory mid-walk
  */
 async function addWithOnly(dir: string, only: string): Promise<string> {
   const { extensionSourceAddCommand } = await import(

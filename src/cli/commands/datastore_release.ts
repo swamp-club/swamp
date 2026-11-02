@@ -49,11 +49,9 @@ import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.t
 type AnyOptions = any;
 
 /**
- * Removes the claim `swamp datastore claim` made (swamp-club#4063), so
- * checkouts write the v3 datastore's storage directly again. Through a
- * running serve, serve removes it; otherwise this command takes the writer
- * lease itself, which also releases the claim of an owner serve that is
- * gone for good.
+ * through a running serve, serve removes the claim; otherwise this command
+ * takes the writer lease, which also releases the claim of an owner serve that
+ * is gone for good.
  */
 export const datastoreReleaseCommand = withRemoteOptions(
   new Command()

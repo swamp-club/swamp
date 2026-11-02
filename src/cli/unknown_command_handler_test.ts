@@ -28,8 +28,6 @@ import {
   unknownSubcommandBehindOption,
 } from "./unknown_command_handler.ts";
 
-// Helper to build a command with subcommands for testing.
-// Builds subcommands in a way that avoids Cliffy's deep generic inference issues.
 function buildCommand(name: string, subcommandNames: string[]): Command {
   const cmd = new Command().name(name);
   for (const sub of subcommandNames) {
@@ -432,7 +430,6 @@ Deno.test("buildUnknownCommandMessage - history context suggestions", () => {
   assertStringIncludes(msg, "history search");
 });
 
-/** `swamp <group> output`, so the output group has its real parent chain. */
 function outputUnder(group: string): Command {
   const output = buildCommand("output", ["get", "search", "logs", "data"]);
   new Command().name("swamp").command(
@@ -667,9 +664,7 @@ Deno.test("buildTooManyArgumentsMessage - matches the alias the user typed (swam
 
 Deno.test("buildTooManyArgumentsMessage - suggests quoting multi-word input", () => {
   const cmd = new Command().name("search");
-  // Simulate cmd.getPath() returning the full path
   const parent = new Command().name("extension").command("search", cmd);
-  // Force Cliffy to set the path by accessing the child through parent
   const searchCmd = parent.getCommand("search")!;
   const msg = buildTooManyArgumentsMessage(
     searchCmd,

@@ -129,7 +129,6 @@ Deno.test("groupCommandAction: calls showHelp when not in JSON mode", () => {
       .name("test-group")
       .command("sub1", new Command().description("First subcommand"));
 
-    // Override showHelp to track whether it was called
     cmd.showHelp = () => {
       helpShown = true;
     };

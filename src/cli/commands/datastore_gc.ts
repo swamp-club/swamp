@@ -55,8 +55,8 @@ export const datastoreGcCommand = new Command()
       "gc",
     ]);
 
-    // A writing command: on v3 it holds the datastore's writer lock, which
-    // chunk GC needs (swamp-club#3279).
+    // a writing command: on v3 it holds the datastore's writer lock, which
+    // chunk GC needs.
     const { repoDir, repoContext, datastoreResolver } =
       await requireInitializedRepo({
         repoDir: resolveRepoDir(options.repoDir),

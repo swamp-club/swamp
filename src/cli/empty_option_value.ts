@@ -21,22 +21,9 @@ import type { AnyCommand } from "./cli_schema.ts";
 import { findOption, optionConsumesNext } from "./telemetry_invocation.ts";
 
 /**
- * The option given an empty value — with `=` (`--title=`, `-t=`, `-qt=`) or
- * as an empty next token (`--title ""`) — as the flag Cliffy names in its own
- * errors (`--title`), or `undefined` when every option value is present.
- *
- * Cliffy 1.0.1 reads an empty value after `=` as no value at all and takes
- * the next token instead, so `--title= --no-redact --body x` parses as a title
- * of `--no-redact` and silently drops the flag (swamp-club#3542). Checking
- * argv against the command tree before Cliffy parses it reports every empty
- * value the same way, wherever it appears and however it is spelled.
- *
- * Walks argv the way telemetry_invocation.ts does: subcommand words move the
- * walk down the tree, so an option is looked up on the command it is given
- * to, a token taken as an option's value is skipped, and nothing after `--`
- * is read. Only options that take a value are reported — a boolean flag
- * (`--force=`) and a negated one (`--no-color=`) never read the next token,
- * and an unknown option is left for Cliffy to reject.
+ * Cliffy 1.0.1 reads an empty value after = as no value and takes the next
+ * token, so --title= --no-redact parses as title --no-redact and drops the
+ * flag; argv is checked against the command tree first
  */
 export function findEmptyOptionValue(
   root: AnyCommand,
@@ -77,7 +64,6 @@ export function findEmptyOptionValue(
   return undefined;
 }
 
-/** The flag to report for `key` given an empty value, if any. */
 function emptyValueFlag(command: AnyCommand, key: string): string | undefined {
   if (key.startsWith("--")) {
     // Cliffy sets a `--no-` option to false without reading a value.

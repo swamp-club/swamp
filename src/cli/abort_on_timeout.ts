@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Aborts `controller` once `ms` elapse, with the same `TimeoutError` reason
- * `AbortSignal.timeout` gives, so a local run cancelled by `--timeout`
- * records a timeout as its `cancel_reason` rather than a bare abort
- * indistinguishable from Ctrl-C. Over `--server` the reason stays with the
- * client: the cancel frame sent to serve carries none. A controller that is
- * already aborted keeps its own reason.
- *
- * Returns a disposer that disarms the timeout. Call it once the guarded work
- * ends: while its abort listener is attached, the timeout keeps the process
- * alive.
+ * same TimeoutError reason as AbortSignal.timeout, so --timeout records a
+ * timeout cancel_reason, not a bare abort; call the returned disposer when
+ * done, as the timer keeps the process alive
  */
 export function abortOnTimeout(
   controller: AbortController,

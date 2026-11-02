@@ -120,8 +120,6 @@ export const runGcCommand = withRemoteOptions(
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
-  // Pushes and releases the global lock when the command ends, as the
-  // teardown flush did (swamp-club#3055).
   await runInCoordinatorRoot(repoContext, async () => {
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
     const deps = createRunGcDeps(
@@ -170,9 +168,8 @@ export const runGcCommand = withRemoteOptions(
 });
 
 /**
- * Reads a `run.gc` server response as RunGcData. A server older than the
- * CLI omits fields added since (such as `evaluatedSnapshotsDeleted`); they
- * default to 0 so the renderer never prints `undefined` or `NaN`.
+ * a server older than the CLI omits newer fields; they default to 0 so the
+ * renderer never prints undefined or NaN.
  */
 export function runGcDataFromServer(data: Record<string, unknown>): RunGcData {
   const result = data as unknown as RunGcData;

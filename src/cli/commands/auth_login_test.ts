@@ -20,10 +20,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("authLoginCommand: --club names the sign-in site and --server is its kept spelling", async () => {

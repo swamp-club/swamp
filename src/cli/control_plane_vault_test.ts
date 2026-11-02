@@ -270,7 +270,6 @@ Deno.test("initializeControlPlaneVaultForCli: works without sync service", async
 const KEY_VAULT = "prod-secrets";
 const KEY_NAME = "swamp-token-key";
 
-/** A local_encryption vault holding a token secrets key, and a serve.yaml naming it. */
 async function setUpExternalKey(
   repoDir: string,
   serveYamlVault = KEY_VAULT,
@@ -337,7 +336,6 @@ Deno.test("initializeControlPlaneVaultForCli: fails closed without a serve.yaml 
 
 Deno.test("initializeControlPlaneVaultForCli: never migrates a co-located key, leaving that to serve", async () => {
   await withTempDir(async (repoDir) => {
-    // A control plane created before the opt-in: co-located key.
     await initializeControlPlaneVaultForCli(repoDir, undefined);
     const keyBefore = await readKeyRecord(repoDir);
     assertEquals(classifyTokenKeyRecord(keyBefore).kind, "legacy");

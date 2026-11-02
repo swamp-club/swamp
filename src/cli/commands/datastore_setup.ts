@@ -81,12 +81,6 @@ type AnyOptions = any;
 
 const encoder = new TextEncoder();
 
-/**
- * Resolves where the outgoing datastore's data is when switching to
- * filesystem: its cache path for an extension datastore, or its root for a
- * filesystem datastore outside the repo (swamp-club#3238). Returns neither
- * when the current datastore is the repo's own `.swamp/`.
- */
 async function resolveOutgoingCachePath(
   repoDir: string,
 ): Promise<
@@ -165,10 +159,9 @@ async function nudgeVaultMigration(repoDir: string): Promise<void> {
 }
 
 /**
- * Reads `--format` for setup (swamp-club#3279): 2 or 3. The same rule
- * `.swamp.yaml` follows (`readDatastoreFormatKey`), so the flag and the
- * file refuse alike. Whether an extension datastore can host format 3 is
- * checked once its provider is built (swamp-club#3534).
+ * same rule .swamp.yaml follows, so the flag and the file refuse alike; whether
+ * an extension datastore can host format 3 is checked once its provider is
+ * built.
  */
 function parseSetupFormat(
   value: unknown,
@@ -226,7 +219,6 @@ const datastoreSetupFilesystemCommand = new Command()
       outgoingDatastorePath,
     } = await resolveOutgoingCachePath(resolveRepoDir(options.repoDir));
 
-    // Expand env vars (e.g. ~/data or $HOME/data) then resolve path
     const expandedPath = expandEnvVars(options.path);
     const datastorePath = isAbsolute(expandedPath)
       ? expandedPath
@@ -370,7 +362,6 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
     return;
   }
 
-  // Remap legacy type names (e.g., "s3" → "@swamp/s3-datastore")
   const renamedTo = RENAMED_DATASTORE_TYPES[type];
   const resolvedType = renamedTo ?? type;
 
@@ -400,7 +391,6 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
   );
   requireScope("datastore:*");
 
-  // Parse config JSON and extract namespace before provider validation
   let config: Record<string, unknown>;
   try {
     config = JSON.parse(options.config) as Record<string, unknown>;
@@ -489,10 +479,6 @@ const datastoreSetupS3DeprecatedCommand = new Command()
     );
   });
 
-/**
- * Describes the current datastore configuration for display during
- * interactive setup.
- */
 function describeCurrentDatastore(
   datastoreConfig: DatastoreConfig,
 ): string {
@@ -502,7 +488,6 @@ function describeCurrentDatastore(
   return `filesystem (${datastoreConfig.path})`;
 }
 
-/** Configure a datastore for this repository. */
 export const datastoreSetupCommand = new Command()
   .description("Configure a datastore for this repository")
   .option(
@@ -525,9 +510,8 @@ export const datastoreSetupCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
 
-    // Resolve the current datastore configuration up front. The result is
     // reused later by the filesystem branch to detect a remote-to-filesystem
-    // transition (ADV-6: avoids a redundant resolveDatastoreForRepo call).
+    // transition.
     let currentResolution:
       | Awaited<
         ReturnType<typeof resolveDatastoreForRepo>
@@ -548,7 +532,6 @@ export const datastoreSetupCommand = new Command()
       );
     }
 
-    // Ask where to store data
     const CHOICES = [
       "AWS S3 / S3-compatible",
       "Google Cloud Storage",
@@ -608,7 +591,6 @@ export const datastoreSetupCommand = new Command()
       }
       filesystemPath = path;
     } else {
-      // Other: search for a datastore extension by name
       const query = await promptLine(
         "Search for a datastore extension (e.g. azure, minio): ",
       );
@@ -683,7 +665,6 @@ export const datastoreSetupCommand = new Command()
       }
     }
 
-    // Execute the chosen setup path
     if (filesystemPath) {
       let resolvedRepoDir: string;
       let outgoingCachePath: string | undefined;

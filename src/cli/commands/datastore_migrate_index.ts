@@ -63,9 +63,8 @@ export const datastoreMigrateIndexCommand = new Command()
     ]);
     cliCtx.logger.debug("Executing datastore migrate-index command");
 
-    // A v3 datastore has no v2 index, and is refused below: open it
-    // read-only, so the refusal takes no writer lease and leaves the
-    // datastore as it was (swamp-club#3359).
+    // a v3 datastore has no v2 index and is refused below: open it read-only so
+    // the refusal takes no writer lease.
     const repoDirOption = resolveRepoDir(options.repoDir);
     const engine = await peekRepoDatastoreEngine(repoDirOption);
     const { repoDir, datastoreResolver } = engine === "v3"

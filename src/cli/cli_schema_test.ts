@@ -235,16 +235,13 @@ Deno.test("buildCliSchema filters global options from subcommands", () => {
 
   const schema = buildCliSchema(root, "1.0.0");
 
-  // Global option appears on root
   const rootJson = schema.root.options.find((o) => o.flags.includes("--json"));
   assertEquals(rootJson !== undefined, true);
 
-  // Global option does NOT appear on subcommand
   const subOpts = schema.root.subcommands[0].options;
   const subJson = subOpts.find((o) => o.flags.includes("--json"));
   assertEquals(subJson, undefined);
 
-  // Local option does appear on subcommand
   const subLocal = subOpts.find((o) => o.flags.includes("--local"));
   assertEquals(subLocal !== undefined, true);
 });
@@ -260,18 +257,14 @@ Deno.test("buildCliSchema stripGlobalOptions removes globals from options and po
     .globalOption("--json", "JSON output")
     .command("sub", sub);
 
-  // Build schema for the subcommand with stripGlobalOptions
   const schema = buildCliSchema(sub, "1.0.0", { stripGlobalOptions: true });
 
-  // Global option should NOT appear in options
   const jsonOpt = schema.root.options.find((o) => o.flags.includes("--json"));
   assertEquals(jsonOpt, undefined);
 
-  // Local option should still appear in options
   const localOpt = schema.root.options.find((o) => o.flags.includes("--local"));
   assertEquals(localOpt !== undefined, true);
 
-  // Global option should appear in globalOptions
   assertEquals(schema.root.globalOptions !== undefined, true);
   const globalJson = schema.root.globalOptions!.find((o) =>
     o.flags.includes("--json")
@@ -281,7 +274,6 @@ Deno.test("buildCliSchema stripGlobalOptions removes globals from options and po
   assertEquals(globalJson!.takesValue, false);
   assertEquals(globalJson!.hidden, false);
 
-  // Local option should NOT appear in globalOptions
   const globalLocal = schema.root.globalOptions!.find((o) =>
     o.flags.includes("--local")
   );

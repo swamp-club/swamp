@@ -21,11 +21,6 @@ import type { ExtensionLookupPort } from "../domain/extensions/extension_auto_re
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 
-/**
- * A registry lookup port backed by the extension API, the same lookup the
- * auto-resolver uses. Extension commands pass it to recognise the datastore
- * extension when the managed config base is unresolved.
- */
 export function createExtensionRegistryLookup(
   serverUrl: string,
   identity: ClientIdentity,

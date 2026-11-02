@@ -30,10 +30,6 @@ import {
   withConsoleGuard,
 } from "../domain/models/console_guard.ts";
 
-/**
- * Runs `fn` with the stdout console methods recording into the returned
- * list, as `method:text`, and restores them afterwards.
- */
 async function recordingStdout(
   fn: (written: string[]) => void | Promise<void>,
 ): Promise<string[]> {

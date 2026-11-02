@@ -231,7 +231,6 @@ const PENDING: PendingSignalInfo = {
   submittedBy: "camera",
 };
 
-/** A logger that records each info and warn line with its properties filled in. */
 function recordingLogger() {
   const info: string[] = [];
   const warn: string[] = [];
@@ -246,7 +245,6 @@ function recordingLogger() {
   return { info, warn, logger };
 }
 
-/** A server that answers `workflow.waits` with `data`, recording each request. */
 function fakeServer(data: Record<string, unknown>) {
   const sent: Array<{ type: string; payload?: WorkflowWaitsPayload }> = [];
   return {
@@ -391,7 +389,6 @@ Deno.test("listServerWaits: --pending asks the server for pending signals and pa
     payload: { includePending: true },
   }]);
   assertEquals(data.pending, [PENDING]);
-  // The key a server lists on a wait survives to the output.
   assertEquals(data.waits[0].key, "kitchen-verdict");
   const json = captureStdout(() =>
     renderWaits(

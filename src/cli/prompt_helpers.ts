@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Shared interactive prompt helpers for CLI commands.
- *
- * These thin wrappers over raw stdin/stderr keep the prompt UX
- * consistent across every command that needs user confirmation or
- * free-text input.
- *
- * Prompts are written to **stderr**, never stdout. A prompt is interaction,
- * not output: stdout belongs to the command's result, and for the commands
- * whose stdout carries a *value* a prompt there is corruption, not clutter.
- * `swamp vault read-secret v k > key.pem` used to write `Continue? [y/N] `
- * into the key file ahead of the secret (swamp-club#2260), defeating the
- * byte-exact stdout that swamp-club#1768 established. The stdin gate below
- * does not help: redirecting stdout does not change stdin, so the prompt
- * still fires and still lands in the redirect target.
+ * prompts go to stderr, never stdout: stdout belongs to the command's result,
+ * and a prompt in a value-carrying command's stdout corrupts it. The stdin gate
+ * does not help, since redirecting stdout leaves stdin unchanged
  */
 
 import { UserError } from "../domain/errors.ts";
@@ -55,15 +44,10 @@ function assertInteractiveStdin(): void {
   }
 }
 
-/**
- * Prompt for a single line of text input.
- * Returns the trimmed response, or an empty string on EOF.
- */
 export async function promptLine(message: string): Promise<string> {
   return (await readLine(message)) ?? "";
 }
 
-/** Writes `message` and reads one line; `null` on EOF. */
 async function readLine(message: string): Promise<string | null> {
   writeHeldOutput();
   await Deno.stderr.write(encoder.encode(message));
@@ -73,7 +57,6 @@ async function readLine(message: string): Promise<string | null> {
   return decoder.decode(buf.subarray(0, n)).trim();
 }
 
-/** Writes each line to stderr, ahead of a prompt. */
 async function writeLines(lines: string[]): Promise<void> {
   writeHeldOutput();
   for (const line of lines) {
@@ -81,12 +64,6 @@ async function writeLines(lines: string[]): Promise<void> {
   }
 }
 
-/**
- * Prompt for a yes/no confirmation.
- * Appends ` [y/N] ` to the message. Returns `true` for "y" or "yes"
- * (case-insensitive), `false` otherwise (including EOF). `details` are
- * printed above the question, so a prompt can say what each answer does.
- */
 export async function promptConfirmation(
   message: string,
   details: string[] = [],
@@ -99,11 +76,6 @@ export async function promptConfirmation(
     response.toLowerCase() === "yes";
 }
 
-/**
- * Prompt the user to choose from a numbered list of options.
- * An extra "Other path" option is appended; selecting it prompts for
- * a free-text path. Returns the chosen string.
- */
 export async function promptChoice(
   message: string,
   choices: string[],
@@ -130,10 +102,8 @@ export async function promptChoice(
 }
 
 /**
- * Prompt for one of a numbered list of choices, with no default. `details`
- * are printed above the list. Enter or an answer outside the list asks again,
- * so nothing is chosen by accident. Returns the chosen index, or `null` on
- * EOF, which callers treat as the answer that changes nothing.
+ * Enter or an answer outside the list asks again so nothing is chosen by
+ * accident; null on EOF is the answer callers treat as changing nothing
  */
 export async function promptNumberedChoice(
   details: string[],
@@ -158,10 +128,6 @@ export async function promptNumberedChoice(
   }
 }
 
-/**
- * Like {@link promptLine} but displays a default value and returns it
- * when the user presses Enter without typing anything.
- */
 export async function promptLineWithDefault(
   message: string,
   defaultValue: string,

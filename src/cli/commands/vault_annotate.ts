@@ -80,10 +80,6 @@ export interface VaultAnnotateFlags {
   clear?: boolean;
 }
 
-/**
- * Validates the annotate flags and builds the input shared by the local
- * path and the `--server` request, so both reject the same combinations.
- */
 export function buildVaultAnnotateInput(
   vaultName: string,
   key: string,

@@ -39,11 +39,6 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Lands a change serve keeps because its author lacked a grant it needs
- * (swamp-club#4195). Admin only; asked of the serve this checkout writes
- * through.
- */
 const datastoreQuarantineAcceptCommand = new Command()
   .description(
     "Accept a quarantined change: land it as its author (admin only)",
@@ -101,11 +96,6 @@ const datastoreQuarantineAcceptCommand = new Command()
     );
   });
 
-/**
- * Discards a change serve keeps because its author lacked a grant it needs,
- * so it never lands (swamp-club#4195). Admin only; asked of the serve this
- * checkout writes through.
- */
 const datastoreQuarantineDiscardCommand = new Command()
   .description(
     "Discard a quarantined change so it never lands (admin only)",
@@ -163,7 +153,6 @@ const datastoreQuarantineDiscardCommand = new Command()
     );
   });
 
-/** `swamp datastore quarantine`: changes serve keeps for an admin. */
 export const datastoreQuarantineCommand = new Command()
   .name("quarantine")
   .description("Changes serve keeps because their author lacks a grant")

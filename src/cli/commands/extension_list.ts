@@ -73,11 +73,6 @@ function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
-/**
- * Decides whether to run the freshness composer for `extension list`.
- * TTY-aware default: enabled when stdout is a terminal AND output mode
- * is "log". Explicit overrides win in either direction.
- */
 export function shouldEnrich(args: {
   checkUpdates: boolean | undefined;
   outputMode: "log" | "json";
@@ -188,11 +183,9 @@ export const extensionListCommand = withRemoteOptions(
     if (!(error instanceof SyntaxError)) throw error;
   }
 
-  // Pull the bare list from the libswamp generator (pure local read).
   const completed = await result(extensionList(ctx, deps));
   const baseEntries: ExtensionListEntry[] = completed.data.extensions;
 
-  // Decide whether to enrich based on TTY-aware default + explicit flags.
   const enrich = shouldEnrich({
     checkUpdates: options.checkUpdates as boolean | undefined,
     outputMode: cliCtx.outputMode,
@@ -232,9 +225,6 @@ export const extensionListCommand = withRemoteOptions(
         freshnessDeps,
       );
     } catch (error) {
-      // Degrade to the bare list on any unexpected failure. Mirrors
-      // the swallow-and-degrade pattern used by
-      // checkForMissingPulledExtensions in cli/mod.ts.
       cliCtx.logger.debug(
         "Extension freshness enrichment failed; falling back to bare list: {error}",
         {

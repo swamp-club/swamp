@@ -62,10 +62,6 @@ import {
 } from "../remote_run.ts";
 import type { ExtensionSearchResponse } from "../../serve/protocol.ts";
 
-/**
- * Resolves the registry server URL.
- * Priority: SWAMP_CLUB_URL env var > DEFAULT_SWAMP_CLUB_URL
- */
 function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
@@ -131,22 +127,20 @@ export const extensionSearchCommand = withRemoteOptions(
     "search",
   ]);
 
-  // Validate sort + query combination
   if (options.sort === "relevance" && !query) {
     throw new UserError(
       'Sort by "relevance" requires a search query.',
     );
   }
 
-  // The behavior spelling (swamp-club#3410) in the registry's model form,
-  // duplicates removed, so both the registry and a serve see `models`.
+  // the behavior spelling in the registry's model form, duplicates removed, so
+  // both the registry and a serve see `models`.
   if (options.contentType !== undefined) {
     options.contentType = canonicalExtensionKinds(
       options.contentType as string[],
     );
   }
 
-  // Validate content type values
   const validContentTypes = [
     "models",
     "workflows",
@@ -164,7 +158,6 @@ export const extensionSearchCommand = withRemoteOptions(
     }
   }
 
-  // Validate channel values
   for (const ch of options.channel ?? []) {
     if (!ReleaseChannel.isValid(ch)) {
       throw new UserError(
@@ -179,7 +172,6 @@ export const extensionSearchCommand = withRemoteOptions(
     }
   }
 
-  // Validate sort option value
   const validSorts = ["relevance", "new", "updated", "name"];
   if (options.sort && !validSorts.includes(options.sort)) {
     throw new UserError(
@@ -215,8 +207,7 @@ export const extensionSearchCommand = withRemoteOptions(
       },
     );
     const effectiveMode = interactiveOutputMode(ctx);
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker.
     const renderer = createExtensionSearchRenderer(effectiveMode, {
       interactive: false,
     });
@@ -281,12 +272,11 @@ export const extensionSearchCommand = withRemoteOptions(
   const action = renderer.selectedAction();
 
   if (selected && action === "install") {
-    // Extension install writes to local files only (pulled-extensions/,
-    // lockfile) — no datastore needed; see #445.
+    // install writes local files only (pulled-extensions/, lockfile): no
+    // datastore needed.
     const { repoDir, marker } = await requireRepoMarker(".");
-    // Refuses to record into a guessed managed config base, except when
-    // installing the repo's own datastore extension, as `extension pull`
-    // allows (swamp-club#2483, #445).
+    // refuses to record into a guessed managed config base, except when
+    // installing the repo's own datastore extension, as extension pull allows.
     const lockfileWrite = await resolveManagedLockfileForWrite(
       repoDir,
       marker,
@@ -324,8 +314,7 @@ export const extensionSearchCommand = withRemoteOptions(
       depth: 0,
     };
 
-    // Made against the datastore's lockfile and published as it lands
-    // (swamp-club#2838).
+    // made against the datastore's lockfile and published as it lands.
     await withManagedLockfileTransaction(
       createManagedLockfileTransaction(repoDir, marker, lockfileWrite),
       () => pullExtension({ name: selected.name, version: null }, pullCtx),

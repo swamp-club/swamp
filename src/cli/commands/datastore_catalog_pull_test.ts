@@ -68,8 +68,8 @@ function flags(
 }
 
 Deno.test("exportRowsToCatalogRows: normalises a legacy export with one latest per step", () => {
-  // Written before swamp-club#2520: no is_step_latest, and two workflow
-  // steps' versions of one data name both flagged is_latest.
+  // a legacy export has no is_step_latest, and two workflow steps' versions of
+  // one data name both flagged is_latest
   const rows = exportRowsToCatalogRows([
     makeExportRow({ version: 1, step_name: "s1" }),
     makeExportRow({ version: 2, step_name: "s2" }),
@@ -141,8 +141,6 @@ async function withCatalogStore(
   } finally {
     store.close();
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -150,7 +148,6 @@ async function withCatalogStore(
   }
 }
 
-/** The reader's own row, as the reader's own writes stamp it. */
 function ownRow(): CatalogRow {
   return exportRowsToCatalogRows([
     makeExportRow({ namespace: "team-a", tags: '{"owner":"a"}' }),

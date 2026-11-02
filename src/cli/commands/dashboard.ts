@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp dashboard`: the dashboard for the repo it runs in, with no
-// swamp serve (design/surfaces/local-dashboard.md).
-
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
@@ -58,10 +55,6 @@ import { UserError } from "../../domain/errors.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Serves one repo's dashboard for the local hub: prints `{"port":N}` once
- * it listens and stops when the hub closes its stdin.
- */
 async function runChild(options: AnyOptions): Promise<void> {
   const hubToken = Deno.env.get(HUB_TOKEN_ENV);
   if (!hubToken) {
@@ -130,7 +123,6 @@ async function runChild(options: AnyOptions): Promise<void> {
   await Deno.stdout.write(
     new TextEncoder().encode(JSON.stringify({ port: server.port }) + "\n"),
   );
-  // Fill the run index cache while the hub opens the page (swamp-club#3443).
   const runIndexWarmup = new RunIndexWarmup({
     listWorkflowIds: async () =>
       (await listWorkflows(repo.repoContext.workflowRepo)).map((w) => w.id),

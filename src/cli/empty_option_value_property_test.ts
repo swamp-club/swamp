@@ -54,7 +54,6 @@ const arbToken = fc.oneof(
   fc.string(),
 );
 
-/** A token that is, or ends a flag with, an empty value. */
 function isEmptyValue(token: string): boolean {
   return token === "" || (token.startsWith("-") && token.endsWith("="));
 }

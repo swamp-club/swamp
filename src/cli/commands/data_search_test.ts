@@ -21,10 +21,8 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { parseDuration, parseTags } from "../../libswamp/data/search.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("dataSearchCommand module loads", async () => {
@@ -74,8 +72,6 @@ Deno.test("parseDuration throws on invalid format", () => {
   }
   assertEquals(threw, true);
 });
-
-// ----- parseTags tests -----
 
 Deno.test("parseTags parses single KEY=VALUE", () => {
   const result = parseTags(["env=prod"]);

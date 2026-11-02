@@ -75,11 +75,9 @@ export const extensionYankCommand = new Command()
     ]);
     cliCtx.logger.debug`Starting extension yank`;
 
-    // Parse extension reference
     const ref = parseExtensionRef(extension);
     const resolvedVersion = version ?? ref.version ?? null;
 
-    // Validate --channel if provided
     const channel = (options.channel as string | undefined) ?? null;
     if (
       channel !== null &&
@@ -100,7 +98,6 @@ export const extensionYankCommand = new Command()
       reason: options.reason as string,
     };
 
-    // Phase 1: Preview — validate credentials and extension name
     let preview;
     try {
       preview = await extensionYankPreview(ctx, deps, input);
@@ -111,7 +108,6 @@ export const extensionYankCommand = new Command()
       throw error;
     }
 
-    // Phase 2: Confirmation prompt (log mode only, unless --yes)
     if (cliCtx.outputMode === "log" && !options.yes && !options.force) {
       const prompt = preview.version
         ? `Yank ${preview.extensionName}@${preview.version}? This will mark it yanked.`
@@ -125,7 +121,6 @@ export const extensionYankCommand = new Command()
       }
     }
 
-    // Phase 3: Execute mutation
     const renderer = createExtensionYankRenderer(cliCtx.outputMode);
     await consumeStream(
       extensionYank(ctx, deps, input),

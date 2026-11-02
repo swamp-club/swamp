@@ -43,7 +43,6 @@ import {
 
 const logger = getLogger(["swamp", "cli", "retention"]);
 
-/** A CLI pass runs at most this often per checkout. */
 export const CLI_RETENTION_MIN_INTERVAL_MS = 60 * 60 * 1000;
 /** A CLI pass stops starting batches after this long; the next continues. */
 export const CLI_RETENTION_BUDGET_MS = 10_000;
@@ -52,16 +51,13 @@ export const CLI_RETENTION_BUDGET_MS = 10_000;
  * an aborted one resumes on the next pass.
  */
 export const CLI_RETENTION_COMPACTION_TIMEOUT_MS = 10_000;
-/** How long the pass waits for a busy repository before skipping. */
 export const CLI_RETENTION_LOCK_WAIT_MS = 2_000;
 
 const LAST_ATTEMPT_FILE = "retention-last-attempt.json";
 
 /**
- * Claims this checkout's hourly CLI pass with a repo-local timestamp
- * (`.swamp/retention-last-attempt.json`), so a command reads no remote
- * state at all within the hour. Returns false when the last attempt is
- * younger than {@link CLI_RETENTION_MIN_INTERVAL_MS}.
+ * a repo-local timestamp claims the hourly pass, so a command reads no remote
+ * state at all within the hour
  */
 async function takeLocalGate(repoDir: string, now: Date): Promise<boolean> {
   const path = swampPath(repoDir, LAST_ATTEMPT_FILE);
@@ -95,15 +91,9 @@ async function takeLocalGate(repoDir: string, now: Date): Promise<boolean> {
 }
 
 /**
- * The end-of-command retention pass of a CLI with no serve
- * (swamp-club#3473). Runs after the command's own locks are released, at
- * most once per hour per checkout and once per hour per datastore (the
- * hourly claim it shares with serve), only when `.swamp.yaml` sets
- * `garbageCollection.automatic: true`. It takes the datastore lock through
- * the same path as any writing command, waiting at most
- * {@link CLI_RETENTION_LOCK_WAIT_MS}, and stops starting batches after
- * {@link CLI_RETENTION_BUDGET_MS}. Never throws: retention must not fail
- * the command that triggered it.
+ * runs after the command's own locks are released, at most once per hour per
+ * checkout and datastore, and never throws: retention must not fail the command
+ * that triggered it
  */
 export async function runRetentionAtCommandEnd(
   options: { now?: () => Date } = {},
@@ -119,10 +109,9 @@ export async function runRetentionAtCommandEnd(
     if (!policy.automatic || !policy.hasAnyRetention) return undefined;
     if (!(await takeLocalGate(repoDir, now))) return undefined;
 
-    // The command's own v3 commits are confirmed first (swamp-club#3534):
-    // a sync failing for the pass's commits afterwards never fails the
-    // command. Commits not confirmed now are the command's own, and the
-    // closing sync reports them as it always has, so the pass waits.
+    // the command's own v3 commits are confirmed first so a sync failing for
+    // the pass's commits never fails the command; commits not confirmed now are
+    // the command's own and the closing sync reports them, so the pass waits
     try {
       await confirmV3CommandReplicated();
     } catch (error) {
@@ -135,8 +124,8 @@ export async function runRetentionAtCommandEnd(
 
     const { datastoreConfig, engine, serveUpstream } =
       await resolveDatastoreForRepo(repoDir);
-    // A datastore written through serve is kept by serve: its retention pass
-    // runs there, and this checkout holds only a copy (swamp-club#3985).
+    // a datastore written through serve is kept by serve: its retention pass
+    // runs there, and this checkout holds only a copy
     if (serveUpstream !== undefined) {
       takeRetentionCandidate();
       return undefined;

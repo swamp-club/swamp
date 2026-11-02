@@ -50,8 +50,8 @@ async function loadCachedVaultBundles(repoDir: string): Promise<void> {
   try {
     for await (const fpDir of Deno.readDir(bundlesDir)) {
       if (!fpDir.isDirectory) continue;
-      // An in-flight or interrupted install's staging: half-written
-      // bundles that are not installed (swamp-club#2723).
+      // an in-flight or interrupted install's staging: half-written bundles
+      // that are not installed
       if (isStagingEntryName(fpDir.name)) continue;
       for await (const file of Deno.readDir(join(bundlesDir, fpDir.name))) {
         if (!file.name.endsWith(".js")) continue;

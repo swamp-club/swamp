@@ -50,7 +50,6 @@ import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** Cliffy type for `--tool`; completes the built-in tools. Exported for testing. */
 export class ToolNameType extends StringType {
   override complete(): string[] {
     return [...VALID_AI_TOOLS];
@@ -62,13 +61,9 @@ export class ToolNameType extends StringType {
 }
 
 /**
- * Resolves a Cliffy `--tool` collect array into the `tools` list passed
- * downstream. Returns `undefined` when the user did not pass `--tool` at all
- * — the caller layer (RepoService.init defaults to ["claude"];
- * RepoService.upgrade preserves marker.tools). Validates `none + other`
- * combinations and dedupes repeated values.
- *
- * Exported for unit testing.
+ * returns undefined when --tool was not passed, so the caller decides the
+ * default (init uses claude, upgrade preserves marker.tools). Validates none
+ * combined with others and dedupes.
  */
 export function resolveToolFlag(toolOption: unknown): string[] | undefined {
   if (toolOption === undefined) return undefined;
@@ -95,7 +90,6 @@ export function resolveToolFlag(toolOption: unknown): string[] | undefined {
   return result;
 }
 
-// Exported for reuse by repoCommand default action
 export async function repoInitAction(
   options: AnyOptions,
   pathArg?: string,
@@ -189,15 +183,12 @@ export const repoUpgradeCommand = new Command()
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createRepoUpgradeDeps(VERSION);
 
-    // Build the extension install deps so the upgrade runs the install
-    // pass afterward. This is what completes any legacy-layout
-    // migration: `extensionInstall` detects entries at pre-current
-    // layouts, re-pulls them into the per-extension subtree, and sweeps
-    // the legacy files — a single command, no manual follow-up.
+    // build the install deps so the upgrade runs the install pass afterward,
+    // which completes any legacy-layout migration.
     const repoDir = resolveRepoDir(pathArg);
-    // An unresolved managed config base, or a datastore lock that timed
-    // out while resolving it, must not block the core upgrade: skip the
-    // install pass and report why (swamp-club#2483).
+    // an unresolved managed config base, or a datastore lock that timed out
+    // while resolving it, must not block the core upgrade: skip the install
+    // pass and report why.
     let extensionInstallDeps: ExtensionInstallDeps | undefined;
     let extensionInstallSkippedReason: string | undefined;
     try {
@@ -215,11 +206,8 @@ export const repoUpgradeCommand = new Command()
     // The untrusted-collectives check reads the same lockfile the install
     // pass would; when that is unresolved, the check is skipped.
     const lockfilePath = extensionInstallDeps?.lockfilePath ?? null;
-    // The install pass may migrate lockfile entries; they are made against
-    // the datastore's lockfile and published as they land, like the other
-    // extension writers (swamp-club#2838). The marker is read before the
-    // upgrade runs: the upgrade does not change managedConfig or the
-    // datastore type, which are all the transaction reads from it.
+    // The install pass may migrate lockfile entries, made against the
+    // datastore's lockfile and published as they land.
     const lockfileTransaction = lockfilePath
       ? createManagedLockfileTransaction(
         repoDir,

@@ -286,8 +286,6 @@ Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow an
   );
   assertEquals(
     remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
-    // A key address says this client reads a pending reply and an accepted
-    // one.
     {
       workflow: "@acme/release",
       key: "verdict",
@@ -327,7 +325,6 @@ Deno.test("remoteSignalPayload: the not-found message quotes the address, hides 
     typed.message,
     'Signal wait not found: key "Not A Key" of workflow "rel?ease". No step can declare that key: a key is 1 to 64 lowercase',
   );
-  // A well-formed address that is only too long gets no hint about keys.
   assertEquals(
     assertThrows(
       () => remoteSignalPayload({ workflow: "", key: "verdict" }, {}),
@@ -371,7 +368,6 @@ Deno.test("signalUserError: an already_pending refusal keeps until when the earl
     submittedBy: "tester",
   };
   const heldUntil = "2026-01-01T00:00:10.000Z";
-  // As the use case reports it: beside the refusal.
   const local = signalUserError({
     code: "validation_failed",
     message: "A signal is already pending.",
@@ -383,8 +379,6 @@ Deno.test("signalUserError: an already_pending refusal keeps until when the earl
     refusal: "already_pending",
     pending: { heldUntil, receipt },
   });
-  // As a server reports it to a caller who may only signal: under
-  // `pending`, with no receipt and a message that names no time.
   const remote = remoteSignalUserError(
     new ServerResponseError({
       code: "workflow_signal_refused",
@@ -400,7 +394,6 @@ Deno.test("signalUserError: an already_pending refusal keeps until when the earl
     refusal: "already_pending",
     pending: { heldUntil },
   });
-  // The receipt of another refusal is not read as a pending signal's.
   const settled = signalUserError({
     code: "validation_failed",
     message: "already settled",
@@ -501,7 +494,6 @@ Deno.test("renderPendingSignalResult: a held signal says when the key's last wai
   assertStringIncludes(lines[1], lastWait.receipt.id);
   assertStringIncludes(lines[1], lastWait.settledAt);
   assertStringIncludes(lines[1], "held for the next run");
-  // A caller who may only signal is told when, not by which signal.
   const { receipt: _receipt, ...withoutReceipt } = lastWait;
   const generic = captureStdout(() =>
     renderPendingSignalResult(hintTestContext(), {
@@ -510,7 +502,6 @@ Deno.test("renderPendingSignalResult: a held signal says when the key's last wai
     })
   );
   assertStringIncludes(generic[1], "settled by a signal at");
-  // A wait that timed out says nothing of an earlier signal landing.
   const expired = captureStdout(() =>
     renderPendingSignalResult(hintTestContext(), {
       ...HELD,
@@ -526,8 +517,6 @@ Deno.test("renderPendingSignalResult: json mode prints the receipt and until whe
   );
   assertEquals(lines.length, 1);
   assertEquals(JSON.parse(lines[0]), HELD);
-  // A server's reply to a caller who may only signal names no workflow; the
-  // document still says the signal is pending.
   const { signal, heldUntil } = HELD;
   const remote = captureStdout(() =>
     renderPendingSignalResult(hintTestContext({ outputMode: "json" }), {
@@ -584,7 +573,6 @@ Deno.test("renderSignalResult: a signal a wait took suggests a resume only when 
   assertEquals(lines({ awaitingResume: false }), [
     "The step took the signal, and its run has nothing to resume: it went on without waiting, or it still waits on something else.",
   ]);
-  // Another reader gave the signal to a wait whose run is suspended.
   assertEquals(lines({ awaitingResume: true }), [
     `The step's wait took the signal while its run was suspended. swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${resume}`,
   ]);
@@ -594,7 +582,6 @@ Deno.test("renderSignalResult: a signal a wait took suggests a resume only when 
       `The step's wait took the signal. This host has no copy of the run, so it cannot tell whether the run went on by itself. Check with "swamp workflow waits", and if the run is suspended resume it where it is: ${resume}`,
     ],
   );
-  // JSON carries both facts, for a caller that decides by itself.
   const json = captureStdout(() =>
     renderSignalResult(
       hintTestContext({ outputMode: "json" }),

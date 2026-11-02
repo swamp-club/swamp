@@ -22,10 +22,8 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { readTokenFile } from "../remote_run.ts";
 import { UserError } from "../../domain/errors.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 Deno.test("workerConnectCommand: module loads", async () => {

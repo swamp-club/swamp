@@ -25,7 +25,6 @@ export interface CliOptionSchema {
   required: boolean;
   default?: unknown;
   collect: boolean;
-  /** Whether the option consumes a value, as opposed to being a bare flag. */
   takesValue: boolean;
   /**
    * The value as declared, e.g. `<level:string>` or `[tag:string]` — angle
@@ -58,7 +57,6 @@ export interface CliSchema {
   root: CliCommandSchema;
 }
 
-/** Option names that Cliffy adds automatically and should be filtered out. */
 const BUILTIN_OPTION_NAMES = new Set(["help", "version"]);
 
 /**
@@ -69,15 +67,10 @@ const BUILTIN_OPTION_NAMES = new Set(["help", "version"]);
 export type AnyCommand = Command<any>;
 
 export interface BuildCliSchemaOptions {
-  /** When true, strip global options from all commands including the root. */
   stripGlobalOptions?: boolean;
-  /** When true, list hidden commands and hidden options too. */
   includeHidden?: boolean;
 }
 
-/**
- * Builds a structured CLI schema by recursively walking a Cliffy command tree.
- */
 export function buildCliSchema(
   rootCommand: AnyCommand,
   version: string,

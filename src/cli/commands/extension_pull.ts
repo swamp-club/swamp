@@ -72,7 +72,6 @@ import {
 import { renderServerExtensionChange } from "../../presentation/output/server_extension_change_output.ts";
 import type { ExtensionPullResponse } from "../../serve/protocol.ts";
 
-// Re-export types that other CLI commands depend on
 export {
   ConflictError,
   createInstallContext,
@@ -93,7 +92,6 @@ import { overwritePrompt } from "../../presentation/renderers/extension_pull_pro
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** PullContext for use by extension_search.ts and other callers. */
 export interface PullContext {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   getLatestVersion?: (
@@ -111,15 +109,8 @@ export interface PullContext {
     channel?: string,
   ) => Promise<string | null>;
   logger: Logger;
-  /**
-   * Lockfile repository owning read+write of upstream_extensions.json.
-   * Captures a snapshot at construction; construct fresh per pull.
-   */
+  /** captures a snapshot at construction; construct fresh per pull. */
   lockfileRepository: LockfileRepository;
-  /**
-   * Tool-aware skills destinations — one per unique enrolled tool.
-   * See {@link InstallContext.skillsDirs}.
-   */
   skillsDirs: string[];
   repoDir: string;
   force: boolean;
@@ -128,29 +119,17 @@ export interface PullContext {
   depth: number;
   channel?: string;
   /**
-   * W2 service deps. When BOTH are provided, `extensionPull` routes
-   * through {@link InstallExtensionService} so phase 8 fires (catalog
-   * populated synchronously, I-Repo-1 fires on `(kind, type)` collision,
-   * rollback to the previous version on conflict). When either is
-   * missing, falls back to the pre-W2 free-function path. See
-   * {@link ExtensionPullDeps} for the full contract.
+   * when both are provided, extensionPull routes through
+   * InstallExtensionService (catalog populated synchronously, rollback on
+   * conflict); otherwise it falls back to the older free-function path.
    */
   denoRuntime?: DenoRuntime;
   repository?: ExtensionRepository;
-  /** See {@link ExtensionPullDeps.getVersionChannels}. */
   getVersionChannels?: ExtensionPullDeps["getVersionChannels"];
-  /**
-   * Asks the overwrite question. Defaults to {@link promptConfirmation};
-   * tests pass an answer.
-   */
   confirm?: (question: string, details: string[]) => Promise<boolean>;
-  /** Test seam; see {@link ExtensionPullDeps.installExtensionFn}. */
   installExtensionFn?: ExtensionPullDeps["installExtensionFn"];
 }
 
-/**
- * Pull command wrapper: calls extensionPull and handles rendering + conflict prompts.
- */
 export async function pullExtension(
   ref: { name: string; version: string | null },
   ctx: PullContext,
@@ -224,9 +203,9 @@ export async function pullExtension(
         renderExtensionPullCancelled(outputMode);
         return;
       }
-      // Retry with force. The first attempt marked every extension it
-      // reached, dependencies included; the conflict may be a dependency's,
-      // so the retry starts from the marks made before it (swamp-club#3313).
+      // the first attempt marked every extension it reached, dependencies
+      // included; the conflict may be a dependency's, so the retry starts from
+      // the marks made before it.
       deps.alreadyPulled.clear();
       for (const name of pulledBefore) deps.alreadyPulled.add(name);
       await consumeStream(
@@ -313,22 +292,20 @@ export const extensionPullCommand = withRemoteOptions(
     return;
   }
 
-  // 1. Validate repo (lightweight — no datastore resolution, so pulling
-  // the repo's own datastore extension doesn't circular-fail; see #445)
+  // lightweight: no datastore resolution, so pulling the repo's own datastore
+  // extension does not fail circularly.
   const { repoDir, marker } = await requireRepoMarker(
     resolveRepoDir(options.repoDir),
   );
 
-  // 2. Parse extension reference
   const ref = parseExtensionRef(extension);
 
-  // 3. Validate name format
   validateExtensionName(ref.name);
   const serverUrl = resolveServerUrl();
   const identity = await loadIdentity();
-  // Refuses to record into a guessed managed config base, except for the
-  // repo's own datastore extension (#445), which then lands in the in-repo
-  // lockfile until the base resolves (swamp-club#2483).
+  // refuses to record into a guessed managed config base, except for the repo's
+  // own datastore extension, which lands in the in-repo lockfile until the base
+  // resolves.
   const lockfileWrite = await resolveManagedLockfileForWrite(
     repoDir,
     marker,
@@ -348,10 +325,8 @@ export const extensionPullCommand = withRemoteOptions(
     primarySkillsDirRelative,
   );
 
-  // 7. Construct W2 service deps (denoRuntime + ExtensionRepository)
-  // so phase 8 fires synchronously at install time. Both are required
-  // for `extensionPull` to route through {@link InstallExtensionService}
-  // — without them it falls back to the pre-W2 free-function path.
+  // both are required for extensionPull to route through
+  // InstallExtensionService; without them it falls back to the older path.
   const denoRuntime = new EmbeddedDenoRuntime();
   const catalog = new ExtensionCatalogStore(
     swampPath(repoDir, "_extension_catalog.db"),
@@ -372,8 +347,8 @@ export const extensionPullCommand = withRemoteOptions(
       mountedSourceDirs: await resolveMountedSourceDirs(repoDir),
     });
 
-    // The lockfile change is made against the datastore's copy and
-    // published as it lands (swamp-club#2838).
+    // the lockfile change is made against the datastore's copy and published as
+    // it lands.
     await withManagedLockfileTransaction(
       createManagedLockfileTransaction(repoDir, marker, lockfileWrite),
       () =>

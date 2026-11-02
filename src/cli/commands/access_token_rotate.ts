@@ -206,9 +206,8 @@ export const accessTokenRotateCommand = withRemoteOptions(
     { vaultsDir },
   );
 
-  // Name lock first, then the model lock: every writer of a token takes
-  // them in that order (swamp-club#2482). The argument may be a definition
-  // id, so lock the token name it resolves to.
+  // name lock first, then the model lock, in every token writer; the argument
+  // may be a definition id, so lock the name it resolves to.
   const lockName = await serverTokenLockName(repoContext.definitionRepo, name);
   await withServerTokenLock(datastoreConfig, lockName, async () => {
     const preResult = await findDefinitionByIdOrName(

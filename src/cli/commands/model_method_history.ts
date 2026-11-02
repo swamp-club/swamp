@@ -41,20 +41,17 @@ import {
   modelMethodHistoryLogsCommand,
 } from "./model_method_history_logs.ts";
 
-/** The subcommands of `model method history`, in registration order. */
 export interface ModelMethodHistoryChildren {
   readonly get: ReturnType<typeof createModelMethodHistoryGetCommand>;
   readonly search: ReturnType<typeof createModelMethodHistorySearchCommand>;
   readonly logs: ReturnType<typeof createModelMethodHistoryLogsCommand>;
 }
 
-/** The preferred spelling: `swamp behavior history`. */
 export const BEHAVIOR_HISTORY_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior history",
   surface: "behavior",
 };
 
-/** The legacy spelling: `swamp model method history`. */
 export const MODEL_METHOD_HISTORY_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history",
   surface: "model",
@@ -62,9 +59,8 @@ export const MODEL_METHOD_HISTORY_SYNTAX: CommandSyntax = {
 };
 
 /**
- * Builds the `history` group for one CLI surface. Children not passed are
- * built fresh from `syntax`; Cliffy reparents a command attached under a
- * second parent, so two surfaces must never share an instance.
+ * Cliffy reparents a command attached under a second parent, so two surfaces
+ * must never share a child instance.
  */
 export function createModelMethodHistoryCommand(
   syntax: CommandSyntax,

@@ -19,22 +19,15 @@
 
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 
-/**
- * Resolves the workflows directory path for extension workflows.
- * Priority: SWAMP_WORKFLOWS_DIR env var > .swamp.yaml config > default "extensions/workflows"
- */
 export function resolveWorkflowsDir(marker: RepoMarkerData | null): string {
-  // Environment variable takes highest priority
   const envWorkflowsDir = Deno.env.get("SWAMP_WORKFLOWS_DIR");
   if (envWorkflowsDir) {
     return envWorkflowsDir;
   }
 
-  // Then .swamp.yaml config
   if (marker?.workflowsDir) {
     return marker.workflowsDir;
   }
 
-  // Default
   return "extensions/workflows";
 }

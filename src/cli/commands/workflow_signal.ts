@@ -88,10 +88,6 @@ export function parseSignalPayload(raw: string): unknown {
   }
 }
 
-/**
- * The wait a signal is addressed to: a wait ID, or `--workflow` with `--key`.
- * Exactly one of the two forms is given.
- */
 export function parseSignalAddress(
   waitId: string | undefined,
   options: { workflow?: string; key?: string },
@@ -190,10 +186,8 @@ export function renderSignalResult(
 }
 
 /**
- * Renders a signal that is held as its key's pending signal, in log or JSON
- * mode (swamp-club#3212). A server names the key and the workflow only to a
- * caller who may read the workflow. Nothing is said of a run: none took the
- * signal, and none may.
+ * a server names the key and workflow only to a caller who may read the
+ * workflow; nothing is said of a run, since none took the signal
  */
 export function renderPendingSignalResult(
   cliCtx: CommandContext,
@@ -233,11 +227,9 @@ export function renderPendingSignalResult(
 }
 
 /**
- * The `workflow.signal` payload for a signal sent through a server. The
- * server accepts only a UUID as a wait ID, and only a bounded workflow and
- * key; it answers anything else as a malformed request, which reads as a
- * server that needs an upgrade. Such an address names no wait, so it is
- * answered here as the server answers a wait it does not know.
+ * the server accepts only a UUID wait ID and a bounded workflow and key, and
+ * answers anything else as malformed, which reads as needing an upgrade; such
+ * an address names no wait, so answer it locally
  */
 export function remoteSignalPayload(
   address: WorkflowSignalAddress,
@@ -350,10 +342,9 @@ export function renderRemoteSignalResult(
 }
 
 /**
- * Renders a signal a server received and says no more about, in log or JSON
- * mode (swamp-club#3213): what a caller who may signal a workflow and not
- * read it gets for a key whose step sets `acceptEarly`. The server does not
- * say whether a wait took the signal or it is held, so neither does this.
+ * for a caller who may signal a workflow but not read it, on a key whose step
+ * sets acceptEarly; the server does not say whether a wait took the signal or
+ * it is held, so neither does this
  */
 export function renderAcceptedSignalResult(
   cliCtx: CommandContext,
@@ -376,11 +367,6 @@ export function renderAcceptedSignalResult(
   );
 }
 
-/**
- * The error the command throws for a signal that was not delivered here. A
- * refusal keeps what its details say of it, so `--json` output carries the
- * refusal and the key's last wait beside the message.
- */
 export function signalUserError(error: SwampError): UserError {
   const plain = userErrorFromSwampError(error);
   const refusal = signalRefusalKind(error) === undefined
@@ -399,11 +385,6 @@ export function signalUserError(error: SwampError): UserError {
   );
 }
 
-/**
- * The error the command throws for what a server answered. A refused signal
- * keeps the refusal and the key's last wait from the server's details; any
- * other error is passed on as it is.
- */
 export function remoteSignalUserError(error: unknown): unknown {
   if (
     !(error instanceof ServerResponseError) ||
@@ -490,7 +471,7 @@ export const workflowSignalCommand = withRemoteOptions(
       let response: WorkflowSignalResponse;
       try {
         response = await requestNewerServerResponse<WorkflowSignalResponse>(
-          // A server from before swamp-club#3211 takes a wait ID only.
+          // a server from before wait-key addressing takes a wait ID only
           "waitId" in named ? "signals" : "signalling by workflow and key",
           { server, token },
           { type: "workflow.signal", payload: named },

@@ -29,24 +29,10 @@ import { LockfileRepository } from "../infrastructure/persistence/lockfile_repos
 import { resolveServerUrl } from "../libswamp/extensions/pull.ts";
 import { resolveManagedLockfileForWrite } from "./repo_context.ts";
 
-/**
- * Wires `ExtensionInstallDeps` from a repo directory and a logger.
- *
- * Shared by `swamp extension install` (its primary use) and
- * `swamp repo upgrade` (which runs the install pass to complete any
- * legacy-layout migration). Reading the marker is the only I/O — the
- * returned deps wrap a fresh `ExtensionApiClient` and construct install
- * contexts lazily per-entry.
- */
 export async function createExtensionInstallDeps(
   repoDir: string,
   logger: Logger,
   options?: {
-    /**
-     * The lockfile to restore from, already resolved by the caller (serve
-     * derives it from its datastore resolver). Skips the managed config
-     * resolution and the guard.
-     */
     lockfilePath?: string;
   },
 ): Promise<ExtensionInstallDeps> {
@@ -58,8 +44,8 @@ export async function createExtensionInstallDeps(
   const repoPath = RepoPath.create(absoluteRepoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
-  // Refuses to restore into a guessed managed config base: install would
-  // record into a lockfile the datastore never sees (swamp-club#2483).
+  // refuses to restore into a guessed managed config base, since install would
+  // record into a lockfile the datastore never sees
   const lockfilePath = options?.lockfilePath ??
     (await resolveManagedLockfileForWrite(absoluteRepoDir, marker))
       .lockfilePath;

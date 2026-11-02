@@ -44,7 +44,6 @@ import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
 
 const tree = buildCommandTree();
 
-/** What a run of `args` does with the inbox, resolved as runCli resolves it. */
 function eligibility(
   args: string[],
   overrides: { gatePassed?: boolean; nested?: boolean; disabled?: boolean } =
@@ -258,7 +257,6 @@ Deno.test("finishInboxNotice: a failing poll or notice read never escapes", asyn
   });
 });
 
-/** An env store a marker can read and write, seeded with `initial`. */
 function envStore(initial: Record<string, string>) {
   const values = new Map(Object.entries(initial));
   return {
@@ -269,7 +267,6 @@ function envStore(initial: Record<string, string>) {
 }
 
 Deno.test("nested runs: a swamp under another swamp is nested, but an agent swamp start launches is not", () => {
-  // What a swamp that a running swamp (pid 4242) started inherits.
   const inherited = {
     [SWAMP_LOCK_HOLDER_PID]: "4242",
     [SWAMP_LOCK_ANCESTOR_PIDS]: "4242",
@@ -279,10 +276,9 @@ Deno.test("nested runs: a swamp under another swamp is nested, but an agent swam
   nested.publish();
   assertEquals(nested.ancestorPids().size > 0, true);
 
-  // swamp start's launcher scripts unset NESTED_SWAMP_ENV_VARS before they
-  // start the agent (terminal_launcher.ts), so the agent's swamp runs are
-  // outermost and show the notice. Both lock variables must stay in that
-  // list, or the agent would never see it.
+  // swamp start's launcher scripts unset NESTED_SWAMP_ENV_VARS before starting
+  // the agent, so its runs are outermost and show the notice; both lock
+  // variables must stay in that list
   const launched = envStore(inherited);
   for (const name of NESTED_SWAMP_ENV_VARS) launched.delete(name);
   const agent = new LockHolderMarker(launched, 5000);

@@ -80,16 +80,14 @@ import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts
 type AnyOptions = any;
 
 /**
- * Refuses a namespace change on a v3 datastore (swamp-club#3279): its
- * commits are recorded per namespace, so moving a checkout to another one
- * would leave every commit it made behind. Migrating v3 data is Phase 6.
+ * v3 commits are recorded per namespace, so moving a checkout to another would
+ * leave every commit it made behind.
  */
 export function refuseNamespaceChangeOnV3(
   engine: DatastoreEngine,
   config: DatastoreConfig,
 ): void {
   if (engine === "v3") {
-    // The way out names this datastore's own setup (swamp-club#3644).
     const setup = isCustomDatastoreConfig(config)
       ? `swamp datastore setup extension ${config.type} --config '...' ` +
         "--format 3"
@@ -176,9 +174,9 @@ export const datastoreNamespaceSetCommand = new Command()
             namespace,
             rId,
           );
-          // Materialize the manifest into the local cache so push's
-          // orphan detection sees a local counterpart and does not
-          // delete the remote copy (swamp-club#834).
+          // materialize the manifest into the local cache so push's orphan
+          // detection sees a local counterpart and does not delete the remote
+          // copy.
           const cachePath =
             (datastoreConfig as CustomDatastoreConfig).cachePath;
           if (cachePath) {

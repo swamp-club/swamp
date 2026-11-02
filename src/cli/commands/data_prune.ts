@@ -111,8 +111,6 @@ export const dataPruneCommand = withRemoteOptions(
     ? await requireInitializedRepoReadOnly(repoOpts)
     : await requireInitializedRepo(repoOpts);
 
-  // Pushes and releases the global lock when the command ends, as the
-  // teardown flush did (swamp-club#3055).
   await runInCoordinatorRoot(
     repoContext,
     async () => {
@@ -125,7 +123,6 @@ export const dataPruneCommand = withRemoteOptions(
         repoContext.unifiedDataRepo,
       );
 
-      // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
       if (
         cliCtx.outputMode === "log" && !options.yes && !options.force &&
         !options.dryRun
@@ -148,15 +145,13 @@ export const dataPruneCommand = withRemoteOptions(
         }
       }
 
-      // Phase 2: Execute prune
       const renderer = createDataPruneRenderer(cliCtx.outputMode);
       await consumeStream(
         dataPrune(ctx, deps, { dryRun: !!options.dryRun }),
         holdFromOutcome(renderer.handlers()),
       );
     },
-    // Status lines stream in log mode; the result waits for the commit
-    // (swamp-club#3893).
+    // status lines stream in log mode; the result waits for the commit.
     cliCtx.outputMode === "log" ? "live-until-outcome" : "held",
   );
 });

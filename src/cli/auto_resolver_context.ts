@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Re-export from domain layer for convenience.
-// CLI startup sets the resolver; commands access it via these functions.
 export {
   getAutoResolver,
   setAutoResolver,

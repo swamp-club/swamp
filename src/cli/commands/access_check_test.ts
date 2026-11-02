@@ -28,17 +28,10 @@ import { RepoService } from "../../domain/repo/repo_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { VERSION } from "./version.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
-/**
- * In-process serve endpoint answering every request frame with the given
- * payload — enough to drive the command's request/response --server path
- * without a subprocess.
- */
 function payloadServer(
   payload: Record<string, unknown>,
 ): { url: string; shutdown: () => Promise<void> } {
@@ -64,7 +57,6 @@ function payloadServer(
   };
 }
 
-/** Runs `access check` against a scripted server payload; returns Deno.exitCode. */
 async function runAccessCheckAgainst(
   decisions: Record<string, unknown>[],
 ): Promise<number> {
@@ -203,8 +195,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -220,7 +210,6 @@ async function initRepo(dir: string): Promise<void> {
   }).init(RepoPath.create(dir), { tools: [] });
 }
 
-/** Runs `access <command> <args> --json` locally; returns output and exit code. */
 async function runAccess(
   command: "check" | "grant",
   args: string[],
@@ -251,7 +240,6 @@ async function runAccess(
   }
 }
 
-/** A repo holding a command/shell model named team-x-probe, plus grants. */
 async function withShellModelRepo(
   grants: string[][],
   fn: (dir: string) => Promise<void>,

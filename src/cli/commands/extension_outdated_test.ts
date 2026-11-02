@@ -75,7 +75,6 @@ Deno.test("filterOutdated: keeps not_found and failed for visibility", () => {
 });
 
 Deno.test("filterOutdated: hasUpdateAvailable semantic — only update_available drives exit code", () => {
-  // not_found + failed alone → no update_available → exit 0
   const noUpdates: ExtensionUpdateStatus[] = [
     {
       status: "not_found",
@@ -100,7 +99,6 @@ Deno.test("filterOutdated: hasUpdateAvailable semantic — only update_available
     "only not_found/failed should NOT trip exit 1",
   );
 
-  // Add an update_available → flips to true
   const withUpdate: ExtensionUpdateStatus[] = [
     ...noUpdates,
     {

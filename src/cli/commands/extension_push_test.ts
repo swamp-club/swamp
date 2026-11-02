@@ -73,8 +73,8 @@ Deno.test("resolveWarningsGate: --yes and --force proceed and record the flag in
 });
 
 Deno.test("resolveWarningsGate: json push with a warning and no flag proceeds without a record", () => {
-  // The pre-#3015 behaviour: --json never prompted and never refused. The
-  // warnings were rendered ahead of the gate, so nothing is hidden.
+  // --json never prompted and never refused; the warnings are rendered ahead of
+  // the gate, so nothing is hidden
   assertEquals(gate({ outputMode: "json" }), { kind: "proceed" });
 });
 
@@ -86,7 +86,6 @@ Deno.test("resolveWarningsGate: json dry run with a warning and no flag proceeds
 });
 
 Deno.test("resolveWarningsGate: log dry run with a warning and no flag proceeds without prompting", () => {
-  // A dry run performs no push and so has nothing to confirm.
   assertEquals(gate({ dryRun: true }), { kind: "proceed" });
 });
 
@@ -171,7 +170,6 @@ Deno.test("buildAcceptedWarnings: keeps safety warnings and drops the review ske
     ],
   });
   assertEquals("skeleton" in record.review[0], false);
-  // No unaudited dependency, no dependencyTrust list.
   assertEquals("dependencyTrust" in record, false);
 });
 
@@ -229,8 +227,6 @@ Deno.test("buildAcceptedWarnings: records the shipped-version findings with the 
   });
   assertEquals(record.dependencyTrust, [loose, deprecated, yanked]);
 });
-
-// ── Existing version (swamp-club#2939) ────────────────────────────────
 
 const LOWER_CHANNEL_MESSAGE =
   "Version 2026.10.06.1 already exists for @x/y on channel 'beta'. " +

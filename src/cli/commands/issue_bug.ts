@@ -86,8 +86,6 @@ export function parseBugContent(
     return null;
   }
 
-  // Extract title from the "## Title" section
-  // Title must be a single line that doesn't start with # or <!--
   const titleMatch = content.match(
     /## Title\s*\n(?:<!--[^>]*-->\s*\n)?([^\n#<][^\n]*)/,
   );
@@ -97,7 +95,6 @@ export function parseBugContent(
     return null;
   }
 
-  // Build body from remaining sections (everything after ## Description)
   const descriptionIndex = content.indexOf("## Description");
   if (descriptionIndex === -1) {
     return { title, body: "" };
@@ -105,7 +102,6 @@ export function parseBugContent(
 
   const body = content.substring(descriptionIndex);
 
-  // Clean up the body by removing HTML comment lines
   const cleanedBody = body
     .split("\n")
     .filter((line) => !line.match(/^\s*<!--.*-->\s*$/))
@@ -161,9 +157,8 @@ export const issueBugCommand = new Command()
     }
     const issueSource = resolveIssueSource(options);
 
-    // Extension-aware pre-flight: resolve the target BEFORE auth so refusals
-    // and third-party repository handoffs don't spuriously fail on Lab auth
-    // (they never touch swamp-club).
+    // resolve the target before auth so refusals and third-party repository
+    // handoffs do not fail on Lab auth; they never touch swamp-club.
     let extensionTarget: UsableExtensionTarget | undefined;
     if (options.extension) {
       extensionTarget = await resolveExtensionOrRefuse(
@@ -172,8 +167,6 @@ export const issueBugCommand = new Command()
       );
     }
 
-    // Lab auth is only needed for the plain path and the `@swamp/*` path.
-    // Third-party repository handoffs skip this step entirely.
     const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
       ? await resolveDestination(
         ctx,

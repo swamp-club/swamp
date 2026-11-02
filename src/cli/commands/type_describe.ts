@@ -43,7 +43,6 @@ import {
 } from "../remote_run.ts";
 import type { ModelTypeDescribeResponse } from "../../serve/protocol.ts";
 
-// Re-export from libswamp for backward compatibility with existing importers
 export {
   buildDataOutputSpecs,
   toMethodDescribeData,
@@ -53,18 +52,12 @@ export {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * The legacy spelling: `swamp model type describe`. Its help examples once
- * read `swamp type describe`, a spelling that never ran; they now name the
- * command a user actually types (swamp-club#3409).
- */
 export const MODEL_TYPE_DESCRIBE_SYNTAX: CommandSyntax = {
   invocation: "swamp model type describe",
   surface: "model",
   preferred: "swamp behavior type describe aws-ec2",
 };
 
-/** The preferred spelling: `swamp behavior type describe`. */
 export const BEHAVIOR_TYPE_DESCRIBE_SYNTAX: CommandSyntax = {
   invocation: "swamp behavior type describe",
   surface: "behavior",

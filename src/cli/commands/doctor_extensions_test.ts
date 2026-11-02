@@ -29,7 +29,6 @@ import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marke
 import { rescanSkippedFor, runRepull } from "./doctor_extensions.ts";
 import { ManagedLockfileUnpublishedError } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
@@ -45,8 +44,6 @@ Deno.test("doctorExtensionsCommand is registered as subcommand of doctorCommand"
   const extCmd = commands.find((c) => c.getName() === "extensions");
   assertEquals(extCmd !== undefined, true);
 });
-
-// ── rescanSkippedFor (swamp-club#2483) ──────────────────────────────────────
 
 const unsetDatastoreEnv = () => undefined;
 

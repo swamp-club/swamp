@@ -55,11 +55,6 @@ import type { WorkflowRunSearchResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Creates a fetchPreview closure that fetches full workflow run detail data.
- * This bridges the presentation layer to the run repository, converting
- * WorkflowRun to WorkflowRunView.
- */
 function createRunFetchPreview(
   runRepo: YamlWorkflowRunRepository,
 ): (item: WorkflowRunSearchItem) => Promise<WorkflowRunView> {
@@ -116,8 +111,7 @@ export async function workflowRunSearchAction(
         },
       },
     );
-    // A remote search prints a plain list and never starts the picker
-    // (swamp-club#3917).
+    // a remote search prints a plain list and never starts the picker
     const renderer = createWorkflowRunSearchRenderer(
       effectiveMode,
       undefined,
@@ -146,7 +140,6 @@ export async function workflowRunSearchAction(
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
 
-  // Parse --tag and --input values into Record<string, string>
   const parsedTags = options.tag
     ? parseTags(options.tag as string[])
     : undefined;
@@ -156,10 +149,9 @@ export async function workflowRunSearchAction(
 
   const deps: WorkflowRunSearchDeps = {
     findAllWorkflows: () => listWorkflows(workflowRepo),
-    // Search reads each workflow's run index snapshot, never the run
-    // records: hydrating every run (with its inline step outputs) OOMs on
-    // workflows with a large run history (#1173), and the snapshot narrows
-    // by time before any run is looked at (swamp-club#3443).
+    // search reads each workflow's run index snapshot, never the run records:
+    // hydrating every run with its inline step outputs runs out of memory on
+    // large histories, and the snapshot narrows by time first
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
     retentionWatermarks: repoContext.retentionWatermarks,
   };
@@ -188,7 +180,6 @@ export async function workflowRunSearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected run: ${selected.runId}`;
-    // In JSON mode, still display the full run details after auto-select
     if (effectiveMode === "json") {
       const run = await runRepo.findById(
         createWorkflowId(selected.workflowId),
@@ -203,8 +194,6 @@ export async function workflowRunSearchAction(
         renderWorkflowRunDisplay(runData, effectiveMode);
       }
     }
-    // In interactive mode, the scrollback from the picker already contains
-    // the run detail, so no additional findById+render call is needed.
   } else {
     ctx.logger.debug`Search cancelled`;
   }

@@ -121,7 +121,6 @@ export const vaultGetCommand = withRemoteOptions(
     const handlers = renderer.handlers();
     const wrappedHandlers: typeof handlers = {
       ...handlers,
-      // An edit of it now starts from this version (swamp-club#4097).
       completed: (e) => {
         markConfigLoaded(repoContext, "vault", e.data.name);
         return handlers.completed(e);

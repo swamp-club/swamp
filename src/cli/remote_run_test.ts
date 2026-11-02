@@ -65,10 +65,6 @@ import {
   SWAMP_LOCK_HOLDER_TOKENS,
 } from "../domain/datastore/lock_holder_marker.ts";
 
-/**
- * In-process scripted serve endpoint: the script receives each parsed client
- * request plus a `reply` function and decides what frames come back.
- */
 function scriptedServer(
   script: (
     request: { type: string; id: string; payload: Record<string, unknown> },
@@ -111,8 +107,6 @@ function scriptedServer(
     upgradeUrls,
   };
 }
-
-// ── resolveCaCertPath tests ────────────────────────────────────────────
 
 Deno.test("resolveCaCertPath: --ca-cert flag takes precedence over SWAMP_CA_CERT", () => {
   assertEquals(
@@ -167,8 +161,6 @@ Deno.test("resolveCaCertPath: a trailing --ca-cert with no value falls through t
     "/env/ca.pem",
   );
 });
-
-// ── resolveServeUrl tests ──────────────────────────────────────────────
 
 Deno.test("resolveServeUrl: flag value takes precedence over env var", () => {
   withMockedEnv({ SWAMP_SERVE_URL: "wss://env.example.com" }, () => {
@@ -256,8 +248,6 @@ Deno.test("resolveServeUrl: returns undefined when no flag, env var, or markerVa
     },
   );
 });
-
-// ── cached marker serverAddress tests ─────────────────────────────────
 
 Deno.test("resolveServeUrl: falls back to cached marker serverAddress", () => {
   try {
@@ -391,7 +381,6 @@ Deno.test({
       reply({ type: "done", id: request.id });
     });
     const options = { server: server.url };
-    /** The lock list each kind of run request sent, by request type. */
     const sentWith = async (inherited: string | undefined) => {
       server.received.length = 0;
       await withMockedEnv(
@@ -434,7 +423,6 @@ Deno.test({
         assertEquals(forwarded[type].lockHolderTokens, "100:a+b", type);
       }
 
-      // Well-formed nonces, enough of them to pass the length limit.
       let overLimit = "100:n0";
       for (
         let i = 1;
@@ -539,7 +527,6 @@ Deno.test({
         id: request.id,
         event: { kind: "started", workflowName: "wf" },
       });
-      // Then hang until cancelled.
     });
     try {
       const controller = new AbortController();
@@ -573,7 +560,6 @@ Deno.test({
     await assertRejects(async () => {
       for await (
         const _ of runWorkflowOverServer({
-          // Port 1 is never listening.
           server: "ws://127.0.0.1:1",
           payload: { workflowIdOrName: "wf" },
         })
@@ -582,8 +568,6 @@ Deno.test({
     }, UserError);
   },
 });
-
-// ── requestServerResponse tests ──────────────────────────────────────
 
 Deno.test({
   name: "requestServerResponse: returns payload from a single response frame",
@@ -743,8 +727,6 @@ Deno.test({
   },
 });
 
-// ── resolveServerToken tests ────────────────────────────────────────────
-
 Deno.test("resolveServerToken: explicit token takes precedence", async () => {
   const result = await resolveServerToken(
     "http://localhost:9090",
@@ -806,8 +788,6 @@ Deno.test("resolveServerToken: ws URL is resolved by credential repo normalizati
   );
   assertEquals(result, "stored.ws-lookup");
 });
-
-// ── extra headers tests ────────────────────────────────────────────────
 
 function headerCapturingServer(): {
   url: string;
@@ -971,8 +951,6 @@ Deno.test("resolveServerToken: returns undefined when no credential", async () =
   assertEquals(result, undefined);
 });
 
-// ── readTokenFile tests ─────────────────────────────────────────────
-
 Deno.test("readTokenFile: reads token and trims trailing newline", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
   try {
@@ -1006,9 +984,6 @@ Deno.test("readTokenFile: throws UserError for empty file", async () => {
   }
 });
 
-// ── resolveServerToken: token-file tests ────────────────────────────
-
-/** Leaves the token file bound only by what a test sets itself. */
 const UNSET_SERVE_URL_ENV: Record<string, string | undefined> = {
   SWAMP_SERVE_URL: undefined,
   SWAMP_SERVER_URL: undefined,
@@ -1081,8 +1056,6 @@ Deno.test("resolveServerToken: falls back to credential repo when no token file 
   });
 });
 
-// ── resolveServerTokenFromOptions tests ──────────────────────────────
-
 Deno.test("resolveServerTokenFromOptions: reads token from options.tokenFile", async () => {
   const tmpFile = await Deno.makeTempFile({ prefix: "swamp-token-test-" });
   try {
@@ -1154,8 +1127,6 @@ Deno.test("resolveServerTokenFromOptions: falls back to the token file env var w
   }
 });
 
-// ── SWAMP_SERVER_TOKEN_FILE binding (swamp-club#4012) ────────────────
-
 Deno.test("tokenFileBoundTo: a mismatched, empty or unparseable address does not bind the token file", () => {
   const key = "http://serve.test:9090";
   assertEquals(tokenFileBoundTo(key, ["http://other.test:9090"]), false);
@@ -1187,7 +1158,6 @@ const NO_CREDENTIALS: ServerCredentialRepository = {
   list: () => Promise.resolve([]),
 };
 
-/** Runs `fn` with SWAMP_SERVER_TOKEN_FILE pointing at a file holding `token`. */
 async function withTokenFileEnv(
   token: string,
   env: Record<string, string | undefined>,
@@ -1208,7 +1178,6 @@ async function withTokenFileEnv(
   }
 }
 
-/** The warnings the remote-run logger emits while `fn` runs. */
 async function captureRemoteRunWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -1457,7 +1426,6 @@ Deno.test({
   },
 });
 
-/** A credential repository that fails the test if it is ever read. */
 function unreachableRepo(): ServerCredentialRepository {
   return {
     get: () => Promise.reject(new Error("credential repo must not be read")),
@@ -1532,13 +1500,6 @@ Deno.test("resolveServerTokenFromOptions: an unsupported scheme throws UserError
   );
 });
 
-// ── auth error classification tests ──────────────────────────────────
-
-/**
- * Server that rejects WebSocket upgrades with 401 but serves a healthy
- * /health endpoint — simulates a swamp serve instance rejecting stale
- * credentials.
- */
 function authRejectingServer(
   opts?: { healthBody?: unknown; healthStatus?: number },
 ): {
@@ -1568,9 +1529,9 @@ function authRejectingServer(
 }
 
 /**
- * A server that upgrades WebSockets only for `Authorization: Bearer good`
- * and answers 401 to any other handshake. Its /health answers ok, as serve's
- * does, so an implementation that guesses from a healthy probe is caught.
+ * upgrades WebSockets only for Authorization: Bearer good and answers 401
+ * otherwise; /health answers ok, so an implementation that guesses from a
+ * healthy probe is caught
  */
 function tokenCheckingServer(): {
   url: string;
@@ -1800,10 +1761,9 @@ Deno.test({
 });
 
 /**
- * A server whose /health answers ok but which drops every WebSocket upgrade
- * without a response — a transient connection failure that carries no HTTP
- * status, and that the handshake probe cannot get a status for either
- * (swamp-club#3276).
+ * /health answers ok but every WebSocket upgrade is dropped without a response:
+ * a transient failure with no HTTP status, which the handshake probe cannot get
+ * either
  */
 function connectionDroppingServer(): {
   url: string;
@@ -1895,8 +1855,8 @@ Deno.test({
 });
 
 /**
- * A socket that fails before opening with `message` and no HTTP status — the
- * way Deno reports a handshake rejected over HTTP/2 (swamp-club#1482).
+ * fails before opening with no HTTP status, the way Deno reports a handshake
+ * rejected over HTTP/2
  */
 function opaquelyFailingSocket(message: string): () => WebSocket {
   return () => {
@@ -2033,8 +1993,6 @@ Deno.test({
   },
 });
 
-// ── rate-limit error classification tests ────────────────────────────
-
 function rateLimitingServer(): {
   url: string;
   shutdown: () => Promise<void>;
@@ -2131,8 +2089,6 @@ Deno.test({
     }
   },
 });
-
-// ── cross-instance reconnection tests ─────────────────────────────────
 
 Deno.test({
   name:
@@ -2509,8 +2465,6 @@ Deno.test({
   },
 });
 
-// ── Token transport tests ─────────────────────────────────────────────
-
 Deno.test({
   name:
     "requestServerResponse: sends token via Authorization header, not query param",
@@ -2668,8 +2622,6 @@ Deno.test({
   },
 });
 
-// ── createTlsHttpClient tests ─────────────────────────────────────────
-
 Deno.test("createTlsHttpClient: turns a cert-store failure into guidance", () => {
   const error = assertThrows(
     () =>
@@ -2709,8 +2661,6 @@ Deno.test("createTlsHttpClient: returns the client when the store loads", () => 
   assertEquals(typeof client.close, "function");
 });
 
-// ── diagnoseTlsMessage tests ──────────────────────────────────────────
-
 Deno.test("diagnoseTlsMessage: returns guidance for CaUsedAsEndEntity", () => {
   const result = diagnoseTlsMessage(
     "invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))",
@@ -2746,8 +2696,6 @@ Deno.test("diagnoseTlsMessage: returns undefined for non-TLS errors", () => {
   assertEquals(diagnoseTlsMessage("DNS lookup failed"), undefined);
 });
 
-// ── serverReloadCommand tests ─────────────────────────────────────────
-
 Deno.test("serverReloadCommand: keeps --server for a clean URL", () => {
   assertEquals(
     serverReloadCommand("ws://127.0.0.1:9090"),
@@ -2772,8 +2720,6 @@ Deno.test("serverReloadCommand: leaves out --server for an unparseable value", (
     "swamp serve reload",
   );
 });
-
-// ── writeRemoteIndicator tests ───────────────────────────────────────
 
 Deno.test("writeRemoteIndicator: writes server URL to stderr", () => {
   const calls: string[] = [];
@@ -2914,8 +2860,6 @@ Deno.test({
   },
 });
 
-// ── subscribeServerEvents tests ──────────────────────────────────────
-
 Deno.test("subscribeServerEvents: yields audit events from server", async () => {
   const server = scriptedServer((request, reply) => {
     if (request.type === "audit.subscribe") {
@@ -3014,8 +2958,6 @@ Deno.test("subscribeServerEvents: terminates on socket close", async () => {
     await server.shutdown();
   }
 });
-
-// ── server-error classification tests (swamp-club#2383) ──────────────
 
 function upgradeFailingServer(status: number): {
   url: string;
@@ -3251,9 +3193,8 @@ Deno.test({
 });
 
 /**
- * A socket that answers the one request sent on it, in memory: no listener
- * is bound. It opens when its `onopen` handler is assigned, so it does not
- * depend on when `requestServerResponse` gets round to assigning it.
+ * answers the one request sent on it in memory; it opens when onopen is
+ * assigned, so it does not depend on when requestServerResponse assigns it
  */
 function answeringSocket(
   answer: (request: { type: string; id: string }) => Record<string, unknown>,
@@ -3282,7 +3223,6 @@ function answeringSocket(
   };
 }
 
-/** Request options for a server that exists only as `answeringSocket`. */
 function inMemoryServer(
   answer: Parameters<typeof answeringSocket>[0],
 ): {
@@ -3332,7 +3272,6 @@ Deno.test("requestNewerServerResponse: any other refusal and a reply pass throug
   );
   assertEquals(error.code, "not_found");
 
-  // The server's details are kept beside the message and the code.
   const refused = await assertRejects(
     () =>
       requestNewerServerResponse(
@@ -3370,13 +3309,6 @@ Deno.test("requestNewerServerResponse: any other refusal and a reply pass throug
   assertEquals(sent, ["workflow.waits"]);
 });
 
-// ── detach (swamp-club#1090) ───────────────────────────────────────────
-
-/**
- * A server that answers a `workflow.run` with the given events and then keeps
- * the run open, as a running workflow does. `closed` settles when the client's
- * socket closes.
- */
 function runningWorkflowServer(events: Record<string, unknown>[]) {
   let markClosed!: () => void;
   const closed = new Promise<void>((resolve) => {

@@ -25,7 +25,6 @@ import { renderApproveResult, serveIsResuming } from "./workflow_approve.ts";
 Deno.test("serveIsResuming: true only when serve reports it resumed the run", () => {
   assertEquals(serveIsResuming({ autoResumed: true }), true);
   assertEquals(serveIsResuming({ autoResumed: false }), false);
-  // An older serve that predates auto-resume sends no flag.
   assertEquals(serveIsResuming({}), false);
 });
 

@@ -117,7 +117,6 @@ export const workflowEvaluateCommand = withRemoteOptions(
       return;
     }
 
-    // If --all flag or no argument, evaluate all workflows (global lock)
     if (options.all || !workflowIdOrName) {
       const { repoDir, repoContext, datastoreResolver } =
         await requireInitializedRepo({
@@ -125,8 +124,7 @@ export const workflowEvaluateCommand = withRemoteOptions(
           outputMode: cliCtx.outputMode,
         });
 
-      // Pushes and releases the global lock when the command ends, as the
-      // teardown flush did (swamp-club#3055).
+      // pushes and releases the global lock when the command ends
       await runInCoordinatorRoot(repoContext, async () => {
         const ctx = libSwampContextForRepo(repoContext, {
           logger: cliCtx.logger,
@@ -150,7 +148,6 @@ export const workflowEvaluateCommand = withRemoteOptions(
       return;
     }
 
-    // Single workflow evaluation — use per-model lock
     const unlocked = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
@@ -166,7 +163,6 @@ export const workflowEvaluateCommand = withRemoteOptions(
       throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
 
-    // Extract model references for per-model locking
     const modelRefs = await extractModelReferencesFromWorkflow(
       workflow,
       workflowRepo,
@@ -178,7 +174,6 @@ export const workflowEvaluateCommand = withRemoteOptions(
     let datastoreResolver = unlocked.datastoreResolver;
 
     if (modelRefs !== null && modelRefs.length > 0) {
-      // Resolve model references to { modelType, modelId }
       const definitionRepo = unlocked.repoContext.definitionRepo;
       const resolvedModels: Array<{ modelType: string; modelId: string }> = [];
 
@@ -211,9 +206,8 @@ export const workflowEvaluateCommand = withRemoteOptions(
 
       repoDir = unlocked.repoDir;
     } else if (modelRefs === null) {
-      // Dynamic references — fall back to global lock. The root below pushes
-      // and releases it when the command ends, as the teardown flush did
-      // (swamp-club#3055).
+      // dynamic references fall back to the global lock; the root below pushes
+      // and releases it when the command ends
       globalLock = true;
       const logger = getSwampLogger(["workflow", "evaluate"]);
       logger
@@ -225,7 +219,6 @@ export const workflowEvaluateCommand = withRemoteOptions(
       repoDir = globalResult.repoDir;
       datastoreResolver = globalResult.datastoreResolver;
     } else {
-      // No model references
       repoDir = unlocked.repoDir;
     }
 

@@ -20,13 +20,9 @@
 import { runFileSink } from "../infrastructure/logging/run_file_sink.ts";
 
 /**
- * Stdout discipline for the dispatch runner (`swamp worker exec-dispatch`).
- *
- * The runner's stdout carries length-prefixed RPC frames to its worker, so
- * any other byte written there corrupts the frame stream and kills the
- * worker. The redirect must happen before anything can print — including
- * OpenTelemetry, whose console span exporter writes with `console.dir` and is
- * initialised in `main.ts` before any command runs.
+ * the runner's stdout carries length-prefixed RPC frames, so any other byte
+ * corrupts the stream and kills the worker; the redirect must happen before
+ * anything prints, including OpenTelemetry's console exporter
  */
 
 /**
@@ -44,11 +40,6 @@ function writeStderrLine(line: string): void {
   Deno.stderr.writeSync(encoder.encode(line + "\n"));
 }
 
-/**
- * Redirects every console method that writes to stdout — `log`, `info`,
- * `debug` and `dir` — to stderr, and prefixes `warn` and `error`. Safe to
- * call more than once. `write` is a test seam.
- */
 export function redirectConsoleToStderr(
   write: (line: string) => void = writeStderrLine,
 ): void {

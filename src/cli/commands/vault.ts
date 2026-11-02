@@ -36,18 +36,12 @@ import { vaultReadSecretCommand } from "./vault_read_secret.ts";
 import { vaultAuditTrailCommand } from "./vault_audit_trail.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
-/**
- * Parent command for vault type operations.
- */
 export const vaultTypeCommand = new Command()
   .name("type")
   .description("Inspect vault types")
   .action(groupCommandAction)
   .command("search", vaultTypeSearchCommand);
 
-/**
- * Parent command for vault operations.
- */
 export const vaultCommand = new Command()
   .name("vault")
   .description("Manage vault configurations")

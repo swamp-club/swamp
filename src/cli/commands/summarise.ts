@@ -45,11 +45,6 @@ import type { SummariseResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * `swamp summarise`
- *
- * Shows a high-level overview of repo activity over a time window.
- */
 export const summariseCommand = withRemoteOptions(
   new Command()
     .name("summarise")

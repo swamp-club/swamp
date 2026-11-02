@@ -24,10 +24,8 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { upgradeAuthorizationHeaders } from "./remote_token_test_helpers.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
-// Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 // Module-shape tests only. Running the command — locally and through
@@ -130,9 +128,6 @@ Deno.test({
   },
 });
 
-// ── SWAMP_SERVER_TOKEN_FILE binding (swamp-club#4012) ──────────────────
-
-/** Parses `model method run my-model echo <args>` through a root with --json. */
 async function parseModelMethodRun(args: string[]): Promise<void> {
   const { modelMethodRunCommand } = await import("./model_method_run.ts");
   const root = registerCompletionTypes(new Command())

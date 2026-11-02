@@ -27,23 +27,14 @@ import {
   promptNumberedChoice,
 } from "./prompt_helpers.ts";
 
-// ---------------------------------------------------------------------------
-// Test helpers — stub Deno.stdin.read and both output streams so the prompt
-// functions can be tested without a real TTY.
-//
-// Both streams are captured, not just the one prompts use: `written` holds
-// stderr, where prompts belong, and `stdoutWritten` holds stdout, which must
-// stay empty. stdout is the command's value for `vault read-secret` and
-// friends, and a prompt written there lands in the user's redirect target
-// (swamp-club#2260).
-// ---------------------------------------------------------------------------
+// both streams are captured: prompts belong on stderr and stdout must stay
+// empty, since it carries the command's value (vault read-secret) and a prompt
+// there lands in the user's redirect target
 
 function fakeStdinRead(
   input: string | null | Array<string | null>,
 ): (buf: Uint8Array) => Promise<number | null> {
   const encoder = new TextEncoder();
-  // An array answers one read per entry, in order; a single value answers
-  // every read.
   const queue = Array.isArray(input) ? [...input] : undefined;
   return (buf: Uint8Array) => {
     const response = queue ? (queue.shift() ?? null) : input as string | null;
@@ -55,12 +46,8 @@ function fakeStdinRead(
 }
 
 /**
- * Capture stderr and stdout writes into separate arrays and stub stdin to
- * return `input`.
- *
- * Note this stubs the async `write`, which is what the prompt helpers call.
- * The logger writes through `Deno.stderr.writeSync` (see `createStderrSink`
- * in infrastructure/logging/logger.ts) and so never reaches these captures.
+ * stubs the async write the prompt helpers call; the logger writes through
+ * Deno.stderr.writeSync and never reaches these captures
  */
 function stubIO(
   input: string | null | Array<string | null>,
@@ -101,10 +88,6 @@ function stubIO(
   };
 }
 
-// ---------------------------------------------------------------------------
-// promptLine
-// ---------------------------------------------------------------------------
-
 Deno.test("promptLine: returns trimmed user input", async () => {
   const io = stubIO("  hello world  \n");
   try {
@@ -125,10 +108,6 @@ Deno.test("promptLine: returns empty string on EOF", async () => {
     io.restore();
   }
 });
-
-// ---------------------------------------------------------------------------
-// promptConfirmation
-// ---------------------------------------------------------------------------
 
 Deno.test("promptConfirmation: accepts 'y'", async () => {
   const io = stubIO("y\n");
@@ -219,10 +198,6 @@ Deno.test("promptConfirmation: throws UserError on non-interactive stdin", async
   }
 });
 
-// ---------------------------------------------------------------------------
-// promptChoice
-// ---------------------------------------------------------------------------
-
 Deno.test("promptChoice: selects a numbered choice", async () => {
   const choices = ["alpha", "beta", "gamma"];
   const io = stubIO("2\n");
@@ -266,10 +241,6 @@ Deno.test("promptChoice: falls back to first choice on empty input", async () =>
   }
 });
 
-// ---------------------------------------------------------------------------
-// promptLineWithDefault
-// ---------------------------------------------------------------------------
-
 Deno.test("promptLineWithDefault: returns user input when provided", async () => {
   const io = stubIO("custom\n");
   try {
@@ -301,14 +272,8 @@ Deno.test("promptLineWithDefault: returns default on EOF", async () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Stream discipline — swamp-club#2260
-//
-// Prompts go to stderr so a command whose stdout carries a value keeps that
-// stream byte-exact under redirection. Before the fix, `swamp vault
-// read-secret v k > key.pem` wrote the confirmation prompt into key.pem ahead
-// of the secret.
-// ---------------------------------------------------------------------------
+// prompts go to stderr so a command whose stdout carries a value keeps that
+// stream byte-exact under redirection
 
 Deno.test("promptLine: writes the prompt to stderr, never stdout", async () => {
   const io = stubIO("value\n");
@@ -366,10 +331,6 @@ Deno.test("promptLineWithDefault: writes the prompt to stderr, never stdout", as
     io.restore();
   }
 });
-
-// ---------------------------------------------------------------------------
-// Consequence lines and numbered choices (swamp-club#2939)
-// ---------------------------------------------------------------------------
 
 Deno.test("promptConfirmation: prints the details above the question on stderr", async () => {
   const io = stubIO("n\n");

@@ -67,7 +67,6 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** Checks sign-in the way the auth gate does, without blocking the run. */
 async function checkSignedIn(live: boolean): Promise<SignedInState> {
   let outcome;
   try {
@@ -98,10 +97,6 @@ async function checkSignedIn(live: boolean): Promise<SignedInState> {
   return { kind: "signed_in", source, ...(username ? { username } : {}) };
 }
 
-/**
- * The start dependencies. `prune` lets the running check delete stale
- * server records; the read-only inspection passes false so it writes nothing.
- */
 async function buildDeps(prune: boolean) {
   return createStartDeps({
     version: VERSION,
@@ -112,7 +107,6 @@ async function buildDeps(prune: boolean) {
   });
 }
 
-/** 32 random bytes, base64url-encoded. */
 function newToken(): string {
   let binary = "";
   for (const byte of crypto.getRandomValues(new Uint8Array(32))) {
@@ -212,11 +206,6 @@ export const startStatusCommand = new Command()
     await inspectAction(options, ["start", "status"]);
   });
 
-/**
- * Runs the local hub: the start page and, under `/dashboard/w/<workspace>`,
- * every workspace's dashboard. `swamp start` opens the start page;
- * `swamp dashboard` passes its repo to land on that repo's dashboard.
- */
 export async function runStart(
   options: AnyOptions,
   commandPath: string[],
@@ -327,7 +316,6 @@ export async function runStart(
       }
     }
 
-    // `swamp dashboard` lands on its repo's dashboard.
     const url = fixed === null
       ? pageUrl(server.port, token)
       : dashboardUrl(server.port, token, fixed.name);
@@ -337,7 +325,6 @@ export async function runStart(
       fixed !== null,
     );
 
-    // The exit code a signal stopped us with: 128 + the signal number.
     let signalExitCode: number | undefined;
     let onInterrupt!: () => void;
     const interruptedPromise = new Promise<"interrupted">((resolve) => {

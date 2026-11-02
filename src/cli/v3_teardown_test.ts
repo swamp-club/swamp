@@ -50,11 +50,9 @@ import {
 import { V3_STORAGE_UNREACHABLE_CODE } from "../domain/datastore_v3/writer_lease.ts";
 import { exitCodeForError } from "../presentation/output/error_output.ts";
 
-/** A command that committed nothing to the datastore at `/ds`. */
 const NOTHING_COMMITTED = { committed: false, datastorePath: "/ds" } as const;
 const COMMITTED = { committed: true } as const;
 
-/** A lineage the bucket could not be reached to record, as the reporter's. */
 function lineageCutOff(): V3ReplicationError {
   const lost = new Error("S3 putObjectConditional failed key=lineage/1", {
     cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),

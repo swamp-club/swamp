@@ -26,10 +26,8 @@ Deno.test("USER_AGENT identifies the CLI and carries the version", () => {
 });
 
 Deno.test("loadIdentity returns empty identity when config dir is unresolvable", async () => {
-  // Reproduces the Windows test-env scenario where HOME is not set
-  // (Windows uses USERPROFILE; minimal test envs strip both). The CLI
-  // calls loadIdentity at startup for every command — if this throws,
-  // every command crashes with empty stdout. Must return `{}` safely.
+  // HOME can be unset (Windows test envs strip it); loadIdentity runs at
+  // startup for every command and must return {} rather than throw
   await withMockedEnv({
     HOME: undefined,
     USERPROFILE: undefined,
