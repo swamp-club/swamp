@@ -26,6 +26,7 @@ import {
   type ModelMethodRunPayload,
   SERVE_REQUEST_PATH,
   type ServerMessage,
+  USE_WEBSOCKET_CODE,
   type WorkflowResumePayload,
   type WorkflowRunPayload,
 } from "../serve/protocol.ts";
@@ -568,11 +569,18 @@ async function requestOverHttp<T>(
         ),
       );
     }
-    if (response.status === 404) {
-      await response.body?.cancel();
-      return { kind: "route_missing" };
+    if (!response.ok) {
+      const refusal = await readServeRefusal(response);
+      // a serve that predates the route, a proxy that does not pass it, or a
+      // route that sends the request back: the socket answered these before
+      if (
+        response.status === 404 || response.status === 405 ||
+        refusal === undefined || refusal.code === USE_WEBSOCKET_CODE
+      ) {
+        return { kind: "route_missing" };
+      }
+      throw httpRefusal(baseUrl, response.status, refusal);
     }
-    if (!response.ok) throw await httpRefusal(baseUrl, response);
     let body: string;
     try {
       body = await response.text();
@@ -608,44 +616,53 @@ async function requestOverHttp<T>(
       }
     }
     throw new UserError(
-      `The response from ${baseUrl} ended before the reply to '${request.type}' arrived`,
+      `Connection to ${baseUrl} closed before a response was received`,
     );
   } finally {
     ownClient?.close();
   }
 }
 
-/** the same errors the socket path gives for the same refusal */
-async function httpRefusal(
-  baseUrl: string,
+interface ServeRefusal {
+  readonly code: string;
+  readonly message: string;
+  readonly leader?: unknown;
+}
+
+async function readServeRefusal(
   response: Response,
-): Promise<Error> {
-  let body: { code?: unknown; message?: unknown; leader?: unknown } = {};
+): Promise<ServeRefusal | undefined> {
+  let body: { code?: unknown; message?: unknown; leader?: unknown };
   try {
     body = await response.json();
-  } catch { /* not a serve refusal body */ }
-  if (response.status === 401 || response.status === 403) {
+  } catch {
+    return undefined;
+  }
+  if (typeof body?.code !== "string" || typeof body.message !== "string") {
+    return undefined;
+  }
+  return { code: body.code, message: body.message, leader: body.leader };
+}
+
+function httpRefusal(
+  baseUrl: string,
+  status: number,
+  refusal: ServeRefusal,
+): Error {
+  if (status === 401 || status === 403) {
     return new UserError(authFailedMessage(baseUrl));
   }
-  if (response.status === 429) {
+  if (status === 429) {
     return new UserError(
       describeHandshakeStatus(baseUrl, 429, "Rate-limited by server"),
     );
   }
-  if (typeof body.code === "string" && typeof body.message === "string") {
-    return new ServerResponseError({
-      code: body.code,
-      message: body.message,
-      ...(body.leader !== undefined && { details: { leader: body.leader } }),
-    });
-  }
-  return new UserError(
-    describeHandshakeStatus(
-      baseUrl,
-      response.status,
-      `${baseUrl} answered HTTP ${response.status}`,
-    ),
-  );
+  return new ServerResponseError({
+    code: refusal.code,
+    message: refusal.message,
+    ...(refusal.leader !== undefined &&
+      { details: { leader: refusal.leader } }),
+  });
 }
 
 function requestOverSocket<T>(

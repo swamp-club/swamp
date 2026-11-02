@@ -274,8 +274,8 @@ Deno's WebSocket receiver closes the socket on any frame of 64 MiB or more, so
 `sendSerialized` caps every client frame at `MAX_RPC_FRAME_BYTES` (the worker
 control socket's limit), measured after compression. An oversize reply, error
 reply or run outcome event (`completed`, `cancelled`, `suspended`) is replaced
-by a `frame_too_large` error for that request, and any later frame for it is
-dropped; an oversize progress event is dropped and its stream goes on. The
+by a `frame_too_large` error for that request, and a later reply or `done` frame
+for it (and, on a follower, any frame relayed for it) is dropped; an oversize progress event is dropped and its stream goes on. The
 socket and its other requests survive. Each refusal logs the frame type,
 request id and size, never the payload.
 
@@ -284,14 +284,19 @@ Reads whose replies grow without bound (`HTTP_REQUEST_TYPES` in
 over `POST /api/v1/request` instead (`src/serve/http_request_route.ts`). The
 route sits behind the same no-auth host and Origin checks as every `/api`
 route, accepts bearer tokens only (`authenticateHttpCaller`, shared with the
-datastore API, so no cookie-authenticated POST exists), caps the body at 64 KiB
-and a principal's concurrent requests at the WebSocket's per-connection cap,
+datastore API, so no cookie-authenticated POST exists) without the
+per-principal request rate a socket read never had, caps the body at 64 KiB,
 and applies the follower freshness gate. It runs the request through
 `handleMessage` against a WebSocket-shaped reply channel, so validation,
 authorization, audit and the handler are the socket's own, and streams every
 frame as one NDJSON line with no size cap, gzipped when the client accepts it.
-`requestServerResponse` sends those types there and falls back to the socket
-when an older serve answers 404. Run streams and the dashboard stay on the
+A type outside the list (404) and a caller over the WebSocket's per-connection
+request cap in flight (429; anonymous callers are counted per source IP) are
+refused with `use_websocket`. `requestServerResponse` sends the listed types
+there and falls back to the socket on `use_websocket`, on 404 or 405 (a serve
+that predates the route, or a proxy that does not pass it), and on any refusal
+that is not a serve `{code, message}` body; serve's own refusals map to the
+socket path's errors. Run streams and the dashboard stay on the
 socket under the cap; the dashboard reaches serve through the workspace hub, a
 Deno relay with the same receive limit.
 

@@ -3790,7 +3790,7 @@ Deno.test("requestServerResponse: an HTTP reply that ends before the request's r
         { type: "data.get" },
       ),
     UserError,
-    "ended before the reply to 'data.get' arrived",
+    "closed before a response was received",
   );
 });
 
@@ -3911,3 +3911,40 @@ Deno.test("requestServerResponse: an HTTP refusal with a serve code carries the 
   assertEquals(error.code, "payload_too_large");
   assertStringIncludes(error.message, "Request body exceeds 65536 bytes");
 });
+
+for (
+  const [label, refusal] of [
+    [
+      "a route that sends the request back (use_websocket)",
+      () =>
+        Response.json(
+          { code: "use_websocket", message: "send it over the WebSocket" },
+          { status: 429 },
+        ),
+    ],
+    [
+      "a proxy that refuses the POST (405)",
+      () => new Response("Method Not Allowed", { status: 405 }),
+    ],
+    [
+      "a plain-text 403 that is not a serve refusal",
+      () => new Response("Forbidden: untrusted host", { status: 403 }),
+    ],
+  ] as const
+) {
+  Deno.test(`requestServerResponse: ${label} falls back to the WebSocket`, async () => {
+    const result = await requestServerResponse<{ data: { name: string } }>(
+      {
+        server: "ws://serve.test:9090",
+        fetch: fetchAnswering(refusal),
+        createSocket: answeringSocket((request) => ({
+          type: "data.get",
+          id: request.id,
+          payload: { data: { name: "from-socket" } },
+        })),
+      },
+      { type: "data.get" },
+    );
+    assertEquals(result.data.name, "from-socket");
+  });
+}

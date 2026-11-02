@@ -2180,7 +2180,8 @@ function refuseOversizeFrame(
       `outcome could not be sent over the socket. Read it from the run's history`
     : `The ${header.type} reply is ${bytes} bytes, over the ${limit} byte ` +
       `WebSocket frame limit; the request ran, but its reply could not be ` +
-      `sent over the socket`;
+      `sent over the socket. A current swamp client reads replies this ` +
+      `large over HTTP`;
   sendError(socket, header.id, FRAME_TOO_LARGE, message);
   // after the error went out, or the error itself would be dropped
   markAnsweredByError(socket, header.id);
@@ -2197,6 +2198,13 @@ interface HeldReplies {
 const heldReplies = new WeakMap<WebSocket, Map<string, HeldReplies>>();
 
 const answeredByError = new WeakMap<WebSocket, Set<string>>();
+
+export function wasAnsweredByError(
+  socket: WebSocket,
+  requestId: string,
+): boolean {
+  return answeredByError.get(socket)?.has(requestId) ?? false;
+}
 
 function markAnsweredByError(socket: WebSocket, requestId: string): void {
   let answered = answeredByError.get(socket);

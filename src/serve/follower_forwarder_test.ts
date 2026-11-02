@@ -101,6 +101,9 @@ Deno.test("FollowerForwarder: a relayed reply over the frame limit reaches the c
     }),
   });
   await done.promise;
+  upstream.onmessage?.({
+    data: JSON.stringify({ type: "done", id: requestId }),
+  });
 
   assertEquals(toClient.length, 1);
   const reply = JSON.parse(toClient[0]);

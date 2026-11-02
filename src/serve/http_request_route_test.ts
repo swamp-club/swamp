@@ -165,8 +165,10 @@ Deno.test("handleHttpRequest: a request type outside the allowlist is refused an
       },
     }),
   );
-  assertEquals(response.status, 400);
-  assertStringIncludes((await response.json()).message, "WebSocket");
+  assertEquals(response.status, 404);
+  const refusal = await response.json();
+  assertEquals(refusal.code, "use_websocket");
+  assertStringIncludes(refusal.message, "WebSocket");
   assertEquals(dispatched, false);
 });
 
@@ -281,7 +283,7 @@ Deno.test("handleHttpRequest: concurrent requests are capped per principal", asy
     routeDeps,
   );
   assertEquals(refused.status, 429);
-  assertEquals(refused.headers.get("Retry-After"), "1");
+  assertEquals((await refused.json()).code, "use_websocket");
 
   release.resolve();
   for (const response of held) await response.body?.cancel();
@@ -367,4 +369,47 @@ Deno.test("handleHttpRequest: the real request path answers into the HTTP reply 
   const lines = await linesOf(response);
   assertEquals(lines.length, 1);
   assertEquals([lines[0].type, lines[0].id], ["error", "real"]);
+});
+
+Deno.test("handleHttpRequest: anonymous callers are counted per source IP", async () => {
+  const release = Promise.withResolvers<void>();
+  const busyIp = uniqueIp();
+  const held: Response[] = [];
+  const routeDeps = deps(ctxOf("none"), { dispatch: () => release.promise });
+  for (let i = 0; i < MAX_ACTIVE_REQUESTS; i++) {
+    held.push(
+      await handleHttpRequest(post(dataGet(`a${i}`)), busyIp, routeDeps),
+    );
+  }
+
+  const sameIp = await handleHttpRequest(post(dataGet("x")), busyIp, routeDeps);
+  const otherIp = await handleHttpRequest(
+    post(dataGet("y")),
+    uniqueIp(),
+    deps(ctxOf("none"), { dispatch: () => Promise.resolve() }),
+  );
+
+  assertEquals(sameIp.status, 429);
+  assertEquals(otherIp.status, 200);
+  await otherIp.body?.cancel();
+  release.resolve();
+  for (const response of held) await response.body?.cancel();
+});
+
+Deno.test("handleHttpRequest: reads are not held to the per-principal request rate", async () => {
+  const principalId = `user:${crypto.randomUUID()}`;
+  const routeDeps = deps(ctxOf("token"), {
+    authenticate: () => Promise.resolve(tokenFor(principalId)),
+    dispatch: () => Promise.resolve(),
+    now: () => 0,
+  });
+  for (let i = 0; i < 250; i++) {
+    const response = await handleHttpRequest(
+      post(dataGet(`r${i}`)),
+      uniqueIp(),
+      routeDeps,
+    );
+    await response.body?.cancel();
+    assertEquals(response.status, 200, `request ${i}`);
+  }
 });

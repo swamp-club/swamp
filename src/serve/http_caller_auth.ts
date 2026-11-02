@@ -39,6 +39,8 @@ export interface HttpCallerAuthDeps {
     sourceIp: string,
   ) => Promise<ServerTokenAuthResult>;
   readonly now?: () => number;
+  /** the per-principal request rate; on unless false */
+  readonly limitPrincipalRate?: boolean;
 }
 
 export interface HttpCallerToken {
@@ -56,9 +58,8 @@ export interface HttpCaller {
 }
 
 /**
- * Bearer tokens only: a cookie-authenticated POST would be reachable
- * cross-site. Callers that fail to authenticate count toward the IP's burst;
- * an authenticated caller is limited per principal instead.
+ * Callers that fail to authenticate count toward the IP's burst; an
+ * authenticated caller is limited per principal instead.
  */
 export async function authenticateHttpCaller(
   req: Request,
@@ -71,6 +72,7 @@ export async function authenticateHttpCaller(
       principal: ANONYMOUS_PRINCIPAL,
     };
   }
+  // bearer only: a cookie-authenticated POST would be reachable cross-site
   const token = bearerToken(req);
   if (token === null) {
     const ipBurst = checkIpBurst(sourceIp);
@@ -87,8 +89,10 @@ export async function authenticateHttpCaller(
     return httpFailure(401, "unauthorized", `Unauthorized: ${auth.reason}`);
   }
   clearRateLimit(key);
-  const rate = checkPrincipalRate(auth.principalId, deps.now?.());
-  if (!rate.allowed) return tooManyRequests(rate.retryAfterSeconds);
+  if (deps.limitPrincipalRate !== false) {
+    const rate = checkPrincipalRate(auth.principalId, deps.now?.());
+    if (!rate.allowed) return tooManyRequests(rate.retryAfterSeconds);
+  }
   return {
     access: {
       principal: parsePrincipal(auth.principalId),

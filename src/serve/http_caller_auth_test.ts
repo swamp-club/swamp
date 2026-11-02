@@ -147,3 +147,40 @@ Deno.test("authenticateHttpCaller: repeated failures with one token are rate-lim
   assertEquals(last.status, 429);
   assertEquals(last.headers.get("Retry-After") !== null, true);
 });
+
+Deno.test("authenticateHttpCaller: limitPrincipalRate false leaves the per-principal rate unchecked", async () => {
+  const principalId = `user:${crypto.randomUUID()}`;
+  const authenticate = () =>
+    Promise.resolve({ ...validToken, principalId } as ServerTokenAuthResult);
+  let limited = false;
+  for (let i = 0; i < 250 && !limited; i++) {
+    const result = await authenticateHttpCaller(
+      request(`Bearer ${crypto.randomUUID()}`),
+      uniqueIp(),
+      { authMode: "token", authenticate, now: () => 0 },
+    );
+    limited = result instanceof Response && result.status === 429;
+  }
+  assertEquals(limited, true, "the default applies the principal rate");
+
+  const unlimitedPrincipal = `user:${crypto.randomUUID()}`;
+  for (let i = 0; i < 250; i++) {
+    const result = await authenticateHttpCaller(
+      request(`Bearer ${crypto.randomUUID()}`),
+      uniqueIp(),
+      {
+        authMode: "token",
+        authenticate: () =>
+          Promise.resolve(
+            {
+              ...validToken,
+              principalId: unlimitedPrincipal,
+            } as ServerTokenAuthResult,
+          ),
+        now: () => 0,
+        limitPrincipalRate: false,
+      },
+    );
+    assertEquals(result instanceof Response, false, `request ${i}`);
+  }
+});

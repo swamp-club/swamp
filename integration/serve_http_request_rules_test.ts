@@ -28,7 +28,7 @@ const SERVE_COMMAND = fromFileUrl(
 
 Deno.test("serve HTTP route rules: the route is dispatched after the no-auth host and Origin checks", async () => {
   const source = await Deno.readTextFile(SERVE_COMMAND);
-  const trustCheck = source.indexOf("validateNoAuthApiRequest(");
+  const trustCheck = source.indexOf("= validateNoAuthApiRequest(");
   const route = source.indexOf("apiUrl.pathname === SERVE_REQUEST_PATH");
   assert(trustCheck !== -1, "validateNoAuthApiRequest call not found");
   assert(route !== -1, "SERVE_REQUEST_PATH dispatch not found");

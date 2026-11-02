@@ -36,9 +36,12 @@ import {
   authenticateHttpCaller,
   type HttpCaller,
   httpFailure,
-  tooManyRequests,
 } from "./http_caller_auth.ts";
-import { HTTP_REQUEST_TYPES, MAX_HTTP_REQUEST_BODY_BYTES } from "./protocol.ts";
+import {
+  HTTP_REQUEST_TYPES,
+  MAX_HTTP_REQUEST_BODY_BYTES,
+  USE_WEBSOCKET_CODE,
+} from "./protocol.ts";
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
 
@@ -81,8 +84,8 @@ class HttpReplySocket extends EventTarget {
 const inFlightByPrincipal = new Map<string, number>();
 
 /**
- * Runs one client read through the WebSocket's own request path and streams
- * every frame it answers with as one NDJSON line, with no frame limit.
+ * Runs one client read through the WebSocket's own request path, so the two
+ * transports share one validation, authorization and audit.
  */
 export async function handleHttpRequest(
   req: Request,
@@ -99,6 +102,9 @@ export async function handleHttpRequest(
     authMode: deps.ctx.authConfig.mode,
     authenticate: deps.authenticate,
     now: deps.now,
+    // a read the socket answered had no per-principal rate; the in-flight cap
+    // below bounds memory instead
+    limitPrincipalRate: false,
   });
   if (caller instanceof Response) return caller;
 
@@ -123,18 +129,28 @@ export async function handleHttpRequest(
   }
   if (!HTTP_REQUEST_TYPES.has(validated.type)) {
     return httpFailure(
-      400,
-      "invalid_request",
+      404,
+      USE_WEBSOCKET_CODE,
       `'${validated.type}' is not answered over HTTP; send it over the WebSocket`,
     );
   }
   const notLeader = followerHttpRefusal(validated.type, deps.ctx.followerGate);
   if (notLeader !== undefined) return notLeader;
 
-  // stands in for the per-socket request cap a WebSocket gives its caller
-  const inFlight = inFlightByPrincipal.get(caller.principal) ?? 0;
-  if (inFlight >= MAX_ACTIVE_REQUESTS) return tooManyRequests(1);
-  inFlightByPrincipal.set(caller.principal, inFlight + 1);
+  // stands in for the per-socket request cap a WebSocket gives its caller; a
+  // caller over it is sent back to the socket, which answered it before
+  const slot = caller.token === undefined
+    ? `anonymous:${sourceIp}`
+    : caller.principal;
+  const inFlight = inFlightByPrincipal.get(slot) ?? 0;
+  if (inFlight >= MAX_ACTIVE_REQUESTS) {
+    return httpFailure(
+      429,
+      USE_WEBSOCKET_CODE,
+      `Over ${MAX_ACTIVE_REQUESTS} requests in flight on HTTP; send it over the WebSocket`,
+    );
+  }
+  inFlightByPrincipal.set(slot, inFlight + 1);
 
   const body = replyStream(
     caller,
@@ -142,6 +158,7 @@ export async function handleHttpRequest(
     text,
     deps.ctx,
     deps.dispatch ?? handleMessage,
+    () => releaseInFlight(slot),
   );
   const gzip = acceptsGzip(req);
   return new Response(
@@ -162,6 +179,7 @@ function replyStream(
   requestText: string,
   ctx: ConnectionContext,
   dispatch: typeof handleMessage,
+  release: () => void,
 ): ReadableStream<Uint8Array<ArrayBuffer>> {
   const reply = new HttpReplySocket();
   const socket = reply as unknown as WebSocket;
@@ -203,7 +221,7 @@ function replyStream(
         );
       } finally {
         reply.close();
-        releaseInFlight(caller.principal);
+        release();
         if (!cancelled) controller.close();
       }
     },
@@ -214,10 +232,10 @@ function replyStream(
   });
 }
 
-function releaseInFlight(principal: string): void {
-  const remaining = (inFlightByPrincipal.get(principal) ?? 1) - 1;
-  if (remaining <= 0) inFlightByPrincipal.delete(principal);
-  else inFlightByPrincipal.set(principal, remaining);
+function releaseInFlight(slot: string): void {
+  const remaining = (inFlightByPrincipal.get(slot) ?? 1) - 1;
+  if (remaining <= 0) inFlightByPrincipal.delete(slot);
+  else inFlightByPrincipal.set(slot, remaining);
 }
 
 function acceptsGzip(req: Request): boolean {

@@ -50,6 +50,9 @@ export const SERVE_REQUEST_PATH = "/api/v1/request";
 
 export const MAX_HTTP_REQUEST_BODY_BYTES = 64 * 1024;
 
+/** a refusal of the HTTP route that the WebSocket would answer */
+export const USE_WEBSOCKET_CODE = "use_websocket";
+
 /**
  * reads whose replies grow without bound; the CLI sends these over
  * SERVE_REQUEST_PATH, every other request stays on the WebSocket
