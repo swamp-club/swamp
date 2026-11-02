@@ -24,6 +24,7 @@
 
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
   initializeV3Datastore,
@@ -44,10 +45,14 @@ import {
 } from "../src/infrastructure/datastore_v3/litestream/litestream_replicator.ts";
 import {
   type PresenceRecord,
+  readCopyState,
   readPresence,
+  readReplicaVerification,
   type ReplicationPaths,
   replicationPathsFor,
+  writeReplicaVerification,
 } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
+import { normalizeTxid } from "../src/domain/datastore_v3/published_lineage.ts";
 import {
   hostLitestreamProcesses,
   isSupervisorFor,
@@ -192,6 +197,32 @@ export async function presenceOf(
   if (read.kind !== "found") return undefined;
   startedPids.add(read.record.supervisorPid);
   return read.record;
+}
+
+// waits for the sidecar's own verdict on the acknowledged TXID: a running check
+// would overwrite the planted one, and a covering verdict starts no new check
+export async function plantBrokenVerdict(
+  paths: ReplicationPaths,
+  lineageFence: number,
+): Promise<void> {
+  await waitFor(
+    async () => {
+      const copy = await readCopyState(paths);
+      const verdict = await readReplicaVerification(paths);
+      return copy?.lineageFence === lineageFence &&
+        verdict?.lineageFence === lineageFence &&
+        normalizeTxid(verdict.txid) === normalizeTxid(copy.txid);
+    },
+    "the sidecar to record its verdict for the acknowledged TXID",
+    { timeoutMs: 20_000 },
+  );
+  const verdict = (await readReplicaVerification(paths))!;
+  await writeReplicaVerification(paths, {
+    ...verdict,
+    checkedAt: new Date().toISOString(),
+    ok: false,
+    error: "the restored database failed SQLite's integrity check",
+  });
 }
 
 export async function writeCommand(

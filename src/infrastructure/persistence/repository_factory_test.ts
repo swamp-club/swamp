@@ -467,10 +467,10 @@ Deno.test("writeCatalogExport: old export survives when write fails mid-iteratio
   }
 });
 
-Deno.test("writeCatalogExport: 100k rows benchmark", async () => {
+Deno.test("writeCatalogExport: each row keeps its own size and tags", async () => {
   const { store, cachePath, cleanup } = setupCatalogExportFixture();
   try {
-    const totalRows = 100_000;
+    const totalRows = 300;
     for (let i = 0; i < totalRows; i++) {
       store.upsert(makeRow({
         data_name: `data-${i}`,
@@ -480,17 +480,21 @@ Deno.test("writeCatalogExport: 100k rows benchmark", async () => {
         tags: `{"type":"resource","specName":"result","index":"${i}"}`,
       }));
     }
-    const start = performance.now();
     const count = await writeCatalogExport(store, cachePath, "test-ns");
-    const elapsed = performance.now() - start;
     assertEquals(count, totalRows);
-    console.log(`  writeCatalogExport 100k rows: ${elapsed.toFixed(0)}ms`);
 
     const content = await Deno.readTextFile(
       join(cachePath, "test-ns", ".catalog-export.json"),
     );
     const parsed = JSON.parse(content) as CatalogRow[];
     assertEquals(parsed.length, totalRows);
+    for (const row of parsed) {
+      const i = Number(row.id.slice("uuid-".length));
+      assertEquals(row.data_name, `data-${i}`);
+      assertEquals(row.size, i * 10);
+      assertEquals(JSON.parse(row.tags).index, `${i}`);
+    }
+    assertEquals(new Set(parsed.map((row) => row.id)).size, totalRows);
   } finally {
     cleanup();
   }

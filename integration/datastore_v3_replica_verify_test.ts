@@ -35,7 +35,6 @@ import {
   readReplicaVerification,
   replicationPathsFor,
   writeCopyState,
-  writeReplicaVerification,
 } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import { verifyReplica } from "../src/infrastructure/datastore_v3/litestream/replica_verifier.ts";
 import { readNewestSnapshotTxid } from "../src/infrastructure/datastore_v3/litestream/replica_snapshot.ts";
@@ -50,6 +49,7 @@ import {
   commitCount,
   commitIn,
   LITESTREAM_BINARY,
+  plantBrokenVerdict,
   presenceOf,
   type ReplicationEnv,
   restoredCommitCount,
@@ -336,13 +336,7 @@ Deno.test({
         probeIntervalMs: 200,
       });
       try {
-        await writeReplicaVerification(paths, {
-          lineageFence: before.lineageFence,
-          txid: "0000000000000001",
-          checkedAt: new Date().toISOString(),
-          ok: false,
-          error: "the restored database failed SQLite's integrity check",
-        });
+        await plantBrokenVerdict(paths, before.lineageFence);
         await waitFor(
           async () =>
             (await readLineage(paths))!.lineageFence > before.lineageFence &&
@@ -387,13 +381,7 @@ Deno.test({
       );
       assertEquals(expired.length, 1);
       await Deno.remove(expired[0]);
-      await writeReplicaVerification(paths, {
-        lineageFence: first,
-        txid: "0000000000000001",
-        checkedAt: new Date().toISOString(),
-        ok: false,
-        error: "the restored database failed SQLite's integrity check",
-      });
+      await plantBrokenVerdict(paths, first);
       await writeCommand(env, 2);
       const next = (await readLineage(paths))!.lineageFence;
       assert(next > first);
