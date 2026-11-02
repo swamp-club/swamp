@@ -39,6 +39,7 @@ import {
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type {
+  DefinitionOwner,
   DefinitionOwnerIndex,
   DefinitionOwnerView,
   DefinitionRepository,
@@ -612,7 +613,7 @@ export class CanonicalResources {
   readonly #workflowRepo: WorkflowRepository;
   readonly #ownerIndex: DefinitionOwnerIndex | undefined;
   readonly #signal: AbortSignal | undefined;
-  readonly #definitions = new Map<string, Promise<DefinitionLookupResult[]>>();
+  readonly #definitions = new Map<string, Promise<DefinitionOwner[]>>();
   #index: Promise<Map<string, DefinitionLookupResult[]>> | undefined;
   #view: Promise<DefinitionOwnerView> | undefined;
   readonly #workflows = new Map<string, Promise<AccessResource[]>>();
@@ -629,7 +630,7 @@ export class CanonicalResources {
     this.#signal = signal;
   }
 
-  #definitionsById(id: string): Promise<DefinitionLookupResult[]> {
+  #definitionsById(id: string): Promise<DefinitionOwner[]> {
     // inside a diagnostic phase every lookup is counted, and those answered
     // without a new lookup or scan count as reused
     const tally = currentDiagnosticTally();

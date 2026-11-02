@@ -25,9 +25,14 @@ import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import {
   type DefinitionFileSource,
   DefinitionIdIndex,
+  type DefinitionIdIndexOptions,
 } from "./definition_id_index.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
-import { statRecord } from "./workflow_run_index.ts";
+import {
+  fingerprintOf,
+  type RecordFingerprint,
+  statRecord,
+} from "./workflow_run_index.ts";
 import {
   diagnosticPhases,
   findSpan,
@@ -52,7 +57,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-function fixture(dir: string, stat?: typeof statRecord) {
+// the clock runs a minute ahead, so every stat a test sets is settled
+function fixture(dir: string, options: DefinitionIdIndexOptions = {}) {
   const primary = join(dir, "models");
   const auto = join(dir, ".swamp", "auto-definitions");
   const repo = new YamlDefinitionRepository(dir, undefined, primary, auto);
@@ -78,7 +84,7 @@ function fixture(dir: string, stat?: typeof statRecord) {
   };
   const index = new DefinitionIdIndex(source, {
     now: () => Date.now() + 60_000,
-    stat,
+    ...options,
   });
   return { primary, auto, repo, counter, index };
 }
@@ -207,7 +213,7 @@ Deno.test("DefinitionIdIndex: sees definitions another writer adds, removes and 
     assertEquals(await owners(index, id), [
       { name: "added", type: "test/a", tags: {} },
     ]);
-    assertEquals(counter.reads - before, 2);
+    assertEquals(counter.reads - before, 1);
 
     await Deno.rename(join(typeDir, "added.yaml"), join(typeDir, "moved.yaml"));
     await bump(typeDir);
@@ -253,6 +259,245 @@ Deno.test("DefinitionIdIndex: an owner's tags rewritten in place are read at loo
 
     await Deno.writeTextFile(path, yamlOf(id, "tagged", { env: "prod" }));
     assertEquals((await owners(index, id))[0].tags, { env: "prod" });
+  });
+});
+
+Deno.test("DefinitionIdIndex: a repeat lookup of an owner whose stat has not moved reads no file, and a cold listing is not read twice (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, counter, index } = fixture(dir);
+    const id = crypto.randomUUID();
+    await writeDefinition(join(primary, "test", "a", "o.yaml"), id, "o", {
+      env: "dev",
+    });
+    const expected = [{ name: "o", type: "test/a", tags: { env: "dev" } }];
+    assertEquals(await owners(index, id), expected);
+    assertEquals(counter.reads, 1);
+    assertEquals(await owners(index, id), expected);
+    assertEquals(counter.reads, 1);
+  });
+});
+
+Deno.test("DefinitionIdIndex: an owner whose name or tags changed is read once, then answered without a read, and its name is found by the new one (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, counter, index } = fixture(dir);
+    const path = join(primary, "test", "a", "o.yaml");
+    const id = crypto.randomUUID();
+    await writeDefinition(path, id, "before", { env: "dev" });
+    await owners(index, id);
+    const reads = counter.reads;
+
+    // In place: the directory's stat does not move.
+    await Deno.writeTextFile(path, yamlOf(id, "after", { env: "prod" }));
+    const expected = [{ name: "after", type: "test/a", tags: { env: "prod" } }];
+    assertEquals(await owners(index, id), expected);
+    assertEquals(counter.reads, reads + 1);
+    assertEquals(await owners(index, id), expected);
+    assertEquals(counter.reads, reads + 1);
+
+    assertEquals((await index.findByName("after"))?.definition.name, "after");
+    assertEquals(await index.findByName("before"), null);
+
+    // Renamed over: a new inode, and the directory's stat moves.
+    await Deno.writeTextFile(`${path}.tmp`, yamlOf(id, "after", { env: "qa" }));
+    await Deno.rename(`${path}.tmp`, path);
+    await bump(dirname(path));
+    assertEquals((await owners(index, id))[0].tags, { env: "qa" });
+  });
+});
+
+Deno.test("DefinitionIdIndex: a rewrite of the same size that sets the mtime back is seen by its ctime (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    let ctimeMoved = 0;
+    const { primary, index } = fixture(dir, {
+      // The rewrite's real ctime may land in the tick of the last stat.
+      lstat: async (path) => {
+        const info = await Deno.lstat(path);
+        const fingerprint = fingerprintOf(info);
+        return {
+          isSymlink: info.isSymlink,
+          fingerprint: fingerprint && {
+            ...fingerprint,
+            ctimeMs: (fingerprint.ctimeMs ?? 0) + ctimeMoved,
+          },
+        };
+      },
+    });
+    const path = join(primary, "test", "a", "o.yaml");
+    const id = crypto.randomUUID();
+    await writeDefinition(path, id, "o", { env: "dev" });
+    await owners(index, id);
+    const { mtime } = await Deno.stat(path);
+
+    await Deno.writeTextFile(path, yamlOf(id, "o", { env: "tst" }));
+    await Deno.utime(path, mtime!, mtime!);
+    ctimeMoved = 1;
+    assertEquals((await owners(index, id))[0].tags, { env: "tst" });
+  });
+});
+
+Deno.test("DefinitionIdIndex: where a stat reports neither a ctime nor an inode, an owner is read at every lookup, so a rewrite of the same size that sets the mtime back is seen (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const bare = (fingerprint: RecordFingerprint | undefined) =>
+      fingerprint && { mtimeMs: fingerprint.mtimeMs, size: fingerprint.size };
+    const { primary, counter, index } = fixture(dir, {
+      stat: async (path) => {
+        const stat = await statRecord(path);
+        return stat === null ? null : bare(stat);
+      },
+      lstat: async (path) => {
+        const info = await Deno.lstat(path);
+        return {
+          isSymlink: info.isSymlink,
+          fingerprint: bare(fingerprintOf(info)),
+        };
+      },
+    });
+    const path = join(primary, "test", "a", "o.yaml");
+    const id = crypto.randomUUID();
+    await writeDefinition(path, id, "o", { env: "dev" });
+    await owners(index, id);
+    const reads = counter.reads;
+    assertEquals((await owners(index, id))[0].tags, { env: "dev" });
+    assertEquals(counter.reads, reads + 1);
+
+    const { mtime } = await Deno.stat(path);
+    await Deno.writeTextFile(path, yamlOf(id, "o", { env: "tst" }));
+    await Deno.utime(path, mtime!, mtime!);
+    assertEquals((await owners(index, id))[0].tags, { env: "tst" });
+  });
+});
+
+Deno.test("DefinitionIdIndex: an owner too recent to trust is read at each lookup until its stat is settled (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    let now = Date.now();
+    const { primary, counter, index } = fixture(dir, { now: () => now });
+    const path = join(primary, "test", "a", "o.yaml");
+    const id = crypto.randomUUID();
+    await ensureDir(dirname(path));
+    await Deno.writeTextFile(path, yamlOf(id, "o"));
+
+    await owners(index, id);
+    let reads = counter.reads;
+    await owners(index, id);
+    assertEquals(counter.reads > reads, true);
+
+    now = Date.now() + 60_000;
+    await owners(index, id);
+    reads = counter.reads;
+    await owners(index, id);
+    assertEquals(counter.reads, reads);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a symlinked owner is read at every lookup (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, counter, index } = fixture(dir);
+    const typeDir = join(primary, "test", "a");
+    const target = join(dir, "extra", "target.yaml");
+    const id = crypto.randomUUID();
+    await writeDefinition(target, id, "linked");
+    await ensureDir(typeDir);
+    await Deno.symlink(target, join(typeDir, "link.yaml"), { type: "file" });
+    await bump(typeDir);
+    assertEquals((await owners(index, id)).map((o) => o.name), ["linked"]);
+
+    const reads = counter.reads;
+    assertEquals((await owners(index, id)).map((o) => o.name), ["linked"]);
+    assertEquals(counter.reads, reads + 1);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a read that fails at lookup changes nothing, so the next lookup reads again (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, counter, index } = fixture(dir);
+    const path = join(primary, "test", "a", "o.yaml");
+    const id = crypto.randomUUID();
+    await writeDefinition(path, id, "o", { env: "dev" });
+    await owners(index, id);
+
+    await Deno.writeTextFile(path, yamlOf(id, "o", { env: "prod" }));
+    counter.failOn = path;
+    await assertRejects(() => owners(index, id), Error, "failed to read");
+    counter.failOn = undefined;
+    assertEquals((await owners(index, id))[0].tags, { env: "prod" });
+  });
+});
+
+Deno.test("DefinitionIdIndex: tags a request changes do not reach the next request (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    const id = crypto.randomUUID();
+    await writeDefinition(join(primary, "test", "a", "o.yaml"), id, "o", {
+      env: "dev",
+    });
+    const view = await index.begin();
+    const [first] = await view.findAllById(id as DefinitionId);
+    first.definition.tags.env = "changed";
+    assertEquals((await owners(index, id))[0].tags, { env: "dev" });
+  });
+});
+
+Deno.test("DefinitionIdIndex: tags a request changes on an owner the lookup read do not reach the next request, whatever the source shares (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const primary = join(dir, "models");
+    const auto = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(dir, undefined, primary, auto);
+    // A source whose definitions hand out one tags object, not a copy.
+    const source: DefinitionFileSource = {
+      definitionRoots: () => repo.definitionRoots(),
+      readDefinitionFile: async (path, segments, isSymlink) => {
+        const found = await repo.readDefinitionFile(path, segments, isSymlink);
+        if (!found) return found;
+        const tags = found.definition.tags;
+        const definition = new Proxy(found.definition, {
+          get: (target, key) =>
+            key === "tags" ? tags : Reflect.get(target, key, target),
+        });
+        return { ...found, definition };
+      },
+    };
+    const index = new DefinitionIdIndex(source, {
+      now: () => Date.now() + 60_000,
+    });
+    const path = join(primary, "test", "a", "o.yaml");
+    const id = crypto.randomUUID();
+    await writeDefinition(path, id, "o", { env: "dev" });
+    await owners(index, id);
+
+    // In place, so the lookup reads it rather than answering from the index.
+    await Deno.writeTextFile(path, yamlOf(id, "o", { env: "prod" }));
+    await bump(path);
+    const view = await index.begin();
+    const [first] = await view.findAllById(id as DefinitionId);
+    assertEquals(first.definition.tags, { env: "prod" });
+    first.definition.tags.env = "changed";
+    assertEquals((await owners(index, id))[0].tags, { env: "prod" });
+  });
+});
+
+Deno.test("DefinitionIdIndex: an owner removed since the view began owns nothing (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    const path = join(primary, "test", "a", "o.yaml");
+    const id = crypto.randomUUID();
+    await writeDefinition(path, id, "o");
+    const view = await index.begin();
+    await Deno.remove(path);
+    assertEquals(await view.findAllById(id as DefinitionId), []);
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: reads the file at every lookup, since its caller runs the definition (swamp-club#4231)", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, counter, index } = fixture(dir);
+    const id = crypto.randomUUID();
+    await writeDefinition(join(primary, "test", "a", "o.yaml"), id, "o");
+    await owners(index, id);
+
+    const reads = counter.reads;
+    const found = await index.findByName("o");
+    assertEquals(found?.definition.toData().id, id);
+    assertEquals(counter.reads, reads + 1);
   });
 });
 
@@ -629,10 +874,12 @@ Deno.test("DefinitionIdIndex: a check that joins another's listing counts it as 
   await withTempDir(async (dir) => {
     const listed = join(dir, "models", "test", "a");
     let listedStats = 0;
-    const { primary, counter, index } = fixture(dir, async (path) => {
-      const stat = await statRecord(path);
-      if (path === listed) listedStats++;
-      return stat;
+    const { primary, counter, index } = fixture(dir, {
+      stat: async (path) => {
+        const stat = await statRecord(path);
+        if (path === listed) listedStats++;
+        return stat;
+      },
     });
     for (let i = 0; i < 5; i++) {
       await writeDefinition(

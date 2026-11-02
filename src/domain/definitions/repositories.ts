@@ -29,14 +29,18 @@ export interface DefinitionOwnerIndex {
   begin(signal?: AbortSignal): Promise<DefinitionOwnerView>;
 }
 
+// not an executable definition, so an index may keep it between requests
+export interface DefinitionOwner {
+  definition: Pick<Definition, "id" | "name" | "tags">;
+  type: ModelType;
+}
+
 export interface DefinitionOwnerView {
   /**
-   * Every definition declaring `id`, each read from its file now, primary
+   * Every definition declaring `id`, each as its file declares it now, primary
    * definitions first, in the order a scan of every definition reads them.
    */
-  findAllById(
-    id: DefinitionId,
-  ): Promise<{ definition: Definition; type: ModelType }[]>;
+  findAllById(id: DefinitionId): Promise<DefinitionOwner[]>;
 }
 
 export interface DefinitionRepository {

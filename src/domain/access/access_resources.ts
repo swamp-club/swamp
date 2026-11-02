@@ -20,7 +20,7 @@
 import { controlPlaneRecordResource } from "./control_plane_records.ts";
 import type { AccessResource } from "./access_decision_service.ts";
 import { isControlPlaneModelType } from "../models/control_plane_types.ts";
-import type { DefinitionLookupResult } from "../models/model_lookup.ts";
+import type { DefinitionOwner } from "../definitions/repositories.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Workflow } from "../workflows/workflow.ts";
 
@@ -52,7 +52,7 @@ export function modelTypeFields(
  * for
  */
 export function modelAccessResource(
-  result: DefinitionLookupResult,
+  result: DefinitionOwner,
   kind: ModelResourceKind = "model",
 ): AccessResource {
   if (isControlPlaneModelType(result.type.normalized)) {

@@ -266,9 +266,12 @@ these phases.
 
 `definition_names` names the outputs from the request's owner lookups
 (lab #4141): it looks up each definition owning an output that is not already
-named, once, and reads only those definitions' files (`files_read`), never a
-definition that owns none. It looks up 8 of them at a time (lab #4150), so its
-`read_work_ms` can exceed its wall time. A restricted search can run it more than
+named, once, and reads only those definitions' files whose stat moved, is too
+recent to trust or reports neither a ctime nor an inode, or that are symlinks
+(`files_read`, lab #4231), never a definition
+that owns none. A repeat request with no definition changes reads none. It looks
+up 8 of them at a time (lab #4150), so its `read_work_ms` can exceed its wall time.
+A restricted search can run it more than
 once: inside `candidate_scan` for the listed keys, then under the search for any
 output still unnamed (see below), and a search with a `limit` runs it again for
 each batch that has names still to look up. `authorization` then judges each item

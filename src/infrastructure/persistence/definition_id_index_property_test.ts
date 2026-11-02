@@ -193,10 +193,16 @@ async function assertMatchesScan(clockAhead: number, numRuns: number) {
             const all = await repo.findAllIncludingAutoGlobal();
             const view = await index.begin();
             for (const id of IDS) {
-              assertEquals(
-                describe(await view.findAllById(id as DefinitionId)),
-                describe(all.filter((f) => f.definition.id === id)),
+              const expected = describe(
+                all.filter((f) => f.definition.id === id),
               );
+              // The second answers from what the first left behind.
+              for (let lookup = 0; lookup < 2; lookup++) {
+                assertEquals(
+                  describe(await view.findAllById(id as DefinitionId)),
+                  expected,
+                );
+              }
             }
             for (const name of [...NAMES, "missing"]) {
               const found = await index.findByName(name);

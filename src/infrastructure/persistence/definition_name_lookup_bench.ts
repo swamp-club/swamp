@@ -19,6 +19,7 @@
 
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import {
   type DefinitionFileSource,
   DefinitionIdIndex,
@@ -35,10 +36,13 @@ const repo = ctx.definitionRepo;
 const runnerDir = join(ctx.autoDefinitionsDir, "test", "runner");
 await ensureDir(runnerDir);
 await ensureDir(join(repoDir, "models"));
+const storedIds: DefinitionId[] = [];
 for (let i = 0; i < STORED; i++) {
+  const id = crypto.randomUUID();
+  storedIds.push(id as DefinitionId);
   await Deno.writeTextFile(
     join(runnerDir, `stored-${i}.yaml`),
-    `type: ${TYPE}\nid: ${crypto.randomUUID()}\nname: stored-${i}\nversion: 1\ntags: {}\nglobalArguments: {}\nmethods: {}\n`,
+    `type: ${TYPE}\nid: ${id}\nname: stored-${i}\nversion: 1\ntags: {}\nglobalArguments: {}\nmethods: {}\n`,
   );
 }
 // wait past the index's racy window so the stored files count as settled, as
@@ -115,10 +119,34 @@ Deno.bench({
   },
 });
 
+// Deno runs groups in the order first registered, so this runs before the
+// burst, whose new files would leave the directory too recent to trust
+const ownerLookups = countingIndex("warm owner lookups");
+reads.set("warm owner lookups", { files: 0, iterations: 0 });
+await ownerLookups.begin();
+reads.set("warm owner lookups", { files: 0, iterations: 0 });
+
+Deno.bench({
+  name: `index: ${STORED} warm owner lookups, 8 at a time`,
+  group: "owners",
+  n: 20,
+  warmup: 1,
+  async fn() {
+    iteration("warm owner lookups");
+    const view = await ownerLookups.begin();
+    let next = 0;
+    await Promise.all(Array.from({ length: 8 }, async () => {
+      while (next < storedIds.length) {
+        await view.findAllById(storedIds[next++]);
+      }
+    }));
+  },
+});
+
 Deno.bench({
   name:
     `index: ${CONCURRENT} concurrent lookups right after ${CONCURRENT} new definitions`,
-  group: "miss",
+  group: "burst",
   n: 20,
   warmup: 1,
   async fn(b) {

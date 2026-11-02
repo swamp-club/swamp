@@ -20,8 +20,12 @@
 import { getLogger } from "@logtape/logtape";
 import { basename, dirname, join } from "@std/path";
 import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
-import type { Definition } from "../../domain/definitions/definition.ts";
 import type {
+  Definition,
+  DefinitionId,
+} from "../../domain/definitions/definition.ts";
+import type {
+  DefinitionOwner,
   DefinitionOwnerIndex,
   DefinitionOwnerView,
 } from "../../domain/definitions/repositories.ts";
@@ -40,6 +44,7 @@ import { comparePathsBySegment, readDirSorted } from "./sorted_dir_entries.ts";
 import { warnUnreadableLeftOut } from "./unreadable_records.ts";
 import {
   fingerprintMatches,
+  fingerprintOf,
   type RecordFingerprint,
   statRecord,
 } from "./workflow_run_index.ts";
@@ -79,15 +84,29 @@ export interface DefinitionFileSource {
   readonly unreadableContent?: UnreadableContentLookup;
 }
 
+// as lstat sees it: a symlink is not followed
+export interface LiveDefinitionFile {
+  isSymlink: boolean;
+  // undefined when the platform gives no mtime
+  fingerprint: RecordFingerprint | undefined;
+}
+
 export interface DefinitionIdIndexOptions {
   racyWindowMs?: number;
   now?: () => number;
   stat?: (path: string) => Promise<RecordFingerprint | undefined | null>;
+  // null when the file is gone or a directory on its path no longer is one
+  lstat?: (path: string) => Promise<LiveDefinitionFile | null>;
 }
 
 interface IndexedFile {
   id: string | undefined;
   name: string | undefined;
+  /**
+   * answers a lookup of its id while fingerprint holds; never kept for a
+   * symlink or a file that did not parse
+   */
+  owner: DefinitionOwner | undefined;
   /**
    * kept only when old enough to rule out a change within the same clock tick;
    * otherwise undefined and the file is stat'ed on every check
@@ -122,9 +141,9 @@ interface ValidationCounts {
 const MAX_JOIN_LINKS = 8;
 
 /**
- * keeps file locations only and re-reads files per lookup; an in-place
- * overwrite that changes a declared id or name goes unseen until the
- * directory's stat moves, which fails open
+ * keeps each file's location and owner fields, answering a lookup by id from
+ * them while the file's lstat holds; an in-place overwrite that changes a
+ * declared id goes unseen until the directory's stat moves, which fails open
  */
 export class DefinitionIdIndex implements DefinitionOwnerIndex {
   readonly #source: DefinitionFileSource;
@@ -133,6 +152,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   readonly #stat: (
     path: string,
   ) => Promise<RecordFingerprint | undefined | null>;
+  readonly #lstat: (path: string) => Promise<LiveDefinitionFile | null>;
   readonly #dirs = new Map<string, IndexedDir>();
   readonly #pathsById = new Map<string, Set<string>>();
   readonly #pathsByName = new Map<string, Set<string>>();
@@ -157,6 +177,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     this.#racyWindowMs = options.racyWindowMs ?? RUN_INDEX_RACY_WINDOW_MS;
     this.#now = options.now ?? Date.now;
     this.#stat = options.stat ?? statRecord;
+    this.#lstat = options.lstat ?? lstatDefinitionFile;
   }
 
   async begin(signal?: AbortSignal): Promise<DefinitionOwnerView> {
@@ -180,8 +201,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       "swamp.diagnostic.scan_root": "all",
       "swamp.diagnostic.scan_strategy": "global_index",
     }, signal);
-    const [found] = await this.#readDeclaring({ name }, true, signal);
-    return found ?? null;
+    return await this.#firstDeclaring(name, signal);
   }
 
   async #check(
@@ -405,6 +425,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       files.set(entry.name, {
         id: undefined,
         name: undefined,
+        owner: undefined,
         fingerprint: undefined,
         isSymlink: entry.isSymlink,
       });
@@ -419,6 +440,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         files.set(entry.name, {
           id: undefined,
           name: undefined,
+          owner: undefined,
           fingerprint: undefined,
           isSymlink: true,
         });
@@ -440,6 +462,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     files.set(entry.name, {
       id: found?.definition.id,
       name: found?.definition.name,
+      owner: found && !entry.isSymlink ? ownerOf(found) : undefined,
       fingerprint,
       isSymlink: entry.isSymlink,
     });
@@ -480,64 +503,53 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       parsed++;
       if (!this.#isCurrent(filePath, file)) continue;
       file.fingerprint = fingerprint;
-      this.#reassign(filePath, file, found?.definition);
+      this.#reassign(filePath, file, found);
     }
     return parsed;
   }
 
+  // the stat is taken before the read, so a write during the read leaves a
+  // stat the next lookup sees has moved
   async #findAllById(
-    id: string,
+    id: DefinitionId,
     signal: AbortSignal | undefined,
-  ): Promise<FoundDefinition[]> {
-    const found = await this.#readDeclaring({ id }, false, signal);
-    return found.map(({ definition, type }) => ({ definition, type }));
-  }
-
-  async #readDeclaring(
-    key: { id: string; name?: undefined } | { id?: undefined; name: string },
-    firstOnly: boolean,
-    signal: AbortSignal | undefined,
-  ): Promise<NamedDefinitionMatch[]> {
-    const indexed = key.id !== undefined
-      ? this.#pathsById.get(key.id)
-      : this.#pathsByName.get(key.name);
-    const declares = (definition: Definition) =>
-      key.id !== undefined
-        ? definition.id === key.id
-        : definition.name === key.name;
-    const paths = [...indexed ?? []]
-      .map((path) => ({ path, dir: this.#dirs.get(dirname(path)) }))
-      .sort((a, b) =>
-        (a.dir?.root ?? 0) - (b.dir?.root ?? 0) ||
-        comparePathsBySegment(a.path, b.path)
-      );
-    const found: NamedDefinitionMatch[] = [];
-    for (const { path, dir } of paths) {
+  ): Promise<DefinitionOwner[]> {
+    const found: DefinitionOwner[] = [];
+    for (const { path, dir } of this.#inScanOrder(this.#pathsById.get(id))) {
       signal?.throwIfAborted();
       const file = dir?.files.get(basename(path));
-      // Whether it is a symlink now, not when listed: a file swapped for a
-      // symlink since must still have its target contained in the repo.
-      const isSymlink = dir && file ? await liveSymlink(path) : null;
+      const statAt = this.#now();
+      const live = dir && file ? await this.#lstat(path) : null;
       // Gone since it was listed (the view lasts the whole request): it owns
       // nothing, and is no broken definition to warn about.
-      if (!dir || !file || isSymlink === null) {
-        this.#unindex(file ?? { id: key.id, name: key.name }, path);
+      if (!dir || !file || live === null) {
+        this.#unindex(file ?? { id, name: undefined }, path);
+        continue;
+      }
+      const settled = this.#settled(live.fingerprint, statAt) ?? undefined;
+      // Whether it is a symlink now, not when listed: a file swapped for a
+      // symlink since must still have its target contained in the repo.
+      if (
+        !live.isSymlink && file.owner?.definition.id === id &&
+        revealsRewrites(settled) && this.#trusted(file.fingerprint, settled)
+      ) {
+        found.push(copyOf(file.owner));
         continue;
       }
       const read = await this.#source.readDefinitionFile(
         path,
         [...dir.segments],
-        isSymlink,
+        live.isSymlink,
       );
-      if (read && declares(read.definition)) {
-        found.push({
-          definition: read.definition,
-          type: read.type,
-          path,
-          segments: [...dir.segments],
-          primary: dir.root === 0,
-        });
-        if (firstOnly) break;
+      if (read?.definition.id === id) {
+        found.push(ownerOf(read));
+        // the name moves with the kept stat, or a listing trusting that stat
+        // would index the file under a name it no longer declares; a symlink's
+        // own stat says nothing of its target, so none is kept
+        if (!live.isSymlink && this.#isCurrent(path, file)) {
+          file.fingerprint = settled;
+          this.#reassign(path, file, read);
+        }
         continue;
       }
       // Rewritten since it was listed: index it under what it declares now,
@@ -545,9 +557,66 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       // entry while this read ran already says what the file declares.
       if (!this.#isCurrent(path, file)) continue;
       file.fingerprint = undefined;
-      this.#reassign(path, file, read?.definition);
+      this.#reassign(path, file, read, live.isSymlink);
     }
     return found;
+  }
+
+  /**
+   * the first file indexed under `name` that still declares it, in the order
+   * a scan of every definition reads them; always read, since callers run it
+   */
+  async #firstDeclaring(
+    name: string,
+    signal: AbortSignal | undefined,
+  ): Promise<NamedDefinitionMatch | null> {
+    for (
+      const { path, dir } of this.#inScanOrder(this.#pathsByName.get(name))
+    ) {
+      signal?.throwIfAborted();
+      const file = dir?.files.get(basename(path));
+      // Whether it is a symlink now, not when listed: a file swapped for a
+      // symlink since must still have its target contained in the repo.
+      const live = dir && file ? await this.#lstat(path) : null;
+      // Gone since it was listed (the view lasts the whole request): it owns
+      // nothing, and is no broken definition to warn about.
+      if (!dir || !file || live === null) {
+        this.#unindex(file ?? { id: undefined, name }, path);
+        continue;
+      }
+      const read = await this.#source.readDefinitionFile(
+        path,
+        [...dir.segments],
+        live.isSymlink,
+      );
+      if (read?.definition.name === name) {
+        return {
+          definition: read.definition,
+          type: read.type,
+          path,
+          segments: [...dir.segments],
+          primary: dir.root === 0,
+        };
+      }
+      // Rewritten since it was listed: index it under what it declares now,
+      // and read it again on the next check. A listing that replaced the
+      // entry while this read ran already says what the file declares.
+      if (!this.#isCurrent(path, file)) continue;
+      file.fingerprint = undefined;
+      this.#reassign(path, file, read, live.isSymlink);
+    }
+    return null;
+  }
+
+  #inScanOrder(
+    paths: ReadonlySet<string> | undefined,
+  ): { path: string; dir: IndexedDir | undefined }[] {
+    return [...paths ?? []]
+      .map((path) => ({ path, dir: this.#dirs.get(dirname(path)) }))
+      .sort((a, b) =>
+        (a.dir?.root ?? 0) - (b.dir?.root ?? 0) ||
+        comparePathsBySegment(a.path, b.path)
+      );
   }
 
   /**
@@ -637,14 +706,17 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     return this.#dirs.get(dirname(path))?.files.get(basename(path)) === file;
   }
 
+  // isSymlink is the path now, which a lookup knows and the listing may not
   #reassign(
     path: string,
     file: IndexedFile,
-    definition: Definition | undefined,
+    found: FoundDefinition | null | undefined,
+    isSymlink: boolean = file.isSymlink,
   ): void {
     this.#unindex(file, path);
-    file.id = definition?.id;
-    file.name = definition?.name;
+    file.id = found?.definition.id;
+    file.name = found?.definition.name;
+    file.owner = found && !isSymlink ? ownerOf(found) : undefined;
     this.#index(file, path);
   }
 
@@ -701,9 +773,31 @@ async function inBatches<T>(
   }
 }
 
-async function liveSymlink(path: string): Promise<boolean | null> {
+function ownerOf({ definition, type }: FoundDefinition): DefinitionOwner {
+  const { id, name, tags } = definition;
+  return { definition: { id, name, tags: { ...tags } }, type };
+}
+
+// a ctime or an inode moves when a same-size rewrite sets the mtime back
+function revealsRewrites(stat: RecordFingerprint | undefined): boolean {
+  return stat?.ctimeMs !== undefined || stat?.ino !== undefined;
+}
+
+// copied so a request that changes its owner cannot reach the next request
+function copyOf({ definition, type }: DefinitionOwner): DefinitionOwner {
+  const { id, name, tags } = definition;
+  return { definition: { id, name, tags: { ...tags } }, type };
+}
+
+async function lstatDefinitionFile(
+  path: string,
+): Promise<LiveDefinitionFile | null> {
   try {
-    return (await Deno.lstat(path)).isSymlink;
+    const info = await Deno.lstat(path);
+    return {
+      isSymlink: info.isSymlink,
+      fingerprint: fingerprintOf(info),
+    };
   } catch (error) {
     if (
       error instanceof Deno.errors.NotFound ||
