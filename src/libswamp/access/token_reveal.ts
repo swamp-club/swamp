@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Reveal the plaintext secret for a server token so the operator can
- * form the `<name>.<secret>` credential string for authentication.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
@@ -160,8 +155,8 @@ export async function* serverTokenReveal(
         return;
       }
 
-      // Serve rejects a credential whose secret is not the one the record
-      // was minted with, so do not hand one out (swamp-club#2482).
+      // serve rejects a credential whose secret is not the one the record was
+      // minted with, so do not hand one out
       try {
         await verifyServerTokenSecret(token, plaintext);
       } catch (error) {

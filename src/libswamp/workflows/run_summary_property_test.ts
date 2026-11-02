@@ -39,7 +39,6 @@ const STATUSES = [
 const START = Date.UTC(2026, 0, 1);
 const SPAN = 14 * 24 * 60 * 60 * 1000;
 
-/** A run, dated or not as `dated` says, with a unique id from its index. */
 function arbRuns(dated: "always" | "sometimes") {
   return fc.array(
     fc.record({

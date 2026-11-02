@@ -67,7 +67,7 @@ export async function createMigrateIndexDeps(
   await datastoreTypeRegistry.ensureLoaded();
   const config = datastoreResolver.config();
 
-  // A v3 datastore on a bucket has no v2 index (swamp-club#3534).
+  // a v3 datastore on a bucket has no v2 index
   if (
     isCustomDatastoreConfig(config) &&
     resolverEngine(datastoreResolver) === "v3"

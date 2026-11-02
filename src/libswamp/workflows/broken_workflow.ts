@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Raw-file scan for workflow files that fail schema parsing.
- *
- * The workflow repository skips unparseable files with a logged warning,
- * so a schema-rejected workflow (e.g. one carrying an unknown key,
- * swamp-club#1240) would otherwise surface as "Workflow not found" in
- * `workflow validate` and `workflow run`. This helper re-reads the raw
- * YAML the same way the doctor flow does, so those callers can surface
- * the actual parse error inline.
+ * the repository skips unparseable workflow files with a warning, which would
+ * read as Workflow not found; this re-reads the raw YAML so callers can show
+ * the real parse error
  */
 
 import { basename, join } from "@std/path";
@@ -38,28 +33,16 @@ import { isWorkflowDocument } from "../../domain/workflows/workflow_document.ts"
 import { resolveEffectiveWorkflowsDir } from "../../infrastructure/persistence/paths.ts";
 import { isPrimaryWorkflowFileName } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 
-/** A workflow file that failed YAML parsing or schema validation. */
 export interface BrokenWorkflow {
-  /** Absolute path of the offending file. */
   file: string;
-  /** Raw `name` from the YAML, when readable. */
   name: string | null;
-  /** Raw `id` from the YAML, when readable. */
   id: string | null;
-  /** The parse or schema error message. */
   error: string;
 }
 
-/**
- * A YAML file in the workflows directory that the loader never reads because
- * its name does not match `workflow-*.yaml`.
- */
 export interface MisnamedWorkflow {
-  /** Absolute path of the file. */
   file: string;
-  /** Raw `name` from the YAML, when readable. */
   name: string | null;
-  /** Raw `id` from the YAML, when readable. */
   id: string | null;
   /**
    * Why the file is not loaded. It names the file by its base name only, so
@@ -68,16 +51,10 @@ export interface MisnamedWorkflow {
   message: string;
 }
 
-/** Returns the effective workflows directory for a repo, consulting the managed config registry. */
 export function workflowsDirFor(repoDir: string): string {
   return resolveEffectiveWorkflowsDir(repoDir);
 }
 
-/**
- * Scans the workflows directory for `workflow-*.yaml` files (the set the
- * repository loader reads) that fail to load, returning one entry per
- * broken file. A missing directory yields an empty list.
- */
 export async function listBrokenWorkflows(
   workflowsDir: string,
 ): Promise<BrokenWorkflow[]> {
@@ -136,10 +113,6 @@ export async function listBrokenWorkflows(
   return broken;
 }
 
-/**
- * Finds the broken workflow file whose raw `name` or `id` matches the
- * given identifier, or null when every file loads (or none matches).
- */
 export async function findBrokenWorkflow(
   workflowsDir: string,
   idOrName: string,
@@ -148,11 +121,6 @@ export async function findBrokenWorkflow(
   return broken.find((b) => b.name === idOrName || b.id === idOrName) ?? null;
 }
 
-/**
- * Explains why a file in a repo workflows dir is not loaded. `file` and `dir`
- * are how the caller names the file and its directory; renaming is only
- * advised for a file that is a workflow.
- */
 export function workflowNotLoadedMessage(
   file: string,
   dir: string,
@@ -167,12 +135,6 @@ export function workflowNotLoadedMessage(
       `meant to be one.`;
 }
 
-/**
- * Finds the top-level `*.yaml` / `*.yml` file in the workflows directory that
- * the loader skips for its name (swamp-club#3839) and whose raw `name` or
- * `id` matches the given identifier, first by file name. Files that cannot
- * be read or parsed are skipped; a missing directory yields null.
- */
 export async function findMisnamedWorkflow(
   workflowsDir: string,
   idOrName: string,

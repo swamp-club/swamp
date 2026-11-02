@@ -36,9 +36,6 @@ import { cancelled, type SwampError } from "../errors.ts";
 import { AsyncQueue } from "../stream/async_queue.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the update check/install output.
- */
 export type UpdateCheckData = UpdateResult;
 
 export type UpdateCheckEvent =
@@ -48,13 +45,11 @@ export type UpdateCheckEvent =
   | { kind: "completed"; data: UpdateCheckData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the update check/install operation. */
 export interface UpdateCheckInput {
   checkOnly: boolean;
   platform: Platform;
 }
 
-/** Dependencies for the update check/install operation. */
 export interface UpdateCheckDeps {
   check: (platform: Platform, signal?: AbortSignal) => Promise<UpdateResult>;
   update: (
@@ -64,16 +59,11 @@ export interface UpdateCheckDeps {
 }
 
 /**
- * How many times `swamp update` sends its update-check request before
- * giving up (swamp-club#3428). The check after every other command makes
- * one attempt so it never slows them down.
+ * `swamp update` retries its check up to this many times; the check after every
+ * other command makes one attempt so it never slows them
  */
 export const UPDATE_CHECK_MAX_ATTEMPTS = 3;
 
-/**
- * Wires real infrastructure into UpdateCheckDeps. `checkerOptions`
- * overrides the checker's settings; tests pass a no-op `sleep`.
- */
 export function createUpdateCheckDeps(
   currentVersion: string,
   binaryPath: string,
@@ -90,11 +80,6 @@ export function createUpdateCheckDeps(
   };
 }
 
-/**
- * Checks for or installs updates. While installing, it streams the
- * download's progress and retries. Aborting `ctx.signal` ends the stream with
- * a `cancelled` error; the installed binary is untouched.
- */
 export async function* updateCheck(
   ctx: LibSwampContext,
   deps: UpdateCheckDeps,
@@ -127,10 +112,6 @@ export async function* updateCheck(
   );
 }
 
-/**
- * Runs the update, yielding its download events as they happen, and returns
- * its result.
- */
 async function* streamUpdate(
   ctx: LibSwampContext,
   deps: UpdateCheckDeps,

@@ -118,7 +118,6 @@ Deno.test("doctorSecrets: never includes the secret value in findings", async ()
     doctorSecrets(createLibSwampContext(), deps),
   );
 
-  // The entire completed payload must be free of the cleartext secret.
   assertEquals(JSON.stringify(completedData(events)).includes(SECRET), false);
 });
 

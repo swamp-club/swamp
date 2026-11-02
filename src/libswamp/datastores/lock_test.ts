@@ -51,8 +51,6 @@ const sampleLockInfo: LockInfo = {
   nonce: "abc-123",
 };
 
-// ── Lock status tests ──────────────────────────────────────────────────
-
 function makeStatusDeps(
   overrides: Partial<DatastoreLockStatusDeps> = {},
 ): DatastoreLockStatusDeps {
@@ -159,7 +157,6 @@ Deno.test("datastoreLockStatus: with model locks on filesystem", async () => {
   );
 
   assertEquals(events.length, 2);
-  // model_lock events come first
   const modelLock = events[0] as Extract<
     DatastoreLockStatusEvent,
     { kind: "model_lock" }
@@ -167,7 +164,6 @@ Deno.test("datastoreLockStatus: with model locks on filesystem", async () => {
   assertEquals(modelLock.kind, "model_lock");
   assertEquals(modelLock.data.held, true);
   assertEquals(modelLock.data.lockScope, "aws-ec2/my-server");
-  // completed comes last
   assertEquals(events[1].kind, "completed");
 });
 
@@ -211,8 +207,6 @@ Deno.test("datastoreLockStatus: reports model locks on a custom datastore", asyn
     },
   ]);
 });
-
-// ── Lock release tests ─────────────────────────────────────────────────
 
 function makeReleaseDeps(
   overrides: Partial<DatastoreLockReleaseDeps> = {},
@@ -357,8 +351,6 @@ Deno.test("datastoreLockRelease: old-format lock with no nonce still reaches for
   assertEquals(forceReleaseCalls, 1);
 });
 
-// ── parseModelLockKey ──────────────────────────────────────────────────
-
 Deno.test("parseModelLockKey: simple model type", () => {
   const result = parseModelLockKey(
     ["data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR),
@@ -410,11 +402,8 @@ Deno.test("parseModelLockKey: too few parts returns null", () => {
 });
 
 Deno.test("parseModelLockKey: handles forward-slash input on any platform", () => {
-  // Simulates the case where rel happens to contain `/` on Windows (e.g.
-  // someone constructed the path manually with forward slashes); on POSIX
-  // this is the normal case. The function should accept it on POSIX and
-  // would return null on Windows where SEPARATOR is `\` — the test
-  // harness is platform-aware.
+  // forward slashes are the normal path form on POSIX; on Windows SEPARATOR is
+  // a backslash, so the assertion branches by platform
   const rel = "data/aws-ec2/server-1/.lock";
   const result = parseModelLockKey(rel);
   if (SEPARATOR === "/") {
@@ -423,8 +412,6 @@ Deno.test("parseModelLockKey: handles forward-slash input on any platform", () =
     assertEquals(result, null);
   }
 });
-
-// ── parseModelSpec ─────────────────────────────────────────────────────
 
 Deno.test("parseModelSpec: simple type/id", () => {
   assertEquals(parseModelSpec("aws-ec2/server-1"), {
@@ -463,8 +450,6 @@ Deno.test("parseModelSpec: empty string returns null", () => {
   assertEquals(parseModelSpec(""), null);
 });
 
-// ── modelLockKey ──────────────────────────────────────────────────────
-
 Deno.test("modelLockKey: without namespace", () => {
   assertEquals(
     modelLockKey(undefined, "aws-ec2", "server-1"),
@@ -493,8 +478,6 @@ Deno.test("modelLockKey: with namespace and scoped extension type", () => {
   );
 });
 
-// ── stripNamespacePrefix ──────────────────────────────────────────────
-
 Deno.test("stripNamespacePrefix: no namespace returns input unchanged", () => {
   const rel = ["data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR);
   assertEquals(stripNamespacePrefix(undefined, rel), rel);
@@ -516,12 +499,9 @@ Deno.test("stripNamespacePrefix: non-matching prefix returns input unchanged", (
   assertEquals(stripNamespacePrefix("infra", rel), rel);
 });
 
-// ── Functional: scanModelLocks against real filesystem ────────────────
-
 Deno.test("scanModelLocks: finds both simple and scoped extension type locks", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp-lock-scan-" });
   try {
-    // Plant a simple-type lock and a scoped-type lock with active TTLs.
     const now = new Date().toISOString();
     const lock = JSON.stringify({
       holder: "h@h",
@@ -615,8 +595,6 @@ Deno.test("scanModelLocks: finds locks under namespace-scoped directory", async 
   }
 });
 
-// ── workflowRunLockKey ────────────────────────────────────────────────
-
 Deno.test("workflowRunLockKey: without namespace", () => {
   assertEquals(
     workflowRunLockKey(undefined, "run-1"),
@@ -635,8 +613,6 @@ Deno.test("workflowRunLockKey: is not read as a per-model lock", () => {
   const rel = workflowRunLockKey(undefined, "run-1").split("/").join(SEPARATOR);
   assertEquals(parseModelLockKey(rel), null);
 });
-
-// ── Custom datastores: model locks through the provider's lock ─────────
 
 const unusedGlobalLock = {
   inspect: () => Promise.resolve(null),
@@ -760,7 +736,6 @@ Deno.test("createDatastoreLockStatusDeps: a failed inspect stops further inspect
         inFlight++;
         try {
           if (lockKey.includes("server-00")) throw new Error("AccessDenied");
-          // Still running when the failing inspect rejects.
           for (let i = 0; i < 5; i++) await Promise.resolve();
           return null;
         } finally {
@@ -779,7 +754,6 @@ Deno.test("createDatastoreLockStatusDeps: a failed inspect stops further inspect
   });
 
   await assertRejects(() => deps.scanModelLocks(), Error, "AccessDenied");
-  // No inspect outlives the scan, and the failure stopped the rest.
   assertEquals(inFlight, 0);
   assertEquals(inspects, 16);
 });

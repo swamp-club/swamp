@@ -28,7 +28,6 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
-/** Data structure for the extension yank output. */
 export interface ExtensionYankData {
   name: string;
   version: string | null;
@@ -40,7 +39,6 @@ export type ExtensionYankEvent =
   | { kind: "completed"; data: ExtensionYankData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the extension yank operation. */
 export interface ExtensionYankInput {
   extensionName: string;
   version: string | null;
@@ -48,7 +46,6 @@ export interface ExtensionYankInput {
   reason: string;
 }
 
-/** Preview data returned before confirmation. */
 export interface ExtensionYankPreview {
   extensionName: string;
   version: string | null;
@@ -56,7 +53,6 @@ export interface ExtensionYankPreview {
   reason: string;
 }
 
-/** Dependencies for the extension yank operation. */
 export interface ExtensionYankDeps {
   loadCredentials: () => Promise<
     { serverUrl: string; apiKey: string } | null
@@ -71,7 +67,6 @@ export interface ExtensionYankDeps {
   ) => Promise<void>;
 }
 
-/** Wires real infrastructure into ExtensionYankDeps. */
 export function createExtensionYankDeps(
   identity?: ClientIdentity,
 ): ExtensionYankDeps {
@@ -103,7 +98,6 @@ function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
-/** Gathers preview info for the extension yank operation, validating inputs. */
 export async function extensionYankPreview(
   ctx: LibSwampContext,
   deps: ExtensionYankDeps,
@@ -111,13 +105,11 @@ export async function extensionYankPreview(
 ): Promise<ExtensionYankPreview> {
   ctx.logger.debug`Validating extension yank preview`;
 
-  // Validate credentials
   const credentials = await deps.loadCredentials();
   if (!credentials) {
     throw notAuthenticated();
   }
 
-  // Validate extension name
   if (!SCOPED_NAME_PATTERN.test(input.extensionName)) {
     throw validationFailed(
       `Invalid extension name: "${input.extensionName}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
@@ -132,7 +124,6 @@ export async function extensionYankPreview(
   };
 }
 
-/** Yanks an extension or specific version from the registry. */
 export async function* extensionYank(
   ctx: LibSwampContext,
   deps: ExtensionYankDeps,
@@ -144,7 +135,6 @@ export async function* extensionYank(
     (async function* () {
       ctx.logger.debug`Executing extension yank`;
 
-      // Re-validate credentials (self-contained)
       const credentials = await deps.loadCredentials();
       if (!credentials) {
         yield { kind: "error", error: notAuthenticated() };

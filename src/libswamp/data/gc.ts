@@ -53,7 +53,6 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import type { DataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 import { getLogger } from "@logtape/logtape";
 
-/** Preview item for a single expired data entry. */
 export interface DataGcPreviewItem {
   type: string;
   modelId: string;
@@ -61,7 +60,6 @@ export interface DataGcPreviewItem {
   reason: string;
 }
 
-/** Preview item for a model that has versions to prune via version GC. */
 export interface VersionGcPreviewItem {
   type: string;
   modelId: string;
@@ -69,35 +67,28 @@ export interface VersionGcPreviewItem {
   bytesWouldBeReclaimed: number;
 }
 
-/** What data retention would age out (see DataGcInput.dataRetentionMs). */
 export interface DataGcAgedOutPreview {
   entries: number;
   versions: number;
   bytes: number;
 }
 
-/** Preview data returned before confirmation. */
 export interface DataGcPreview {
   items: DataGcPreviewItem[];
   versionGcItems: VersionGcPreviewItem[];
-  /** Present when the repository configures a data retention. */
   agedOut?: DataGcAgedOutPreview;
 }
 
-/** Data structure for the data gc completed event. */
 export interface DataGcData {
   dataEntriesExpired: number;
   versionsDeleted: number;
   walPagesTotal: number;
   walPagesCheckpointed: number;
   bytesReclaimed: number;
-  // The aged-out counts are always set by dataGc; a server older than data
-  // retention (swamp-club#3473) omits them from its data.gc response.
-  /** Data names deleted whole by data retention. */
+  // dataGc always sets the aged-out counts; a server older than data retention
+  // omits them from its data.gc response
   agedOutEntries?: number;
-  /** Versions deleted by data retention, counting those of whole names. */
   agedOutVersions?: number;
-  /** Bytes the versions deleted by data retention held. */
   agedOutBytes?: number;
   dryRun: boolean;
   expiredEntries: Array<{
@@ -113,7 +104,6 @@ export type DataGcEvent =
   | { kind: "completed"; data: DataGcData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the data gc operation. */
 export interface DataGcInput {
   dryRun: boolean;
   /**
@@ -124,26 +114,22 @@ export interface DataGcInput {
   dataRetentionMs?: number;
 }
 
-/** Dependencies for the data gc operation. */
 export interface DataGcDeps {
   findExpiredData: () => Promise<ExpiredDataInfo[]>;
   previewVersionGarbage: () => Promise<VersionGcPreviewInfo[]>;
   deleteExpiredData: (opts: {
     dryRun: boolean;
   }) => Promise<LifecycleGCResult>;
-  /** Deletes model data created before `cutoff` (data retention). */
   deleteDataOlderThan?: (
     cutoff: Date,
     opts: { dryRun: boolean; limit?: number; scan?: DataRetentionScan },
   ) => Promise<DataRetentionResult>;
-  /** Checkpoints the catalog WAL. Omit in tests that don't need compaction. */
   compactCatalog?: () => {
     walPagesTotal: number;
     walPagesCheckpointed: number;
   };
 }
 
-/** Wires real infrastructure into DataGcDeps. */
 export function createDataGcDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -173,11 +159,6 @@ export function createDataGcDeps(
   return createDataGcDepsFrom(catalogStore, unifiedDataRepo, workflowRunRepo);
 }
 
-/**
- * Wires DataGcDeps over repositories that already exist, such as a
- * repository context's, so a caller that runs often (serve's retention
- * timer) opens no catalog connection of its own.
- */
 export function createDataGcDepsFrom(
   catalogStore: CatalogStore,
   unifiedDataRepo: FileSystemUnifiedDataRepository,
@@ -206,7 +187,6 @@ export function createDataGcDepsFrom(
   };
 }
 
-/** Gathers preview info for the data gc operation. */
 export async function dataGcPreview(
   ctx: LibSwampContext,
   deps: DataGcDeps,
@@ -253,7 +233,6 @@ async function previewAgedOut(
   };
 }
 
-/** Runs garbage collection on expired data. */
 export async function* dataGc(
   ctx: LibSwampContext,
   deps: DataGcDeps,
@@ -302,22 +281,19 @@ export async function* dataGc(
     ));
 }
 
-/** Result of auto-GC including both version and lifetime expiration. */
 export interface AutoGcResult extends GarbageCollectionResult {
   dataEntriesExpired: number;
 }
 
-/** Dependencies for model-scoped lifetime expiration during auto-GC. */
 export interface AutoGcLifecycleDeps {
   dataRepo: Pick<UnifiedDataRepository, "findAllForModel" | "delete">;
   lifecycleService: Pick<DataLifecycleService, "isExpired">;
 }
 
 /**
- * Runs garbage collection for a single model. Catches all errors — auto-GC
- * failure must never fail the method run. User-visible output is owned by the
- * renderer via the auto_gc_completed event; this function only logs at debug
- * and warn levels.
+ * catches all errors: auto-GC failure must never fail the method run. Output is
+ * owned by the renderer via auto_gc_completed; this only logs at debug and
+ * warn.
  */
 export async function autoGc(
   dataRepo: {

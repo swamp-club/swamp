@@ -25,7 +25,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** Latest published version on a single prerelease channel. */
 export interface ChannelVersionInfo {
   latest: string;
 }
@@ -38,17 +37,11 @@ export type PrereleaseChannels = Partial<
   Record<"beta" | "rc", ChannelVersionInfo>
 >;
 
-/** Data payload for the completed event. */
 export interface ExtensionVersionData {
   extensionName: string;
   currentPublished: string | null;
   publishedAt: string | null;
   nextVersion: string;
-  /**
-   * Latest prerelease versions per channel. Present only when at least one
-   * prerelease exists, and carries only the channels that have a published
-   * latest. Omitted entirely for never-published and stable-only extensions.
-   */
   channels?: PrereleaseChannels;
 }
 
@@ -57,16 +50,13 @@ export type ExtensionVersionEvent =
   | { kind: "completed"; data: ExtensionVersionData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the extension version operation. */
 export interface ExtensionVersionInput {
   extensionName: string;
 }
 
 /**
- * Latest published version on each channel, as reported by the registry.
- * Any field is null when that channel has no published version. Extension
- * versions are globally unique per extension across channels (a version
- * document carries one channel and promotion just updates it).
+ * a version document carries one channel and promotion just updates it, so
+ * versions are globally unique per extension across channels.
  */
 export interface PublishedVersions {
   stable: string | null;
@@ -74,13 +64,10 @@ export interface PublishedVersions {
   rc: string | null;
 }
 
-/** Dependencies for the extension version operation. */
 export interface ExtensionVersionDeps {
-  /** Resolves per-channel latest versions, or null when the extension does not exist. */
   getPublishedVersions: (name: string) => Promise<PublishedVersions | null>;
 }
 
-/** Wires real infrastructure into ExtensionVersionDeps. No authentication required. */
 export function createExtensionVersionDeps(
   identity?: ClientIdentity,
 ): ExtensionVersionDeps {
@@ -100,7 +87,6 @@ export function createExtensionVersionDeps(
   };
 }
 
-/** Queries the registry for the latest published version and computes the next CalVer version. */
 export async function* extensionVersion(
   _ctx: LibSwampContext,
   deps: ExtensionVersionDeps,
@@ -115,9 +101,9 @@ export async function* extensionVersion(
       try {
         const published = await deps.getPublishedVersions(input.extensionName);
 
-        // The next publishable version must exceed the max across all channels,
-        // since versions are globally unique per extension. Filter to valid
-        // CalVers and pick the highest as the bump baseline.
+        // versions are globally unique per extension, so the next one must
+        // exceed the max across all channels; filter to valid CalVers and take
+        // the highest.
         const baseline = published
           ? [published.stable, published.beta, published.rc]
             .filter((v): v is string => v !== null && CalVer.isValid(v))
@@ -130,8 +116,6 @@ export async function* extensionVersion(
           : undefined;
         const nextVersion = CalVer.bump(baseline);
 
-        // Surface latest prerelease versions per channel, omitting channels
-        // with no published latest. Undefined when no prerelease exists.
         const channels: PrereleaseChannels = {};
         if (published?.beta) channels.beta = { latest: published.beta };
         if (published?.rc) channels.rc = { latest: published.rc };

@@ -61,7 +61,6 @@ import type { RunRecordCurrency } from "../../domain/workflows/continuation_clai
 
 export interface WorkflowRejectData {
   runId: string;
-  /** The id of the workflow the rejected run belongs to. */
   workflowId: string;
   workflowName: string;
   stepName: string;
@@ -70,17 +69,12 @@ export interface WorkflowRejectData {
   reason: string | null;
   runStatus: string;
   /**
-   * Nested runs the rejected run's nested steps still waited on: left
-   * suspended on their own (swamp-club#2736).
+   * nested runs the rejected run's nested steps still waited on, left suspended
+   * on their own
    */
   detachedNestedRuns?: DetachedNestedRunData[];
-  /**
-   * Nested runs cancelled with this run, and running ones asked to stop
-   * (swamp-club#2867).
-   */
   cancelledNestedRuns?: CascadedNestedRunData[];
   stopRequestedNestedRuns?: CascadedNestedRunData[];
-  /** The parent run still waiting on this nested run, to resume next. */
   awaitingParent?: AwaitingParentData;
 }
 
@@ -112,28 +106,23 @@ export interface WorkflowRejectDeps {
   workflowRepo: WorkflowRepository;
   runRepo: WorkflowRunRepository;
   /**
-   * Claims the run for the decision, so it is made on the run as stored and
-   * no other writer saves over it (swamp-club#2919).
+   * claims the run so the decision is made on the run as stored and no other
+   * writer saves over it
    */
   runClaims: WorkflowRunClaims;
-  /**
-   * Reads the run's own evaluated workflow snapshot, which its unfinished
-   * jobs and steps are settled against (swamp-club#2905).
-   */
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   runTracker?: RunTrackerRepository;
   /**
-   * Confirms a parent run that still reads as waiting against the datastore
-   * before a nested run's gate is decided (swamp-club#2867).
+   * confirms a parent run that still reads as waiting against the datastore
+   * before a nested run's gate is decided
    */
   runRecordCurrency?: RunRecordCurrency;
-  /** Fetches a parent run's record this host does not have. */
   fetchMissing?: (
     run: { workflowId: string; runId: string },
   ) => Promise<void>;
   /**
-   * Cancels the nested runs the ended run waited on (swamp-club#2867).
-   * Without it they are only reported.
+   * cancels the nested runs the ended run waited on; without it they are only
+   * reported
    */
   cascade?: NestedCascade;
 }
@@ -154,7 +143,6 @@ export function createWorkflowRejectDeps(
   };
 }
 
-/** A decision saved under the run's claim, or the refusal to make it. */
 type RejectOutcome =
   | { error: SwampError }
   | {
@@ -165,10 +153,8 @@ type RejectOutcome =
   };
 
 /**
- * Records the rejection on the run as read now, and settles the work the
- * rejection leaves unfinished, so the failed run keeps no other gate waiting
- * and no job running. The caller holds the run's claim, so nothing saves
- * between this read and this save.
+ * the caller holds the run's claim, so nothing saves between this read and this
+ * save
  */
 async function rejectClaimedRun(
   deps: WorkflowRejectDeps,

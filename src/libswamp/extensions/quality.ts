@@ -65,7 +65,6 @@ import {
 } from "./push.ts";
 import { sourceHostingOf } from "../auth/whoami.ts";
 
-/** Emitted by the extension quality generator. */
 export type ExtensionQualityEvent =
   | { kind: "packaging" }
   | { kind: "cache_hit"; hash: string }
@@ -73,53 +72,44 @@ export type ExtensionQualityEvent =
   | { kind: "completed"; data: ExtensionQualityData }
   | { kind: "error"; error: SwampError };
 
-/** Result of a quality scoring run. */
 export interface ExtensionQualityData {
   score: RubricScore;
-  /** The declared SPDX license expression, or null when none is declared. */
   license: string | null;
-  /** Set when the declared license is not valid SPDX; it never fails the run. */
   licenseWarning: ManifestLicenseWarning | undefined;
   cacheHash: string;
   archiveSize: number;
   cacheHit: boolean;
   dependencyTrustResult: DependencyTrustResult;
   /**
-   * The warning-level findings push would gate on, after the declared
-   * acceptances are applied, and the acceptances themselves. Computed on
-   * every run, including a cache hit, so quality always reports them.
+   * computed on every run, including a cache hit, so quality always reports
+   * them.
    */
   findings: QualityFindings;
   /**
-   * The local gates that failed — each would stop a push. The score is
-   * still computed so the author sees the rubric beside them.
+   * each would stop a push; the score is still computed so the author sees the
+   * rubric beside them.
    */
   gateFailures: LocalGateFailure[];
-  /** Files a gate rejected, left out of the scored archive (sorted). */
   excludedFromArchive: string[];
   /**
-   * False when the registry's scorer cannot resolve the published
-   * extension's bare imports, so it scores the documentation factors 0,
-   * whatever the local score says.
+   * false when the registry's scorer cannot resolve the published extension's
+   * bare imports, so it scores the documentation factors 0 whatever the local
+   * score says.
    */
   registryScorable: boolean;
 }
 
-/** Input to run a quality score. */
 export interface ExtensionQualityInput {
   prepareInput: ExtensionPushPrepareInput;
   hashInput: PackageCacheHashInput;
   /**
-   * Run `deno doc` as the registry does — an empty cache and no inherited
-   * registry credentials — instead of with the local cache and environment.
+   * run `deno doc` as the registry does: an empty cache and no inherited
+   * registry credentials.
    */
   isolated?: boolean;
 }
 
-/**
- * The swamp-club reads behind {@link resolvePrivateSourceStanding}. Each
- * call takes the lookup's signal, so one timeout bounds them all.
- */
+/** each call takes the lookup's signal, so one timeout bounds them all. */
 export interface PrivateSourceLookupDeps {
   loadCredentials: () => Promise<
     { serverUrl: string; apiKey: string } | null
@@ -129,7 +119,6 @@ export interface PrivateSourceLookupDeps {
     apiKey: string,
     signal: AbortSignal,
   ) => Promise<WhoamiResponse>;
-  /** The published extension's visibility, or null when it is not published. */
   getExtensionVisibility: (
     serverUrl: string,
     name: string,
@@ -138,7 +127,6 @@ export interface PrivateSourceLookupDeps {
   ) => Promise<{ isPrivate: boolean } | null>;
 }
 
-/** Dependencies injected into the quality generator. */
 export interface ExtensionQualityDeps {
   pushPrepareDeps: ExtensionPushPrepareDeps;
   cache: ExtensionPackageCache;
@@ -150,7 +138,6 @@ export interface ExtensionQualityDeps {
   privateSourceLookup: PrivateSourceLookupDeps;
 }
 
-/** Wires real infrastructure into ExtensionQualityDeps. */
 export function createExtensionQualityDeps(
   pushPrepareDeps: ExtensionPushPrepareDeps,
   cache: ExtensionPackageCache,
@@ -187,19 +174,11 @@ export function createExtensionQualityDeps(
   };
 }
 
-/** Upper bound on the swamp-club reads that decide private source hosting. */
 export const PRIVATE_SOURCE_LOOKUP_TIMEOUT_MS = 5_000;
 
 /**
- * Whether the registry will award `repository-verified` to this extension
- * through its collective's private source hosting. Reads the collective's
- * standing from whoami and, only when the collective has private source
- * hosting, the published extension's visibility.
- *
- * Never throws and never blocks past the timeout: no credentials, a
- * rejected key, an unreachable or older server, or any error answers
- * `unknown`, and the factor is then scored on the repository URL alone,
- * as it was before the registry offered private source hosting.
+ * never throws or blocks past the timeout: any failure answers `unknown`, and
+ * the factor is then scored on the repository URL alone.
  */
 export async function resolvePrivateSourceStanding(
   ctx: LibSwampContext,
@@ -250,11 +229,8 @@ export async function resolvePrivateSourceStanding(
 }
 
 /**
- * Runs the quality scorer against an extension, reusing or populating
- * the opportunistic package cache along the way. The bytes scored are
- * the bytes a subsequent `swamp extension push` would upload if run
- * against the same source — same input hash, same tarball, same score
- * as the registry will compute server-side.
+ * the bytes scored are the bytes a later `swamp extension push` would upload
+ * from the same source.
  */
 export async function* extensionQuality(
   ctx: LibSwampContext,
@@ -326,10 +302,8 @@ export async function* extensionQuality(
       }
 
       // The registry's scorer strips deno.json, so it cannot resolve a bare
-      // import push ships as written (one the project config does not
-      // resolve, swamp-club#3637, #3612) and scores the documentation
-      // factors 0. The local score below runs with no import map either, so
-      // it fails deno doc the same way (score.docAnalysisError).
+      // import push ships and scores documentation 0; the local score does
+      // likewise.
       const registryScorable = !prepared.reviewRulesResult.warnings.some((w) =>
         w.ruleId === "bare-specifiers"
       );

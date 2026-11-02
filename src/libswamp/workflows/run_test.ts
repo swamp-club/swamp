@@ -59,8 +59,6 @@ import type {
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import { createNamespace } from "../../domain/data/namespace.ts";
 
-// --- Test helpers ---
-
 class InMemoryWorkflowRepository implements WorkflowRepository {
   private workflows = new Map<string, Workflow>();
 
@@ -167,10 +165,6 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
   }
 }
 
-/**
- * Creates a fake execution service whose run() yields a predetermined
- * sequence of events.
- */
 function createFakeService(events: WorkflowExecutionEvent[]) {
   return {
     async *run(
@@ -224,8 +218,6 @@ function createTestDeps(
   };
 }
 
-// --- Tests ---
-
 Deno.test("workflowRun yields validating_inputs and evaluating_workflow prefix events", async () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
@@ -268,9 +260,8 @@ Deno.test("workflowRun yields error for missing workflow", async () => {
 });
 
 Deno.test("workflowRun surfaces the parse error for a schema-rejected workflow file", async () => {
-  // swamp-club#1240: a workflow file carrying an unknown key fails schema
-  // parsing, so the repository lookup misses — run must report the parse
-  // error inline instead of a misleading "not found".
+  // a schema-rejected workflow file misses the repository lookup; run must
+  // report the parse error rather than not found
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
     await Deno.mkdir(join(repoDir, "workflows"));
@@ -727,7 +718,6 @@ Deno.test("toRunData: a failed step carries its error code only when it has one 
   }
 });
 
-/** A run whose single model_method step wrote a resource and a log. */
 function createModelMethodRun(): WorkflowRun {
   const run = WorkflowRun.create(createTestWorkflow());
   run.start();
@@ -747,7 +737,6 @@ function createModelMethodRun(): WorkflowRun {
     version: 1,
     tags: {},
   });
-  // Persisted shape: resource records without attributes.
   step.succeed({
     type: "model_method",
     model: "test-model",
@@ -817,7 +806,6 @@ Deno.test("toRunData: attaches attributes only to the artifact they came from", 
 });
 
 Deno.test("toRunData: without resolved outputs a model_method step shows none", () => {
-  // The run record keeps no attribute values to fall back on.
   const data = toRunData(createModelMethodRun(), undefined, true);
 
   const stepView = data.jobs[0].steps[0];
@@ -928,11 +916,6 @@ Deno.test("extractStepArtifacts returns undefined for no output", () => {
   assertEquals(extractStepArtifacts(step), undefined);
 });
 
-// --- Input coercion and validation tests ---
-
-/**
- * Creates a fake execution service that captures the options passed to run().
- */
 function createCapturingFakeService(
   events: WorkflowExecutionEvent[],
   captured: { options?: Record<string, unknown> },
@@ -1136,11 +1119,9 @@ Deno.test("workflowRun with lastEvaluated skips validation but still coerces", a
     inputs: { count: "7" },
   }));
 
-  // Should not error — validation was skipped
   const steps = events.map((e) => e.kind);
   assertEquals(steps.includes("error"), false);
   assertEquals(steps.includes("evaluating_workflow"), true);
-  // But coercion should still apply
   assertEquals(captured.options?.inputs, { count: 7 });
 });
 
@@ -1281,8 +1262,6 @@ Deno.test("inputValidationFailed returns correct error structure", () => {
   assertEquals(error.message, "Input validation failed:\n  name is required");
 });
 
-// --- Report event collection tests ---
-
 Deno.test("workflowRun collects report_completed events from execution service", async () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
@@ -1336,7 +1315,6 @@ Deno.test("workflowRun collects report_completed events from execution service",
     workflowIdOrName: "test-workflow",
   }));
 
-  // Report events should be forwarded
   const reportStarted = events.find((e) => e.kind === "report_started");
   assertEquals(reportStarted?.kind, "report_started");
   if (reportStarted?.kind === "report_started") {
@@ -1350,7 +1328,6 @@ Deno.test("workflowRun collects report_completed events from execution service",
     assertEquals(reportCompleted.markdown, "# Report");
   }
 
-  // Completed event should include per-step report results
   const completed = events.find((e) => e.kind === "completed");
   if (completed?.kind === "completed") {
     assertEquals(completed.run.reports?.length, 1);
@@ -1396,7 +1373,6 @@ Deno.test("workflowRun collects report_failed events from execution service", as
     workflowIdOrName: "test-workflow",
   }));
 
-  // Report failed event should be forwarded
   const reportFailed = events.find((e) => e.kind === "report_failed");
   assertEquals(reportFailed?.kind, "report_failed");
   if (reportFailed?.kind === "report_failed") {
@@ -1404,7 +1380,6 @@ Deno.test("workflowRun collects report_failed events from execution service", as
     assertEquals(reportFailed.error, "report crashed");
   }
 
-  // Completed event should include the failed report result
   const completed = events.find((e) => e.kind === "completed");
   if (completed?.kind === "completed") {
     assertEquals(completed.run.reports?.length, 1);
@@ -1452,7 +1427,6 @@ Deno.test("workflowRun keeps an empty-markdown report in the completed run's rep
     workflowIdOrName: "test-workflow",
   }));
 
-  // Matches model method run, whose JSON also keeps empty reports.
   const completed = events.find((e) => e.kind === "completed");
   if (completed?.kind !== "completed") {
     throw new Error("expected a completed event");
@@ -1466,13 +1440,10 @@ Deno.test("workflowRun keeps an empty-markdown report in the completed run's rep
   }]);
 });
 
-// --- Cancellation tests ---
-
 Deno.test("workflowRun yields cancelled error when abort signal fires during execution", async () => {
   const workflow = createTestWorkflow();
   const controller = new AbortController();
 
-  // Create a service that aborts mid-stream
   const deps: WorkflowRunDeps = {
     ...createTestDeps(workflow, []),
     createExecutionService: (_wr, _rr, _rd, _cs) =>
@@ -1506,7 +1477,6 @@ Deno.test("workflowRun yields cancelled error when signal is pre-aborted", async
   const controller = new AbortController();
   controller.abort();
 
-  // Service throws AbortError immediately
   const deps: WorkflowRunDeps = {
     ...createTestDeps(workflow, []),
     createExecutionService: (_wr, _rr, _rd, _cs) =>
@@ -1535,11 +1505,9 @@ Deno.test("workflowRun yields cancelled error when signal is pre-aborted", async
 });
 
 Deno.test("workflowRun bridge finalizes in-flight invocations when execution service throws mid-stream", async () => {
-  // Adversarial case: a method_executing event is yielded, then the
-  // execution service throws BEFORE step_completed/step_failed arrives.
-  // The bridge's try/finally must drain the in-flight invocation as an
-  // error child entry. The parent stream's error event must still
-  // propagate cleanly.
+  // If the execution service throws after method_executing but before a
+  // terminal step event, the bridge must drain the invocation as an error child
+  // entry.
   const workflow = createTestWorkflow();
 
   type RecordedCall = {
@@ -1569,8 +1537,6 @@ Deno.test("workflowRun bridge finalizes in-flight invocations when execution ser
             modelName: "test-model",
             methodName: "run",
           };
-          // Simulate the workflow engine blowing up after starting a
-          // method but before any terminal step event.
           throw new Error("execution service crashed");
         },
         execute(): Promise<WorkflowRun> {
@@ -1601,19 +1567,15 @@ Deno.test("workflowRun bridge finalizes in-flight invocations when execution ser
     workflowIdOrName: "test-workflow",
   }));
 
-  // Parent stream still emits the error event cleanly.
   const last = events[events.length - 1];
   assertEquals(last.kind, "error");
 
-  // Bridge drained the in-flight method as an error child entry.
   assertEquals(recorded.length, 1);
   assertEquals(recorded[0].methodName, "run");
   assertStringIncludes(
     recorded[0].error!.message,
     "workflow run terminated before completion",
   );
-  // durationMs is non-negative (start time recorded at method_executing,
-  // end time at finalize) — guard against accidental NaN/negative.
   if (recorded[0].durationMs < 0 || Number.isNaN(recorded[0].durationMs)) {
     throw new Error(`unexpected durationMs: ${recorded[0].durationMs}`);
   }
@@ -1820,8 +1782,6 @@ Deno.test("mapWorkflowExecutionEvent: carries a nested run's parentRunId on star
     jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
   });
 });
-
-// --- byId lookup tests ---
 
 Deno.test("workflowRun: byId looks the workflow up by id only and passes byId to the execution service", async () => {
   const target = createTestWorkflow();
@@ -2151,7 +2111,6 @@ Deno.test("toRunData: inputs, a step error and assert text are shown through the
   assertEquals(view.inputs, { token: "Bearer ***", note: "***" });
   assertEquals(view.jobs[0].steps[0].error, "rejected ***");
   assertEquals(view.jobs[0].steps[1].assertResult?.message, "saw ***");
-  // The typed fields of the result are not put through the mask.
   values.addSecret("false", { vaultName: "v", key: "f" });
   const again = toRunData(run).jobs[0].steps[1].assertResult!;
   assertEquals(again.passed, false);
@@ -2159,7 +2118,6 @@ Deno.test("toRunData: inputs, a step error and assert text are shown through the
   assertEquals(again.expr, "true");
   assertEquals(JSON.stringify(view).includes("__SWAMP_VSEC_"), false);
   assertEquals(JSON.stringify(view).includes("Pl41n-s3cret"), false);
-  // Without a record the view shows the run as it is.
   const plain = WorkflowRun.create(workflow);
   plain.captureInputs({ token: "plain" });
   assertEquals(toRunData(plain).inputs, { token: "plain" });

@@ -41,7 +41,6 @@ import { validationFailed } from "../errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** Data structure for the data delete completed event. */
 export interface DataDeleteData {
   modelId: string;
   modelName: string;
@@ -51,7 +50,6 @@ export interface DataDeleteData {
   versionsDeleted: number;
 }
 
-/** Preview returned before confirmation. */
 export interface DataDeletePreview {
   modelId: string;
   modelName: string;
@@ -65,7 +63,6 @@ export type DataDeleteEvent =
   | { kind: "completed"; data: DataDeleteData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the data delete operation. */
 export interface DataDeleteInput {
   modelIdOrName: string;
   dataName: string;
@@ -83,7 +80,6 @@ export interface DataDeleteInput {
   expectedName?: string;
 }
 
-/** Dependencies for the data delete operation. */
 export interface DataDeleteDeps {
   delete: (
     modelIdOrName: string,
@@ -108,7 +104,6 @@ export interface DataDeleteDeps {
   ) => Promise<BatchDeletePreview>;
 }
 
-/** Wires real infrastructure into DataDeleteDeps. */
 export function createDataDeleteDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -157,7 +152,6 @@ export function createDataDeleteDeps(
   };
 }
 
-/** Gathers preview info (version count) without mutating state. */
 export async function dataDeletePreview(
   ctx: LibSwampContext,
   deps: DataDeleteDeps,
@@ -185,7 +179,6 @@ export async function dataDeletePreview(
   };
 }
 
-/** Deletes a data instance (all versions, or a single version when set). */
 export async function* dataDelete(
   ctx: LibSwampContext,
   deps: DataDeleteDeps,
@@ -241,7 +234,6 @@ export async function* dataDelete(
     ));
 }
 
-/** Data structure for the batch delete completed event. */
 export interface DataBatchDeleteData {
   modelId: string;
   modelName: string;
@@ -252,7 +244,6 @@ export interface DataBatchDeleteData {
   dryRun: boolean;
 }
 
-/** Preview returned before batch confirmation. */
 export interface DataBatchDeletePreview {
   modelId: string;
   modelName: string;
@@ -267,7 +258,6 @@ export type DataBatchDeleteEvent =
   | { kind: "completed"; data: DataBatchDeleteData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the batch delete operation. */
 export interface DataBatchDeleteInput {
   modelIdOrName: string;
   filter: BatchDeleteFilter;
@@ -276,7 +266,6 @@ export interface DataBatchDeleteInput {
 
 export { type BatchDeleteFilter } from "../../domain/data/data_delete_service.ts";
 
-/** Gathers preview info for a batch delete without mutating state. */
 export async function dataBatchDeletePreview(
   ctx: LibSwampContext,
   deps: DataDeleteDeps,
@@ -295,7 +284,6 @@ export async function dataBatchDeletePreview(
   };
 }
 
-/** Deletes data instances matching a filter (prefix or all). */
 export async function* dataBatchDelete(
   ctx: LibSwampContext,
   deps: DataDeleteDeps,

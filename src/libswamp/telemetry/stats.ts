@@ -27,7 +27,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Data payload for the completed event. */
 export interface TelemetryStatsData extends TelemetryStats {}
 
 export type TelemetryStatsEvent =
@@ -35,7 +34,6 @@ export type TelemetryStatsEvent =
   | { kind: "completed"; data: TelemetryStatsData | null }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the telemetry stats operation. */
 export interface TelemetryStatsDeps {
   getStats: (days: number) => Promise<TelemetryStats>;
 }
@@ -44,7 +42,6 @@ export interface TelemetryStatsInput {
   days: number;
 }
 
-/** Wires real infrastructure into TelemetryStatsDeps. */
 export function createTelemetryStatsDeps(
   version: string,
 ): TelemetryStatsDeps {
@@ -58,7 +55,6 @@ export function createTelemetryStatsDeps(
   };
 }
 
-/** Yields telemetry usage statistics. */
 export async function* telemetryStats(
   _ctx: LibSwampContext,
   deps: TelemetryStatsDeps,

@@ -75,25 +75,20 @@ import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Validation result for a single check. */
 export interface ValidationItemData {
   name: string;
   passed: boolean;
   error?: string;
-  /** The failed expressions behind an `Expression paths` failure. */
   expressionErrors?: readonly ExpressionPathError[];
 }
 
-/** A warning surfaced during validation (does not cause failure). */
 export interface ValidationWarningData {
   name: string;
   message: string;
   envVars?: EnvVarUsageDetail[];
-  /** Another service's template syntax, passed to the method unchanged. */
   templates?: ForeignTemplateDetail[];
 }
 
-/** Validation result for a single model. */
 export interface ModelValidateData {
   modelId: string;
   modelName: string;
@@ -103,7 +98,6 @@ export interface ModelValidateData {
   passed: boolean;
 }
 
-/** Aggregate validation result for all models. */
 export interface ModelValidateAllData {
   models: ModelValidateData[];
   totalPassed: number;
@@ -138,30 +132,26 @@ export interface ModelValidateInput {
   include?: (entry: { definition: Definition; type: ModelType }) => boolean;
 }
 
-/** Raw validation result from the domain service. */
 interface ValidationResult {
   name: string;
   passed: boolean;
   error?: string;
   expressionErrors?: readonly ExpressionPathError[];
-  /** `error` in model words (swamp-club#3437). */
   modelError?: string;
 }
 
-/** Raw warning from the domain service. */
 interface ValidationWarningResult {
   name: string;
   message: string;
   envVars?: EnvVarUsageDetail[];
   templates?: ForeignTemplateDetail[];
-  /** The message in model words (swamp-club#3437). */
   modelMessage?: string;
 }
 
 /**
- * Note on a definition swamp wrote itself (swamp-club#2496). One a workflow
- * step wrote from its arguments holds the values that step evaluated, so its
- * findings can be text evaluation produced rather than an author's mistake.
+ * a definition a workflow step wrote from its arguments holds the values that
+ * step evaluated, so its findings can be text evaluation produced rather than
+ * an author's mistake
  */
 const AUTO_DEFINITION_NOTE: ValidationWarningData = {
   name: "Auto-definition",
@@ -169,13 +159,10 @@ const AUTO_DEFINITION_NOTE: ValidationWarningData = {
     "This definition was written by swamp from a run's evaluated arguments, so these findings may be text that evaluation produced rather than mistakes. If a change is needed, make it in the workflow step or command that wrote the definition, not in this file.",
 };
 
-/** Dependencies for the model validate operation. */
 export interface ModelValidateDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -205,7 +192,6 @@ export interface ModelValidateDeps {
   }>;
 }
 
-/** Wires real infrastructure into ModelValidateDeps. */
 export function createModelValidateDeps(
   repoDir: string,
   options?: {
@@ -217,15 +203,14 @@ export function createModelValidateDeps(
   injectedCatalogStore?: CatalogStore,
   injectedDefinitionRepo?: YamlDefinitionRepository,
   /**
-   * The repository context's foreign content fetcher, so expressions that
-   * read another namespace's data see its attributes (swamp-club#3306). Used
-   * only by the repository built here; an injected repository carries its own.
+   * the repository context's foreign content fetcher, so expressions reading
+   * another namespace's data see its attributes; used only by the repository
+   * built here
    */
   fetchForeignContent?: ForeignContentFetcher,
   /**
-   * The repository context's lookup, so a read of a record the v3 read model
-   * could not materialise fails loudly (swamp-club#3617). Used only by the
-   * repository built here; an injected repository carries its own.
+   * the repository context's lookup, so a read of a record the v3 read model
+   * could not materialise fails loudly; used only by the repository built here
    */
   unreadableContent?: UnreadableContentLookup,
 ): ModelValidateDeps {
@@ -233,10 +218,8 @@ export function createModelValidateDeps(
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(repoDir);
-  // When a shared catalog store / data repo is injected (e.g. by serve
-  // handlers passing the process-scoped RepositoryContext), reuse it and skip
-  // createCatalogStore so we don't open a new file-based SQLite store — and
-  // leak its 3 FDs — on every request.
+  // reuse an injected shared catalog store or data repo so each request does
+  // not open a new file-based SQLite store and leak its file descriptors
   const catalogStore = injectedCatalogStore ??
     createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
@@ -306,7 +289,6 @@ export function createModelValidateDeps(
         {
           refuseLiteralSensitiveGlobals: true,
           method: options?.method,
-          // Each finding names the definition file beside its authored path.
           diagnoseSecretMisuse: (expression, location, embedded) =>
             diagnoseSecretMisuse(expression, location, embedded).map((
               finding,
@@ -331,14 +313,9 @@ export function createModelValidateDeps(
 }
 
 /**
- * What the pre-flight checks of a typed validation receive, through the
- * same delivery a method boundary performs (design/enablers/typed-secrets.md
- * Sections 3.3 and 6.3): the runtime pass checks every vault.get reference
- * of the stored definition and issues it into a bag of the validation's
- * registry; the shared step then refuses a secret at a destination that
- * takes none and loads the references the arguments carry, once. The
- * checks see the global arguments with their values, the merge with its
- * sentinels as `unresolvedMethodArgs`, and the loaded bag.
+ * the runtime pass checks every vault.get reference into a bag of the
+ * validation's registry; the shared step refuses a secret at a destination that
+ * takes none and loads the references once
  */
 async function deliverCheckArguments(
   definition: Definition,
@@ -347,10 +324,9 @@ async function deliverCheckArguments(
   expressionService: ExpressionEvaluationService,
   sensitiveValues: RunSensitiveValues,
 ): Promise<CheckArgumentDelivery> {
-  // Only what the checks and the method receive is evaluated: the global
-  // arguments and the selected method's arguments, the scope a run's
-  // runtime pass has. Another method's expressions are not this
-  // validation's to resolve or to fail on, as they are not the run's.
+  // only the global arguments and the selected method's arguments are
+  // evaluated, the scope a run's runtime pass has; another method's expressions
+  // are not this validation's to resolve or fail on
   const method = Object.hasOwn(modelDef.methods, methodName)
     ? modelDef.methods[methodName]
     : undefined;
@@ -392,12 +368,9 @@ async function deliverCheckArguments(
   for (const [raw, error] of evaluated.failedExpressions ?? []) {
     if (delivered.has(raw) && !isEvaluationFailure(error)) throw error;
   }
-  // What validate simply cannot evaluate, an input with no default, an
-  // environment variable unset here or upstream data not produced yet, is
-  // left as its stored text for the checks, one expression at a time: the
-  // pass goes on, so a refused secret or a denied, missing or unreadable
-  // reference beside it fails the checks here as it would fail the run,
-  // whatever the key order.
+  // what validate cannot evaluate (input with no default, unset env var, data
+  // not yet produced) stays as stored text per expression, so a bad reference
+  // beside it still fails the checks as it would the run
   const { definition: resolved, secretBag } = await expressionService
     .resolveRuntimeExpressionsInDefinition(
       evaluated.definition,
@@ -434,18 +407,15 @@ async function deliverCheckArguments(
 }
 
 /**
- * Whether an error of the pass is a gap a later run fills, which leaves that
- * expression as its stored text: an input with no default, an environment
- * variable unset here, or a model whose resource or file data has not been
- * produced yet. Anything else, a reference check, a refusal, a load failing
- * or an invalid expression, fails the checks as it would fail the run.
+ * a gap a later run fills leaves the expression as stored text: an input with
+ * no default, an env var unset here, or model data not produced yet; anything
+ * else fails the checks as it would fail the run
  */
 function isEvaluationFailure(error: unknown): boolean {
   return error instanceof UnboundExpressionError ||
     error instanceof MissingModelDataError;
 }
 
-/** Converts raw validation results to the presentation format. */
 function toValidationItemData(
   results: ValidationResult[],
 ): ValidationItemData[] {
@@ -456,16 +426,14 @@ function toValidationItemData(
       error: r.error,
       expressionErrors: r.expressionErrors,
     };
-    // A hidden marker holding `error` in model words, so the JSON shape is
-    // unchanged (swamp-club#3437). Each expression error carries its own; see
-    // expressionPathErrorInModelWords.
+    // a hidden marker holding error in model words, so the JSON shape is
+    // unchanged; each expression error carries its own
     return r.modelError === undefined || r.modelError === r.error
       ? data
       : markModelWording(data, r.modelError);
   });
 }
 
-/** Converts raw validation warnings to the presentation format. */
 function toValidationWarningData(
   warnings: ValidationWarningResult[],
 ): ValidationWarningData[] {
@@ -476,21 +444,19 @@ function toValidationWarningData(
       envVars: w.envVars,
       templates: w.templates,
     };
-    // A hidden marker, so the JSON shape is unchanged (swamp-club#3437).
+    // a hidden marker, so the JSON shape is unchanged
     return w.modelMessage === undefined
       ? data
       : markModelWording(data, w.modelMessage);
   });
 }
 
-/** Type guard to check if data is ModelValidateAllData. */
 export function isModelValidateAllData(
   data: ModelValidateData | ModelValidateAllData,
 ): data is ModelValidateAllData {
   return "models" in data;
 }
 
-/** Validates all models in the repository. */
 async function* validateAll(
   deps: ModelValidateDeps,
   include: (entry: { definition: Definition; type: ModelType }) => boolean =
@@ -557,7 +523,6 @@ async function* validateAll(
   };
 }
 
-/** Validates a single model. */
 async function* validateSingle(
   deps: ModelValidateDeps,
   modelIdOrName: string,
@@ -620,7 +585,6 @@ async function* validateSingle(
   };
 }
 
-/** Validates model definitions against their schemas. */
 export async function* modelValidate(
   _ctx: LibSwampContext,
   deps: ModelValidateDeps,

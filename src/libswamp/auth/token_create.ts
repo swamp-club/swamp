@@ -39,13 +39,11 @@ import {
 
 export interface AuthTokenCreateData {
   key: string;
-  /** {@link keyFingerprint} of `key`, as swamp-club lists the token. */
   fingerprint: string;
   id: string;
   name: string;
   collective: string;
   scopes: string[];
-  /** The SWAMP_SIGNIN_TOKEN for `key`, when swamp-club issued one. */
   signinToken?: string;
 }
 

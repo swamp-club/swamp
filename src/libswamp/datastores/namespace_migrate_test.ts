@@ -491,10 +491,6 @@ Deno.test("datastoreNamespaceMigrate: no collision check on reverse migration", 
   assertEquals(completed?.kind, "completed");
 });
 
-// ============================================================================
-// Foreign data detection
-// ============================================================================
-
 Deno.test("datastoreNamespaceMigrate: forward migration blocked when foreign namespaces exist", async () => {
   const ctx = createLibSwampContext({});
   const deps = makeDeps({
@@ -685,8 +681,6 @@ Deno.test("datastoreNamespaceMigrate: refuses a namespace equal to a configured 
   assertEquals(events[0].kind, "error");
 });
 
-// --- the repo-local catalog is not datastore content (swamp-club#3316) ---
-
 Deno.test("INFRASTRUCTURE_FILES: names the catalog and every SQLite sidecar", () => {
   assertEquals([...INFRASTRUCTURE_FILES].sort(), [
     "_catalog.db",
@@ -745,7 +739,6 @@ for (const reverse of [false, true]) {
 
 Deno.test("datastoreNamespaceMigrate: re-run after a migration reports nothing to move", async () => {
   const ctx = createLibSwampContext({});
-  // What a completed migration leaves behind: only the recreated catalog.
   const deps = makeDeps({
     dirExists: (path) => Promise.resolve(path === join(DS_PATH, "data")),
     dirContents: () => Promise.resolve({ catalogFiles: 1, otherEntries: 0 }),

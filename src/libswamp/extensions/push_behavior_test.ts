@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Packing a behavior-spelled extension (swamp-club#3338): files under the
-// behaviors directory land at models/<path from it>, a models/ path two
-// files would share is refused, and the push reports the spelling once.
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { createLibSwampContext } from "../context.ts";
@@ -99,7 +95,6 @@ Deno.test("push: behaviors-dir sources, includes and a models-dir file resolved 
       "export const x = 1;\n",
     );
     const include = await write(join(behaviorsDir, "aws", "data.json"), "{}");
-    // A model a workflow references, resolved from the models directory.
     const fromWorkflow = await write(
       join(modelsDir, "acme", "wf", "model.ts"),
       source("model", "@acme/wf"),

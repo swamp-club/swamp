@@ -454,7 +454,6 @@ Deno.test("resolveOrCreateDefinition: refuses to persist global-arg expression t
   assertEquals(saved, 0);
   assertEquals(existingDef.globalArguments, { region: "literal" });
 
-  // The same text vouched for by the caller persists as before.
   const vouched = await resolveOrCreateDefinition(
     deps,
     "test/model",
@@ -472,9 +471,8 @@ Deno.test("resolveOrCreateDefinition: refuses to persist global-arg expression t
 });
 
 Deno.test("resolveOrCreateDefinition: stores unvouched foreign global-arg text wrapped in literal()", async () => {
-  // Another templating system's text from data is stored as a literal() call
-  // that evaluates to the same text, so no later load evaluates what it
-  // holds (swamp-club#3389).
+  // another templating system's text from data is stored as a literal() call
+  // evaluating to the same text, so no later load evaluates what it holds
   const modelDef = createTestModelDef(
     z.object({ region: z.string() }),
     { run: z.object({ id: z.string() }) },
@@ -535,7 +533,6 @@ Deno.test("resolveOrCreateDefinition: stores unvouched foreign global-arg text w
   assertEquals(created.ok, true);
   assertEquals(saved.length, 1);
   assertEquals(saved[0].globalArguments, { region: stored });
-  // This run itself receives the text as it is.
   if (created.ok) {
     assertEquals(created.definition.globalArguments, { region });
   }
@@ -554,17 +551,15 @@ Deno.test("resolveOrCreateDefinition: stores unvouched foreign global-arg text w
     assertEquals(updated.definition.globalArguments, { region });
   }
 
-  // Compared in the form it is stored in, so the same text is no change.
   const again = await run(existingDef);
   assertEquals(again.ok, true);
   assertEquals(saved.length, 2);
   if (again.ok) assertEquals(again.globalArgsUpdated, false);
 });
 
-// Foreign text may be stored, but never in a sensitive field:
-// any constant inside it would be written in cleartext. A record key outside
-// plain identifier characters names the field differently in schema walks
-// and in expression paths, and must still be found.
+// foreign text may be stored but never in a sensitive field, as any constant in
+// it would be written in cleartext; a record key outside plain identifier
+// characters must still be found
 const SENSITIVE_TEXT = "${{ github.x == 'ghp_TOKEN' }}";
 for (
   const [name, field, value] of [
@@ -623,7 +618,6 @@ for (
     if (!created.ok) {
       assertStringIncludes(created.error.message, field);
       assertStringIncludes(created.error.message, "sensitive");
-      // The refusal never repeats the sensitive value.
       assertEquals(created.error.message.includes("ghp_TOKEN"), false);
     }
 
@@ -672,7 +666,6 @@ Deno.test("resolveOrCreateDefinition: refuses global-arg data text swamp would o
       "${{ steps.build-data.outputs.x }}",
       "${{ 1 + 1 }}",
       "${{ a | b }}",
-      // A run reads the hyphen as subtraction.
       "${{ needs.build-vault.outputs.url }}",
       "${{ jobs.build-vault.result }}",
       "${{ matrix.node-18x }}",
@@ -699,7 +692,6 @@ Deno.test("resolveOrCreateDefinition: refuses global-arg data text swamp would o
       assertEquals(result.ok, false, refused);
       if (!result.ok) {
         assertStringIncludes(result.error.message, `region: ${refused} (`);
-        // The occurrence that can be stored is not reported.
         assertEquals(
           result.error.message.includes("region: ${{ github.sha }}"),
           false,
@@ -1324,8 +1316,6 @@ Deno.test("resolveOrCreateDefinition: explicit globalArgs object is not mutated 
   );
 });
 
-// ── autoDefinitionLockKey ──────────────────────────────────────────────
-
 Deno.test("resolveOrCreateDefinition: refuses to auto-create a definition with an invalid name", async () => {
   const modelDef = createTestModelDef(
     z.object({ region: z.string() }),
@@ -1429,18 +1419,13 @@ Deno.test("autoDefinitionLockKey: deeply scoped name flattens all slashes", () =
   );
 });
 
-// ── createAutoDefinitionLock ───────────────────────────────────────────
-
 Deno.test("createAutoDefinitionLock: retries promptly on brief contention", () => {
   const lock = createAutoDefinitionLock("/unused", "fan-model");
 
-  // The create lock is held for milliseconds, so the first retry must not
-  // sleep through a release. Asserted on configuration, not elapsed time —
-  // wall-clock assertions are banned by the repo's flakiness rules.
+  // the create lock is held for milliseconds, so the first retry must not sleep
+  // through a release; asserted on configuration, not elapsed time
   assertEquals(lock.retryIntervalMs, AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS);
 });
-
-// ── resolveOrCreateDefinition with lockDir ──────────────────────────────
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -1550,7 +1535,6 @@ Deno.test("resolveOrCreateDefinition: with lockDir adopts race winner's definiti
       {
         lookupDefinition: () => {
           lookupCount++;
-          // First call (fast path): not found. Second call (under lock): found.
           if (lookupCount === 1) return Promise.resolve(null);
           return Promise.resolve({
             definition: winnerDef,
@@ -1588,10 +1572,6 @@ Deno.test("resolveOrCreateDefinition: with lockDir adopts race winner's definiti
   });
 });
 
-/**
- * Deps whose first lookup misses and whose later lookups find `winner`, as
- * seen by a caller that loses the auto-creation race.
- */
 function raceLoserDeps(
   winner: Definition,
   resolvedType: ModelType,
@@ -1815,7 +1795,6 @@ Deno.test("resolveOrCreateDefinition: stores a data-read secret as its vault ref
       modelDef,
       undefined,
       undefined,
-      // The workflow source authored nothing here; the reference is swamp's.
       new Set(),
       values,
     );
@@ -2009,7 +1988,6 @@ Deno.test("resolveOrCreateDefinition: a creation exports its lookups, lock and s
         () =>
           resolveOrCreateDefinition(
             {
-              // A lookup phase of its own, so the label the caller set shows.
               lookupDefinition: () =>
                 observeDiagnosticPhase(
                   "definition_lookup",
@@ -2100,7 +2078,6 @@ Deno.test("resolveOrCreateDefinition: adopting a stored definition is a definiti
         adopt.attributes["swamp.diagnostic.definition_outcome"],
         "reused",
       );
-      // The fast path takes no lock and saves nothing.
       assertEquals(diagnosticPhases(spans, "lock_wait").length, 0);
       assertEquals(diagnosticPhases(spans, "definition_save").length, 0);
     });
@@ -2123,7 +2100,6 @@ Deno.test("resolveOrCreateDefinition: a race loser adopts the winner's definitio
         () =>
           resolveOrCreateDefinition(
             {
-              // Missing at first; the winner has saved it by the re-check.
               lookupDefinition: () =>
                 Promise.resolve(
                   lookups++ === 0

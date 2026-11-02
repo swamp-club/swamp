@@ -26,9 +26,6 @@ import {
 import type { IssueFilingSource } from "../../domain/issues/issue_source.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the issue create output.
- */
 export type IssueCreateData =
   | {
     method: "lab";
@@ -47,9 +44,7 @@ export type IssueCreateData =
   }
   | {
     /**
-     * Lab submission tagged with an extension name — used when the caller
-     * ran `swamp issue <type> --extension @swamp/<name>`. Same wire
-     * contract as "lab"; the distinct method name lets the renderer say
+     * same wire contract as lab; the distinct method lets the renderer say
      * "Filed against @swamp/<name>".
      */
     method: "extension-lab";
@@ -64,24 +59,18 @@ export type IssueCreateEvent =
   | { kind: "completed"; data: IssueCreateData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the issue create operation. */
 export interface IssueCreateInput {
   title: string;
   body: string;
   type: "bug" | "feature" | "security";
-  /** The Lab source to file against. Unset files with the default source. */
   source?: IssueFilingSource;
   /** Set for extension-scoped submissions; @swamp collectives route to Lab. */
   extensionName?: string;
-  /** Installed version of `extensionName`, surfaced in the body. */
   extensionVersion?: string;
-  /** Upstream repository URL from the manifest, surfaced in the body when set. */
   repositoryUrl?: string;
-  /** Runtime context for reproducibility, appended to the body. */
   reporterContext?: ReporterContext;
 }
 
-/** Dependencies for the issue create operation. */
 export interface IssueCreateDeps {
   submitToLab: (input: {
     type: "bug" | "feature" | "security";
@@ -91,7 +80,6 @@ export interface IssueCreateDeps {
   }) => Promise<{ number: number; url: string }>;
 }
 
-/** Submits a bug, feature, or security issue to the Lab API. */
 export async function* issueCreate(
   ctx: LibSwampContext,
   deps: IssueCreateDeps,
@@ -147,13 +135,9 @@ export async function* issueCreate(
 }
 
 /**
- * Appends extension metadata and reporter context to the user-provided body.
- * Title is deliberately left alone — a `[@swamp/foo]` prefix would collide
- * with existing Lab UI title filters.
- *
- * Shares its formatting with the third-party repository path via
- * {@link assembleExtensionReportBody} so both destinations see identical
- * report bodies.
+ * the title is left alone: a [@swamp/foo] prefix would collide with existing
+ * Lab UI title filters. Formatting is shared with the third-party repository
+ * path so both destinations see identical bodies.
  */
 function assembleExtensionLabBody(input: IssueCreateInput): string {
   if (!input.reporterContext) {

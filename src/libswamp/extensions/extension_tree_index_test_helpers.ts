@@ -19,7 +19,6 @@
 
 import type { ExtensionTreeIndex } from "./extension_tree_index.ts";
 
-/** A push `indexArchive` for fixtures whose archives hold no loadable sources. */
 export const emptyArchiveIndex = (
   _archiveBytes: Uint8Array,
 ): Promise<ExtensionTreeIndex> =>

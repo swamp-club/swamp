@@ -32,14 +32,12 @@ import { notFound } from "../errors.ts";
 import { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Minimal vault config shape needed by the generator. */
 export interface VaultPutConfigInfo {
   id: string;
   name: string;
   type: string;
 }
 
-/** Preview data returned before confirmation. */
 export interface VaultPutPreview {
   vaultName: string;
   vaultType: string;
@@ -47,7 +45,6 @@ export interface VaultPutPreview {
   secretExists: boolean;
 }
 
-/** Data structure for the vault put completed event. */
 export interface VaultPutData {
   vaultName: string;
   secretKey: string;
@@ -63,7 +60,6 @@ export type VaultPutEvent =
   | { kind: "warning"; message: string }
   | { kind: "error"; error: SwampError };
 
-/** Input for the vault put operation. */
 export interface VaultPutInput {
   vaultName: string;
   key: string;
@@ -75,7 +71,6 @@ export interface VaultPutInput {
   tags?: Record<string, string>;
 }
 
-/** Dependencies for the vault put operation. */
 export interface VaultPutDeps {
   findVault: (name: string) => Promise<VaultPutConfigInfo | null>;
   listVaultNames: () => Promise<string[]>;
@@ -102,7 +97,6 @@ export interface VaultPutDeps {
   supportsRefreshHooks: (vaultName: string) => Promise<boolean>;
 }
 
-/** Wires real infrastructure into VaultPutDeps. */
 export function createVaultPutDeps(
   repoDir: string,
   eventBus: EventBus,
@@ -169,7 +163,6 @@ export function createVaultPutDeps(
   };
 }
 
-/** Gathers preview info for the vault put operation. */
 export async function vaultPutPreview(
   ctx: LibSwampContext,
   deps: VaultPutDeps,
@@ -210,7 +203,6 @@ export async function vaultPutPreview(
   };
 }
 
-/** Stores a secret in a vault. */
 export async function* vaultPut(
   ctx: LibSwampContext,
   deps: VaultPutDeps,

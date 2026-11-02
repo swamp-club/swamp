@@ -102,7 +102,6 @@ const okSummary: InboxSummaryResult = {
   etag: '"v2"',
 };
 
-/** A summary that names no message: the read falls back to the list. */
 const quietSummary: InboxSummaryResult = {
   kind: "ok",
   summary: {
@@ -135,11 +134,6 @@ interface Recorder {
   saved: { key: InboxCacheKey; state: InboxState }[];
 }
 
-/**
- * `summaries` answers the summary calls in order, the last repeating: in
- * inboxReadNext the first finds the announced message and the second
- * follows marking read. `summary` answers every call.
- */
 function makeDeps(overrides: Partial<InboxReadDeps> & {
   page?: InboxMessagePage;
   summary?: InboxSummaryResult;
@@ -227,7 +221,6 @@ Deno.test("inboxReadNext: moreUnread follows a second message or a cursor", asyn
     [{ messages: one, nextCursor: null, dropped: 0 }, false],
     [{ messages: one, nextCursor: one[0].id, dropped: 0 }, true],
     [unreadPage, true],
-    // The second entry broke the contract: it is still an unread message.
     [{ messages: one, nextCursor: null, dropped: 1 }, true],
   ];
   for (const [page, expected] of cases) {
@@ -263,8 +256,6 @@ Deno.test("inboxReadNext: nothing unread marks nothing and reports dropped", asy
     dropped: 1,
   });
   assertEquals(rec.marked, []);
-  // Only the summary that looks for the announced message: nothing was
-  // marked, so there is nothing to refresh.
   assertEquals(rec.summaries, 1);
 });
 
@@ -319,7 +310,6 @@ Deno.test("inboxReadNext: stops paging after MAX_INBOX_READ_PAGES pages of dropp
   assertEquals(last.view.message, null);
   assertEquals(rec.listed.length, MAX_INBOX_READ_PAGES);
   assertEquals(last.view.dropped, 2 * MAX_INBOX_READ_PAGES);
-  // Older pages are left unlisted, so more unread messages remain.
   assertEquals(last.view.moreUnread, true);
   assertEquals(rec.marked, []);
 });
@@ -420,7 +410,6 @@ Deno.test("inboxReadNext: a config dir this process does not own is left alone",
   );
 
   assertEquals(rec.marked.length, 1);
-  // The announced message is still looked for; only the cache is left.
   assertEquals(rec.summaries, 1);
   assertEquals(rec.saved, []);
 });
@@ -479,7 +468,6 @@ Deno.test("inboxReadNext: reads the announced message ahead of a newer message t
   const quiet = messageOf("nurture_stalled");
   const announced = messageOf("issue_update");
   assert(quiet.id > announced.id);
-  // The notice is up for the issue_update.
   let state = recordNoticeShown(
     {
       ...InboxState.empty(),
@@ -517,7 +505,6 @@ Deno.test("inboxReadNext: reads the announced message ahead of a newer message t
   assertEquals(last.view.message?.id, announced.id);
   assertEquals(rec.got, [announced.id]);
   assertEquals(rec.marked, [[announced.id]]);
-  // The onboarding message is still waiting.
   assertEquals(last.view.moreUnread, true);
   assertEquals(noticeToShow(state, NOW), null);
 });
@@ -720,7 +707,6 @@ Deno.test("inboxReadById: a read message is shown as read and nothing is marked"
   assert(last.kind === "completed");
   assertEquals(last.view.message?.id, READ_ID);
   assertEquals(last.view.message?.readAt, "2026-10-24T13:15:00.000Z");
-  // Read already, so the renderer has nothing unconfirmed to warn about.
   assertEquals(last.view.marked, true);
   assertEquals(rec.marked, []);
   assertEquals(rec.summaries, 0);
@@ -782,9 +768,7 @@ Deno.test("inboxReadById: an unknown id propagates the client's not-found error"
 
 Deno.test("inboxReadById: moreUnread counts unread messages other than this one", async () => {
   const cases: { page: InboxMessagePage; want: boolean }[] = [
-    // The page holds this message and one other.
     { page: unreadPage, want: true },
-    // Only this message, and nothing after it.
     {
       page: {
         messages: unreadPage.messages.filter((m) => m.id === UNREAD_ID),
@@ -793,7 +777,6 @@ Deno.test("inboxReadById: moreUnread counts unread messages other than this one"
       },
       want: false,
     },
-    // Only this message, with a later page.
     {
       page: {
         messages: unreadPage.messages.filter((m) => m.id === UNREAD_ID),
@@ -802,7 +785,6 @@ Deno.test("inboxReadById: moreUnread counts unread messages other than this one"
       },
       want: true,
     },
-    // Only this message, and an entry the client left out.
     {
       page: {
         messages: unreadPage.messages.filter((m) => m.id === UNREAD_ID),
@@ -927,7 +909,6 @@ Deno.test("createInboxMarkSession: a later request waits for the one before it",
   await session.finish();
 });
 
-/** Waits until the stubbed request has parked its resolver. */
 async function waitForRelease(get: () => (() => void) | undefined) {
   for (let i = 0; i < 100 && get() === undefined; i++) {
     await Promise.resolve();

@@ -27,27 +27,18 @@ import {
   type WhoamiIdentity,
 } from "../auth/whoami.ts";
 
-/**
- * The plan and billing standing of the signed-in operative and each of their
- * collectives — a read of whoami, never a second source of truth.
- */
 export interface SubscriptionStatusView {
   serverUrl: string;
-  /** True for a collective API key, which names a collective, not a user. */
   collectiveToken: boolean;
-  /** The user's handle; absent for a collective token. */
   username?: string;
   /** Shown on the identity line only; never part of the JSON document. */
   email?: string;
-  /** The collective a collective token belongs to. */
   collectiveSlug?: string;
-  /** Strongest plan across the operative's collectives, as the server sent it. */
   plan: string | null;
-  /** Display name for {@link plan}; null when there is none or it is free. */
   planName: string | null;
   /**
-   * False when the server sent no entitlement — an older or self-hosted
-   * swamp-club — so "no subscriptions reported" is never mistaken for "free".
+   * false when the server sent no entitlement (older or self-hosted), so no
+   * subscriptions reported is never read as free
    */
   entitlementsReported: boolean;
   collectives: WhoamiCollectiveEntitlement[];
@@ -61,9 +52,8 @@ export type SubscriptionStatusEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * The server's billing page, or a collective's, never with a doubled slash.
- * A personal collective's page redirects to `/billing` on the server, so the
- * caller never needs to know which collectives are personal.
+ * a personal collective's billing page redirects to /billing on the server, so
+ * callers need not know which collectives are personal
  */
 export function billingUrl(serverUrl: string, collective?: string): string {
   const base = serverUrl.replace(/\/+$/, "");
@@ -90,9 +80,8 @@ function toView(identity: WhoamiIdentity): SubscriptionStatusView {
 }
 
 /**
- * Reports subscription standing by delegating to {@link whoami}, so loading
- * credentials, refreshing auth.json and saving the verification proof stay
- * exactly what `swamp auth whoami` does.
+ * delegates to whoami so credential loading, auth.json refresh and the
+ * verification proof stay what `swamp auth whoami` does
  */
 export async function* subscriptionStatus(
   ctx: LibSwampContext,

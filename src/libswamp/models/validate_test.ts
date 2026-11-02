@@ -47,8 +47,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles
-      // yet. Temp dir is ephemeral, OS reclaims.
+      // best-effort: EBUSY can fire when V8 has not GC'd native sqlite handles
+      // yet
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -384,8 +384,6 @@ Deno.test("modelValidate single model resolves all model types for cross-type re
     }),
   );
 
-  // The target type is resolved once for the target model, then all types
-  // (including the target again) are resolved to populate the registry
   assertEquals(resolvedTypes.includes(targetType.normalized), true);
   assertEquals(resolvedTypes.includes(otherType.normalized), true);
 });

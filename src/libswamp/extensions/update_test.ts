@@ -33,11 +33,6 @@ import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/ups
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import { ManagedLockfileUnpublishedError } from "./managed_lockfile_transaction.ts";
 
-/**
- * Builds a fixture UpstreamExtensionsMap from a shorthand
- * `{ name: version }` map, synthesizing a placeholder pulledAt so each
- * test doesn't have to spell out the full entry shape.
- */
 function shorthandUpstream(
   versions: Readonly<Record<string, string>>,
 ): UpstreamExtensionsMap {

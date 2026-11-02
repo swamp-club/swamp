@@ -46,7 +46,6 @@ export interface ExtensionPromoteData {
 
 export type ExtensionPromoteEvent =
   | { kind: "promoting" }
-  /** The registry lookup found the version on a channel below the target. */
   | {
     kind: "resolved";
     name: string;
@@ -63,9 +62,9 @@ export interface ExtensionPromoteInput {
   toChannel: string;
   fromChannel?: string;
   /**
-   * Look the version up in the registry first and promote from the channel
-   * it is on, failing with "Nothing to promote" when no channel below the
-   * target carries it. Set when the name and version came from a manifest.
+   * set when the name and version came from a manifest: looks the version up
+   * first and fails with 'Nothing to promote' when no channel below the target
+   * carries it
    */
   resolveFromChannel?: boolean;
 }

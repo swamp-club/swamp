@@ -28,9 +28,6 @@ import {
   type PhaseTally,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * A single model output search result item.
- */
 export interface ModelOutputSearchItem {
   id: string;
   definitionId: string;
@@ -40,21 +37,13 @@ export interface ModelOutputSearchItem {
   status: string;
   startedAt: string;
   durationMs?: number;
-  /** What started the method run, from the output's provenance. */
   triggeredBy?: TriggerType;
-  /** The workflow whose run executed the method, when one did. */
   workflowId?: string;
-  /** The current name of `workflowId`; absent when it no longer resolves. */
   workflowName?: string;
-  /** The workflow run that executed the method. */
   workflowRunId?: string;
-  /** The workflow step that executed the method. */
   stepName?: string;
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface ModelOutputSearchData {
   query: string;
   results: ModelOutputSearchItem[];
@@ -65,7 +54,6 @@ export type ModelOutputSearchEvent =
   | { kind: "completed"; data: ModelOutputSearchData }
   | { kind: "error"; error: SwampError };
 
-/** The output fields the search reads. */
 export interface ModelOutputSearchOutput {
   id: string;
   definitionId: string;
@@ -81,59 +69,41 @@ export interface ModelOutputSearchOutput {
   };
 }
 
-/** A model definition the `model` filter resolved to. */
 export interface ModelOutputSearchModel {
   definitionId: string;
   name: string;
   type: { normalized: string };
 }
 
-/**
- * What an output file's location says about the output before it is read.
- */
 export interface ModelOutputSearchKey {
   type: { normalized: string };
   definitionId: string;
   methodName: string;
 }
 
-/** Which of `keys` (distinct) may be read: one answer per key, in order. */
 export type ModelOutputSearchSelector = (
   keys: readonly ModelOutputSearchKey[],
 ) => Promise<readonly boolean[]>;
 
-/** An output the search may leave out unread, as `canRead` is asked of it. */
 export interface ModelOutputSearchCandidate {
   definitionId: string;
-  /** The model name the output's result would carry. */
   modelName?: string;
   type: string;
   methodName: string;
 }
 
-/**
- * The outputs of a window read a batch at a time, newest first: see
- * {@link ModelOutputSearchDeps.findOutputsNewestFirst}.
- */
 export interface ModelOutputSearchNewestFirst {
-  /** The next outputs, at most `count`. Empty only once none remain. */
   next(count: number): Promise<
     Array<{
       output: ModelOutputSearchOutput;
       type: { normalized: string };
-      /** Breaks ties between outputs started in the same millisecond. */
       position: number;
     }>
   >;
-  /** True when every output not read yet started strictly before `instant`. */
   unreadStartedBefore(instant: Date): boolean;
-  /** How many listed outputs have not been read or refused. */
   readonly unread: number;
 }
 
-/**
- * Dependencies for the model output search generator.
- */
 export interface ModelOutputSearchDeps {
   /**
    * Every output. With `selectReadable`, it may leave out unread the
@@ -146,9 +116,9 @@ export interface ModelOutputSearchDeps {
     }>
   >;
   /**
-   * Outputs started at or after `cutoff`, for a `since` filter, leaving out
-   * what `selectReadable` refuses as {@link findAllOutputsGlobal} does.
-   * Optional: without it the search reads every output and filters.
+   * outputs started at or after cutoff for a since filter, leaving out what
+   * selectReadable refuses; optional, without it the search reads every output
+   * and filters
    */
   findAllOutputsGlobalSince?(
     cutoff: Date,
@@ -160,21 +130,19 @@ export interface ModelOutputSearchDeps {
     }>
   >;
   /**
-   * The outputs started in `window`, read as they are asked for, newest first,
-   * leaving out what `selectReadable` refuses as {@link findAllOutputsGlobal}
-   * does. With it, a search with a `limit` and no `model` stops reading once it
-   * holds the results it will return (swamp-club#4143). Optional: without it
-   * the search reads every output and keeps the most recent.
+   * outputs started in window, read as asked for, newest first, leaving out
+   * what selectReadable refuses. With it, a limit search with no model stops
+   * reading once it holds its results. Optional: without it the search reads
+   * every output
    */
   findOutputsNewestFirst?(
     window: { since?: Date; until?: Date },
     selectReadable?: ModelOutputSearchSelector,
   ): Promise<ModelOutputSearchNewestFirst>;
   /**
-   * Every definition with its type, primary definitions before
-   * auto-definitions. Read at most once per search to name the outputs, so
-   * history holding many deleted definitions costs one scan, not one per id
-   * (swamp-club#3959). Not read when {@link resolveModelNames} is given.
+   * every definition with its type, primary before auto-definitions; read at
+   * most once per search so many deleted definitions cost one scan, not one per
+   * id. Not read when resolveModelNames is given
    */
   findAllDefinitions(): Promise<
     Array<{
@@ -183,11 +151,9 @@ export interface ModelOutputSearchDeps {
     }>
   >;
   /**
-   * The names of the given definitions, looked up together, in the order
-   * asked: for each, the first definition of that type and id, primary
-   * definitions before auto-definitions; undefined when none resolves. Given,
-   * it names the outputs instead of {@link findAllDefinitions}, so only the
-   * definitions owning outputs are read (swamp-club#4141).
+   * names of the given definitions looked up together, in order asked: the
+   * first of that type and id, primary before auto-definitions; undefined when
+   * none resolves; replaces findAllDefinitions
    */
   resolveModelNames?(
     keys: ReadonlyArray<{ type: { normalized: string }; definitionId: string }>,
@@ -209,12 +175,9 @@ export interface ModelOutputSearchDeps {
     window?: { since?: Date; until?: Date },
   ): Promise<ModelOutputSearchOutput[]>;
   /**
-   * The outputs of one definition started in `window`, read as they are asked
-   * for, newest first, leaving out what `selectReadable` refuses. With it and
-   * {@link resolveModel}, a search with a `limit` and a `model` stops reading
-   * once it holds the results it will return (swamp-club#4174). Optional:
-   * without it the search reads every output of the model and keeps the most
-   * recent.
+   * outputs of one definition in window, read as asked for, newest first, minus
+   * what selectReadable refuses; with resolveModel, a limited search for a
+   * model stops reading once it has its results
    */
   findOutputsByDefinitionNewestFirst?(
     type: { normalized: string },
@@ -230,45 +193,29 @@ export interface ModelOutputSearchDeps {
     ids: ReadonlySet<string>,
   ): Promise<ReadonlyMap<string, string>>;
   /**
-   * Which of `candidates` the caller may read, one answer per candidate, in
-   * order. With it, a search without `model`, or one reading newest first,
-   * leaves out unread the outputs it refuses (swamp-club#4142). Outputs whose
-   * location says nothing about them are still read, so the results still need
-   * authorizing. A search reading newest first also asks it about each record
-   * it reads, so `limit` counts only outputs it accepts.
+   * which candidates the caller may read, in order; a search without model or
+   * reading newest first skips refused outputs unread; outputs whose location
+   * says nothing are still read and need authorizing
    */
   canRead?(
     candidates: readonly ModelOutputSearchCandidate[],
   ): Promise<readonly boolean[]>;
 }
 
-/**
- * Input for the model output search generator.
- */
 export interface ModelOutputSearchInput {
   query?: string;
   /** Opt in to provenance for output search; legacy history keeps its shape. */
   includeProvenance?: boolean;
-  /** Only outputs of this model, by exact name or id. */
   model?: string;
-  /**
-   * Only outputs started at or after this ISO 8601 instant, or this long
-   * ago for a duration like `7d`.
-   */
   since?: string;
   /**
    * Only outputs started before this ISO 8601 instant or duration ago
    * (exclusive), as run search and the run summary read `until`.
    */
   until?: string;
-  /** At most this many results, most recent first. */
   limit?: number;
 }
 
-/**
- * A time bound as a Date: a duration (`7d`) counts back from `now`, as the
- * run queries read one; anything else must parse as a date-time.
- */
 export function parseInstant(
   field: "since" | "until",
   value: string | undefined,
@@ -290,16 +237,8 @@ export function parseInstant(
 }
 
 /**
- * Searches model outputs across all types.
- *
- * Resolves model names from definition IDs and workflow names from the
- * outputs' provenance, filters by model and start time, sorts by startedAt
- * descending and keeps at most `limit`. Filtering for JSON mode is handled
- * by the renderer.
- *
- * With `limit` and {@link ModelOutputSearchDeps.findOutputsNewestFirst}, or for
- * a `model` {@link ModelOutputSearchDeps.findOutputsByDefinitionNewestFirst}, it
- * returns the same results reading only as far as they need.
+ * with limit and a newest-first dep, or for a model, returns the same results
+ * reading only as far as they need
  */
 export async function* modelOutputSearch(
   _ctx: LibSwampContext,
@@ -336,15 +275,15 @@ export async function* modelOutputSearch(
         return;
       }
 
-      // Names are looked up once each, by the scan's choice of files and
-      // then for the results alike (swamp-club#4141, swamp-club#4142).
+      // names are looked up once each, shared by the scan's choice of files and
+      // by the results
       const namer = definitionNamer(deps);
 
       const canRead = deps.canRead;
       const selectReadable = readableSelector(namer, canRead);
 
-      // Exported as the output_search diagnostic area's phases when the
-      // caller runs this in it (swamp-club#4056); silent otherwise.
+      // exported as the output_search diagnostic area's phases when the caller
+      // runs this in it; silent otherwise
       const openNewestFirst = input.limit === undefined
         ? undefined
         : newestFirstOpener(
@@ -414,7 +353,6 @@ export async function* modelOutputSearch(
           );
         }
 
-        // Sort by startedAt descending (most recent first)
         items.sort(
           (a, b) =>
             new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
@@ -437,10 +375,6 @@ export async function* modelOutputSearch(
   );
 }
 
-/**
- * Sets the current workflow name on each item that links a workflow: one
- * lookup for every workflow the items name, not one per item.
- */
 export async function nameWorkflows(
   deps: Pick<ModelOutputSearchDeps, "resolveWorkflowNames">,
   items: readonly Pick<ModelOutputSearchItem, "workflowId" | "workflowName">[],
@@ -467,9 +401,8 @@ export async function nameWorkflows(
 }
 
 /**
- * The selector a scan leaves out unread what `canRead` refuses with: each key
- * asked about with the name its outputs' results would carry, so it is judged
- * as their results are.
+ * each key is asked about with the name its outputs' results would carry, so it
+ * is judged as their results are
  */
 export function readableSelector(
   namer: ReturnType<typeof definitionNamer>,
@@ -489,7 +422,6 @@ export function readableSelector(
     });
 }
 
-/** Whether an output started at or after `since` and before `until`. */
 export function startedInWindow(
   output: ModelOutputSearchOutput,
   since: Date | undefined,
@@ -500,7 +432,6 @@ export function startedInWindow(
     !(until && startedMs >= until.getTime());
 }
 
-/** The search result for an output. */
 export function toSearchItem(
   output: ModelOutputSearchOutput,
   type: { normalized: string },
@@ -544,25 +475,18 @@ const MIN_NEWEST_FIRST_BATCH = 16;
  */
 const MAX_NEWEST_FIRST_BATCH = 1024;
 
-/** A newest-first read, of every output or of a model's definitions. */
 interface NewestFirstRead extends Omit<ModelOutputSearchNewestFirst, "next"> {
   next(count: number): Promise<
     Array<{
       output: ModelOutputSearchOutput;
       type: { normalized: string };
       position: number;
-      /** The name the output's result carries, when it is already known. */
       modelName?: string;
-      /** Which definition's read it came from: breaks ties before `position`. */
       rank?: number;
     }>
   >;
 }
 
-/**
- * How a search with a limit opens its newest-first read, or undefined when
- * `deps` cannot read that way.
- */
 function newestFirstOpener(
   deps: ModelOutputSearchDeps,
   model: string | undefined,
@@ -595,10 +519,6 @@ function newestFirstOpener(
   };
 }
 
-/**
- * Asks `canRead` about keys under `name`, the name their outputs' results
- * carry, so they are judged as those results are.
- */
 function selectUnderName(
   canRead: NonNullable<ModelOutputSearchDeps["canRead"]>,
   name: string,
@@ -613,11 +533,9 @@ function selectUnderName(
 }
 
 /**
- * One read over each of `definitions`' `reads`, which it asks in turn. Each
- * output is named after its definition and ranked by its place in the list, so
- * outputs started in the same millisecond sort as a full scan's do: by
- * definition, then in walk order. Outputs already read are not in start order
- * across reads, so the search stops only once every read is past its results.
+ * outputs are ranked by definition then walk order, as a full scan sorts them;
+ * reads are not in start order across each other, so the search stops only once
+ * every read is past its results
  */
 function mergedRead(
   definitions: readonly ModelOutputSearchModel[],
@@ -642,13 +560,9 @@ function mergedRead(
 }
 
 /**
- * The `limit` most recent outputs `canRead` accepts, reading only as far as it
- * takes to be sure of them: until the `limit`-th result started strictly after
- * every output still unread. The comparison is strict so that outputs started
- * in the same millisecond as it are read too, and it looks at that result, not
- * at how many are held, because an output whose name says nothing about its
- * start can be older than outputs not read yet. Results sort as a full scan's
- * do: by start time, then by definition, then in walk order.
+ * stop once the limit-th result started strictly after every unread output;
+ * strict so same-millisecond outputs are read too, and judged by that result
+ * not the count held, since a name says nothing about start time
  */
 async function readNewestFirst(
   open: () => Promise<NewestFirstRead>,
@@ -724,13 +638,9 @@ async function readNewestFirst(
 }
 
 /**
- * Names definitions. With {@link ModelOutputSearchDeps.resolveModelNames},
- * `resolve` looks up together the names of the definitions not looked up
- * yet, once each, and `nameOf` answers from what was looked up. Otherwise
- * `resolve` does nothing, and one scan of every definition answers `nameOf`,
- * only once an output needs a name. Either way the first definition per type
- * and id wins, so a primary definition names its outputs over an
- * auto-definition sharing its id.
+ * the first definition per type and id wins, so a primary definition names its
+ * outputs over an auto-definition sharing its id; with resolveModelNames names
+ * are looked up together, else one scan answers
  */
 export function definitionNamer(
   deps: Pick<ModelOutputSearchDeps, "findAllDefinitions" | "resolveModelNames">,
@@ -800,11 +710,9 @@ export function definitionNamer(
 }
 
 /**
- * The outputs worth considering: only the named model's when the
- * repository can look them up by definition (within `since` and `until`
- * when it can skip the rest), otherwise every output (since the `since`
- * cutoff when the repository can skip older ones) that `selectReadable`
- * does not refuse.
+ * only the named model's outputs when the repository can look them up by
+ * definition, otherwise every output that selectReadable does not refuse;
+ * since/until let it skip the rest when it can
  */
 export async function findCandidates(
   deps: Pick<

@@ -57,19 +57,16 @@ import { withUnitOfWork } from "../unit_of_work.ts";
 import { behaviorNotFound, type SwampError } from "../errors.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 
-/** Evaluation result for a single model. */
 export interface ModelEvaluateItemData {
   id: string;
   name: string;
   type: string;
   hadExpressions: boolean;
   outputPath?: string;
-  /** False when the evaluation was not saved; see `persist`. */
   saved?: false;
   globalArguments?: Record<string, unknown>;
 }
 
-/** Aggregate evaluation result for all models. */
 export interface ModelEvaluateAllData {
   items: ModelEvaluateItemData[];
   total: number;
@@ -95,38 +92,30 @@ export interface ModelEvaluateInput {
    */
   expectedName?: string;
   /**
-   * Without a model, saves and reports only the models this accepts. Every
-   * model is still evaluated, since evaluation orders them all in one
-   * dependency graph, but the evaluated definitions of the others are
-   * neither written nor returned. Decided on the stored definition, before
-   * evaluation.
+   * without a model, saves and reports only the models this accepts; every
+   * model is still evaluated because they share one dependency graph, but the
+   * others' definitions are neither written nor returned
    */
   include?: (entry: { definition: Definition; type: ModelType }) => boolean;
   /**
-   * Saves only the evaluated definitions this accepts; the others are
-   * evaluated and returned unsaved, with no output path. A later
-   * `--last-evaluated` run replays what is saved, so serve saves only what
-   * the caller may run (swamp-club#3940). Decided on the stored definition,
-   * before evaluation, for one model and for all. Absent, everything is
-   * saved.
+   * saves only the evaluated definitions this accepts; others are returned
+   * unsaved with no output path. A later --last-evaluated run replays what is
+   * saved, so serve saves only what the caller may run. Absent, everything is
+   * saved
    */
   persist?: (entry: { definition: Definition; type: ModelType }) => boolean;
 }
 
-/** Type guard to check if data is ModelEvaluateAllData. */
 export function isModelEvaluateAllData(
   data: ModelEvaluateItemData | ModelEvaluateAllData,
 ): data is ModelEvaluateAllData {
   return "items" in data;
 }
 
-/** Dependencies for the model evaluate operation. */
 export interface ModelEvaluateDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -140,11 +129,9 @@ export interface ModelEvaluateDeps {
     sensitiveValues: RunSensitiveValues,
   ) => Promise<EvaluatedDefinition[]>;
   /**
-   * The argument schemas of a model type, so a literal under a sensitive
-   * argument is masked in the cache (swamp-club#3681). It must find every
-   * type the evaluated repository's guard can find, or the guard refuses
-   * what this left unmasked. Undefined for a type no extension registers,
-   * which masks nothing; the guard lets such a type through as well.
+   * argument schemas of a model type, so a literal under a sensitive argument
+   * is masked in the cache; must find every type the repository's guard can
+   * find, or the guard refuses what was left unmasked
    */
   lookupModelDefinition: (
     type: ModelType,
@@ -152,18 +139,15 @@ export interface ModelEvaluateDeps {
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
-    /** Where data sits in the definition's raw copy (swamp-club#3205). */
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
-    /** Where the definition holds the mask (swamp-club#3681). */
     maskedPaths?: readonly MaskedPath[],
     persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   getEvaluatedPath: (type: ModelType, id: DefinitionId) => string;
 }
 
-/** Wires real infrastructure into ModelEvaluateDeps. */
 export function createModelEvaluateDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -171,15 +155,14 @@ export function createModelEvaluateDeps(
   injectedCatalogStore?: CatalogStore,
   injectedDefinitionRepo?: YamlDefinitionRepository,
   /**
-   * The repository context's foreign content fetcher, so expressions that
-   * read another namespace's data see its attributes (swamp-club#3306). Used
-   * only by the repository built here; an injected repository carries its own.
+   * the repository context's foreign content fetcher, so expressions reading
+   * another namespace's data see its attributes; used only by the repository
+   * built here
    */
   fetchForeignContent?: ForeignContentFetcher,
   /**
-   * The repository context's lookup, so a read of a record the v3 read model
-   * could not materialise fails loudly (swamp-club#3617). Used only by the
-   * repository built here; an injected repository carries its own.
+   * the repository context's lookup, so a read of a record the v3 read model
+   * could not materialise fails loudly; used only by the repository built here
    */
   unreadableContent?: UnreadableContentLookup,
 ): ModelEvaluateDeps {
@@ -187,10 +170,8 @@ export function createModelEvaluateDeps(
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(repoDir);
-  // When a shared catalog store / data repo is injected (e.g. by serve
-  // handlers passing the process-scoped RepositoryContext), reuse it and skip
-  // createCatalogStore so we don't open a new file-based SQLite store — and
-  // leak its 3 FDs — on every request.
+  // reuse an injected shared catalog store or data repo so each request does
+  // not open a new file-based SQLite store and leak its file descriptors
   const catalogStore = injectedCatalogStore ??
     createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
@@ -225,10 +206,9 @@ export function createModelEvaluateDeps(
       evaluationService.evaluateDefinition(definition, type, sensitiveValues),
     evaluateAllDefinitions: (sensitiveValues) =>
       evaluationService.evaluateAllDefinitions(sensitiveValues),
-    // Loads extensions to find the type when the index does not know it,
-    // exactly as the repository's guard does, so whatever the guard can see
-    // the mask sees first. Never fetches an extension: evaluate reads every
-    // definition in the repo, installed type or not.
+    // loads extensions to find the type when the index does not know it, as the
+    // repository's guard does; never fetches an extension, since evaluate reads
+    // every definition whether or not its type is installed
     lookupModelDefinition: (type) => modelRegistry.getOrLoad(type),
     saveEvaluatedDefinition: (
       type,
@@ -253,11 +233,6 @@ export function createModelEvaluateDeps(
   };
 }
 
-/**
- * Saves an evaluation with every sensitive value it read written as the
- * vault reference it came from, and any literal under a sensitive argument
- * as the mask.
- */
 async function saveWithoutSecrets(
   deps: ModelEvaluateDeps,
   result: EvaluatedDefinition,
@@ -285,7 +260,6 @@ async function saveWithoutSecrets(
   );
 }
 
-/** Evaluates all model definitions. */
 async function* evaluateAll(
   deps: ModelEvaluateDeps,
   include: (entry: { definition: Definition; type: ModelType }) => boolean =
@@ -338,7 +312,6 @@ async function* evaluateAll(
   };
 }
 
-/** Evaluates a single model definition. */
 async function* evaluateSingle(
   deps: ModelEvaluateDeps,
   modelIdOrName: string,
@@ -392,7 +365,6 @@ async function* evaluateSingle(
   };
 }
 
-/** Evaluates model definitions, replacing CEL expressions with values. */
 export async function* modelEvaluate(
   ctx: LibSwampContext,
   deps: ModelEvaluateDeps,

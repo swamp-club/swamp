@@ -17,40 +17,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * `swamp datastore quarantine accept` (swamp-club#4195): an admin lands a
- * change serve keeps because its author lacked a grant it needs. Serve
- * rebases it on what landed meanwhile and lands it as its author.
- *
- * @module
- */
-
 import { isQuarantineTxnId } from "../../domain/datastore_v3/quarantine.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 
-/** A version the accepted change landed under a new number. */
 export interface QuarantineRenumberedVersion {
   name: string;
   from: number;
   to: number;
 }
 
-/** What `datastore quarantine accept` reports. */
 export interface DatastoreQuarantineAcceptData {
   txnId: string;
   partition: string;
-  /** Who made the change: it landed as them. */
   author: string;
-  /** The admin who accepted it. */
   acceptedBy: string;
   acceptedAt: string;
-  /** The seq it landed at. */
   seq?: number;
-  /** It had been accepted already; nothing landed now. */
   duplicate: boolean;
-  /** Versions renumbered after what landed meanwhile. */
   renumbered: QuarantineRenumberedVersion[];
 }
 
@@ -64,11 +49,9 @@ export interface DatastoreQuarantineAcceptInput {
 }
 
 export interface DatastoreQuarantineAcceptDeps {
-  /** Asks serve to land the kept change `txnId`; resolves with its reply. */
   accept: (txnId: string) => Promise<Record<string, unknown>>;
 }
 
-/** Lands a change serve keeps for an admin. */
 export async function* datastoreQuarantineAccept(
   ctx: LibSwampContext,
   deps: DatastoreQuarantineAcceptDeps,
@@ -96,7 +79,6 @@ export async function* datastoreQuarantineAccept(
   );
 }
 
-/** Serve's reply to an accept, as the command reports it. */
 function acceptDataOf(
   txnId: string,
   reply: Record<string, unknown>,

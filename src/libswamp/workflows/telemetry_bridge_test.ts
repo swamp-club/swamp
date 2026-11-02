@@ -103,7 +103,6 @@ Deno.test("bridge records success entry on method_executing → step_completed",
   assertEquals(call.invocation.subcommand, "method");
   assertEquals(call.invocation.args, ["run", "shell-step", "run"]);
   assertEquals(call.invocation.commandPath, ["model", "method", "run"]);
-  // Synthetic: no root word was typed, so no commandSpelling (swamp-club#3411).
   assertEquals("commandSpelling" in call.invocation, false);
   assertEquals(call.error, null);
   assertEquals(call.parentInvocationId, "parent-x");
@@ -155,7 +154,6 @@ Deno.test("bridge synthesizes durationMs=0 entry for pre-method-executing failur
   const bridge = new WorkflowTelemetryBridge(sink);
 
   await bridge.observe(STARTED_EVENT);
-  // No method_executing — domain emits step_failed with modelName/methodName
   await bridge.observe({
     kind: "step_failed",
     jobId: "lookup",
@@ -183,7 +181,6 @@ Deno.test("bridge skips workflow-task / structural step_failed (no modelName)", 
   const bridge = new WorkflowTelemetryBridge(sink);
 
   await bridge.observe(STARTED_EVENT);
-  // Structural failure — workflow-task step or cycle/depth — no model context
   await bridge.observe({
     kind: "step_failed",
     jobId: "orchestrate",
@@ -209,7 +206,6 @@ Deno.test("bridge finalize() drains in-flight invocations as error entries", asy
     modelName: "slow",
     methodName: "process",
   });
-  // Stream terminates without step_completed/step_failed
   await bridge.finalize();
 
   assertEquals(sink.calls.length, 1);
@@ -258,14 +254,12 @@ Deno.test("bridge finalize() is idempotent", async () => {
     methodName: "go",
   });
   await bridge.finalize();
-  await bridge.finalize(); // second call should be a no-op
+  await bridge.finalize();
 
   assertEquals(sink.calls.length, 1);
 });
 
 Deno.test("bridge handles two sequential workflows independently (no state leak)", async () => {
-  // Each workflow stream gets its own bridge. Verify constructing a
-  // fresh bridge after one finalizes does not bleed state.
   const sink = new FakeSink();
   const first = new WorkflowTelemetryBridge(sink);
   await first.observe(STARTED_EVENT);
@@ -321,7 +315,6 @@ Deno.test("bridge emits one entry per forEach iteration (distinct stepNames)", a
   const bridge = new WorkflowTelemetryBridge(sink);
 
   await bridge.observe(STARTED_EVENT);
-  // forEach expands a step into iterations with derived step names
   for (const stepId of ["fan-out[0]", "fan-out[1]"]) {
     await bridge.observe({
       kind: "method_executing",
@@ -346,8 +339,6 @@ Deno.test("bridge emits one entry per forEach iteration (distinct stepNames)", a
 });
 
 Deno.test("bridge does not record allowedFailure: true differently from error", async () => {
-  // Per ADV-3 resolution: allowedFailure records as error (the method
-  // outcome). The workflow's overall success is the parent's concern.
   const sink = new FakeSink();
   const bridge = new WorkflowTelemetryBridge(sink);
 
@@ -394,8 +385,6 @@ Deno.test("bridge records the executor dimension from step_completed (swamp-club
     runId: "run-1",
     executor: "gpu-box-1",
   });
-  // A loopback step records "loopback"; an event without the field stays
-  // absent (older serve relays).
   await bridge.observe({
     kind: "method_executing",
     jobId: "build",
@@ -441,8 +430,6 @@ Deno.test("bridge attributes a parent step after nested workflows to the top-lev
   const bridge = new WorkflowTelemetryBridge(sink);
 
   await bridge.observe(STARTED_EVENT);
-  // A workflow step runs a nested workflow, which runs its own nested
-  // workflow; both forward their started events into this stream.
   await bridge.observe(NESTED_STARTED_EVENT);
   await bridge.observe(GRANDCHILD_STARTED_EVENT);
   await bridge.observe({
@@ -534,7 +521,6 @@ Deno.test("bridge attributes synthesized and finalize-drained entries after a ne
 
   await bridge.observe(STARTED_EVENT);
   await bridge.observe(NESTED_STARTED_EVENT);
-  // Pre-method-executing failure — synthesized entry.
   await bridge.observe({
     kind: "step_failed",
     jobId: "vm",
@@ -544,7 +530,6 @@ Deno.test("bridge attributes synthesized and finalize-drained entries after a ne
     modelName: "missing",
     methodName: "create",
   });
-  // Never completes — drained by finalize().
   await bridge.observe({
     kind: "method_executing",
     jobId: "vm",
@@ -564,10 +549,9 @@ Deno.test("bridge attributes synthesized and finalize-drained entries after a ne
   assertEquals(sink.calls[1].workflowContext.stepName, "long");
 });
 
-// A nested workflow step forwards its child's events into the parent's
-// stream, and the child's job and step names can repeat those of a step
-// running concurrently in the parent or in a sibling nested run. Each run's
-// step records its own entry (swamp-club#2802).
+// a nested workflow step forwards its child's events into the parent's stream,
+// and the child's job and step names can repeat those of a concurrent step;
+// each run's step records its own entry
 
 function methodExecuting(
   runId: string,

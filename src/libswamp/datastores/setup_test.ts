@@ -205,7 +205,6 @@ Deno.test("datastoreSetupFilesystem: errors on non-upgraded repo", async () => {
 Deno.test("datastoreSetupFilesystem: migrates from outgoing cache path when provided and exists", async () => {
   const tempDir = await Deno.makeTempDir();
   try {
-    // Create a fake cache directory with content
     await Deno.mkdir(join(tempDir, "data"), { recursive: true });
     await Deno.writeTextFile(
       join(tempDir, "data", "test.json"),
@@ -307,11 +306,6 @@ Deno.test("datastoreSetupFilesystem: uses .swamp/ when no outgoing cache path pr
   );
 });
 
-// ============================================================================
-// Extension datastore setup tests
-// ============================================================================
-
-/** Creates a stub DatastoreProvider for testing. */
 function createStubProvider(
   overrides?: {
     healthy?: boolean;
@@ -375,7 +369,6 @@ function createStubProvider(
   };
 }
 
-/** Registers a test extension datastore type if not already registered. */
 function ensureTestExtensionType(
   type: string,
   opts?: {
@@ -432,8 +425,6 @@ Deno.test("datastoreSetupExtension: completes with valid config", async () => {
     datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
-  // Event sequence with sync-service-equipped extension:
-  // validating → migrating → hydrating → completed
   assertEquals(events.length, 4);
   assertEquals(events[0].kind, "validating");
   assertEquals(events[1].kind, "migrating");
@@ -462,9 +453,6 @@ Deno.test("datastoreSetupExtension: completes with skip migration", async () => 
     datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
-  // Event sequence on skip-migration with sync service:
-  // validating → hydrating → completed (migration legs skipped, but
-  // hydration still runs because the extension exposes a sync service).
   assertEquals(events.length, 3);
   assertEquals(events[0].kind, "validating");
   assertEquals(events[1].kind, "hydrating");
@@ -580,15 +568,9 @@ Deno.test("datastoreSetupExtension: errors on non-upgraded repo", async () => {
   assertEquals(error.error.code, "validation_failed");
 });
 
-// ============================================================================
-// Cache hydration tests (issue #220)
-//
-// Setup must pull existing remote data into the local cache regardless of
-// whether --skip-migration was used. Migration moves data UP (local →
-// remote); hydration moves data DOWN (remote → local). A contributor
-// joining a populated remote needs hydration even when there is nothing
-// local to migrate.
-// ============================================================================
+// setup must pull existing remote data into the local cache even with
+// --skip-migration: migration moves data up, hydration moves it down, and a
+// contributor joining a populated remote needs hydration
 
 Deno.test("datastoreSetupExtension: skip-migration pulls populated remote into cache", async () => {
   ensureTestExtensionType("test-ext-hydrate-skip", {
@@ -656,7 +638,6 @@ Deno.test("datastoreSetupExtension: default path migrates and then hydrates", as
     { kind: "completed" }
   >;
   assertEquals(completed.kind, "completed");
-  // makeDeps default migrateData returns filesCopied: 5
   assertEquals(completed.data.filesCopied, 5);
   assertEquals(completed.data.filesPulled, 4);
   assertEquals(completed.data.errors, []);
@@ -729,13 +710,6 @@ Deno.test("datastoreSetupExtension: extension without sync service skips push an
   assertEquals(completed.data.errors, []);
 });
 
-// ============================================================================
-// Retry and partial-failure tests (issue #248)
-//
-// Verify that failed migrations leave the repo in a resumable state:
-// config not updated, .swamp/ preserved, retryHint populated.
-// ============================================================================
-
 Deno.test("datastoreSetupExtension: push failure blocks config update, preserves .swamp/, and surfaces retryHint", async () => {
   ensureTestExtensionType("test-ext-push-fail", {
     pushResult: () => Promise.reject(new Error("connection reset")),
@@ -801,8 +775,8 @@ Deno.test("datastoreSetupExtension: migration marks the whole cache dirty before
     ),
   );
 
-  // A clean sidecar takes the push fast path, so the copy must be marked
-  // first or none of it is uploaded (swamp-club#4100).
+  // a clean sidecar takes the push fast path, so the copy must be marked first
+  // or none of it is uploaded
   assertEquals(calls.map((c) => c.method), [
     "markDirty",
     "pushChanged",
@@ -968,10 +942,9 @@ Deno.test("datastoreSetupExtension: successful setup has no retryHint", async ()
 });
 
 Deno.test("datastoreSetupExtension: ensures cachePath exists before hydration pull", async () => {
-  // Defensive guard: setup owns its preconditions rather than relying on
-  // sync service internals. Some extension implementations may not call
-  // ensureDir inside pullChanged; the skip-migration path must create
-  // the cache directory itself before pulling.
+  // setup owns its preconditions: some extensions do not ensureDir inside
+  // pullChanged, so the skip-migration path creates the cache directory itself
+  // before pulling
   ensureTestExtensionType("test-ext-ensuredir", { pullResult: 5 });
   const ensureDirCalls: string[] = [];
   const deps = makeDeps({
@@ -989,7 +962,6 @@ Deno.test("datastoreSetupExtension: ensures cachePath exists before hydration pu
     datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
-  // The stub provider's resolveCachePath returns `${repoDir}/.custom-cache`.
   assertEquals(
     ensureDirCalls.includes(`${input.repoDir}/.custom-cache`),
     true,
@@ -998,10 +970,6 @@ Deno.test("datastoreSetupExtension: ensures cachePath exists before hydration pu
     }`,
   );
 });
-
-// ============================================================================
-// Namespace threading tests (issue #536)
-// ============================================================================
 
 const setupSyncSpyCalls: {
   method: string;
@@ -1152,10 +1120,6 @@ Deno.test("datastoreSetupExtension: threads namespace on skip-migration pull-onl
   assertEquals(push, undefined, "skip-migration should not push");
   assertEquals(pull?.options?.namespace, "staging");
 });
-
-// ============================================================================
-// Namespace config persistence and registration tests (issue #559)
-// ============================================================================
 
 Deno.test("datastoreSetupExtension: includes namespace in updateRepoConfig", async () => {
   ensureTestExtensionType("test-ext-ns-persist");
@@ -1407,10 +1371,6 @@ Deno.test("datastoreSetupExtension: rejects invalid namespace slug", async () =>
   assertStringIncludes(error.error.message, "Invalid namespace");
 });
 
-// ============================================================================
-// Namespace manifest cache materialization tests (swamp-club#834)
-// ============================================================================
-
 Deno.test("datastoreSetupExtension: push timeout commits type (decoupled from push success)", async () => {
   ensureTestExtensionType("test-ext-push-timeout", {
     pushResult: () =>
@@ -1600,10 +1560,6 @@ Deno.test("datastoreSetupExtension: materializes namespace manifest in local cac
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
-
-// ============================================================================
-// managedConfig and the in-repo config dir (swamp-club#2837)
-// ============================================================================
 
 async function withSetupTempDir(
   fn: (dir: string) => Promise<void>,
@@ -2084,10 +2040,6 @@ Deno.test("datastoreSetupFilesystem: leaves an instance-local config dir behind"
   });
 });
 
-// ============================================================================
-// Empty config tier warning (swamp-club#2845)
-// ============================================================================
-
 type WarningEvent = Extract<DatastoreSetupEvent, { kind: "warning" }>;
 
 function warningsOf(events: DatastoreSetupEvent[]): WarningEvent[] {
@@ -2099,10 +2051,6 @@ function emptyTier(tierPath: string | undefined) {
     Promise.resolve({ managed: true as const, tierPath, populated: false });
 }
 
-/**
- * Registers an extension type, under a per-run name, whose sync service
- * implements hydrateFile. Returns the type name and the recorded calls.
- */
 function registerHydratingType(
   hydrate: (relPath: string) => Promise<boolean>,
   extra: Partial<DatastoreProvider> = {},
@@ -2432,7 +2380,6 @@ Deno.test("datastoreSetupExtension: a failed sentinel hydration still warns", as
 Deno.test("datastoreSetupExtension: never hydrates a config tier outside the cache", async () => {
   const { type, calls } = registerHydratingType(() => Promise.resolve(true));
   try {
-    // An excluded config subdir resolves to the repo's own .swamp/config.
     const deps = makeDeps({
       inspectManagedConfigTier: emptyTier(
         join("/tmp/repo", ".swamp", "config"),
@@ -2637,20 +2584,11 @@ Deno.test("createDatastoreSetupDeps.inspectManagedConfigTier: reads the tier .sw
   });
 });
 
-// ============================================================================
-// Joining a remote that already holds a config tier (swamp-club#2844)
-// ============================================================================
-
 interface RecordedSync {
   op: "pull" | "push";
   options?: DatastoreSyncOptions;
 }
 
-/**
- * Like {@link registerTempDirRemoteType}, but scoped by namespace and
- * `subdirs` the way the S3 and GCS sync services are, and recording every
- * call. `failFirstPull` makes the first pull reject with that error.
- */
 function registerRecordingRemoteType(
   remoteDir: string,
   cacheDir: string,
@@ -2698,7 +2636,6 @@ function registerRecordingRemoteType(
   return type;
 }
 
-/** A repo whose filesystem datastore at .swamp holds its config tier. */
 async function writeInRepoTierRepo(repoDir: string): Promise<void> {
   await writeMarker(repoDir, {
     type: "filesystem",
@@ -2770,11 +2707,9 @@ Deno.test("datastoreSetupExtension: an in-repo tier joining a remote tier keeps 
     >;
     assertEquals(completed.kind, "completed");
     assertEquals(completed.data.errors, []);
-    // The remote config tier is pulled before anything is pushed.
     assertEquals(calls[0].op, "pull");
     assertEquals(calls[0].options?.subdirs, ["config"]);
     assertEquals(calls[1].op, "push");
-    // The team's copies survive; local-only config and data migrate.
     assertEquals(
       await Deno.readTextFile(join(remoteConfig, "models", "m.yaml")),
       "team",
@@ -2794,7 +2729,6 @@ Deno.test("datastoreSetupExtension: an in-repo tier joining a remote tier keeps 
       await pathExists(join(remoteConfig, "pulled-extensions")),
       false,
     );
-    // Only the differing local copy stays behind, with pulled extensions.
     assertEquals(
       await Deno.readTextFile(join(localConfig, "models", "m.yaml")),
       "local",
@@ -3053,10 +2987,6 @@ Deno.test("createDatastoreSetupDeps.listConfigTierConflicts: lists shared files,
     );
   });
 });
-
-// ============================================================================
-// Setup onto the migration source (swamp-club#3162)
-// ============================================================================
 
 for (
   const [label, pathOf] of [
@@ -3352,10 +3282,6 @@ Deno.test("datastoreSetupExtension: tells a repo already bound to a reserved nam
   assertEquals(setupSyncSpyCalls, []);
 });
 
-// ============================================================================
-// Local default vault warning (swamp-club#3259)
-// ============================================================================
-
 Deno.test("datastoreSetupExtension: warns when the default vault is local_encryption", async () => {
   ensureTestExtensionType("test-ext-setup");
   const deps = makeDeps({
@@ -3446,16 +3372,6 @@ Deno.test("createDatastoreSetupDeps.findLocalDefaultVault: names a local_encrypt
   });
 });
 
-// ============================================================================
-// Setup from a filesystem datastore outside the repo (swamp-club#3238)
-// ============================================================================
-
-/**
- * A repo whose datastore was moved to `external`, as the first
- * `setup filesystem` leaves it: the data on the external path with the stale
- * catalog copy that move took along, and the live local catalog and a
- * method-run log in the repo's own .swamp.
- */
 async function writeMovedOutRepo(
   tmp: string,
 ): Promise<{ repoDir: string; external: string }> {
@@ -4203,11 +4119,10 @@ Deno.test("datastoreSetupExtension: leaves the audit trail and run logs in .swam
   });
 });
 
-// swamp-club#3301: `namespace set` before any setup leaves the repo's own
-// .swamp/<namespace> holding only its manifest, or nothing. Setup takes that
-// as a fresh start, not an inaccessible datastore.
+// namespace set before any setup leaves .swamp/<namespace> holding only its
+// manifest or nothing; setup takes that as a fresh start, not an inaccessible
+// datastore
 
-/** A repo whose datastore is its own .swamp with `team` set before setup. */
 async function writeFreshNamespaceRepo(
   tmp: string,
   manifest: boolean,
@@ -4529,7 +4444,6 @@ Deno.test("datastoreSetupExtension: setup after namespace set refuses while .swa
   });
 });
 
-/** The calls a v3 extension setup makes into its deps, in order. */
 function recordingV3Deps(overrides: Partial<DatastoreSetupDeps> = {}) {
   const calls: string[] = [];
   const configs: Record<string, unknown>[] = [];
@@ -4609,7 +4523,6 @@ Deno.test("datastoreSetupExtension: --format 3 checks the host, the bucket and t
     "invalidateCatalog",
   ]);
   assertEquals(calls.includes("migrateData"), false);
-  // The checkout, its namespace and the outgoing cache are each checked.
   assertEquals(
     calls.filter((call) => call.startsWith("hasDatastoreRecords")).length,
     3,
@@ -4729,8 +4642,6 @@ Deno.test("datastoreSetupExtension: a repo already on v3 is refused before any b
   assertEquals(events.at(-1)?.kind, "error");
   assertEquals(calls, []);
 });
-
-// --- swamp-club#3617: resuming a v3 setup whose marker a crash lost ---
 
 const LOST_REFUSALS = [
   new LostDatastoreFormatMarkerError("/tmp/datastore", "setup-target"),
@@ -4856,10 +4767,6 @@ Deno.test("createDatastoreSetupDeps: a lost-marker skeleton is refused as a setu
     );
   });
 });
-
-// ============================================================================
-// Reserved namespaces and unsafe checkouts on v3 (swamp-club#3691)
-// ============================================================================
 
 Deno.test("datastoreSetupFilesystem: format 3 refuses a repo bound to a reserved namespace before creating anything (swamp-club#3691)", async () => {
   for (const namespace of ["data", "vault"]) {

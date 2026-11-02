@@ -38,7 +38,6 @@ import {
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { refreshManagedLockfile } from "./managed_lockfile_transaction.ts";
 
-/** Preview data returned before confirmation. */
 export interface ExtensionRmPreview {
   name: string;
   version: string;
@@ -46,7 +45,6 @@ export interface ExtensionRmPreview {
   dependents: string[];
 }
 
-/** Data structure for the extension rm completed event. */
 export interface ExtensionRmData {
   name: string;
   version: string;
@@ -54,15 +52,13 @@ export interface ExtensionRmData {
   filesSkipped: number;
   dirsRemoved: number;
   /**
-   * Tracked files that could not be deleted and are left on disk.
-   * Optional because a thin client may talk to an older server that
-   * does not send it.
+   * optional because a thin client may talk to an older server that does not
+   * send it.
    */
   failedFiles?: FailedFile[];
   /**
-   * Tracked paths kept because another installed extension claims them
-   * (a shared skill dir). Optional because a thin client may talk to an
-   * older server that does not send it.
+   * optional because a thin client may talk to an older server that does not
+   * send it.
    */
   retainedFiles?: RetainedFile[];
 }
@@ -72,39 +68,26 @@ export type ExtensionRmEvent =
   | { kind: "completed"; data: ExtensionRmData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the extension rm operation. */
 export interface ExtensionRmInput {
   extensionName: string;
 }
 
-/** Dependencies for the extension rm operation. */
 export interface ExtensionRmDeps {
   findDependents: (
     repoDir: string,
     upstreamData: UpstreamExtensionsMap,
     targetName: string,
   ) => Promise<string[]>;
-  /**
-   * Lockfile repository owning read+write of upstream_extensions.json.
-   * Captures a snapshot at construction (per its own JSDoc); construct
-   * fresh deps per rm operation via {@link createExtensionRmDeps}.
-   */
+  /** captures a snapshot at construction; construct fresh deps per rm operation. */
   lockfileRepository: LockfileRepository;
   /**
-   * W2 extension repository — owns the catalog write surface.
-   * `extensionRm` routes through {@link RemoveExtensionService} so the
-   * catalog tombstone-save fires FIRST in the inverted ordering
-   * (catalog → lockfile → filesystem). Closes swamp-club#201:
-   * `extension rm` now prunes catalog rows.
+   * extensionRm routes through RemoveExtensionService so the catalog
+   * tombstone-save fires first (catalog, lockfile, filesystem).
    */
   repository: ExtensionRepository;
   repoDir: string;
 }
 
-/**
- * Finds installed extensions that depend on the given extension name
- * by scanning manifest.yaml files tracked in upstream_extensions.json.
- */
 export async function findDependents(
   repoDir: string,
   upstreamData: UpstreamExtensionsMap,
@@ -140,7 +123,6 @@ export async function findDependents(
   return dependents;
 }
 
-/** Gathers preview info for the extension rm operation. */
 export async function extensionRmPreview(
   ctx: LibSwampContext,
   deps: ExtensionRmDeps,
@@ -148,8 +130,8 @@ export async function extensionRmPreview(
 ): Promise<ExtensionRmPreview> {
   ctx.logger.debug`Looking up extension: ${input.extensionName}`;
 
-  // Preview what the datastore's lockfile holds, not a stale cache: an
-  // extension another checkout installed is removable (swamp-club#2838).
+  // preview what the datastore's lockfile holds, not a stale cache: an
+  // extension another checkout installed is removable.
   await refreshManagedLockfile(deps.lockfileRepository);
   const upstreamData = deps.lockfileRepository.getAllEntries();
   const entry = upstreamData[input.extensionName];
@@ -181,12 +163,8 @@ export async function extensionRmPreview(
 }
 
 /**
- * Removes an extension and its tracked files. **Closes
- * swamp-club#201** — routes through {@link RemoveExtensionService} so
- * the catalog tombstone-save fires FIRST (inverted ordering vs.
- * install). The async generator surface and event shape are
- * preserved so renderers and the CLI two-phase prompt flow stay
- * unchanged.
+ * routes through RemoveExtensionService; the generator surface and event shape
+ * are preserved so renderers and the CLI two-phase prompt are unchanged.
  */
 export async function* extensionRm(
   ctx: LibSwampContext,
@@ -199,15 +177,12 @@ export async function* extensionRm(
     (async function* () {
       yield { kind: "deleting" };
 
-      // Confirm the extension is installed before constructing the
-      // service. The service itself throws UserError on a no-op rm,
-      // but the existing rm event shape uses notFound() for the
-      // "not installed" case so renderers don't see a behaviour
-      // change vs. pre-W2.
+      // confirm installed before constructing the service: the rm event shape
+      // reports not installed with notFound(), while the service itself throws.
       let entry = deps.lockfileRepository.getEntry(input.extensionName);
       if (!entry) {
-        // Serve removes without a preview: an extension another checkout
-        // installed is only in the datastore's lockfile (swamp-club#2838).
+        // serve removes without a preview: an extension another checkout
+        // installed is only in the datastore's lockfile.
         await refreshManagedLockfile(deps.lockfileRepository);
         entry = deps.lockfileRepository.getEntry(input.extensionName);
       }
@@ -245,14 +220,8 @@ export async function* extensionRm(
 }
 
 /**
- * Wires real infrastructure into ExtensionRmDeps. Constructs a fresh
- * {@link LockfileRepository} that captures a snapshot at this moment
- * AND a fresh {@link ExtensionRepository} so the rm flow routes
- * through {@link RemoveExtensionService} and prunes catalog rows
- * (closes swamp-club#201). The returned deps object owns the catalog
- * handle — caller is responsible for calling
- * `deps.repository.close()` after the rm operation
- * completes.
+ * constructs a fresh lockfile snapshot and a fresh ExtensionRepository; the
+ * caller must call deps.repository.close() after the rm operation completes.
  */
 export async function createExtensionRmDeps(
   repoDir: string,

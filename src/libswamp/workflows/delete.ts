@@ -47,7 +47,6 @@ import {
   withGeneratorSpan,
 } from "../../infrastructure/tracing/mod.ts";
 
-/** Preview data returned before confirmation. */
 export interface WorkflowDeletePreview {
   id: string;
   name: string;
@@ -55,7 +54,6 @@ export interface WorkflowDeletePreview {
   runCount: number;
 }
 
-/** Data structure for the workflow delete completed event. */
 export interface WorkflowDeleteData {
   id: string;
   name: string;
@@ -68,13 +66,11 @@ export type WorkflowDeleteEvent =
   | { kind: "completed"; data: WorkflowDeleteData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the workflow delete operation. */
 export interface WorkflowDeleteInput {
   workflowIdOrName: string;
   /**
-   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
-   * and look it up by id only, so the delete acts on the workflow the caller
-   * authorized.
+   * looks up by id only, so the delete acts on the workflow the caller
+   * authorized
    */
   byId?: boolean;
   /**
@@ -89,7 +85,6 @@ export interface WorkflowDeleteInput {
   principalId?: string;
 }
 
-/** Dependencies for the workflow delete operation. */
 export interface WorkflowDeleteDeps {
   findById: (id: WorkflowId) => Promise<Workflow | null>;
   findByName: (name: string) => Promise<Workflow | null>;
@@ -97,9 +92,7 @@ export interface WorkflowDeleteDeps {
   pathExists: (path: string) => Promise<boolean>;
   countRuns: (workflowId: WorkflowId) => Promise<number>;
   deleteRuns: (workflowId: WorkflowId) => Promise<number>;
-  /** Lists a workflow's run IDs from the run filenames. */
   listRunIds: (workflowId: WorkflowId) => Promise<string[]>;
-  /** Deletes the per-run evaluated-workflow snapshots of the given runs. */
   deleteRunSnapshots: (runIds: readonly string[]) => Promise<void>;
   /**
    * Removes the signal wait records of the given runs, so an outcome never
@@ -114,7 +107,6 @@ export interface WorkflowDeleteDeps {
   deleteWorkflow: (workflowId: WorkflowId, name?: string) => Promise<void>;
 }
 
-/** Wires real infrastructure into WorkflowDeleteDeps. */
 export function createWorkflowDeleteDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -170,17 +162,15 @@ export function createWorkflowDeleteDeps(
           try {
             await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
           } finally {
-            // Every key record of the workflow goes with it, the release
-            // records its last claims left behind included, and whether
-            // or not the runs' records could be removed: no sweep removes
-            // the highest record of a key (swamp-club#3209).
+            // every key record of the workflow goes with it, including release
+            // records left by its last claims, even when the runs' records
+            // could not be removed: no sweep removes a key's highest record
             await signalWaits.store.removeKeyRecordsOfWorkflow(workflowId);
             await signalWaits.store.removePendingRecordsOfWorkflow(
               workflowId,
             );
           }
         }
-        // The continuation claims of a run go with it (swamp-club#3108).
         await removeClaimsOfRuns(
           continuationClaims,
           runIds.filter((runId) => isSinglePathSegment(runId)),
@@ -200,7 +190,6 @@ export function createWorkflowDeleteDeps(
   };
 }
 
-/** Looks up the workflow by name then exact id, or by id only with `byId`. */
 function findWorkflow(
   deps: WorkflowDeleteDeps,
   input: WorkflowDeleteInput,
@@ -210,7 +199,6 @@ function findWorkflow(
     : findWorkflowByIdOrName(deps, input.workflowIdOrName);
 }
 
-/** Gathers preview info for the workflow delete operation. */
 export async function workflowDeletePreview(
   ctx: LibSwampContext,
   deps: WorkflowDeleteDeps,
@@ -224,7 +212,6 @@ export async function workflowDeletePreview(
 
   const workflowPath = deps.getPath(workflow.id);
 
-  // Guard against deleting extension-only workflows
   const exists = await deps.pathExists(workflowPath);
   if (!exists) {
     throw validationFailed(
@@ -242,7 +229,6 @@ export async function workflowDeletePreview(
   };
 }
 
-/** Deletes a workflow and its run history. */
 export async function* workflowDelete(
   ctx: LibSwampContext,
   deps: WorkflowDeleteDeps,
@@ -280,7 +266,6 @@ export async function* workflowDelete(
         // never leaves surviving runs without their snapshots.
         const runIds = await deps.listRunIds(workflow.id);
 
-        // Delete runs
         ctx.logger.debug`Deleting workflow runs`;
         const runsDeleted = await deps.deleteRuns(workflow.id);
 
@@ -303,11 +288,9 @@ export async function* workflowDelete(
           }
         }
 
-        // Delete evaluated workflow
         ctx.logger.debug`Deleting evaluated workflow`;
         await deps.deleteEvaluated(workflow.id);
 
-        // Delete workflow
         ctx.logger.debug`Deleting workflow: ${workflow.id}`;
         await deps.deleteWorkflow(workflow.id, workflow.name);
 

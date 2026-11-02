@@ -29,11 +29,8 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 /**
- * Data structure for the extension unyank output.
- *
- * Note: `reason` is nullable (unlike the yank equivalent where reason is
- * required). The unyank endpoint accepts an empty body, so callers may omit
- * a reason. JSON consumers should handle `reason: null` explicitly.
+ * reason is nullable, unlike yank: the unyank endpoint accepts an empty body.
+ * JSON consumers should handle `reason: null`.
  */
 export interface ExtensionUnyankData {
   name: string;
@@ -46,7 +43,6 @@ export type ExtensionUnyankEvent =
   | { kind: "completed"; data: ExtensionUnyankData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the extension unyank operation. */
 export interface ExtensionUnyankInput {
   extensionName: string;
   version: string | null;
@@ -54,7 +50,6 @@ export interface ExtensionUnyankInput {
   reason: string | null;
 }
 
-/** Preview data returned before executing the mutation. */
 export interface ExtensionUnyankPreview {
   extensionName: string;
   version: string | null;
@@ -62,7 +57,6 @@ export interface ExtensionUnyankPreview {
   reason: string | null;
 }
 
-/** Dependencies for the extension unyank operation. */
 export interface ExtensionUnyankDeps {
   loadCredentials: () => Promise<
     { serverUrl: string; apiKey: string } | null
@@ -77,7 +71,6 @@ export interface ExtensionUnyankDeps {
   ) => Promise<void>;
 }
 
-/** Wires real infrastructure into ExtensionUnyankDeps. */
 export function createExtensionUnyankDeps(
   identity?: ClientIdentity,
 ): ExtensionUnyankDeps {
@@ -109,7 +102,6 @@ function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
-/** Gathers preview info for the extension unyank operation, validating inputs. */
 export async function extensionUnyankPreview(
   ctx: LibSwampContext,
   deps: ExtensionUnyankDeps,
@@ -136,7 +128,6 @@ export async function extensionUnyankPreview(
   };
 }
 
-/** Unyanks an extension or specific version, restoring availability. */
 export async function* extensionUnyank(
   ctx: LibSwampContext,
   deps: ExtensionUnyankDeps,

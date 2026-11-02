@@ -98,7 +98,6 @@ function makeWorkflow(name = "release"): Workflow {
   });
 }
 
-/** A run suspended with `review` waiting for a signal and `sibling` done. */
 function suspendedAtWait(workflow: Workflow): {
   run: WorkflowRun;
   waitId: string;
@@ -119,25 +118,16 @@ function suspendedAtWait(workflow: Workflow): {
 interface Fixture {
   deps: WorkflowSignalDeps;
   waits: InMemorySignalWaitStore;
-  /** The run records as stored. A signal has no way to change them. */
   stored: Map<string, WorkflowRunData>;
-  /** Reads made of the run repository, in order. */
   calls: string[];
 }
 
-/**
- * A repository holding `runs` as stored records, with no way to save, and a
- * wait store holding the registration of every wait those runs hold, as
- * the executor leaves it. `registered: false` leaves the store empty, as a
- * run suspended before waits were registered.
- */
 async function fixtureOf(
   runs: WorkflowRun[],
   options: {
     now?: Date;
     registered?: boolean;
     waits?: InMemorySignalWaitStore;
-    /** The workflows a signal by key can name. */
     workflows?: Workflow[];
   } = {},
 ): Promise<Fixture> {
@@ -286,7 +276,6 @@ Deno.test("workflowSignal: a registered wait is delivered without reading a run 
   assert(event.kind === "completed", JSON.stringify(event));
   assertEquals(event.data.workflowName, "release");
   assertEquals(event.data.stepName, "review");
-  // Whether the run can resume is not known here, and the result says so.
   assertEquals(event.data.awaitingResume, false);
   assertEquals(event.data.runRecordAvailable, false);
   assertEquals((await outcomeOf(fixture, waitId))?.kind, "accepted");
@@ -356,7 +345,6 @@ Deno.test("workflowSignal: an invalid payload is refused with its errors and the
   assertStringIncludes(error.message, "the wait stays open");
   assertStringIncludes(error.message, "verdict");
   assertEquals(await outcomeOf(fixture, waitId), undefined);
-  // The same wait still takes a valid payload.
   assertEquals(
     (await send(fixture, waitId, { verdict: "fix" })).kind,
     "completed",
@@ -401,7 +389,6 @@ Deno.test("workflowSignal: after the run ended the kept outcome still answers, w
   const fixture = await fixtureOf([run]);
   const first = await send(fixture, waitId, { verdict: "ship" });
   assert(first.kind === "completed");
-  // The run ends: its registration is removed and its outcome kept.
   await closeRunWaits(fixture.waits, run, IN_TIME);
   assertEquals(fixture.waits.registrations.size, 0);
 
@@ -419,7 +406,6 @@ Deno.test("workflowSignal: the wait of a cancelled run is closed", async () => {
   const workflow = makeWorkflow();
   const { run, waitId } = suspendedAtWait(workflow);
   const fixture = await fixtureOf([run]);
-  // A cancel closes the run's waits before it saves the run.
   await closeRunWaits(fixture.waits, run, IN_TIME);
   cancelAndSettle(run, workflow, "operator");
   fixture.stored.set(run.id, run.toData());
@@ -430,7 +416,6 @@ Deno.test("workflowSignal: the wait of a cancelled run is closed", async () => {
   assertEquals((await outcomeOf(fixture, waitId))?.kind, "cancelled");
 });
 
-/** A store in which something else settles the wait just before a signal. */
 class RacedStore extends InMemorySignalWaitStore {
   constructor(private readonly winner: (outcome: WaitOutcome) => WaitOutcome) {
     super();
@@ -469,7 +454,6 @@ Deno.test("workflowSignal: a signal that loses the create to a cancel, a timeout
     const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
 
     assertStringIncludes(error.message, expected);
-    // Exactly one outcome, and it is the winner's.
     assertEquals(waits.outcomes.size, 1);
     const stored = await outcomeOf(fixture, waitId);
     assert(stored);
@@ -481,7 +465,7 @@ Deno.test("workflowSignal: a signal that loses the create to a cancel, a timeout
 
 Deno.test("workflowSignal: a wait of a run suspended before waits were registered is registered from its record and takes the signal", async () => {
   const { run, waitId } = suspendedAtWait(makeWorkflow());
-  // As swamp-club#3068 stored it: status `waiting`, no registration.
+  // a run stored with status waiting and no registration
   const data = run.toData();
   data.jobs[0].steps.find((s) => s.stepName === "review")!.status = "waiting";
   const fixture = await fixtureOf([WorkflowRun.fromData(data)], {
@@ -521,7 +505,6 @@ Deno.test("workflowSignal: a wait an earlier build settled in the run record is 
     (again.error.details as { receipt: unknown }).receipt,
     settled.receipt,
   );
-  // Nothing was registered or settled for a wait that is over.
   assertEquals(fixture.waits.registrations.size, 0);
   assertEquals(fixture.waits.outcomes.size, 0);
 });
@@ -577,7 +560,6 @@ Deno.test("workflowSignal: a registration that cannot be read is rebuilt from th
 Deno.test("workflowSignal: a record that cannot be read, with nothing to rebuild it from, is refused and never treated as an open wait", async () => {
   const garbage = new TextEncoder().encode("{not json");
 
-  // The run record is not on this host, so the wait cannot be rebuilt.
   const first = suspendedAtWait(makeWorkflow());
   const badRegistration = await fixtureOf([first.run]);
   badRegistration.waits.registrations.set(first.waitId, garbage);
@@ -603,7 +585,6 @@ Deno.test("workflowSignal: a record that cannot be read, with nothing to rebuild
 Deno.test("workflowSignal: a registered wait whose step the run record shows already past it is answered from the record, not accepted", async () => {
   const workflow = makeWorkflow();
 
-  // Settled in the run record by a build that writes it directly.
   const settled = suspendedAtWait(workflow);
   const settledFixture = await fixtureOf([settled.run]);
   const review = settled.run.getJob("main")!.getStep("review")!;
@@ -620,7 +601,6 @@ Deno.test("workflowSignal: a registered wait whose step the run record shows alr
   );
   assertEquals(settledFixture.waits.outcomes.size, 0);
 
-  // Cancelled by a writer that did not close the wait.
   const cancelled = suspendedAtWait(workflow);
   const cancelledFixture = await fixtureOf([cancelled.run]);
   cancelAndSettle(cancelled.run, workflow, "operator");
@@ -692,7 +672,6 @@ Deno.test("workflowSignal: the refusals are distinct messages", async () => {
   assertEquals(new Set(kinds).size, kinds.length, kinds.join(" | "));
 });
 
-/** A workflow with two waits in one job, and a run suspended on both. */
 function suspendedAtTwoWaits(): {
   run: WorkflowRun;
   first: string;
@@ -771,7 +750,6 @@ Deno.test("workflowSignal: an empty sender falls back, so the receipt names one"
   const event = events.at(-1)!;
   assert(event.kind === "completed", JSON.stringify(event));
   assertEquals(event.data.signal.submittedBy, "unknown");
-  // The stored outcome reads back with its receipt intact.
   const stored = await outcomeOf(fixture, waitId);
   assert(stored?.kind === "accepted");
   assertEquals(stored.receipt.submittedBy, "unknown");
@@ -842,7 +820,6 @@ Deno.test("workflowSignal: every refusal names the wait id exactly as typed", as
     const { message, typedId } = await refusal();
     const firstLine = message.split("\n")[0];
     assertStringIncludes(firstLine, typedId);
-    // The normalised form, which telemetry would not recognise, is absent.
     assertEquals(
       firstLine.includes(typedId.trim().toLowerCase()),
       false,
@@ -877,7 +854,6 @@ Deno.test("workflowSignal: names read from a wait record are printed without con
   const stored = await fixture.waits.findRegistration(waitId);
   assert(stored.kind === "found");
   await fixture.waits.removeRegistration(waitId);
-  // As a writer of the datastore could leave it.
   await fixture.waits.register({
     ...stored.record,
     stepName: "review\u001b[2J",
@@ -893,9 +869,6 @@ Deno.test("workflowSignal: names read from a wait record are printed without con
   assertEquals(/[\u0000-\u001f]/.test(error.message), false);
 });
 
-// --- refusal kinds, the authorization hook and the run-record scan ---
-
-/** Sends a signal with an `authorize` hook that records what it was asked. */
 async function sendAuthorized(
   fixture: Pick<Fixture, "deps">,
   waitId: string,
@@ -1067,7 +1040,6 @@ Deno.test("workflowSignal: a refused caller learns nothing of a settled, expired
     assertEquals(message.includes(workflow.name), false);
     assertEquals(message.includes("review"), false);
   }
-  // The refused attempt on the expired wait did not settle it either.
   assertEquals((await late.waits.findOutcome(waitId)).kind, "absent");
 });
 
@@ -1094,7 +1066,6 @@ Deno.test("workflowSignal: authorize is asked before an unregistered wait is reg
     true,
   );
   assertEquals(allowed.event.kind, "completed");
-  // Asked once: the run record placed the wait and was the run it named.
   assertEquals(allowed.asked.length, 1);
   assertEquals((await fixture.waits.findRegistration(waitId)).kind, "found");
 });
@@ -1105,7 +1076,6 @@ Deno.test("workflowSignal: with only an outcome left, authorize is asked with th
   const fixture = await fixtureOf([run]);
   fixture.deps.scanRunRecords = false;
   await send(fixture, waitId, { verdict: "ship" });
-  // The run ended and its registration was removed; the run record is kept.
   await fixture.waits.removeRegistration(waitId);
 
   const refused = await sendAuthorized(
@@ -1134,7 +1104,6 @@ Deno.test("workflowSignal: with only an outcome left and no run record, authoriz
   const { run, waitId } = suspendedAtWait(workflow);
   const fixture = await fixtureOf([run]);
   await send(fixture, waitId, { verdict: "ship" });
-  // The run ended and its registration was removed; this host lost the run.
   await fixture.waits.removeRegistration(waitId);
   fixture.stored.clear();
 
@@ -1186,8 +1155,6 @@ Deno.test("workflowSignal: with the scan off a registered wait is delivered as b
   assertEquals(fixture.calls.includes("findGlobalByStatus"), false);
 });
 
-// A signal addressed by workflow and key (swamp-club#3210).
-
 const KEY = "release-verdict";
 
 function keyedWorkflow(name = "release", key = KEY): Workflow {
@@ -1207,7 +1174,6 @@ function keyedWorkflow(name = "release", key = KEY): Workflow {
   });
 }
 
-/** A run suspended at its keyed wait, with the wait's claim on the key. */
 async function suspendedHoldingKey(
   workflow: Workflow,
   waits: InMemorySignalWaitStore,
@@ -1304,7 +1270,6 @@ Deno.test("workflowSignal: a signal by workflow and key reaches the holder and n
   assert(outcome?.kind === "accepted");
   assertEquals(outcome.payload, { verdict: "ship" });
   assertEquals(outcome.receipt, event.data.signal);
-  // Neither the run record nor a key record is written.
   assertEquals(fixture.stored.get(fixture.run.id), before);
   assertEquals(fixture.waits.keyRecords, keyRecords);
 });
@@ -1348,7 +1313,6 @@ Deno.test("workflowSignal: an unknown workflow, an undeclared key and a string t
     );
     assertEquals(refusal.kind, "unknown", `${workflow} ${key}`);
     assertEquals(refusal.code, "not_found");
-    // One message, whichever of the three it was.
     assertEquals(
       refusal.message,
       `Signal wait not found: key "${key}" of workflow "${workflow}"`,
@@ -1366,7 +1330,6 @@ Deno.test("workflowSignal: a declared key no open wait holds is refused as such 
   );
   assertEquals(first.kind, "no_open_wait");
   assertEquals(first.code, "validation_failed");
-  // Nothing ever held the key, so nothing is said of a last wait.
   assertEquals(first.lastWait, undefined);
   assertStringIncludes(
     first.message,
@@ -1375,7 +1338,6 @@ Deno.test("workflowSignal: a declared key no open wait holds is refused as such 
   assertEquals(waits.outcomes.size, 0);
   assertEquals(waits.keyRecords.size, 0);
 
-  // After the holder is settled the key is free again.
   const fixture = await keyedFixture();
   const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
   assert(sent.kind === "completed");
@@ -1383,10 +1345,9 @@ Deno.test("workflowSignal: a declared key no open wait holds is refused as such 
     await sendByKey(fixture, "release", KEY, { verdict: "fix" }),
   );
   assertEquals(second.kind, "no_open_wait");
-  // The wait that last held the key, and the signal that settled it. The
-  // same refusal reaches a sender who retries after a lost reply and one who
-  // is early for the next run, so the message says when the wait was settled
-  // and leaves the conclusion to the sender.
+  // the same refusal reaches a sender retrying after a lost reply and one early
+  // for the next run, so the message says when the wait was settled and leaves
+  // the conclusion to the sender
   assertEquals(second.lastWait?.waitId, fixture.waitId);
   assertEquals(second.lastWait?.settledAs, "accepted");
   assertEquals(second.lastWait?.receipt?.id, sent.data.signal.id);
@@ -1397,7 +1358,6 @@ Deno.test("workflowSignal: a declared key no open wait holds is refused as such 
   assertEquals(second.message.includes("has already landed"), false);
   assertStringIncludes(second.message, 'Run "swamp workflow waits" for');
 
-  // A caller that answers for a server names the command that reaches it.
   const events = await collect<WorkflowSignalEvent>(
     workflowSignal(createLibSwampContext(), fixture.deps, {
       workflow: "release",
@@ -1482,13 +1442,11 @@ Deno.test("workflowSignal: a holder settled between resolving and delivering is 
     );
     assertEquals(refusal.details.waitId, fixture.waitId);
     assert(next);
-    // The wait that claimed the key meanwhile got nothing.
     assertEquals((await store.findOutcome(next.waitId)).kind, "absent");
   }
 });
 
 Deno.test("workflowSignal: a claim whose wait is registered to another workflow or under another key carries no signal there", async () => {
-  // A claim altered to name a wait of another workflow.
   const victim = keyedWorkflow("payroll", "payroll-verdict");
   const waits = new InMemorySignalWaitStore();
   const target = await suspendedHoldingKey(victim, waits, "payroll-verdict");
@@ -1513,7 +1471,6 @@ Deno.test("workflowSignal: a claim whose wait is registered to another workflow 
   );
   assertEquals(refusal.kind, "unreadable");
   assertEquals((await waits.findOutcome(target.waitId)).kind, "absent");
-  // The wait still takes a signal addressed to it.
   const direct = await sendByKey(fixture, "payroll", "payroll-verdict", {
     verdict: "ship",
   });
@@ -1575,7 +1532,6 @@ Deno.test("workflowSignal: a claim altered to name another workflow's wait is an
     settled,
   );
 
-  // The wait has no registration, and its run record places it.
   const openWaits = new InMemorySignalWaitStore();
   const open = await suspendedHoldingKey(victim, openWaits, "payroll-verdict");
   forge(openWaits, open.claim);
@@ -1608,8 +1564,6 @@ Deno.test("workflowSignal: a key whose highest record cannot be read is refused 
 });
 
 Deno.test("workflowSignal: a claim whose wait nothing here knows is not found, in the words of the key address", async () => {
-  // The step claimed its key and stopped before it registered the wait or
-  // saved the run.
   const workflow = keyedWorkflow();
   const waits = new InMemorySignalWaitStore();
   const held = await suspendedHoldingKey(workflow, waits);
@@ -1645,8 +1599,6 @@ Deno.test("workflowSignal: by key on a datastore that cannot hold wait records i
   assertEquals(refusal.kind, "unsupported");
 });
 
-// A signal that arrives before its wait opens (swamp-club#3212).
-
 function earlyWorkflow(name = "release"): Workflow {
   return Workflow.create({
     name,
@@ -1664,7 +1616,6 @@ function earlyWorkflow(name = "release"): Workflow {
   });
 }
 
-/** A run suspended at its keyed wait, opened at `at` by a step with acceptEarly. */
 async function suspendedAtEarlyWait(
   workflow: Workflow,
   waits: InMemorySignalWaitStore,
@@ -1706,7 +1657,6 @@ Deno.test("workflowSignal: a signal by key before the wait opens is held, with i
   assertEquals(sent.data.signal.receivedAt, IN_TIME.toISOString());
   assertEquals(sent.data.signal.submittedBy, "tux");
   assertEquals(sent.data.heldUntil, "2026-01-01T00:00:40.000Z");
-  // One pending record, and nothing that names a wait or a run.
   assertEquals(waits.pendingRecords.size, 1);
   assertEquals(waits.outcomes.size, 0);
   assertEquals(waits.keyRecords.size, 0);
@@ -1783,8 +1733,6 @@ Deno.test("workflowSignal: a wait opened over a pending signal its step never re
   const empty = await fixtureOf([], { waits, workflows: [workflow] });
   const early = await sendByKey(empty, "release", KEY, { verdict: "ship" });
   assert(early.kind === "pending");
-  // The step opens its wait five seconds later and stops before it reads
-  // the slot: the wait is open and registered, with the signal unapplied.
   const opened = await suspendedAtEarlyWait(
     workflow,
     waits,
@@ -1798,15 +1746,14 @@ Deno.test("workflowSignal: a wait opened over a pending signal its step never re
   const later = refusalOf(
     await sendByKey(fixture, "release", KEY, { verdict: "fix" }),
   );
-  // The earlier signal is the wait's outcome; this one came second.
   assertEquals(later.kind, "already_settled");
   const outcome = await waits.findOutcome(opened.waitId);
   assert(outcome.kind === "found" && outcome.record.kind === "accepted");
   assertEquals(outcome.record.payload, { verdict: "ship" });
   assertEquals(outcome.record.receipt.id, early.data.signal.id);
   assertEquals(outcome.record.receipt.waitId, opened.waitId);
-  // The stored receipt says the signal was held; the refusal shows the
-  // sender the receipt shape every reply has (swamp-club#3214).
+  // the stored receipt says the signal was held; the refusal shows the sender
+  // the receipt shape every reply has
   assertEquals(outcome.record.receipt.heldAsPending, true);
   assertEquals(
     later.details.receipt,
@@ -1835,7 +1782,6 @@ Deno.test("workflowSignal: a signal that finds its key held by a wait past its d
     outcome.kind === "found" && outcome.record.kind,
     "timed_out",
   );
-  // Stored for the claim after the one that timed out.
   const [address] = await waits.listPendingAddresses();
   assertEquals(address.slot, 2);
 });
@@ -1885,11 +1831,9 @@ Deno.test("workflowSignal: a signal sent as the step opens its wait is delivered
   assertEquals(sent.data.key, KEY);
   const outcome = await waits.findOutcome(opened!.waitId);
   assert(outcome.kind === "found" && outcome.record.kind === "accepted");
-  // The receipt is the one the pending record carries: one signal, stored
-  // once as pending and once as the outcome.
   assertEquals(outcome.record.receipt.id, sent.data.signal.id);
-  // The wait took it as its key's pending signal, which the stored receipt
-  // records and the reply leaves out (swamp-club#3214).
+  // the wait took it as its key's pending signal, which the stored receipt
+  // records and the reply leaves out
   assertEquals(outcome.record.receipt.heldAsPending, true);
   assertEquals("heldAsPending" in sent.data.signal, false);
   const [address] = await waits.listPendingAddresses();
@@ -1898,13 +1842,6 @@ Deno.test("workflowSignal: a signal sent as the step opens its wait is delivered
   assertEquals(pending.record.receiptId, sent.data.signal.id);
 });
 
-// A signal sent again under its idempotency key (swamp-club#3212).
-
-/**
- * An early signal sent under `idempotencyKey` that the first run's wait
- * took: the wait opened five seconds after it and was settled by the next
- * reader, so the key is free again.
- */
 async function landedEarlySignal(idempotencyKey: string) {
   const workflow = earlyWorkflow();
   const waits = new InMemorySignalWaitStore();
@@ -1928,7 +1865,6 @@ async function landedEarlySignal(idempotencyKey: string) {
       workflows: [workflow],
       now: new Date(IN_TIME.getTime() + seconds * 1000),
     });
-  // Whoever looks at the wait next gives it the signal.
   const reader = refusalOf(
     await sendByKey(await at(6), "release", KEY, { verdict: "fix" }),
   );
@@ -1953,11 +1889,9 @@ Deno.test("workflowSignal: a retry of an early signal a run took is answered wit
   assertEquals(retry.data.runId, opened.run.id);
   assertEquals(retry.data.signal.id, early.signal.id);
   assertEquals(retry.data.signal.idempotencyKey, "order-1");
-  // Only the run view says the signal was held (swamp-club#3214).
   assertEquals("heldAsPending" in retry.data.signal, false);
   assertEquals(waits.pendingRecords.size, held);
 
-  // Under another key, or none, it is a signal for the next run, as before.
   const other = await sendByKey(
     await at(8),
     "release",
@@ -2039,7 +1973,6 @@ Deno.test("workflowSignal: a retry that arrives once the next run has opened its
   assertEquals(retry.data.signal.id, early.signal.id);
   assertEquals((await waits.findOutcome(next.waitId)).kind, "absent");
 
-  // Without the key it is a signal for the wait that is open.
   const plain = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
   assert(plain.kind === "completed", `got ${plain.kind}`);
   assertEquals(plain.data.waitId, next.waitId);
@@ -2071,7 +2004,6 @@ Deno.test("workflowSignal: a signal to an open wait keeps its idempotency key, a
   assertEquals(byKey.data.signal, first.data.signal);
   assertEquals(waits.pendingRecords.size, 0);
 
-  // Another key, or none, is a second signal for a settled wait.
   assertEquals(
     refusalOf(await send(fixture, opened.waitId, payload, "order-2")).kind,
     "already_settled",
@@ -2113,7 +2045,6 @@ Deno.test("workflowSignal: a slot keeps one record however many early signals ag
     assert(sent.kind === "pending", `got ${sent.kind}`);
     last = sent.data.signal.id;
   }
-  // The highest record is the last signal; the ones it superseded are gone.
   const addresses = await waits.listPendingAddresses();
   assertEquals(addresses.map((at) => at.number), [20]);
   const head = await waits.highestPendingRecord({
@@ -2132,7 +2063,6 @@ Deno.test("workflowSignal: a held signal is not taken by a wait its sender is re
   const workflow = earlyWorkflow();
   const waits = new InMemorySignalWaitStore();
   const empty = await fixtureOf([], { waits, workflows: [workflow] });
-  // Authorized on the workflow as it is named now; no wait exists to ask of.
   const early = await collect<WorkflowSignalEvent>(
     workflowSignal(createLibSwampContext(), empty.deps, {
       workflow: "release",
@@ -2144,7 +2074,6 @@ Deno.test("workflowSignal: a held signal is not taken by a wait its sender is re
   );
   assertEquals(early.at(-1)?.kind, "pending");
 
-  // A run recorded under the workflow's earlier name opens its wait.
   const opened = await suspendedAtEarlyWait(
     workflow,
     waits,
@@ -2167,7 +2096,6 @@ Deno.test("workflowSignal: a held signal is not taken by a wait its sender is re
     workflows: [workflow],
     now: new Date(IN_TIME.getTime() + 6_000),
   });
-  // The next reader of the wait leaves the signal where it is.
   const registration = await waits.findRegistration(opened.waitId);
   assert(registration.kind === "found");
   assertEquals(
@@ -2178,7 +2106,6 @@ Deno.test("workflowSignal: a held signal is not taken by a wait its sender is re
     )).kind,
     "absent",
   );
-  // And a sender refused for that wait is told nothing, with nothing applied.
   const refused = await collect<WorkflowSignalEvent>(
     workflowSignal(createLibSwampContext(), later.deps, {
       workflow: "release",
@@ -2213,7 +2140,6 @@ Deno.test("workflowSignal: an idempotency key another sender used is not a match
       idempotencyKey: "build-1",
     }),
   );
-  // Their own signal, refused as any second signal is while one is held.
   assertEquals(refusalOf(other.at(-1)!).kind, "already_pending");
 });
 
@@ -2310,7 +2236,6 @@ Deno.test("workflowSignal: an early signal whose other copy was delivered to the
       ) => {
         if (!first) return await target.createPendingRecord(record);
         first = false;
-        // The step claimed and read its slot before this record existed.
         opened = await suspendedAtEarlyWait(workflow, target, IN_TIME);
         const during = await fixtureOf([opened.run], {
           waits: target,
@@ -2339,7 +2264,6 @@ Deno.test("workflowSignal: an early signal whose other copy was delivered to the
   assertEquals(early.data.duplicate, true);
   assertEquals(early.data.waitId, opened?.waitId);
   assertEquals(early.data.signal, delivered.data.signal);
-  // Nothing waits in the next claim's slot.
   assertEquals(
     (await waits.listPendingAddresses()).map((at) => at.slot),
     [1],
@@ -2398,7 +2322,6 @@ Deno.test("workflowSignal: a copy that reads the key as free because its other c
   assertEquals(late.data.waitId, opened.waitId);
   assertEquals(late.data.signal, delivered.data.signal);
 
-  // It stored nothing: the next run's wait opens over an empty slot.
   assertEquals(waits.pendingRecords.size, 0);
   const next = await suspendedAtEarlyWait(
     workflow,
@@ -2423,16 +2346,10 @@ Deno.test("workflowSignal: a copy that reads the key as free because its other c
   assertEquals(again.calls, []);
 });
 
-// What a signal by key is told when its wait is opening or was open already
-// (swamp-club#3307).
-
-/** `waits`, with `hooks` run around the calls a signal by key makes of it. */
 function racingStore(
   waits: InMemorySignalWaitStore,
   hooks: {
-    /** Once, after the signal's pending record is created. */
     afterStored?: () => Promise<void>;
-    /** Once, before the claims are read to look for the signal's taker. */
     beforeTakerLookup?: () => Promise<void>;
   },
 ): InMemorySignalWaitStore {
@@ -2512,13 +2429,10 @@ Deno.test("workflowSignal: a signal too old for the wait that is opening is refu
   assertStringIncludes(refusal.message, "was not delivered");
   assertStringIncludes(refusal.message, "Send it again once the wait is open");
 
-  // The step registers and reads its slot: no reader gives it the signal.
   await registerEarlyWait(waits, workflow, opened!.run, claimedAt);
   assertEquals(await takePendingSignalsOfRun(waits, opened!.run), 0);
   assertEquals((await waits.findOutcome(opened!.waitId)).kind, "absent");
 
-  // The retry is not answered from the record left in the slot: it is
-  // delivered to the wait, which is open now.
   const later = await fixtureOf([opened!.run], {
     waits,
     registered: false,
@@ -2542,7 +2456,6 @@ Deno.test("workflowSignal: a signal too old for the wait that is opening is refu
 Deno.test("workflowSignal: a signal within the age limit of the wait that is opening is answered as held, and the wait takes it", async () => {
   const workflow = earlyWorkflow();
   const waits = new InMemorySignalWaitStore();
-  // Claimed exactly the age limit after the signal: the edge of the window.
   const claimedAt = new Date(IN_TIME.getTime() + 10_000);
   let opened: { run: WorkflowRun; waitId: string } | undefined;
   const fixture = await fixtureOf([], { waits, workflows: [workflow] });
@@ -2596,7 +2509,6 @@ Deno.test("workflowSignal: a held signal another reader gave to a suspended wait
   assertEquals(sent.data.taken, true);
   assertEquals(sent.data.waitId, opened!.waitId);
   assertEquals(sent.data.runRecordAvailable, true);
-  // The run is suspended and nothing resumed it.
   assertEquals(sent.data.awaitingResume, true);
 });
 
@@ -2639,7 +2551,6 @@ Deno.test("workflowSignal: the last wait a no_open_wait refusal names carries th
   assert(stored.kind === "found" && stored.record.kind === "accepted");
   assertEquals(stored.record.receipt.heldAsPending, true);
 
-  // A caller that cannot be told a signal is held finds the key free.
   const events = await collect<WorkflowSignalEvent>(
     workflowSignal(createLibSwampContext(), (await at(7)).deps, {
       workflow: "release",

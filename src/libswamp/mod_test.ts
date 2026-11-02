@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The only importer of the barrel. Production code and every other test
-// import each name from the file that defines it, so nothing else would
-// notice a re-export in mod.ts that no longer resolves. Type-checking this
-// file checks every `export … from` in the barrel; loading it links them.
-// `integration/ddd_layer_rules_test.ts` pins this file as the one exception
-// to "nothing imports mod.ts".
+// the only importer of the barrel; type-checking and loading this file checks
+// that every re-export in mod.ts still resolves
 
 import { assertEquals } from "@std/assert";
 import * as libswamp from "./mod.ts";

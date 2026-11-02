@@ -19,9 +19,6 @@
 
 import type { SwampError } from "../errors.ts";
 
-/**
- * Summary of a stored report (no content).
- */
 export interface StoredReportSummary {
   reportName: string;
   reportScope: string;
@@ -35,25 +32,17 @@ export interface StoredReportSummary {
   varySuffix?: string;
 }
 
-/**
- * Full stored report detail including content.
- */
 export interface StoredReportDetail extends StoredReportSummary {
   markdown: string;
   json: Record<string, unknown>;
 }
 
-/**
- * Report definition metadata from the registry.
- */
 export interface ReportDefinitionDetail {
   name: string;
   description: string;
   scope: string;
   labels: string[];
 }
-
-// --- Event types ---
 
 export type ReportSearchEvent =
   | { kind: "resolving" }

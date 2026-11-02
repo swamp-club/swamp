@@ -107,7 +107,6 @@ Deno.test("dataList model-scoped yields grouped data", async () => {
   >;
   const data = completed.data as DataListData;
   assertEquals(data.total, 2);
-  // log type should come before data type (standard ordering)
   assertEquals(data.groups[0].type, "log");
   assertEquals(data.groups[1].type, "data");
 });

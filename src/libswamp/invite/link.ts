@@ -22,11 +22,9 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /**
- * The operative's recruit link, as swamp-club resolved it.
- *
- * A read model owned by the server: get-or-create is idempotent, so the same
- * operative always gets the same `code` back. Nothing here carries a CLI-side
- * invariant, which is why there is no domain type behind it.
+ * a read model owned by the server: get-or-create is idempotent, so the same
+ * operative always gets the same code. No CLI-side invariant, so no domain
+ * type.
  */
 export interface InviteLinkData {
   code: string;
@@ -45,12 +43,8 @@ export interface InviteLinkDeps {
 }
 
 /**
- * Fetch the operative's recruit link, creating it on first use.
- *
- * Deliberately knows nothing about the per-address invite path or its
- * coming-soon substitution: which link gets printed, and with what messaging,
- * is a CLI surface decision. Keeping that out of here is what stops swamp-club
- * lab #1376 from leaking into libswamp.
+ * knows nothing of the per-address invite path or its coming-soon substitution:
+ * which link is printed is a CLI surface decision.
  */
 export async function* inviteLink(
   ctx: LibSwampContext,

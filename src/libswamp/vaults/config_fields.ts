@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Where vault create and vault migrate learn a target type's config
- * fields before its extension is installed, so the CLI can ask for the
- * missing ones (swamp-club#3003).
- *
- * The registry's field list is extracted from the extension's source at
- * push time by a text scan, so it is a guide, not a gate: the installed
- * schema has the final say on whether a config is valid.
+ * the registry's field list comes from a text scan of the extension source at
+ * push time: a guide, not a gate; the installed schema decides validity
  */
 
 import type { ExtensionAutoResolver } from "../../domain/extensions/extension_auto_resolver.ts";
@@ -35,20 +30,14 @@ import {
   vaultConfigField,
 } from "../../domain/vaults/vault_config_fields.ts";
 
-/**
- * The config fields the registry publishes for an extension vault type,
- * or null when they are unknown: the type is not in the registry, the
- * metadata carries no fields, or there is no resolver to ask.
- */
 export type RegistryConfigFieldsLookup = (
   type: string,
 ) => Promise<VaultConfigField[] | null>;
 
 /**
- * Asks the auto resolver for a type's published config fields, once per
- * type: the CLI prompt and the generator's pre-install check share one
- * registry request. The memo lives on the deps instance of a single
- * command invocation (or serve request), so it never outlives an install.
+ * memoized per type so the CLI prompt and the generator's pre-install check
+ * share one registry request; the memo lives on one command invocation or serve
+ * request, so it never outlives an install
  */
 export function createRegistryConfigFieldsLookup(
   resolver: ExtensionAutoResolver | null,
@@ -64,9 +53,8 @@ export function createRegistryConfigFieldsLookup(
 }
 
 /**
- * Reads the registry's answer defensively: the metadata is whatever the
- * publisher's client sent, so an entry of the wrong shape means "unknown",
- * never a crash before the install.
+ * the metadata is whatever the publisher's client sent, so an entry of the
+ * wrong shape means unknown, never a crash before the install
  */
 async function lookupRegistryConfigFields(
   resolver: ExtensionAutoResolver | null,
@@ -104,20 +92,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** What a generator needs to describe a target type's config. */
 export interface VaultTypeConfigDeps {
-  /** Loads a lazily-indexed type if needed and says whether it is known. */
   isVaultTypeLoaded: (type: string) => Promise<boolean>;
   getVaultTypeInfo: (type: string) => VaultTypeInfo | undefined;
   findRegistryConfigFields: RegistryConfigFieldsLookup;
 }
 
-/**
- * The config fields of a target vault type: from its schema when the type
- * is installed (an empty list for a built-in or schema-less type), from
- * the registry when it is an extension type still to be installed, and
- * null when nothing can say.
- */
 export async function describeVaultTargetConfig(
   deps: VaultTypeConfigDeps,
   type: string,

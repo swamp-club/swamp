@@ -25,7 +25,6 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import { isUuid, matchByPartialId } from "../../domain/models/model_lookup.ts";
 
-/** Partial ID match result. */
 export interface PartialMatchResult {
   status: "found" | "not_found" | "ambiguous";
   match?: WorkflowRun;
@@ -33,12 +32,8 @@ export interface PartialMatchResult {
 }
 
 /**
- * The run repository surface the matcher needs.
- *
- * Structural on purpose: the whole point of the fast path is a call that must
- * NOT happen, and this is the cheapest way for a test to count it. Deliberately
- * local to this module and not re-exported from `mod.ts` — it is a test seam,
- * not a public contract.
+ * structural on purpose so a test can count the lookup the fast path must skip;
+ * a local test seam, not exported from mod.ts
  */
 interface RunLookupRepository {
   findGlobalById(
@@ -47,15 +42,6 @@ interface RunLookupRepository {
   findAllGlobal(): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 }
 
-/**
- * Rewrites a complete run UUID to its canonical dashed lowercase form.
- *
- * Applies the same normalization as {@link matchByPartialId} (strip dashes,
- * lowercase) so an uppercase or dashless UUID resolves the same way the scan
- * would have resolved it. Returns null for anything that is not a complete
- * UUID — prefixes, workflow names, malformed input — which is the signal to
- * fall back to the broader scan.
- */
 function toCanonicalUuid(value: string): string | null {
   const normalized = value.toLowerCase().replace(/-/g, "");
   if (normalized.length !== 32) return null;
@@ -72,18 +58,9 @@ function toCanonicalUuid(value: string): string | null {
 }
 
 /**
- * Builds the run matcher shared by the workflow history commands.
- *
- * A complete run UUID is resolved with a targeted repository lookup, so a
- * single known run no longer costs a read and parse of every retained run in
- * the repository. Everything else — prefixes, workflow names, and complete
- * UUIDs with no matching run file — falls through to the global scan, which
- * keeps Docker-style prefix matching, ambiguity detection, and not-found
- * semantics exactly as they were. The scan is therefore only paid on input
- * that was never going to resolve cheaply.
- *
- * Nothing is cached: each call re-reads from the repository, so repeated
- * lookups observe a run's status as it progresses.
+ * a complete run UUID gets a targeted lookup; everything else falls through to
+ * the global scan. Nothing is cached, so repeated lookups see a run's status as
+ * it progresses.
  */
 export function createRunMatcher(
   runRepo: RunLookupRepository,

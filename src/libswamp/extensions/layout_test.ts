@@ -83,8 +83,6 @@ Deno.test("classifyExtensionFile: .swamp paths outside pulled-extensions are cur
 });
 
 Deno.test("classifyExtensionFile: tool-specific skill dir paths are current", () => {
-  // Pre-fix bug: any non-`.swamp/` path classified as gen-1 → migration's
-  // sweep recursively deleted skill dirs after re-install.
   assertEquals(
     classifyExtensionFile(".claude/skills/good-planning"),
     "current",
@@ -108,9 +106,6 @@ Deno.test("classifyExtensionFile: tool-specific skill dir paths are current", ()
 });
 
 Deno.test("classifyExtensionFile: arbitrary non-extensions/ paths are current", () => {
-  // Tightened classifier no longer flags hand-rolled or unknown paths as
-  // gen-1; only the documented gen-1 shape (extensions/<known-type>/...)
-  // counts.
   assertEquals(
     classifyExtensionFile("random/path/file.ts"),
     "current",
@@ -653,11 +648,6 @@ Deno.test("extractTopLevelRoot: handles trailing-slash skillsDir", () => {
 Deno.test(
   "extractTopLevelRoot: hand-rolled non-extensions path returns null",
   () => {
-    // Regression guard: after the classifier was tightened so non-`.swamp/`
-    // non-`extensions/<type>/...` paths classify as `current`, the early
-    // return inside extractTopLevelRoot no longer fires for them. Confirm
-    // they still bottom out at the trailing `return null` rather than
-    // leaking into a misidentified per-extension or bundle root.
     assertEquals(
       extractTopLevelRoot("random/file.ts", SKILLS_DIR, "@x/y"),
       null,
@@ -668,10 +658,6 @@ Deno.test(
     );
   },
 );
-
-// ============================================================================
-// Managed Config Path Detection (managedConfig: true)
-// ============================================================================
 
 Deno.test("classifyExtensionFile: managed config flat under .swamp/config is gen-2", () => {
   assertEquals(
@@ -717,10 +703,6 @@ Deno.test("classifyExtensionFile: managed config paths outside pulled-extensions
     "current",
   );
 });
-
-// ============================================================================
-// Windows separators (swamp-club#3271)
-// ============================================================================
 
 Deno.test("classifyExtensionFile: backslash gen-1 path is gen-1", () => {
   assertEquals(

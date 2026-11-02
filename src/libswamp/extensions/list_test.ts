@@ -157,8 +157,6 @@ Deno.test("createExtensionListDeps reads the given managed lockfile and the tran
       managed,
       JSON.stringify({ "@ns/team": { version: "1", pulledAt: "x" } }),
     );
-    // @ns/gone has no directory and no files left, so it awaits reinstall;
-    // @ns/null is malformed.
     await Deno.writeTextFile(
       local,
       JSON.stringify({
@@ -183,7 +181,6 @@ Deno.test("createExtensionListDeps reads the given managed lockfile and the tran
       ["@ns/auto", "2", true],
       ["@ns/team", "1", undefined],
     ]);
-    // Only the auto-resolved entry says what to delete to reinstall it.
     assertEquals(exts[0].removeToReinstall?.length, 2);
     assertPathEquals(
       exts[0].removeToReinstall?.[1] ?? "",
@@ -199,7 +196,6 @@ Deno.test("createExtensionListDeps retries once when the lockfile is caught mid-
     await Deno.writeTextFile(managed, "{ truncated");
     let retries = 0;
     const deps = await createExtensionListDeps(dir, managed, undefined, {
-      // The writer finishes while the reader waits to retry.
       waitBeforeRetry: async () => {
         retries++;
         await Deno.writeTextFile(
@@ -226,7 +222,6 @@ Deno.test("createExtensionListDeps lists nothing from install staging", async ()
       join(pulled, "@ns", "team", "manifest.yaml"),
       'name: "@ns/team"\nversion: "1"\n',
     );
-    // An in-flight upgrade's staged root carries a newer manifest.
     const staged = join(pulled, ".swamp-staging", crypto.randomUUID());
     await Deno.mkdir(join(staged, "new", "0"), { recursive: true });
     await Deno.writeTextFile(

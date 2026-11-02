@@ -108,10 +108,8 @@ interface Fakes {
   opened: Array<{ spec: HarnessLaunchSpec; workspacePath: string }>;
   outcome: LaunchOutcome;
   briefs: Array<{ workspacePath: string; briefFile: string; content: string }>;
-  /** The task `trustReady` (or `newTask`) created last. */
   taskId?: string;
   signInEvents: AuthLoginEvent[];
-  /** Workspace paths another `swamp start` is serving. */
   running: Set<string>;
   random: () => number;
 }
@@ -207,7 +205,6 @@ function lastOf<T extends { kind: string }>(events: T[]): T {
   return events[events.length - 1];
 }
 
-/** A workspace folder that is a repo, with a session at the trust step. */
 async function trustReady(f: Fakes, harness = "claude"): Promise<string> {
   const ws = startWorkspacePath(f.deps.dataDir, "first-workspace");
   await Deno.mkdir(ws, { recursive: true });
@@ -228,7 +225,6 @@ async function trustReady(f: Fakes, harness = "claude"): Promise<string> {
   return ws;
 }
 
-/** Saves a new task in the workspace; returns (and remembers) its id. */
 async function newTask(f: Fakes, ws: string, text: string): Promise<string> {
   const s = await status(
     startSaveTask(ctx, f.deps, { workspacePath: ws, text }),
@@ -237,10 +233,6 @@ async function newTask(f: Fakes, ws: string, text: string): Promise<string> {
   f.taskId = s.taskId;
   return s.taskId;
 }
-
-// ---------------------------------------------------------------------------
-// Workspace states
-// ---------------------------------------------------------------------------
 
 Deno.test("startWorkspacePath: is <dataDir>/workspaces/<name>", () => {
   assertPathEquals(
@@ -409,10 +401,6 @@ Deno.test("startPrepare: without a name reports the blocked screen when sign-in 
     assertEquals(last.data.workspacePath, null);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
 
 function sessionAt(
   step: "task" | "agent" | "trust" | "launched",
@@ -713,7 +701,6 @@ Deno.test("startChooseHarness: remembers the agent picked, so the next new task 
         harness: "cursor",
       }),
     );
-    // A refused pick changes nothing.
     const second = await newTask(f, ws, "t2");
     await collect(
       startChooseHarness(ctx, f.deps, {
@@ -745,10 +732,6 @@ Deno.test("startBack: from the task step answers with a transition error", async
     assertStringIncludes(event.error.message, `"task"`);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Harnesses
-// ---------------------------------------------------------------------------
 
 Deno.test("startListHarnesses: lists every harness in table order with whether it is on PATH", async () => {
   await withTempDir(async (dir) => {
@@ -827,10 +810,6 @@ Deno.test("startListHarnesses: on Windows prefers the .cmd hit and reports codex
   });
 });
 
-// ---------------------------------------------------------------------------
-// Launch
-// ---------------------------------------------------------------------------
-
 Deno.test("startLaunch: enrols the tool, writes the brief, opens the window and records the launch", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
@@ -861,7 +840,6 @@ Deno.test("startLaunch: enrols the tool, writes the brief, opens the window and 
     );
     assertEquals(f.briefs[0].briefFile, "tasks/2026-10-03-list-my-pods.md");
     assertEquals(f.opened.length, 1);
-    // The agent is told to read this task's brief.
     assertEquals(f.opened[0].spec.args, [
       "Read tasks/2026-10-03-list-my-pods.md and use the swamp-getting-started skill.",
     ]);
@@ -1000,10 +978,6 @@ Deno.test("startLaunch: records a copy-command fallback", async () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Several tasks
-// ---------------------------------------------------------------------------
-
 Deno.test("startLaunch: two tasks in one workspace each launch with their own brief", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
@@ -1028,7 +1002,6 @@ Deno.test("startLaunch: two tasks in one workspace each launch with their own br
       "tasks/2026-10-03-watch-my-queues.md",
     ]);
     assertStringIncludes(f.opened[1].spec.args[0], "watch-my-queues");
-    // The first task is untouched by the second.
     const one = await f.deps.sessions.load(ws, first);
     assertEquals(one?.task?.text, "list my pods");
     assertEquals(one?.step, "launched");
@@ -1060,10 +1033,6 @@ Deno.test("startListTasks: every task, newest first by when it was created", asy
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Sign-in
-// ---------------------------------------------------------------------------
 
 Deno.test("startSignIn: never forwards the API key or email", async () => {
   await withTempDir(async (dir) => {
@@ -1145,11 +1114,6 @@ Deno.test("startSignIn: turns a thrown error into an error event", async () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Workspaces
-// ---------------------------------------------------------------------------
-
-/** A workspace repo under the data dir whose `.swamp.yaml` has `mtime`. */
 async function makeWorkspace(
   f: Fakes,
   name: string,
@@ -1264,7 +1228,6 @@ Deno.test("startListWorkspaces: skips folders that are not repos and loose files
 Deno.test("startListWorkspaces: the suggestion avoids every existing folder name", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
-    // random() = 0 always draws "amber-alligator".
     await makeWorkspace(
       f,
       "amber-alligator",
@@ -1276,10 +1239,6 @@ Deno.test("startListWorkspaces: the suggestion avoids every existing folder name
     assertEquals(suggestedName, "amber-alligator-3");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Inspect
-// ---------------------------------------------------------------------------
 
 Deno.test("startInspect: reports no workspaces without creating anything", async () => {
   await withTempDir(async (dir) => {
@@ -1476,7 +1435,6 @@ Deno.test("startOpenAgent: opens a fresh session for an agent new to the workspa
       startOpenAgent(ctx, f.deps, { workspacePath: ws, harness: "claude" }),
     );
     assertEquals(f.opened.at(-1)!.spec.args, ["--continue"]);
-    // No task went to either window, and the session is untouched.
     assertEquals(f.briefs.length, 1);
     assertEquals(
       (await f.deps.sessions.load(ws, f.taskId!))?.harness,
@@ -1573,7 +1531,6 @@ Deno.test("startCheckFolder: ticks a swamp repo, says why it can't import anythi
     const notRepo = await startCheckFolder(ctx, f.deps, { path: plain });
     assertEquals(notRepo.ok ? null : notRepo.code, "not_a_repo");
 
-    // Checking reads only: nothing was registered.
     assertEquals(await f.deps.registry.load(), null);
 
     await startImportWorkspace(ctx, f.deps, { path: repo });
@@ -1659,10 +1616,6 @@ Deno.test("startImportWorkspace: refuses a missing folder or one that isn't a sw
     }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Sign-in first
-// ---------------------------------------------------------------------------
 
 function errorCode(events: Array<{ kind: string }>): string | undefined {
   const last = lastOf(events) as { kind: string; error?: { code: string } };
@@ -1768,10 +1721,6 @@ Deno.test("startOpenWorkspace: a blocked error carries the reason", async () => 
     assertEquals(last.error.message, "Your API key was revoked.");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Briefs, imported workspaces and the registry
-// ---------------------------------------------------------------------------
 
 Deno.test("startLaunch: refuses a file at the brief's path swamp didn't write and leaves it untouched", async () => {
   await withTempDir(async (dir) => {
@@ -1953,11 +1902,6 @@ Deno.test("startOpenAgent: leaves the workspace's tools alone when the agent is 
   });
 });
 
-// ---------------------------------------------------------------------------
-// Trust is recorded in the registry, never read from the workspace
-// ---------------------------------------------------------------------------
-
-/** A workspace whose own task record says it was launched. */
 async function plantedLaunched(f: Fakes): Promise<string> {
   const ws = await trustReady(f);
   await f.deps.sessions.save(
@@ -2001,7 +1945,6 @@ Deno.test("startResume: refuses with trust_required, opening nothing, until trus
     assert(done.kind === "completed");
     assertEquals(done.data.trusted, true);
 
-    // Trusted now: the next resume needs no confirmation.
     await collect(
       startResume(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
     );
@@ -2135,7 +2078,6 @@ Deno.test("startOpenAgent: an agent launched for any task in the workspace resum
     await collect(
       startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
     );
-    // A second task, not launched, is open; Claude Code still resumes.
     const second = await newTask(f, ws, "Another task");
     const events = await collect(
       startOpenAgent(ctx, f.deps, {
@@ -2150,10 +2092,6 @@ Deno.test("startOpenAgent: an agent launched for any task in the workspace resum
     assertEquals(done.data.taskId, second);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Creating a workspace in a chosen folder
-// ---------------------------------------------------------------------------
 
 Deno.test("startOpenWorkspace: creates a new name in the chosen folder, registered as created", async () => {
   await withTempDir(async (dir) => {
@@ -2357,7 +2295,6 @@ Deno.test("startCheckWorkspaceLocation: answers the folder a create would make, 
     });
     assert(!taken.ok);
     assertEquals([taken.field, taken.code], ["name", "name_taken"]);
-    // Reads only: nothing was created by the checks.
     assertEquals(f.inits, [startWorkspacePath(dir, "infra")]);
   });
 });
@@ -2410,7 +2347,6 @@ Deno.test("startCheckWorkspaceLocation: agrees with opening about a repo left un
       await startCheckWorkspaceLocation(ctx, f.deps, { name: "prod" }),
       { ok: true, path: leftBehind },
     );
-    // ...while a chosen folder holding an unregistered repo is refused.
     const parent = join(dir, "dev");
     await Deno.mkdir(join(parent, "prod"), { recursive: true });
     f.repos.add(join(parent, "prod"));
@@ -2466,7 +2402,6 @@ Deno.test({
         startOpenWorkspace(ctx, f.deps, { workspaceName: "infra", parent }),
       );
       const real = join(parent, "infra");
-      // The same folder reached through a symlink.
       const link = join(dir, "link");
       await Deno.symlink(real, link, { type: "dir" });
       f.repos.add(link);

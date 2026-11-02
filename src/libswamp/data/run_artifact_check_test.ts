@@ -85,7 +85,6 @@ Deno.test("v3RunArtifactCheck: a ref's sha256 decides on v3", async () => {
     await check({ ...ref, sha256: "0".repeat(64) }, data, owner, run),
     false,
   );
-  // Without a sha256 the version's run decides: this run wrote it.
   assertEquals(await check(ref, data, owner, run), true);
 });
 

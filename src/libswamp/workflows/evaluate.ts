@@ -109,19 +109,16 @@ import {
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
 
-/** Evaluation result for a single workflow. */
 export interface WorkflowEvaluateItemData {
   id: string;
   name: string;
   hadExpressions: boolean;
   forEachExpanded?: boolean;
   outputPath?: string;
-  /** False when the evaluation was not saved; see `persist`. */
   saved?: false;
   jobs?: JobData[];
 }
 
-/** Aggregate evaluation result for all workflows. */
 export interface WorkflowEvaluateAllData {
   items: WorkflowEvaluateItemData[];
   total: number;
@@ -139,11 +136,7 @@ export type WorkflowEvaluateEvent =
 export interface WorkflowEvaluateInput {
   workflowIdOrName?: string;
   inputs: Record<string, unknown>;
-  /**
-   * Treat `workflowIdOrName` as a workflow id the caller already resolved,
-   * and look it up by id only, so evaluate acts on the workflow the caller
-   * authorized.
-   */
+  /** looks up by id only, so evaluate acts on the workflow the caller authorized */
   byId?: boolean;
   /**
    * With `byId`, the name the caller authorized: ids are not guaranteed
@@ -158,25 +151,21 @@ export interface WorkflowEvaluateInput {
     workflow: { name: string; tags: Record<string, string> },
   ) => boolean;
   /**
-   * Saves only the evaluated workflows this accepts; the others are
-   * evaluated and returned unsaved, with no output path. A later
-   * `--last-evaluated` run replays what is saved, inputs included, so serve
-   * saves only what the caller may run (swamp-club#3940). Absent, everything
-   * is saved.
+   * saves only the evaluated workflows this accepts; the others are returned
+   * unsaved with no output path. A later --last-evaluated run replays what is
+   * saved, so serve saves only what the caller may run
    */
   persist?: (
     workflow: { name: string; tags: Record<string, string> },
   ) => boolean;
 }
 
-/** Type guard to check if data is WorkflowEvaluateAllData. */
 export function isWorkflowEvaluateAllData(
   data: WorkflowEvaluateItemData | WorkflowEvaluateAllData,
 ): data is WorkflowEvaluateAllData {
   return "items" in data;
 }
 
-/** Dependencies for the workflow evaluate operation. */
 export interface WorkflowEvaluateDeps {
   findWorkflowById: (id: WorkflowId) => Promise<Workflow | null>;
   findWorkflowByName: (name: string) => Promise<Workflow | null>;
@@ -190,11 +179,9 @@ export interface WorkflowEvaluateDeps {
     sensitiveValues: RunSensitiveValues,
   ) => Promise<ExpressionContext>;
   /**
-   * The evaluator the evaluation's passes run with, selected through the
-   * one seam the run paths use (`ExpressionEvaluationService.passEvaluatorFor`,
-   * typed-secrets 4.4), bound to a bag of the registry, so a data read
-   * returns a reference and a Secret leaves as a sentinel the cache writes
-   * as its reference, with no load.
+   * the evaluator for the evaluation's passes, from the seam the run paths use,
+   * bound to a registry so a data read returns a reference and a Secret leaves
+   * as a sentinel, with no load
    */
   passEvaluatorFor: (
     sensitiveValues: RunSensitiveValues,
@@ -202,41 +189,34 @@ export interface WorkflowEvaluateDeps {
   ) => PassEvaluator | Promise<PassEvaluator>;
   saveEvaluatedWorkflow: (
     workflow: Workflow,
-    /** Where data sits in the workflow's raw copy (swamp-club#3205). */
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
-    /**
-     * The inputs the workflow was evaluated with, or why they are withheld
-     * (swamp-club#3583).
-     */
     recorded?: RecordedEvaluationInputs,
-    /** Where data sits in the written workflow (typed-secrets 4.4). */
     persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
 
-/** Wires real infrastructure into WorkflowEvaluateDeps. */
 export function createWorkflowEvaluateDeps(
   repoDir: string,
   workflowRepo: WorkflowRepository,
   datastoreResolver?: DatastorePathResolver,
   injectedDefinitionRepo?: YamlDefinitionRepository,
   /**
-   * The repository context's hook, so expressions that read lazily hydrated
-   * content download it rather than evaluate against an empty cache entry
-   * that would be saved into the evaluated workflow (swamp-club#3179).
+   * the repository context's hook, so expressions reading lazily hydrated
+   * content download it instead of evaluating against an empty cache entry that
+   * would be saved into the evaluated workflow
    */
   hydrateFile?: HydrateFileHook,
   /**
-   * The repository context's foreign content fetcher, so expressions that
-   * read another namespace's data see its attributes (swamp-club#3306).
+   * the repository context's foreign content fetcher, so expressions that read
+   * another namespace's data see its attributes
    */
   fetchForeignContent?: ForeignContentFetcher,
   /**
-   * The repository context's lookup, so an expression reading a record the
-   * v3 read model could not materialise fails loudly (swamp-club#3617).
+   * the repository context's lookup, so an expression reading a record the v3
+   * read model could not materialise fails loudly
    */
   unreadableContent?: UnreadableContentLookup,
 ): WorkflowEvaluateDeps {
@@ -303,10 +283,8 @@ export function createWorkflowEvaluateDeps(
 }
 
 /**
- * Evaluates a single workflow, replacing CEL expressions with values.
- * Vault expressions are left as-is for runtime resolution.
- * forEach-related expressions (self.* and forEach.in) are left raw for
- * runtime expansion.
+ * vault expressions are left for runtime resolution, and forEach-related ones
+ * (self.*, forEach.in) stay raw for runtime expansion
  */
 async function evaluateWorkflowInternal(
   ctx: LibSwampContext,
@@ -321,11 +299,9 @@ async function evaluateWorkflowInternal(
   // for the source's expressions even after the source has been edited.
   const authoredExpressions = collectWorkflowAuthoredExpressions(workflow);
 
-  // Coerce string CLI inputs to schema types and apply schema defaults
-  // (matching run.ts behavior), so the cache records the same set a fresh
-  // run records and a --last-evaluated run compares against (swamp-club#3583).
-  // Before the early return below: a workflow with no expressions and no
-  // supplied inputs still records its defaults.
+  // coerces CLI inputs and applies schema defaults as run.ts does, so the cache
+  // records what a fresh run records; before the early return, since a workflow
+  // with no expressions still records its defaults
   const coercedInputs = workflow.inputs
     ? new InputValidationService().applyDefaults(
       coerceInputTypes(inputs, workflow.inputs),
@@ -374,7 +350,6 @@ async function evaluateWorkflowInternal(
     };
   }
 
-  // Build expression context with inputs
   const sensitiveValues = new RunSensitiveValues();
   const context = await deps.buildExpressionContext(
     requiresModelNamespace(workflowData),
@@ -386,13 +361,11 @@ async function evaluateWorkflowInternal(
     location: workflow.name,
   });
   context.inputs = coercedInputs;
-  // Where data sits in the inputs, as on the run path (swamp-club#3205).
   attachInputsProvenance(
     context,
     inputsProvenance,
   );
 
-  // Collect forEach.in expressions to skip during evaluation
   const forEachInExpressions = new Set<string>();
   for (const job of workflow.jobs) {
     for (const step of job.steps) {
@@ -408,26 +381,21 @@ async function evaluateWorkflowInternal(
   const isDeferredTaskTarget = createTaskTargetDeferral(workflow);
   const deferredTargetPaths = new Set<string>();
 
-  // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
   const evaluatedValues = new Map<string, unknown>();
   const origins = new Map<string, SpliceOrigin>();
   for (const expr of expressions) {
     if (containsRuntimeExpression(expr.celExpression)) {
       continue;
     }
-    // Skip self.* expressions — they reference forEach variables resolved at runtime
     if (maskLiteralCalls(expr.celExpression).match(/\bself\??\./)) {
       continue;
     }
-    // Skip steps.* expressions — the namespace only exists once a run does
     if (hasStepsNamespaceReference(expr.celExpression)) {
       continue;
     }
-    // Skip forEach.in expressions — they must remain as strings for forEach expansion
     if (forEachInExpressions.has(expr.raw)) {
       continue;
     }
-    // Skip guard expressions — they are evaluated at step execution time
     if (isGuardPath(expr.path)) {
       continue;
     }
@@ -440,21 +408,18 @@ async function evaluateWorkflowInternal(
     ) {
       continue;
     }
-    // Skip task targets that read step output or sit on a guarded step
     if (isDeferredTaskTarget(expr)) {
       deferredTargetPaths.add(expr.path);
       continue;
     }
 
     try {
-      // A synchronous evaluation: make what it reads local first
-      // (swamp-club#3179).
+      // a synchronous evaluation: make what it reads local first
       await pass.prepare(expr.raw, context);
       const value = pass.evaluate(expr.celExpression, context);
       evaluatedValues.set(expr.raw, value);
       origins.set(expr.raw, spliceOrigin(expr.celExpression, context, value));
     } catch (error) {
-      // Skip expressions that fail to evaluate (might depend on runtime context)
       const message = error instanceof Error ? error.message : String(error);
       ctx.logger.warn(
         `Warning: Could not evaluate expression "${expr.raw}": ${message}`,
@@ -462,7 +427,6 @@ async function evaluateWorkflowInternal(
     }
   }
 
-  // Replace only CEL-only expressions with evaluated values
   const evaluated = replaceExpressionsTracked(
     workflowData,
     evaluatedValues,
@@ -471,13 +435,10 @@ async function evaluateWorkflowInternal(
     (path) => isAssertExprPath(path) || deferredTargetPaths.has(path),
   );
   const evaluatedData = evaluated.data;
-  // The expanded workflow's map: each step's map at its new index.
   let expandedProvenance = evaluated.provenance;
 
-  // Create new Workflow from evaluated data
   const evaluatedWorkflow = Workflow.fromData(evaluatedData as WorkflowData);
 
-  // Expand forEach steps
   const expandedWorkflowData = evaluatedWorkflow.toData();
   for (const [jobIndex, jobData] of expandedWorkflowData.jobs.entries()) {
     const expandedSteps: typeof jobData.steps = [];
@@ -493,7 +454,6 @@ async function evaluateWorkflowInternal(
         continue;
       }
 
-      // Evaluate the forEach.in expression
       const inSpan = scanExpressions(stepData.forEach.in)[0];
       if (!inSpan) {
         expandedSteps.push(stepData);
@@ -501,11 +461,9 @@ async function evaluateWorkflowInternal(
         continue;
       }
 
-      // Async so data.* helpers that return Promises (latest, findByTag,
-      // findBySpec, query, etc.) resolve before we iterate. cel-js
-      // propagates Promises through its evaluator natively.
-      // Gated by position as on the run path: forEach.in may hold data
-      // spliced by the evaluation above (swamp-club#3205).
+      // async so data.* helpers returning Promises resolve before iterating;
+      // gated by position as on the run path, since forEach.in may hold data
+      // spliced by the evaluation above
       const allowedIn = partitionAuthoredAt(
         extractExpressions(stepData.forEach.in),
         authoredExpressions,
@@ -518,9 +476,9 @@ async function evaluateWorkflowInternal(
       const itemsProvenance = spliceOrigin(inSpan.inner, context, items).map;
       const itemName = stepData.forEach.item;
       const nameHasExpression = containsExpression(stepData.name);
-      // Each item's step is resolved synchronously against a context that
-      // shares this one's model map and data namespace, so what they read is
-      // made local once, here (swamp-club#3179).
+      // each item's step is resolved synchronously against a context sharing
+      // this one's model map and data namespace, so what they read is made
+      // local once, here
       await pass.prepare(
         {
           name: stepData.name,
@@ -532,10 +490,6 @@ async function evaluateWorkflowInternal(
         context,
       );
 
-      // Build one expanded step for a single forEach item: resolve every
-      // available expression (self.* etc.) across the step name, task, AND
-      // placement fields in one pass via the shared resolver, then apply the
-      // unique-name suffix policy.
       const buildExpandedStep = (
         stepContext: Record<string, unknown>,
         fallbackSuffix: string,
@@ -597,8 +551,8 @@ async function evaluateWorkflowInternal(
 
         return {
           ...stepData,
-          // Matches ForEachExpansionService: an item value's control
-          // character is escaped, never a schema failure (swamp-club#3027).
+          // matches ForEachExpansionService: a control character in an item
+          // value is escaped, never a schema failure
           name: escapeControlCharacters(
             forEachNameWithoutSecrets(expandedName, index, sensitiveValues),
           ),
@@ -658,7 +612,6 @@ async function evaluateWorkflowInternal(
           );
         }
       } else {
-        // Not iterable — keep original step
         expandedSteps.push(stepData);
         expandedStepMaps.push(stepMap);
       }
@@ -726,7 +679,6 @@ async function evaluateWorkflowInternal(
   };
 }
 
-/** Evaluates all workflow definitions. */
 async function* evaluateAll(
   ctx: LibSwampContext,
   deps: WorkflowEvaluateDeps,
@@ -764,7 +716,6 @@ async function* evaluateAll(
   };
 }
 
-/** Evaluates a single workflow definition. */
 async function* evaluateSingle(
   ctx: LibSwampContext,
   deps: WorkflowEvaluateDeps,
@@ -801,7 +752,6 @@ async function* evaluateSingle(
   yield { kind: "completed", data: item };
 }
 
-/** Evaluates workflow definitions, replacing CEL expressions with values. */
 export async function* workflowEvaluate(
   ctx: LibSwampContext,
   deps: WorkflowEvaluateDeps,

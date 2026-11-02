@@ -55,7 +55,6 @@ function createSuspendedRun(
   run.captureInputs(inputs);
   run.suspend(inputs);
   if (instanceId) {
-    // Use fromData to set instanceId since the constructor doesn't expose it
     const data = run.toData();
     data.instanceId = instanceId;
     return WorkflowRun.fromData(data);
@@ -63,10 +62,8 @@ function createSuspendedRun(
   return run;
 }
 
-/** Runs here have no evaluated snapshot: they settle against `wf`. */
 const noSnapshot = () => Promise.resolve(null);
 
-/** A repository holding `stored`, which records the runs saved to it. */
 function stubRunRepo(
   saved: WorkflowRun[],
   stored: WorkflowRun[] = [],
@@ -241,7 +238,6 @@ Deno.test("supersedeSuspendedRuns: skips non-suspended runs in the list", async 
   const run = WorkflowRun.create(wf);
   run.start();
   run.captureInputs({ env: "prod" });
-  // Not suspended — still running
   const saved: WorkflowRun[] = [];
 
   const result = await supersedeSuspendedRuns(
@@ -263,7 +259,6 @@ Deno.test("supersedeSuspendedRuns: skips non-suspended runs in the list", async 
 Deno.test("supersedeSuspendedRuns: cancels the run as stored, under its claim", async () => {
   const wf = createWorkflow("deploy");
   const listed = createSuspendedRun(wf, { env: "prod" });
-  // The stored record is a separate copy, as a repository read returns.
   const current = WorkflowRun.fromData(listed.toData());
   const saved: WorkflowRun[] = [];
   const claimed: string[] = [];
@@ -335,7 +330,6 @@ Deno.test("supersedeSuspendedRuns: leaves a run deleted since the listing", asyn
   assertEquals(saved, []);
 });
 
-/** A suspended run of `wf` whose only step waits for a signal. */
 function createWaitingRun(
   wf: Workflow,
   inputs: Record<string, unknown>,
@@ -399,7 +393,6 @@ Deno.test("supersedeSuspendedRuns: leaves a run whose wait is past its deadline,
 
 Deno.test("supersedeSuspendedRuns: decides the skip on the run as stored under its claim", async () => {
   const wf = createWorkflow("deploy");
-  // Listed while it waited; signalled before the claim was taken.
   const { run: listed } = createWaitingRun(wf, {}, new Date());
   const current = WorkflowRun.fromData(listed.toData());
   const signalled = current.getJob("j")!.getStep("s")!;
@@ -513,7 +506,6 @@ Deno.test("supersedeSuspendedRuns: a nested run that cannot be read does not sto
   assertEquals(result.skippedRuns, []);
 });
 
-/** An evaluated cache of `workflow`, with what it recorded of its inputs. */
 function cacheOf(
   workflow: Workflow,
   recorded?: Record<string, unknown>,
@@ -538,12 +530,10 @@ Deno.test("supersedeMatchInputs: a --last-evaluated run is matched on the inputs
     target: "scratch",
     region: "eu",
   });
-  // A supplied input equal to the recorded one changes nothing.
   assertEquals(supersedeMatchInputs({ region: "eu" }, true, cache), {
     target: "scratch",
     region: "eu",
   });
-  // A fresh run: the supplied inputs alone, cache or not.
   assertEquals(supersedeMatchInputs({ a: 1 }, false, cache), { a: 1 });
   assertEquals(supersedeMatchInputs({ a: 1 }, false, undefined), { a: 1 });
 });
@@ -551,25 +541,21 @@ Deno.test("supersedeMatchInputs: a --last-evaluated run is matched on the inputs
 Deno.test("supersedeMatchInputs: a --last-evaluated run that will be refused supersedes nothing (swamp-club#3583)", () => {
   const workflow = createWorkflow("gated");
   const cache = cacheOf(workflow, { target: "scratch" });
-  // An input at another value than the cache was evaluated with.
   assertEquals(
     supersedeMatchInputs({ target: "protected" }, true, cache),
     undefined,
   );
-  // An input the cache was evaluated without.
   assertEquals(supersedeMatchInputs({ region: "us" }, true, cache), undefined);
-  // No cache to replay.
   assertEquals(supersedeMatchInputs({}, true, null), undefined);
   assertEquals(supersedeMatchInputs({}, true, undefined), undefined);
-  // Inputs withheld for a sensitive value, or never recorded.
   assertEquals(
     supersedeMatchInputs({}, true, cacheOf(workflow, undefined, "sensitive")),
     undefined,
   );
   assertEquals(supersedeMatchInputs({}, true, cacheOf(workflow)), undefined);
-  // What execution refuses before it replays: a provenance record it
-  // cannot read, or a cache an older swamp wrote that may hold a secret in
-  // plaintext.
+  // what execution refuses before it replays: a provenance record it cannot
+  // read, or a cache written by an older swamp that may hold a secret in
+  // plaintext
   assertEquals(
     supersedeMatchInputs({}, true, {
       ...cacheOf(workflow, { target: "scratch" }),

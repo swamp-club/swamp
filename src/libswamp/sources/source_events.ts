@@ -20,44 +20,36 @@
 import type { SwampError } from "../errors.ts";
 import type { ExtensionKind } from "../../domain/repo/swamp_sources.ts";
 
-/** Data returned when a source is added or removed. */
 export interface SourceModifyData {
   action: "added" | "removed";
   path: string;
   only?: ExtensionKind[];
   totalSources: number;
-  /** Skill directory names installed or removed by this operation. */
   installedSkills?: string[];
 }
 
-/** Events emitted by source add/remove operations. */
 export type SourceModifyEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: SourceModifyData }
   | { kind: "error"; error: SwampError };
 
-/** A single source entry with resolution status. */
 export interface SourceListEntry {
   path: string;
   only?: ExtensionKind[];
   expandedPaths: string[];
   status: "valid" | "path_not_found" | "no_extensions";
   /**
-   * Extension kinds this source contributes, determined by the same
-   * resolver used at load time. Populated when status is `valid`. Sorted
-   * by EXTENSION_KINDS declaration-order index so JSON output and test
-   * assertions are stable. Optional for backwards compatibility — JSON
-   * consumers that predate this field keep working.
+   * extension kinds this source contributes, from the same resolver used at
+   * load time; populated when status is valid and sorted by EXTENSION_KINDS
+   * order so output is stable. Optional so older JSON consumers keep working
    */
   resolvedKinds?: ExtensionKind[];
 }
 
-/** Data returned by the source list operation. */
 export interface SourceListData {
   sources: SourceListEntry[];
 }
 
-/** Events emitted by the source list operation. */
 export type SourceListEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: SourceListData }

@@ -411,7 +411,6 @@ Deno.test("serverLogin: an expired device code times out without polling", async
 
 const SERVE_URL = "http://serve.test:9090";
 
-/** Calls each serve endpoint through the production deps. */
 function callEndpoint(
   endpoint: "info" | "device" | "token",
   signal: AbortSignal,

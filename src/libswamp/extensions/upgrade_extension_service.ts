@@ -27,33 +27,9 @@ import type { ExtensionRepository } from "../../infrastructure/persistence/exten
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 
 /**
- * W2 lifecycle service for upgrading an installed extension to a new
- * version. **Atomic transition** — `saveAll([tombstoneAll(vN), vN+1])`
- * commits in one SQLite transaction so I-Repo-1 evaluates only the
- * post-save state where vN+1 holds the type identifier.
- *
- * **Implementation note.** {@link InstallExtensionService.execute}
- * already implements the atomic pattern internally — for every new
- * version it tombstones any existing aggregates with the same name
- * but a different version BEFORE calling `repository.saveAll`. So
- * upgrade is structurally `install` of the new version; this class is
- * a thin discoverable facade so callers that mean "upgrade" can express
- * the intent at the call site.
- *
- * **Bulk-upgrade behavior** (resolves plan v4 challenge ADV-5). Each
- * upgrade is its own atomic transition via its own `saveAll`. If A's
- * upgrade rolls back due to a collision with unchanged B, every other
- * extension already-upgraded in the bulk run STAYS upgraded — there is
- * no all-or-nothing rollback across a bulk-upgrade run. Pinned by
- * design.
- *
- * **An upgrade that collides keeps the previous version.** If
- * `repository.saveAll` rolls back via `DuplicateTypeError`, the install
- * service rolls the install back: v1's lockfile entry is restored and
- * v1's roots, kept aside until then, are moved back, so v1 stays
- * installed exactly as it was (swamp-club#2724). Any other phase-8
- * fault commits v2 and reports the "Install partially applied"
- * half-state.
+ * upgrade is install of the new version, which tombstones other versions in the
+ * same saveAll transaction; bulk upgrades are independent; a collision restores
+ * the previous lockfile entry and roots
  */
 export class UpgradeExtensionService {
   private readonly installService: InstallExtensionService;
@@ -62,21 +38,14 @@ export class UpgradeExtensionService {
     denoRuntime: DenoRuntime;
     repository: ExtensionRepository;
     /**
-     * Test seam — defaults to the real `installExtension` from
-     * `pull.ts`. Tests inject a stub when exercising upgrade against
-     * a pre-staged on-disk subtree.
+     * test seam: tests inject a stub to exercise upgrade against a pre-staged
+     * on-disk subtree.
      */
     installExtensionFn?: InstallExtensionFn;
   }) {
     this.installService = new InstallExtensionService(args);
   }
 
-  /**
-   * Upgrades extension `name` to `newVersion`. Drives the same
-   * filesystem + lockfile + catalog flow as install; the atomic
-   * tombstone of the prior version happens inside the install
-   * service's phase 8.
-   */
   async execute(
     name: string,
     newVersion: string,

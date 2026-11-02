@@ -21,7 +21,6 @@ import { assertEquals } from "@std/assert";
 import type { SwampError } from "./errors.ts";
 import type { HasTerminals, StreamEvent } from "./stream.ts";
 
-/** Accumulates all events from a stream into an array. */
 export async function collect<E extends StreamEvent>(
   stream: AsyncIterable<E>,
 ): Promise<E[]> {
@@ -32,10 +31,6 @@ export async function collect<E extends StreamEvent>(
   return events;
 }
 
-/**
- * Asserts that a stream ends with a `completed` event matching the expected value.
- * Returns the completed event for further inspection.
- */
 export async function assertCompletes<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
   expected: Extract<E, { kind: "completed" }>,
@@ -46,10 +41,6 @@ export async function assertCompletes<E extends StreamEvent>(
   return last as unknown as Extract<E, { kind: "completed" }>;
 }
 
-/**
- * Asserts that a stream ends with an `error` event with the given code.
- * Returns the SwampError for further inspection.
- */
 export async function assertErrors<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
   expectedCode: string,

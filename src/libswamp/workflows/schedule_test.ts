@@ -382,7 +382,6 @@ Deno.test("workflowSchedulePause: an --until past year 9999 is a validation erro
   assertEquals(pauses.records.size, 0);
 });
 
-/** Deps whose pause reads reject, as a record the process cannot read does. */
 function unreadableDeps(workflows: Workflow[]) {
   const made = deps(workflows);
   made.pauses.get = () => Promise.reject(new Error("permission denied"));

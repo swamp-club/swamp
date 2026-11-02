@@ -23,7 +23,6 @@ import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { FileServerCredentialRepository } from "../../infrastructure/persistence/server_credential_repository.ts";
 import { describeCauses, UserError } from "../../domain/errors.ts";
 
-/** Data returned on successful server login via OAuth device flow. */
 export interface ServerLoginData {
   readonly token: string;
   readonly principalId: string;
@@ -32,7 +31,6 @@ export interface ServerLoginData {
   readonly collectives: string[];
 }
 
-/** Events emitted by the server login generator. */
 export type ServerLoginEvent =
   | { kind: "discovering" }
   | {
@@ -47,19 +45,16 @@ export type ServerLoginEvent =
   | { kind: "completed"; data: ServerLoginData }
   | { kind: "error"; error: Error };
 
-/** Input parameters for the server login generator. */
 export interface ServerLoginInput {
   readonly serverUrl: string;
   readonly signal?: AbortSignal;
 }
 
-/** Auth discovery response from a serve instance. */
 export interface AuthDiscovery {
   readonly mode: string;
   readonly verificationBaseUri?: string;
 }
 
-/** Device authorization response from a serve instance. */
 export interface DeviceAuthResponse {
   readonly deviceCode: string;
   readonly userCode: string;
@@ -69,7 +64,6 @@ export interface DeviceAuthResponse {
   readonly interval: number;
 }
 
-/** Token response from a device code poll. */
 export interface DeviceTokenResponse {
   readonly token: string;
   readonly principal: {
@@ -80,7 +74,6 @@ export interface DeviceTokenResponse {
   };
 }
 
-/** Error thrown when the device token poll receives a "pending" response. */
 export class DeviceAuthPendingError extends Error {
   constructor() {
     super("authorization_pending");
@@ -88,7 +81,6 @@ export class DeviceAuthPendingError extends Error {
   }
 }
 
-/** Dependencies for the server login operation, injected for testability. */
 export interface ServerLoginDeps {
   readonly discoverAuthMode: (
     serverUrl: string,
@@ -108,10 +100,6 @@ export interface ServerLoginDeps {
   readonly normalizeServerUrl: (url: string) => string;
 }
 
-/**
- * Convert a WebSocket URL scheme to HTTP(S) for REST calls.
- * ws:// -> http://, wss:// -> https://. HTTP(S) URLs pass through unchanged.
- */
 function wsToHttp(url: string): string {
   const parsed = new URL(url);
   if (parsed.protocol === "ws:") parsed.protocol = "http:";
@@ -120,10 +108,9 @@ function wsToHttp(url: string): string {
 }
 
 /**
- * Send a request to the serve instance, turning a failed request into a
- * UserError that names the server and endpoint. The underlying reason is kept
- * in the message so TLS hints still match. Aborts pass through unchanged so
- * the login flow can tell a timeout from a failed request.
+ * the underlying reason stays in the message so TLS hints still match; aborts
+ * pass through unchanged so the login flow can tell a timeout from a failed
+ * request
  */
 async function fetchFromServer(
   serverUrl: string,
@@ -143,11 +130,6 @@ async function fetchFromServer(
   }
 }
 
-/**
- * Parse a serve instance's JSON response, turning a body that is not JSON
- * into a UserError. That usually means --server points at something other
- * than swamp serve, such as a proxy login page.
- */
 async function readServerJson<T>(
   resp: Response,
   serverUrl: string,
@@ -166,11 +148,6 @@ async function readServerJson<T>(
   }
 }
 
-/**
- * Create production dependencies for server login. When an httpClient
- * is provided (e.g. one carrying custom CA certs from `--ca-cert`), it
- * is used for all REST calls to the serve instance.
- */
 export function createServerLoginDeps(
   options?: { httpClient?: Deno.HttpClient },
 ): ServerLoginDeps {
@@ -278,7 +255,6 @@ export function createServerLoginDeps(
   };
 }
 
-/** Delay helper that respects AbortSignal. */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -297,7 +273,6 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** True when the login signal was aborted by its timeout, not cancelled. */
 function timedOut(signal: AbortSignal): boolean {
   return signal.aborted && signal.reason instanceof DOMException &&
     signal.reason.name === "TimeoutError";
@@ -310,12 +285,6 @@ function authorizationTimedOut(): UserError {
   );
 }
 
-/**
- * Authenticate with a swamp serve instance via the OAuth device code flow.
- *
- * Yields events as the flow progresses so the CLI can render status updates.
- * If the signal times out, yields an error event carrying a UserError.
- */
 export async function* serverLogin(
   deps: ServerLoginDeps,
   input: ServerLoginInput,
@@ -345,7 +314,6 @@ async function* deviceFlow(
   signal: AbortSignal,
   progress: { codeIssued: boolean },
 ): AsyncGenerator<ServerLoginEvent> {
-  // Step 1: Discover auth mode
   yield { kind: "discovering" };
   const discovery = await deps.discoverAuthMode(serverUrl, signal);
 
@@ -356,7 +324,6 @@ async function* deviceFlow(
     );
   }
 
-  // Step 2: Start device authorization
   const deviceAuth = await deps.startDeviceAuth(serverUrl, signal);
   progress.codeIssued = true;
   // The code expires relative to when the server issued it, so start the
@@ -370,7 +337,6 @@ async function* deviceFlow(
     verificationUriComplete: deviceAuth.verificationUriComplete,
   };
 
-  // Step 3: Try to open browser
   const urlToOpen = deviceAuth.verificationUriComplete ??
     deviceAuth.verificationUri;
   yield { kind: "opening_browser" };
@@ -383,7 +349,6 @@ async function* deviceFlow(
     };
   }
 
-  // Step 4: Poll for token
   const intervalMs = (deviceAuth.interval > 0 ? deviceAuth.interval : 5) * 1000;
 
   while (Date.now() < deadline) {
@@ -395,7 +360,6 @@ async function* deviceFlow(
         signal,
       );
 
-      // Save credential
       await deps.saveCredential({
         serverUrl,
         tokenName: tokenResult.principal.email,

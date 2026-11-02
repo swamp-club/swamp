@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Runs a write use case inside one unit of work: datastore rework Phase 2
- * (swamp-club#3025).
- *
- * The use case is the application service, so it owns the transaction
- * boundary. Each exported write use case keeps its signature and wraps its
- * body: `yield* withUnitOfWork(ctx, () => ...)`.
- * `PINNED_TRANSACTIONAL_USE_CASES` in
- * `integration/datastore_write_seams_rules_test.ts` lists them, and this
- * module is the only production code that opens an ambient scope.
- *
- * @module
- */
-
 import {
   rethrowUnrecordedEnd,
   type UnitOfWork,
@@ -46,48 +32,9 @@ import type { LibSwampContext } from "./context.ts";
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
 /**
- * Drives `inner` inside a unit of work opened from `ctx.openUnitOfWork()`.
- *
- * - **Scope.** `inner` is created, and every `next()` and a forwarded
- *   `return()` run, inside `runInUnitOfWork`, so all code the generator runs
- *   between yields sees the unit. `AsyncLocalStorage` does not flow into a
- *   generator any other way. Code the consumer runs between events is
- *   outside the scope.
- * - **Events** are re-yielded unchanged, in order.
- * - **Commit.** Once, after `inner` yields `completed` (and no `error`) and
- *   then finishes; a v3 unit also on a reported `error` (see **Terminal
- *   policy**). Writes a use case makes after yielding `completed` are
- *   inside the unit when the consumer drains the stream.
- * - **Abandon.** Once, on every other ending: `inner` yields `error` (a
- *   legacy unit),
- *   throws, ends on another terminal (`workflowRun` ends on `suspended` or
- *   `cancelled`), or the consumer stops early with `return()`. `result()`
- *   stops at `completed` that way, so most use cases end their unit through
- *   abandon even when they succeeded. If abandon fails while an error is
- *   already propagating, it is logged at warn and the original error wins.
- *   Otherwise (a stream that ended without error, including a consumer's
- *   `return()` after `completed`) an abandon that rejects reaches the
- *   consumer, as a failing commit does. Use-case units have no flush today,
- *   so theirs cannot fail; a Phase 3 unit whose discard can throw must expect
- *   that error at `result()`.
- * - **Terminal policy.** For legacy units which ending is chosen does not
- *   change what is pushed: a use case's unit is a child of the command's or
- *   request's root (or has no flush), and the root decides the push. A v3
- *   commit-log unit, which discards on abandon, follows decision 5 instead
- *   (swamp-club#3257): it commits once the stream yields an outcome
- *   (`completed`, `suspended`, `cancelled`, or an `error` it reported),
- *   including when the consumer then stops with `return()`, and abandons on
- *   a throw or a stop before any of them. A reported `error` is an outcome
- *   since swamp-club#3279: a failed method run reports one, and its record
- *   is what v2 publishes too. A use case that reaches an outcome before its
- *   stream reports it (a model method run cancelled by its signal, which
- *   saves its record and only then yields `cancelled`) calls
- *   {@link markOutcomeReported} as well (swamp-club#3299). A workflow run
- *   also checkpoints as it saves its record (swamp-club#3587), so
- *   an abandon discards only what it wrote after its last checkpoint.
- * - **Nesting.** A use case run inside another opens its own unit, which is
- *   a child of the outer one when both are bound to the same hook; the
- *   innermost unit is ambient while it runs.
+ * inner runs inside the unit so code between yields sees it, as
+ * AsyncLocalStorage does not flow into a generator; commits on completion,
+ * abandons otherwise, and an abandon failure never masks an error
  */
 export async function* withUnitOfWork<E extends { kind: string }>(
   ctx: LibSwampContext,
@@ -149,11 +96,9 @@ export async function* withUnitOfWork<E extends { kind: string }>(
       }
       returned = true;
     } finally {
-      // A v3 unit commits once the stream reached an outcome (a terminal
-      // event, or a reported error, since swamp-club#3279 reversed that part
-      // of decision 5), even when the consumer stopped there with return(),
-      // and abandons on a throw or an earlier stop. A legacy unit ends as
-      // before.
+      // A v3 unit commits once the stream reached an outcome, even if the
+      // consumer stopped with return(), and abandons on a throw or earlier
+      // stop.
       const commits = takesTypedChanges(uow)
         ? (terminal || failed || outcomeReported.has(uow)) && !thrown &&
           returned
@@ -165,21 +110,18 @@ export async function* withUnitOfWork<E extends { kind: string }>(
   }
 }
 
-/** The events that end a use case with an outcome (decision 5). */
 const TERMINAL_KINDS: ReadonlySet<string> = new Set([
   "completed",
   "suspended",
   "cancelled",
 ]);
 
-/** Units whose use case reported an outcome ahead of, or without, an event. */
 const outcomeReported = new WeakSet<UnitOfWork>();
 
 /**
- * Records that the use case running in the ambient unit reached an outcome
- * its stream has not reported yet, or reports through no event, so a v3 unit
- * commits when the stream ends as it would after a terminal event
- * (decision 5). A legacy unit ignores it. Outside a unit it does nothing.
+ * records an outcome the stream has not reported yet, so a v3 unit commits at
+ * stream end as after a terminal event; legacy units and calls outside a unit
+ * ignore it
  */
 export function markOutcomeReported(): void {
   const uow = currentUnitOfWork();
@@ -187,9 +129,8 @@ export function markOutcomeReported(): void {
 }
 
 /**
- * Abandons `uow` while another error, `failure` when known, propagates,
- * masking it only with an abandon that could not record its outcome, which
- * carries it (swamp-club#3586).
+ * abandons while another error propagates; only an abandon that could not
+ * record its outcome masks that error
  */
 async function abandonQuietly(
   uow: UnitOfWork,

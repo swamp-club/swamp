@@ -37,13 +37,9 @@ import {
   type WorkflowRunSummaryRun,
 } from "./run_summary.ts";
 
-// The run search and run summary read each workflow's run index snapshot
-// and narrow it before building anything (swamp-club#3443). These
-// properties hold them to the algorithm they replaced: build every run of
-// every workflow, sort, then filter, authorize and page. The one change is
-// the order of runs from different workflows that started at the same
-// moment, which used to follow which workflow's read finished first and now
-// follows the workflows' order; the oracle uses that order.
+// these properties hold run search and summary to: build every run, sort, then
+// filter, authorize and page; runs from different workflows that start together
+// follow workflow order, which the oracle uses
 
 const START = Date.UTC(2026, 0, 1);
 // Start times and bounds fall on a coarse grid, so runs often share a start
@@ -76,7 +72,6 @@ interface Fixture {
 const arbFixture: fc.Arbitrary<Fixture> = fc.array(
   fc.record({
     workflow: fc.integer({ min: 0, max: WORKFLOWS.length - 1 }),
-    // Some runs keep a name the workflow had before a rename.
     renamed: fc.boolean(),
     status: fc.constantFrom(...STATUSES),
     startMs: fc.option(
@@ -126,7 +121,6 @@ const arbFixture: fc.Arbitrary<Fixture> = fc.array(
   return { workflows, runsOf, allIds };
 });
 
-/** A filter that is mostly left out, so most cases still match runs. */
 function sometimes<T>(arb: fc.Arbitrary<T>): fc.Arbitrary<T | undefined> {
   return fc.oneof(
     { arbitrary: fc.constant(undefined), weight: 3 },
@@ -148,7 +142,6 @@ const arbName = fc.constantFrom(
 
 interface SearchCase {
   input: WorkflowRunSearchInput;
-  /** Recorded names the caller may not read. */
   hidden: string[];
   queryRun?: number;
 }
@@ -167,7 +160,6 @@ const arbSearchCase: fc.Arbitrary<SearchCase> = fc.record({
   tags: sometimes(fc.constantFrom({ env: "prod" }, { env: "dev" })),
   inputs: sometimes(fc.constantFrom({ env: "prod" })),
   query: sometimes(fc.constantFrom("al", "fail", "0000-4000", "zzz")),
-  // Indexes the fixture's runs: a full run id as the query.
   queryRun: sometimes(fc.integer({ min: 0, max: 30 })),
   offset: sometimes(fc.integer({ min: 0, max: 20 })),
   limit: sometimes(fc.integer({ min: 1, max: 30 })),
@@ -199,7 +191,6 @@ function statusMatches(status: string, filter: string): boolean {
     runStatusBucket(actual) === filter;
 }
 
-/** The old algorithm: every run sorted, then each filter in turn. */
 function oracle(
   fixture: Fixture,
   input: WorkflowRunSearchInput,
@@ -273,8 +264,6 @@ function oracle(
 
 function withQueryRun(c: SearchCase, fixture: Fixture): WorkflowRunSearchInput {
   if (c.queryRun === undefined) return c.input;
-  // A full run id, in upper case half the time; an id past the last run
-  // names nothing.
   const id = fixture.allIds[c.queryRun] ?? uuidOf(10_000 + c.queryRun);
   return { ...c.input, query: c.queryRun % 2 ? id.toUpperCase() : id };
 }

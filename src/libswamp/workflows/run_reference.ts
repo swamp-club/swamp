@@ -18,14 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resolves the argument of a workflow history read — a run id prefix, a
- * workflow name or a workflow id — to the run the read acts on
- * (swamp-club#2673).
- *
- * The lookup is split from the read so a caller that authorizes can resolve
- * once, authorize the run's workflow, and hand the read that same
- * reference: the read then acts on exactly what was authorized, never on a
- * second lookup of the raw string.
+ * split from the read so a caller that authorizes resolves once, authorizes the
+ * run's workflow, and hands the read that same reference, never the raw string
  */
 
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -35,13 +29,9 @@ import type { PartialMatchResult } from "./run_lookup.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
 import { withSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** The longest argument a span records; longer ones are cut. */
 const TRACED_ARGUMENT_MAX_LENGTH = 256;
 
-/**
- * A run-or-workflow argument as a span records it: cut to a bounded length,
- * since a remote caller chooses it (swamp-club#3741).
- */
+/** cut to a bounded length, since a remote caller chooses it */
 export function tracedArgument(value: string): string {
   return value.length > TRACED_ARGUMENT_MAX_LENGTH
     ? value.slice(0, TRACED_ARGUMENT_MAX_LENGTH)
@@ -49,10 +39,9 @@ export function tracedArgument(value: string): string {
 }
 
 /**
- * What a run-or-workflow argument names. A workflow carries its latest run,
- * found as it resolves, so the read never looks one up afterwards. An
- * ambiguous prefix carries every run it matched, in the order of `ids`, so
- * serve can authorize each one's workflows (swamp-club#2743).
+ * a workflow carries its latest run, found as it resolves; an ambiguous prefix
+ * carries every run it matched, in the order of `ids`, so serve can authorize
+ * each one's workflows
  */
 export type RunReference =
   | { kind: "run"; run: WorkflowRun }
@@ -60,7 +49,6 @@ export type RunReference =
   | { kind: "ambiguous"; ids: string[]; runs: WorkflowRun[] }
   | { kind: "not_found" };
 
-/** Lookups a run-or-workflow argument resolves through. */
 export interface RunReferenceDeps {
   isPartialId: (value: string) => boolean;
   matchRunByPartialId: (idPrefix: string) => Promise<PartialMatchResult>;
@@ -68,11 +56,6 @@ export interface RunReferenceDeps {
   findLatestRun: (workflowId: WorkflowId) => Promise<WorkflowRun | null>;
 }
 
-/**
- * Resolves a run-or-workflow argument: a 3+ hex-character string is first
- * matched as a run id prefix across every workflow; failing that, the
- * argument names a workflow, and the read takes its latest run.
- */
 export function resolveRunReference(
   deps: RunReferenceDeps,
   runIdOrWorkflow: string,

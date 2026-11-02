@@ -64,23 +64,15 @@ const EDIT_RERUN_HINT: RerunHint = (_example, missing) =>
   missing.length > 0
     ? "Add the missing field(s) under config in the vault definition and save again."
     : "Fix the config in the vault definition and save again.";
-/** Minimal vault config shape needed by the generator. */
 export interface VaultEditConfigInfo {
   id: string;
   name: string;
   type: string;
 }
 
-/**
- * Data structure for the vault edit output.
- */
 export interface VaultEditData {
   path: string;
   editor?: string;
-  /**
-   * `updated` when the edit was saved, `unchanged` when the editor closed
-   * with nothing to save.
-   */
   status: "updated" | "unchanged";
   /**
    * With `unchanged`: where the copy was kept, because the editor is not
@@ -89,9 +81,7 @@ export interface VaultEditData {
   keptPath?: string;
   name: string;
   type: string;
-  /** The vault's previous name, when the edit renamed it. */
   renamedFrom?: string;
-  /** Whether a rename moved stored secrets to the new name. */
   secretsMoved?: boolean;
   /**
    * Whether the edit replaced a config that did not parse. Its stored secrets
@@ -109,30 +99,24 @@ export type VaultEditEvent =
   | { kind: "completed"; data: VaultEditData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the vault edit operation. */
 export interface VaultEditInput {
   vaultNameOrId: string;
   vaultType?: string;
   /**
-   * Treat `vaultNameOrId` as an id already resolved by the caller, and look it
-   * up by id only. Requires `vaultType`. Vault names can look like ids, so a
-   * name-first lookup could land on a different vault than the one the caller
-   * authorized.
+   * looks up by id only and requires vaultType: names can look like ids, so a
+   * name-first lookup could land on a vault the caller did not authorize
    */
   byId?: boolean;
   /**
-   * New vault YAML. A vault is edited in the editor through
-   * {@link resolveVaultEditFile} and a copy, then saved with this set, so the
-   * edit is committed (swamp-club#4107).
+   * new vault YAML; an editor edit is made on a copy and saved with this set,
+   * so the edit is committed
    */
   stdinContent?: string | null;
   /**
-   * Where `stdinContent` came from: the default `stdin`, or `editor` for a
-   * copy edited in the user's editor. An editor edit whose content is the
-   * stored vault saves nothing and completes as `unchanged`.
+   * where stdinContent came from; an editor edit whose content equals the
+   * stored vault saves nothing and completes as unchanged
    */
   source?: "stdin" | "editor";
-  /** The editor that produced `stdinContent`, reported on completion. */
   editor?: string;
   /**
    * Called before every stdin update is saved, with the stored and the edited
@@ -144,22 +128,18 @@ export interface VaultEditInput {
     after: VaultEditConfigInfo,
   ) => Promise<boolean> | boolean;
   /**
-   * Allows a stdin update to replace a vault config that does not parse, when
-   * `vaultNameOrId` and `vaultType` name that file. Called with the broken
-   * vault's id and type and the edited vault before anything is written;
-   * returning false leaves the file untouched. Without it, such a vault is
-   * reported as invalid and cannot be updated from stdin.
+   * lets a stdin update replace a vault config that does not parse, before
+   * anything is written; without it such a vault is reported invalid and cannot
+   * be updated from stdin
    */
   authorizeRepair?: (
     target: { id: string; type: string },
     after: VaultEditConfigInfo,
   ) => Promise<boolean> | boolean;
   /**
-   * Accept stdin updates that change a local_encryption vault's key source
-   * (base_dir, key_file, ssh_key_path, auto_generate). Only a caller that
-   * already owns the host sets this: the local CLI. Without it an update
-   * must keep the stored values, and a repair gets the server defaults
-   * (swamp-club#2690).
+   * accepts stdin updates that change a local_encryption key source; only the
+   * local CLI, which owns the host, sets this. Without it an update must keep
+   * the stored values and a repair gets the server defaults
    */
   trustKeySource?: boolean;
   /**
@@ -169,12 +149,7 @@ export interface VaultEditInput {
   repoDir?: string;
 }
 
-/** Lookups used to resolve a vault by name or id. */
 export interface VaultEditLookupDeps {
-  /**
-   * Finds a vault by name. With `skipUnparseable`, vault files that do not
-   * parse never fail the lookup.
-   */
   findByName: (
     name: string,
     skipUnparseable?: boolean,
@@ -183,7 +158,6 @@ export interface VaultEditLookupDeps {
   findAll: () => Promise<VaultEditConfigInfo[]>;
 }
 
-/** Dependencies for the vault edit operation. */
 export interface VaultEditDeps extends VaultEditLookupDeps {
   getVaultPath: (config: VaultEditConfigInfo) => string;
   fileExists: (path: string) => Promise<boolean>;
@@ -196,10 +170,6 @@ export interface VaultEditDeps extends VaultEditLookupDeps {
     config: VaultEditConfigInfo,
   ) => Promise<VaultConfigData | null>;
   saveConfigData: (data: VaultConfigData) => Promise<void>;
-  /**
-   * The schema a vault type's config must satisfy, or undefined when the type
-   * declares none. Mirrors `vault create`: only extension types are checked.
-   */
   getConfigSchema: (type: string) => Promise<z.ZodTypeAny | undefined>;
   /**
    * Moves the stored secrets of a vault being renamed to `toName`, for vault
@@ -212,13 +182,12 @@ export interface VaultEditDeps extends VaultEditLookupDeps {
   ) => Promise<(() => Promise<void>) | null>;
 }
 
-/** Wires real infrastructure into VaultEditDeps. */
 export function createVaultEditDeps(
   repoDir: string,
   injectedRepo?: YamlVaultConfigRepository,
 ): VaultEditDeps {
-  // The repository resolves the effective vaults dir, which is the datastore
-  // config tier under managedConfig (swamp-club#2426).
+  // the repository resolves the effective vaults dir, which is the datastore
+  // config tier under managedConfig
   const repo = injectedRepo ?? new YamlVaultConfigRepository(repoDir);
   return {
     findByName: (name, skipUnparseable) =>
@@ -268,11 +237,6 @@ export function createVaultEditDeps(
   };
 }
 
-/**
- * Finds a vault by name, falling back to its id. With a type the id lookup is
- * direct; without one every vault is scanned. Shared by `vault edit` and the
- * serve handler so both resolve the same vault.
- */
 export async function findVaultByNameOrId(
   deps: VaultEditLookupDeps,
   vaultNameOrId: string,
@@ -310,11 +274,9 @@ function contentError(input: VaultEditInput, detail: string): SwampError {
 }
 
 /**
- * Validates new vault YAML against the existing vault and saves it. The id and
- * createdAt are kept, and the type cannot change because it is part of the
- * storage path.
- * Messages carry no file paths: serve replaces any message with a path in it
- * by a generic error.
+ * id and createdAt are kept and the type cannot change, as it is part of the
+ * storage path. Messages carry no file paths: serve replaces any message
+ * containing one with a generic error
  */
 async function* updateVaultFromStdin(
   deps: VaultEditDeps,
@@ -523,10 +485,6 @@ async function* updateVaultFromStdin(
   };
 }
 
-/**
- * Whether a lookup failed because the requested vault's own file does not
- * parse: the error names the file at the requested type and id.
- */
 function isBrokenTarget(
   deps: VaultEditDeps,
   error: unknown,
@@ -548,11 +506,9 @@ function isBrokenTarget(
 }
 
 /**
- * Replaces a vault config that does not parse with new vault YAML. The id
- * comes from the file name and the type from its directory. Secrets are not
- * moved: the vault's previous name cannot be read.
- * Messages carry no file paths: serve replaces any message with a path in it
- * by a generic error.
+ * id comes from the file name and type from its directory; secrets are not
+ * moved because the previous name cannot be read. Messages carry no file paths:
+ * serve replaces any message containing one
  */
 async function* repairVaultFromStdin(
   deps: VaultEditDeps,
@@ -745,22 +701,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The stored vault file a vault edit acts on. */
 export interface VaultEditFile {
   config: VaultEditConfigInfo;
   path: string;
-  /**
-   * The requested vault's own file does not parse: it can be replaced when
-   * repair is authorized.
-   */
   broken: boolean;
 }
 
-/**
- * Resolves the stored vault file a vault edit acts on, or the error that
- * stops the edit. A file that does not parse is accepted when the edit has
- * no content yet (it opens in the editor) or may repair it.
- */
 export async function resolveVaultEditFile(
   ctx: LibSwampContext,
   deps: VaultEditDeps,
@@ -791,7 +737,6 @@ export async function resolveVaultEditFile(
     config = { id: vaultNameOrId, name: vaultNameOrId, type: vaultType };
   }
 
-  // If type was specified, verify it matches
   if (config && vaultType && config.type !== vaultType) {
     return {
       error: validationFailed(
@@ -815,7 +760,6 @@ export async function resolveVaultEditFile(
   return { config, path, broken };
 }
 
-/** Edits a vault configuration file via stdin update or editor. */
 export async function* vaultEdit(
   ctx: LibSwampContext,
   deps: VaultEditDeps,
@@ -861,9 +805,9 @@ export async function* vaultEdit(
           return;
         }
 
-        // A vault is edited on a copy and saved as stdinContent; opened in
-        // place, the edit would never be saved through the repository, so
-        // it would never be committed (swamp-club#4107).
+        // a vault is edited on a copy and saved as stdinContent; opened in
+        // place, the edit would never be saved through the repository, so never
+        // committed
         yield {
           kind: "error",
           error: validationFailed(

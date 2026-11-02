@@ -21,18 +21,13 @@ import { SWAMP_DATA_DIR } from "../../infrastructure/persistence/paths.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 /**
- * Generation of an on-disk extension layout.
- *
- * - `gen-1`: files in `extensions/<type>/…` (pre-`.swamp/`).
- * - `gen-2`: files in `.swamp/pulled-extensions/<type>/…` — the "flat"
- *   layout where types sit at the top and filenames collide across
- *   extensions.
- * - `current`: files in `.swamp/pulled-extensions/<@scope>/<name>/<type>/…`
- *   — per-extension subtree, no cross-extension collisions.
+ * gen-1 is extensions/<type>/…, gen-2 is the flat
+ * .swamp/pulled-extensions/<type>/… where filenames collide across extensions,
+ * current is the per-extension
+ * .swamp/pulled-extensions/<@scope>/<name>/<type>/…
  */
 export type ExtensionLayoutGeneration = "gen-1" | "gen-2" | "current";
 
-/** A single lockfile file entry classified by generation. */
 export interface LegacyFileEntry {
   extensionName: string;
   file: string;
@@ -40,10 +35,8 @@ export interface LegacyFileEntry {
 }
 
 /**
- * Known pulled-type dir names under `.swamp/pulled-extensions/`. Used
- * by `classifyExtensionFile` to detect the gen-1 and gen-2 shapes; its
- * result decides which entries `needsInstallOrMigration` re-pulls and
- * which tracked paths `sweepLegacyPaths` removes (both in install.ts).
+ * classifyExtensionFile uses it to detect gen-1 and gen-2 shapes, which decides
+ * what needsInstallOrMigration re-pulls and sweepLegacyPaths removes
  */
 export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
   "models",
@@ -57,19 +50,9 @@ export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Per-extension scaffold dir names that `pull` unconditionally creates
- * under `.swamp/pulled-extensions/<name>/` regardless of whether the
- * extension ships content for that kind. Skills are excluded because
- * they land at the tool-specific skills dir, not under the per-extension
- * root. These scaffold dirs are NOT recorded in the lockfile's tracked
- * files, so `extension rm` must enumerate them explicitly to prune any
- * empty ones — `pruneEmptyDirs` in `remove_extension_service.ts` walks
- * up from tracked-file parents and would otherwise stop at the
- * extension root when it sees the untracked scaffolds as entries.
- *
- * Stays in sync with the `Deno.mkdir` calls in `installExtension`
- * in `pull.ts`. If `pull` adds a new per-extension kind dir, add it
- * here too.
+ * pull always creates these under .swamp/pulled-extensions/<name>/ but the
+ * lockfile does not track them, so extension rm must enumerate them to prune
+ * empty ones; keep in sync with installExtension
  */
 export const PER_EXTENSION_SCAFFOLD_DIRS: readonly string[] = [
   "models",
@@ -86,34 +69,9 @@ const MANAGED_PULLED_PREFIX = `${SWAMP_DATA_DIR}/config/pulled-extensions/`;
 const GEN1_PREFIX = "extensions/";
 
 /**
- * Classifies a single lockfile file path.
- *
- * - Returns `"gen-1"` when the path matches the published gen-1 shape:
- *   `extensions/<known-type>/...` where `<known-type>` is in
- *   `PULLED_TYPE_DIRS`. Tightened from "any path outside `.swamp/`" so
- *   tool-specific skill dirs (`.claude/skills/<name>`,
- *   `.cursor/skills/<name>`, etc.) and other non-`.swamp/` paths are not
- *   misclassified as legacy and routed through migration's destructive
- *   sweep.
- * - Returns `"gen-2"` when the path lives under
- *   `.swamp/pulled-extensions/<type>/...` where `<type>` is a known
- *   pulled-type dir — the "flat" layout where filenames collide across
- *   extensions.
- * - Returns `"current"` for the per-extension subtree
- *   (`.swamp/pulled-extensions/@<scope>/...`), for paths outside
- *   `pulled-extensions/` entirely (bundles, etc.), and for any
- *   non-`.swamp/` path that does not match the gen-1 shape.
- *
- * Note: this classifier is path-only and cannot tell a `tool=none` skill
- * directory entry (`.swamp/pulled-extensions/skills/<name>`) apart from a
- * gen-2 model file path. The install flow filters skill dir entries via
- * `isSkillDirEntry` before reaching the classifier — see
- * `needsInstallOrMigration` and `sweepLegacyPaths` in `install.ts`.
- *
- * The path is normalised to forward slashes before matching, so a
- * lockfile written on Windows (where `@std/path` `relative()` returns
- * backslash-separated paths) classifies the same as one written on
- * POSIX.
+ * gen-1 needs a known type dir so skill dirs and other non-.swamp paths are not
+ * swept as legacy; path-only, so it cannot tell a tool=none skill entry from
+ * gen-2; normalised to forward slashes
  */
 export function classifyExtensionFile(path: string): ExtensionLayoutGeneration {
   const file = path.replaceAll("\\", "/");
@@ -139,26 +97,9 @@ export function classifyExtensionFile(path: string): ExtensionLayoutGeneration {
 }
 
 /**
- * Returns true when a tracked file path is a skill directory entry —
- * either the skillsDir root itself or a path under it.
- *
- * Skills are tracked in `entry.files[]` as a single directory path, or
- * as the individual files when the skill was merged into a dir the
- * extension does not own (both set by `installExtension` in `pull.ts`),
- * so this check compares against the directory boundary. The skillsDir
- * is repo-and-tool-specific (`.claude/skills`, `.cursor/skills`, `.swamp/pulled-extensions/skills`
- * for `tool=none`, etc.) and must be repo-relative — `entry.files[]`
- * paths are repo-relative; the caller passes it in.
- *
- * Both sides are normalised to forward slashes before comparison so
- * the check works on Windows (where `@std/path` `relative()` returns
- * backslash-separated paths) without requiring callers to normalise.
- *
- * Used by the install flow to short-circuit skill paths before legacy
- * classification — without this filter, the `tool=none` fallback at
- * `.swamp/pulled-extensions/skills/<name>` is structurally identical to
- * a gen-2 path and would otherwise be swept destructively after
- * migration.
+ * skills are tracked as a directory path, or file by file when merged into a
+ * shared dir, so this compares at the directory boundary; skillsDir must be
+ * repo-relative, and both sides are normalised to forward slashes for Windows
  */
 export function isSkillDirEntry(
   file: string,
@@ -172,10 +113,6 @@ export function isSkillDirEntry(
     normalizedFile.startsWith(`${trimmed}/`);
 }
 
-/**
- * Multi-dir variant of {@link isSkillDirEntry}. Returns true when the
- * file matches ANY of the provided skill dirs.
- */
 export function isSkillDirEntryMulti(
   file: string,
   skillsDirs: string[] | undefined,
@@ -188,34 +125,10 @@ export function isSkillDirEntryMulti(
 }
 
 /**
- * Returns the per-extension root subtree that owns a tracked file path,
- * or `null` when the path does not anchor to a root that
- * `doctor extensions` should walk for orphan detection.
- *
- * Returns null for:
- * - skill paths (`<skillsDir>/<skill>/`) — skills are tracked as
- *   directory paths only, so files inside aren't individually tracked
- *   and we cannot meaningfully orphan-detect within a skill dir.
- * - legacy paths (gen-1, gen-2) — the extensionInstall migration path
- *   handles these; doctor's orphan walk is for current-layout only.
- *
- * Otherwise returns the longest path-segment prefix that identifies a
- * single per-extension subtree:
- * - `.swamp/pulled-extensions/<@scope>/<name>/...` →
- *   `.swamp/pulled-extensions/<@scope>/<name>`
- * - `.swamp/pulled-extensions/<flat-name>/...` →
- *   `.swamp/pulled-extensions/<flat-name>`
- * - bundle namespaces (`bundles/<hash>/...`,
- *   `vault-bundles/<hash>/...`,
- *   `datastore-bundles/<hash>/...`, `report-bundles/<hash>/...`,
- *   `webhook-bundles/<hash>/...`) →
- *   `<kind>/<hash>`
- *
- * The skillsDir is repo-and-tool-specific (`.claude/skills/`,
- * `.cursor/skills/`, etc.); the caller must pass it in.
- *
- * @param filePath Repo-relative path from `entry.files[]`
- * @param skillsDir Repo-relative tool-specific skills directory
+ * null for skill paths (tracked as directories only, so no orphan detection
+ * within) and legacy paths (extensionInstall migration handles those);
+ * otherwise the longest prefix identifying one per-extension subtree or bundle
+ * namespace
  */
 export function extractTopLevelRoot(
   filePath: string,
@@ -235,8 +148,6 @@ export function extractTopLevelRoot(
     return null;
   }
 
-  // Per-extension subtree: pulled-extensions/<extensionName>/...
-  // (current-layout or managed-config layout).
   const pfx = filePath.startsWith(MANAGED_PULLED_PREFIX)
     ? MANAGED_PULLED_PREFIX
     : filePath.startsWith(PULLED_PREFIX)
@@ -250,7 +161,6 @@ export function extractTopLevelRoot(
     return `${pfx}${segments.slice(0, nameSegments.length).join("/")}`;
   }
 
-  // Bundle namespaces: <kind>/<hash>/...
   const BUNDLE_KINDS = [
     "bundles",
     "vault-bundles",
@@ -268,15 +178,9 @@ export function extractTopLevelRoot(
     }
   }
 
-  // Anything else current-layout but not under a known root — no
-  // orphan walk possible.
   return null;
 }
 
-/**
- * Multi-dir variant of {@link extractTopLevelRoot}. Returns null when
- * the file is a skill entry under ANY of the provided skill dirs.
- */
 export function extractTopLevelRootMulti(
   filePath: string,
   skillsDirs: string[],
@@ -321,21 +225,9 @@ export function extractTopLevelRootMulti(
 }
 
 /**
- * Detects whether a repository has pulled extensions in any legacy layout.
- *
- * Reads `upstream_extensions.json` and classifies each tracked file.
- * Returns a flat list of legacy entries (both gen-1 and gen-2) with their
- * generation tag so the upgrade migrator can branch.
- *
- * `skillsDirRelative` (when provided, repo-relative) filters skill
- * directory entries out of legacy classification — they are always
- * considered current-layout regardless of physical location. Without
- * this filter, the `tool=none` fallback at
- * `.swamp/pulled-extensions/skills/<name>` is structurally identical to
- * a gen-2 path and would be falsely flagged as legacy.
- *
- * @param lockfilePath Full path to upstream_extensions.json
- * @param skillsDirRelative Repo-relative skills directory path
+ * without the skillsDirRelative filter the tool=none fallback
+ * .swamp/pulled-extensions/skills/<name> looks like a gen-2 path and would be
+ * falsely flagged as legacy
  */
 export async function detectLegacyExtensionLayout(
   lockfilePath: string,
@@ -361,24 +253,12 @@ export async function detectLegacyExtensionLayout(
   return legacy;
 }
 
-/**
- * Emits a structured summary of legacy state suitable for renderer
- * consumption: per-extension set of flagged files and the generations
- * represented.
- */
 export interface LegacyLayoutSummary {
-  /** Names of extensions whose lockfile entries reference legacy paths. */
   extensionNames: string[];
-  /** Total count of flagged file entries across all extensions. */
   fileCount: number;
-  /** Which legacy generations are present. */
   generations: Set<"gen-1" | "gen-2">;
 }
 
-/**
- * Summarises detectLegacyExtensionLayout output into the shape that CLI
- * commands and the renderer prefer.
- */
 export function summariseLegacyLayout(
   legacy: LegacyFileEntry[],
 ): LegacyLayoutSummary {
@@ -396,26 +276,9 @@ export function summariseLegacyLayout(
 }
 
 /**
- * Logs a warning when any pulled-extension entries are in a legacy layout.
- *
- * Prior versions threw here to hard-block extension commands until the
- * user ran `swamp repo upgrade`. That was the right call when migration
- * was rename-based and had to move everything atomically. The current
- * migration path is per-extension (re-install from the lockfile), so the
- * lockfile tolerates mixed-generation state and individual extensions can
- * be upgraded in any order. Commands proceed normally — they operate on
- * whatever paths the lockfile records — so extensions already in the new
- * layout stay usable even when others are pending migration.
- *
- * @param lockfilePath Full path to upstream_extensions.json
- * @param warn Invoked with a short human-readable message when legacy
- *   entries exist. Callers typically wire this to their logger's warn
- *   channel.
- * @param skillsDirRelative Repo-relative skills directory path; filters
- *   skill dir entries out of legacy classification so the `tool=none`
- *   fallback at `.swamp/pulled-extensions/skills/<name>` is not falsely
- *   flagged as gen-2.
- * @returns The legacy summary, or `undefined` if everything is current.
+ * warns rather than throws: migration is per-extension, so the lockfile
+ * tolerates mixed-generation state and commands operate on whatever paths it
+ * records
  */
 export async function warnLegacyExtensionLayout(
   lockfilePath: string,
@@ -436,13 +299,8 @@ export async function warnLegacyExtensionLayout(
 }
 
 /**
- * Backwards-compatible alias that retains the old throw-on-legacy shape
- * for any caller that still depends on a hard-gate. New code should use
- * `warnLegacyExtensionLayout`. Kept to keep the migration window's diff
- * small — remove in a follow-up once all call sites have moved over.
- *
- * @deprecated Prefer `warnLegacyExtensionLayout` — the lockfile tolerates
- *   mixed-generation state.
+ * deprecated hard-gate alias; use warnLegacyExtensionLayout, since the lockfile
+ * tolerates mixed-generation state
  */
 export async function requireCurrentExtensionLayout(
   lockfilePath: string,

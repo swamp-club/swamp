@@ -63,7 +63,6 @@ import {
 } from "../../domain/datastore_v3/run_artifact_resolution.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import { sha256Hex } from "../data/run_artifact_check.ts";
-/** Data payload for the completed event. */
 export interface ModelOutputDataData {
   outputId: string;
   methodName: string;
@@ -98,7 +97,6 @@ export interface ModelOutputDataInput {
   reference?: OutputIdReference<ModelOutput>;
 }
 
-/** Data metadata. */
 interface DataMeta {
   id: string;
   name: string;
@@ -106,7 +104,6 @@ interface DataMeta {
   contentType: string;
 }
 
-/** Dependencies for the model output data operation. */
 export interface ModelOutputDataDeps
   extends OutputIdReferenceDeps<ModelOutput> {
   findDefinition: (
@@ -126,10 +123,9 @@ export interface ModelOutputDataDeps
     version?: number,
   ) => Promise<Uint8Array | null>;
   /**
-   * On a v3 datastore, whether the version an output's ref names is still
-   * the content that output produced (swamp-club#3279): history compaction
-   * can leave a later re-save of the same version live. Absent on v2, where
-   * a version is never written again.
+   * on a v3 datastore, whether the version an output's ref names is still the
+   * content that output produced, since history compaction can leave a later
+   * re-save of the same version live; absent on v2
    */
   checkArtifact?: (
     type: ModelType,
@@ -139,17 +135,15 @@ export interface ModelOutputDataDeps
   ) => Promise<RunArtifactResolution>;
 }
 
-/** Wires real infrastructure into ModelOutputDataDeps. */
 export function createModelOutputDataDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedDefinitionRepo?: YamlDefinitionRepository,
   /**
-   * The repository context's lookup, so a read of a record the v3 read model
-   * could not materialise fails loudly (swamp-club#3617). Used by the output
-   * repository built here, and by the data repository when none is
-   * injected; an injected one carries its own.
+   * the repository context's lookup, so a read of a record the v3 read model
+   * could not materialise fails loudly; used by the output repository built
+   * here, and by the data repository when none is injected
    */
   unreadableContent?: UnreadableContentLookup,
 ): ModelOutputDataDeps {
@@ -163,9 +157,8 @@ export function createModelOutputDataDeps(
   );
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(repoDir);
-  // Reuse an injected shared data repo (e.g. serve's process-scoped
-  // RepositoryContext) so we don't open a new file-based catalog store — and
-  // leak its 3 FDs — on every request.
+  // reuse an injected shared data repo so each request does not open a new
+  // file-based catalog store and leak its file descriptors
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
@@ -240,7 +233,6 @@ export function createModelOutputDataDeps(
   };
 }
 
-/** Yields data artifact content for a model output. */
 export async function* modelOutputData(
   _ctx: LibSwampContext,
   deps: ModelOutputDataDeps,
@@ -287,7 +279,6 @@ export async function* modelOutputData(
 
       const { output, type } = reference.match;
 
-      // Find the data artifact
       let dataArtifact: DataArtifactRef | undefined;
       if (input.name) {
         dataArtifact = output.artifacts.dataArtifacts.find(
@@ -324,7 +315,6 @@ export async function* modelOutputData(
         return;
       }
 
-      // Get the definition
       const definition = await deps.findDefinition(type, output.definitionId);
       if (!definition) {
         yield {
@@ -363,10 +353,8 @@ export async function* modelOutputData(
         }
       }
 
-      // Get the version
       const version = input.version ?? dataArtifact.version;
 
-      // Find the data
       const data = await deps.findDataByName(
         type,
         definition.id,
@@ -393,7 +381,6 @@ export async function* modelOutputData(
         return;
       }
 
-      // Get the raw content
       const content = await deps.getContent(
         type,
         definition.id,
@@ -431,7 +418,6 @@ export async function* modelOutputData(
         }
       }
 
-      // If a specific field is requested, extract it
       if (input.field) {
         if (typeof displayData !== "object" || displayData === null) {
           yield {

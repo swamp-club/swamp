@@ -35,9 +35,6 @@ import {
 } from "./schema_helpers.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the type describe output.
- */
 export interface TypeDescribeData {
   type: {
     raw: string;
@@ -54,20 +51,13 @@ export type TypeDescribeEvent =
   | { kind: "completed"; data: TypeDescribeData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the type describe operation. */
 export interface TypeDescribeDeps {
   resolveModelType: (
     type: ModelType,
   ) => Promise<ModelDefinition | undefined>;
-  /**
-   * The types an installed extension of this name provides, so a type not
-   * found that is an extension's name can point at them. Absent means no
-   * suggestion.
-   */
   typesProvidedByExtension?: (extensionName: string) => string[];
 }
 
-/** Wires real infrastructure into TypeDescribeDeps. */
 export function createTypeDescribeDeps(): TypeDescribeDeps {
   return {
     resolveModelType: (type) => resolveModelType(type, null),
@@ -78,7 +68,6 @@ export function createTypeDescribeDeps(): TypeDescribeDeps {
   };
 }
 
-/** Describes a model type with schema details. */
 export async function* typeDescribe(
   _ctx: LibSwampContext,
   deps: TypeDescribeDeps,
@@ -137,10 +126,6 @@ export async function* typeDescribe(
   );
 }
 
-/**
- * Points a name that is an installed extension's, not a type's, at the
- * types that extension provides (swamp-club#3819).
- */
 function installedExtensionHint(
   extensionName: string,
   types: string[],
@@ -154,17 +139,12 @@ function installedExtensionHint(
     types.map((type) => `  ${type}`).join("\n");
 }
 
-/** Suggests finding the type in the extension registry. */
 function registryHint(normalized: string, installName: string): string {
   return `This type may be available as an extension:\n` +
     `  Search:  swamp extension search ${deriveSearchTerm(normalized)}\n` +
     `  Install: swamp extension pull ${installName}`;
 }
 
-/**
- * Derives a search term from a normalized type by stripping the collective prefix.
- * e.g., "@swamp/gcp/oauth2" → "gcp/oauth2", "swamp/echo" → "echo"
- */
 function deriveSearchTerm(normalized: string): string {
   let stripped = normalized;
   if (stripped.startsWith("@")) {
@@ -177,10 +157,6 @@ function deriveSearchTerm(normalized: string): string {
   return stripped;
 }
 
-/**
- * Derives an install name from a normalized type by ensuring the @ prefix.
- * e.g., "swamp/echo" → "@swamp/echo", "@swamp/gcp/oauth2" → "@swamp/gcp/oauth2"
- */
 function deriveInstallName(normalized: string): string {
   return normalized.startsWith("@") ? normalized : `@${normalized}`;
 }

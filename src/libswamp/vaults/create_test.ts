@@ -141,8 +141,6 @@ Deno.test("vaultCreate: yields error for invalid vault name", async () => {
   );
 });
 
-// Key-source rule for local_encryption vaults (swamp-club#2690).
-
 async function createLocal(
   vaultType: string,
   config: Record<string, unknown> | undefined,
@@ -309,10 +307,6 @@ Deno.test("createVaultCreateDeps: without an injected repository, saves under th
   });
 });
 
-// ---------------------------------------------------------------------------
-// Leftover local_encryption storage (swamp-club#3614)
-// ---------------------------------------------------------------------------
-
 Deno.test("vaultCreate: refuses a local_encryption vault whose storage an earlier vault left, and saves nothing", async () => {
   const saved: VaultConfig[] = [];
   const checked: Array<[string, Record<string, unknown>]> = [];
@@ -403,8 +397,8 @@ Deno.test("vaultCreate: other vault types never look for local_encryption storag
 
 Deno.test("vaultCreate: a vault whose config was deleted leaves storage a new vault of that name may not adopt", async () => {
   await withTempDir(async (dir) => {
-    // The reporter's scenario: an earlier vault 'old' stored a secret, then
-    // its config went away and its secrets directory stayed.
+    // an earlier vault 'old' stored a secret, then its config went away and its
+    // secrets directory stayed
     await new LocalEncryptionVaultProvider("old", {
       auto_generate: true,
       base_dir: dir,
@@ -472,10 +466,6 @@ Deno.test("createVaultCreateDeps: looks for leftover storage under a custom base
     );
   });
 });
-
-// ---------------------------------------------------------------------------
-// Required config fields (swamp-club#3003)
-// ---------------------------------------------------------------------------
 
 const ONE_PASSWORD_INFO = {
   type: "@swamp/1password",

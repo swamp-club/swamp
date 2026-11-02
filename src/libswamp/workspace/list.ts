@@ -28,7 +28,6 @@ import {
 } from "./deps.ts";
 import { loadWorkspaceRegistry } from "./workspace_store.ts";
 
-/** Every registered workspace, by name. */
 export interface WorkspaceListData {
   readonly workspaces: readonly WorkspaceSummary[];
 }

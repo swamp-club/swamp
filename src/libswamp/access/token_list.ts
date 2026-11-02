@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * List server tokens for the `swamp access token list` command.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";

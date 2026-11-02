@@ -52,9 +52,6 @@ import {
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { argumentParseContext } from "../../domain/untrusted_parse.ts";
-/**
- * Data structure for the model create output.
- */
 export interface ModelCreateData {
   id: string;
   type: string;
@@ -70,7 +67,6 @@ export type ModelCreateEvent =
   | { kind: "completed"; data: ModelCreateData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the model create operation. */
 export interface ModelCreateInput {
   typeArg: string;
   name: string;
@@ -82,7 +78,6 @@ export interface ModelCreateInput {
   principalId?: string;
 }
 
-/** Dependencies for the model create operation. */
 export interface ModelCreateDeps {
   resolveModelType: (
     typeArg: string,
@@ -99,7 +94,6 @@ export interface ModelCreateDeps {
   listAvailableTypes: () => string[];
 }
 
-/** Wires real infrastructure into ModelCreateDeps. */
 export async function createModelCreateDeps(
   repoDir: string,
   definitionsDir?: string,
@@ -138,7 +132,6 @@ export async function createModelCreateDeps(
   };
 }
 
-/** Creates a new model definition. */
 export async function* modelCreate(
   ctx: LibSwampContext,
   deps: ModelCreateDeps,
@@ -176,7 +169,6 @@ export async function* modelCreate(
           return;
         }
 
-        // Validate and resolve the model type
         const modelType = ModelType.create(input.typeArg);
         const resolvedDef = await deps.resolveModelType(input.typeArg);
         if (!resolvedDef) {
@@ -195,7 +187,6 @@ export async function* modelCreate(
           return;
         }
 
-        // Check name uniqueness
         const exists = await deps.findByNameGlobal(input.name);
         if (exists) {
           yield {
@@ -209,7 +200,6 @@ export async function* modelCreate(
           return;
         }
 
-        // Validate global arguments against model schema if present
         const modelDef = deps.getModelDef(modelType);
         let globalArguments = input.globalArguments;
         if (globalArguments && modelDef?.globalArguments) {
@@ -236,20 +226,16 @@ export async function* modelCreate(
               return;
             }
           }
-          // Validate only the static (non-expression) fields against the schema.
-          // Fields holding a `${{ ... }}` expression (e.g. a `vault.get(...)`
-          // reference) are resolved at runtime and validated then — running them
-          // through the schema now would reject a sentinel string against a
-          // constrained field (e.g. `z.string().min(20)`), making the vault
-          // remediation for a sensitive argument impossible. Mirrors the
-          // strip-then-validate behavior in validation_service.
+          // validate only static fields: `${{ }}` expression fields resolve at
+          // runtime, and a sentinel string would fail constrained schemas (e.g.
+          // min(20)), making the vault remediation impossible
           const staticArgs = stripExpressionFields(globalArguments);
           const hasExpressionArgs = Object.keys(staticArgs).length <
             Object.keys(globalArguments).length;
           if (!hasExpressionArgs) {
-            // Described as a run's refusal is, so the schema's own code
-            // cannot spell a sensitive value here, and a schema that throws
-            // while parsing is reported as a run reports it (swamp-club#3681).
+            // described as a run's refusal is, so the schema's own code cannot
+            // spell a sensitive value, and a schema that throws while parsing
+            // is reported as a run reports it
             let result: ReturnType<typeof globalArgsSchema.safeParse>;
             try {
               result = globalArgsSchema.safeParse(
@@ -291,11 +277,9 @@ export async function* modelCreate(
             globalArguments = result.data as Record<string, unknown>;
           }
 
-          // Refuse a literal value for a sensitive global argument before it is
-          // persisted in cleartext. The persistence chokepoint
-          // (YamlDefinitionRepository.save) enforces this for every writer; doing
-          // it here as well gives `model create` a clean, typed error instead of
-          // a raw thrown one. Expression values (vault.get) pass through.
+          // refuse a literal sensitive global argument before it is persisted
+          // in cleartext; the repository save enforces this too, but checking
+          // here gives a typed error. Expressions pass through
           const leakedArgs = findLiteralSensitiveGlobalArgs(
             modelDef.globalArguments,
             globalArguments,
@@ -311,7 +295,6 @@ export async function* modelCreate(
           }
         }
 
-        // Create and save the definition
         const definition = await deps.createAndSave(
           modelType,
           input.name,

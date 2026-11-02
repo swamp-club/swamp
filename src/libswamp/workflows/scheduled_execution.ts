@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * ScheduledExecutionService is a libswamp application service that
- * orchestrates scheduled workflow execution. It connects:
- * - WorkflowScheduler (domain service — timer lifecycle)
- * - WorkflowWatcher (filesystem observation — live reload)
- * - workflowRun (libswamp operation — execution)
- *
- * Emits typed events as an AsyncIterable for consumer observation.
- */
-
 import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
@@ -59,7 +49,6 @@ const logger = getSwampLogger(["scheduled-execution"]);
  */
 const FIRE_SETTLE_TIMEOUT_MS = 5_000;
 
-/** Resolves when `promise` settles or `timeoutMs` elapses, whichever is first. */
 async function settleWithin(
   promise: Promise<unknown>,
   timeoutMs: number,
@@ -77,9 +66,6 @@ async function settleWithin(
   }
 }
 
-/**
- * Events emitted by the scheduled execution service.
- */
 export type ScheduledExecutionEvent =
   | {
     kind: "schedule_registered";
@@ -96,7 +82,6 @@ export type ScheduledExecutionEvent =
     kind: "schedule_fired";
     workflowId: WorkflowId;
     workflowName: string;
-    /** ISO-8601 cron fire time. */
     fireTime: string;
   }
   | {
@@ -105,33 +90,24 @@ export type ScheduledExecutionEvent =
     workflowName: string;
     reason: string;
     dedupSkip?: boolean;
-    /** Set when the workflow's schedule is paused (swamp-club#3522). */
     paused?: {
       readonly reason?: string;
       readonly pausedBy: string;
       readonly until?: string;
     };
-    /** ISO-8601 cron fire time; unset for a run replayed after a restart. */
     fireTime?: string;
     replayed?: boolean;
   }
   | {
-    /** A run began executing; runId is known from here on. */
     kind: "schedule_started";
     workflowId: WorkflowId;
     workflowName: string;
     runId: string;
-    /** ISO-8601 cron fire time; unset for a run replayed after a restart. */
     fireTime?: string;
     replayed: boolean;
-    /**
-     * How long the run waited between its fire (or, for a replayed run, its
-     * enqueue) and its start.
-     */
     queueDelayMs?: number;
   }
   | {
-    /** Authorization refused the run; it never started. */
     kind: "schedule_denied";
     workflowId: WorkflowId;
     workflowName: string;
@@ -158,17 +134,10 @@ export type ScheduledExecutionEvent =
     error: string;
   };
 
-/**
- * Callback for schedule events — consumers provide this to observe
- * scheduled execution lifecycle.
- */
 export type ScheduledExecutionEventHandler = (
   event: ScheduledExecutionEvent,
 ) => void;
 
-/**
- * Dependencies required by the ScheduledExecutionService.
- */
 /**
  * Callback that executes a workflow run. Injected by the serve layer
  * so libswamp doesn't depend on serve infrastructure.
@@ -195,20 +164,16 @@ export interface ActiveRunHook {
 }
 
 /**
- * Callback for cross-instance cron fire dedup. Returns true if this
- * instance should execute, false if another instance already claimed
- * the fire slot. When not provided (single-instance mode), all fires
- * proceed unconditionally.
+ * returns true if this instance should execute, false if another already
+ * claimed the fire slot; without it all fires proceed
  */
 export type CronFireDedupCallback = (
   workflowId: string,
   fireTime: Date,
 ) => Promise<boolean>;
 
-/** What the scheduler asks before it starts a run. */
 export interface ScheduledRunRequest {
   readonly workflowName: string;
-  /** Unset for a run replayed after a restart. */
   readonly fireTime?: Date;
   readonly replayed: boolean;
 }
@@ -242,7 +207,6 @@ export interface ScheduledExecutionDeps {
   activeRunHook?: ActiveRunHook;
   cronFireDedup?: CronFireDedupCallback;
   triggerOverrides?: ReadonlyMap<string, TriggerOverride>;
-  /** Recorded on every run as `initiatedBy` (the scheduler's principal). */
   initiatedBy?: string;
   authorizeRun?: ScheduledRunAuthorizer;
   /**
@@ -257,17 +221,12 @@ export interface ScheduledExecutionDeps {
    * 1: one scheduled run at a time, in fire order.
    */
   maxConcurrentRuns?: number;
-  /** Clock for queue-delay reporting, in epoch ms. Defaults to `Date.now`. */
   now?: () => number;
 }
 
-/** A scheduled workflow's queue state, as reported in health. */
 export interface ScheduleQueueStatus {
-  /** Fires waiting to start. */
   readonly queued: number;
-  /** ISO-8601 fire (or enqueue) time of the oldest waiting fire. */
   readonly oldestQueuedAt: string | null;
-  /** Fire-to-start delay of the last run that started. */
   readonly lastQueueDelayMs: number | null;
 }
 
@@ -277,7 +236,6 @@ interface QueuedRun {
   workflowId: WorkflowId;
   workflowName: string;
   fireTime?: Date;
-  /** Epoch ms the entry joined the queue. */
   enqueuedAt: number;
   replayed: boolean;
 }
@@ -293,15 +251,11 @@ export class ScheduledExecutionService {
   private readonly runQueue: QueuedRun[] = [];
   private readonly maxConcurrentRuns: number;
   private readonly now: () => number;
-  /** Queue entries taken off the queue and not yet settled. */
   private readonly inFlight = new Set<Promise<void>>();
-  /** Workflow ids and names of the in-flight entries. */
   private readonly claimed = new Set<string>();
-  /** Last fire-to-start delay, by workflow name. */
   private readonly lastQueueDelayMs = new Map<string, number>();
   private draining = false;
   private stopped = false;
-  /** Fires still in handleFire, e.g. waiting on the cron dedup claim. */
   private readonly inFlightFires = new Set<Promise<void>>();
   private eventHandler: ScheduledExecutionEventHandler | null = null;
   private triggerOverrides: ReadonlyMap<string, TriggerOverride>;
@@ -325,23 +279,13 @@ export class ScheduledExecutionService {
     );
   }
 
-  /**
-   * Starts the scheduled execution service:
-   * 1. Scans all existing workflows for schedules
-   * 2. Applies trigger overrides from serve config
-   * 3. Starts the filesystem watcher for live reload
-   * 4. Starts the scheduler to fire cron jobs
-   */
   async start(
     onEvent?: ScheduledExecutionEventHandler,
   ): Promise<void> {
     this.eventHandler = onEvent ?? null;
 
-    // Phase 1: scan existing workflows and register built-in schedules
     await this.watcher.scanExisting();
 
-    // Phase 2: apply trigger overrides — adds schedules to unscheduled
-    // workflows and replaces schedules on already-registered ones
     await this.applyTriggerOverrides();
 
     // Start the scheduler — cron jobs begin firing. WorkflowScheduler arms
@@ -363,10 +307,10 @@ export class ScheduledExecutionService {
   }
 
   /**
-   * Begin shutdown: stop the watcher and scheduler, drop queued runs (their
-   * pending-run entries stay for the next boot to replay), and wait up to
-   * `timeoutMs` for the in-flight runs to finish. A timeout of 0 returns at
-   * once. Call {@link stop} afterwards to abort what is left.
+   * stops the watcher and scheduler, drops queued runs (their pending-run
+   * entries stay for the next boot to replay) and waits up to timeoutMs for
+   * in-flight runs; 0 returns at once. Call stop afterwards to abort what is
+   * left.
    */
   async drain(timeoutMs: number): Promise<void> {
     this.draining = true;
@@ -400,18 +344,13 @@ export class ScheduledExecutionService {
     ]);
   }
 
-  /**
-   * Stops the service: aborts in-flight runs, stops watcher and scheduler.
-   */
   async stop(): Promise<void> {
     this.stopped = true;
     await this.watcher.stop();
     this.scheduler.stop();
 
-    // Clear the queue so no new runs start after current one finishes
     this.runQueue.length = 0;
 
-    // Abort all in-flight runs
     for (const [workflowId, entry] of this.running) {
       logger.info(
         "Aborting in-flight scheduled run for workflow {workflowId}",
@@ -420,7 +359,6 @@ export class ScheduledExecutionService {
       entry.controller.abort();
     }
 
-    // Wait for the in-flight entries — runs exit quickly after abort
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight]);
     }
@@ -432,30 +370,18 @@ export class ScheduledExecutionService {
     logger.info("Scheduled execution service stopped");
   }
 
-  /**
-   * Re-scans all workflows and registers any new schedules.
-   * Called during hot reload after extension workflow directories are updated.
-   */
   async rescanWorkflows(): Promise<void> {
     await this.watcher.scanExisting();
   }
 
-  /**
-   * Returns the trigger override this service currently applies for a
-   * workflow name, or undefined when it holds none.
-   */
   getTriggerOverride(workflowName: string): TriggerOverride | undefined {
     return this.triggerOverrides.get(workflowName);
   }
 
-  /** Returns every trigger override this service currently applies. */
   getTriggerOverrides(): ReadonlyMap<string, TriggerOverride> {
     return this.triggerOverrides;
   }
 
-  /**
-   * Returns all registered schedules and their next fire times.
-   */
   listSchedules(): Array<ScheduleEntry & { workflowName: string }> {
     return this.scheduler.listSchedules().map((entry) => ({
       ...entry,
@@ -464,17 +390,10 @@ export class ScheduledExecutionService {
     }));
   }
 
-  /**
-   * Returns whether a workflow is currently running from a scheduled trigger.
-   */
   isRunning(workflowId: WorkflowId): boolean {
     return this.running.has(workflowId);
   }
 
-  /**
-   * Returns a scheduled workflow's queue state: its fires waiting to start,
-   * the oldest one's fire time, and the last run's fire-to-start delay.
-   */
   queueStatus(workflowId: WorkflowId): ScheduleQueueStatus {
     const name = this.workflowNames.get(workflowId) ?? workflowId;
     const waiting = this.runQueue.filter((entry) =>
@@ -493,9 +412,6 @@ export class ScheduledExecutionService {
     };
   }
 
-  /**
-   * Cancels a scheduled run by workflow ID. Returns true if found and aborted.
-   */
   cancelRun(workflowId: string): boolean {
     const id = workflowId as WorkflowId;
     const entry = this.running.get(id);
@@ -507,12 +423,6 @@ export class ScheduledExecutionService {
     return true;
   }
 
-  /**
-   * Cancels a scheduled run by run ID (reverse lookup). Used by the REST
-   * cancel endpoint which receives a run ID, not a workflow ID.
-   * Returns true if found and aborted. `reason` becomes the run's
-   * `cancel_reason`.
-   */
   cancelByRunId(runId: string, reason = "cancelled by user"): boolean {
     for (const [workflowId, entry] of this.running) {
       if (entry.runId === runId) {
@@ -525,9 +435,6 @@ export class ScheduledExecutionService {
     return false;
   }
 
-  /**
-   * Cancels all scheduled runs. Returns the number of runs cancelled.
-   */
   cancelAllRuns(reason = "cancelled by user"): number {
     let count = 0;
     for (const [workflowId, entry] of this.running) {
@@ -640,7 +547,6 @@ export class ScheduledExecutionService {
     this.triggerOverrides = newOverrides;
     let changed = 0;
 
-    // Removed overrides: fall back to built-in schedule
     for (const [workflowName] of oldOverrides) {
       if (newOverrides.has(workflowName)) continue;
 
@@ -656,7 +562,6 @@ export class ScheduledExecutionService {
       }
     }
 
-    // Added or changed overrides
     for (const [workflowName, newOverride] of newOverrides) {
       const oldOverride = oldOverrides.get(workflowName);
 
@@ -748,8 +653,6 @@ export class ScheduledExecutionService {
     // await, which can span the start of a drain.
     if (this.draining) return;
 
-    // Cross-instance dedup — race to claim this fire slot via the
-    // control-plane store. If another instance won, skip silently.
     if (this.deps.cronFireDedup) {
       try {
         const claimed = await this.deps.cronFireDedup(workflowId, fireTime);
@@ -899,10 +802,9 @@ export class ScheduledExecutionService {
   }
 
   /**
-   * Starts queued entries while fewer than maxConcurrentRuns are in flight:
-   * each time, the first entry whose workflow is not already in flight. With
-   * one slot nothing is in flight when it picks, so entries start in queue
-   * order. Each settled entry frees its slot and starts the next.
+   * while fewer than maxConcurrentRuns are in flight, starts the first queued
+   * entry whose workflow is not already in flight; with one slot entries start
+   * in queue order
    */
   private processQueue(): void {
     while (this.inFlight.size < this.maxConcurrentRuns) {
@@ -971,9 +873,9 @@ export class ScheduledExecutionService {
           return;
         }
       }
-      // Each entry starts outside any vault scope: the run enters its own
+      // each entry starts outside any vault scope: the run enters its own
       // principal's scope, and the queue's inherited context never carries
-      // another entry's (swamp-club#2676).
+      // another entry's
       await withoutVaultAccess(() => this.executeWorkflow(entry));
     } catch (error) {
       logger.error(
@@ -1196,11 +1098,8 @@ export class ScheduledExecutionService {
 }
 
 /**
- * Normalizes a fire time to a deterministic key component shared
- * across all instances. Truncates to the second and formats as
- * ISO 8601 UTC without milliseconds, with colons replaced by
- * hyphens for Windows filesystem compatibility
- * (e.g. "2026-08-01T00-00-00Z").
+ * a deterministic key component shared across instances: second precision, ISO
+ * UTC without milliseconds, colons replaced by hyphens for Windows filenames
  */
 export function normalizeFireTime(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z").replaceAll(":", "-");

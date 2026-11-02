@@ -36,7 +36,6 @@ Deno.test("resolveTrustedCollectives returns explicit collectives from marker", 
 });
 
 Deno.test("resolveTrustedCollectives does NOT trust membership collectives by default", () => {
-  // No trustMemberCollectives opt-in → auth collectives are ignored.
   const result = resolveTrustedCollectives(null, ["myorg", "other"]);
   assertEquals(result, ["swamp"]);
 });

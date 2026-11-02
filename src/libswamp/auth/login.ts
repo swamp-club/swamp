@@ -48,7 +48,6 @@ const NO_TERMINAL_GUIDANCE =
   "password with --username: " +
   "printf 'mypassword\\n' | swamp auth login --username alice --no-browser";
 
-/** Data returned on successful authentication. */
 export interface AuthLoginData {
   username: string;
   email?: string;
@@ -57,7 +56,6 @@ export interface AuthLoginData {
   apiKey: string;
 }
 
-/** Events emitted by the auth login generator. */
 export type AuthLoginEvent =
   | { kind: "opening_browser" }
   | { kind: "browser_open_failed"; message: string }
@@ -72,18 +70,15 @@ export type AuthLoginEvent =
   | { kind: "completed"; data: AuthLoginData }
   | { kind: "error"; error: SwampError };
 
-/** Input parameters for the auth login generator. */
 export interface AuthLoginInput {
   serverUrl: string;
   useBrowserFlow: boolean;
   username?: string;
   password?: string;
   minDeviceAuthExpiryMs?: number;
-  /** Whether stdin is a terminal the stdin flow can prompt on. Defaults to true. */
   stdinIsTerminal?: boolean;
 }
 
-/** Device authorization response from swamp-club. */
 export interface DeviceAuthResponse {
   readonly deviceCode: string;
   readonly userCode: string;
@@ -93,12 +88,10 @@ export interface DeviceAuthResponse {
   readonly interval: number;
 }
 
-/** Token response from a device code poll. */
 export interface DeviceTokenResponse {
   readonly accessToken: string;
 }
 
-/** Error thrown when the device token poll receives a pending response. */
 export class DeviceAuthPendingError extends Error {
   readonly slowDown: boolean;
   constructor(slowDown = false) {
@@ -108,41 +101,33 @@ export class DeviceAuthPendingError extends Error {
   }
 }
 
-/** Dependencies for the auth login operation, injected for testability. */
 export interface AuthLoginDeps {
-  /** Try to open a URL in the browser. Returns true on success, false on failure. */
   openBrowser: (url: string) => Promise<boolean>;
-  /** Start device authorization, returns device code and verification URI. */
   startDeviceAuth: (
     serverUrl: string,
     clientId: string,
     signal: AbortSignal,
   ) => Promise<DeviceAuthResponse>;
-  /** Poll for device token approval. Throws DeviceAuthPendingError while pending. */
   pollDeviceToken: (
     serverUrl: string,
     deviceCode: string,
     clientId: string,
     signal: AbortSignal,
   ) => Promise<DeviceTokenResponse>;
-  /** Sign in with username/password, returns session token and username. */
   signIn: (
     serverUrl: string,
     username: string,
     password: string,
   ) => Promise<{ token: string; username: string }>;
-  /** Read credentials from user (for interactive stdin flow). Skips prompts for prefilled fields. */
   readCredentials: (prefilled?: {
     username?: string;
     password?: string;
   }) => Promise<{ username: string; password: string }>;
-  /** Create API key for CLI use. */
   createApiKey: (
     serverUrl: string,
     sessionToken: string,
     keyName: string,
   ) => Promise<{ id: string; key: string }>;
-  /** Get user identity. */
   whoami: (
     serverUrl: string,
     apiKey: string,
@@ -152,7 +137,6 @@ export interface AuthLoginDeps {
     name?: string;
     collectives?: string[];
   }>;
-  /** Save credentials to persistent storage. */
   saveCredentials: (credentials: {
     serverUrl: string;
     apiKey: string;
@@ -160,11 +144,9 @@ export interface AuthLoginDeps {
     username: string;
     collectives?: string[];
   }) => Promise<void>;
-  /** Get hostname for API key naming. */
   getHostname: () => string;
 }
 
-/** Read a line from stdin. */
 async function readLine(prompt: string): Promise<string> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -179,7 +161,6 @@ async function readLine(prompt: string): Promise<string> {
   return decoder.decode(buf.subarray(0, n)).trim();
 }
 
-/** Read a password from stdin without echoing. Falls back to readLine for piped stdin. */
 async function readPassword(prompt: string): Promise<string> {
   if (!Deno.stdin.isTerminal()) {
     return await readLine(prompt);
@@ -194,11 +175,6 @@ async function readPassword(prompt: string): Promise<string> {
   }
 }
 
-/**
- * POSTs JSON to a device-flow endpoint and reads the response body. Network
- * failures and timeouts, while connecting or while reading the body, become
- * UserErrors worded like SwampClubClient's.
- */
 async function deviceRequest(
   serverUrl: string,
   endpoint: string,
@@ -231,7 +207,6 @@ async function deviceRequest(
   }
 }
 
-/** Delay helper that respects AbortSignal. */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -251,12 +226,9 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Wires real infrastructure into AuthLoginDeps.
- *
- * Identity is optional and bearerToken will normally be undefined here —
- * the login flow runs *before* the user has a personal API key.
- * distinctId is the per-device UUID and should be passed when available
- * so the login handshake's HTTP traffic still attributes to a device.
+ * identity is optional and bearerToken is normally undefined, since login runs
+ * before the user has a personal API key; distinctId lets the handshake traffic
+ * attribute to a device
  */
 export function createAuthLoginDeps(
   identity?: ClientIdentity,
@@ -403,7 +375,6 @@ export function createAuthLoginDeps(
   };
 }
 
-/** Authenticates with a swamp-club server via device flow or stdin flow. */
 export async function* authLogin(
   ctx: LibSwampContext,
   deps: AuthLoginDeps,
@@ -466,7 +437,6 @@ export async function* authLogin(
             token = result.accessToken;
             break;
           } catch (err) {
-            // The device code expired while a poll request was in flight.
             if (signal.aborted) {
               break;
             }
@@ -507,7 +477,6 @@ export async function* authLogin(
 
         sessionToken = token;
       } else {
-        // Stdin flow
         let username = input.username;
         let password = input.password;
         if (!username && input.stdinIsTerminal === false) {

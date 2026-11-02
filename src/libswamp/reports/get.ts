@@ -26,9 +26,6 @@ import { behaviorNotFound, notFound, validationFailed } from "../errors.ts";
 import type { ReportGetEvent, StoredReportDetail } from "./report_views.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Input for the report get operation.
- */
 export interface ReportGetInput {
   reportName: string;
   model?: string;
@@ -46,11 +43,7 @@ export interface ReportGetInput {
   ) => Promise<boolean>;
 }
 
-/**
- * Dependencies for the report get operation.
- */
 export interface ReportGetDeps {
-  /** Every stored report, or one owner's; see {@link FindStoredReports}. */
   findReportData: FindStoredReports;
   findDataByVersion: (
     type: ModelType,
@@ -79,18 +72,12 @@ export interface ReportGetDeps {
   ) => Promise<{ id: string; name: string } | null>;
 }
 
-/**
- * Checks whether a Data artifact is a markdown report with matching name.
- */
 function isMatchingReport(data: Data, reportName: string): boolean {
   return data.tags.type === "report" &&
     data.contentType === "text/markdown" &&
     data.tags.reportName === reportName;
 }
 
-/**
- * Fetches a specific stored report's content.
- */
 export async function* reportGet(
   _ctx: LibSwampContext,
   deps: ReportGetDeps,
@@ -102,7 +89,6 @@ export async function* reportGet(
     (async function* () {
       yield { kind: "resolving" };
 
-      // --- Find matching report data entries ---
       let matches: Array<{
         data: Data;
         modelType: ModelType;
@@ -140,7 +126,6 @@ export async function* reportGet(
           isMatchingReport(c.data, input.reportName)
         );
       } else {
-        // Global search
         const all = await deps.findReportData();
         matches = all.filter((c) => isMatchingReport(c.data, input.reportName));
       }
@@ -159,7 +144,6 @@ export async function* reportGet(
         matches = accepted;
       }
 
-      // Filter by variant when specified
       if (input.variant) {
         matches = matches.filter(
           (m) => m.data.tags.varySuffix === input.variant,
@@ -174,7 +158,6 @@ export async function* reportGet(
         return;
       }
 
-      // Ambiguity check: multiple models/workflows have this report
       if (matches.length > 1 && !input.model && !input.workflow) {
         const locations = new Set<string>();
         for (const m of matches) {
@@ -198,7 +181,6 @@ export async function* reportGet(
         }
       }
 
-      // Ambiguity check: multiple variants on the same model
       if (matches.length > 1 && !input.variant) {
         const variants = new Set(
           matches.map((m) => m.data.tags.varySuffix).filter(Boolean),
@@ -244,7 +226,6 @@ export async function* reportGet(
       const { data, modelType, modelId } = match;
       const reportScope = data.tags.reportScope ?? "unknown";
 
-      // Resolve model name
       let modelName = modelId;
       if (modelType.normalized === "workflow") {
         const wf = await deps.findWorkflowById(modelId);
@@ -254,14 +235,12 @@ export async function* reportGet(
         if (def) modelName = def.name;
       }
 
-      // Resolve workflow name
       let workflowName: string | undefined;
       if (modelType.normalized === "workflow") {
         const wf = await deps.findWorkflowById(modelId);
         if (wf) workflowName = wf.name;
       }
 
-      // Fetch markdown content
       const rawMd = await deps.getContent(
         modelType,
         modelId,
@@ -270,7 +249,6 @@ export async function* reportGet(
       );
       const markdown = rawMd ? new TextDecoder().decode(rawMd) : "";
 
-      // Fetch paired JSON content
       const jsonDataName = `${data.name}-json`;
       const rawJson = await deps.getContent(
         modelType,

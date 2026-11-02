@@ -146,8 +146,8 @@ Deno.test("dataSearch: rejects an unknown lifecycle (swamp-club#3706)", async ()
 
 Deno.test("dataSearch: filters by since duration", async () => {
   const now = new Date();
-  const recent = new Date(now.getTime() - 1 * 60 * 60 * 1000); // 1 hour ago
-  const old = new Date(now.getTime() - 48 * 60 * 60 * 1000); // 48 hours ago
+  const recent = new Date(now.getTime() - 1 * 60 * 60 * 1000);
+  const old = new Date(now.getTime() - 48 * 60 * 60 * 1000);
   const items = [
     makeSearchItem({ id: "d1", createdAt: recent.toISOString() }),
     makeSearchItem({ id: "d2", createdAt: old.toISOString() }),

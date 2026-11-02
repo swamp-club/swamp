@@ -24,14 +24,10 @@ import { notFound } from "../errors.ts";
 import type { ReportDescribeEvent } from "./report_views.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Dependencies for the report describe operation.
- */
 export interface ReportDescribeDeps {
   getReport: (name: string) => Promise<ReportDefinition | undefined>;
 }
 
-/** Wires real infrastructure into ReportDescribeDeps. */
 export async function createReportDescribeDeps(): Promise<ReportDescribeDeps> {
   await reportRegistry.ensureLoaded();
   return {
@@ -42,9 +38,6 @@ export async function createReportDescribeDeps(): Promise<ReportDescribeDeps> {
   };
 }
 
-/**
- * Looks up a report definition from the registry and yields its metadata.
- */
 export async function* reportDescribe(
   _ctx: LibSwampContext,
   deps: ReportDescribeDeps,

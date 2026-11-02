@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fixtures for retention tests (swamp-club#3473): runs, snapshots, outputs,
- * data versions and audit days written through the real repositories, then
- * aged on disk (record timestamps and file mtimes) so a retention pass run
- * at the real clock sees them as old.
+ * fixtures are written through the real repositories, then aged on disk (record
+ * timestamps and file mtimes) so a retention pass at the real clock sees them
+ * as old
  */
 
 import { ensureDir } from "@std/fs";
@@ -84,11 +83,6 @@ export interface AgedRun {
   snapshotPath?: string;
 }
 
-/**
- * Saves a run with `status` that started (and, when finished, completed)
- * `ageMs` ago, with a run log next to its record. With `snapshotAgeMs`, an
- * evaluated snapshot is saved for it and aged that much.
- */
 export async function saveAgedRun(
   runRepo: YamlWorkflowRunRepository,
   workflow: Workflow,
@@ -134,10 +128,6 @@ export interface AgedOutput {
   logPath: string;
 }
 
-/**
- * Saves a method output of `type`'s `run` method that started `ageMs` ago,
- * with its run log; `succeeded` unless `running` is set.
- */
 export async function saveAgedOutput(
   outputRepo: YamlOutputRepository,
   type: ModelType,
@@ -174,11 +164,9 @@ export async function saveAgedOutput(
 }
 
 /**
- * Saves one version of `name` per entry of `agesMs` (oldest first, so the
- * latest version is the last entry), then rewrites each version's recorded
- * creation time to its age. The catalog rows the saves wrote still carry
- * the save time: remove the catalog (`removeCatalogDb`) before a pass so it
- * is rebuilt from the rewritten metadata.
+ * the catalog rows the saves wrote still carry the save time: remove the
+ * catalog (removeCatalogDb) before a pass so it is rebuilt from the rewritten
+ * metadata
  */
 export async function saveAgedDataVersions(
   dataRepo: FileSystemUnifiedDataRepository,
@@ -220,7 +208,6 @@ export async function saveAgedDataVersions(
   return versions;
 }
 
-/** Writes the agent command log file of the UTC day `ageDays` ago. */
 export async function writeAuditDay(
   auditDir: string,
   ageDays: number,

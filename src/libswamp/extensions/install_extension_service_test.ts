@@ -42,8 +42,7 @@ import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
 import { probeModule } from "../../infrastructure/runtime/bundle_probe.ts";
 
-// Required so the model loader's test bootstrap finds command/shell
-// (preserved from the loader test files' pattern).
+// the model loader's test bootstrap needs command/shell registered
 import "../../domain/models/models.ts";
 
 const testDenoRuntime: DenoRuntime = {
@@ -51,11 +50,6 @@ const testDenoRuntime: DenoRuntime = {
   getDenoEnv: () => Deno.env.toObject(),
 };
 
-/**
- * Helpers for building a self-contained on-disk fixture that the
- * service can walk in phase 8. Avoids needing a real tarball / network
- * round-trip.
- */
 async function withFixtureRepo(
   fn: (args: {
     repoDir: string;
@@ -96,7 +90,6 @@ async function withFixtureRepo(
   }
 }
 
-/** Stages a model file at .swamp/pulled-extensions/<name>/models/<file> */
 async function stageModel(
   repoDir: string,
   extName: string,
@@ -114,7 +107,6 @@ async function stageModel(
   return path;
 }
 
-/** Builds an InstallResult that points at staged on-disk files. */
 function makeStubInstallResult(
   extName: string,
   version: string,
@@ -202,7 +194,6 @@ Deno.test(
           MINIMAL_MODEL_CODE(typeId),
         );
 
-        // Pre-condition: catalog empty, no Extension known.
         assertEquals(catalog.findAll().length, 0);
         assertEquals(repository.loadByName(extName).length, 0);
 
@@ -224,13 +215,9 @@ Deno.test(
           ctx,
         );
 
-        // Returned result is the InstallResult unchanged (FS+lockfile
-        // already done by the stubbed installExtension).
         assertEquals(result?.name, extName);
         assertEquals(result?.version, "1.0.0");
 
-        // Phase 8 wrote a row for the model: catalog non-empty, the
-        // Extension aggregate loads, and its Source has the type populated.
         const extensions = repository.loadByName(extName);
         assertEquals(extensions.length, 1);
         const ext = extensions[0];
@@ -252,22 +239,9 @@ Deno.test(
   },
 );
 
-// =============================================================
-// Catalog source_path absolute-form regression
-// =============================================================
-//
-// Phase 8 must write the catalog's `source_path` column as the absolute
-// canonical path so that the legacy `populateCatalogFromDir` bootstrap
-// (in `user_*_loader.ts`) — which uses absolute paths from a filesystem
-// walk — UPSERTs onto the same row instead of inserting a duplicate
-// empty-identity row at the absolute form.
-//
-// Pre-fix symptom: a brand-new repo + `extension pull` + any subsequent
-// model command produced two rows per source file (one relative,
-// identity-populated; one absolute, identity-empty). The empty-
-// identity rows triggered cosmetic "Dropping orphan row" warnings on
-// the next `loadByName` because the lockfile-fallback couldn't match
-// them when the user passed `repoDir` as a relative path.
+// phase 8 must write the catalog source_path as the absolute canonical path, so
+// the legacy populateCatalogFromDir upsert hits the same row instead of
+// inserting a duplicate empty-identity row
 Deno.test(
   "InstallExtensionService.execute: catalog source_path is absolute (legacy populateCatalogFromDir compat)",
   async () => {
@@ -303,10 +277,6 @@ Deno.test(
           makeInstallContext(repoDir, lockfileRepository),
         );
 
-        // The row's source_path must be absolute (start with `/` on
-        // POSIX, or contain a drive letter on Windows). Relative paths
-        // would leave the legacy loader's UPSERT key-mismatched and
-        // create duplicate empty-identity rows.
         const rows = catalog.findAll().filter((r) =>
           r.extension_name === extName
         );
@@ -335,7 +305,6 @@ Deno.test(
         const extA = `@test/collide-a-${ts}`;
         const extB = `@test/collide-b-${ts}`;
 
-        // Stage and install A first via service.
         await stageModel(repoDir, extA, "model.ts", MINIMAL_MODEL_CODE(typeId));
         await lockfileRepository.writeEntry(extA, "1.0.0", [
           `.swamp/pulled-extensions/${extA}/models/model.ts`,
@@ -357,8 +326,6 @@ Deno.test(
         );
         assertEquals(repository.loadByName(extA).length, 1);
 
-        // Stage B which claims the SAME type. Phase 8 must detect the
-        // collision via I-Repo-1 and roll back.
         await stageModel(repoDir, extB, "model.ts", MINIMAL_MODEL_CODE(typeId));
         const bExtractedFiles = [
           `.swamp/pulled-extensions/${extB}/models/model.ts`,
@@ -393,22 +360,15 @@ Deno.test(
         );
         assertStringIncludes(thrown.message, "swamp extension rm");
 
-        // Phase 8 rolled the install back and did not commit it. What a
-        // rollback does on disk is tested against the real install in
-        // install_rollback_test.ts.
         assertEquals(calls, { commit: 0, rollback: 1 });
         assertEquals(thrown.rolledBack, true);
 
-        // Lockfile rollback: B's entry was never persisted (or was
-        // rolled back). A's entry remains.
         const fresh = await LockfileRepository.create(
           lockfileRepository.lockfilePath,
         );
         assertEquals(fresh.getEntry(extB), null);
         assertEquals(fresh.getEntry(extA)?.version, "1.0.0");
 
-        // Catalog rollback (via SQLite ROLLBACK inside saveAll): A's row
-        // is preserved, B's never landed.
         assertEquals(repository.loadByName(extA).length, 1);
         assertEquals(repository.loadByName(extB).length, 0);
       },
@@ -426,7 +386,6 @@ Deno.test(
         const extA = `@test/ghost-a-${ts}`;
         const extB = `@test/ghost-b-${ts}`;
 
-        // Install A so its type claims a catalog slot.
         const aModelPath = await stageModel(
           repoDir,
           extA,
@@ -453,12 +412,8 @@ Deno.test(
         );
         assertEquals(repository.loadByName(extA).length, 1);
 
-        // Delete A's source file — simulating "rm -rf" outside swamp.
         await Deno.remove(aModelPath);
 
-        // Install B claiming the SAME type. A's row is now a ghost: its
-        // source is gone, so saveAll prunes it before I-Repo-1 runs and
-        // B installs cleanly.
         await stageModel(
           repoDir,
           extB,
@@ -489,7 +444,6 @@ Deno.test(
   },
 );
 
-/** Stages one model file for `extName` and installs it through phase 8. */
 async function installStagedModel(args: {
   repoDir: string;
   repository: ExtensionRepository;
@@ -618,19 +572,9 @@ Deno.test(
   },
 );
 
-// =============================================================
-// Crash-state recovery (W2 plan v4 step 10)
-// =============================================================
-//
-// Generic non-`DuplicateTypeError` failures inside `repository.saveAll`
-// (process kill, SQLite I/O error, OOM, etc.) must leave the catalog
-// in its pre-save state so a retry succeeds. This pins the SQLite
-// transaction-rollback contract that the lifecycle service depends on.
-// The install commits for generic errors, so FS + lockfile hold the new
-// version — a known and intentional behavior (only DuplicateTypeError
-// rolls the install back, because the user is provably going to want
-// the prior state restored). The retry resolves the FS+lockfile-vs-
-// catalog drift via the diff-save in saveAll.
+// only DuplicateTypeError rolls the install back; other saveAll failures commit
+// it, leaving the catalog in its pre-save state and the retry reconciles
+// through the diff-save
 
 Deno.test(
   "InstallExtensionService.execute: catalog saveAll fault leaves catalog clean and retry succeeds",
@@ -672,10 +616,6 @@ Deno.test(
           }, { calls }),
         });
 
-        // First attempt: faults inside saveAll. The lifecycle service
-        // wraps the underlying error in a UserError with the pinned
-        // half-state recovery message so log-mode shows clean guidance
-        // and `--json` consumers see the recovery hint in `error`.
         const thrown = await assertRejects(
           () =>
             service.execute(
@@ -685,7 +625,6 @@ Deno.test(
           UserError,
           "Install partially applied",
         );
-        // The pinned message names the extension and the recovery action.
         if (!(thrown.message.includes(extName))) {
           throw new Error(
             `expected message to name extension ${extName}, got: ${thrown.message}`,
@@ -696,28 +635,20 @@ Deno.test(
             `expected message to mention \`swamp doctor extensions\`, got: ${thrown.message}`,
           );
         }
-        // The underlying fault message is preserved for diagnostics.
         if (!(thrown.message.includes("simulated SQLite I/O fault"))) {
           throw new Error(
             `expected message to include underlying fault, got: ${thrown.message}`,
           );
         }
 
-        // The install was committed, not rolled back.
         assertEquals(calls, { commit: 1, rollback: 0 });
-        // Catalog state: SQLite txn rolled back, no rows survive.
         assertEquals(faultingRepo.loadByName(extName).length, 0);
         assertEquals(catalog.findAll().length, 0);
-        // Lockfile + FS state: the install service does NOT roll these
-        // back for generic errors. Both still hold the partial install.
         assertEquals(
           lockfileRepository.getEntry(extName)?.version,
           "1.0.0",
         );
 
-        // Second attempt: no fault scheduled. The diff-save in saveAll
-        // reconciles the catalog against the (still-on-disk) FS+lockfile
-        // state, so the retry succeeds and the catalog now matches.
         const retry = await service.execute(
           { name: extName, version: "1.0.0" } as ExtensionRef,
           makeInstallContext(repoDir, lockfileRepository),
@@ -737,8 +668,6 @@ Deno.test(
         const ts = Date.now();
         const extName = `@test/import-fail-${ts}`;
 
-        // Stage a model file that will throw at import time
-        // (references a non-existent module to force an import error)
         await stageModel(
           repoDir,
           extName,
@@ -770,16 +699,11 @@ Deno.test(
           "bundling/importing",
           "error must identify the failure phase as bundling/importing",
         );
-        // A source that fails to bundle does not roll the install back.
         assertEquals(calls, { commit: 1, rollback: 0 });
       },
     );
   },
 );
-
-// =============================================================
-// Probed indexing (swamp-club#3374)
-// =============================================================
 
 Deno.test(
   "InstallExtensionService.execute: an extension and its dependency share one prober, released once after both are indexed",
@@ -805,10 +729,9 @@ Deno.test(
         const [root, dep] = results;
         root.dependencyResults = [dep];
 
-        // The root and its dependency are indexed concurrently. A release
-        // while either still has probes to run would fail them. Probes run
-        // in this isolate, as these bundles are well behaved; the probe
-        // host's own cases live in integration/process_bundle_prober_test.
+        // probes run in this isolate, as these bundles are well behaved; a
+        // release while either extension still has probes to run would fail
+        // them
         let probes = 0;
         const probesAtRelease: number[] = [];
         const prober: BundleProber = {
@@ -846,13 +769,6 @@ Deno.test(
   },
 );
 
-// ===== Rebuilt bundle safety (swamp-club#3383) =====
-
-/**
- * Stages a model that imports `helperPath` (relative to the extension root)
- * holding eval, which pull's source scan does not cover. The helper marks
- * a global when imported, so a test sees whether the bundle ever ran.
- */
 async function stageModelWithUnscannedHelper(
   repoDir: string,
   extName: string,
@@ -939,7 +855,6 @@ for (
             "the refused bundle must never be imported",
           );
           assertEquals(repository.loadByName(extName).length, 0);
-          // The refused bundle was deleted, not left for a later load.
           const bundles: string[] = [];
           for await (
             const entry of walkFiles(swampPath(repoDir, "bundles"))
@@ -998,7 +913,6 @@ Deno.test(
   },
 );
 
-/** Every file under `dir`, recursively; nothing for a missing dir. */
 async function* walkFiles(dir: string): AsyncGenerator<string> {
   let entries: Deno.DirEntry[];
   try {
@@ -1021,8 +935,8 @@ Deno.test(
       async ({ repoDir, repository, lockfileRepository }) => {
         const id = crypto.randomUUID().slice(0, 8);
         const extName = `@test/bundle-after-fail-${id}`;
-        // Sorted ahead of model.ts: a.ts fails to bundle (its import does
-        // not exist) and has no bundle on disk to fall back to.
+        // sorted ahead of model.ts: a.ts fails to bundle and has no bundle on
+        // disk to fall back to
         await stageModel(
           repoDir,
           extName,
@@ -1120,10 +1034,6 @@ Deno.test(
   },
 );
 
-/**
- * Stages the bundle the archive shipped for `<extName>/models/model.ts`
- * where pull's applyInstall puts it, and returns its path.
- */
 async function stageArchiveBundle(
   repoDir: string,
   extName: string,
@@ -1272,7 +1182,6 @@ Deno.test(
         const id = crypto.randomUUID().slice(0, 8);
         const extName = `@test/bundle-format-${id}`;
         const typeId = `@test/bundle-format-${id}`;
-        // Source that cannot be bundled.
         await stageModel(
           repoDir,
           extName,

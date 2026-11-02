@@ -161,15 +161,8 @@ export const model = {
 };
 `;
 
-// =============================================================
-// Atomic upgrade contract — saveAll([tombstoneAll(v1), v2]) in one txn
-// =============================================================
-//
-// Without the tombstone of v1 in the same saveAll, I-Repo-1 fires
-// `DuplicateTypeError` on every upgrade because v1 still claims the
-// type when v2's save attempts to add a row for the same type. This
-// test pins the atomic contract: after upgrade, ONLY v2's rows are in
-// the catalog; v1's are gone.
+// v1 must be tombstoned in the same saveAll as v2, or I-Repo-1 raises
+// DuplicateTypeError because v1 still claims the type
 
 Deno.test(
   "UpgradeExtensionService.execute: v1 → v2 upgrade tombstones v1's catalog rows in one transaction",
@@ -183,7 +176,6 @@ Deno.test(
         const v1Cal = "2026.05.05.1";
         const v2Cal = "2026.05.05.2";
 
-        // Install v1 first via InstallExtensionService.
         await stageModel(
           repoDir,
           extName,
@@ -214,8 +206,6 @@ Deno.test(
         assertEquals(v1Extensions.length, 1);
         assertEquals(v1Extensions[0].version, v1Cal);
 
-        // Upgrade to v2 — overwrite the source file with v2 content
-        // (mirrors what install does on disk).
         await stageModel(
           repoDir,
           extName,
@@ -244,10 +234,6 @@ Deno.test(
           makeInstallContext(repoDir, lockfileRepository),
         );
 
-        // Atomic upgrade contract: only v2's aggregate is present;
-        // v1's rows tombstoned and DELETEd by the diff-save. No
-        // DuplicateTypeError fired (the tombstone in the same saveAll
-        // means I-Repo-1 evaluates only v2 in the post-save state).
         const afterUpgrade = repository.loadByName(extName);
         assertEquals(afterUpgrade.length, 1);
         assertEquals(afterUpgrade[0].version, v2Cal);
@@ -259,16 +245,6 @@ Deno.test(
     );
   },
 );
-
-// =============================================================
-// Force-pull regression — re-pulling an already-installed extension
-// must not fail with DuplicateTypeError.
-// =============================================================
-//
-// Pre-this-fix: `swamp extension pull foo --force` against an already-
-// installed foo would fail because phase 8 saved v2's aggregate while
-// v1's rows still claimed the type → I-Repo-1 fired. Now the atomic
-// tombstone-of-prior-version pattern handles this transparently.
 
 Deno.test(
   "InstallExtensionService.execute: force-reinstall of already-installed extension does not fail with DuplicateTypeError",
@@ -282,7 +258,6 @@ Deno.test(
         const v1Cal = "2026.05.05.1";
         const v2Cal = "2026.05.05.2";
 
-        // Install v1.
         await stageModel(
           repoDir,
           extName,
@@ -310,8 +285,6 @@ Deno.test(
           makeInstallContext(repoDir, lockfileRepository),
         );
 
-        // Force-pull v2 (same name, different version) via the SAME
-        // service. The atomic-tombstone pattern handles it.
         await stageModel(
           repoDir,
           extName,
@@ -334,7 +307,6 @@ Deno.test(
             );
           }),
         });
-        // Should not throw.
         await svc2.execute(
           { name: extName, version: v2Cal },
           makeInstallContext(repoDir, lockfileRepository),

@@ -37,9 +37,6 @@ import type { SwampError } from "../errors.ts";
 import { join } from "@std/path";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/**
- * Data structure for the datastore sync output.
- */
 export interface DatastoreSyncData {
   mode: "push" | "pull" | "sync";
   filesPushed?: number;
@@ -47,7 +44,6 @@ export interface DatastoreSyncData {
   errors?: string[];
 }
 
-/** Preview data shown when `sync --push` runs without `--confirm`. */
 export interface DatastoreSyncPreviewData {
   mode: "push";
   summary: PushPreviewSummary;
@@ -64,7 +60,6 @@ export interface DatastoreSyncInput {
   confirm?: boolean;
 }
 
-/** Dependencies for the datastore sync operation. */
 export interface DatastoreSyncDeps {
   validateSyncSupport: () => Promise<{
     supported: boolean;
@@ -86,18 +81,14 @@ export interface DatastoreSyncDeps {
   }>;
 }
 
-/** Options for wiring real infrastructure into DatastoreSyncDeps. */
 export interface CreateDatastoreSyncDepsOptions {
   /**
-   * Per-invocation override for the sync timeout, in milliseconds. Wins
-   * over `CustomDatastoreConfig.syncTimeoutMs`, the env var, and the
-   * default — the CLI `--timeout` flag on `swamp datastore sync` threads
-   * its value through here. Validated at the CLI boundary; must be `> 0`.
+   * wins over CustomDatastoreConfig.syncTimeoutMs, the env var and the default;
+   * validated at the CLI boundary, must be > 0
    */
   readonly syncTimeoutMsOverride?: number;
 }
 
-/** Wires real infrastructure into DatastoreSyncDeps. */
 export async function createDatastoreSyncDeps(
   repoDir: string,
   datastoreResolver: DatastorePathResolver,
@@ -106,8 +97,8 @@ export async function createDatastoreSyncDeps(
   await datastoreTypeRegistry.ensureLoaded();
   const config = datastoreResolver.config();
 
-  // A v3 datastore on a bucket replicates as it commits: nothing to sync
-  // (swamp-club#3534). A filesystem v3 datastore keeps its own refusal below.
+  // a v3 datastore on a bucket replicates as it commits, so there is nothing to
+  // sync; a filesystem v3 datastore keeps its own refusal below
   if (
     isCustomDatastoreConfig(config) &&
     resolverEngine(datastoreResolver) === "v3"
@@ -180,11 +171,9 @@ export async function createDatastoreSyncDeps(
               ...(ns ? { namespace: ns } : {}),
             }),
         );
-        // A full push publishes the lockfile too, so a failed publish whose
-        // change was never recorded no longer needs retrying
-        // (swamp-club#2752). A recorded change is kept for the next
-        // extension write to replay onto a fresh fetch (swamp-club#2838).
-        // Best effort: the push succeeded.
+        // A full push publishes the lockfile too, so a failed publish never
+        // recorded needs no retry; a recorded change is kept for the next write
+        // to replay.
         await clearUnrecordedLockfilePublishPending(repoDir).catch(() => {});
         return { filesPushed: typeof count === "number" ? count : 0 };
       },
@@ -283,7 +272,6 @@ function makeUnsupportedDeps(
   };
 }
 
-/** Syncs data between local cache and remote datastore. */
 export async function* datastoreSync(
   ctx: LibSwampContext,
   deps: DatastoreSyncDeps,

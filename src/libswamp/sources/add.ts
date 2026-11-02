@@ -42,30 +42,22 @@ import {
   resolveSourceSkills,
 } from "./source_skills.ts";
 
-/** Dependencies for the source add operation. */
 export interface SourceAddDeps {
   readSources: () => Promise<SwampSourcesConfig | null>;
   writeSources: (config: SwampSourcesConfig) => Promise<void>;
-  /** Returns the kinds a given source contributes. Injected so tests can
-   * fake the resolver without touching the real filesystem. */
   resolveKinds: (source: SwampSource) => Promise<ExtensionKind[]>;
-  /** Expands globs to concrete paths. Injected alongside resolveKinds so
-   * the glob-vs-concrete validation split is fully testable. */
   expandSource: (source: SwampSource) => Promise<SwampSource[]>;
-  /** Resolves skill directories from a source extension's manifest. */
   resolveSkills: (sourcePath: string) => Promise<ResolvedSkill[]>;
-  /** Copies resolved skills to the repo's skill directory. */
   copySkills: (skills: ResolvedSkill[]) => Promise<string[]>;
-  /** Removes named skill directories (used for cleanup on partial failure). */
   cleanupSkills: (skillNames: string[]) => Promise<void>;
-  /** Paths of directories already scanned by default (e.g.
-   * `extensions/models`). Source paths that resolve to one of these are
-   * rejected — adding them would cause every file to be processed twice,
-   * producing nondeterministic BundleBuildFailed errors (swamp-club#1419). */
+  /**
+   * directories already scanned by default; a source resolving to one is
+   * rejected, as every file would be processed twice, producing
+   * nondeterministic BundleBuildFailed errors
+   */
   defaultKindDirs: readonly string[];
 }
 
-/** Wires real infrastructure into SourceAddDeps. */
 export async function createSourceAddDeps(
   repoDir: string,
   tools?: string[],
@@ -74,8 +66,8 @@ export async function createSourceAddDeps(
 ): Promise<SourceAddDeps> {
   const resolvedTools = tools?.length ? tools : ["claude"];
   const dirs = skillsDirs?.length ? skillsDirs : [];
-  // New entries resolve from the repository only, never the git-root
-  // fallback, so the legacy form is not recorded again (swamp-club#4027).
+  // new entries resolve from the repository only, never the git-root fallback,
+  // so the legacy form is not recorded again
   const { baseDir: sourceBaseDir } = await resolveSourceBaseDirs(repoDir);
   return {
     readSources: () => readSwampSources(repoDir),
@@ -103,7 +95,6 @@ export async function createSourceAddDeps(
   };
 }
 
-/** Adds a source path to `.swamp-sources.yaml`. */
 export async function* sourceAdd(
   _ctx: LibSwampContext,
   deps: SourceAddDeps,
@@ -123,7 +114,6 @@ export async function* sourceAdd(
   const existing = await deps.readSources();
   const sources = existing?.sources ?? [];
 
-  // Check for duplicate path
   if (sources.some((s) => s.path === path)) {
     yield {
       kind: "error",
@@ -163,7 +153,6 @@ export async function* sourceAdd(
     if (isGlob) {
       cachedExpansions = await deps.expandSource(tentative);
       if (cachedExpansions.length > 0) {
-        // Glob expanded to concrete dirs but none contributed kinds.
         yield {
           kind: "error",
           error: validationFailed(
@@ -177,7 +166,6 @@ export async function* sourceAdd(
         };
         return;
       }
-      // Unexpanded glob → allow (pre-population workflow).
     } else {
       const probed = only ?? EXTENSION_KINDS;
       yield {
@@ -196,8 +184,6 @@ export async function* sourceAdd(
 
   const newEntry: SwampSource = only ? { path, only } : { path };
 
-  // Resolve and copy skills from the source's manifest.
-  // For glob sources, reuse the cached expansion from validation.
   const sourcesToProbe = isGlob
     ? (cachedExpansions ?? await deps.expandSource(newEntry))
     : [newEntry];

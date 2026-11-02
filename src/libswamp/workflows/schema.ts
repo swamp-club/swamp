@@ -33,7 +33,6 @@ import type { SwampError } from "../errors.ts";
 import { zodToJsonSchema } from "../types/schema_helpers.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Schema data for all workflow-related Zod schemas. */
 export interface WorkflowSchemaData {
   workflow: object;
   job: object;
@@ -57,7 +56,6 @@ function isTaskVariant(node: unknown, tag: string): boolean {
     (type as { const?: unknown }).const === tag;
 }
 
-/** The behavior step-task variant as a JSON Schema node. */
 function behaviorTaskVariant(): Record<string, unknown> {
   const { $schema: _ignored, ...variant } = zodToJsonSchema(
     BehaviorTaskDocSchema,
@@ -66,10 +64,9 @@ function behaviorTaskVariant(): Record<string, unknown> {
 }
 
 /**
- * A copy of `node` with the behavior step-task variant placed after every
- * `model_method` variant of a `oneOf`/`anyOf` list. JSON Schema generation
- * drops the task schema's preprocess, which is what accepts the behavior
- * spelling (swamp-club#3334), so the variant is added here.
+ * places the behavior step-task variant after every model_method variant of a
+ * oneOf/anyOf list; JSON Schema generation drops the task schema's preprocess,
+ * which is what accepts the behavior spelling
  */
 function withBehaviorTaskVariant(
   node: unknown,
@@ -94,7 +91,6 @@ function withBehaviorTaskVariant(
   return out;
 }
 
-/** The JSON Schema of a workflow schema that holds step tasks. */
 function taskHoldingSchema(
   schema: Parameters<typeof zodToJsonSchema>[0],
   variant: Record<string, unknown>,
@@ -102,7 +98,6 @@ function taskHoldingSchema(
   return withBehaviorTaskVariant(zodToJsonSchema(schema), variant) as object;
 }
 
-/** Yields the JSON Schema representation of all workflow schemas. */
 export async function* workflowSchema(
   _ctx: LibSwampContext,
 ): AsyncIterable<WorkflowSchemaEvent> {

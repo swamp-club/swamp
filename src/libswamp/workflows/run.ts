@@ -88,13 +88,6 @@ import {
   nestedCascadeFields,
 } from "./nested_cascade.ts";
 
-/**
- * Events emitted by the libswamp workflow run generator.
- */
-/**
- * Lightweight job metadata included in the `started` event so renderers
- * can display the full tree skeleton before any jobs begin executing.
- */
 export interface WorkflowRunJobInfo {
   id: string;
   stepCount: number;
@@ -106,12 +99,9 @@ export type WorkflowRunEvent =
   | {
     kind: "superseded_runs";
     cancelledRunIds: string[];
-    /** Nested runs the superseded runs had waited on, left unfinished. */
     detachedNestedRuns?: DetachedNestedRunData[];
-    /** Nested runs cancelled with them, and running ones asked to stop. */
     cancelledNestedRuns?: CascadedNestedRunData[];
     stopRequestedNestedRuns?: CascadedNestedRunData[];
-    /** Matching suspended runs left alone because they wait for a signal. */
     skippedRuns?: SkippedSupersedeData[];
   }
   | { kind: "evaluating_workflow" }
@@ -141,7 +131,6 @@ export type WorkflowRunEvent =
     kind: "step_completed";
     jobId: string;
     stepId: string;
-    /** "loopback" or the worker name that executed the step's method. */
     executor?: string;
     forEachTemplate?: string;
     forEachIndex?: number;
@@ -159,7 +148,6 @@ export type WorkflowRunEvent =
   | {
     kind: "approval_requested";
     runId: string;
-    /** The workflow the gate belongs to, which differs for a nested run. */
     workflowName?: string;
     jobId: string;
     stepId: string;
@@ -169,15 +157,11 @@ export type WorkflowRunEvent =
   | {
     kind: "signal_wait_requested";
     runId: string;
-    /** The workflow the wait belongs to, which differs for a nested run. */
     workflowName?: string;
     jobId: string;
     stepId: string;
-    /** The id `workflow signal` names to settle this wait. */
     waitId: string;
-    /** When the wait stops accepting a signal, as an ISO timestamp. */
     deadline: string;
-    /** The key the step declared, if any (swamp-club#3214). */
     key?: string;
   }
   | {
@@ -187,18 +171,12 @@ export type WorkflowRunEvent =
     error: string;
     errorCode?: string;
     allowedFailure?: boolean;
-    /** The nested workflow a nested workflow step's error names. */
     nestedRun?: { workflowId: string; workflowName: string };
-    /**
-     * Populated only when the failing step is a model-method task. The
-     * telemetry bridge uses these to synthesize a child entry for
-     * failures that occurred before `method_executing` was yielded.
-     */
     modelName?: string;
     methodName?: string;
     /**
-     * On a `wait_key_held` failure: the open wait that holds the key, as its
-     * own registration names it (swamp-club#3214). The error stays bare.
+     * on a wait_key_held failure: the open wait that holds the key, as its own
+     * registration names it; the error stays bare
      */
     waitKeyHolder?: WaitKeyHolder;
     forEachTemplate?: string;
@@ -301,47 +279,35 @@ export type WorkflowRunEvent =
     prompt: string;
     timeout?: number;
     /**
-     * Set when the run suspended on a nested workflow step waiting on a
-     * suspended child run, rather than on a gate of its own
-     * (swamp-club#2736). `jobId` and `stepId` are then the nested step.
+     * set when the run suspended on a nested workflow step waiting on a
+     * suspended child run; jobId and stepId are then the nested step
      */
     nested?: { workflowName: string; runId: string };
     /**
-     * Set when the run suspended on a step waiting for a signal: the wait
-     * `workflow signal` names. `jobId` and `stepId` are then that step.
-     * `key` is the key the step declared, if any (swamp-club#3214).
+     * set when the run suspended on a step waiting for a signal; jobId and
+     * stepId are then that step
      */
     wait?: { id: string; deadline: string; key?: string };
     /**
-     * The open waits for a signal that nested runs of this run hold, each at
-     * the innermost run that has to act (swamp-club#3110). A run on a server
-     * learns of a nested run's wait only here: `signal_wait_requested` is
-     * not sent to a client.
+     * open signal waits held by nested runs, each at the innermost run that has
+     * to act; a run on a server learns of them only here, as
+     * signal_wait_requested is not sent to a client
      */
     nestedSignalWaits?: NestedSignalWaitData[];
   }
   | { kind: "error"; error: SwampError };
 
-/** An open wait for a signal held by a nested run. */
 export interface NestedSignalWaitData {
-  /** The workflow the wait belongs to, which is the nested run's. */
   workflowId: string;
   workflowName: string;
   runId: string;
   jobId: string;
   stepId: string;
-  /** The id `workflow signal` names to settle the wait. */
   waitId: string;
-  /** When the wait stops accepting a signal, as an ISO timestamp. */
   deadline: string;
-  /** The key the wait's step declared, if any (swamp-club#3214). */
   key?: string;
 }
 
-/**
- * The open wait that holds a key a step was refused with `wait_key_held`
- * (swamp-club#3214).
- */
 export interface WaitKeyHolder {
   workflowId: string;
   workflowName: string;
@@ -352,13 +318,8 @@ export interface WaitKeyHolder {
 }
 
 /**
- * Narrow callback shape for emitting per-method-invocation telemetry from
- * inside a workflow run. The CLI binds this to TelemetryService's
- * recordChildInvocation; non-CLI consumers (UI, tests, scripts) pass
- * `undefined` for `telemetrySink` to no-op.
- *
- * Lives in libswamp (not domain.telemetry) so libswamp can stay free of
- * direct domain.telemetry imports beyond plain DTO shapes.
+ * lives in libswamp so it stays free of domain.telemetry imports beyond DTO
+ * shapes; non-CLI consumers pass undefined to no-op
  */
 export interface WorkflowTelemetrySink {
   recordChildInvocation(
@@ -371,17 +332,9 @@ export interface WorkflowTelemetrySink {
     workflowContext:
       import("../../domain/telemetry/workflow_context.ts").WorkflowContextData,
   ): Promise<void>;
-  /**
-   * Pre-allocated id of the parent CLI invocation. Children reference
-   * this id via `parentInvocationId` so analytics can join children to
-   * the parent without timestamp guessing.
-   */
   readonly parentInvocationId: string;
 }
 
-/**
- * Dependencies injected into the workflow run generator.
- */
 export interface WorkflowRunDeps {
   workflowRepo: WorkflowRepository;
   runRepo: WorkflowRunRepository;
@@ -403,18 +356,13 @@ export interface WorkflowRunDeps {
   definitionRepo?: DefinitionRepository;
   telemetrySink?: WorkflowTelemetrySink;
   /**
-   * Supersedes matching-input suspended runs when set, and loads the
-   * evaluated cache a `--last-evaluated` run replays (swamp-club#3583).
-   * Without it nothing is superseded and the execution service loads the
-   * cache itself, which is safe only because nothing was superseded on
-   * another copy.
+   * supersedes matching-input suspended runs and loads the evaluated cache a
+   * --last-evaluated run replays; without it nothing is superseded and the
+   * execution service loads the cache itself
    */
   supersede?: SupersedeDeps;
 }
 
-/**
- * Input for the workflow run generator.
- */
 export interface WorkflowRunInput {
   workflowIdOrName: string;
   /**
@@ -447,35 +395,21 @@ export interface WorkflowRunInput {
   skipCheckNames?: string[];
   skipCheckLabels?: string[];
   skipAllChecks?: boolean;
-  /** W3C traceparent header for per-invocation trace context. */
   traceparent?: string;
-  /** W3C tracestate header for per-invocation trace context. */
   tracestate?: string;
-  /** Minimum assert severity that fails the run. */
   assertFailOnSeverity?: AssertSeverity;
-  /** Identity of the user who initiated this run (e.g. "user:paul"). */
   initiatedBy?: string;
-  /** Serve instance identity for cross-machine run reconciliation. */
   instanceId?: string;
-  /** How this run was triggered (schedule, webhook, api). */
   triggerSource?: string;
-  /** Skip superseding matching-input suspended runs. */
   noSupersede?: boolean;
 }
 
-/**
- * A step or job status as shown: a wait for a signal is `waiting` however
- * its record spells it.
- */
 function viewStatus(
   status: WorkflowRun["jobs"][number]["status"],
 ): StepRunView["status"] {
   return status === "waiting_signal" ? "waiting" : status;
 }
 
-/**
- * Extracts artifact data from a step's output for verbose mode.
- */
 export function extractStepArtifacts(
   step: StepRun,
   resolved?: ResolvedStepOutputs,
@@ -486,7 +420,6 @@ export function extractStepArtifacts(
 
   const output = step.output as Record<string, unknown>;
 
-  // Shell command output: { stdout, exitCode }
   if (
     typeof output.stdout === "string" || typeof output.exitCode === "number"
   ) {
@@ -532,17 +465,11 @@ function mapApprovalDecision(
   };
 }
 
-/** Resolved step outputs for one run, keyed by job name, then step name. */
 export type RunStepOutputs = Record<
   string,
   Record<string, ResolvedStepOutputs>
 >;
 
-/**
- * Resolves the outputs of every step in a run. The run record keeps no
- * attribute values, so each step's outputs are read back through the
- * resolver.
- */
 export async function resolveRunStepOutputs(
   run: WorkflowRun,
   resolver: StepOutputResolver,
@@ -558,11 +485,6 @@ export async function resolveRunStepOutputs(
   return resolved;
 }
 
-/**
- * Converts a WorkflowRun to WorkflowRunData for presentation. Step outputs
- * and data attributes appear only when `stepOutputs` is given, because the
- * run record does not carry them.
- */
 export function toRunData(
   run: WorkflowRun,
   path?: string,
@@ -572,8 +494,8 @@ export function toRunData(
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
-  // Value fields are shown through the run's one display view: recorded
-  // values masked and, in a typed run, its sentinels (typed-secrets 4.4).
+  // value fields are shown through the run's one display view: recorded values
+  // masked and, in a typed run, its sentinels
   const inputs = run.inputs && Object.keys(run.inputs).length > 0
     ? run.mask(run.inputs)
     : undefined;
@@ -667,8 +589,8 @@ export function toRunData(
               ...(step.signalWait.key !== undefined
                 ? { key: step.signalWait.key }
                 : {}),
-              // As stored, heldAsPending included: the run view is the one
-              // place that shows it (swamp-club#3214).
+              // as stored, heldAsPending included: the run view is the one
+              // place that shows it
               ...(step.signalWait.receipt
                 ? { receipt: { ...step.signalWait.receipt } }
                 : {}),
@@ -722,12 +644,8 @@ export function toRunData(
 }
 
 /**
- * Maps a domain WorkflowExecutionEvent to a libswamp WorkflowRunEvent.
- *
- * Shared by the `run` and `resume` paths so both emit the identical
- * `WorkflowRunView` envelope — in particular, the canonical un-prefixed
- * `status`/`startedAt`/`jobs` keys rather than the `WorkflowRun` class's
- * private `_status` fields leaking through `JSON.stringify`.
+ * shared by run and resume so both emit the same WorkflowRunView envelope, not
+ * the WorkflowRun class's private _status fields
  */
 export function mapWorkflowExecutionEvent(
   event: WorkflowExecutionEvent,
@@ -788,10 +706,8 @@ export function mapWorkflowExecutionEvent(
       };
     }
     case "step_failed": {
-      // dataHandles is domain-internal: it feeds the workflow summary. Keep
-      // it off the published event so serve and JSON consumers see the same
-      // step_failed shape as before. errorPaths feeds only the telemetry
-      // bridge. runId is domain-internal too; see below.
+      // dataHandles and runId are domain-internal and errorPaths feeds only the
+      // telemetry bridge; keep them off the published event
       const {
         dataHandles: _dataHandles,
         errorPaths: _errorPaths,
@@ -833,9 +749,6 @@ export function mapWorkflowExecutionEvent(
   }
 }
 
-/**
- * Executes a workflow, yielding progress events as a libswamp stream.
- */
 export async function* workflowRun(
   ctx: LibSwampContext,
   deps: WorkflowRunDeps,
@@ -853,7 +766,6 @@ export async function* workflowRun(
 
           yield { kind: "validating_inputs" };
 
-          // Look up workflow
           const workflow = input.byId
             ? await findWorkflowById(
               deps.workflowRepo,
@@ -887,8 +799,8 @@ export async function* workflowRun(
               };
               return;
             }
-            // A file declaring it under a name the loader skips explains
-            // the miss (swamp-club#3839).
+            // a file declaring it under a name the loader skips explains the
+            // miss
             const misnamed = await findMisnamedWorkflow(
               workflowsDir,
               input.workflowIdOrName,
@@ -902,7 +814,6 @@ export async function* workflowRun(
             return;
           }
 
-          // Coerce and validate inputs
           if (workflow.inputs && !input.lastEvaluated) {
             const coercedInputs = coerceInputTypes(
               input.inputs ?? {},
@@ -926,17 +837,15 @@ export async function* workflowRun(
             }
             resolvedInput = { ...input, inputs: inputsWithDefaults };
           } else if (workflow.inputs) {
-            // lastEvaluated: still coerce types but skip validation
             resolvedInput = {
               ...input,
               inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
             };
           }
 
-          // One copy of the evaluated cache for the whole start: superseding
-          // matches on it and the execution service replays it
-          // (swamp-club#3583). A cache that cannot be read is reported like
-          // any other failure to start, not thrown out of the stream.
+          // one copy of the evaluated cache for the whole start, shared by
+          // superseding and the execution service; an unreadable cache is
+          // reported like any failure to start, not thrown out of the stream
           let evaluatedCache: EvaluatedWorkflowCache | null | undefined;
           if (resolvedInput.lastEvaluated && deps.supersede) {
             try {
@@ -957,9 +866,8 @@ export async function* workflowRun(
             )
             : undefined;
           if (supersedeInputs && deps.supersede) {
-            // A run cancelled while its suspended runs are read supersedes
-            // none of them, and is recorded as cancelled by the run below
-            // (swamp-club#4088).
+            // a run cancelled while its suspended runs are read supersedes none
+            // of them, and is recorded as cancelled by the run below
             const { cancelledRunIds, skippedRuns, ...nested } =
               await supersedeSuspendedRuns(
                 workflow,
@@ -980,10 +888,9 @@ export async function* workflowRun(
 
           yield { kind: "evaluating_workflow" };
 
-          // Created here — after the input-validation early returns above — so the
-          // scratch store is only allocated once the run will actually execute,
-          // and those early-return paths never leak it. Disposed in the finally
-          // below on every exit, including early consumer abandonment.
+          // created after the input-validation early returns so the scratch
+          // store is allocated only for a run that executes; disposed in the
+          // finally below on every exit
           const ephemeral = createEphemeralStore(deps.dataRepo?.namespace);
           const service = deps.createExecutionService(
             deps.workflowRepo,
@@ -994,24 +901,20 @@ export async function* workflowRun(
             ephemeral.catalog,
           );
 
-          // Gate service intentionally not wired here — approving/rejecting
-          // workflow gates from model code bypasses authorization. Use the
-          // CLI (swamp workflow approve/reject) or WebSocket API instead.
+          // gate service intentionally not wired: approving or rejecting
+          // workflow gates from model code bypasses authorization
 
-          // Per-method-invocation telemetry bridge. Constructed once per
-          // stream consumption and finalized in the outer try/finally so
-          // any in-flight invocations on cancellation / throw are still
-          // recorded as error child entries.
+          // constructed once per stream consumption and finalized in the outer
+          // finally, so in-flight invocations on cancellation or throw are
+          // recorded as error child entries
           const telemetryBridge = deps.telemetrySink
             ? new WorkflowTelemetryBridge(deps.telemetrySink)
             : undefined;
 
           try {
-            // Aggregate report results from both method-scope (yielded during
-            // step execution) and workflow-scope (yielded by the execution
-            // service after run.complete()). All report_completed and
-            // report_failed events arrive before the completed event, so the
-            // accumulated list is attached to the run view at that point.
+            // all report_completed and report_failed events, method- and
+            // workflow-scope, arrive before the completed event, so the
+            // accumulated list is attached there
             const reportResults: ReportResultView[] = [];
 
             for await (
@@ -1063,10 +966,8 @@ export async function* workflowRun(
                 resolvedInput.verbose,
               );
 
-              // Per-method telemetry observer — runs alongside existing
-              // event handling. Skipped when telemetry is disabled. It takes
-              // the domain event: pairing a step's events needs the owning
-              // run's id, which the mapped event deliberately omits.
+              // takes the domain event: pairing a step's events needs the
+              // owning run's id, which the mapped event omits
               if (telemetryBridge) {
                 await telemetryBridge.observe(event);
               }
@@ -1096,11 +997,8 @@ export async function* workflowRun(
               error: workflowExecutionFailed(error),
             };
           } finally {
-            // Drain any in-flight method invocations as error entries. Runs
-            // on every stream termination — normal completion, thrown
-            // errors, and AbortSignal cancellation — so methods that
-            // started but never received a terminal event don't disappear
-            // from telemetry.
+            // runs on every stream termination so methods that started but
+            // never got a terminal event still reach telemetry
             if (telemetryBridge) {
               await telemetryBridge.finalize();
             }
@@ -1111,9 +1009,6 @@ export async function* workflowRun(
     ));
 }
 
-/**
- * Creates a SwampError for a missing workflow.
- */
 export function workflowNotFound(idOrName: string): SwampError {
   return {
     code: "workflow_not_found",
@@ -1123,10 +1018,6 @@ export function workflowNotFound(idOrName: string): SwampError {
   };
 }
 
-/**
- * Creates a SwampError for a missing workflow that a file the loader skips
- * for its name declares (swamp-club#3839).
- */
 export function workflowNotLoaded(
   idOrName: string,
   misnamed: Pick<MisnamedWorkflow, "message">,
@@ -1137,10 +1028,6 @@ export function workflowNotLoaded(
   };
 }
 
-/**
- * Creates a SwampError for a workflow whose file exists but fails schema
- * parsing (e.g. an unknown key, swamp-club#1240).
- */
 export function workflowLoadFailed(
   idOrName: string,
   broken: { file: string; error: string },
@@ -1150,14 +1037,11 @@ export function workflowLoadFailed(
   return {
     code: "workflow_load_failed",
     message,
-    // Marks the file so telemetry removes it exactly (swamp-club#2830).
+    // marks the file so telemetry removes it exactly
     cause: markErrorPaths(new Error(message), [broken.file]),
   };
 }
 
-/**
- * Creates a SwampError for input validation failure.
- */
 export function inputValidationFailed(
   errors: InputValidationError[],
 ): SwampError {
@@ -1169,9 +1053,6 @@ export function inputValidationFailed(
   };
 }
 
-/**
- * Creates a SwampError for a workflow execution failure.
- */
 export function workflowExecutionFailed(cause: unknown): SwampError {
   const message = cause instanceof Error ? cause.message : String(cause);
   return {

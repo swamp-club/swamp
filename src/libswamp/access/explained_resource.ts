@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The resource an access check explains. This is a resolution helper used
- * inside commands, not a user-facing operation, so it returns a value rather
- * than an event stream (swamp-club#3224).
- */
-
 import {
   type AccessResource,
   kindResource,
@@ -43,7 +37,6 @@ import {
   type VaultEditLookupDeps,
 } from "../vaults/edit.ts";
 
-/** The repositories an access check resolves a named resource through. */
 export interface ExplainedResourceDeps {
   readonly definitionRepo: DefinitionRepository;
   readonly workflowRepo: Pick<WorkflowRepository, "findByName" | "findById">;
@@ -51,22 +44,9 @@ export interface ExplainedResourceDeps {
 }
 
 /**
- * The resource an access check explains, judged as a request would judge it
- * (swamp-club#2675). A concrete model, data or workflow name is resolved to
- * the resource it names, with all of its fields, so a grant on its type or a
- * condition on its tags decides as it would for a request; a name that
- * matches nothing is a resource with no tags. A pattern with a wildcard, or
- * an access resource, names no single resource and is explained as a check
- * on the kind. A vault is explained by the name it resolves to.
- *
- * `extraFields` are merged over the resolved fields, a map one level deep,
- * so a simulated `tags.env` replaces that one tag and keeps the others.
- * `onLookupError` hears a lookup that failed; the resource is then explained
- * by its name alone, so conditions on anything else fail closed.
- *
- * Serve's access check and the local `swamp access check` both explain
- * through here, so they give the same answer for the same repo
- * (swamp-club#3224).
+ * explains a named resource as a request would judge it; a name matching
+ * nothing has no tags, and a wildcard or access resource is explained as a
+ * check on the kind
  */
 export async function explainedAccessResource(
   deps: ExplainedResourceDeps,

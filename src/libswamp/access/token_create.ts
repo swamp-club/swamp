@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Mint a server token for user authentication on `swamp serve`.
- *
- * Runs the `mint` method on the built-in `swamp/server-token` model via
- * direct type execution — auto-creating the model instance named after the
- * token. Use `swamp access token reveal` to retrieve the credential.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import { type SwampError, validationFailed } from "../errors.ts";

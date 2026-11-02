@@ -31,12 +31,10 @@ import {
   parseWorkspaceNameWithCode,
 } from "./workspace_store.ts";
 
-/** A workspace taken off the registry. Its folder is left as it is. */
 export interface WorkspaceRemoveData {
   readonly name: string;
   /** The folder, which is kept: importing it brings the workspace back. */
   readonly path: string;
-  /** True when a `swamp start` still had the workspace open. */
   readonly openInStart: boolean;
 }
 
@@ -44,10 +42,6 @@ export type WorkspaceRemoveEvent =
   | { kind: "completed"; data: WorkspaceRemoveData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Removes a workspace from the registry, and with it the trust confirmed
- * for its folder. Never touches the folder.
- */
 export async function* workspaceRemove(
   ctx: LibSwampContext,
   deps: WorkspaceDeps,

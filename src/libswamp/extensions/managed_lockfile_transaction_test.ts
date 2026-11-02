@@ -42,8 +42,8 @@ import {
 const PULLED_AT = "2026-09-30T00:00:00.000Z";
 
 /**
- * Runs the transaction with no root unit of work: these tests drive a fake
- * sync port, which publishes without one.
+ * runs the transaction with no root unit of work, as the fake sync port
+ * publishes without one
  */
 const noRoot = <T>(fn: () => Promise<T>): Promise<T> => fn();
 const entry = (version: string) => ({ version, pulledAt: PULLED_AT });
@@ -54,7 +54,6 @@ interface Harness {
   remote: { entries: UpstreamExtensionsMap };
   pending: { value: PendingLockfilePublish };
   failPublish: { value: boolean };
-  /** The push "succeeds" but sends nothing, as the real adapter sees it. */
   pushSendsNothing: { value: boolean };
   mustUpload: boolean[];
   earlierChangeOnly: boolean[];
@@ -150,7 +149,6 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
 Deno.test("ManagedLockfileTransaction.run: fetches under the lock, keeps a peer's entry and publishes the change", async () => {
   await withHarness(async (h) => {
     h.remote.entries = { "@peer/p": entry("1") };
-    // The local cache is stale: it has never seen the peer's entry.
     await new LockfileRepository(h.lockfilePath).replaceAll({});
 
     await h.transaction().run(async () => {
@@ -225,7 +223,6 @@ Deno.test("ManagedLockfileTransaction.run: a failed publish is recorded and repl
     assertEquals(h.pending.value.kind, "delta");
     assertEquals(h.events.at(-1), "release");
 
-    // A peer publishes meanwhile; the next transaction must keep both.
     h.remote.entries = { "@peer/p": entry("1") };
     h.failPublish.value = false;
     await h.transaction().refresh();
@@ -283,8 +280,6 @@ Deno.test("ManagedLockfileTransaction.run: a change that throws after writing st
     );
     assertEquals(Object.keys(h.remote.entries), ["@me/x"]);
 
-    // With the publish failing too, the change's error is still the one
-    // reported, and the change is left pending.
     h.failPublish.value = true;
     await assertRejects(
       () =>
@@ -406,7 +401,6 @@ Deno.test("ManagedLockfileTransaction.run: a pending change is published even wh
           release: () => Promise.resolve(),
         },
         sync: {
-          // A fetch with nothing to download leaves the local file alone.
           hydrate: async () => {
             if (remote.entries) {
               await new LockfileRepository(h.lockfilePath).replaceAll(
@@ -502,7 +496,6 @@ Deno.test("ManagedLockfileTransaction.run: a second failed publish keeps the fir
 
     await assertRejects(() => install("@me/x"), Error, "unreachable");
     await assertRejects(() => install("@me/y"), Error, "unreachable");
-    // A peer creates the datastore's first lockfile meanwhile.
     remote = { "@peer/z": entry("1") };
     failPublish = false;
     await transaction().refresh();
@@ -536,14 +529,12 @@ Deno.test("ManagedLockfileTransaction.run: a failed publish surfaces as ManagedL
 
 Deno.test("ManagedLockfileTransaction.run: a legacy record's local entries survive a fetch that overwrites the lockfile and then fails", async () => {
   await withHarness(async (h) => {
-    // An older swamp's record: the change is not described.
     await new LockfileRepository(h.lockfilePath).replaceAll({
       "@me/new": entry("1"),
     });
     h.pending.value = { kind: "unknown" };
     h.remote.entries = { "@peer/p": entry("1") };
 
-    // A fetch that downloads the lockfile, then fails on a later file.
     const failingFetch = new ManagedLockfileTransaction({
       lockfilePath: h.lockfilePath,
       inRoot: noRoot,
@@ -623,8 +614,6 @@ Deno.test("ManagedLockfileTransaction.run: a replayed change is kept pending whe
       ManagedLockfileUnpublishedError,
     );
 
-    // A peer publishes, and the sync service has lost track of the unpushed
-    // file: the retry's push reports success but sends nothing.
     h.remote.entries = { "@peer/p": entry("1") };
     h.failPublish.value = false;
     h.pushSendsNothing.value = true;
@@ -694,7 +683,6 @@ Deno.test("ManagedLockfileTransaction.run: a publish of only an earlier change s
         }),
       ManagedLockfileUnpublishedError,
     );
-    // A refresh (the rm preview, update targets) changes nothing itself.
     await assertRejects(
       () => h.transaction().refresh(),
       ManagedLockfileUnpublishedError,
@@ -703,16 +691,11 @@ Deno.test("ManagedLockfileTransaction.run: a publish of only an earlier change s
   });
 });
 
-// --- The publish as a root unit-of-work commit (swamp-club#3192) ---------
-
 interface RootHarness {
   lockfilePath: string;
-  /** acquire, pull, mark <path>, checkpoint, release, in order. */
   events: string[];
   pending: { value: PendingLockfilePublish };
-  /** How many roots the transaction opened. */
   roots: { value: number };
-  /** What each checkpoint's push reports; undefined reports nothing. */
   pushed: { value: number | undefined };
   signals: (AbortSignal | undefined)[];
   transaction: (
@@ -823,7 +806,6 @@ Deno.test("createRootLockfileSync: stages the lockfile, then pushes at the root'
     ]);
     assertEquals(h.roots.value, 1);
     assertEquals(h.pending.value.kind, "none");
-    // The push runs under runBoundedSync's bound, which aborts it on timeout.
     assertEquals(h.signals[0] instanceof AbortSignal, true);
   });
 });

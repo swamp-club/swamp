@@ -47,22 +47,16 @@ import {
 } from "../errors.ts";
 
 /**
- * What one collective entitles the operative to, as the server reported it.
- *
- * Carried alongside — never instead of — {@link WhoamiIdentity.collectives}.
- * That field is a slug list persisted to auth.json and read by three other
- * call sites; widening it would rewrite every existing user's credentials file
- * and turn a cache into a second, staler source of truth for a question the
- * server owns.
+ * carried alongside, never instead of, collectives: that slug list is persisted
+ * to auth.json and read elsewhere, and widening it would rewrite every
+ * credentials file and make a cache a staler second source of truth
  */
 export interface WhoamiCollectiveEntitlement {
   slug: string;
   plan?: string;
   planName?: string;
-  /** Owner/admin only — absent when the server withheld it. */
   subscriptionStatus?: string | null;
   trial?: WhoamiTrial | null;
-  /** The registry's verdict on private extensions, passed on as it came. */
   privateExtensions?: string;
 }
 
@@ -73,7 +67,6 @@ export interface WhoamiIdentity {
   email: string;
   name: string;
   collectives?: string[];
-  /** Strongest plan across the operative's collectives. Server-derived. */
   plan?: string;
   /**
    * Per-collective entitlement. Absent when the server sends none — an older
@@ -84,10 +77,6 @@ export interface WhoamiIdentity {
   collectiveToken?: boolean;
   collectiveSlug?: string;
   scopes?: string[];
-  /**
-   * {@link keyFingerprint} of the credential in use — the value swamp-club
-   * shows beside each key, so it names the row to revoke.
-   */
   fingerprint?: string;
 }
 
@@ -97,7 +86,6 @@ export type AuthWhoamiEvent =
   | { kind: "completed"; identity: WhoamiIdentity }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the whoami operation, injected for testability. */
 export interface AuthDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
   saveCredentials: (credentials: AuthCredentials) => Promise<void>;
@@ -109,19 +97,12 @@ export interface AuthDeps {
   serverUrlOverride?: string;
 }
 
-/**
- * Options for {@link createAuthDeps}. The `repo` field accepts the
- * same overrides as `AuthRepository` itself — used by tests to bypass
- * the shared `Deno.env` global, which races across files when
- * `deno test --parallel` runs multiple auth-touching test files at once.
- */
 export interface CreateAuthDepsOptions {
   serverUrlOverride?: string;
   repo?: AuthRepositoryOptions;
   identity?: ClientIdentity;
 }
 
-/** Wires real infrastructure into AuthDeps. */
 export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
   const repo = new AuthRepository(options.repo);
   const getApiKey = options.repo?.getApiKey ?? resolveApiKey;
@@ -148,17 +129,10 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
 }
 
 /**
- * Per-collective entitlement from a whoami response, or undefined when the
- * server sent none.
- *
- * Reads the dedicated `collectiveEntitlements` field, never `organizations` —
- * that array is membership, and extension push authorizes against it. Returns
- * undefined rather than an empty array so the renderers can tell "this server
- * does not report entitlement" apart from "entitlement says everything is
- * free", and fall back to the older output shape only in the first case.
- *
- * Shared with extension push, which reads entitlement from the same whoami
- * call it already makes for membership and keeps it in memory only.
+ * reads collectiveEntitlements, never organizations (membership, which
+ * extension push authorizes against). Returns undefined rather than an empty
+ * array so renderers can tell no reported entitlement from everything being
+ * free.
  */
 export function entitlementsOf(
   response: WhoamiResponse,
@@ -182,10 +156,6 @@ export function entitlementsOf(
   }));
 }
 
-/**
- * Display name for the top-level roll-up, borrowed from a matching collective.
- * None when the strongest plan is free, which is not a plan.
- */
 export function rollUpPlanName(identity: WhoamiIdentity): string | undefined {
   if (!identity.plan || identity.plan === "free") return undefined;
   const match = identity.collectiveEntitlements?.find(
@@ -195,13 +165,9 @@ export function rollUpPlanName(identity: WhoamiIdentity): string | undefined {
 }
 
 /**
- * One collective's source hosting from a whoami response, or undefined when
- * the server did not report it for that collective — an older server, a
- * failed lookup on its side, or a collective the caller is not in.
- *
- * Reads the dedicated `collectiveSourceHosting` field, never `organizations`.
- * An entry without boolean flags counts as unreported, so a malformed answer
- * falls back to the repository URL instead of guessing.
+ * reads collectiveSourceHosting, never organizations; an entry without boolean
+ * flags counts as unreported, so a malformed answer falls back to the
+ * repository URL
  */
 export function sourceHostingOf(
   response: WhoamiResponse,
@@ -226,7 +192,6 @@ export function sourceHostingOf(
   return undefined;
 }
 
-/** Verifies the current authenticated identity via the swamp-club API. */
 export async function* whoami(
   ctx: LibSwampContext,
   deps: AuthDeps,
@@ -278,10 +243,9 @@ export async function* whoami(
     const fingerprint = await keyFingerprint(credentials.apiKey);
 
     if (!response.collectiveToken) {
-      // Refresh cached username and collectives so they stay current; the
-      // username also repairs a login record an older version overwrote with
-      // an env key's identity. Collective tokens are env-var-based — nothing
-      // to cache.
+      // refresh cached username and collectives; the username also repairs a
+      // login record overwritten with an env key's identity. Collective tokens
+      // are env-var-based, so nothing is cached for them.
       await deps.saveCredentials({
         ...credentials,
         username: response.username ?? credentials.username,

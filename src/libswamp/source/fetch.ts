@@ -25,9 +25,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the source fetch output.
- */
 export type SourceFetchData = SourceFetchResult;
 
 export type SourceFetchEvent =
@@ -35,17 +32,14 @@ export type SourceFetchEvent =
   | { kind: "completed"; data: SourceFetchData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the source fetch operation. */
 export interface SourceFetchInput {
   version: string;
 }
 
-/** Dependencies for the source fetch operation. */
 export interface SourceFetchDeps {
   fetch: (version: string) => Promise<SourceFetchResult>;
 }
 
-/** Wires real infrastructure into SourceFetchDeps. */
 export function createSourceFetchDeps(): SourceFetchDeps {
   const downloader = new HttpSourceDownloader();
   const repository = new JsonSourceMetadataRepository();
@@ -55,7 +49,6 @@ export function createSourceFetchDeps(): SourceFetchDeps {
   };
 }
 
-/** Fetches swamp source code for the given version. */
 export async function* sourceFetch(
   ctx: LibSwampContext,
   deps: SourceFetchDeps,

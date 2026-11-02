@@ -91,7 +91,6 @@ Deno.test("workflowHistorySearch: returns all runs sorted by startedAt desc", as
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.query, "");
   assertEquals(completed.data.results.length, 2);
-  // Most recent first
   assertEquals(completed.data.results[0].runId, "run-1");
   assertEquals(completed.data.results[1].runId, "run-2");
 });
@@ -296,8 +295,6 @@ Deno.test("workflowHistorySearch: returns empty results when no runs exist", asy
   assertEquals(completed.data.query, "foo");
   assertEquals(completed.data.results.length, 0);
 });
-
-// --- CEL filter tests ---
 
 function makeDepsWithInputs(): WorkflowHistorySearchDeps {
   return {

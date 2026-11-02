@@ -25,21 +25,14 @@ import type { WorkspaceDeps } from "./deps.ts";
 
 export const ctx = createLibSwampContext();
 
-/** Fake workspace dependencies over a real temporary folder. */
 export interface WorkspaceFixture {
   readonly deps: WorkspaceDeps;
-  /** The temp dir; the data dir is `<dir>/data`. */
   readonly dir: string;
   readonly dataDir: string;
-  /** Tools per workspace path, as `.swamp.yaml` would hold them. */
   readonly tools: Map<string, string[]>;
-  /** Workspace paths a `swamp start` has open. */
   readonly open: Set<string>;
-  /** Names the create lock was taken for, in order. */
   readonly locks: string[];
-  /** Makes `path` a swamp repo (a folder with a `.swamp.yaml`). */
   makeRepo(path: string): Promise<void>;
-  /** Sets the folder `swamp config set workspaces.dir` names; undefined clears it. */
   configure(dir: string | undefined): void;
 }
 
@@ -107,7 +100,6 @@ export async function withWorkspaceFixture(
   }
 }
 
-/** The only event of a stream, which must be `completed`. */
 export async function completed<D>(
   events: AsyncIterable<
     { kind: "completed"; data: D } | {
@@ -125,7 +117,6 @@ export async function completed<D>(
   return event.data;
 }
 
-/** The only event of a stream, which must be an error; returns its code. */
 export async function errorCode(
   events: AsyncIterable<
     { kind: "completed"; data: unknown } | {
@@ -137,7 +128,6 @@ export async function errorCode(
   return (await errorOf(events)).code;
 }
 
-/** The only event of a stream, which must be an error; returns the error. */
 export async function errorOf(
   events: AsyncIterable<
     { kind: "completed"; data: unknown } | {

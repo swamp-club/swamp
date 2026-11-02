@@ -144,7 +144,6 @@ for (
     assertEquals(deleteCalled, false);
     assertEquals(error.code, "revoke_failed");
     assertStringIncludes(error.message, reason);
-    // the reason always ends a sentence before the kept-credentials note
     assertEquals(/[.!?…] Your credentials were kept/.test(error.message), true);
     assertStringIncludes(
       error.message,
@@ -293,10 +292,9 @@ Deno.test("authLogout: a cache that cannot be removed does not fail logout witho
 Deno.test("createAuthLogoutDeps: loads the stored login key even when SWAMP_API_KEY and SWAMP_CLUB_URL are set", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    // Inject overrides instead of mutating Deno.env — `deno test --parallel`
-    // runs logout_test and whoami_test in different files concurrently and
-    // both touch SWAMP_API_KEY / XDG_CONFIG_HOME. Going through the deps
-    // options keeps this test hermetic.
+    // inject overrides instead of mutating Deno.env: logout_test and
+    // whoami_test run concurrently and both touch SWAMP_API_KEY and
+    // XDG_CONFIG_HOME
     const configDir = join(tmpDir, "swamp");
     await new AuthRepository({ configDir, getApiKey: () => undefined }).save({
       serverUrl: "https://swamp-club.com",

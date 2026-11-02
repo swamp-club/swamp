@@ -47,46 +47,33 @@ import {
   type UpstreamExtensionsMap,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
 
-/**
- * Moves the shared extension lockfile between the datastore and the local
- * cache.
- */
 export interface ManagedLockfileSyncPort {
-  /** Fetches the datastore's lockfile into the local cache. */
   hydrate(): Promise<void>;
   /**
-   * Publishes the local cache's lockfile to the datastore. With
-   * `mustUpload`, the lockfile differs from the datastore's copy, so a push
-   * that reports sending nothing rejects: the change did not reach the
-   * datastore. With `earlierChangeOnly`, the current command did not change
-   * the lockfile, and the publish carries only a change an earlier
-   * transaction failed to publish.
+   * mustUpload: the lockfile differs from the datastore's, so a push sending
+   * nothing rejects; earlierChangeOnly: this command changed nothing, so the
+   * publish carries only an earlier unpublished change
    */
   publish(
     options: { mustUpload: boolean; earlierChangeOnly: boolean },
   ): Promise<void>;
 }
 
-/** The datastore global lock, held for a whole lockfile transaction. */
 export interface ManagedLockfileLock {
   acquire(): Promise<void>;
   release(): Promise<void>;
 }
 
-/** Where a lockfile change that failed to publish is recorded. */
 export interface PendingLockfileDeltaStore {
   read(): Promise<PendingLockfilePublish>;
-  /** Records the outstanding change, replacing any earlier record. */
   write(delta: LockfileEntryDelta): Promise<void>;
   clear(): Promise<void>;
 }
 
 /**
- * A lockfile change was made locally, and recorded, but did not reach the
- * datastore. The change itself succeeded: callers that report per-item
- * results count the item as done and raise this once they have reported,
- * so the command still fails and names the retry (swamp-club#2752). It
- * carries the publish error's message and code.
+ * the change itself succeeded: callers that report per-item results count the
+ * item as done and raise this after reporting, so the command still fails and
+ * names the retry
  */
 export class ManagedLockfileUnpublishedError extends UserError {
   constructor(cause: unknown) {
@@ -102,12 +89,9 @@ export class ManagedLockfileUnpublishedError extends UserError {
 }
 
 /**
- * A lockfile publish ran outside a root unit of work over its datastore
- * hook: a wiring mistake in the code that built the transaction, not a
- * datastore failure (swamp-club#3192). It is thrown as itself, never
- * wrapped as {@link ManagedLockfileUnpublishedError} or deferred to a
- * warning, so it cannot read as a datastore problem. The change stays
- * recorded as pending, as for any failed publish.
+ * a wiring mistake in the code that built the transaction, not a datastore
+ * failure: thrown as itself, never wrapped or deferred to a warning, so it
+ * cannot read as a datastore problem
  */
 export class LockfilePublishWiringError extends Error {
   constructor() {
@@ -119,18 +103,9 @@ export class LockfilePublishWiringError extends Error {
   }
 }
 
-/** Serializes a checkout's writes to one managed lockfile. */
 export interface LockfileTransaction {
   readonly lockfilePath: string;
-  /**
-   * Runs `fn`, which may write the lockfile, as one transaction against
-   * the datastore's copy. Nested calls join the outer transaction.
-   */
   run<T>(fn: () => Promise<T>): Promise<T>;
-  /**
-   * Brings the local lockfile up to date with the datastore's before a
-   * command reads it to decide what to change.
-   */
   refresh(): Promise<void>;
 }
 
@@ -140,46 +115,23 @@ export interface ManagedLockfileTransactionOptions {
   sync: ManagedLockfileSyncPort;
   pending: PendingLockfileDeltaStore;
   /**
-   * Runs the outermost `run` inside the root unit of work its publish
-   * stages into and pushes at the checkpoint of (swamp-club#3192), around
-   * the lock's acquire and release, so the checkpoint lands before the lock
-   * is released. A nested `run` joins the outer one, and its root.
+   * the checkpoint lands before the lock is released; a nested run joins the
+   * outer one and its root
    */
   inRoot: <T>(fn: () => Promise<T>) => Promise<T>;
   /**
-   * `throw` (the default) rethrows a failed publish once the change is
-   * recorded as pending. `defer` reports it to `onWarning` and completes
-   * normally; the next transaction publishes it. Serve defers: the change
-   * has applied on the instance, and failing the request would report it
-   * as not made.
+   * defer reports a failed publish to onWarning and completes; serve defers
+   * because the change has applied on the instance and failing the request
+   * would report it as not made
    */
   publishFailure?: "throw" | "defer";
   onWarning?: (message: string, error?: unknown) => void;
 }
 
 /**
- * Makes a checkout's changes to the shared extension lockfile safe against
- * other checkouts writing it too (swamp-club#2838).
- *
- * The datastore stores each file last-writer-wins, so a checkout that
- * publishes the lockfile from a stale cache erases entries other checkouts
- * added. A transaction therefore, under the datastore global lock:
- *
- * 1. fetches the datastore's lockfile into the cache,
- * 2. replays any change an earlier transaction failed to publish,
- * 3. runs the caller's change,
- * 4. records the whole outstanding change (any earlier record merged with
- *    what the change did), publishes, and clears the record.
- *
- * A process killed during step 3 records nothing: the next fetch replaces
- * the local lockfile, so an interrupted change must be run again.
- *
- * Step 4 also runs when the change throws, since an install can fail after
- * its lockfile entry landed; the original error is rethrown. Lock order:
- * this lock, then the pulled-extensions lock, then the lockfile's own
- * advisory lock. An install downloads before `run`, outside every lock;
- * its dependencies download inside it, because whether one needs
- * installing is only known from the lockfile read under the lock.
+ * last-writer-wins storage means a stale cache erases other checkouts' entries,
+ * so under the global lock: fetch, replay any unpublished change, run, record
+ * and publish, even if the change throws
  */
 export class ManagedLockfileTransaction implements LockfileTransaction {
   readonly lockfilePath: string;
@@ -272,21 +224,8 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
   }
 
   /**
-   * Records and publishes the outstanding change: the earlier record merged
-   * with what the change did, the diff between the lockfile it started from
-   * (`start`: fetched, with the earlier record replayed) and the lockfile
-   * now.
-   *
-   * With an earlier record the lockfile is published even when the change
-   * did nothing: a fetch that found nothing to download (no lockfile in the
-   * datastore yet, or a sync service that keeps a locally changed file)
-   * leaves the earlier change unpublished (swamp-club#2752).
-   *
-   * The record is cleared only once the change reached the datastore. When
-   * the lockfile differs from the one fetched (`fetched`), a push that
-   * sends nothing counts as a failed publish: a sync service that lost
-   * track of its unpushed files would otherwise report success and the
-   * change would be dropped.
+   * with an earlier record it publishes even when the change did nothing; the
+   * record is cleared only once the change reached the datastore
    */
   async #settle(
     fetched: UpstreamExtensionsMap,
@@ -342,12 +281,6 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
 
 const ambientTransaction = new AsyncLocalStorage<LockfileTransaction>();
 
-/**
- * Runs `fn` with `transaction` governing writes to its lockfile: installs
- * and removals inside `fn` that write that lockfile run through it. With no
- * transaction (repos without managedConfig, filesystem datastores), runs
- * `fn` as is.
- */
 export async function withManagedLockfileTransaction<T>(
   transaction: LockfileTransaction | undefined,
   fn: () => Promise<T>,
@@ -364,10 +297,6 @@ function transactionFor(lockfilePath: string): LockfileTransaction | undefined {
     : undefined;
 }
 
-/**
- * Runs `fn`, a write to the lockfile at `lockfilePath`, inside the
- * transaction the caller established for that lockfile, if any.
- */
 export async function inManagedLockfileTransaction<T>(
   lockfilePath: string,
   fn: () => Promise<T>,
@@ -376,11 +305,6 @@ export async function inManagedLockfileTransaction<T>(
   return transaction ? await transaction.run(fn) : await fn();
 }
 
-/**
- * Brings `repository`'s snapshot up to date with the datastore's lockfile,
- * when a transaction governs it. For reads that decide what a command will
- * change (the rm preview, update targets, install restore).
- */
 export async function refreshManagedLockfile(
   repository: LockfileRepository,
 ): Promise<void> {
@@ -391,21 +315,15 @@ export async function refreshManagedLockfile(
 }
 
 /**
- * A {@link ManagedLockfileSyncPort} whose publish is a unit-of-work commit
- * (swamp-club#3192). The fetch is a pull scoped to the `config` tier. The
- * publish stages one write of exactly the lockfile into the root unit of
- * work open over `markDirty` (the transaction's `inRoot` opens it) and
- * pushes at that root's checkpoint; it rejects a push that reports `0`
- * files sent when the lockfile had to be uploaded. Both are bounded by
- * `timeoutMs`. A publish with no such root throws
- * {@link LockfilePublishWiringError} rather than mark and push by hand.
+ * the publish stages one write of exactly the lockfile into the open root unit
+ * and pushes at its checkpoint, rejecting a push that reports 0 files sent when
+ * the lockfile had to be uploaded
  */
 export function createRootLockfileSync(options: {
   syncService: Pick<DatastoreSyncService, "pullChanged">;
   namespace: string | undefined;
   timeoutMs: number;
   lockfilePath: string;
-  /** The exact hook the root is opened over. */
   markDirty: MarkDirtyHook;
 }): ManagedLockfileSyncPort {
   const { syncService, namespace, timeoutMs, lockfilePath, markDirty } =
@@ -444,10 +362,7 @@ export function createRootLockfileSync(options: {
   };
 }
 
-/**
- * The pending-change record in the repo's own `.swamp/` directory, which is
- * never synced.
- */
+/** the repo's own .swamp/, which is never synced */
 export function createRepoPendingLockfileStore(
   repoDir: string,
 ): PendingLockfileDeltaStore {
@@ -458,11 +373,7 @@ export function createRepoPendingLockfileStore(
   };
 }
 
-/**
- * Whether a managed lockfile transaction governs the lockfile at
- * `lockfilePath` in the current call. Its entries may then have come from
- * another checkout through the fetch.
- */
+/** its entries may have come from another checkout through the fetch */
 export function isManagedLockfile(lockfilePath: string): boolean {
   return transactionFor(lockfilePath) !== undefined;
 }

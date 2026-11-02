@@ -20,15 +20,6 @@
 import type { ReportResultView } from "../models/model_method_run_view.ts";
 import type { AssertSeverity } from "../../domain/workflows/step_task.ts";
 
-/**
- * Read-model projections of workflow run domain aggregates.
- * These are presentation-oriented views with computed fields (duration, path, artifacts).
- * Named "View" to avoid collision with the domain persistence types in workflow_run.ts.
- */
-
-/**
- * Artifact data included when --verbose is set.
- */
 export interface StepArtifactsData {
   stdout?: string;
   stderr?: string;
@@ -36,9 +27,6 @@ export interface StepArtifactsData {
   dataAttributes?: Record<string, unknown>;
 }
 
-/**
- * Reference to a Data artifact produced by a step.
- */
 export interface DataArtifactRefData {
   dataId: string;
   name: string;
@@ -67,11 +55,8 @@ export interface ApprovalView {
 }
 
 /**
- * Why a step did not run, as the read model exposes it.
- *
- * Mirrors the domain's `StepSkipReasonData`. Present only on steps whose
- * `status` is `skipped`, and absent on runs persisted before skip reasons
- * were recorded.
+ * mirrors the domain's StepSkipReasonData; present only on skipped steps, and
+ * absent on runs recorded before skip reasons existed
  */
 export interface StepSkipReasonView {
   kind: "dependency" | "guarded" | "job_skipped";
@@ -90,26 +75,17 @@ export interface StepRunView {
     | "skipped"
     | "unknown";
   error?: string;
-  /** Stable error identifier, when the step failed with a coded UserError. */
   errorCode?: string;
   startedAt?: string;
   completedAt?: string;
   duration?: number;
-  /** Output ID if this step produced an output (for model methods) */
   outputId?: string;
-  /** Step artifacts included when --verbose is set */
   artifacts?: StepArtifactsData;
-  /** Data artifacts produced by this step */
   dataArtifacts?: DataArtifactRefData[];
-  /** Whether this step's failure was allowed (did not fail the job) */
   allowedFailure?: boolean;
-  /** Assert result if this step is an assert task */
   assertResult?: AssertResultView;
-  /** Approval decision metadata for manual_approval steps */
   approval?: ApprovalView;
-  /** Step outputs (resource attributes from model methods) */
   outputs?: Record<string, unknown>;
-  /** Why the step was skipped. Only set when `status` is `skipped`. */
   skipReason?: StepSkipReasonView;
   /**
    * Set when the failure is structural. `workflow_changed`: a failed-run
@@ -118,9 +94,9 @@ export interface StepRunView {
    */
   failureKind?: "workflow_changed";
   /**
-   * On a nested workflow step: the child run it started and, while
-   * `waiting_approval`, waits on (swamp-club#2736). `detached` when the run
-   * ended while the step still waited and left the child suspended.
+   * on a nested workflow step: the child run it started and, while
+   * `waiting_approval`, waits on; `detached` when the run ended while the step
+   * still waited and left the child suspended
    */
   nestedRun?: {
     workflowId: string;
@@ -128,17 +104,12 @@ export interface StepRunView {
     runId: string;
     detached?: true;
   };
-  /**
-   * On a `wait_for_signal` step: the wait it holds while `waiting`, or held
-   * before it settled, with the receipt of the signal that settled it.
-   */
   wait?: SignalWaitView;
 }
 
 export interface SignalWaitView {
   id: string;
   deadline: string;
-  /** The key the step declared, if any (swamp-club#3214). */
   key?: string;
   receipt?: {
     id: string;
@@ -146,9 +117,9 @@ export interface SignalWaitView {
     receivedAt: string;
     submittedBy: string;
     /**
-     * Set when the signal arrived before the wait opened and was held as
-     * its key's pending signal until the wait took it (swamp-club#3214).
-     * The run view is the one place that shows it.
+     * set when the signal arrived before the wait opened and was held as its
+     * key's pending signal until the wait took it; the run view is the one
+     * place that shows it
      */
     heldAsPending?: true;
   };
@@ -190,22 +161,15 @@ export interface WorkflowRunView {
   duration?: number;
   path?: string;
   reports?: ReportResultView[];
-  /** Data artifacts produced at workflow scope (e.g. workflow-scope reports). */
   workflowDataArtifacts?: DataArtifactRefData[];
   initiatedBy?: string;
-  /** Optional metadata linking the run to external systems. */
   references?: Record<string, string>;
-  /** On a nested workflow's run: the parent run that started it. */
   parentRun?: {
     workflowId: string;
     workflowName: string;
     runId: string;
     stepName: string;
   };
-  /**
-   * The nested runs this run's steps wait on, with each run's status when it
-   * was read (swamp-club#2736).
-   */
   nestedWaits?: {
     workflowId: string;
     workflowName: string;

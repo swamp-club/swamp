@@ -18,25 +18,20 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resolves the argument of an output read — an output id prefix, a model
- * name or a model id — to what the read acts on (swamp-club#2673).
- *
- * The lookup is split from the read so a caller that authorizes can resolve
- * once, authorize the output's owners, and hand the read that same
- * reference: the read then acts on exactly what was authorized, never on a
- * second lookup of the raw string.
+ * the lookup is split from the read so a caller that authorizes can resolve
+ * once, authorize the owners, and hand the read that same reference: the read
+ * acts on exactly what was authorized, never on a second lookup of the raw
+ * string
  */
 
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 
-/** An output with the model type it is filed under. */
 export interface TypedOutput<O> {
   output: O;
   type: ModelType;
 }
 
-/** The result of matching an output id prefix. */
 export interface OutputMatchResult<O> {
   status: "found" | "not_found" | "ambiguous";
   match?: TypedOutput<O>;
@@ -44,10 +39,9 @@ export interface OutputMatchResult<O> {
 }
 
 /**
- * What an output-or-model argument names. A model carries its latest
- * output, found as it resolves, so the read never looks one up afterwards.
- * An ambiguous prefix carries every output it matched, in the order of
- * `ids`, so serve can authorize each one's owners (swamp-club#2743).
+ * a model carries its latest output, found as it resolves, so the read never
+ * looks one up afterwards. An ambiguous prefix carries every output it matched,
+ * in the order of ids, so serve can authorize each owner
  */
 export type OutputReference<O> =
   | { kind: "output"; match: TypedOutput<O> }
@@ -60,21 +54,17 @@ export type OutputReference<O> =
   | { kind: "ambiguous"; ids: string[]; matches: TypedOutput<O>[] }
   | { kind: "not_found" };
 
-/** What an output id argument names. */
 export type OutputIdReference<O> =
   | { kind: "output"; match: TypedOutput<O> }
   | { kind: "ambiguous"; ids: string[]; matches: TypedOutput<O>[] }
   | { kind: "not_found" }
-  /** Not an output id at all: no 3+ hex-character prefix. */
   | { kind: "invalid" };
 
-/** Lookups an output id argument resolves through. */
 export interface OutputIdReferenceDeps<O> {
   isPartialId: (value: string) => boolean;
   matchOutputByPartialId: (idPrefix: string) => Promise<OutputMatchResult<O>>;
 }
 
-/** Lookups an output-or-model argument resolves through. */
 export interface OutputReferenceDeps<O> extends OutputIdReferenceDeps<O> {
   findDefinitionByIdOrName: (
     idOrName: string,
@@ -85,10 +75,6 @@ export interface OutputReferenceDeps<O> extends OutputIdReferenceDeps<O> {
   ) => Promise<O | null>;
 }
 
-/**
- * Resolves an output id prefix. Only for reads that take an output id and
- * nothing else.
- */
 export async function resolveOutputIdReference<O>(
   deps: OutputIdReferenceDeps<O>,
   outputId: string,
@@ -109,10 +95,9 @@ export async function resolveOutputIdReference<O>(
 }
 
 /**
- * Resolves an output-or-model argument: a 3+ hex-character string is first
- * matched as an output id prefix across every model; failing that, the
- * argument names a model by name, then by id, and the read takes that
- * model's latest output.
+ * a 3+ hex-character string is first matched as an output id prefix across
+ * every model; failing that it names a model by name, then id, and the read
+ * takes that model's latest output
  */
 export async function resolveOutputReference<O>(
   deps: OutputReferenceDeps<O>,

@@ -26,14 +26,9 @@ export {
 
 export { createLibSwampContext, type LibSwampContext } from "./context.ts";
 
-// Extension CEL surface — INTERNAL re-exports for libswamp/* and CLI callers.
-// Extension authors never reach into libswamp/mod.ts directly (the top-level
-// `@swamp/cli` package only exports main.ts); they get the runtime factory
-// via `ctx.createCelEnvironment()` and type via inference. The runtime
-// constructor is deliberately kept out of any extension-author-facing
-// package — swamp-host's cel-js and an extension's bundled cel-js have
-// separate class identities, so `instanceof` checks across that boundary
-// silently fail.
+// internal re-exports only; the runtime constructor stays out of
+// extension-facing packages because host and extension cel-js have separate
+// class identities, so instanceof fails across them
 export { createExtensionCelEnvironment } from "../infrastructure/cel/cel_evaluator.ts";
 export type { Environment } from "cel-js";
 export {
@@ -59,7 +54,6 @@ export { AsyncQueue } from "./stream/async_queue.ts";
 export { merge } from "./stream/merge.ts";
 export { assertCompletes, assertErrors, collect } from "./testing.ts";
 
-// Auth operations
 export {
   type AuthDeps,
   type AuthWhoamiEvent,
@@ -71,7 +65,6 @@ export {
 } from "./auth/whoami.ts";
 export type { WhoamiTrial } from "../infrastructure/http/swamp_club_client.ts";
 
-// Subscription operations
 export {
   billingUrl,
   subscriptionStatus,
@@ -88,7 +81,6 @@ export {
   type SubscriptionStartResult,
 } from "./subscription/start.ts";
 
-// Inbox operations
 export {
   createInboxListDeps,
   type CreateInboxListDepsOptions,
@@ -128,7 +120,6 @@ export {
   startInboxPoll,
 } from "./inbox/notice.ts";
 
-// Workflow operations
 export {
   extractStepArtifacts,
   inputValidationFailed,
@@ -193,7 +184,6 @@ export {
 
 export { severityAtOrAbove } from "../domain/workflows/assert_severity.ts";
 
-// Scheduled execution
 export {
   type ActiveRunHook,
   type CronFireDedupCallback,
@@ -215,7 +205,6 @@ export {
   WorkflowScheduler,
 } from "../domain/workflows/workflow_scheduler.ts";
 
-// Workflow search operations
 export {
   workflowSearch,
   type WorkflowSearchData,
@@ -248,7 +237,6 @@ export {
   type WorkflowHistorySearchItem,
 } from "./workflows/history_search.ts";
 
-// Model operations
 export {
   type EnvVarUsage,
   methodExecutionFailed,
@@ -283,7 +271,6 @@ export {
   type UnpublishedVersionView,
 } from "./models/model_method_run_view.ts";
 
-// Report operations (top-level)
 export {
   createReportDescribeDeps,
   reportDescribe,
@@ -463,7 +450,6 @@ export {
   type ModelMethodDescribeEvent,
 } from "./models/method_describe.ts";
 
-// Workflow get operations
 export {
   createWorkflowGetDeps,
   isUuid,
@@ -550,7 +536,6 @@ export {
   type WorkflowWaitsOptions,
 } from "./workflows/waits.ts";
 
-// Vault operations
 export {
   createVaultGetDeps,
   type VaultConfigInfo,
@@ -568,7 +553,6 @@ export {
   type VaultDescribeEvent,
 } from "./vaults/describe.ts";
 
-// Data operations
 export {
   createDataGetDeps,
   dataGet,
@@ -605,7 +589,6 @@ export {
   type WorkflowDataListItem,
 } from "./data/list.ts";
 
-// Data search operations
 export {
   dataSearch,
   type DataSearchData,
@@ -617,7 +600,6 @@ export {
   parseTags,
 } from "./data/search.ts";
 
-// Data query operations
 export {
   dataQuery,
   type DataQueryData,
@@ -633,7 +615,6 @@ export {
 } from "./data/query.ts";
 export type { DataRecord } from "../domain/data/data_record.ts";
 
-// Worker pool operations (remote execution control plane)
 export {
   createWorkerListDeps,
   effectiveTokenState,
@@ -693,7 +674,6 @@ export {
   type WorkerPruneResult,
 } from "./worker/prune.ts";
 
-// Server token operations (user authentication for swamp serve)
 export {
   createServerTokenCreateDeps,
   serverTokenCreate,
@@ -749,7 +729,6 @@ export {
   SOLO_NAMESPACE,
 } from "../domain/data/namespace.ts";
 
-// Extension trust operations
 export {
   DEFAULT_TRUSTED,
   resolveTrustedCollectives,
@@ -781,13 +760,11 @@ export {
   type TrustAutoTrustEvent,
 } from "./extensions/trust_auto_trust.ts";
 
-// Extension source types
 export {
   EXTENSION_KINDS,
   type ExtensionKind,
 } from "../domain/repo/swamp_sources.ts";
 
-// Extension source operations
 export {
   type SourceListData,
   type SourceListEntry,
@@ -812,7 +789,6 @@ export {
   type SourceListDeps,
 } from "./sources/list.ts";
 
-// Type operations
 export {
   createTypeDescribeDeps,
   typeDescribe,
@@ -836,7 +812,6 @@ export {
   type TypeSearchItem,
 } from "./types/search.ts";
 
-// Vault type search operations
 export {
   vaultTypeSearch,
   type VaultTypeSearchData,
@@ -846,7 +821,6 @@ export {
   type VaultTypeSearchItem,
 } from "./vaults/type_search.ts";
 
-// Datastore type search operations
 export {
   datastoreTypeSearch,
   type DatastoreTypeSearchData,
@@ -856,7 +830,6 @@ export {
   type DatastoreTypeSearchItem,
 } from "./datastores/type_search.ts";
 
-// Report type search operations
 export {
   reportTypeSearch,
   type ReportTypeSearchData,
@@ -866,7 +839,6 @@ export {
   type ReportTypeSearchItem,
 } from "./reports/type_search.ts";
 
-// Vault search operations
 export {
   vaultSearch,
   type VaultSearchData,
@@ -876,14 +848,12 @@ export {
   type VaultSearchItem,
 } from "./vaults/search.ts";
 
-// Workflow schema operations
 export {
   workflowSchema,
   type WorkflowSchemaData,
   type WorkflowSchemaEvent,
 } from "./workflows/schema.ts";
 
-// Broken workflow file scanning
 export {
   type BrokenWorkflow,
   findBrokenWorkflow,
@@ -891,7 +861,6 @@ export {
   workflowsDirFor,
 } from "./workflows/broken_workflow.ts";
 
-// Workflow validate operations
 export {
   createWorkflowValidateDeps,
   isWorkflowValidateAllData,
@@ -904,7 +873,6 @@ export {
   type WorkflowValidateInput,
 } from "./workflows/validate.ts";
 
-// Workflow doctor operations
 export {
   doctorWorkflowDirs,
   type DoctorWorkflowRepos,
@@ -915,7 +883,6 @@ export {
   type DoctorWorkflowsReport,
 } from "./workflows/doctor.ts";
 
-// Workflow evaluate operations
 export {
   createWorkflowEvaluateDeps,
   isWorkflowEvaluateAllData,
@@ -927,7 +894,6 @@ export {
   type WorkflowEvaluateItemData,
 } from "./workflows/evaluate.ts";
 
-// Workflow history logs operations
 export {
   createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
@@ -942,7 +908,6 @@ export {
   type RunReferenceDeps,
 } from "./workflows/run_reference.ts";
 
-// Model validate operations
 export {
   createModelValidateDeps,
   isModelValidateAllData,
@@ -956,7 +921,6 @@ export {
   type ValidationWarningData as ModelValidationWarningData,
 } from "./models/validate.ts";
 
-// Model evaluate operations
 export {
   createModelEvaluateDeps,
   isModelEvaluateAllData,
@@ -968,7 +932,6 @@ export {
   type ModelEvaluateItemData,
 } from "./models/evaluate.ts";
 
-// Model method history logs operations
 export {
   createModelMethodHistoryLogsDeps,
   type MethodHistoryLogsCompletedData,
@@ -978,7 +941,6 @@ export {
   type ModelMethodHistoryLogsInput,
 } from "./models/method_history_logs.ts";
 
-// Model output logs operations
 export {
   createModelOutputLogsDeps,
   modelOutputLogs,
@@ -988,7 +950,6 @@ export {
   type ModelOutputLogsInput,
 } from "./models/output_logs.ts";
 
-// Model output data operations
 export {
   createModelOutputDataDeps,
   modelOutputData,
@@ -998,7 +959,6 @@ export {
   type ModelOutputDataInput,
 } from "./models/output_data.ts";
 
-// Vault list-keys operations
 export {
   createVaultListKeysDeps,
   vaultListKeys,
@@ -1008,7 +968,6 @@ export {
   type VaultListKeysInput,
 } from "./vaults/list_keys.ts";
 
-// Vault read-secret operations
 export {
   createVaultReadSecretDeps,
   vaultReadSecret,
@@ -1018,7 +977,6 @@ export {
   type VaultReadSecretInput,
 } from "./vaults/read_secret.ts";
 
-// Vault migrate operations
 export {
   createVaultMigrateDeps,
   vaultMigrate,
@@ -1039,7 +997,6 @@ export {
   type VaultConfigField,
 } from "../domain/vaults/vault_config_fields.ts";
 
-// Extension search operations
 export {
   extensionSearch,
   type ExtensionSearchData,
@@ -1050,7 +1007,6 @@ export {
   type ExtensionSearchMeta,
 } from "./extensions/search.ts";
 
-// Extension operations
 export {
   createExtensionListDeps,
   extensionList,
@@ -1271,8 +1227,8 @@ export {
   extensionRmPreview,
 } from "./extensions/rm.ts";
 
-// Managed lockfile transactions — writes to a datastore-shared lockfile
-// fetch it under the datastore global lock first (swamp-club#2838).
+// writes to a datastore-shared lockfile fetch it under the datastore global
+// lock first
 export {
   createRepoPendingLockfileStore,
   createRootLockfileSync,
@@ -1291,7 +1247,6 @@ export {
 // Lockfile repository — sole gateway for upstream_extensions.json.
 export { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 
-// W2 lifecycle services — own the catalog write surface end-to-end.
 export { InstallExtensionService } from "./extensions/install_extension_service.ts";
 export {
   type FailedFile,
@@ -1300,14 +1255,12 @@ export {
   type RetainedFile,
 } from "./extensions/remove_extension_service.ts";
 export { UpgradeExtensionService } from "./extensions/upgrade_extension_service.ts";
-// Crash recovery of interrupted extension installs (swamp-club#2723).
 export {
   recoverPulledExtensionStaging,
   type RecoverStagingOptions,
   type StagingRecoveryReport,
 } from "./extensions/recover_staging.ts";
 
-// W3 reconcile service — post-hoc state repair from disk.
 export {
   ReconcileFromDiskService,
   type ReconcileResult,
@@ -1315,7 +1268,6 @@ export {
   type UncataloguedPulledResult,
 } from "./extensions/reconcile_from_disk_service.ts";
 
-// Extension layout detection
 export {
   classifyExtensionFile,
   detectLegacyExtensionLayout,
@@ -1328,7 +1280,6 @@ export {
   warnLegacyExtensionLayout,
 } from "./extensions/layout.ts";
 
-// Pulled-extension enumeration helper
 export {
   choosePulledDatastoreDirsOnDisk,
   enumeratePulledDatastoreExtensionsOnDisk,
@@ -1337,7 +1288,6 @@ export {
   type PulledExtensionType,
 } from "./extensions/enumerate_pulled.ts";
 
-// Extension install (restore from lockfile)
 export {
   extensionInstall,
   type ExtensionInstallData,
@@ -1346,7 +1296,6 @@ export {
   type ExtensionInstallEvent,
 } from "./extensions/install.ts";
 
-// Extension load diagnostic (`swamp doctor extensions`)
 export {
   DOCTOR_REGISTRY_ORDER,
   doctorExtensions,
@@ -1364,13 +1313,11 @@ export {
   toDoctorWarnings,
 } from "./extensions/doctor.ts";
 
-// Extension RowState (used by doctor extensions rendering)
 export {
   ROW_STATE_TAGS,
   type RowStateTag,
 } from "../domain/extensions/row_state.ts";
 
-// Extension aggregate state (`swamp doctor extensions` W6)
 export {
   buildAggregateState,
   type DoctorAggregateReport,
@@ -1381,7 +1328,6 @@ export {
   enumerateBundleFiles,
 } from "./extensions/doctor_aggregate.ts";
 
-// Extension repair (`swamp doctor extensions --repair` W6)
 export {
   type RepairDeps,
   repairExtensions,
@@ -1390,7 +1336,6 @@ export {
   type RepairReport,
 } from "./extensions/doctor_repair.ts";
 
-// Model edit operations
 export {
   createModelEditDeps,
   modelEdit,
@@ -1403,7 +1348,6 @@ export {
   resolveModelEditFile,
 } from "./models/edit.ts";
 
-// Editing a stored definition on a copy in the user's editor
 export {
   createEditorSessionDeps,
   editInEditor,
@@ -1413,7 +1357,6 @@ export {
   type EditorSessionResult,
 } from "./editor_session.ts";
 
-// Workflow edit operations
 export {
   createWorkflowEditDeps,
   resolveWorkflowEditFile,
@@ -1426,7 +1369,6 @@ export {
   type WorkflowEditTarget,
 } from "./workflows/edit.ts";
 
-// Vault edit operations
 export {
   createVaultEditDeps,
   findVaultByNameOrId,
@@ -1441,7 +1383,6 @@ export {
   type VaultEditLookupDeps,
 } from "./vaults/edit.ts";
 
-// Model delete operations
 export {
   createModelDeleteDeps,
   modelDelete,
@@ -1453,7 +1394,6 @@ export {
   modelDeletePreview,
 } from "./models/delete.ts";
 
-// Workflow delete operations
 export {
   createWorkflowDeleteDeps,
   workflowDelete,
@@ -1465,7 +1405,6 @@ export {
   workflowDeletePreview,
 } from "./workflows/delete.ts";
 
-// Workflow schedule pause operations (swamp-club#3522)
 export {
   createWorkflowScheduleDeps,
   type LiveSchedule,
@@ -1488,7 +1427,6 @@ export {
   type WorkflowScheduleTarget,
 } from "./workflows/schedule.ts";
 
-// Vault put operations
 export {
   createVaultPutDeps,
   vaultPut,
@@ -1501,7 +1439,6 @@ export {
   vaultPutPreview,
 } from "./vaults/put.ts";
 
-// Vault delete operations
 export {
   createVaultDeleteDeps,
   vaultDelete,
@@ -1514,7 +1451,6 @@ export {
   vaultDeletePreview,
 } from "./vaults/delete.ts";
 
-// Vault remove operations
 export {
   createVaultRemoveDeps,
   vaultRemove,
@@ -1529,7 +1465,6 @@ export {
   vaultRemoveStoredSecrets,
 } from "./vaults/remove.ts";
 
-// Vault annotate operations
 export {
   createVaultAnnotateDeps,
   vaultAnnotate,
@@ -1540,7 +1475,6 @@ export {
   type VaultAnnotateInput,
 } from "./vaults/annotate.ts";
 
-// Vault inspect operations
 export {
   createVaultInspectDeps,
   vaultInspect,
@@ -1550,7 +1484,6 @@ export {
   type VaultInspectEvent,
 } from "./vaults/inspect.ts";
 
-// Vault audit trail operations
 export {
   createVaultAuditTrailDeps,
   vaultAuditTrail,
@@ -1560,7 +1493,6 @@ export {
   type VaultAuditTrailInput,
 } from "./vaults/audit_trail.ts";
 
-// Data GC operations
 export {
   type AutoGcLifecycleDeps,
   type AutoGcResult,
@@ -1576,7 +1508,6 @@ export {
   type VersionGcPreviewItem,
 } from "./data/gc.ts";
 
-// Data prune (orphaned-data reclamation)
 export {
   createDataPruneDeps,
   dataPrune,
@@ -1589,7 +1520,6 @@ export {
   type DataPrunePreviewItem,
 } from "./data/prune.ts";
 
-// Run GC operations (workflow-runs + outputs)
 export {
   createRunGcDeps,
   DEFAULT_OUTPUT_RETENTION_DAYS,
@@ -1606,14 +1536,12 @@ export {
   runGcRetentionFromPolicy,
 } from "./data/run_gc.ts";
 
-// Retention (swamp-club#3473)
 export { type RepoRetentionDeps, runRepoRetention } from "./retention/run.ts";
 export {
   type RetentionKindResult,
   type RetentionPassResult,
 } from "./retention/pass.ts";
 
-// Model create operations
 export {
   createModelCreateDeps,
   modelCreate,
@@ -1623,7 +1551,6 @@ export {
   type ModelCreateInput,
 } from "./models/create.ts";
 
-// Workflow create operations
 export {
   createWorkflowCreateDeps,
   workflowCreate,
@@ -1635,7 +1562,6 @@ export {
   type WorkflowCreateStepData,
 } from "./workflows/create.ts";
 
-// Vault create operations
 export {
   createVaultCreateDeps,
   vaultCreate,
@@ -1645,7 +1571,6 @@ export {
   type VaultCreateInput,
 } from "./vaults/create.ts";
 
-// Data rename operations
 export {
   createDataRenameDeps,
   dataRename,
@@ -1655,7 +1580,6 @@ export {
   type DataRenameInput,
 } from "./data/rename.ts";
 
-// Data delete operations
 export {
   type BatchDeleteFilter,
   createDataDeleteDeps,
@@ -1674,7 +1598,6 @@ export {
   dataDeletePreview,
 } from "./data/delete.ts";
 
-// Auth login operations
 export {
   authLogin,
   type AuthLoginData,
@@ -1685,7 +1608,6 @@ export {
   createAuthLoginDeps,
 } from "./auth/login.ts";
 
-// Auth token create operations
 export {
   authTokenCreate,
   type AuthTokenCreateData,
@@ -1696,7 +1618,6 @@ export {
   type CreateAuthTokenCreateDepsOptions,
 } from "./auth/token_create.ts";
 
-// Auth token list operations
 export {
   authTokenList,
   type AuthTokenListData,
@@ -1708,7 +1629,6 @@ export {
   type CreateAuthTokenListDepsOptions,
 } from "./auth/token_list.ts";
 
-// Auth token revoke operations
 export {
   authTokenRevoke,
   type AuthTokenRevokeData,
@@ -1719,7 +1639,6 @@ export {
   type CreateAuthTokenRevokeDepsOptions,
 } from "./auth/token_revoke.ts";
 
-// Auth logout operations
 export {
   authLogout,
   type AuthLogoutData,
@@ -1729,7 +1648,6 @@ export {
   createAuthLogoutDeps,
 } from "./auth/logout.ts";
 
-// Server login operations (OAuth device flow for swamp serve)
 export {
   type AuthDiscovery,
   createServerLoginDeps,
@@ -1743,7 +1661,6 @@ export {
   type ServerLoginInput,
 } from "./auth/server_login.ts";
 
-// Server credential storage
 export type {
   ServerCredential,
   ServerCredentialRepository,
@@ -1754,7 +1671,6 @@ export {
   type FileServerCredentialRepositoryOptions,
 } from "../infrastructure/persistence/server_credential_repository.ts";
 
-// Repo init/upgrade operations
 export {
   createRepoInitDeps,
   createRepoUpgradeDeps,
@@ -1770,7 +1686,6 @@ export {
   type RepoUpgradeInput,
 } from "./repo/init.ts";
 
-// Version operations
 export {
   createVersionDeps,
   version,
@@ -1780,7 +1695,6 @@ export {
   type VersionInput,
 } from "./version.ts";
 
-// Telemetry operations
 export {
   createTelemetryStatsDeps,
   telemetryStats,
@@ -1790,7 +1704,6 @@ export {
   type TelemetryStatsInput,
 } from "./telemetry/stats.ts";
 
-// Source operations
 export {
   createSourcePathDeps,
   sourcePath,
@@ -1814,7 +1727,6 @@ export {
   type SourceCleanEvent,
 } from "./source/clean.ts";
 
-// Issue operations
 export {
   issueCreate,
   type IssueCreateData,
@@ -1855,7 +1767,6 @@ export {
   type IssueSearchItem,
 } from "./issues/search.ts";
 
-// Invite operations
 export {
   inviteLink,
   type InviteLinkData,
@@ -1864,7 +1775,6 @@ export {
   type InviteLinkInput,
 } from "./invite/link.ts";
 
-// Audit operations
 export {
   auditTimeline,
   type AuditTimelineData,
@@ -1874,7 +1784,6 @@ export {
   createAuditTimelineDeps,
 } from "./audit/timeline.ts";
 
-// Update operations
 export {
   createUpdateCheckDeps,
   updateCheck,
@@ -1884,7 +1793,6 @@ export {
   type UpdateCheckInput,
 } from "./update/check.ts";
 
-// Summary operations
 export {
   createSummariseDeps,
   summarise,
@@ -1894,7 +1802,6 @@ export {
   type SummariseInput,
 } from "./summary/summarise.ts";
 
-// Doctor (preflight diagnostics)
 export {
   type AuditDoctorReport,
   type CheckResult,
@@ -1914,7 +1821,6 @@ export {
 export type { ResolveBinary } from "../domain/audit/doctor/checks/resolve_binary.ts";
 export { todaysAuditFilePath } from "../domain/audit/audit_path.ts";
 
-// Datastore operations
 export {
   createDatastoreStatusDeps,
   type DatastoreHeldLeaseStatus,

@@ -41,7 +41,6 @@ export interface AuthTokenListItem {
   id: string;
   name: string;
   keyPrefix: string;
-  /** Absent when the server does not report one. */
   fingerprint?: string;
   enabled: boolean;
   expiresAt: string | null;

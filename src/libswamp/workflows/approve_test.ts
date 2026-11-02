@@ -42,7 +42,6 @@ import {
 } from "../../domain/workflows/run_claim.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 
-/** The approve deps, with no evaluated snapshot to settle a reject against. */
 function rejectDeps(deps: WorkflowApproveDeps): WorkflowRejectDeps {
   return { ...deps, findEvaluatedWorkflow: () => Promise.resolve(null) };
 }
@@ -70,7 +69,6 @@ function makeWorkflow(gateNames: string[], name = "gated"): Workflow {
   });
 }
 
-/** Suspends a run with every named gate parked in waiting_approval. */
 function suspendAtGates(workflow: Workflow, gateNames: string[]): WorkflowRun {
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -147,11 +145,6 @@ Deno.test("workflowApprove: reports allGatesDecided false while a sibling gate s
   }
 });
 
-/**
- * Deps holding `target` and an impostor workflow named with `target`'s id,
- * each with its own suspended run, and recording which workflow's run was
- * saved.
- */
 function makeCollidingDeps(): {
   deps: WorkflowApproveDeps;
   target: Workflow;
@@ -234,12 +227,6 @@ Deno.test("workflowApprove: without byId a workflow named with the id wins", asy
   }
 });
 
-// --- Nested waits (swamp-club#2736) ------------------------------------------
-
-/**
- * A run with one gate beside a nested step waiting on a child run, and the
- * child, which links back to it.
- */
 function gateBesideNestedWait(childStatus: "suspended" | "succeeded"): {
   workflow: Workflow;
   run: WorkflowRun;
@@ -302,7 +289,6 @@ Deno.test("workflowApprove: a nested step waiting on its child run is not a gate
   const { deps } = gateBesideNestedWait("suspended");
   const last = await approve(deps, "call-child");
   assertEquals(last?.kind, "error");
-  // The refusal points at the nested run to decide instead.
   if (last?.kind === "error") {
     assertEquals(last.error.message.includes("waits on nested run"), true);
     assertEquals(
@@ -331,8 +317,6 @@ Deno.test("workflowApprove: an unreadable linked run after the decision is saved
     ...deps,
     runRepo: {
       ...deps.runRepo,
-      // The run itself is read again under its claim; only its linked run
-      // is unreadable.
       findById: (_w: string, id: string) =>
         id === run.id
           ? Promise.resolve(run)
@@ -349,7 +333,6 @@ Deno.test("workflowApprove: an unreadable linked run after the decision is saved
 });
 
 Deno.test("workflowApprove: a run failed by a rejected parallel gate names --from that gate", async () => {
-  // Two parallel jobs, each suspended at its own gate (swamp-club#2899).
   const workflow = Workflow.create({
     name: "gated",
     jobs: ["side", "main"].map((jobName) =>
@@ -383,7 +366,6 @@ Deno.test("workflowApprove: a run failed by a rejected parallel gate names --fro
     }),
   );
   assertEquals(rejected.at(-1)?.kind, "completed");
-  // The reject settled the other gate, so nothing is left to approve.
   assertEquals(run.getJob("main")!.steps[0].status, "failed");
 
   const last = await approve(deps, "main-gate");
@@ -399,11 +381,6 @@ Deno.test("workflowApprove: a run failed by a rejected parallel gate names --fro
   );
 });
 
-/**
- * Deps over one stored run record, read as a fresh copy each time as a
- * repository does, with claims that run `beforeClaimed` once the claim is
- * taken and before the claimed work starts.
- */
 function makeStoredRunDeps(
   workflow: Workflow,
   run: WorkflowRun,
@@ -466,7 +443,6 @@ Deno.test("workflowApprove: reads the run and saves the decision under the run's
 Deno.test("workflowApprove: refuses a run cancelled before the claim was taken, and saves nothing", async () => {
   const workflow = makeWorkflow(["gate"]);
   const run = suspendAtGates(workflow, ["gate"]);
-  // The cancel lands after approve first read the run suspended.
   const { deps, stored, saves } = makeStoredRunDeps(
     workflow,
     run,
@@ -547,7 +523,6 @@ Deno.test("workflowApprove: reports allGatesDecided false while a step still wai
   for (const opened of [new Date(), new Date("2020-01-01T00:00:00.000Z")]) {
     const workflow = makeWorkflow(["gate"]);
     const run = suspendAtGates(workflow, ["gate"]);
-    // The deploy step stands in for a wait_for_signal step beside the gate.
     run.getJob("main")!.getStep("deploy")!.waitForSignal(
       SignalWait.open({ type: "object" }, 60, opened),
     );
@@ -574,13 +549,6 @@ Deno.test("workflowApprove: a step waiting for a signal is not a gate to approve
   assertEquals(run.getJob("main")!.getStep("deploy")!.status, "waiting_signal");
 });
 
-// --- timeout of a forEach-expanded gate (swamp-club#3218) ---
-
-/**
- * A run suspended two hours ago on `approve-prod`, expanded from a forEach
- * gate with a one-hour timeout. `recorded` is whether the step run holds the
- * timeout, which a run suspended before swamp-club#3218 does not.
- */
 function expiredForEachGate(
   recorded: boolean,
 ): { workflow: Workflow; run: WorkflowRun } {

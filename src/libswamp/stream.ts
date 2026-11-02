@@ -19,13 +19,8 @@
 
 import type { SwampError } from "./errors.ts";
 
-/** Base constraint for all stream events — must have a `kind` discriminant. */
 export type StreamEvent = { kind: string };
 
-/**
- * Compile-time check that an event union includes both `completed` and `error`
- * terminal variants. Resolves to `E` when valid, `never` when invalid.
- */
 export type HasTerminals<E extends StreamEvent> = Extract<
   E,
   { kind: "completed" }
@@ -33,20 +28,12 @@ export type HasTerminals<E extends StreamEvent> = Extract<
   : Extract<E, { kind: "error" }> extends never ? never
   : E;
 
-/**
- * Mapped type enforcing exhaustive handler objects.
- * Every step in the event union becomes a required key.
- */
 export type EventHandlers<E extends StreamEvent> = {
   [K in E["kind"]]: (
     event: Extract<E, { kind: K }>,
   ) => void | Promise<void>;
 };
 
-/**
- * Iterates a stream and dispatches each event to the matching handler.
- * Handlers are exhaustiveness-checked at compile time.
- */
 export async function consumeStream<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
   handlers: EventHandlers<E>,
@@ -58,11 +45,6 @@ export async function consumeStream<E extends StreamEvent>(
   }
 }
 
-/**
- * Fast-forwards through a stream to the `completed` event.
- * Throws the `SwampError` if an `error` event is encountered.
- * Throws a generic error if the stream ends without a terminal event.
- */
 export async function result<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
 ): Promise<Extract<E, { kind: "completed" }>> {
@@ -77,10 +59,7 @@ export async function result<E extends StreamEvent>(
   throw new Error("Stream ended without a completed or error event");
 }
 
-/**
- * Fills missing handlers with no-ops (or a provided fallback).
- * Uses Proxy since step names exist only in the type system at runtime.
- */
+/** uses a Proxy because step names exist only in the type system at runtime */
 export function withDefaults<E extends StreamEvent>(
   partial: Partial<EventHandlers<E>>,
   fallback?: (event: E) => void | Promise<void>,

@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Explicit model leases (swamp-club#4121): `swamp model lease acquire`,
- * `release` and `status`. A serve-mode checkout holds a fenced lease on a
- * behavior's lock across commands; every swamp command in the checkout
- * renews it while it lives, and a command that takes the behavior's lock
- * uses it. Leases are a team-mode feature: a checkout not written through
- * serve keeps its local locks and has none to take.
- *
- * @module
+ * a serve-mode checkout holds a fenced lease on a behavior's lock across
+ * commands; every command in the checkout renews it and a command taking the
+ * lock uses it. Team mode only: other checkouts keep local locks
  */
 
 import type { LibSwampContext } from "../context.ts";
@@ -36,43 +31,32 @@ import {
 } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** A behavior a lease is taken on. */
 export interface LeaseBehavior {
   readonly name: string;
   readonly type: string;
   readonly id: string;
 }
 
-/** An explicit lease, as the lease commands report it. */
 export interface ModelLeaseView {
-  /** Serve's lock key for the behavior. */
   readonly lockKey: string;
   readonly fence: number;
-  /** Each renewal extends the lease by this long. */
   readonly holdMs: number;
-  /** When the lease ends unless renewed, by serve's clock. */
   readonly expiresAt: string;
 }
 
-/** What `model lease acquire` reports. */
 export interface ModelLeaseAcquireData extends ModelLeaseView {
   readonly behavior: LeaseBehavior;
-  /** The checkout already held this lease; it was renewed. */
   readonly existing: boolean;
 }
 
-/** What `model lease release` reports. */
 export interface ModelLeaseReleaseData {
   readonly behavior: LeaseBehavior;
   readonly lockKey: string;
-  /** False when the checkout held no lease on the behavior. */
   readonly released: boolean;
 }
 
-/** What `model lease status` reports. */
 export interface ModelLeaseStatusData {
   readonly leases: readonly (ModelLeaseView & {
-    /** `held` until its expiry passes without a renewal, then `expired`. */
     readonly state: "held" | "expired";
   })[];
 }
@@ -89,15 +73,11 @@ export type ModelLeaseStatusEvent =
   | { kind: "completed"; data: ModelLeaseStatusData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies of the lease commands. */
 export interface ModelLeaseDeps {
-  /** Whether the checkout's datastore is written through serve. */
   readonly teamMode: boolean;
-  /** The behavior `idOrName` names, if any. */
   readonly lookupBehavior: (
     idOrName: string,
   ) => Promise<LeaseBehavior | undefined>;
-  /** Serve's lock key for `behavior`. */
   readonly lockKeyOf: (behavior: LeaseBehavior) => string;
   readonly acquire: (
     lockKey: string,
@@ -108,12 +88,8 @@ export interface ModelLeaseDeps {
   readonly now?: () => number;
 }
 
-/**
- * The longest hold an explicit lease may ask for: serve's own bound, a day,
- * so a lease can be checked out to work offline (swamp-club#4195).
- */
+/** serve's own bound, a day, so a lease can be checked out to work offline */
 export const MAX_LEASE_HOLD_MS = 86_400_000;
-/** The shortest hold an explicit lease may ask for. */
 export const MIN_LEASE_HOLD_MS = 5_000;
 
 function teamModeOnly(): SwampError {
@@ -125,7 +101,6 @@ function teamModeOnly(): SwampError {
   };
 }
 
-/** Takes an explicit lease on a behavior, held for `holdMs` between renewals. */
 export async function* modelLeaseAcquire(
   _ctx: LibSwampContext,
   deps: ModelLeaseDeps,
@@ -169,7 +144,6 @@ export async function* modelLeaseAcquire(
   );
 }
 
-/** Ends the explicit lease the checkout holds on a behavior. */
 export async function* modelLeaseRelease(
   _ctx: LibSwampContext,
   deps: ModelLeaseDeps,
@@ -195,7 +169,6 @@ export async function* modelLeaseRelease(
   );
 }
 
-/** Lists the explicit leases the checkout holds. */
 export async function* modelLeaseStatus(
   _ctx: LibSwampContext,
   deps: ModelLeaseDeps,

@@ -48,7 +48,6 @@ import {
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { v3RunArtifactCheck } from "./run_artifact_check.ts";
-/** Data item in the list. */
 export interface DataListItem {
   id: string;
   name: string;
@@ -60,13 +59,11 @@ export interface DataListItem {
   createdAt: string;
 }
 
-/** Data grouped by tag type. */
 export interface DataGroupedByType {
   type: string;
   items: DataListItem[];
 }
 
-/** Model-scoped data list. */
 export interface DataListData {
   modelId: string;
   modelName: string;
@@ -76,18 +73,14 @@ export interface DataListData {
   total: number;
 }
 
-/** Data item with workflow context. */
 export interface WorkflowDataListItem extends DataListItem {
   modelId: string;
   modelName: string;
   modelType: string;
-  /** Absent for workflow-scope artifacts not produced by a single step. */
   jobName?: string;
-  /** Absent for workflow-scope artifacts not produced by a single step. */
   stepName?: string;
 }
 
-/** Workflow-scoped data list. */
 export interface WorkflowDataListData {
   workflowId: string;
   workflowName: string;
@@ -113,10 +106,6 @@ export interface DataListInput {
    * authorized.
    */
   byId?: boolean;
-  /**
-   * With `byId`, the name the caller authorized: ids are not guaranteed
-   * unique, so only a resource with this name and the id is accepted.
-   */
   expectedName?: string;
   workflowName?: string;
   /**
@@ -130,7 +119,6 @@ export interface DataListInput {
   typeFilter?: string;
 }
 
-/** Raw data entry from repository. */
 interface RawDataEntry {
   id: string;
   name: string;
@@ -142,37 +130,29 @@ interface RawDataEntry {
   createdAt: Date;
 }
 
-/** Workflow data entry with model context. */
 interface WorkflowDataEntry {
   data: RawDataEntry;
   modelId: string;
   modelName: string;
   modelType: ModelType;
-  /** Absent for workflow-scope artifacts not produced by a single step. */
   jobName?: string;
-  /** Absent for workflow-scope artifacts not produced by a single step. */
   stepName?: string;
 }
 
-/** Minimal workflow info for data list operations. */
 export interface WorkflowInfo {
   id: string;
   name: string;
 }
 
-/** Minimal workflow run info for data list operations. */
 export interface WorkflowRunInfo {
   id: string;
   status: string;
 }
 
-/** Dependencies for the data list operation. */
 export interface DataListDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -184,7 +164,6 @@ export interface DataListDeps {
   findWorkflow: (
     nameOrId: string,
   ) => Promise<WorkflowInfo | null>;
-  /** Looks up by exact id only; required for a `workflowById` request. */
   findWorkflowById?: (
     id: string,
     expectedName?: string,
@@ -203,7 +182,6 @@ export interface DataListDeps {
   namespace?: string;
 }
 
-/** Wires real infrastructure into DataListDeps. */
 export function createDataListDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -215,9 +193,9 @@ export function createDataListDeps(
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
-  // The injected data repository's lookup, so the run records and
-  // auto-definitions read here fail loudly on a record the v3 read model
-  // could not materialise (swamp-club#3617).
+  // use the injected data repository's lookup so run records and
+  // auto-definitions fail loudly on a record the v3 read model could not
+  // materialise
   const unreadableContent = injectedDataRepo?.unreadableContent;
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(
@@ -292,10 +270,8 @@ export function createDataListDeps(
   };
 }
 
-/** Standard type ordering for grouping. */
 const STANDARD_TYPES = ["log", "file", "resource", "data"];
 
-/** Groups data items by type tag, sorting standard types first. */
 function groupByType<T extends { type: string }>(
   items: T[],
 ): Array<{ type: string; items: T[] }> {
@@ -341,7 +317,6 @@ function groupByType<T extends { type: string }>(
   return groups;
 }
 
-/** Workflow-scoped data list. */
 async function* workflowScopedList(
   deps: DataListDeps,
   input: DataListInput,
@@ -429,7 +404,6 @@ async function* workflowScopedList(
   };
 }
 
-/** Model-scoped data list. */
 async function* modelScopedList(
   deps: DataListDeps,
   input: DataListInput,
@@ -482,7 +456,6 @@ async function* modelScopedList(
   };
 }
 
-/** Yields all data for a model or workflow, grouped by type. */
 export async function* dataList(
   _ctx: LibSwampContext,
   deps: DataListDeps,

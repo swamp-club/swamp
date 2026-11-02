@@ -29,9 +29,6 @@ import type { DataRepositoryReader } from "../../domain/summary/summary_types.ts
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
-/**
- * Data structure for the summarise output.
- */
 export type SummariseData =
   | { status: "summary"; summary: ActivitySummary; sinceLabel: string }
   | { status: "no_activity"; sinceLabel: string };
@@ -40,19 +37,16 @@ export type SummariseEvent =
   | { kind: "completed"; data: SummariseData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the summarise operation. */
 export interface SummariseInput {
   since: Date;
   sinceLabel: string;
   /**
-   * If set, caps each per-group `runs[]` array to the N most-recent entries.
-   * Counts always reflect every matching run in the window. Default is
-   * unlimited (preserves prior behavior — no silent JSON shape change).
+   * caps each group's runs[] to the N most recent while counts cover every run;
+   * unset means unlimited so the JSON shape does not change
    */
   limit?: number;
 }
 
-/** Dependencies for the summarise operation. */
 export interface SummariseDeps {
   summarise: (
     cutoffDate: Date,
@@ -60,7 +54,6 @@ export interface SummariseDeps {
   ) => Promise<ActivitySummary>;
 }
 
-/** Wires real infrastructure into SummariseDeps. */
 export function createSummariseDeps(repos: {
   outputRepo: OutputRepository;
   workflowRunRepo: WorkflowRunRepository;
@@ -80,7 +73,6 @@ export function createSummariseDeps(repos: {
   };
 }
 
-/** Generates an activity summary for the repository. */
 export async function* summarise(
   ctx: LibSwampContext,
   deps: SummariseDeps,

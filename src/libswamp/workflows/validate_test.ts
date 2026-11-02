@@ -85,9 +85,8 @@ Deno.test("workflowValidate single workflow yields completed", async () => {
 });
 
 Deno.test("workflowValidate single workflow with a failing validation reports passed=false", async () => {
-  // Guards the exit-code path: a failing validation result (e.g. an
-  // unresolvable step-input type, see swamp-club#506) must surface as
-  // passed=false so the CLI exits non-zero rather than reporting PASSED.
+  // a failing validation result must surface as passed=false so the CLI exits
+  // non-zero rather than reporting PASSED
   const deps = makeDeps({
     validate: () =>
       Promise.resolve([
@@ -247,9 +246,9 @@ Deno.test("workflowValidate yields error when not found", async () => {
   assertEquals(events[1].kind, "error");
 });
 
-// Broken-file surfacing (swamp-club#1240): a workflow file that fails
-// schema parsing is invisible to the repository, so validate must report
-// the parse error rather than "not found" or an all-green aggregate.
+// a workflow file that fails schema parsing is invisible to the repository, so
+// validate must report the parse error rather than not found or an all-green
+// aggregate
 
 const BROKEN = {
   file: "/repo/workflows/workflow-74ae52ba.yaml",
@@ -298,9 +297,6 @@ Deno.test("workflowValidate single: still not-found when no broken file matches"
 
   assertEquals(events[1].kind, "error");
 });
-
-// A file the loader skips for its name explains a not-found lookup
-// (swamp-club#3839).
 
 const MISNAMED = {
   file: "/repo/workflows/plain.yaml",
@@ -427,8 +423,8 @@ Deno.test("createWorkflowValidateDeps: a misnamed file in the workflows dir is n
   }
 });
 
-// A file named after its workflow is read by the lookup itself, which then
-// throws its schema failure instead of returning null (swamp-club#3832).
+// a file named after its workflow is read by the lookup itself, which throws
+// its schema failure instead of returning null
 
 const SCHEMA_ERROR = new WorkflowSchemaError(
   [{ path: "jobs[0].weight", message: "Invalid input" }],
@@ -814,13 +810,11 @@ Deno.test("createWorkflowValidateDeps: predicts sensitive-output vaults with the
     assertStringIncludes(routed?.error ?? "", "'step-vault'");
     assertEquals(routed?.error?.includes("'fallback'"), false);
 
-    // A step override that sets only vary keeps the definition's vaultName.
     assertEquals(
       await vaultsResult({ specName: "creds", vary: ["env"] }),
       undefined,
     );
 
-    // An evaluated vaultName is decided at run time, not predicted here.
     assertEquals(
       await vaultsResult({
         specName: "creds",
@@ -1035,8 +1029,8 @@ Deno.test("createWorkflowValidateDeps: description prose that documents the expr
           name: "misused",
           task: StepTask.manualApproval("${{ dyn(vault).get('prod', 'key') }}"),
         }),
-        // An environment variable named description is not prose: a run
-        // evaluates it, so its misuse is diagnosed (swamp-club#3735).
+        // an environment variable named description is not prose: a run
+        // evaluates it, so its misuse is diagnosed
         Step.create({
           name: "env-named-description",
           task: StepTask.model("consumer", "run", {
@@ -1054,7 +1048,6 @@ Deno.test("createWorkflowValidateDeps: description prose that documents the expr
   const findings = (await deps.validate(workflow)).filter((r) =>
     r.name === "Secret usage"
   );
-  // Only the step arguments the run evaluates are diagnosed.
   assertEquals(findings.length, 2, JSON.stringify(findings));
   assertStringIncludes(findings[0].error ?? "", "jobs[0].steps[1]");
   assertStringIncludes(

@@ -204,7 +204,6 @@ const existingData: VaultConfigData = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-/** Deps for stdin updates of `existingData`, recording what gets saved. */
 function makeStdinDeps(
   overrides: Partial<VaultEditDeps> = {},
 ): { deps: VaultEditDeps; saved: VaultConfigData[] } {
@@ -404,7 +403,6 @@ Deno.test("vaultEdit: stdin update asks authorizeUpdate even without a rename", 
 Deno.test("resolveVaultEditFile: byId looks the vault up by id only", async () => {
   const lookups: string[] = [];
   const deps = makeDeps({
-    // A vault whose name matches the id must not be picked.
     findByName: (name) => {
       lookups.push(`name:${name}`);
       return Promise.resolve({ id: "other", name, type: "env" });
@@ -590,7 +588,6 @@ Deno.test("vaultEdit: an editor edit equal to the stored vault saves nothing (sw
 
   const last = await runStdin(
     deps,
-    // Same data, different layout: the order and quoting an editor may leave.
     "type: env\nname: 'my-vault'\nconfig:\n  prefix: APP_\n",
     { source: "editor", editor: "Neovim" },
   );
@@ -781,15 +778,9 @@ Deno.test("createVaultEditDeps: a rename moves the secrets of a local_encryption
   });
 });
 
-// --- vaults whose config does not parse (swamp-club#2693) ---
-
 const BROKEN_YAML = "name: [broken\n  : : :\n";
 const BROKEN_ID = "broken-id";
 
-/**
- * A repo with a valid local_encryption vault `my-vault` (id vault-1, secrets
- * in the repo dir) and a broken local_encryption vault file BROKEN_ID.
- */
 async function withBrokenVaultRepo(
   fn: (ctx: {
     repoDir: string;
@@ -984,7 +975,6 @@ function runRepair(
       vaultType: "local_encryption",
       stdinContent: content,
       authorizeRepair,
-      // These cover repair itself; the key-source rule has its own tests.
       trustKeySource: true,
     }),
   );
@@ -1176,8 +1166,6 @@ Deno.test("vaultEdit: an argument that is not a valid id keeps the broken file's
   });
 });
 
-// Key-source rule for local_encryption vaults (swamp-club#2690).
-
 const storedLocalVault: VaultConfigData = {
   id: "vault-1",
   name: "my-vault",
@@ -1186,7 +1174,6 @@ const storedLocalVault: VaultConfigData = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-/** Stdin deps for `storedLocalVault`, recording saves and secret moves. */
 function makeLocalStdinDeps(stored: VaultConfigData = storedLocalVault) {
   const moves: string[] = [];
   const { deps, saved } = makeStdinDeps({
@@ -1365,9 +1352,6 @@ Deno.test("vaultEdit: an untrusted repair without the repo dir writes nothing", 
   });
 });
 
-// --- names declared by vault files that do not parse (swamp-club#4107) ---
-
-/** A schema-broken vault file that still declares `name` in its YAML. */
 async function writeBrokenDeclaring(
   repo: YamlVaultConfigRepository,
   id: string,
@@ -1389,8 +1373,6 @@ Deno.test("YamlVaultConfigRepository.findUnparseableDeclaring: finds broken file
       (await repo.findUnparseableDeclaring("held")).map((p) => p === declaring),
       [true],
     );
-    // A valid vault's name and a file whose YAML does not parse at all
-    // declare nothing here.
     assertEquals(await repo.findUnparseableDeclaring("my-vault"), []);
     assert(brokenPath.length > 0);
   });

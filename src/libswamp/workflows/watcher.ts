@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * WorkflowWatcher monitors the workflows directory for changes and notifies
- * a callback when workflow schedules are added, modified, or removed. The
- * caller supplies the directory the workflow loader reads (`workflowsDirFor`),
- * which is the managed config workflows directory when managedConfig is on.
- * Uses Deno.watchFs with debouncing to coalesce rapid filesystem events.
- */
-
 import { basename } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -35,10 +27,6 @@ const logger = getSwampLogger(["workflow-watcher"]);
 
 const DEBOUNCE_MS = 500;
 
-/**
- * Callback invoked when a workflow's schedule changes.
- * A null schedule means the schedule was removed or the workflow was deleted.
- */
 export type ScheduleChangeCallback = (
   workflowId: WorkflowId,
   schedule: string | null,
@@ -57,9 +45,6 @@ export class WorkflowWatcher {
     private readonly onChange: ScheduleChangeCallback,
   ) {}
 
-  /**
-   * Starts watching the workflows directory for changes.
-   */
   async start(): Promise<void> {
     try {
       await Deno.stat(this.workflowsDir);
@@ -79,9 +64,6 @@ export class WorkflowWatcher {
     });
   }
 
-  /**
-   * Stops watching and clears all pending debounce timers.
-   */
   async stop(): Promise<void> {
     if (this.watcher) {
       this.watcher.close();
@@ -153,7 +135,6 @@ export class WorkflowWatcher {
       return;
     }
 
-    // For create/modify, read the file to get the workflow ID
     try {
       const content = await Deno.readTextFile(path);
       const data = parseYaml(content) as { id?: string; name?: string };
@@ -180,14 +161,9 @@ export class WorkflowWatcher {
     }
   }
 
-  /**
-   * Performs an initial scan of all workflows and reports their schedules.
-   * Used on startup to register existing schedules.
-   */
   async scanExisting(): Promise<void> {
     const workflows = await this.workflowRepo.findAll();
     for (const workflow of workflows) {
-      // Populate filename→id map for delete event handling
       const path = this.workflowRepo.getPath(workflow.id);
       this.filenameToId.set(basename(path), workflow.id);
 

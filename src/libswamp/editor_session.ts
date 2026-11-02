@@ -24,18 +24,16 @@ import {
   EditorService,
 } from "../infrastructure/editor/editor_service.ts";
 
-/** Dependencies for an editor session. */
 export interface EditorSessionDeps {
-  /** Resolves the editor for `path`; the real one waits for every editor. */
   prepareEditor: (path: string) => Promise<EditorLaunch>;
 }
 
 let depsForTesting: EditorSessionDeps | undefined;
 
 /**
- * Test seam: makes {@link createEditorSessionDeps} return `deps` until the
- * returned function is called, so a test can stand in for the person at the
- * editor without starting a process. Only tests may call it.
+ * test seam: returns deps from createEditorSessionDeps until the returned
+ * function is called, so a test can stand in for the person at the editor; only
+ * tests may call it
  */
 export function useEditorSessionDepsForTesting(
   deps: EditorSessionDeps,
@@ -49,7 +47,6 @@ export function useEditorSessionDepsForTesting(
   };
 }
 
-/** Wires the user's editor into EditorSessionDeps. */
 export function createEditorSessionDeps(): EditorSessionDeps {
   if (depsForTesting !== undefined) return depsForTesting;
   const editorService = new EditorService();
@@ -59,32 +56,26 @@ export function createEditorSessionDeps(): EditorSessionDeps {
   };
 }
 
-/** What is announced before the editor starts. */
 export interface EditorLaunchingData {
   editor: string;
   path: string;
   waitsForExit: boolean;
 }
 
-/** Input for an editor session. */
 export interface EditorSessionInput {
-  /** The stored text the editor opens. */
   content: string;
-  /** The temp file's name, so the editor can tell the file is YAML. */
   fileName: string;
   onLaunching?: (data: EditorLaunchingData) => void;
 }
 
-/** How an editor session ended. */
 export type EditorSessionResult =
   | {
     status: "unchanged";
     editor: string;
     /**
-     * Set only when the launch reports `waitConfirmed: false`: the editor is
-     * not known to stay open until the file is closed and may have returned
-     * before the person saved, so the copy is kept here rather than
-     * removed. A launch that does not report it is trusted to have waited.
+     * set only when the launch reports waitConfirmed: false: the editor may
+     * have returned before the person saved, so the copy is kept rather than
+     * removed; a launch that does not report it is trusted to have waited
      */
     keptPath?: string;
   }
@@ -92,17 +83,14 @@ export type EditorSessionResult =
     status: "edited";
     editor: string;
     content: string;
-    /** The temp file holding the edit, kept until `discard` is called. */
     tempPath: string;
     discard: () => Promise<void>;
   };
 
 /**
- * Opens the user's editor on a private temp copy of `content` and reads the
- * edit back once the editor closes. The stored file is never opened, so the
- * caller saves the edit through its repository like any other edit
- * (swamp-club#4107). An unchanged copy is removed; an edited one is kept
- * until the caller discards it, so a refused save can be retried from it.
+ * the stored file is never opened, so the caller saves the edit through its
+ * repository; an unchanged copy is removed, an edited one is kept until the
+ * caller discards it so a refused save can be retried
  */
 export async function editInEditor(
   deps: EditorSessionDeps,

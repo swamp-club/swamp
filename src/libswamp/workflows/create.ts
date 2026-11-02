@@ -33,9 +33,6 @@ import type { SwampError } from "../errors.ts";
 import { alreadyExists, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structures for the workflow create output.
- */
 export interface WorkflowCreateStepData {
   name: string;
   description: string;
@@ -60,7 +57,6 @@ export type WorkflowCreateEvent =
   | { kind: "completed"; data: WorkflowCreateData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the workflow create operation. */
 export interface WorkflowCreateInput {
   name: string;
   /**
@@ -70,14 +66,12 @@ export interface WorkflowCreateInput {
   principalId?: string;
 }
 
-/** Dependencies for the workflow create operation. */
 export interface WorkflowCreateDeps {
   findByName: (name: string) => Promise<Workflow | null>;
   save: (workflow: Workflow) => Promise<void>;
   getPath: (id: WorkflowId) => string;
 }
 
-/** Wires real infrastructure into WorkflowCreateDeps. */
 export function createWorkflowCreateDeps(
   repoDir: string,
   injectedWorkflowRepo?: WorkflowRepository,
@@ -90,7 +84,6 @@ export function createWorkflowCreateDeps(
   };
 }
 
-/** Creates a new workflow with default job structure. */
 export async function* workflowCreate(
   ctx: LibSwampContext,
   deps: WorkflowCreateDeps,
@@ -121,7 +114,6 @@ export async function* workflowCreate(
           return;
         }
 
-        // Check name uniqueness
         const existing = await deps.findByName(input.name);
         if (existing) {
           yield {

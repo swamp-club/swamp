@@ -34,7 +34,6 @@ import type { DataRetentionScan } from "../../domain/data/data_lifecycle_service
 
 const DAY_MS = 86_400_000;
 
-/** Output batches are this many times the pass's batch size. */
 const OUTPUT_BATCH_MULTIPLIER = 10;
 
 export interface RetentionCollectorSources {
@@ -53,27 +52,14 @@ export interface RetentionCollectorSources {
     unifiedDataRepo: FileSystemUnifiedDataRepository;
     workflowRunRepo: YamlWorkflowRunRepository;
   };
-  /** The agent command log; defaults to the repository's `.swamp/audit`. */
   auditRepo?: AuditRepository;
   now?: () => number;
 }
 
 /**
- * The collectors of one retention pass, in the order they must run
- * (swamp-club#3473):
- *
- * 1. Runs, with their snapshots, signal wait records and continuation
- *    claims. First, since data with a `workflow` or `job` lifetime expires
- *    with its run.
- * 2. Evaluated snapshots: orphans, and snapshots of finished runs older
- *    than their own retention. Lists every snapshot, so one batch per pass.
- * 3. Method outputs and their run logs.
- * 4. Model data, every version older than the cutoff, the latest included,
- *    except built-in access and serve state.
- * 5. The agent command log (`.swamp/audit`), by whole day.
- *
- * Serve bookkeeping is reaped by serve's worker GC with the `bookkeeping`
- * grace, and serve audit stores by their own timer, so neither is here.
+ * collectors run in order: runs first (data with a workflow or job lifetime
+ * expires with its run), evaluated snapshots, method outputs and run logs,
+ * model data, then the agent command log
  */
 export function createRetentionCollectors(
   sources: RetentionCollectorSources,

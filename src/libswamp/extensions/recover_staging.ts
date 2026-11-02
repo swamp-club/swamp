@@ -43,12 +43,10 @@ import {
 
 export type { StagingRecoveryReport };
 
-/** Options for {@link recoverPulledExtensionStaging}. */
 export interface RecoverStagingOptions {
   /**
-   * Lockfile paths to accept on top of the ones derived from the repo
-   * marker, e.g. the lockfile the calling install or removal already
-   * uses.
+   * lockfile paths accepted on top of those derived from the repo marker, such
+   * as the one the calling install or removal already uses.
    */
   lockfilePaths?: ReadonlyArray<string>;
   /** Test seam: the clock the stale-staging sweep reads. */
@@ -58,15 +56,9 @@ export interface RecoverStagingOptions {
 }
 
 /**
- * Finishes or undoes every extension install a crashed process left
- * half done in this checkout, and sweeps stale staging. Each install
- * writes a journal before it moves anything; recovery rolls it forward
- * when its swap completed and its lockfile entry landed, otherwise back,
- * deciding each root from what its staging dir holds. An invalid journal
- * is left in place with a warning naming it.
- *
- * Takes the pulled-extensions lock (running inline when the caller holds
- * it). For convergence and other callers outside an install or removal.
+ * each install writes a journal before moving anything; recovery rolls it
+ * forward when its swap completed and its lockfile entry landed, otherwise
+ * back. An invalid journal is left in place with a warning naming it.
  */
 export async function recoverPulledExtensionStaging(
   repoDir: string,
@@ -78,11 +70,6 @@ export async function recoverPulledExtensionStaging(
   );
 }
 
-/**
- * {@link recoverPulledExtensionStaging} for a caller that already holds
- * the pulled-extensions lock: installs at the start of every apply, and
- * removals before they change anything.
- */
 export async function recoverPulledExtensionStagingLocked(
   repoDir: string,
   options: RecoverStagingOptions = {},
@@ -118,11 +105,9 @@ export async function recoverPulledExtensionStagingLocked(
 }
 
 /**
- * Refuses to change extension `name` while crash recovery left a journal
- * behind for it, or for an extension nested in or above it: their roots
- * overlap, and a later recovery of that journal could act on files this
- * change wrote. The advice follows where the interrupted extension's
- * copies are, so it never says to delete the only copy of one.
+ * their roots overlap, so a later recovery of that journal could act on files
+ * this change wrote. The advice follows where the interrupted extension's
+ * copies are, so it never says to delete the only copy.
  */
 export function assertNoBlockingJournal(
   recovery: StagingRecoveryReport,
@@ -143,7 +128,6 @@ export function assertNoBlockingJournal(
   );
 }
 
-/** What the user can do by hand about `left`, given where its copies are. */
 function recoveryAdvice(
   left: LeftJournal,
   repoDir: string,

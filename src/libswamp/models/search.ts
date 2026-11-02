@@ -21,18 +21,12 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * A single model search result item.
- */
 export interface ModelSearchItem {
   id: string;
   name: string;
   type: string;
 }
 
-/**
- * Data payload for the completed event.
- */
 export interface ModelSearchData {
   query: string;
   results: ModelSearchItem[];
@@ -43,9 +37,6 @@ export type ModelSearchEvent =
   | { kind: "completed"; data: ModelSearchData }
   | { kind: "error"; error: SwampError };
 
-/**
- * Dependencies for the model search generator.
- */
 export interface ModelSearchDeps {
   findAllGlobal(): Promise<
     Array<{
@@ -56,20 +47,11 @@ export interface ModelSearchDeps {
   isInternalType?: (type: string) => boolean;
 }
 
-/**
- * Input for the model search generator.
- */
 export interface ModelSearchInput {
   query?: string;
   includeInternal?: boolean;
 }
 
-/**
- * Searches model definitions across all types.
- *
- * Returns all models — filtering for JSON mode is handled by the renderer.
- * The Ink renderer uses fzf for interactive fuzzy matching.
- */
 export async function* modelSearch(
   _ctx: LibSwampContext,
   deps: ModelSearchDeps,

@@ -34,9 +34,7 @@ import {
 } from "./pass.ts";
 
 export interface RepoRetentionDeps extends RetentionCollectorSources {
-  /** Where the pass records its watermarks; absent, none are kept. */
   watermarks?: RetentionWatermarkRepository;
-  /** Wraps each batch: sync gate, unit of work, push of what it removed. */
   runBatch<T>(fn: () => Promise<T>): Promise<T>;
   /**
    * Runs once after the batches: v3 history compaction, catalog checkpoint.
@@ -45,7 +43,6 @@ export interface RepoRetentionDeps extends RetentionCollectorSources {
   afterPass?(result: RetentionPassResult): Promise<void>;
 }
 
-/** Stands in where the datastore has nowhere to keep watermarks: drops them. */
 class DiscardedWatermarks implements RetentionWatermarkRepository {
   get(_kind: RetentionKind): Promise<RetentionWatermark | null> {
     return Promise.resolve(null);
@@ -61,12 +58,6 @@ class DiscardedWatermarks implements RetentionWatermarkRepository {
   }
 }
 
-/**
- * Applies a repository's retention once (swamp-club#3473): every kind with a
- * retention loses its items older than the cutoff, in batches, in the order
- * {@link createRetentionCollectors} gives. Shared by serve's timer and the
- * CLI's end-of-command pass.
- */
 export async function runRepoRetention(
   deps: RepoRetentionDeps,
   options: RetentionPassOptions & { policy: RetentionPolicy },

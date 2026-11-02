@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Revoke a worker enrollment token before its lifetime expires (see
- * design/enablers/remote-execution.md, "Enrollment tokens").
- *
- * Runs the `revoke` method on the existing `swamp/enrollment-token` model
- * instance named by the token. Revoking an already-revoked token is a
- * no-op, reported via `alreadyRevoked`.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
@@ -34,12 +25,10 @@ import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { createWorkerModelRunDeps } from "./run_deps.ts";
 
-/** Data payload for the completed event. */
 export interface WorkerTokenRevokeData {
   name: string;
   state: string;
   revokedAt?: string;
-  /** True when the token was already revoked and no state change occurred. */
   alreadyRevoked: boolean;
   /**
    * Workers the orchestrator disconnected because they were enrolled on the
@@ -58,12 +47,10 @@ export interface WorkerTokenRevokeInput {
   name: string;
 }
 
-/** Dependencies for the worker token revoke operation. */
 export interface WorkerTokenRevokeDeps {
   runRevoke: (name: string) => AsyncIterable<ModelMethodRunEvent>;
 }
 
-/** Wires real infrastructure into WorkerTokenRevokeDeps. */
 export async function createWorkerTokenRevokeDeps(
   ctx: LibSwampContext,
   repoDir: string,
@@ -86,9 +73,6 @@ export async function createWorkerTokenRevokeDeps(
 
 const TOKEN_DATA_NAME = "token-main";
 
-/**
- * Revokes a named enrollment token.
- */
 export async function* workerTokenRevoke(
   ctx: LibSwampContext,
   deps: WorkerTokenRevokeDeps,
@@ -105,7 +89,6 @@ export async function* workerTokenRevoke(
         let completed = false;
         for await (const event of deps.runRevoke(input.name)) {
           if (event.kind === "error") {
-            // Reword the generic model lookup failure in token terms.
             const error = event.error.code === "model_not_found"
               ? {
                 code: event.error.code,

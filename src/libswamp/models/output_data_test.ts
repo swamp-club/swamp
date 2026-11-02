@@ -39,8 +39,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles
-      // yet. Temp dir is ephemeral, OS reclaims.
+      // best-effort: EBUSY can fire when V8 has not GC'd native sqlite handles
+      // yet
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -206,7 +206,6 @@ Deno.test("modelOutputData yields error when no data artifacts", async () => {
   assertEquals(events[1].kind, "error");
 });
 
-// The 8-byte PNG signature: 0x89 is not valid UTF-8.
 const PNG_SIGNATURE = new Uint8Array([
   0x89,
   0x50,

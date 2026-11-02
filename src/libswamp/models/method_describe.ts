@@ -38,9 +38,6 @@ import {
 } from "../types/schema_helpers.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the model method describe output.
- */
 export interface ModelMethodDescribeData {
   modelName: string;
   modelType: string;
@@ -54,13 +51,10 @@ export type ModelMethodDescribeEvent =
   | { kind: "completed"; data: ModelMethodDescribeData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the model method describe operation. */
 export interface ModelMethodDescribeDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -70,7 +64,6 @@ export interface ModelMethodDescribeDeps {
   ) => Promise<ModelDefinition | undefined>;
 }
 
-/** Wires real infrastructure into ModelMethodDescribeDeps. */
 export function createModelMethodDescribeDeps(
   repoDir: string,
   injectedDefinitionRepo?: YamlDefinitionRepository,
@@ -86,7 +79,6 @@ export function createModelMethodDescribeDeps(
   };
 }
 
-/** Describes a method on a model with argument details. */
 export async function* modelMethodDescribe(
   _ctx: LibSwampContext,
   deps: ModelMethodDescribeDeps,

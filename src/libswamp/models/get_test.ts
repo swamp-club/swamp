@@ -360,21 +360,11 @@ Deno.test("modelGet: a missing behavior reaches userErrorFromSwampError in both 
   );
 });
 
-// ---------------------------------------------------------------------------
-// typeVersion reporting (swamp-club#900)
-//
-// `modelGet` used to report the registered model's version as `typeVersion`,
-// so an instance whose global arguments were never migrated still displayed the
-// new version. That is what led the reporter of swamp-club#900 to conclude the
-// model schema was being cached.
-// ---------------------------------------------------------------------------
-
 const staleDefinition = {
   ...testDefinition,
   typeVersion: "2026.01.01.1",
 };
 
-/** Runs modelGet with the given deps and returns the completed payload. */
 async function getData(deps: ModelGetDeps) {
   return completedData(
     await collect<ModelGetEvent>(
@@ -441,8 +431,8 @@ Deno.test("modelGet: reports unknown for a definition with no recorded version",
 });
 
 Deno.test("modelGet: describes a definition whose typeVersion is malformed", async () => {
-  // model get is the command used to diagnose a broken definition, so it must
-  // not fail on one. Surfaced by the adversarial review of swamp-club#900.
+  // model get is used to diagnose a broken definition, so it must not fail on
+  // one
   const deps = makeDeps({
     lookupResult: {
       definition: { ...testDefinition, typeVersion: "1.0.0" },

@@ -95,7 +95,6 @@ import type { ClientIdentity } from "../../infrastructure/http/client_identity.t
 
 export { expandHome } from "../workspace/workspace_store.ts";
 
-/** Whether the user is signed in to Swamp Club, as the auth gate sees it. */
 export type SignedInState =
   | {
     readonly kind: "signed_in";
@@ -105,7 +104,6 @@ export type SignedInState =
   | { readonly kind: "not_signed_in" }
   | { readonly kind: "blocked"; readonly reason: string };
 
-/** Which screen the start page shows. */
 export type StartScreen =
   | "workspace"
   | "task"
@@ -114,13 +112,8 @@ export type StartScreen =
   | "agent"
   | "trust"
   | "launched"
-  /**
-   * The workspace's home: every task, and the chosen one's summary with
-   * its agent to reopen.
-   */
   | "home";
 
-/** Cheap local hints that order the example prompts. */
 export interface StartSignals {
   readonly kubeconfig: boolean;
   readonly awsConfig: boolean;
@@ -129,28 +122,23 @@ export interface StartSignals {
 
 /** Everything the start page renders from. Never carries a secret. */
 export interface StartStatus {
-  /** Null until a workspace is chosen (screen "workspace"). */
   readonly workspacePath: string | null;
   readonly workspaceName: string | null;
   readonly signedIn: "signed_in" | "not_signed_in" | "blocked";
   readonly username?: string;
   readonly blockedReason?: string;
   readonly screen: StartScreen;
-  /** The task the page has open, or none (a new task is being written). */
   readonly taskId?: string;
   readonly task?: {
     readonly text: string;
     readonly title: string;
-    /** When the task was created (ISO). */
     readonly createdAt: string;
-    /** Its brief, relative to the workspace, once it has one. */
     readonly briefFile?: string;
   };
   readonly harness?: {
     readonly id: string;
     readonly displayName: string;
     readonly trustMode: TrustMode;
-    /** True when reopening it continues the previous conversation. */
     readonly canResume: boolean;
   };
   readonly launch?: {
@@ -159,57 +147,37 @@ export interface StartStatus {
     readonly opened: boolean;
     readonly at: string;
   };
-  /** Definitions in the workspace now: what the agent has built so far. */
   readonly contents?: StartContents;
-  /** Tools the workspace is set up for already (its `.swamp.yaml`). */
   readonly enrolledTools?: readonly string[];
-  /** Tools chosen for this task, the harness included. */
   readonly tools?: readonly string[];
-  /** True when another `swamp start` has this workspace open too. */
   readonly alsoOpenElsewhere?: boolean;
-  /** Every task of the workspace, newest first. Set once one is chosen. */
   readonly tasks?: readonly StartTaskSummary[];
   /**
-   * True when the user confirmed, on this machine, that agents may work in
-   * the workspace (recorded in the workspace registry, never read from the
-   * workspace). Until then every agent launch asks for that confirmation.
+   * recorded in the workspace registry on this machine, never read from the
+   * workspace; until set, every agent launch asks for confirmation
    */
   readonly trusted: boolean;
-  /**
-   * The agent (a harness id) the user last picked for a task, in any
-   * workspace: a new task starts with it selected when it can launch.
-   */
   readonly lastAgent?: string;
-  /**
-   * True when the server can show this machine's folder chooser for an
-   * import (not over SSH or without a display).
-   */
   readonly canPickFolder: boolean;
   readonly apiKeyFromEnv: boolean;
   readonly signals: StartSignals;
 }
 
-/** What a workspace holds: its models and workflows, by name. */
 export interface StartContents {
   readonly models: number;
   readonly workflows: number;
-  /** Up to {@link CONTENTS_LIMIT} models, by name and type. */
   readonly modelList: readonly {
     readonly name: string;
     readonly type: string;
   }[];
-  /** Up to {@link CONTENTS_LIMIT} workflow names. */
   readonly workflowList: readonly string[];
 }
 
-/** How many models and workflows a summary names before "+N more". */
 const CONTENTS_LIMIT = 8;
 
-/** One supported harness, and whether this machine has it on PATH. */
 export interface StartHarnessInfo {
   readonly id: string;
   readonly displayName: string;
-  /** The executable looked up on PATH. */
   readonly binary: string;
   readonly binaryPath: string | null;
   readonly found: boolean;
@@ -217,53 +185,38 @@ export interface StartHarnessInfo {
   readonly launchable: boolean;
 }
 
-/** One workspace under the data dir, as the picker shows it. */
 export interface StartWorkspaceSummary {
   readonly name: string;
   readonly path: string;
-  /** The newest task's step, title and agent; null with no tasks. */
   readonly step: StartSession["step"] | null;
   readonly taskTitle: string | null;
   readonly harness: string | null;
   readonly harnessDisplayName: string | null;
-  /** Every task of the workspace, newest first. */
   readonly tasks: readonly StartTaskSummary[];
-  /** Tools the workspace is set up for (its `.swamp.yaml`). */
   readonly enrolledTools: readonly string[];
-  /** When the workspace was created, or null when unknown. */
   readonly createdAt: string | null;
-  /** When one of its tasks last changed, or null when it has none. */
   readonly updatedAt: string | null;
-  /** True when another `swamp start` is serving it. */
   readonly running: boolean;
-  /** True when its folder is outside the data dir: an imported repo. */
   readonly imported: boolean;
 }
 
-/** Enrols tools and creates the workspace repo. */
 export interface StartRepoOps {
-  /** True when the folder holds a `.swamp.yaml`. */
   isRepo(path: string): Promise<boolean>;
   init(path: string): Promise<void>;
   enrolledTools(path: string): Promise<string[]>;
-  /** When the repo was initialised (`.swamp.yaml` initializedAt). */
   createdAt?(path: string): Promise<string | null>;
   setTools(path: string, tools: string[]): Promise<void>;
 }
 
-/** Dependencies of the start services, injected for testing. */
 export interface StartDeps {
-  /** The swamp data dir the workspaces live under. */
   readonly dataDir: string;
   readonly os: string;
   readonly checkSignedIn: (live: boolean) => Promise<SignedInState>;
   readonly apiKeyFromEnv: () => boolean;
   readonly repo: StartRepoOps;
   readonly sessions: StartSessionRepository;
-  /** All lookup hits for an executable name, best first. */
   readonly lookup: (name: string) => Promise<string[]>;
   readonly terminalLauncher: TerminalLauncher;
-  /** Writes a task's brief (`briefFile` is workspace-relative). */
   readonly writeBrief: (
     workspacePath: string,
     briefFile: string,
@@ -273,38 +226,21 @@ export interface StartDeps {
   readonly signIn: (ctx: LibSwampContext) => AsyncIterable<AuthLoginEvent>;
   readonly now: () => Date;
   readonly randomUUID: () => string;
-  /** Values in [0, 1), for suggested workspace names. */
   readonly random: () => number;
-  /** True when another `swamp start` is serving the workspace. */
   readonly isRunning: (workspacePath: string) => Promise<boolean>;
-  /** Every workspace Swamp knows about, wherever its folder is. */
   readonly registry: WorkspaceRegistryRepository;
-  /** The user's home folder, for `~` in an imported path; unset when unknown. */
   readonly homeDir?: string;
-  /**
-   * The folder new workspaces go in when none is chosen
-   * (`swamp config set workspaces.dir`); unset means under the data dir.
-   */
   readonly configuredParent?: () => Promise<string | undefined>;
-  /**
-   * A task's brief file as it is now, or null when there is none. Defaults
-   * to reading the file.
-   */
   readonly readBrief?: (
     workspacePath: string,
     briefFile: string,
   ) => Promise<string | null>;
-  /** The OS folder chooser for imports; none means typing the path only. */
   readonly folderPicker?: FolderPicker;
 }
 
 /**
- * Throws unless the user is signed in to Swamp Club. Everything that writes
- * to a workspace (creating or importing one, setting tools up, saving or
- * launching a task) needs it: `swamp start` is exempt from the auth gate
- * only so it can sign the user in.
- *
- * @throws {UserError} code `not_signed_in`, or `blocked` with the reason
+ * every workspace write needs sign-in; `swamp start` is exempt from the auth
+ * gate only so it can sign the user in
  */
 async function requireSignedIn(
   deps: StartDeps,
@@ -320,21 +256,10 @@ async function requireSignedIn(
   return signedIn;
 }
 
-/**
- * The folder a new workspace of that name gets: under the data dir. A
- * registered workspace may live anywhere; see {@link resolveStartWorkspacePath}.
- */
 export function startWorkspacePath(dataDir: string, name: string): string {
   return defaultWorkspacePath(dataDir, name);
 }
 
-/**
- * The folder a workspace opens in: where it is registered, else where a
- * new one would be created (see {@link StartWorkspaceLocationInput}).
- *
- * @throws {UserError} code `invalid_name`, `registry_unreadable`, or a
- *   `parent_*` code for a chosen folder that can't be used
- */
 export async function resolveStartWorkspacePath(
   deps: StartDeps,
   name: string,
@@ -355,24 +280,15 @@ export async function resolveStartWorkspacePath(
     .path;
 }
 
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
-
 function deriveScreen(
   session: StartSession | null,
   signedIn: SignedInState,
 ): StartScreen {
   if (signedIn.kind === "blocked") return "blocked";
   if (signedIn.kind === "not_signed_in") return "sign_in";
-  // No task chosen: a new one is being written.
   return session?.step ?? "task";
 }
 
-/**
- * Builds the status the page renders from, for a workspace and the task the
- * page has open (none while a new task is written).
- */
 export function buildStartStatus(
   workspacePath: string,
   session: StartSession | null,
@@ -436,7 +352,6 @@ export function buildStartStatus(
   };
 }
 
-/** The status before a workspace is chosen. */
 export function buildUnboundStatus(
   signedIn: SignedInState,
   apiKeyFromEnv: boolean,
@@ -482,11 +397,6 @@ async function canPickFolder(deps: StartDeps): Promise<boolean> {
   }
 }
 
-/**
- * The workspace's task with that id.
- *
- * @throws {UserError} code `task_missing` when there is none
- */
 async function loadTask(
   deps: StartDeps,
   workspacePath: string,
@@ -502,17 +412,14 @@ async function loadTask(
   return task;
 }
 
-/** One task of a workspace, as the task list shows it. */
 export interface StartTaskSummary {
   readonly id: string;
   readonly title: string;
   readonly step: StartSession["step"];
   readonly harness: string | null;
   readonly harnessDisplayName: string | null;
-  /** When the task was created (ISO). The list is ordered by it. */
   readonly createdAt: string;
   readonly launchedAt: string | null;
-  /** Its brief, relative to the workspace, once it has one. */
   readonly briefFile: string | null;
 }
 
@@ -532,7 +439,6 @@ function summariseTask(session: StartSession): StartTaskSummary | null {
   };
 }
 
-/** Every task of the workspace, newest first by when it was created. */
 async function listTasks(
   deps: StartDeps,
   workspacePath: string,
@@ -545,11 +451,6 @@ async function listTasks(
     );
 }
 
-/**
- * The models and workflows a workspace holds, read through swamp's own
- * definition and workflow repositories, so it matches `swamp model search`
- * and `swamp workflow search` rather than guessing from files.
- */
 async function listContents(workspacePath: string): Promise<StartContents> {
   let models: { name: string; type: string }[] = [];
   let workflows: string[] = [];
@@ -614,14 +515,9 @@ async function statusOf(
 }
 
 /**
- * Refuses to open an agent in a folder the user hasn't trusted on this
- * machine. Trust is recorded in the workspace registry (the config dir),
- * never taken from the workspace's own files: an imported repo can carry any
- * `.swamp/start/state.json` it likes, including one that says its task was
- * launched. `confirmed` is the user's confirmation sent with this request,
- * which is recorded.
- *
- * @throws {UserError} code `trust_required`
+ * trust is recorded in the workspace registry, never taken from the workspace's
+ * own files: an imported repo can carry a state.json claiming its task was
+ * launched
  */
 async function requireTrust(
   deps: StartDeps,
@@ -640,7 +536,6 @@ async function requireTrust(
   });
 }
 
-/** Events of the operations that answer with a status. */
 export type StartStatusEvent =
   | { kind: "completed"; data: StartStatus }
   | { kind: "error"; error: SwampError };
@@ -655,10 +550,6 @@ function errorEvent(error: unknown): { kind: "error"; error: SwampError } {
   throw error;
 }
 
-/**
- * Runs one command on a task: re-reads it, applies the change, saves it
- * and answers with the status.
- */
 function taskCommand(
   deps: StartDeps,
   workspacePath: string,
@@ -680,11 +571,6 @@ function taskCommand(
   })();
 }
 
-/**
- * The status of a workspace and the task the page has open (none while a
- * new task is written); with no workspace chosen, the workspace screen.
- * Never writes anything.
- */
 export function startStatus(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -710,11 +596,6 @@ export function startStatus(
   })();
 }
 
-/**
- * Saves a task's text. With no `taskId` it creates a new task, giving it
- * its brief path; otherwise it changes the text of that task, which is
- * only allowed until it is launched. The status names the task.
- */
 export function startSaveTask(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -801,7 +682,6 @@ export function startChooseHarness(
   });
 }
 
-/** Every task of the workspace, newest first by when it was created. */
 export async function startListTasks(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -810,10 +690,6 @@ export async function startListTasks(
   return await listTasks(deps, input.workspacePath);
 }
 
-// ---------------------------------------------------------------------------
-// Prepare
-// ---------------------------------------------------------------------------
-
 export type StartPrepareEvent =
   | { kind: "signed_in_checked"; state: SignedInState }
   | { kind: "workspace_ready"; path: string; created: boolean }
@@ -821,14 +697,8 @@ export type StartPrepareEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Converts a workspace's files from before every task had its own record
- * and brief. What can't be read is kept where it is, with a warning.
- */
-/**
- * Records a launch after the agent's window has opened. The agent is
- * already running by then, so a failed save is a warning, not an error:
- * reporting the launch as failed would invite a second agent on the same
- * brief.
+ * a failed save is only a warning: the agent is already running, and reporting
+ * failure would invite a second agent on the same brief
  */
 async function saveLaunch(
   deps: StartDeps,
@@ -853,23 +723,14 @@ async function migrateLegacyTasks(
   }
 }
 
-/** Where to create a workspace that isn't registered yet. */
 export interface StartWorkspaceLocationInput {
-  /**
-   * The folder to create it in; unset means the configured folder, else
-   * under the data dir.
-   */
   readonly parent?: string;
-  /** The folder a relative `parent` is resolved against; unset refuses one. */
   readonly relativeTo?: string;
 }
 
 /**
- * Creates or reuses a workspace by name and shows its newest task.
- * A registered name opens where it is registered; a new one is created in
- * the chosen folder (see {@link StartWorkspaceLocationInput}).
- * The caller holds the workspace's claim (its creation lock and server
- * record); several `swamp start` processes may serve one workspace.
+ * the caller holds the workspace's claim (creation lock and server record);
+ * several `swamp start` processes may serve one workspace
  */
 export function startOpenWorkspace(
   _ctx: LibSwampContext,
@@ -879,7 +740,6 @@ export function startOpenWorkspace(
   return openWorkspace(deps, input.workspaceName, undefined, input);
 }
 
-/** True when the workspace at `path` is an existing repo imported there. */
 async function isImportedFolder(
   deps: StartDeps,
   path: string,
@@ -899,7 +759,6 @@ async function isImportedFolder(
   return isImportedWorkspace(deps.dataDir, entry ?? { path });
 }
 
-/** The error for a name that isn't valid, keeping the registry's own. */
 function asInvalidName(error: unknown): unknown {
   if (error instanceof UserError && error.code !== "registry_unreadable") {
     return new UserError(error.message, "invalid_name");
@@ -956,8 +815,6 @@ async function* openWorkspace(
     }
     await migrateLegacyTasks(deps, workspacePath);
     yield { kind: "workspace_ready", path: workspacePath, created };
-    // The newest task is shown first; a workspace with none starts on a new
-    // task.
     const newest = (await listTasks(deps, workspacePath))[0];
     const session = newest
       ? await loadTask(deps, workspacePath, newest.id)
@@ -971,10 +828,6 @@ async function* openWorkspace(
   }
 }
 
-/**
- * Refuses to open a registered workspace when a folder was chosen for it
- * and it is registered somewhere else: the name is taken.
- */
 async function refuseOtherFolder(
   deps: StartDeps,
   name: string,
@@ -1002,10 +855,6 @@ async function refuseOtherFolder(
   );
 }
 
-/**
- * Checks sign-in and, when a workspace is named, opens it. With no name the
- * status reports the workspace screen, and the page picks one.
- */
 export async function* startPrepare(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1036,10 +885,6 @@ export async function* startPrepare(
   yield* openWorkspace(deps, input.workspaceName, signedIn);
 }
 
-// ---------------------------------------------------------------------------
-// Workspaces
-// ---------------------------------------------------------------------------
-
 async function mtimeOf(path: string): Promise<Date | null> {
   try {
     return (await Deno.stat(path)).mtime;
@@ -1048,10 +893,6 @@ async function mtimeOf(path: string): Promise<Date | null> {
   }
 }
 
-/**
- * The registered workspaces, newest first, plus a fresh name and the
- * folder a new workspace goes in when none is chosen.
- */
 export async function startListWorkspaces(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1131,29 +972,21 @@ export async function startListWorkspaces(
   };
 }
 
-/** What the create form shows for a new workspace before it is created. */
 export type StartLocationCheck =
   | {
     readonly ok: true;
-    /** The workspace folder that would be created. */
     readonly path: string;
   }
   | {
     readonly ok: false;
-    /** The field the problem is about. */
     readonly field: "name" | "location";
     readonly code: string;
     readonly message: string;
-    /** The workspace folder, when the location could be worked out. */
     readonly path?: string;
   };
 
 const NAME_PROBLEMS = new Set(["invalid_name", "name_taken"]);
 
-/**
- * Checks where a new workspace would be created without creating it: the
- * same rules a create runs. Reads only.
- */
 export async function startCheckWorkspaceLocation(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1185,21 +1018,10 @@ export async function startCheckWorkspaceLocation(
   }
 }
 
-/** What the folder chooser asks. */
 export const PICK_FOLDER_PROMPT = "Choose the swamp repo to import";
 
-/** What the folder chooser asks when picking where to create a workspace. */
 export const PICK_LOCATION_PROMPT = "Choose where to create the workspace";
 
-/**
- * Shows this machine's folder chooser, for an import or for where to create
- * a workspace, and answers with the chosen folder, or null when the user
- * cancelled. Nothing is imported or created: the page fills its folder
- * field and the user still confirms.
- *
- * @throws {UserError} code `not_signed_in`, or `picker_unavailable` when no
- *   chooser can be shown here (over SSH, without a display)
- */
 export async function startPickFolder(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1225,12 +1047,10 @@ export async function startPickFolder(
   };
 }
 
-/** What the import form shows for a folder before it is imported. */
 export type StartFolderCheck =
   | {
     readonly ok: true;
     readonly path: string;
-    /** Set when the folder is already a registered workspace. */
     readonly registeredAs?: string;
   }
   | {
@@ -1239,11 +1059,6 @@ export type StartFolderCheck =
     readonly message: string;
   };
 
-/**
- * Checks a folder for import without importing it: the same rules as
- * {@link startImportWorkspace}, and the name it is already registered
- * under, if any. Reads only.
- */
 export async function startCheckFolder(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1279,12 +1094,6 @@ export async function startCheckFolder(
   return { ok: true, path };
 }
 
-/**
- * Registers an existing swamp repo as a workspace where it is: nothing is
- * moved or copied. The name defaults to the folder's name; a clash gets a
- * numeric suffix. Importing a folder that is already registered answers
- * with its existing name.
- */
 export async function startImportWorkspace(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1295,10 +1104,6 @@ export async function startImportWorkspace(
   return { name, path };
 }
 
-// ---------------------------------------------------------------------------
-// Harnesses
-// ---------------------------------------------------------------------------
-
 async function resolveHarnessBinary(
   deps: StartDeps,
   binary: string,
@@ -1306,10 +1111,6 @@ async function resolveHarnessBinary(
   return pickBinaryPath(await deps.lookup(binary), deps.os);
 }
 
-/**
- * Every harness swamp supports (the `--tool` values), in the order the page
- * lists them, with whether each one is on PATH.
- */
 export async function startListHarnesses(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1329,10 +1130,6 @@ export async function startListHarnesses(
   }));
 }
 
-// ---------------------------------------------------------------------------
-// Sign-in
-// ---------------------------------------------------------------------------
-
 /** The sign-in events the browser may see. Never the API key or email. */
 export type StartSignInEvent =
   | {
@@ -1346,7 +1143,6 @@ export type StartSignInEvent =
   | { kind: "completed"; username: string }
   | { kind: "error"; message: string };
 
-/** Whitelists one auth login event for the browser, or drops it. */
 function projectSignInEvent(
   event: AuthLoginEvent,
 ): StartSignInEvent | null {
@@ -1373,7 +1169,6 @@ function projectSignInEvent(
   }
 }
 
-/** Signs the user in through the device flow, forwarding whitelisted events. */
 export async function* startSignIn(
   ctx: LibSwampContext,
   deps: StartDeps,
@@ -1399,10 +1194,6 @@ export async function* startSignIn(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Launch
-// ---------------------------------------------------------------------------
-
 export type StartLaunchEvent =
   | { kind: "checking" }
   | { kind: "enrolling"; tool: string }
@@ -1412,11 +1203,6 @@ export type StartLaunchEvent =
   | { kind: "completed"; data: StartStatus }
   | { kind: "error"; error: SwampError };
 
-/**
- * Checks sign-in and the harness binary, then enrols the harness in the
- * workspace (refreshing its instruction file and skills when it is already
- * enrolled). Shared by launch and resume.
- */
 async function prepareHarness(
   deps: StartDeps,
   session: StartSession,
@@ -1438,10 +1224,8 @@ async function prepareHarness(
 }
 
 /**
- * Sets the workspace up for the session's tools, keeping every tool it is
- * already set up for: `repo upgrade --tool` with the union. Never removes a
- * tool. Re-setting an unchanged list refreshes the instruction files and
- * skills for this version.
+ * sets up the union of the workspace's tools and the session's; never removes a
+ * tool
  */
 async function enrol(
   deps: StartDeps,
@@ -1457,10 +1241,8 @@ async function enrol(
 }
 
 /**
- * Refuses to go on when the task's brief path holds a file swamp did not
- * write: it is someone's own file and is never overwritten.
- *
- * @throws {UserError} code `task_file_exists`
+ * a file at the brief path that swamp did not write is someone's own and is
+ * never overwritten
  */
 async function assertBriefIsOurs(
   deps: StartDeps,
@@ -1495,11 +1277,7 @@ async function readBriefFile(
   }
 }
 
-/**
- * Enrols the chosen harness, writes the task's brief and the launcher, and
- * opens the agent's window, telling it to read that brief. Every step is
- * idempotent, so "Launch again" runs the same path.
- */
+/** every step is idempotent, so launching again runs the same path */
 export async function* startLaunch(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1526,7 +1304,6 @@ export async function* startLaunch(
     const briefFile = session.briefFile!;
     // Checked before anything is set up, so a refused launch changes nothing.
     await assertBriefIsOurs(deps, input.workspacePath, briefFile);
-    // The launch request carries the trust screen's confirmation.
     await requireTrust(deps, input.workspacePath, true);
 
     yield { kind: "enrolling", tool: session.tools.join(", ") };
@@ -1576,12 +1353,6 @@ export async function* startLaunch(
   }
 }
 
-/**
- * Reopens a launched task's agent in its workspace, without sending the
- * task again: harnesses that can continue their most recent conversation in
- * the folder do so, the rest open a fresh session there. The brief is left
- * as it is.
- */
 export async function* startResume(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1634,7 +1405,6 @@ export async function* startResume(
   }
 }
 
-/** The task the page has open, or null; a missing one reads as none. */
 async function openTask(
   deps: StartDeps,
   workspacePath: string,
@@ -1645,7 +1415,6 @@ async function openTask(
     : await deps.sessions.load(workspacePath, taskId);
 }
 
-/** Sets the workspace up for more agents; never removes one. */
 export function startAddTools(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1681,12 +1450,6 @@ export function startAddTools(
   })();
 }
 
-/**
- * Opens an agent in the workspace without a task: any installed agent, not
- * only one a task was launched with. It is set up first when needed. An
- * agent that was launched in this workspace before, and can, continues its
- * own earlier conversation; otherwise a fresh session opens.
- */
 export async function* startOpenAgent(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1763,24 +1526,14 @@ export async function* startOpenAgent(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Inspect (JSON mode and `start status`)
-// ---------------------------------------------------------------------------
-
-/** What `swamp start --json` and `swamp start status` print. */
 export interface StartInspection {
   readonly signedIn: "signed_in" | "not_signed_in" | "blocked" | "unknown";
-  /** The signed-in account's username, when known. */
   readonly username?: string;
-  /** Why the account couldn't be verified (signedIn "blocked"). */
   readonly blockedReason?: string;
-  /** Every workspace, or only the one named with `--workspace`. */
   readonly workspaces: StartWorkspaceSummary[];
-  /** Every supported harness and whether it is on PATH. */
   readonly agents: StartHarnessInfo[];
 }
 
-/** Reads the workspaces' state without creating anything or calling out. */
 export async function startInspect(
   ctx: LibSwampContext,
   deps: StartDeps,
@@ -1815,11 +1568,6 @@ export async function startInspect(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Wiring
-// ---------------------------------------------------------------------------
-
-/** Checks the chooser's availability once per process. */
 function memoizedAvailability(picker: FolderPicker): FolderPicker {
   let available: Promise<boolean> | undefined;
   return {
@@ -1843,7 +1591,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Real dependencies; the CLI supplies the sign-in check. */
 export function createStartDeps(options: {
   version: string;
   checkSignedIn: (live: boolean) => Promise<SignedInState>;
@@ -1851,7 +1598,6 @@ export function createStartDeps(options: {
   identity?: ClientIdentity;
   lookup?: (name: string) => Promise<string[]>;
   homeDir?: string;
-  /** True when another `swamp start` serves the workspace. */
   isRunning: (workspacePath: string) => Promise<boolean>;
 }): StartDeps {
   const service = new RepoService(options.version);

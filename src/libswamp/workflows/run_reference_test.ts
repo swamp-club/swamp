@@ -41,7 +41,6 @@ function run(id: string, workflow: Workflow = FLOW): WorkflowRun {
 const RUN_A = run("abd00000-0000-4000-8000-000000000001");
 const RUN_B = run("abd11111-0000-4000-8000-000000000001");
 
-/** Deps over in-memory runs and workflows, recording calls. */
 function fakeDeps(
   runs: WorkflowRun[],
   workflows: Workflow[],

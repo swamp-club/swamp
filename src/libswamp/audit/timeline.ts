@@ -27,9 +27,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the audit timeline output.
- */
 export type AuditTimelineData =
   | { status: "timeline"; timeline: AuditTimeline }
   | { status: "no_data" }
@@ -39,22 +36,18 @@ export type AuditTimelineEvent =
   | { kind: "completed"; data: AuditTimelineData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the audit timeline operation. */
 export interface AuditTimelineInput {
   hours: number;
   showAll: boolean;
   sessionId?: string;
   tool: string;
-  /** Include rows written by `swamp doctor audit`'s smoke test. */
   includeDiagnostic?: boolean;
 }
 
-/** Dependencies for the audit timeline operation. */
 export interface AuditTimelineDeps {
   getTimeline: (options: AuditTimelineOptions) => Promise<AuditTimeline>;
 }
 
-/** Wires real infrastructure into AuditTimelineDeps. */
 export function createAuditTimelineDeps(repoDir: string): AuditTimelineDeps {
   const auditRepository = new JsonlAuditRepository(repoDir);
   const service = new AuditService(auditRepository);
@@ -63,7 +56,6 @@ export function createAuditTimelineDeps(repoDir: string): AuditTimelineDeps {
   };
 }
 
-/** Retrieves the audit timeline of swamp vs direct CLI commands. */
 export async function* auditTimeline(
   ctx: LibSwampContext,
   deps: AuditTimelineDeps,
@@ -75,7 +67,6 @@ export async function* auditTimeline(
     (async function* () {
       ctx.logger.debug`Fetching audit timeline`;
 
-      // Check if the configured tool supports audit hooks
       if (input.tool === "codex") {
         yield {
           kind: "completed",

@@ -35,10 +35,7 @@ interface TestDeps extends SourceAddDeps {
 function createTestDeps(
   options: {
     existing?: SwampSourcesConfig | null;
-    /** Override the resolver return for the next call. Accepts a function
-     * so tests can key on the path being validated. */
     resolveKinds?: (source: SwampSource) => ExtensionKind[];
-    /** Override the glob expansion for the next call. */
     expandSource?: (source: SwampSource) => SwampSource[];
     defaultKindDirs?: string[];
   } = {},
@@ -83,10 +80,6 @@ function findError(events: SourceModifyEvent[]) {
 }
 
 const ctx = createLibSwampContext({});
-
-// ----------------------------------------------------------------
-// Basic add behaviours (independent of resolver validation).
-// ----------------------------------------------------------------
 
 Deno.test("sourceAdd: adds a new source when resolver reports kinds", async () => {
   const deps = createTestDeps({ resolveKinds: () => ["models"] });
@@ -154,10 +147,6 @@ Deno.test("sourceAdd: rejects empty path", async () => {
   assertEquals(deps.written, null);
 });
 
-// ----------------------------------------------------------------
-// swamp-club#1419: reject sources that overlap default scan dirs.
-// ----------------------------------------------------------------
-
 Deno.test("sourceAdd: rejects path that matches a default kind dir", async () => {
   const deps = createTestDeps({
     defaultKindDirs: ["extensions/models", "extensions/vaults"],
@@ -202,10 +191,6 @@ Deno.test("sourceAdd: allows path that does not overlap default dirs", async () 
   assertEquals(completed?.kind, "completed");
 });
 
-// ----------------------------------------------------------------
-// Issue-139 validation: fail fast when the source contributes nothing.
-// ----------------------------------------------------------------
-
 Deno.test("sourceAdd: rejects concrete path that resolves to zero kinds", async () => {
   const deps = createTestDeps({ resolveKinds: () => [] });
   const events = await collectEvents(sourceAdd(ctx, deps, "/empty"));
@@ -241,27 +226,19 @@ Deno.test("sourceAdd: rejection does NOT leak all kinds when --only is set", asy
 
   const error = findError(events);
   if (error?.kind === "error") {
-    // Only the requested kind should appear in the "expected" list.
-    // Avoids a confusing message that suggests all kinds are expected
-    // when the user explicitly narrowed via --only.
+    // only the requested kind appears in the expected list, so the message does
+    // not suggest all kinds when the user narrowed via --only
     const msg = error.error.message;
-    // vaults is in the list
     assertStringIncludes(msg, "vaults");
-    // The message should NOT enumerate the unrequested kinds.
     assertEquals(msg.includes("models"), false);
     assertEquals(msg.includes("drivers"), false);
   }
 });
 
-// ----------------------------------------------------------------
-// Glob semantics: unexpanded allowed, expanded-but-empty rejected,
-// expanded-with-content accepted.
-// ----------------------------------------------------------------
-
 Deno.test("sourceAdd: allows unexpanded glob (pre-population workflow)", async () => {
   const deps = createTestDeps({
-    resolveKinds: () => [], // no kinds (glob hasn't matched anything yet)
-    expandSource: () => [], // zero expansions
+    resolveKinds: () => [],
+    expandSource: () => [],
   });
   const events = await collectEvents(
     sourceAdd(ctx, deps, "/prefix/*"),
@@ -314,13 +291,6 @@ Deno.test("sourceAdd: accepts glob when at least one expansion contributes kinds
   assertEquals(completed?.kind, "completed");
 });
 
-// ----------------------------------------------------------------
-// End-to-end integration with the real resolver (temp-dir fixtures).
-// These exercise the full path from sourceAdd → resolveExtensionKinds
-// ForSource → both layouts, ensuring the unit-level fakes above agree
-// with real filesystem behaviour.
-// ----------------------------------------------------------------
-
 import { createSourceAddDeps } from "./add.ts";
 
 async function withTempRepo(
@@ -364,8 +334,6 @@ Deno.test("sourceAdd e2e: non-standard layout — loose model.ts at root", async
 
 Deno.test("sourceAdd e2e: reporter's case — extensions/models/ as source path", async () => {
   await withTempRepo(async (repo) => {
-    // Exactly the issue-139 reporter's misconfiguration: user points at
-    // the models dir itself instead of the parent repo root.
     const src = join(repo, "sister", "extensions", "models");
     await Deno.mkdir(src, { recursive: true });
     await Deno.writeTextFile(
@@ -438,7 +406,6 @@ Deno.test("sourceAdd e2e: mixed layout — standard wins, loose files ignored", 
     );
     const deps = await createSourceAddDeps(repo);
     const events = await collectEvents(sourceAdd(ctx, deps, src));
-    // Should succeed — standard layout has content; loose file ignored.
     assertEquals(findCompleted(events)?.kind, "completed");
   });
 });

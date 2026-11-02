@@ -115,7 +115,6 @@ Deno.test("modelCreate: coerces string global arguments to match schema types", 
       resources: {},
     } as unknown as ModelDefinition),
     createAndSave: (_type, _name, _version, globalArguments) => {
-      // Verify the number was coerced from string "428" to number 428
       assertEquals(
         (globalArguments as Record<string, unknown>)?.issueNumber,
         428,
@@ -133,7 +132,6 @@ Deno.test("modelCreate: coerces string global arguments to match schema types", 
     modelCreate(createLibSwampContext(), deps, {
       typeArg: "test/typed-args",
       name: "my-model",
-      // CLI passes all values as strings from --global-arg key=value
       globalArguments: { repo: "owner/repo", issueNumber: "428" },
     }),
   );
@@ -381,8 +379,6 @@ Deno.test("modelCreate: coerces string values with default-wrapped schema", asyn
 });
 
 Deno.test("modelCreate: coerces Zod v3-style schema global arguments", async () => {
-  // Simulate a Zod v3 schema where _def uses typeName instead of type,
-  // and shape is a function instead of a value.
   const v3LikeSchema = {
     _def: {
       typeName: "ZodObject",
@@ -558,7 +554,6 @@ Deno.test("modelCreate: stores a record global arg given as a JSON string as a m
     modelCreate(createLibSwampContext(), deps, {
       typeArg: "test/record-args",
       name: "my-model",
-      // CLI passes --global-arg 'labels={"env":"prod"}' as one string
       globalArguments: { labels: '{"env":"prod"}' },
     }),
   );
@@ -650,9 +645,8 @@ Deno.test("modelCreate: refuses a sensitive record JSON string that mixes a lite
 });
 
 Deno.test("modelCreate: accepts a vault.get expression for a CONSTRAINED sensitive field (ADV-3)", async () => {
-  // The vault.get sentinel is far shorter than min(20); without stripping
-  // expression fields before schema validation this would be wrongly rejected,
-  // making the vault remediation impossible.
+  // the vault.get sentinel is far shorter than min(20); expression fields must
+  // be stripped before schema validation or this is wrongly rejected
   const deps = makeDeps({
     getModelDef: () => ({
       type: { normalized: "test/sensitive-constrained" },
@@ -817,8 +811,6 @@ Deno.test("modelCreate: a schema that throws while parsing a sensitive global ar
   );
   assertEquals(last.error.message.includes("HUNTER2-LONG"), false);
 });
-
-// ── Serve's untrusted argument policy (swamp-club#3862) ─────────────────
 
 async function globalArgumentsError(count: number): Promise<string> {
   const deps = makeDeps({

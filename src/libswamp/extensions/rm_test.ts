@@ -46,11 +46,6 @@ const DEFAULT_UPSTREAM: UpstreamExtensionsMap = {
   },
 };
 
-/**
- * Spins up a real temp repo with a real lockfile + catalog so deps
- * exercise the W2 RemoveExtensionService path. Caller cleans up via
- * the returned `cleanup` fn.
- */
 async function fakeDeps(
   overrides: Partial<ExtensionRmDeps> & {
     upstream?: UpstreamExtensionsMap;
@@ -166,13 +161,6 @@ Deno.test("extensionRmPreview: throws validation_failed when no file tracking", 
   }
 });
 
-// Note: file-deletion behaviour (filesDeleted/filesSkipped counts,
-// dirsRemoved pruning) is covered by remove_extension_service_test.ts
-// which exercises the real filesystem via temp-dir fixtures. This file
-// retains coverage for rm.ts's wrapper-specific behaviour: event
-// shape (deleting → completed → error), lockfile/preview interactions,
-// and the existing #120 regression tests.
-
 Deno.test("extensionRm: yields error for missing extension", async () => {
   const ctx = fakeCtx();
   const { deps, cleanup } = await fakeDeps({ upstream: {} });
@@ -202,8 +190,6 @@ Deno.test("extensionRm: events include deleting then completed", async () => {
   }
 });
 
-// --- issue 120 regression coverage ---
-
 async function seedLockfileOnDisk(
   lockfilePath: string,
   entries: Record<string, string[]>,
@@ -227,11 +213,6 @@ async function seedFile(repoDir: string, relPath: string): Promise<void> {
   await Deno.writeTextFile(abs, `// seed for ${relPath}`);
 }
 
-// Regression test for plan step 15. Two sibling extensions under a
-// shared scope root (@swamp/aws/ec2 + @swamp/aws/eks) must cleanly
-// support removing one without destroying the other's parent. Guards
-// against pruneEmptyDirs over-walking upward past a still-populated
-// intermediate directory.
 Deno.test("extensionRm: removing one sibling leaves the other intact under a shared scope root", async () => {
   const { createExtensionRmDeps } = await import("./rm.ts");
   const { join } = await import("@std/path");
@@ -271,7 +252,6 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
     const completed = events.find((e) => e.kind === "completed");
     assertEquals(completed?.kind, "completed");
 
-    // ec2 subtree is gone
     const ec2Root = join(tmpDir, ".swamp/pulled-extensions/@swamp/aws/ec2");
     let ec2Exists = true;
     try {
@@ -282,7 +262,6 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
     }
     assertEquals(ec2Exists, false, "@swamp/aws/ec2 subtree should be removed");
 
-    // eks subtree is intact
     const eksModel = join(
       tmpDir,
       ".swamp/pulled-extensions/@swamp/aws/eks/models/cluster.ts",
@@ -290,14 +269,12 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
     const stat = await Deno.stat(eksModel);
     assertEquals(stat.isFile, true, "@swamp/aws/eks file must remain");
 
-    // Crucially, the shared @swamp/aws/ scope parent must survive —
-    // pruneEmptyDirs walks upward but must stop when it hits a
-    // non-empty directory (eks still lives there).
+    // the shared @swamp/aws/ scope parent must survive: pruneEmptyDirs walks
+    // upward but must stop at a non-empty directory (eks still lives there)
     const awsScope = join(tmpDir, ".swamp/pulled-extensions/@swamp/aws");
     const awsStat = await Deno.stat(awsScope);
     assertEquals(awsStat.isDirectory, true, "@swamp/aws/ must still exist");
 
-    // Sibling eks must still appear in the lockfile; only ec2 was removed.
     const lockfileAfter = JSON.parse(
       await Deno.readTextFile(lockfilePath),
     );
@@ -319,12 +296,6 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
   }
 });
 
-// findDependents regression — issue 120's manifest.yaml colocation
-// fixes the latent bug where pull.ts never extracted manifest.yaml to
-// disk, so rm.ts's findDependents (which searches entry.files for a
-// manifest.yaml path) could never resolve a dependency graph. After
-// issue 120, each installed extension tracks its manifest in the
-// lockfile's files[], and findDependents works as documented.
 Deno.test("extensionRmPreview: resolves dependents via the tracked per-extension manifest.yaml", async () => {
   const { createExtensionRmDeps } = await import("./rm.ts");
   const { join } = await import("@std/path");

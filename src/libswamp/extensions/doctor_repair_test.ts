@@ -183,7 +183,6 @@ Deno.test("repairExtensions: evicts orphan bundle files on apply", async () => {
 
     assertEquals(result.evictedFileCount, 1);
 
-    // Verify the file was actually deleted.
     let exists = true;
     try {
       await Deno.stat(orphanPath);
@@ -219,7 +218,6 @@ Deno.test("repairExtensions: dry-run does not evict bundle files", async () => {
     assertEquals(result.mode, "dry-run");
     assertEquals(result.evictedFileCount, 1);
 
-    // File should still exist.
     const stat = await Deno.stat(orphanPath);
     assertEquals(stat.isFile, true);
   });

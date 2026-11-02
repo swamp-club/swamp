@@ -60,7 +60,6 @@ import {
   observeDiagnosticPhase,
   withGeneratorDiagnosticPhase,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
-/** Preview data returned before confirmation. */
 export interface ModelDeletePreview {
   id: string;
   name: string;
@@ -71,7 +70,6 @@ export interface ModelDeletePreview {
   outputCount: number;
 }
 
-/** Data structure for the model delete completed event. */
 export interface ModelDeleteData {
   id: string;
   name: string;
@@ -89,7 +87,6 @@ export type ModelDeleteEvent =
   | { kind: "completed"; data: ModelDeleteData }
   | { kind: "error"; error: SwampError };
 
-/** Looks up the model by name then exact id, or by id only with `byId`. */
 function lookupModel(
   deps: ModelDeleteDeps,
   input: ModelDeleteInput,
@@ -103,7 +100,6 @@ function lookupModel(
   )(input.modelIdOrName);
 }
 
-/** Input for the model delete operation. */
 export interface ModelDeleteInput {
   modelIdOrName: string;
   force: boolean;
@@ -125,13 +121,10 @@ export interface ModelDeleteInput {
   principalId?: string;
 }
 
-/** Dependencies for the model delete operation. */
 export interface ModelDeleteDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -168,7 +161,6 @@ export interface ModelDeleteDeps {
   isExpired?: (data: Data) => Promise<boolean>;
 }
 
-/** Wires real infrastructure into ModelDeleteDeps. */
 export function createModelDeleteDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -192,9 +184,8 @@ export function createModelDeleteDeps(
     markDirty,
   );
   const workflowRepo = new YamlWorkflowRepository(repoDir);
-  // Reuse an injected shared data repo (e.g. serve's process-scoped
-  // RepositoryContext) so we don't open a new file-based catalog store — and
-  // leak its 3 FDs — on every request.
+  // reuse an injected shared data repo so each request does not open a new
+  // file-based catalog store and leak its file descriptors
   const unifiedDataRepo = injectedDataRepo ??
     new FileSystemUnifiedDataRepository(
       repoDir,
@@ -244,9 +235,6 @@ export function createModelDeleteDeps(
   };
 }
 
-/**
- * Finds all workflows that reference a model by ID or name.
- */
 function findWorkflowsReferencingModel(
   workflows: Workflow[],
   modelId: string,
@@ -275,15 +263,10 @@ function findWorkflowsReferencingModel(
   return names;
 }
 
-/**
- * Partitions data artifacts into live and expired, using the isExpired
- * predicate when available. Expired artifacts don't block model deletion.
- */
 async function partitionExpired(
   dataArtifacts: Data[],
   isExpired?: (data: Data) => Promise<boolean>,
 ): Promise<{ live: Data[]; expired: Data[] }> {
-  // Counted into the running diagnostic phase, if any (expiry_check).
   const tally = currentDiagnosticTally();
   if (!isExpired) {
     tally.add("live", dataArtifacts.length);
@@ -312,7 +295,6 @@ async function partitionExpired(
   return { live, expired };
 }
 
-/** Gathers preview info for the model delete operation. */
 export async function modelDeletePreview(
   ctx: LibSwampContext,
   deps: ModelDeleteDeps,
@@ -350,7 +332,6 @@ export async function modelDeletePreview(
   };
 }
 
-/** Deletes a model and all related artifacts. */
 export async function* modelDelete(
   ctx: LibSwampContext,
   deps: ModelDeleteDeps,
@@ -419,7 +400,6 @@ async function* deleteStages(
     "swamp.diagnostic.definition_type": modelType.normalized,
   });
 
-  // Check workflow references
   const referencingWorkflows = await observeDiagnosticPhase(
     "workflow_reference_check",
     {},
@@ -455,7 +435,6 @@ async function* deleteStages(
     return;
   }
 
-  // Check data artifacts — expired data is auto-collected, not a blocker
   const dataArtifacts = await observeDiagnosticPhase(
     "data_discovery",
     {},
@@ -486,7 +465,6 @@ async function* deleteStages(
 
   const definitionPath = deps.getDefinitionPath(modelType, definition.id);
 
-  // Delete outputs
   const outputs = await observeDiagnosticPhase(
     "output_discovery",
     {},
@@ -514,7 +492,6 @@ async function* deleteStages(
     // The data repository adds the versions it removes; zero when the worker
     // has no data.
     tally.add("versions_removed", 0);
-    // Auto-collect expired data artifacts
     for (const data of expired) {
       ctx.logger.debug`Auto-collecting expired data: ${data.name}`;
       await deps.deleteData(modelType, definition.id, data.name);
@@ -522,7 +499,6 @@ async function* deleteStages(
       tally.add("expired_deleted");
     }
 
-    // Delete remaining data artifacts (force mode)
     for (const data of live) {
       ctx.logger.debug`Deleting data artifact: ${data.name}`;
       await deps.deleteData(modelType, definition.id, data.name);
@@ -531,7 +507,6 @@ async function* deleteStages(
     }
   });
 
-  // Delete evaluated definition
   ctx.logger.debug`Deleting evaluated definition: ${definition.id}`;
   await observeDiagnosticPhase(
     "evaluated_removal",
@@ -540,7 +515,6 @@ async function* deleteStages(
   );
   const evaluatedInputDeleted = true;
 
-  // Delete definition
   ctx.logger.debug`Deleting definition: ${definition.id}`;
   await observeDiagnosticPhase(
     "definition_removal",

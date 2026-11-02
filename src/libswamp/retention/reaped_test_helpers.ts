@@ -23,13 +23,8 @@ import type {
   RetentionWatermarkRepository,
 } from "../../domain/retention/retention_watermark.ts";
 
-/** The cutoff the fake watermark repository reports. */
 export const FAKE_REAPED_CUTOFF = "2026-10-01T00:00:00.000Z";
 
-/**
- * An in-memory watermark repository holding one complete watermark for each
- * of `kinds`, cut off at {@link FAKE_REAPED_CUTOFF} under `14d`.
- */
 export function fakeWatermarks(
   kinds: readonly RetentionKind[],
 ): RetentionWatermarkRepository {
@@ -50,7 +45,6 @@ export function fakeWatermarks(
   };
 }
 
-/** A watermark repository whose every read rejects. */
 export function failingWatermarks(): RetentionWatermarkRepository {
   const fail = () => Promise.reject(new Error("datastore unavailable"));
   return {

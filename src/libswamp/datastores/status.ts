@@ -31,9 +31,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the datastore status output.
- */
 export interface DatastoreStatusData {
   type: string;
   path?: string;
@@ -42,57 +39,26 @@ export interface DatastoreStatusData {
   latencyMs: number;
   directories: string[];
   exclude?: string[];
-  /** Set to 3 on a v3 datastore (swamp-club#3279); absent on v2. */
   format?: 3;
-  /** The v3 commit log, on a v3 datastore. */
   commitLog?: DatastoreCommitLogStatus;
-  /**
-   * The explicit leases serve holds (swamp-club#4195), from
-   * `datastore status --server`: who holds each and when it ends unless
-   * renewed. Absent from a local status.
-   */
   explicitLeases?: DatastoreExplicitLeaseStatus[];
-  /**
-   * This checkout's outbox entries that are not simply waiting to land
-   * (swamp-club#4195): queued offline, rejected or quarantined. Absent
-   * when the checkout holds none, and from `--server`.
-   */
   outbox?: DatastoreOutboxEntryStatus[];
-  /**
-   * The changes serve keeps because their author lacks a grant they need
-   * (swamp-club#4195), from `datastore status --server`: every held one and
-   * the latest accepted. Absent from a local status.
-   */
   quarantine?: DatastoreQuarantineStatus[];
-  /** More accepted changes are kept than `quarantine` lists. */
   quarantineTruncated?: boolean;
-  /**
-   * The explicit leases this serve-mode checkout holds
-   * (`swamp behavior lease acquire --for`), from its own record
-   * (swamp-club#4195). Absent outside a serve-mode checkout.
-   */
   heldLeases?: DatastoreHeldLeaseStatus[];
   /**
-   * Why serve's section (`explicitLeases`, `quarantine`) is missing from a
-   * serve-mode checkout's status: serve did not answer, or the caller is
-   * not an admin (swamp-club#4195). Absent when it is shown, and outside a
-   * serve-mode checkout.
+   * why serve's section is missing: serve did not answer, or the caller is not
+   * an admin
    */
   serveSectionAbsent?: string;
 }
 
-/** An explicit lease this checkout holds, as `datastore status` lists it. */
 export interface DatastoreHeldLeaseStatus {
   lockKey: string;
   fence: number;
-  /** When it ends unless renewed, by serve's clock (ISO). */
   expiresAt: string;
 }
 
-/**
- * Serve's section of a serve-mode checkout's status, or why it is absent
- * (swamp-club#4195).
- */
 export type DatastoreServeSection =
   | {
     readonly kind: "shown";
@@ -102,22 +68,17 @@ export type DatastoreServeSection =
   }
   | { readonly kind: "absent"; readonly reason: string };
 
-/** An outbox entry, as `datastore status` lists it. */
 export interface DatastoreOutboxEntryStatus {
   state: "offline" | "rejected" | "quarantined";
   partition: string;
   txnId: string;
-  /** Why it is rejected or quarantined. */
   reason?: string;
-  /** When it was first saved (ISO). */
   savedAt: string;
 }
 
-/** A change serve keeps for an admin, as `datastore status --server` lists it. */
 export interface DatastoreQuarantineStatus {
   txnId: string;
   partition: string;
-  /** Who made it: the principal it lands as. */
   author: string;
   reason: string;
   depositedAt: string;
@@ -129,19 +90,14 @@ export interface DatastoreQuarantineStatus {
   discardedAt?: string;
 }
 
-/** An explicit lease serve holds, as `datastore status --server` lists it. */
 export interface DatastoreExplicitLeaseStatus {
   lockKey: string;
   holder: string;
-  /** ISO time it ends unless renewed. */
   expiresAt: string;
 }
 
-/** What `datastore status` reports of a v3 datastore's commit log. */
 export interface DatastoreCommitLogStatus {
-  /** Commits stored above the compaction point. */
   storedCommits: number;
-  /** The cursor history is compacted through; 0 before any compaction. */
   compactedThrough: number;
 }
 
@@ -149,35 +105,23 @@ export type DatastoreStatusEvent =
   | { kind: "completed"; data: DatastoreStatusData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the datastore status operation. */
 export interface DatastoreStatusDeps {
   loadConfig: () => DatastoreConfig;
   verifyHealth: (
     config: DatastoreConfig,
   ) => Promise<{ healthy: boolean; message: string; latencyMs: number }>;
   getDirectories: (config: DatastoreConfig) => string[];
-  /** Describes the commit log of a v3 datastore; absent on v2. */
   describeCommitLog?: () => Promise<DatastoreCommitLogStatus>;
-  /** The explicit leases serve holds; given by serve only. */
   listExplicitLeases?: () => DatastoreExplicitLeaseStatus[];
-  /** This checkout's kept outbox entries; given on a v3 checkout. */
   listOutboxEntries?: () => Promise<DatastoreOutboxEntryStatus[]>;
-  /** The changes serve keeps for an admin; given by serve only. */
   listQuarantine?: () => Promise<{
     readonly entries: DatastoreQuarantineStatus[];
     readonly truncated: boolean;
   }>;
-  /** The explicit leases a serve-mode checkout holds. */
   listHeldLeases?: () => Promise<DatastoreHeldLeaseStatus[]>;
-  /** Serve's section, asked of serve by a serve-mode checkout. */
   serveSection?: () => Promise<DatastoreServeSection>;
 }
 
-/**
- * The kept entries of a checkout's outbox as `datastore status` lists them:
- * queued offline, rejected or quarantined (swamp-club#4195). Entries simply
- * waiting to land are not listed.
- */
 export function outboxEntryStatusesOf(
   entries: readonly OutboxEntry[],
 ): DatastoreOutboxEntryStatus[] {
@@ -195,7 +139,6 @@ export function outboxEntryStatusesOf(
   return listed;
 }
 
-/** A change serve keeps, as `datastore status --server` lists it. */
 export function quarantineStatusOf(
   record: QuarantineRecord,
 ): DatastoreQuarantineStatus {
@@ -222,26 +165,18 @@ export function quarantineStatusOf(
   };
 }
 
-/** Wires real infrastructure into DatastoreStatusDeps. */
 export async function createDatastoreStatusDeps(
   datastoreResolver: DatastorePathResolver,
   options: {
-    /** The commit log's description, given by the caller on a v3 datastore. */
     readonly describeCommitLog?: () => Promise<DatastoreCommitLogStatus>;
-    /** The explicit leases serve holds, given by serve. */
     readonly listExplicitLeases?: () => DatastoreExplicitLeaseStatus[];
-    /** This checkout's kept outbox entries, given on a v3 checkout. */
     readonly listOutboxEntries?: () => Promise<DatastoreOutboxEntryStatus[]>;
-    /** The changes serve keeps for an admin, given by serve. */
     readonly listQuarantine?: DatastoreStatusDeps["listQuarantine"];
-    /** The explicit leases a serve-mode checkout holds. */
     readonly listHeldLeases?: DatastoreStatusDeps["listHeldLeases"];
-    /** Serve's section, for a serve-mode checkout. */
     readonly serveSection?: DatastoreStatusDeps["serveSection"];
     /**
-     * The datastore the status describes, when it is not the resolver's: a
-     * serve-mode checkout describes its own copy, never the storage its
-     * config names, which it does not read (swamp-club#4195).
+     * a serve-mode checkout describes its own copy, never the storage its
+     * config names, which it does not read
      */
     readonly config?: DatastoreConfig;
   } = {},
@@ -292,7 +227,6 @@ export async function createDatastoreStatusDeps(
   };
 }
 
-/** Returns datastore configuration and health status. */
 export async function* datastoreStatus(
   ctx: LibSwampContext,
   deps: DatastoreStatusDeps,

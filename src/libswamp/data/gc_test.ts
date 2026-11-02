@@ -307,8 +307,6 @@ Deno.test("dataGcPreview: counts what data retention would age out, as a dry run
   assertEquals(without.agedOut, undefined);
 });
 
-// --- autoGc tests ---
-
 function makeFakeDataRepo(
   result: GarbageCollectionResult = { versionsRemoved: 0, bytesReclaimed: 0 },
 ) {

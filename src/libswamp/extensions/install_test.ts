@@ -54,7 +54,6 @@ Deno.test("extensionInstall: empty lockfile yields all up to date", async () => 
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    // Write empty lockfile
     await Deno.writeTextFile(lockfilePath, "{}");
 
     const ctx = createLibSwampContext({});
@@ -84,8 +83,6 @@ Deno.test("extensionInstall: empty lockfile yields all up to date", async () => 
 Deno.test("extensionInstall: skips extensions with all files present", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Create the files on disk at the current per-extension subtree
-    // layout (`.swamp/pulled-extensions/@scope/name/models/…`).
     const pulledDir = join(
       tmpDir,
       ".swamp",
@@ -171,7 +168,6 @@ Deno.test("extensionInstall: reinstalls when filesChecksum mismatches on-disk di
       }),
     );
 
-    // Sanity: on-disk digest differs from the fake lockfile checksum
     if (realDigest === "a".repeat(64)) {
       throw new Error("test setup: digest should not match the fake checksum");
     }
@@ -363,7 +359,6 @@ Deno.test("extensionInstall: no filesChecksum in lockfile skips digest check (gr
           version: "2.0.0",
           pulledAt: "2026-01-01T00:00:00Z",
           files: [".swamp/pulled-extensions/@test/ext/models/test.ts"],
-          // No filesChecksum — pre-filesChecksum entry
         },
       }),
     );
@@ -416,8 +411,6 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
         repoDir: tmpDir,
         createInstallContext: async (_name, _version) => {
           installCalled = true;
-          // Return a minimal context that won't actually pull
-          // (installExtension will fail, which we catch)
           return {
             getExtension: () => Promise.resolve(null),
             downloadArchive: () => Promise.reject(new Error("test stub")),
@@ -435,7 +428,6 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
 
     assertEquals(installCalled, true);
 
-    // Should have an "installing" event
     const installing = events.find((e) => e.kind === "installing");
     assertEquals(installing?.kind, "installing");
     if (installing?.kind === "installing") {
@@ -443,7 +435,6 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
       assertEquals(installing.version, "2.0.0");
     }
 
-    // Install will fail since our stub rejects — that's fine, we're testing detection
     const completed = events.find((e) => e.kind === "completed");
     assertEquals(completed?.kind, "completed");
     if (completed?.kind === "completed") {
@@ -484,9 +475,6 @@ Deno.test("extensionInstall: missing lockfile yields empty result", async () => 
 Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drift message", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    // Seed a lockfile pointing at files that don't exist on disk (so
-    // hasAnyMissingFiles triggers the install path) with a stored
-    // checksum that will not match the "fresh download" bytes.
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
     await Deno.writeTextFile(
       lockfilePath,
@@ -494,16 +482,14 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
         "@fake/ext": {
           version: "1.0.0",
           pulledAt: "2026-01-01T00:00:00Z",
-          // SHA-256 this value will never match our stub's bytes.
           checksum: "0".repeat(64),
           files: [".swamp/pulled-extensions/@fake/ext/models/missing.ts"],
         },
       }),
     );
 
-    // Stub downloadArchive returns bytes that — when SHA-256'd — won't
-    // match the stored checksum. installExtension must throw BEFORE
-    // attempting tar extraction, so the nonsense bytes never matter.
+    // installExtension must throw on the checksum mismatch before tar
+    // extraction, so the stub's bytes never matter
     const ctx = createLibSwampContext({});
     const events = await collectEvents(
       extensionInstall(ctx, {
@@ -534,8 +520,6 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
     if (completed?.kind === "completed") {
       assertEquals(completed.data.failed, 1);
       assertEquals(completed.data.entries[0].status, "failed");
-      // Error should name checksum, stored, fetched, and offer the
-      // user-recovery hint (pull to accept).
       const err = completed.data.entries[0].error ?? "";
       if (!err.includes("Checksum mismatch")) {
         throw new Error(`expected drift message, got: ${err}`);
@@ -549,11 +533,6 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
   }
 });
 
-/**
- * Minimal `InstallContext` for tests that inject a stubbed
- * `installExtensionFn`. Fields the stub reads are populated; the rest
- * are placeholders.
- */
 async function makeStubInstallContext(
   tmpDir: string,
   lockfilePath: string,
@@ -572,14 +551,6 @@ async function makeStubInstallContext(
   };
 }
 
-/**
- * Returns a stub `installExtensionFn` that pretends to pull: writes a
- * single file under the per-extension subtree and updates the lockfile
- * entry to current-layout paths with a dummy `filesChecksum` anchor.
- * This is the shape real `installExtension` leaves the repo in on
- * success — simulating it here lets migrate-path tests exercise the
- * `migrated` status and sweep behavior without a real tar archive.
- */
 function makeSuccessfulInstall(
   tmpDir: string,
   lockfilePath: string,
@@ -613,13 +584,6 @@ function makeFailingInstall(): InstallExtensionFn {
   return () => Promise.reject(new Error("simulated download failure"));
 }
 
-/**
- * Stub that simulates a successful install AND surfaces a `pruned`
- * list on its InstallResult — the shape real `installExtension`
- * returns when prior-version files were dropped between versions.
- * Lets us verify that `extensionInstall` propagates the prune list
- * to the orphans-pruned event without needing a real archive.
- */
 function makeInstallWithPruned(
   tmpDir: string,
   lockfilePath: string,
@@ -743,11 +707,9 @@ Deno.test("needsInstallOrMigration: missing file beats legacy classification", a
   }
 });
 
-// A lockfile written on Windows stores backslash-separated paths
-// (swamp-club#3271). On Windows they name nested files; on POSIX a
-// backslash is an ordinary filename character, so each entry is one
-// file at the repo root. Writing through join(repo, entry) creates
-// whichever the platform means, so these tests hold on both.
+// a Windows lockfile stores backslash paths; on POSIX each entry is one
+// filename at the repo root. writing through join(repo, entry) creates
+// whichever the platform means
 
 Deno.test("needsInstallOrMigration: backslash gen-1 path on disk returns migrate", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
@@ -765,8 +727,6 @@ Deno.test("needsInstallOrMigration: backslash gen-1 path on disk returns migrate
 });
 
 Deno.test("needsInstallOrMigration: missing backslash gen-1 path returns install", async () => {
-  // A Windows-written lockfile read on POSIX: the literal backslash
-  // name is not on disk, so the extension is re-pulled.
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const result = await needsInstallOrMigration(
@@ -786,7 +746,6 @@ Deno.test("needsInstallOrMigration and sweepLegacyPaths: backslash traversal ent
     await ensureDir(repoDir);
     const keep = join(repoDir, "keep.txt");
     await Deno.writeTextFile(keep, "keep");
-    // Where the entry resolves when backslashes are separators.
     const sentinel = join(rootDir, "outside");
     await Deno.writeTextFile(sentinel, "sentinel");
     const entry = "extensions\\models\\..\\..\\..\\outside";
@@ -801,7 +760,6 @@ Deno.test("needsInstallOrMigration and sweepLegacyPaths: backslash traversal ent
         PathTraversalError,
       );
     } else {
-      // One filename inside the repo, not on disk.
       assertEquals(await needsInstallOrMigration([entry], repoDir), "install");
       await sweepLegacyPaths([entry], repoDir);
     }
@@ -816,10 +774,6 @@ Deno.test("needsInstallOrMigration and sweepLegacyPaths: backslash traversal ent
 Deno.test(
   "needsInstallOrMigration: skill dir under tool-specific skillsDir does not trigger migrate",
   async () => {
-    // Pre-fix bug: skill paths classified as gen-1 (any non-`.swamp/`
-    // path was gen-1) made every skill-bearing extension trigger migrate
-    // → re-pull → sweep destroyed the skill. Post-fix: skill paths are
-    // filtered before classification.
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const currentPath = join(
@@ -853,10 +807,8 @@ Deno.test(
 Deno.test(
   "needsInstallOrMigration: skill dir at tool=none fallback does not trigger migrate",
   async () => {
-    // Without skillsDir filtering, the path
-    // `.swamp/pulled-extensions/skills/<name>` is structurally
-    // indistinguishable from a gen-2 model file path and would be
-    // misclassified. The skillsDir filter pins it down as a skill.
+    // without the skillsDir filter, a skill path is indistinguishable from a
+    // gen-2 model file path
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const currentPath = join(
@@ -890,10 +842,8 @@ Deno.test(
 Deno.test(
   "needsInstallOrMigration: missing skill dir still triggers install (auto-recovery)",
   async () => {
-    // Users who lost their skill dir to a prior buggy migration must
-    // self-heal on the next install/upgrade. The skill path stat-check
-    // runs BEFORE the skillsDir filter — a missing skill returns
-    // "install" so the next pass re-pulls.
+    // the skill path stat check runs before the skillsDir filter, so a missing
+    // skill returns install and the next pass re-pulls it
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const currentPath = join(
@@ -905,7 +855,6 @@ Deno.test(
       );
       await Deno.writeTextFile(currentPath, "// current");
 
-      // Skill dir intentionally NOT created on disk.
       const result = await needsInstallOrMigration(
         [
           ".swamp/pulled-extensions/@me/ext/models/main.ts",
@@ -924,9 +873,6 @@ Deno.test(
 Deno.test(
   "needsInstallOrMigration: no skillsDir param still catches gen-1 paths (back-compat)",
   async () => {
-    // ADV-6 guard: optional skillsDir must default to "no filter" so
-    // direct libswamp consumers without skillsDir wired keep their
-    // current legacy-detection behaviour.
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const path = join(tmpDir, "extensions/models/legacy.ts");
@@ -949,8 +895,6 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // Seed gen-1 layout: user's files live under extensions/models/
-      // and the lockfile tracks them at those paths.
       const legacyDir = join(tmpDir, "extensions", "models");
       await ensureDir(legacyDir);
       await Deno.writeTextFile(
@@ -988,12 +932,9 @@ Deno.test(
         }),
       );
 
-      // Event: `migrating`, not `installing` — the trigger is layout,
-      // not missing files.
       const migrating = events.find((e) => e.kind === "migrating");
       assertEquals(migrating?.kind, "migrating");
 
-      // Completion: status is `migrated` and the counter ticked up.
       const completed = events.find((e) => e.kind === "completed");
       assertEquals(completed?.kind, "completed");
       if (completed?.kind === "completed") {
@@ -1004,7 +945,6 @@ Deno.test(
         assertEquals(completed.data.entries[0].name, "@me/daemon");
       }
 
-      // Legacy files are swept (successful install → sweep runs).
       for (const file of ["daemon.ts", "helper.ts"]) {
         let exists = true;
         try {
@@ -1015,7 +955,6 @@ Deno.test(
         assertEquals(exists, false, `legacy ${file} should be swept`);
       }
 
-      // Lockfile now points at current-layout paths with the anchor.
       const updated = await readUpstreamExtensions(lockfilePath);
       const entry = updated["@me/daemon"];
       assertEquals(entry.filesChecksum, "fake-anchor");
@@ -1031,8 +970,6 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // One entry at current layout (no work needed); one at gen-1
-      // (migration needed).
       const currentDir = join(
         tmpDir,
         ".swamp/pulled-extensions/@current/ext/models",
@@ -1072,7 +1009,6 @@ Deno.test(
         }),
       );
 
-      // Only the legacy entry emits `migrating`.
       const migratingEvents = events.filter((e) => e.kind === "migrating");
       assertEquals(migratingEvents.length, 1);
       if (migratingEvents[0].kind === "migrating") {
@@ -1129,11 +1065,9 @@ Deno.test(
         }),
       );
 
-      // Legacy file preserved — sweep only runs after successful install.
       const stat = await Deno.stat(join(legacyDir, "legacy.ts"));
       assertEquals(stat.isFile, true);
 
-      // Lockfile unchanged — the failing install did not rewrite files[].
       const postLockfile = await Deno.readTextFile(lockfilePath);
       assertEquals(postLockfile, originalLockfile);
 
@@ -1149,15 +1083,6 @@ Deno.test(
   },
 );
 
-/**
- * Stub `installExtensionFn` that simulates a real install with both
- * per-extension model files AND a skill directory. Writes the model
- * file under the per-extension subtree, writes the skill dir at the
- * caller-provided `skillsDirAbs`, and rewrites the lockfile entry's
- * files[] to include both. Used by the issue-#207 migration regression
- * tests to verify the freshly-restored skill dir survives the
- * post-migration sweep.
- */
 function makeSuccessfulInstallWithSkill(
   tmpDir: string,
   lockfilePath: string,
@@ -1201,16 +1126,10 @@ function makeSuccessfulInstallWithSkill(
 Deno.test(
   "extensionInstall: tool=claude migration preserves the skill dir (issue #207)",
   async () => {
-    // Issue #207 reproduction at the integration boundary. Lockfile
-    // mixes a gen-2 model path (forces migrate) with a `.claude/skills/`
-    // skill dir entry. Pre-fix: sweepLegacyPaths recursively deleted
-    // the freshly-restored skill dir. Post-fix: the skillsDir filter
-    // excludes the skill from both the migrate trigger and the sweep,
-    // so it survives.
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // Seed the gen-2 path on disk so needsInstallOrMigration sees it
-      // present (otherwise it would short-circuit to "install").
+      // seed the gen-2 path on disk, or needsInstallOrMigration short-circuits
+      // to install
       const gen2Path = join(
         tmpDir,
         ".swamp/pulled-extensions/models/legacy.ts",
@@ -1218,8 +1137,6 @@ Deno.test(
       await ensureDir(join(tmpDir, ".swamp/pulled-extensions/models"));
       await Deno.writeTextFile(gen2Path, "// legacy");
 
-      // Skill dir already on disk from a prior pull; the entry tracks
-      // it. The migration must not destroy it.
       const skillDir = join(tmpDir, ".claude/skills/good-planning");
       await ensureDir(skillDir);
       await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# original");
@@ -1255,7 +1172,6 @@ Deno.test(
         }),
       );
 
-      // Migration ran (gen-2 path forced it).
       const completed = events.find((e) => e.kind === "completed");
       assertEquals(completed?.kind, "completed");
       if (completed?.kind === "completed") {
@@ -1263,7 +1179,6 @@ Deno.test(
         assertEquals(completed.data.entries[0].status, "migrated");
       }
 
-      // gen-2 path swept.
       let gen2Exists = true;
       try {
         await Deno.stat(gen2Path);
@@ -1272,7 +1187,6 @@ Deno.test(
       }
       assertEquals(gen2Exists, false, "gen-2 path should be swept");
 
-      // Skill dir survives — the load-bearing assertion for #207.
       const stat = await Deno.stat(skillDir);
       assertEquals(
         stat.isDirectory,
@@ -1290,11 +1204,8 @@ Deno.test(
 Deno.test(
   "extensionInstall: tool=none fallback migration preserves the skill dir (issue #207)",
   async () => {
-    // The `tool=none` fallback puts skills at
-    // `.swamp/pulled-extensions/skills/<name>` — structurally identical
-    // to a gen-2 path. Without skillsDir threaded into the deps, the
-    // skill would be classified gen-2 and recursively swept after
-    // re-install. The skillsDir filter pins it down.
+    // the tool=none fallback puts skills at a gen-2 looking path, so skillsDir
+    // must be threaded into the deps
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const gen2Path = join(
@@ -1390,7 +1301,6 @@ Deno.test(
         tmpDir,
       );
 
-      // Gen-1 and gen-2 gone.
       for (const p of [gen1, gen2]) {
         let exists = true;
         try {
@@ -1401,7 +1311,6 @@ Deno.test(
         assertEquals(exists, false, `${p} should be removed`);
       }
 
-      // Current-layout path untouched.
       const stat = await Deno.stat(current);
       assertEquals(stat.isFile, true);
     } finally {
@@ -1431,9 +1340,6 @@ Deno.test(
         tmpDir,
       );
 
-      // Both files gone AND the now-empty _lib directory is pruned.
-      // Regression guard: a prior bug where a relative repoDir (".")
-      // broke startsWith() in cleanupEmptyParentDirs left _lib/ stranded.
       let libExists = true;
       try {
         await Deno.stat(libDir);
@@ -1485,7 +1391,6 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // Path is legacy-classified but does not exist — should not throw.
       await sweepLegacyPaths(
         ["extensions/models/ghost.ts"],
         tmpDir,
@@ -1501,11 +1406,8 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // gen-2 path — `.swamp/pulled-extensions/<known-type>/...` —
-      // pointing at a non-empty directory. Plain Deno.remove fails on
-      // non-empty directories; sweep must use { recursive: true } to
-      // handle skill-style directory entries that survive into legacy
-      // lockfile state.
+      // sweep removes recursively because skill-style directory entries can
+      // survive into legacy lockfile state
       const dirPath = join(
         tmpDir,
         ".swamp/pulled-extensions/skills/foo",
@@ -1534,10 +1436,6 @@ Deno.test(
 Deno.test(
   "sweepLegacyPaths: leaves tool-specific skill dir intact when skillsDir is provided",
   async () => {
-    // Regression guard for issue #207: with skillsDir threaded through,
-    // the freshly-installed `.claude/skills/<name>` dir survives the
-    // post-migration sweep even though the original lockfile entry
-    // tracked it.
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const skillDir = join(tmpDir, ".claude/skills/good-planning");
@@ -1554,7 +1452,6 @@ Deno.test(
         [".claude/skills"],
       );
 
-      // gen-1 path swept.
       let gen1Exists = true;
       try {
         await Deno.stat(gen1);
@@ -1563,7 +1460,6 @@ Deno.test(
       }
       assertEquals(gen1Exists, false, "gen-1 path should be swept");
 
-      // Skill dir intact.
       const stat = await Deno.stat(skillDir);
       assertEquals(stat.isDirectory, true, "skill dir should survive sweep");
       const skillFile = await Deno.stat(join(skillDir, "SKILL.md"));
@@ -1577,9 +1473,6 @@ Deno.test(
 Deno.test(
   "sweepLegacyPaths: leaves tool=none skill dir intact when skillsDir is provided",
   async () => {
-    // The `tool=none` fallback puts skills at
-    // `.swamp/pulled-extensions/skills/<name>`, structurally identical to
-    // a gen-2 path. Without skillsDir filtering they would be swept.
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const skillDir = join(
@@ -1610,10 +1503,8 @@ Deno.test(
 Deno.test(
   "sweepLegacyPaths: no skillsDir param still sweeps gen-2 dir entries (back-compat)",
   async () => {
-    // ADV-6 guard: optional skillsDir defaults to "no filter" so the
-    // pre-existing recursive-remove behaviour for legacy skill-style
-    // directory entries continues to work for callers that don't wire
-    // skillsDir.
+    // skillsDir is optional and defaults to no filter, so callers that do not
+    // wire it keep the recursive removal of legacy skill-style entries
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const dirPath = join(tmpDir, ".swamp/pulled-extensions/skills/foo");
@@ -1691,9 +1582,8 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // Skills are tracked as directory paths in entry.files[]; the
-      // diff against extractedFiles can hand us a directory entry that
-      // is non-empty. recursive:true is mandatory here.
+      // skills are tracked as directory paths, so the diff can hand over a
+      // non-empty directory; recursive remove is required
       const skillDir = join(tmpDir, ".claude/skills/foo");
       await ensureDir(skillDir);
       await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# foo");
@@ -1728,8 +1618,6 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // Mix: one path exists, one does not. Ground-truth contract: the
-      // NotFound path must be excluded from the returned list.
       const real = join(
         tmpDir,
         ".swamp/pulled-extensions/@x/y/models/real.ts",
@@ -1759,8 +1647,6 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // Solo file in a nested dir — after removal, the parent should
-      // also be pruned via cleanupEmptyParentDirs.
       const nestedDir = join(
         tmpDir,
         ".swamp/pulled-extensions/@x/y/models/nested",
@@ -1805,8 +1691,6 @@ Deno.test(
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const lockfilePath = join(tmpDir, "upstream_extensions.json");
-      // Seed the lockfile so the entry isn't up-to-date — install is
-      // triggered, the stub runs, and the orphans-pruned event has data.
       await Deno.writeTextFile(
         lockfilePath,
         JSON.stringify({
@@ -1885,7 +1769,6 @@ Deno.test(
           repoDir: tmpDir,
           createInstallContext: () =>
             makeStubInstallContext(tmpDir, lockfilePath),
-          // Empty pruned list — no event should fire.
           installExtensionFn: makeInstallWithPruned(tmpDir, lockfilePath, []),
         }),
       );
@@ -1899,14 +1782,8 @@ Deno.test(
 );
 
 /**
- * Lays down a current-layout extension on disk — one model file plus the
- * read-only `manifest.yaml` copy that `installExtension` leaves in the
- * per-extension root — and writes a lockfile entry pinning
- * `pinnedVersion`. Pass `manifestVersion: null` to omit the manifest
- * entirely, the shape left by installs that predate the manifest copy.
- *
- * Deliberately omits `filesChecksum` so the content check stays out of
- * the way and each test exercises the version comparison alone.
+ * omits filesChecksum so the content check stays out of the way and each test
+ * exercises the version comparison alone
  */
 async function seedInstalledExtension(
   tmpDir: string,
@@ -2074,7 +1951,6 @@ Deno.test(
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
-      // Both entries list files that are not on disk, so both restore.
       const lockfilePath = join(tmpDir, "upstream_extensions.json");
       await Deno.writeTextFile(
         lockfilePath,
@@ -2124,13 +2000,6 @@ Deno.test(
   },
 );
 
-/**
- * Lays down a current-layout extension on disk — one model file plus the
- * installed `manifest.yaml` copy declaring `dependencies` — and returns
- * its lockfile entry. The entry omits `filesChecksum` and the manifest
- * version matches the pin, so only the dependency check can move the
- * entry off `up_to_date`.
- */
 async function seedExtensionWithDependencies(
   tmpDir: string,
   name: string,
@@ -2155,11 +2024,6 @@ async function seedExtensionWithDependencies(
   };
 }
 
-/**
- * Stub `installExtensionFn` that records each ref it is called with and
- * simulates installExtension's dependency loop: it seeds `dependency` on
- * disk and records its lockfile entry.
- */
 function makeInstallRecordingDependency(
   tmpDir: string,
   lockfilePath: string,
@@ -2418,8 +2282,6 @@ Deno.test(
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
     try {
       const lockfilePath = join(tmpDir, "upstream_extensions.json");
-      // Parent recorded in the lockfile but absent from disk, dependency
-      // unrecorded — the state before the first restore.
       await Deno.writeTextFile(
         lockfilePath,
         JSON.stringify({
@@ -2434,8 +2296,6 @@ Deno.test(
         }),
       );
 
-      // First run: installExtension writes the parent, then its
-      // dependency install throws.
       const ctx = createLibSwampContext({});
       const first = await collectEvents(
         extensionInstall(ctx, {
@@ -2457,8 +2317,6 @@ Deno.test(
         assertEquals(firstCompleted.data.failed, 1);
       }
 
-      // Second run: the parent is intact on disk, but its dependency is
-      // still unrecorded, so it is re-pulled rather than up to date.
       const calls: string[] = [];
       const second = await collectEvents(
         extensionInstall(ctx, {
@@ -2597,11 +2455,6 @@ Deno.test(
   },
 );
 
-/**
- * A repo whose one extension's source file is on disk, with a lockfile
- * written as a Windows checkout writes it: backslash paths, and a bundle
- * path under that checkout's bundle namespace (swamp-club#3569).
- */
 async function withWindowsLockfile(
   fn: (tmpDir: string, lockfilePath: string, written: string) => Promise<void>,
 ): Promise<void> {

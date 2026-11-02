@@ -32,13 +32,11 @@ export type TrustAutoTrustEvent =
   | { kind: "completed"; data: TrustAutoTrustData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the trust auto-trust operation, injected for testability. */
 export interface TrustAutoTrustDeps {
   readMarker: () => Promise<RepoMarkerData | null>;
   writeMarker: (data: RepoMarkerData) => Promise<void>;
 }
 
-/** Wires real infrastructure into TrustAutoTrustDeps. */
 export function createTrustAutoTrustDeps(repoDir: string): TrustAutoTrustDeps {
   const markerRepo = new RepoMarkerRepository();
   const repoPath = RepoPath.create(repoDir);
@@ -49,7 +47,6 @@ export function createTrustAutoTrustDeps(repoDir: string): TrustAutoTrustDeps {
   };
 }
 
-/** Sets whether membership collectives are automatically trusted. */
 export async function* trustAutoTrust(
   _ctx: LibSwampContext,
   deps: TrustAutoTrustDeps,

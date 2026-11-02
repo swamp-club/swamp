@@ -60,10 +60,6 @@ const parentWorkflow = Workflow.create({
   ],
 });
 
-/**
- * A parent cancelled while its step waited on a child, and a run repository
- * answering for the child as `lookup` says.
- */
 function cancelledParent(
   lookup: (child: WorkflowRun) => Promise<WorkflowRun | null>,
   childFields: Partial<WorkflowRunData> = {},
@@ -120,7 +116,6 @@ Deno.test("detachedNestedRunsOf: reports a child it cannot read, since it may st
   assertEquals(detached.map((d) => d.runId), [child.id]);
 });
 
-/** A parent whose step waits on a suspended child. */
 function waitingParent(): { parent: WorkflowRun; child: WorkflowRun } {
   const parent = WorkflowRun.create(parentWorkflow);
   parent.start();

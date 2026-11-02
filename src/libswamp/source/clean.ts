@@ -25,21 +25,16 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/**
- * Data structure for the source clean output.
- */
 export type SourceCleanData = SourceCleanResult;
 
 export type SourceCleanEvent =
   | { kind: "completed"; data: SourceCleanData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the source clean operation. */
 export interface SourceCleanDeps {
   clean: () => Promise<SourceCleanResult>;
 }
 
-/** Wires real infrastructure into SourceCleanDeps. */
 export function createSourceCleanDeps(): SourceCleanDeps {
   const downloader = new HttpSourceDownloader();
   const repository = new JsonSourceMetadataRepository();
@@ -49,7 +44,6 @@ export function createSourceCleanDeps(): SourceCleanDeps {
   };
 }
 
-/** Removes downloaded swamp source. */
 export async function* sourceClean(
   ctx: LibSwampContext,
   deps: SourceCleanDeps,

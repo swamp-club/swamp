@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Where workspaces live and how they are registered, shared by
- * `swamp start` and the `swamp workspace` commands so both create, adopt
- * and import workspaces the same way.
- */
-
 import { basename, isAbsolute, join, relative, resolve } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
@@ -33,29 +27,19 @@ import {
   type WorkspaceRegistryRepository,
 } from "../../domain/workspace/workspace_registry.ts";
 
-/** What the workspace store needs from its caller. */
 export interface WorkspaceStoreDeps {
-  /** The swamp data dir new workspaces are created under. */
   readonly dataDir: string;
   readonly os: string;
   readonly registry: WorkspaceRegistryRepository;
   readonly repo: {
-    /** True when the folder holds a `.swamp.yaml`. */
     isRepo(path: string): Promise<boolean>;
-    /** Initialises the folder as a repo with no tools. */
     init(path: string): Promise<void>;
   };
   readonly now: () => Date;
-  /** The user's home folder, for `~` in an imported path; unset when unknown. */
   readonly homeDir?: string;
-  /**
-   * The folder new workspaces go in when none is chosen
-   * (`swamp config set workspaces.dir`); unset means under the data dir.
-   */
   readonly configuredParent?: () => Promise<string | undefined>;
 }
 
-/** The folder new workspaces are created in. */
 export function workspacesRoot(dataDir: string): string {
   return join(dataDir, "workspaces");
 }
@@ -73,18 +57,13 @@ export function isImportedWorkspace(
   return !isUnder(entry.path, workspacesRoot(dataDir));
 }
 
-/**
- * The folder a new workspace of that name gets: under the data dir. A
- * registered workspace may live anywhere; see {@link resolveWorkspacePath}.
- */
 export function defaultWorkspacePath(dataDir: string, name: string): string {
   return join(workspacesRoot(dataDir), parseWorkspaceName(name));
 }
 
 /**
- * The registry, adopting the workspaces already under the data dir the
- * first time it is read (before the registry existed, `swamp start` only
- * created folders there).
+ * adopts the workspaces already under the data dir the first time the registry
+ * is read
  */
 export async function loadWorkspaceRegistry(
   deps: WorkspaceStoreDeps,
@@ -105,7 +84,6 @@ export async function loadWorkspaceRegistry(
   }
   const createdAt = deps.now().toISOString();
   if (options.readOnly) {
-    // Report what adoption would register, without writing anything.
     return WorkspaceRegistry.fromEntries(
       found.map((name) => ({
         name,
@@ -132,7 +110,6 @@ export async function loadWorkspaceRegistry(
   });
 }
 
-/** The folder of a workspace: where it is registered, else the default. */
 export async function resolveWorkspacePath(
   deps: WorkspaceStoreDeps,
   name: string,
@@ -144,10 +121,6 @@ export async function resolveWorkspacePath(
     defaultWorkspacePath(deps.dataDir, parsed);
 }
 
-/**
- * Registers the workspace Swamp created at `path` unless its name is
- * registered already.
- */
 export async function ensureRegistered(
   deps: WorkspaceStoreDeps,
   name: string,
@@ -165,24 +138,15 @@ export async function ensureRegistered(
   });
 }
 
-/** Where a new workspace would be created. */
 export interface NewWorkspaceLocation {
   readonly name: string;
-  /** The folder it is created in. */
   readonly parent: string;
-  /** The workspace folder, `<parent>/<name>`. */
   readonly path: string;
-  /** True when it goes in the default folder under the data dir. */
   readonly inDataDir: boolean;
 }
 
-/** The longest folder path accepted for a new workspace's location. */
 export const MAX_WORKSPACE_PARENT_LENGTH = 4096;
 
-/**
- * The folder new workspaces go in when none is chosen: the one set with
- * `swamp config set workspaces.dir`, else `<data dir>/workspaces`.
- */
 export async function defaultWorkspaceParent(
   deps: Pick<WorkspaceStoreDeps, "dataDir" | "configuredParent">,
 ): Promise<string> {
@@ -190,15 +154,9 @@ export async function defaultWorkspaceParent(
 }
 
 /**
- * Where a new workspace of that name goes: in `parent` when one is given,
- * else in the configured folder, else under the data dir. A chosen or
- * configured folder must already exist; it is used by its real path
- * (symlinks resolved), so one folder is only ever registered one way. A
- * relative `parent` is resolved against `relativeTo` (the CLI's working
- * folder) and refused without it.
- *
- * @throws {UserError} code `invalid_name`, or one of
- *   {@link resolveChosenFolder}'s
+ * a chosen or configured folder must already exist and is used by its real path
+ * (symlinks resolved), so one folder is only ever registered one way; a
+ * relative `parent` needs `relativeTo`
  */
 export async function newWorkspaceLocation(
   deps: Pick<
@@ -232,14 +190,6 @@ export async function newWorkspaceLocation(
   return { name, parent: real, path: join(real, name), inDataDir: false };
 }
 
-/**
- * The real path (symlinks resolved) of a folder the user typed or chose:
- * `~` expanded, a relative path resolved against `relativeTo` (refused
- * without it). The folder must already exist.
- *
- * @throws {UserError} code `parent_too_long`, `parent_not_absolute`,
- *   `parent_not_found`, `parent_not_a_folder` or `parent_unreadable`
- */
 export async function resolveChosenFolder(
   deps: Pick<WorkspaceStoreDeps, "homeDir" | "os">,
   typed: string,
@@ -274,7 +224,6 @@ export async function resolveChosenFolder(
   );
 }
 
-/** The real path of an existing folder; `missing` says what to do if not. */
 async function existingFolder(path: string, missing: string): Promise<string> {
   try {
     if (!(await Deno.stat(path)).isDirectory) {
@@ -306,11 +255,8 @@ async function existingFolder(path: string, missing: string): Promise<string> {
 }
 
 /**
- * Refuses a new workspace whose name or folder is taken: a registered
- * name (`name_taken`), a folder registered under another name or a repo
- * that isn't registered (`folder_exists`), or a folder holding something
- * else (`not_a_workspace`). With `reuseRepo`, a repo that isn't registered
- * is accepted, as `swamp start` reuses one under the data dir. Reads only.
+ * with `reuseRepo`, a repo that isn't registered is accepted, as swamp start
+ * reuses one under the data dir. Reads only.
  */
 export async function checkNewWorkspaceFolder(
   deps: WorkspaceStoreDeps,
@@ -377,11 +323,9 @@ export async function checkNewWorkspaceFolder(
 }
 
 /**
- * Creates a new workspace at its location and registers it, after
- * {@link checkNewWorkspaceFolder}. The caller holds the name's create lock.
- * Registration is strict: a name or folder registered meanwhile (an import
- * does not take the create lock) fails rather than being reported as
- * created, and what was made is taken away again.
+ * the caller holds the name's create lock. Registration is strict: a name or
+ * folder registered meanwhile (an import does not take the lock) fails, and
+ * what was made is taken away again.
  */
 export async function createNewWorkspace(
   deps: WorkspaceStoreDeps,
@@ -428,7 +372,6 @@ async function undoCreate(
   }
 }
 
-/** True when `path` is a symbolic link, dangling or not. */
 async function isSymlink(path: string): Promise<boolean> {
   try {
     return (await Deno.lstat(path)).isSymlink;
@@ -438,7 +381,6 @@ async function isSymlink(path: string): Promise<boolean> {
   }
 }
 
-/** Whether a folder is missing, empty, or holds something. */
 export async function folderState(
   path: string,
 ): Promise<"missing" | "empty" | "not_empty"> {
@@ -451,11 +393,6 @@ export async function folderState(
   }
 }
 
-/**
- * Creates the workspace folder and initialises it as a repo with no tools,
- * or reuses it. Refuses a folder that holds something other than a
- * workspace. Returns true when it created the workspace.
- */
 export async function ensureWorkspace(
   deps: WorkspaceStoreDeps,
   name: string,
@@ -492,12 +429,6 @@ export async function ensureWorkspace(
   return true;
 }
 
-/**
- * The folder a typed path names, checked the way an import checks it: it
- * exists and holds a `.swamp.yaml`.
- *
- * @throws {UserError} code `not_found` or `not_a_repo`
- */
 export async function importableFolder(
   deps: Pick<WorkspaceStoreDeps, "repo" | "homeDir" | "os">,
   typed: string,
@@ -531,15 +462,6 @@ export async function importableFolder(
   return path;
 }
 
-/**
- * Registers an existing swamp repo as a workspace where it is: nothing is
- * moved or copied. The name defaults to the folder's name; a clash gets a
- * numeric suffix. Importing a folder that is already registered answers
- * with its existing name.
- *
- * @throws {UserError} code `not_found`, `not_a_repo`, `invalid_name` or
- *   `name_taken`
- */
 export async function importWorkspace(
   deps: WorkspaceStoreDeps,
   input: { path: string; name?: string },
@@ -598,12 +520,6 @@ export async function importWorkspace(
   });
 }
 
-/**
- * Expands a leading `~` (`~/…`, or `~\…` on Windows) to the home folder.
- *
- * @throws {UserError} code `not_found` when there is a `~` to expand but
- *   the home folder is unknown
- */
 export function expandHome(
   raw: string,
   homeDir: string | undefined,
@@ -621,7 +537,6 @@ export function expandHome(
   return raw === "~" ? homeDir : join(homeDir, raw.slice(2));
 }
 
-/** The folder with symlinks resolved, or the path as given when it's gone. */
 export async function realPathOrSelf(path: string): Promise<string> {
   try {
     return await Deno.realPath(path);
@@ -630,7 +545,6 @@ export async function realPathOrSelf(path: string): Promise<string> {
   }
 }
 
-/** Parses a workspace name, failing with code `invalid_name`. */
 export function parseWorkspaceNameWithCode(name: string): string {
   try {
     return parseWorkspaceName(name);
@@ -647,7 +561,6 @@ function isUnder(path: string, dir: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-/** A workspace name made from a folder name: lowercase, dashes, ≤ 63. */
 function nameFromFolder(folder: string): string {
   const slug = folder.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
     /^-+|-+$/g,

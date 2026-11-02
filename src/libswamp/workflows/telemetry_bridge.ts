@@ -24,13 +24,8 @@ import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_se
 import type { WorkflowTelemetrySink } from "./run.ts";
 
 /**
- * Build the CommandInvocationData for a workflow-internal method
- * invocation. Shape matches what `resolveTelemetryInvocation` produces for
- * a direct `swamp model method run <name> <method>` invocation. Model and
- * method names are not sensitive and are sent as-is (swamp-club#2817):
- *   - args[0] = "run"
- *   - args[1] = modelName
- *   - args[2] = methodName
+ * model and method names are not sensitive and are sent as-is; the shape
+ * matches a direct `swamp model method run <name> <method>` invocation
  */
 export function buildChildInvocation(
   modelName: string,
@@ -46,11 +41,6 @@ export function buildChildInvocation(
   };
 }
 
-/**
- * Internal tracking record for a method invocation that has started but
- * not yet completed. Held by WorkflowTelemetryBridge while events are
- * still arriving for the (runId, jobId, stepId) triple.
- */
 interface InFlightMethodInvocation {
   jobId: string;
   stepId: string;
@@ -61,26 +51,11 @@ interface InFlightMethodInvocation {
 }
 
 /**
- * Bridges domain WorkflowExecutionEvents to per-method-invocation
- * telemetry. Tracks in-flight invocations between `method_executing` and
- * the matching `step_completed`/`step_failed` events; on stream
- * termination, finalizes any unfinished invocations as errors via
- * {@link finalize}.
- *
- * A step is identified by the run that owns it as well as its job and step
- * names: a nested workflow step forwards its child's events into the same
- * stream, and the child's job and step names can repeat those of a step
- * running concurrently in the parent or in a sibling nested run. The owning
- * run's id is on the domain event only, which is why the bridge observes
- * domain events rather than the published WorkflowRunEvent.
- *
- * Ownership model: one bridge instance per workflow stream consumption.
- * Re-using a bridge across runs would leak state. The libswamp
- * `workflowRun` generator constructs a fresh bridge inside its
- * try/finally and discards it on exit.
+ * a step is keyed by its owning run as well as job and step names, since nested
+ * runs forward events into the same stream with repeating names; the run id is
+ * on the domain event only
  */
 export class WorkflowTelemetryBridge {
-  /** Keyed by {@link stepKey}. */
   private readonly inFlight = new Map<string, InFlightMethodInvocation>();
   /**
    * Captured from the top-level run's `started` event so workflowContext can
@@ -89,24 +64,14 @@ export class WorkflowTelemetryBridge {
    */
   private workflowName = "";
   private runId = "";
-  /**
-   * Captured from `model_resolved` so workflowContext can carry modelType.
-   * Keyed by {@link stepKey}.
-   */
   private readonly modelTypeByStep = new Map<string, string>();
-  /** Set true after finalize() runs, so observe() becomes a no-op. */
   private finalized = false;
 
   constructor(private readonly sink: WorkflowTelemetrySink) {}
 
   /**
-   * Observe one event from the workflow run stream. Idempotent — calling
-   * with the same event twice would double-record, so callers must invoke
-   * once per event.
-   *
-   * Returns void; awaits internally for `recordChildInvocation` so the
-   * caller's stream loop awaits the write before yielding the next event
-   * (matters for ordering guarantees in tests).
+   * calling twice with the same event double-records, so invoke once per event;
+   * awaits the sink write so ordering holds before the next event
    */
   async observe(event: WorkflowExecutionEvent): Promise<void> {
     if (this.finalized) return;
@@ -140,7 +105,7 @@ export class WorkflowTelemetryBridge {
       case "step_completed": {
         const key = stepKey(event.runId, event.jobId, event.stepId);
         const tracked = this.inFlight.get(key);
-        if (!tracked) return; // workflow_task step or non-method step
+        if (!tracked) return;
         this.inFlight.delete(key);
         await this.sink.recordChildInvocation(
           buildChildInvocation(tracked.modelName, tracked.methodName),
@@ -162,8 +127,6 @@ export class WorkflowTelemetryBridge {
         const tracked = this.inFlight.get(key);
 
         if (tracked) {
-          // Method had started; record an error child entry with the
-          // actual duration from method_executing → step_failed.
           this.inFlight.delete(key);
           await this.sink.recordChildInvocation(
             buildChildInvocation(tracked.modelName, tracked.methodName),
@@ -176,17 +139,14 @@ export class WorkflowTelemetryBridge {
           return;
         }
 
-        // No method_executing was yielded — this is a pre-method-executing
-        // failure (model lookup, vary-key validation, vault expression
-        // resolution, etc.). The domain layer populates modelName /
-        // methodName on step_failed for model-method tasks; if
-        // those are absent the failure is structural (workflow-task,
-        // nesting-depth, cycle) and we skip emission.
+        // no method_executing was yielded, so this is a pre-method failure; the
+        // domain sets modelName and methodName for model-method tasks, and when
+        // absent the failure is structural and nothing is emitted
         if (!event.modelName || !event.methodName) return;
         const synthesized: InFlightMethodInvocation = {
           jobId: event.jobId,
           stepId: event.stepId,
-          startedAt: new Date(0), // placeholder, overwritten below
+          startedAt: new Date(0),
           modelName: event.modelName,
           methodName: event.methodName,
           modelType: this.modelTypeByStep.get(key),
@@ -206,12 +166,9 @@ export class WorkflowTelemetryBridge {
   }
 
   /**
-   * Drain any in-flight invocations as error entries. Call from the
-   * libswamp generator's `finally` block so cancelled / thrown / aborted
-   * runs don't silently lose telemetry for methods that started but
-   * never received a terminal event.
-   *
-   * Safe to call multiple times; only the first call drains.
+   * call from the generator's finally so cancelled or thrown runs don't lose
+   * telemetry for methods that never received a terminal event; only the first
+   * call drains
    */
   async finalize(reason?: string): Promise<void> {
     if (this.finalized) return;

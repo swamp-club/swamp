@@ -50,10 +50,6 @@ type Event =
 
 type CountingUnit = UnitOfWork & { commits: number; abandons: number };
 
-/**
- * A unit of work that counts commits and abandons, plus a context that opens
- * them.
- */
 function countingContext(options: { typed?: boolean } = {}): {
   ctx: LibSwampContext;
   units: CountingUnit[];
@@ -79,7 +75,6 @@ function countingContext(options: { typed?: boolean } = {}): {
         },
         staged: () => [...staged],
       };
-      // A unit that takes typed changes is a v3 commit-log unit.
       if (options.typed) {
         typedStagers.register(uow, () => Promise.resolve());
       }
@@ -178,7 +173,6 @@ Deno.test("withUnitOfWork: does not commit when the consumer stops early, and ru
   const done = await result(withUnitOfWork(ctx, body));
 
   assertEquals(done.kind, "completed");
-  // result() stops at completed with return(): the unit is abandoned, once.
   assertEquals(units[0].commits, 0);
   assertEquals(units[0].abandons, 1);
   assertStrictEquals(finallySaw, units[0]);
@@ -218,7 +212,6 @@ Deno.test("withUnitOfWork: a failing abandon never masks the error that ended th
   await assertRejects(() => drain(withUnitOfWork(ctx, body)), Error, "boom");
 });
 
-/** An abandon that could not record its outcome, as a v3 unit's may be. */
 class Unrecorded extends UnrecordedEndError {
   constructor(readonly failure?: unknown) {
     super("the outcome could not be recorded");
@@ -263,7 +256,6 @@ Deno.test("withUnitOfWork: inside a root unit, a wrapped use case stages into a 
       },
     },
     async () => {
-      // The ambient unit is the root itself; fn gets a view of it.
       const root = currentUnitOfWork()!;
       async function* body(): AsyncGenerator<Event> {
         child = currentUnitOfWork();
@@ -393,14 +385,11 @@ Deno.test("withUnitOfWork: a v3 unit commits on a terminal outcome, including co
     yield { kind: "completed" };
     yield { kind: "step", seen: undefined };
   }
-  // result() stops at completed with return().
   await result(withUnitOfWork(ctx, body));
   assertEquals([units[0].commits, units[0].abandons], [1, 0]);
 });
 
 Deno.test("withUnitOfWork: a v3 unit commits a reported error, and abandons on a throw or a stop before any outcome (swamp-club#3257, swamp-club#3279)", async () => {
-  // A reported error is an outcome: a failed method run reports one, and
-  // its record is what v2 publishes too (swamp-club#3279).
   const errored = countingContext({ typed: true });
   async function* failing(): AsyncGenerator<Event> {
     yield { kind: "error", message: "failed" };
@@ -440,7 +429,6 @@ Deno.test("withUnitOfWork: a v3 unit commits when the use case marks an outcome 
   await drain(withUnitOfWork(legacy.ctx, cancelledSilently));
   assertEquals([legacy.units[0].commits, legacy.units[0].abandons], [0, 1]);
 
-  // Without the mark, the same silent ending abandons on v3.
   async function* endsSilently(): AsyncGenerator<Event> {
     yield { kind: "step", seen: undefined };
   }
@@ -451,7 +439,6 @@ Deno.test("withUnitOfWork: a v3 unit commits when the use case marks an outcome 
     1,
   ]);
 
-  // A throw after the mark still abandons.
   async function* marksThenThrows(): AsyncGenerator<Event> {
     markOutcomeReported();
     yield { kind: "step", seen: undefined };
@@ -463,6 +450,5 @@ Deno.test("withUnitOfWork: a v3 unit commits when the use case marks an outcome 
 });
 
 Deno.test("markOutcomeReported: outside a unit it does nothing", () => {
-  // Nothing to observe: the call must simply not throw.
   markOutcomeReported();
 });

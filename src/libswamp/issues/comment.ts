@@ -23,15 +23,13 @@ import { UserError } from "../../domain/errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /**
- * Server-side maximum comment length (matches MAX_COMMENT_LENGTH in
- * swamp-club's comments handler). Validated client-side so callers see a
- * clear error before round-tripping a too-long body.
+ * matches the server's maximum comment length; validated client-side so callers
+ * see a clear error before a round trip.
  */
 export const MAX_RIPPLE_LENGTH = 65_536;
 
 export type IssueStatusTransition = "closed" | "open";
 
-/** Output of a successful ripple post. */
 export interface IssueCommentData {
   issueNumber: number;
   commentId: string;
@@ -62,11 +60,8 @@ export interface IssueCommentDeps {
 }
 
 /**
- * Post a "ripple" (comment) on an existing swamp-club Lab issue.
- *
- * Validates the body client-side to avoid round-tripping obviously bad
- * input. Server-side checks (profanity, comment-locked, visibility) are
- * surfaced through the infrastructure adapter as UserErrors.
+ * server-side checks (profanity, comment-locked, visibility) surface through
+ * the infrastructure adapter as UserErrors.
  */
 export async function* issueComment(
   ctx: LibSwampContext,

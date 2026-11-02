@@ -35,27 +35,22 @@ import type { OrphanedNestedRunRefusal } from "../../domain/workflows/orphaned_n
 import { type SwampError, validationFailed } from "../errors.ts";
 
 /**
- * A nested workflow run its parent stopped waiting on when the parent ended
- * (swamp-club#2736). The child was left unfinished; cancelling it is a
- * separate step.
+ * a nested run its parent stopped waiting on when the parent ended; it was left
+ * unfinished, and cancelling it is a separate step
  */
 export interface DetachedNestedRunData {
   workflowId: string;
   workflowName: string;
   runId: string;
-  /** The parent step that waited on it. */
   jobName: string;
   stepName: string;
-  /** The command that cancels the child (the --server form when serve owns it). */
   cancelCommand: string;
 }
 
-/** The parent run still waiting on a nested run that just finished. */
 export interface AwaitingParentData {
   workflowId: string;
   workflowName: string;
   runId: string;
-  /** The command that resumes the parent. */
   resumeCommand: string;
 }
 
@@ -65,12 +60,6 @@ function serverSuffix(
   return run?.instanceId !== undefined ? " --server <url>" : "";
 }
 
-/**
- * The child runs the ended run's nested steps were still waiting on and that
- * have not finished, each with the command that cancels it. A child that
- * already finished, or no longer exists, needs no cancel and is left out; one
- * that cannot be read is reported, since it may still be unfinished.
- */
 export async function detachedNestedRunsOf(
   deps: Pick<NestedRunLinkDeps, "runRepo">,
   run: WorkflowRun,
@@ -94,7 +83,6 @@ export async function detachedNestedRunsOf(
   return result;
 }
 
-/** The command that cancels a detached nested run. */
 export function detachedCancelCommand(
   detached: DetachedNestedRunRef,
   child: { instanceId?: string } | null | undefined,
@@ -104,10 +92,6 @@ export function detachedCancelCommand(
   } --run ${detached.child.runId}${serverSuffix(child)}`;
 }
 
-/**
- * The parent run still waiting on this run, when there is one, with the
- * command that resumes it.
- */
 export async function awaitingParentOf(
   deps: NestedRunLinkDeps,
   run: WorkflowRun,
@@ -132,10 +116,8 @@ export async function awaitingParentOf(
 }
 
 /**
- * What a refusal to approve or reject a nested workflow step carries in its
- * `details`: the nested run's workflow, and the refusal without naming it, so
- * a server can name the nested run only to a reader of its workflow
- * (swamp-club#2736).
+ * carries the nested run's workflow and the refusal without naming it, so a
+ * server can name the nested run only to a reader of its workflow
  */
 export interface NestedWaitGateDetails {
   nestedWaitGate: {
@@ -145,10 +127,6 @@ export interface NestedWaitGateDetails {
   };
 }
 
-/**
- * For a step that waits on a nested run rather than a gate of its own, the
- * refusal to approve or reject it, naming the nested run to decide instead.
- */
 export function nestedWaitGateError(
   run: WorkflowRun,
   stepName: string,
@@ -169,7 +147,6 @@ export function nestedWaitGateError(
   );
 }
 
-/** The nested run a refusal from {@link nestedWaitGateError} names, if any. */
 export function nestedWaitGateOf(
   error: SwampError,
 ): NestedWaitGateDetails["nestedWaitGate"] | undefined {
@@ -178,10 +155,8 @@ export function nestedWaitGateOf(
 }
 
 /**
- * What a refusal to continue an orphaned nested run carries in its
- * `details`: the workflow of the run above it, and the refusal without
- * naming that run, so a server can name it only to a reader of its workflow
- * (swamp-club#2867).
+ * carries the workflow of the run above and the refusal without naming that
+ * run, so a server can name it only to a reader of its workflow
  */
 export interface OrphanedNestedRunDetails {
   orphanedNestedRun: {
@@ -192,7 +167,6 @@ export interface OrphanedNestedRunDetails {
   };
 }
 
-/** The refusal to approve, reject or resume an orphaned nested run. */
 export function orphanedNestedRunError(
   refusal: OrphanedNestedRunRefusal,
 ): SwampError {
@@ -211,7 +185,6 @@ export function orphanedNestedRunError(
   return validationFailed(refusal.message, details);
 }
 
-/** What a refusal from {@link orphanedNestedRunError} carries, if any. */
 export function orphanedNestedRunOf(
   error: SwampError,
 ): OrphanedNestedRunDetails["orphanedNestedRun"] | undefined {

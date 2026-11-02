@@ -37,18 +37,12 @@ import type { LibSwampContext } from "../context.ts";
 import { cancelled, type SwampError } from "../errors.ts";
 
 /**
- * What happened to the stored API key on the server, for a logout that
- * completed:
- * - `revoked`: the server revoked it.
- * - `already_invalid`: the server no longer accepted it, so nothing was left
- *   to revoke.
- * - `no_key`: the stored credentials held no API key to revoke.
+ * revoked: the server revoked the key; already_invalid: the server did not
+ * accept it, so nothing was left to revoke; no_key: the stored credentials held
+ * no API key
  */
 export type AuthLogoutKeyRevocation = "revoked" | "already_invalid" | "no_key";
 
-/**
- * Data structure for the auth logout output.
- */
 export interface AuthLogoutData {
   loggedOut: boolean;
   username?: string;
@@ -62,7 +56,6 @@ export type AuthLogoutEvent =
   | { kind: "completed"; data: AuthLogoutData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the auth logout operation. */
 export interface AuthLogoutDeps {
   loadCredentials: () => Promise<
     { username: string; serverUrl: string; apiKey: string } | null
@@ -84,17 +77,13 @@ export interface AuthLogoutDeps {
 }
 
 /**
- * Options for {@link createAuthLogoutDeps}. The `repo` field accepts
- * the same overrides as `AuthRepository` itself — used by tests to
- * bypass the shared `Deno.env` global, which races across files when
- * `deno test --parallel` runs multiple auth-touching test files at
- * once.
+ * the repo field takes AuthRepository's overrides so tests can avoid the shared
+ * Deno.env global, which races across parallel test files
  */
 export interface CreateAuthLogoutDepsOptions {
   repo?: AuthRepositoryOptions;
 }
 
-/** Wires real infrastructure into AuthLogoutDeps. */
 export function createAuthLogoutDeps(
   options: CreateAuthLogoutDepsOptions = {},
 ): AuthLogoutDeps {
@@ -111,7 +100,7 @@ export function createAuthLogoutDeps(
       if (!creds) return null;
       return {
         username: creds.username,
-        // A file from before serverUrl was always written means the default.
+        // a credentials file without serverUrl means the default
         serverUrl: creds.serverUrl || DEFAULT_SWAMP_CLUB_URL,
         apiKey: creds.apiKey ?? "",
       };
@@ -157,12 +146,9 @@ export async function* authLogout(
   const credentials = await deps.loadCredentials();
 
   if (!credentials) {
-    // An API-key run leaves its identity and scope caches without any login
-    // record, so they are cleared here too. Only the caches: deleting
-    // auth.json here could remove a login another process just wrote, and
-    // the gate's stamps are bound to a key fingerprint. Best effort: with no
-    // login there is nothing to log out, so a cache that cannot be removed
-    // does not fail the command.
+    // an API-key run leaves identity and scope caches with no login record, so
+    // clear only the caches: deleting auth.json could remove a login another
+    // process just wrote. Best effort, since there is nothing to log out.
     await deps.deleteCaches().catch(() => {});
     const data: AuthLogoutData = {
       loggedOut: false,

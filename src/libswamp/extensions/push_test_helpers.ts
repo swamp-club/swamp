@@ -32,12 +32,7 @@ import {
 import { scanImportSites } from "../../domain/extensions/dependency_resolution/import_sites.ts";
 import { isBareSpecifier } from "../../domain/extensions/dependency_resolution/specifier.ts";
 
-/**
- * The bare-import resolutions the module graph would report for `files`
- * under a config with only top-level `imports`, without running deno: each
- * bare import each file writes, resolved through the `imports` of the
- * config at `denoConfigPath`. Unit tests use it in place of a real graph.
- */
+/** stands in for a real module graph in unit tests, without running deno. */
 export async function topLevelBareImports(
   files: string[],
   denoConfigPath: string,
@@ -59,11 +54,6 @@ export async function topLevelBareImports(
   return found;
 }
 
-/**
- * The source plan push builds for files that all sit inside their kind's
- * directory and import nothing outside it: each file at
- * `<kind>/<path relative to the kind directory>`, byte for byte.
- */
 export function kindDirectorySourcePlan(
   input: Omit<ExtensionPushPrepareInput, "sourcePlan">,
 ): SourceArchivePlan {
@@ -71,9 +61,8 @@ export function kindDirectorySourcePlan(
     kinds: [
       {
         kind: "models",
-        // A behaviors: manifest's entries resolve from the behaviors dir,
-        // and models-dir files beside them still pack under models/
-        // (swamp-club#3338), as the resolver plans them.
+        // a behaviors: manifest's entries resolve from the behaviors dir, and
+        // models-dir files beside them still pack under models/.
         dir: input.behaviorsDir ?? input.modelsDir,
         ...(input.behaviorsDir !== undefined &&
             input.behaviorsDir !== input.modelsDir
@@ -110,11 +99,9 @@ export function kindDirectorySourcePlan(
 }
 
 /**
- * Builds a prepare input for tests. Every typed directory sits under
- * `repoDir`, the manifest's directory is `repoDir` unless overridden, and a
- * dry run collects registry checks while a real push enforces them, as the
- * CLI does. Tests in this repository build prepare inputs through this
- * helper so a new required field is added in one place.
+ * tests build prepare inputs through this helper so a new required field is
+ * added in one place; a dry run collects registry checks while a real push
+ * enforces them, as the CLI does.
  */
 export function buildPrepareInput(
   manifest: ExtensionManifest,

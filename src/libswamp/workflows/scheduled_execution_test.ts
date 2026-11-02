@@ -102,13 +102,11 @@ Deno.test("ScheduledExecutionService: registers schedules from existing workflow
 
   await service.start((e) => events.push(e));
 
-  // Should have registered the schedule
   const schedules = service.listSchedules();
   assertEquals(schedules.length, 1);
   assertEquals(schedules[0].cronExpression, "0 * * * *");
   assertEquals(schedules[0].workflowName, "scheduled-wf");
 
-  // Should have emitted a registration event
   const registered = events.filter((e) => e.kind === "schedule_registered");
   assertEquals(registered.length, 1);
 
@@ -177,7 +175,6 @@ Deno.test("ScheduledExecutionService: emits schedule_failed when workflow run ha
 
   await service.start((e) => events.push(e));
 
-  // Wait for the cron to fire (every second)
   await waitFor(
     () => events.some((e) => e.kind === "schedule_failed"),
     "schedule_failed event",
@@ -364,9 +361,6 @@ Deno.test("ScheduledExecutionService: stop clears schedules", async () => {
   assertEquals(service.listSchedules().length, 0);
 });
 
-// ── Drain (swamp-club#2484) ──────────────────────────────────────────
-
-/** An executor whose runs stay in flight until released or aborted. */
 function createBlockingExecutor() {
   const gate = Promise.withResolvers<void>();
   const signals: AbortSignal[] = [];
@@ -431,9 +425,6 @@ Deno.test("ScheduledExecutionService.drain: returns at the timeout and stop then
   assertEquals(executor.signals[0].aborted, true);
 });
 
-// ── Cancel reason (swamp-club#2651) ─────────────────────────────────
-
-/** A service with one scheduled run in flight, run-1. */
 async function withRunInFlight(
   fn: (
     service: ScheduledExecutionService,
@@ -750,8 +741,6 @@ Deno.test("ScheduledExecutionService: pendingRunHook delete awaits enqueue befor
   }
 });
 
-// ── Trigger Overrides ────────────────────────────────────────────────
-
 Deno.test("ScheduledExecutionService: trigger override adds schedule to unscheduled workflow", async () => {
   const wf = createTestWorkflow("unscheduled-wf");
   const events: ScheduledExecutionEvent[] = [];
@@ -897,8 +886,6 @@ Deno.test("ScheduledExecutionService: no trigger overrides works as before", asy
 
   await service.stop();
 });
-
-// ── updateTriggerOverrides ──────────────────────────────────────────
 
 Deno.test("getTriggerOverride: returns the override the service applies, before and after an update", async () => {
   const wf = createTestWorkflow("scheduled-wf", "0 12 * * *");
@@ -1132,7 +1119,6 @@ Deno.test("ScheduledExecutionService: rescanWorkflows registers new workflows ad
   assertEquals(schedules.length, 1);
   assertEquals(schedules[0].workflowName, "existing-wf");
 
-  // Simulate a new workflow being added to the repo (e.g., via extension pull + reload)
   const wf2 = createTestWorkflow("new-wf", "30 * * * *");
   workflows.push(wf2);
 
@@ -1381,11 +1367,9 @@ Deno.test("ScheduledExecutionService: a nested workflow's started event does not
 
 Deno.test("ScheduledExecutionService: each fire is the root of its own trace", async () => {
   const wf = createTestWorkflow("traced-wf", "* * * * * *");
-  // The active span when the dedup claim runs, recorded per fire.
   const dedupActiveSpans: (Span | undefined)[] = [];
 
   await withCapturedSpans(async (spans) => {
-    // Started under an active span, as serve starts it under swamp.cli.
     await withSpan("swamp.cli", {}, async () => {
       const service = new ScheduledExecutionService({
         workflowRepo: createMockWorkflowRepo([wf]),
@@ -1395,7 +1379,6 @@ Deno.test("ScheduledExecutionService: each fire is the root of its own trace", a
           return Promise.resolve(true);
         },
         executeWorkflow: (_input, _signal, onEvent) =>
-          // Stands in for the run's own spans, which nest under the fire.
           withSpan("swamp.workflow.run", {}, () => {
             onEvent({
               kind: "started",
@@ -1431,19 +1414,12 @@ Deno.test("ScheduledExecutionService: each fire is the root of its own trace", a
   });
 });
 
-// ── Concurrent scheduled runs (swamp-club#3046) ─────────────────────
-
 interface HeldRun {
   workflow: string;
   signal: AbortSignal;
   release: () => void;
 }
 
-/**
- * An executor whose runs each stay in flight until released one by one or
- * aborted. Records how many runs it saw in flight at once, in all and for
- * one workflow, and how many have finished.
- */
 function createPerRunExecutor() {
   const runs: HeldRun[] = [];
   const inFlight = new Map<string, number>();
@@ -1572,7 +1548,6 @@ Deno.test("ScheduledExecutionService: a workflow never overlaps itself while oth
   await service.start();
   try {
     replay(service, "wf-a", "wf-a", "wf-b");
-    // wf-b passes the queued second wf-a.
     await waitFor(() => executor.runs.length === 2, "two runs in flight");
     assertEquals(executor.runs.map((run) => run.workflow), ["wf-a", "wf-b"]);
     executor.runs[0].release();
@@ -1637,7 +1612,6 @@ Deno.test("ScheduledExecutionService: a failed pending-run delete is logged and 
   try {
     service.enqueueForReplay({ pendingRunId: "p-bad", workflowIdOrName: "wf" });
     service.enqueueForReplay({ pendingRunId: "p-ok", workflowIdOrName: "wf" });
-    // The failed entry never starts; the next one for the same workflow does.
     await waitFor(() => executor.runs.length === 1, "next run");
     assertEquals(executor.runs[0].workflow, "wf");
   } finally {
@@ -1803,9 +1777,6 @@ Deno.test("ScheduledExecutionService.queueStatus: records the delay of a replay 
   }
 });
 
-// ── Schedule pauses (swamp-club#3522) ─────────────────────────────
-
-/** An in-memory pause repository whose reads can be made to fail. */
 function createPauseRepo(pauses: SchedulePause[] = []) {
   const records = new Map(pauses.map((p) => [p.workflowId, p]));
   const state = { failReads: false, reads: 0 };

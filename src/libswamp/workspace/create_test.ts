@@ -76,7 +76,6 @@ Deno.test("workspaceCreate: refuses the folder a removed workspace left behind",
       "folder_exists",
     );
     assertEquals((await f.deps.registry.load())?.get("prod"), undefined);
-    // Importing it brings it back.
     const back = await completed(workspaceImport(ctx, f.deps, { path }));
     assertEquals(back, { name: "prod", path, alreadyRegistered: false });
   });
@@ -84,7 +83,6 @@ Deno.test("workspaceCreate: refuses the folder a removed workspace left behind",
 
 Deno.test("workspaceCreate: refuses a data-dir folder imported under another name", async () => {
   await withWorkspaceFixture(async (f) => {
-    // A registry exists, so the folder isn't adopted under its own name.
     await completed(workspaceCreate(ctx, f.deps, { name: "first" }));
     const path = join(f.dataDir, "workspaces", "prod");
     await f.makeRepo(path);
@@ -97,7 +95,6 @@ Deno.test("workspaceCreate: refuses a data-dir folder imported under another nam
 
 Deno.test("workspaceCreate: refuses a folder that holds something else", async () => {
   await withWorkspaceFixture(async (f) => {
-    // A registry exists, so nothing is adopted.
     await completed(workspaceCreate(ctx, f.deps, { name: "first" }));
     const path = join(f.dataDir, "workspaces", "prod");
     await Deno.mkdir(path, { recursive: true });
@@ -112,7 +109,6 @@ Deno.test("workspaceCreate: refuses a folder that holds something else", async (
 
 Deno.test("workspaceCreate: an existing workspace folder is adopted by the first read, so its name is taken", async () => {
   await withWorkspaceFixture(async (f) => {
-    // A folder `swamp start` made before the registry existed.
     await f.makeRepo(join(f.dataDir, "workspaces", "prod"));
     assertEquals(
       await errorCode(workspaceCreate(ctx, f.deps, { name: "prod" })),
@@ -146,7 +142,6 @@ Deno.test("workspaceCreate: fails when the name is registered elsewhere while th
     }
     assertEquals(events.map((e) => e.kind), ["error"]);
     assertEquals((await f.deps.registry.load())?.get("prod")?.path, elsewhere);
-    // The folder it made is removed, not left behind unregistered.
     assertEquals(
       await folderState(join(f.dataDir, "workspaces", "prod")),
       "missing",
@@ -168,7 +163,6 @@ Deno.test("workspaceCreate: --path creates the workspace in <dir>/<name>, regist
     assertEquals(entry?.path, path);
     assertEquals(entry?.origin, "created");
     assertEquals(f.locks, ["prod"]);
-    // Outside the data dir, but made by Swamp: not an import.
     const got = await completed(workspaceGet(ctx, f.deps, { name: "prod" }));
     assertEquals(got.imported, false);
   });
@@ -254,7 +248,6 @@ Deno.test("workspaceCreate: uses the configured folder when no --path is given",
       workspaceCreate(ctx, f.deps, { name: "prod" }),
     );
     assertEquals(data.path, join(parent, "prod"));
-    // --path still wins over the setting.
     const other = join(f.dir, "other");
     await Deno.mkdir(other);
     const chosen = await completed(

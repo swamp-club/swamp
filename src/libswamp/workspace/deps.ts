@@ -37,11 +37,8 @@ import {
   type WorkspaceStoreDeps,
 } from "./workspace_store.ts";
 
-/** Dependencies of the `swamp workspace` services, injected for testing. */
 export interface WorkspaceDeps extends WorkspaceStoreDeps {
-  /** Tools the repo at `path` is set up for (its `.swamp.yaml`). */
   readonly enrolledTools: (path: string) => Promise<string[]>;
-  /** True when a `swamp start` has the workspace open. */
   readonly isOpenInStart: (path: string) => Promise<boolean>;
   /**
    * Runs `fn` under the workspace's create lock, the one `swamp start`
@@ -53,7 +50,6 @@ export interface WorkspaceDeps extends WorkspaceStoreDeps {
   ) => Promise<T>;
 }
 
-/** Wires real infrastructure into {@link WorkspaceDeps}. */
 export function createWorkspaceDeps(options: {
   version: string;
   homeDir?: string;
@@ -103,20 +99,16 @@ export function createWorkspaceDeps(options: {
   };
 }
 
-/** Whether a registered workspace's folder is still a swamp repo. */
 export type WorkspaceFolderState = "ok" | "missing" | "not_a_repo";
 
-/** One registered workspace, as `list` and `get` show it. */
 export interface WorkspaceSummary {
   readonly name: string;
   readonly path: string;
   readonly createdAt: string;
-  /** True when the workspace is an existing repo imported where it was. */
   readonly imported: boolean;
   readonly folder: WorkspaceFolderState;
 }
 
-/** The summary of one registry entry, checking its folder. */
 export async function summarizeWorkspace(
   deps: WorkspaceDeps,
   entry: WorkspaceEntry,
@@ -137,7 +129,6 @@ export async function summarizeWorkspace(
   };
 }
 
-/** The error event for a thrown UserError; anything else is rethrown. */
 export function workspaceErrorEvent(
   error: unknown,
 ): { kind: "error"; error: SwampError } {
@@ -154,7 +145,6 @@ export function workspaceErrorEvent(
   throw error;
 }
 
-/** The error for a name that isn't registered. */
 export function workspaceNotFound(name: string): UserError {
   return new UserError(
     `No workspace named "${name}". Run 'swamp workspace list' to see them.`,

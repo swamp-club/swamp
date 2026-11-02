@@ -113,9 +113,6 @@ import {
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 
-// ── Data types ────────────────────────────────────────────────────────
-
-/** A model entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedModelEntry {
   /** Absent when neither the source text nor loading it gave a type. */
   type?: string;
@@ -123,7 +120,6 @@ export interface ResolvedModelEntry {
   globalArguments?: ExtractedArgument[];
 }
 
-/** A vault entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedVaultEntry {
   /** Absent when neither the source text nor loading it gave a type. */
   type?: string;
@@ -133,7 +129,6 @@ export interface ResolvedVaultEntry {
   configFields?: ExtractedArgument[];
 }
 
-/** A datastore entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedDatastoreEntry {
   /** Absent when neither the source text nor loading it gave a type. */
   type?: string;
@@ -143,7 +138,6 @@ export interface ResolvedDatastoreEntry {
   configFields?: ExtractedArgument[];
 }
 
-/** A report entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedReportEntry {
   /** Absent when neither the source text nor loading it gave a name. */
   name?: string;
@@ -153,7 +147,6 @@ export interface ResolvedReportEntry {
   labels?: string[];
 }
 
-/** A webhook entry enriched with extracted metadata for the resolved display. */
 export interface ResolvedWebhookEntry {
   /** Absent when neither the source text nor loading it gave a type. */
   type?: string;
@@ -162,13 +155,11 @@ export interface ResolvedWebhookEntry {
   description?: string;
 }
 
-/** Data for showing resolved extension contents before push. */
 export interface ExtensionPushResolvedData {
   name: string;
   version: string;
   /** Requested intent, not a prediction of registry authorization or defaults. */
   visibility: PublishVisibility | "default";
-  /** The declared SPDX license expression, or null when none is declared. */
   license: string | null;
   description: string | undefined;
   repository: string | undefined;
@@ -186,7 +177,6 @@ export interface ExtensionPushResolvedData {
   dependencies: string[];
 }
 
-/** Data for successful push output. */
 export interface ExtensionPushSuccessData {
   name: string;
   version: string;
@@ -202,41 +192,23 @@ export interface ExtensionPushSuccessData {
   skillCount: number;
   channel: string;
   visibility: "public" | "private";
-  /**
-   * What the registry said about the push it accepted, such as client
-   * contentMetadata it discarded. Present only when it said something.
-   */
   registryWarnings?: RegistryWarnings;
 }
 
-/** Data for compilation error output. */
 export interface CompilationError {
   file: string;
   error: string;
 }
 
-// ── Prepare types ─────────────────────────────────────────────────────
-
-/** Input for the extension push prepare phase. */
 export interface ExtensionPushPrepareInput {
   manifest: ExtensionManifest;
   repoDir: string;
-  /**
-   * The manifest's directory. The `quality.yaml` sidecar (declared
-   * acceptances, the generated declaration) is discovered beside it.
-   */
   manifestDir: string;
-  /**
-   * The manifest file, whose description is checked for secret-unsafe
-   * docs. Defaults to `manifest.yaml` in {@link manifestDir}.
-   */
   manifestPath?: string;
   modelsDir: string;
   /**
-   * The behaviors directory the model entry points resolved from when the
-   * manifest lists them under `behaviors:` (swamp-club#3338). Files under
-   * it are packed at `models/<path from it>`, exactly as files under
-   * `modelsDir` are packed at `models/<path from modelsDir>`.
+   * files under it are packed at models/<path from it>, as files under
+   * modelsDir are packed at models/<path from modelsDir>.
    */
   behaviorsDir?: string;
   allModelFiles: string[];
@@ -264,112 +236,69 @@ export interface ExtensionPushPrepareInput {
    * packaged and safety-scanned, never sent to fmt, lint or review rules.
    */
   dataFilesByKind?: Partial<Record<SourceArchiveKind, string[]>>;
-  /**
-   * The archive's source copy: where every local module goes and which of
-   * its imports are rewritten there (swamp-club#3376).
-   */
   sourcePlan: SourceArchivePlan;
-  /**
-   * Local modules an entry point imports that do not exist. Reported as
-   * compilation errors at the bundle step, where the bundler used to
-   * report them.
-   */
   missingModules?: MissingLocalModule[];
   /**
-   * Entry points whose module graph reaches a symlink. The bundler would
-   * follow it and quote the target in its errors, so they are never
-   * bundled (swamp-club#3420).
+   * the bundler would follow a symlink and quote the target in its errors, so
+   * these entry points are never bundled.
    */
   entryPointsReachingSymlinks?: string[];
   /**
-   * Extension files with a symlink on their path, to the first symlinked
-   * component (swamp-club#3421). Nothing reads them; the safety gate
-   * refuses each by the symlink rule.
+   * nothing reads these files; the safety gate refuses each by the symlink
+   * rule.
    */
   symlinkedPaths?: ReadonlyMap<string, string>;
   dryRun: boolean;
   /**
-   * What to do with the registry-side checks (authentication, collective
-   * membership, reserved collective, version exists): a real push enforces
-   * them, a dry run collects their verdicts, packaging-only callers skip
-   * them and never contact the registry.
+   * a real push enforces the registry checks, a dry run collects their
+   * verdicts, and packaging-only callers skip them and never contact the
+   * registry.
    */
   registryChecks: RegistryChecksMode;
   /**
-   * What to do when a local gate fails (content collectives, the
-   * additionalFiles allowlist, safety, dependency trust, skills, fmt/lint,
-   * upgrade chain, review errors, archive size). A push enforces them: the
-   * first failure throws. `extension quality` collects them so it can still
-   * score the archive and print the rubric beside every failure. Defaults to
-   * `enforce`.
+   * a push enforces local gates (first failure throws); `extension quality`
+   * collects them so it can still score the archive. Defaults to enforce.
    */
   localGates?: LocalGatesMode;
-  /**
-   * The channel the push publishes to; stable when omitted. The
-   * version-exists check compares it with the channel a published version
-   * is already on.
-   */
   channel?: string;
   releaseNotes?: string;
   denoConfigPath?: string;
   packageJsonDir?: string;
   /**
-   * The workspace root `denoConfigPath` is a member of, whose lock push
-   * bundles against and the audit reads (swamp-club#3971).
+   * the workspace root denoConfigPath is a member of, whose lock push bundles
+   * against and the audit reads.
    */
   workspaceRootConfigPath?: string;
   /**
-   * Bundle with `--no-config`: no Deno config inside the repository, so
-   * none above it applies (swamp-club#3971).
+   * bundle with --no-config: no Deno config inside the repository, so none
+   * above it applies.
    */
   noConfig?: boolean;
-  /** A workspace member's own lock, which Deno ignores (swamp-club#3971). */
+  /** a workspace member's own lock, which Deno ignores. */
   ignoredMemberLock?: string;
   /**
-   * What Deno resolved each bare import a local module writes to, from the
-   * module graph read under `denoConfigPath` (swamp-club#3612). Push
-   * rewrites, audits and reports bare imports from these alone.
+   * push rewrites, audits and reports bare imports from these resolutions
+   * alone.
    */
   bareImports: ResolvedBareImport[];
-  /**
-   * The exact version each `npm:` and `jsr:` import resolved to, the code
-   * from outside npm and JSR, and whether a package-lock.json counts as a
-   * lock, read from the module graphs the bundles are built from
-   * (swamp-club#3970). Push pins every import it ships to these versions.
-   */
+  /** push pins every import it ships to these versions. */
   graphDependencies: GraphDependencies;
-  /**
-   * Config, lock and package files push left out of the archive, by their
-   * path from the manifest directory; set by push itself.
-   */
   leftOutProjectFiles?: string[];
-  /**
-   * Content hash of the resolved source tree (the package cache hash). When
-   * provided, push verifies a content-hash-bound adversarial-review report.
-   * Omitted by non-push callers (e.g. quality packaging).
-   */
   contentHash?: string;
   /**
-   * If provided, reuse these archive bytes instead of bundling and
-   * tarring from source. Callers supply this when a prior
-   * `swamp extension quality` run left a cached tarball whose source
-   * hash matches the current tree — letting push skip the expensive
-   * bundling step. The caller is responsible for validating that the
-   * cache key corresponds to the current source state.
+   * the caller must validate that the cache key matches the current source
+   * state.
    */
   cachedArchive?: Uint8Array;
   /**
-   * The loaded types the cache entry recorded for `cachedArchive`. Used only
-   * with that archive, so the collective check does not load every source
-   * of an archive it has already judged (swamp-club#3456).
+   * used only with cachedArchive, so the collective check does not reload every
+   * source of an archive it already judged.
    */
   cachedArchiveIndex?: StoredArchiveIndex;
 }
 
-/** How the prepare phase treats a failed local gate. */
 export type LocalGatesMode = "enforce" | "collect";
 
-/** The local gates prepare runs, in the order it runs them. */
 export type LocalGate =
   | "content-collectives"
   | "additional-files"
@@ -382,7 +311,6 @@ export type LocalGate =
   | "review"
   | "archive-size";
 
-/** A local gate that failed in `collect` mode, with the error push would throw. */
 export interface LocalGateFailure {
   gate: LocalGate;
   message: string;
@@ -390,11 +318,9 @@ export interface LocalGateFailure {
 }
 
 /**
- * Safety rules whose error rejects the file itself. In `collect` mode a file
- * carrying one is left out of the archive: it is never copied, so a
- * rejected symlink's target is not packaged. (A bundled entry point that
- * imports a rejected file can still resolve it; the archive is only scored
- * locally.)
+ * in collect mode a file carrying one of these is left out, so a rejected
+ * symlink's target is not packaged; a bundled entry point that imports it can
+ * still resolve it.
  */
 const FILE_REJECTING_SAFETY_RULES: ReadonlySet<string> = new Set([
   "hidden-file",
@@ -404,67 +330,46 @@ const FILE_REJECTING_SAFETY_RULES: ReadonlySet<string> = new Set([
   "unreadable-file",
 ]);
 
-/** Result of the prepare phase, containing everything needed for push. */
 export interface ExtensionPushPrepared {
   resolvedData: ExtensionPushResolvedData;
   safetyWarnings: SafetyIssue[];
   dependencyTrustResult: DependencyTrustResult;
   reviewRulesResult: ReviewRulesResult;
-  /**
-   * Set when the manifest declares a license that is not a valid SPDX
-   * expression. A license is optional, so this never blocks a push.
-   */
+  /** a license is optional, so this never blocks a push. */
   licenseWarning: ManifestLicenseWarning | undefined;
-  /** The `quality.yaml` sidecar beside the manifest, when one exists. */
   sidecar: { path: string; value: QualitySidecar } | undefined;
   /**
-   * The findings the author declared acceptable, with any reasons. The
-   * `safetyWarnings` and `reviewRulesResult.warnings` above hold only the
-   * findings no acceptance covers, so the warnings gate counts those alone.
+   * safetyWarnings and reviewRulesResult.warnings hold only findings no
+   * acceptance covers, so the warnings gate counts those alone.
    */
   acceptances: DeclaredAcceptances;
-  /** The warned lines a comment acceptance can go above, by absolute file (see {@link QualityFindings}). */
   commentSites: Record<string, CommentSites>;
   archiveBytes: Uint8Array;
-  /**
-   * The loaded types of `archiveBytes`, for a package cache entry to keep
-   * beside the archive. Absent when the archive could not be indexed.
-   */
   archiveIndex: StoredArchiveIndex | undefined;
   manifest: ExtensionManifest;
   contentMetadata: ExtensionContentMetadata | undefined;
   counts: ExtensionPushCounts;
   isDryRun: boolean;
   /**
-   * The registry checks' verdicts. Empty when the checks were skipped; in
-   * `enforce` mode every entry passed, since a failure throws instead.
+   * empty when the checks were skipped; in enforce mode every entry passed,
+   * since a failure throws.
    */
   registryChecks: RegistryCheckResult[];
-  /** The content hash the review report is keyed by, when the caller computed one. */
   contentHash: string | undefined;
   /**
-   * The local gates that failed, in `collect` mode. Always empty under
-   * `enforce`, where the first failure throws instead. When non-empty the
-   * archive was built without the rejected files, and must be neither
-   * uploaded nor cached.
+   * always empty under enforce. When non-empty the archive was built without
+   * the rejected files and must be neither uploaded nor cached.
    */
   gateFailures: LocalGateFailure[];
-  /**
-   * The files a gate rejected and the archive leaves out, in `collect` mode
-   * (sorted). Always empty under `enforce`.
-   */
   excludedFromArchive: string[];
   /**
-   * What the registry reported the extension's collective entitles the
-   * caller to, from the sign-in whoami call. Undefined when the registry sent
-   * no entitlement or the checks were skipped. Held in memory for the push
-   * that follows and never written to disk: entitlement is the registry's to
-   * decide, and a cached plan would make a confidently wrong message.
+   * held in memory for the push that follows and never written to disk:
+   * entitlement is the registry's to decide, and a cached plan would make a
+   * confidently wrong message.
    */
   collectiveEntitlement: CollectiveEntitlement | undefined;
 }
 
-/** Content counts for the extension. */
 export interface ExtensionPushCounts {
   models: number;
   workflows: number;
@@ -476,9 +381,6 @@ export interface ExtensionPushCounts {
   skills: number;
 }
 
-// ── Push (execute) types ──────────────────────────────────────────────
-
-/** Input for the extension push execute phase. */
 export interface ExtensionPushExecuteInput {
   manifest: ExtensionManifest;
   archiveBytes: Uint8Array;
@@ -486,10 +388,6 @@ export interface ExtensionPushExecuteInput {
   counts: ExtensionPushCounts;
   releaseNotes?: string;
   channel?: string;
-  /**
-   * The collective's entitlement as the prepare phase resolved it, so a
-   * refused private publication can say what the registry had reported.
-   */
   collectiveEntitlement?: CollectiveEntitlement;
 }
 
@@ -498,15 +396,10 @@ export type ExtensionPushEvent =
   | { kind: "completed"; data: ExtensionPushSuccessData }
   | { kind: "error"; error: SwampError };
 
-// ── Dependencies ──────────────────────────────────────────────────────
-
 /**
- * The caller's collectives and what each entitles them to, from one whoami
- * call. `collectives` is undefined when the registry sent no organizations;
- * `entitlements` when it sent no entitlement (an older server), which the
- * private-entitlement check reports as undecided. `identity` is who the
- * same answer says the key belongs to; it names the credential in the
- * authentication verdict and never decides membership.
+ * an undefined field means the registry sent none (entitlements: an older
+ * server), which the private check reports as undecided. identity names the
+ * credential and never decides membership.
  */
 export interface CollectiveLookup {
   collectives: string[] | undefined;
@@ -514,14 +407,12 @@ export interface CollectiveLookup {
   identity?: CollectiveLookupIdentity;
 }
 
-/** Who a whoami answer says the key belongs to. */
 export interface CollectiveLookupIdentity {
   username?: string;
   collectiveToken?: boolean;
   collectiveSlug?: string;
 }
 
-/** Dependencies for the extension push prepare phase. */
 export interface ExtensionPushPrepareDeps {
   loadCredentials: () => Promise<
     { serverUrl: string; apiKey: string; username: string } | null
@@ -566,15 +457,10 @@ export interface ExtensionPushPrepareDeps {
       bareImports?: readonly ResolvedBareImport[];
     },
   ) => Promise<string>;
-  /** `resolver` resolves bare imports, as the bundler does. */
   extractDependencySpecifiers: (
     sourceFiles: string[],
     resolver?: BareImportResolver,
   ) => Promise<DependencySpecifier[]>;
-  /**
-   * Audits each dependency at the version push ships; `project` locates the
-   * lockfile the bundler honours.
-   */
   checkDependencyTrust: (
     specifiers: DependencySpecifier[],
     project: ExtensionProject,
@@ -585,19 +471,14 @@ export interface ExtensionPushPrepareDeps {
   ensureDenoPath: () => Promise<string>;
   getDenoEnv: () => Record<string, string>;
   /**
-   * Loads every source in the archive the way a consumer's install does and
-   * reports the type each registers, so the collective check judges the
-   * type the consumer gets, not only what the static metadata could read
-   * (swamp-club#3456).
+   * loads every source as a consumer's install does, so the collective check
+   * judges the type the consumer gets, not only what static metadata could
+   * read.
    */
   indexArchive: (
     archiveBytes: Uint8Array,
     extensionName: string,
   ) => Promise<ExtensionTreeIndex>;
-  /**
-   * Finds a published version of the extension on any release channel.
-   * Resolves null when no channel carries that version.
-   */
   findPublishedVersion: (
     serverUrl: string,
     name: string,
@@ -611,7 +492,6 @@ export interface ExtensionPushPrepareDeps {
   ) => Promise<LatestVersionDetail | null>;
 }
 
-/** Metadata sent during push phases. */
 export interface ExtensionPushMetadata {
   name: string;
   version: string;
@@ -623,14 +503,12 @@ export interface ExtensionPushMetadata {
   releaseNotes?: string;
   binaries?: string[];
   channel?: string;
-  /** The declared SPDX license expression; omitted when none is declared. */
   license?: string;
   /** Public/default selection is represented by omission on the wire. */
   visibility?: "private";
   contentMetadata?: ExtensionContentMetadata;
 }
 
-/** Dependencies for the extension push execute phase. */
 export interface ExtensionPushExecuteDeps {
   loadCredentials: () => Promise<
     { serverUrl: string; apiKey: string } | null
@@ -661,8 +539,6 @@ export interface ExtensionPushExecuteDeps {
     apiKey: string,
   ) => Promise<{ isPrivate: boolean } | null>;
 }
-
-// ── Deps factory ──────────────────────────────────────────────────────
 
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import {
@@ -802,18 +678,11 @@ function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
-/** Options for the prepare deps factory. */
 export interface ExtensionPushPrepareDepsOptions {
-  /**
-   * Receives every HTTP call the prepare phase makes (registry, OSV, npm),
-   * so the summary can list the calls actually made.
-   */
   recorder?: ApiCallRecorder;
-  /** The fetch to make calls with; tests pass a fake. Defaults to global fetch. */
   fetch?: Fetcher;
 }
 
-/** Wires real infrastructure into ExtensionPushPrepareDeps. */
 export function createExtensionPushPrepareDeps(
   identity?: ClientIdentity,
   options: ExtensionPushPrepareDepsOptions = {},
@@ -903,7 +772,6 @@ export function createExtensionPushPrepareDeps(
   };
 }
 
-/** Wires real infrastructure into ExtensionPushExecuteDeps. */
 export function createExtensionPushExecuteDeps(
   identity?: ClientIdentity,
 ): ExtensionPushExecuteDeps {
@@ -924,10 +792,9 @@ export function createExtensionPushExecuteDeps(
       return { uploadUrl: result.uploadUrl };
     },
     uploadArchive: async (uploadUrl, archiveBytes) => {
-      // No identity here — uploadArchive bypasses the client's fetch
-      // wrapper and PUTs directly to a presigned S3 URL. Sending
-      // identity headers to S3 breaks the presigned signature and
-      // would leak the bearer token to S3 access logs.
+      // no identity: uploadArchive PUTs to a presigned S3 URL, and identity
+      // headers would break the signature and leak the bearer token to S3
+      // access logs.
       const client = new ExtensionApiClient("");
       await client.uploadArchive(uploadUrl, archiveBytes);
     },
@@ -944,13 +811,6 @@ export function createExtensionPushExecuteDeps(
   };
 }
 
-// ── Prepare function ──────────────────────────────────────────────────
-
-/**
- * Builds the flat list of source files for the adversarial review, tagging
- * each with its content kind and whether it is an entry point. Entry points
- * are the main implementation files; the remaining `all*Files` are helpers.
- */
 function buildReviewFileRefs(
   input: ExtensionPushPrepareInput,
 ): ReviewFileRef[] {
@@ -985,7 +845,6 @@ function buildReviewFileRefs(
   return refs;
 }
 
-/** The reviewable content kinds present in the extension. */
 function contentKindsPresent(
   input: ExtensionPushPrepareInput,
 ): ExtensionContentKind[] {
@@ -998,21 +857,13 @@ function contentKindsPresent(
   return kinds;
 }
 
-/**
- * Performs the extension push prepare phase: validates auth & collectives,
- * extracts content metadata, validates content collectives, runs safety
- * analysis, runs quality checks, bundles entry points, and creates archive.
- *
- * This is a plain async function that throws SwampError on failure.
- * The CLI handles all interactive prompts between prepare and execute.
- */
 export async function extensionPushPrepare(
   ctx: LibSwampContext,
   deps: ExtensionPushPrepareDeps,
   input: ExtensionPushPrepareInput,
 ): Promise<ExtensionPushPrepared> {
-  // No Deno config, lock or package.json file ships: consumers and the
-  // registry read only the canonical source (swamp-club#3970).
+  // no Deno config, lock or package.json file ships: consumers and the registry
+  // read only the canonical source.
   input = withoutProjectFiles(input);
   let requestedVisibility: PublishVisibility | undefined;
   try {
@@ -1025,14 +876,11 @@ export async function extensionPushPrepare(
   // A private publication adds the private-entitlement check; public or
   // default intent leaves the registry to apply its defaults.
   const privateIntent = requestedVisibility === "private";
-  // 1. Registry checks: authentication and collective membership. A real
-  // push (`enforce`) stops at the first failure; a dry run (`collect`)
-  // records every verdict so the summary reports what the push would say;
-  // packaging-only callers (`skip`) never contact the registry.
+  // a real push (enforce) stops at the first failure; a dry run (collect)
+  // records every verdict; packaging-only callers (skip) never contact the
+  // registry.
   const mode = input.registryChecks;
   const registryChecks: RegistryCheckResult[] = [];
-  // Local gates: a push throws the first failure; `collect` records each one
-  // and carries on to packaging, so quality can score beside them.
   const gateFailures: LocalGateFailure[] = [];
   const failGate = (gate: LocalGate, error: SwampError): void => {
     if (input.localGates !== "collect") throw error;
@@ -1046,7 +894,6 @@ export async function extensionPushPrepare(
     | { serverUrl: string; apiKey: string; username: string }
     | undefined;
   let collectiveEntitlement: CollectiveEntitlement | undefined;
-  // Why the credentialed checks could not run, when they could not.
   let credentialsUnavailable: string | undefined;
   if (mode !== "skip") {
     const creds = await deps.loadCredentials();
@@ -1082,7 +929,6 @@ export async function extensionPushPrepare(
         );
       }
     } else {
-      // 2. Validate collective matches user's collectives
       let collectives: string[] | undefined;
       let entitlements: CollectiveEntitlement[] | undefined;
       let identity: CollectiveLookupIdentity | undefined;
@@ -1174,7 +1020,7 @@ export async function extensionPushPrepare(
             throw validationFailed(check.message);
           }
         }
-        // Membership nobody could settle refuses the push, as it always has.
+        // membership nobody could settle refuses the push.
         if (
           mode === "enforce" && membership.status === "not-run" &&
           membership.cause === "registry-unavailable"
@@ -1184,12 +1030,9 @@ export async function extensionPushPrepare(
           );
         }
         registryChecks.push(reserved, membership);
-        // 2b. Private entitlement, from the same whoami answer. Only a
-        // collective the caller belongs to has an entitlement to report, so
-        // the check is omitted when membership did not pass. A whoami that
-        // did not answer leaves it unasked, like authentication; an answer
-        // that does not settle it (no entitlement reported for the
-        // collective) is undecided, and the push lets the registry decide.
+        // private entitlement comes from the same whoami answer: omitted when
+        // membership did not pass, unasked when whoami did not answer,
+        // undecided (the registry decides) when none was reported.
         if (privateIntent) {
           if (lookupFailure !== undefined) {
             registryChecks.push(
@@ -1215,17 +1058,16 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 3. Extract content metadata. A file with a symlink on its path is
-  // never read: the safety gate refuses it (swamp-club#3421).
+  // a file with a symlink on its path is never read: the safety gate refuses
+  // it.
   const symlinked = input.symlinkedPaths ?? new Map<string, string>();
   const readable = symlinked.size > 0
     ? withoutFiles(input, new Set(symlinked.keys()))
     : input;
   let contentMetadata: ExtensionContentMetadata | undefined;
   try {
-    // Entry points under the behaviors directory are read from it, so
-    // each `fileName` is the entry point's path inside the archive's
-    // models/ (swamp-club#3338).
+    // entry points under the behaviors directory are read from it, so each
+    // fileName is the entry point's path inside the archive's models/.
     const behaviorEntryPoints = readable.modelEntryPoints.filter((f) =>
       modelsArchiveBase(input, f) !== readable.modelsDir
     );
@@ -1275,7 +1117,6 @@ export async function extensionPushPrepare(
     ctx.logger.debug`Content metadata extraction failed, skipping`;
   }
 
-  // 4. Validate content collectives
   if (contentMetadata) {
     const collectiveResult = validateContentCollectives(
       input.manifest.name,
@@ -1300,9 +1141,9 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 6a. Pre-check additionalFiles against the extension allowlist so the
-  // error can name the manifest field and suggest `binaries`.
-  // Files a gate rejected; in `collect` mode they are left out of the archive.
+  // pre-check additionalFiles against the extension allowlist so the error can
+  // name the manifest field and suggest `binaries`. Rejected files are left out
+  // of the archive in collect mode.
   const rejectedFiles = new Set<string>();
   for (const file of input.additionalFilePaths) {
     const ext = extname(file).toLowerCase();
@@ -1322,13 +1163,12 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 6a2. The quality sidecar beside the manifest. Read and validated here so
-  // a malformed one blocks like a malformed manifest, before any gate runs.
+  // read and validated here so a malformed sidecar blocks like a malformed
+  // manifest, before any gate runs.
   const sidecar = await readQualitySidecar(input.manifestDir);
 
-  // 6b. Safety analysis
-  // Include files are safety-checked but excluded from quality checks
-  // (they may have their own tooling and conventions).
+  // include files are safety-checked but excluded from quality checks, since
+  // they may have their own tooling and conventions.
   const qualityFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
@@ -1346,9 +1186,8 @@ export async function extensionPushPrepare(
     ...(sidecar ? [sidecar.path] : []),
   ];
   const binaryExemptSet = new Set(input.binaryFilePaths);
-  // A file with a symlink on its path is refused by the symlink rule
-  // without being stat'd or read; the analyzer sees the rest
-  // (swamp-club#3421).
+  // a file with a symlink on its path is refused by the symlink rule without
+  // being stat'd or read; the analyzer sees the rest.
   const analyzed = await deps.analyzeExtensionSafety(
     allFiles.filter((file) => !symlinked.has(file)),
     binaryExemptSet,
@@ -1376,11 +1215,9 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 6b2. Every code file the archive ships must parse: push and the
-  // registry read its imports from its syntax tree, so a module that does
-  // not parse has no imports to audit or rewrite (swamp-club#3983). Such a
-  // module is missing from the source plan, which `deno info` builds:
-  // `deno info` reports it as a module it cannot load.
+  // every shipped code file must parse: push and the registry read imports from
+  // the syntax tree, so an unparseable module has no imports to audit or
+  // rewrite, and `deno info` reports it as a module it cannot load.
   const unparsed: string[] = [];
   const codeFiles = new Set([
     ...auditedCodeFiles(input),
@@ -1410,20 +1247,17 @@ export async function extensionPushPrepare(
     failGate("source-syntax", validationFailed(unparsed.join("\n")));
   }
 
-  // 6c. A file a check rejected (only `collect` mode gets this far with
-  // one) is left out of every later gate as well as the archive: fmt, lint
-  // and review read a symlink's target and would quote it (swamp-club#3420).
+  // a rejected file (only collect mode gets here) is left out of later gates
+  // too: fmt, lint and review read a symlink's target and would quote it.
   const gated = rejectedFiles.size > 0
     ? withoutFiles(input, rejectedFiles)
     : input;
   const notRejected = (file: string) => !rejectedFiles.has(file);
 
-  // 7. Dependency trust audit
   let dependencyTrustResult: DependencyTrustResult;
   const sourceFiles = auditedCodeFiles(gated);
-  // Each import is audited at the version its bundle holds, read from the
-  // module graph, so what ships, what is bundled and what is audited agree
-  // (swamp-club#3970).
+  // each import is audited at the version its bundle holds, so what ships, what
+  // is bundled and what is audited agree.
   const specifiers = withBundledVersions(
     await deps.extractDependencySpecifiers(
       sourceFiles,
@@ -1455,14 +1289,13 @@ export async function extensionPushPrepare(
       passed: true,
     };
   }
-  // Code from outside npm and JSR that the bundles hold is not audited and
-  // costs the dependency-trust points, as on the registry (swamp-club#4018).
+  // code from outside npm and JSR that the bundles hold is not audited and
+  // costs the dependency-trust points, as on the registry.
   dependencyTrustResult = withUnauditedCode(
     dependencyTrustResult,
     input.graphDependencies?.unaudited ?? [],
   );
 
-  // 8. Validate skills and populate content metadata
   if (gated.skillDirs.length > 0) {
     const skillResult = await validateExtensionSkills(gated.skillDirs);
     if (skillResult.errors.length > 0) {
@@ -1477,7 +1310,6 @@ export async function extensionPushPrepare(
       );
     }
 
-    // Populate skill metadata for registry
     if (contentMetadata) {
       const skillsByName = new Map(
         skillResult.skills.map((s) => [s.name, s]),
@@ -1495,15 +1327,14 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 9. Resolve deno binary (only needed when building a fresh archive)
   const usingCachedArchive = input.cachedArchive !== undefined;
   let denoPath = "";
   if (!usingCachedArchive) {
     denoPath = await deps.ensureDenoPath();
   }
 
-  // 10. Quality checks — skip on cache hit (the cached archive was
-  // written only after quality checks passed)
+  // skipped on a cache hit: the cached archive was written only after quality
+  // checks passed.
   if (!usingCachedArchive) {
     const qualityResult = await deps.checkExtensionQuality(
       qualityFiles.filter(notRejected),
@@ -1522,9 +1353,7 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 10a. Upgrade chain consistency — validate that each model's upgrade
-  // chain terminates at its declared version. Always runs (not gated on
-  // cache hit) since it's a fast file read.
+  // always runs, not gated on a cache hit, since it is a fast file read.
   const upgradeChainIssues = await checkUpgradeChainConsistency(
     gated.allModelFiles,
   );
@@ -1538,9 +1367,8 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 10b. Review, bare specifiers and declared acceptances — one pass shared
-  // with `swamp extension quality`, after the mechanical gates (safety,
-  // deps, fmt) so those fire first.
+  // one pass shared with `swamp extension quality`, after the mechanical gates
+  // (safety, deps, fmt) so those fire first.
   const findings = await runQualityFindings(ctx, deps, {
     input: gated,
     sidecar,
@@ -1570,11 +1398,8 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 11a. A missing local module fails the push as a compilation error, the
-  // way the bundler reported it before push read the module graph
-  // (swamp-club#3376); models that are never bundled are covered too. A
-  // module a gate rejected is reported by that gate (a file that does not
-  // parse reads to `deno info` as a module it cannot load).
+  // a missing local module fails the push as a compilation error, models never
+  // bundled included. A module a gate rejected is reported by that gate.
   const missingModules = (input.missingModules ?? []).filter((m) =>
     notRejected(m.path)
   );
@@ -1590,9 +1415,8 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 11. Bundle entry points + build archive — skip on cache hit, unless a
-  // check rejected files: the cached archive was built before the rejection
-  // and may hold them, so collect mode rebuilds without them.
+  // skipped on a cache hit unless a check rejected files: the cached archive
+  // may hold them, so collect mode rebuilds without them.
   let totalBundles: number;
   let archiveBytes: Uint8Array;
   const archiveFromCache = usingCachedArchive && rejectedFiles.size === 0;
@@ -1628,10 +1452,8 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 11a. Load the archive's sources the way a consumer's install will, and
-  // check the types they register against the collective too: the static
-  // metadata reads only string-literal types, so a type in a constant, a
-  // spread or a helper file would otherwise go unchecked (swamp-club#3456).
+  // Load the archive's sources as a consumer's install will and check their
+  // types against the collective; static metadata reads only literal types.
   let runtimeIndex: ExtensionTreeIndex | undefined =
     archiveFromCache && input.cachedArchiveIndex
       ? fromStoredArchiveIndex(input.cachedArchiveIndex)
@@ -1692,16 +1514,16 @@ export async function extensionPushPrepare(
     reviewRulesResult.warnings.push(warning);
   }
 
-  // 5. Build resolved data, with each type the static metadata could not
-  // read taken from the loaded source rather than shown as its file path.
+  // a type the static metadata could not read is taken from the loaded source
+  // rather than shown as its file path.
   const resolvedData = buildResolvedData(
     input,
     contentMetadata,
     runtimeIndex,
   );
 
-  // 12. The version must not be published on any channel. Runs after
-  // packaging, as it always has, so the cheaper local gates fire first.
+  // the version must not be published on any channel. Runs after packaging so
+  // the cheaper local gates fire first.
   if (mode !== "skip") {
     if (!credentials) {
       registryChecks.push(
@@ -1795,14 +1617,8 @@ export async function extensionPushPrepare(
 }
 
 /**
- * The prepare input with `rejected` files left out of every list the archive
- * is built from. `additionalFiles` / `additionalFilePaths` and `binaries` /
- * `binaryFilePaths` are parallel arrays, so each pair is filtered in
- * lockstep. Used only in `collect` mode.
- */
-/**
- * The input without `entryPoints` among its entry points, so they are not
- * bundled; their sources are still packaged.
+ * additionalFiles/additionalFilePaths and binaries/binaryFilePaths are parallel
+ * arrays, so each pair is filtered in lockstep. Used only in collect mode.
  */
 function withoutEntryPoints(
   input: ExtensionPushPrepareInput,
@@ -1884,76 +1700,53 @@ function isNotAuthenticatedError(error: unknown): boolean {
     (error as SwampError).code === "not_authenticated";
 }
 
-// ── Quality findings (shared with `swamp extension quality`) ─────────
-
-/** One declared acceptance, as the summaries and the registry see it. */
 export interface DeclaredAcceptance {
   ruleId: string;
   /**
-   * The file relative to the manifest's directory (forward slashes, a
-   * `../` path for a typed directory beside it); absent for
-   * extension-scoped rules.
+   * relative to the manifest's directory, with forward slashes and a `../` path
+   * for a typed directory beside it; absent for extension-scoped rules.
    */
   file?: string;
   /**
-   * The file's path inside the archive (`models/x.ts`, `vaults/v.ts`,
-   * `files/README.md`), which is what the registry receives; absent when
-   * the file is not packaged under a known directory.
+   * the path inside the archive, which is what the registry receives; absent
+   * when the file is not packaged under a known directory.
    */
   archivePath?: string;
   line?: number;
-  /** The author's reason; absent when they gave none. */
   reason?: string;
   source: AcceptanceSource;
-  /** The accepted finding's message. */
   message: string;
 }
 
-/** Everything the author declared acceptable in this run. */
 export interface DeclaredAcceptances {
   accepted: DeclaredAcceptance[];
-  /** The generated declaration from the quality sidecar, when present. */
   generated?: GeneratedDeclaration;
 }
 
-/** The warning-level findings of a run after acceptances are applied. */
 export interface QualityFindings {
-  /** Safety warnings no acceptance covers. */
   safetyWarnings: SafetyIssue[];
   /**
-   * Review findings: `warnings` holds those no acceptance covers plus one
-   * stale-acceptance warning per directive that matched nothing; `errors`
-   * holds invalid acceptances and any blocking review finding.
+   * warnings hold findings no acceptance covers plus one stale-acceptance
+   * warning per directive that matched nothing; errors hold invalid acceptances
+   * and any blocking finding.
    */
   reviewRulesResult: ReviewRulesResult;
   acceptances: DeclaredAcceptances;
-  /**
-   * The warned lines a comment acceptance can go above, with their
-   * indentation, by absolute file; the findings report offers no comment
-   * acceptance on any other line.
-   */
+  /** the findings report offers no comment acceptance on any other line. */
   commentSites: Record<string, CommentSites>;
 }
 
-/** Input to {@link runQualityFindings}. */
 export interface QualityFindingsInput {
   input: ExtensionPushPrepareInput;
-  /** The parsed sidecar, from {@link readQualitySidecar}. */
   sidecar: { path: string; value: QualitySidecar } | undefined;
-  /** The safety analyzer's warnings for `files`. */
   safetyWarnings: SafetyIssue[];
-  /** Every file the extension packages; directives are read from those with a comment form. */
   files: string[];
-  /** The extension's declared and sensitive argument names, for the secret-unsafe-docs check. */
   argumentSchemas?: ArgumentSchemas;
 }
 
 /**
- * How push resolves the bare imports `input`'s modules write: as Deno
- * resolved them under the project's Deno config, read from the module
- * graph (swamp-club#3612), or in a package.json project to the package
- * installed in node_modules (swamp-club#3630); without either, not at all,
- * so each ships as written.
+ * without a Deno config or package.json project, bare imports are not resolved
+ * and each ships as written.
  */
 export function bareImportResolverFor(
   input: {
@@ -1967,11 +1760,6 @@ export function bareImportResolverFor(
     : undefined;
 }
 
-/**
- * The bare-specifiers finding's message: which bare imports ship as
- * written, why the registry cannot score its documentation because of them,
- * and what lets push rewrite them (swamp-club#3637).
- */
 export function bareSpecifiersMessage(names: string[]): string {
   return "Extension has bare imports that ship as written, which the " +
     "registry's scorer cannot resolve, so it would score the documentation " +
@@ -1985,11 +1773,6 @@ export function bareSpecifiersMessage(names: string[]): string {
     "entry or dependency for each, or write the specifier in its place.";
 }
 
-/**
- * The uncatalogued-model finding's message: what push could not read from
- * the model export, and that the registry will not list the model although
- * it still installs and runs.
- */
 function uncataloguedModelMessage(
   gap: ModelCatalogGap,
   exportName: "model" | "behavior" = "model",
@@ -2010,11 +1793,6 @@ function uncataloguedModelMessage(
     "The extension still installs and the behavior still runs.";
 }
 
-/**
- * The name a model entry point's export is spelled with: `behavior` when
- * the source declares `export const behavior` and no `export const model`
- * (swamp-club#3338), else `model`.
- */
 function exportNameOf(source: string): "model" | "behavior" {
   return !declaresExport(source, /export\s+const\s+model\s*[=:]/) &&
       declaresExport(source, /export\s+const\s+behavior\s*[=:]/)
@@ -2022,11 +1800,6 @@ function exportNameOf(source: string): "model" | "behavior" {
     : "model";
 }
 
-/**
- * Where the extension uses the behavior spelling (swamp-club#3338): the
- * `behaviors:` manifest key, the behaviors directory, and entry points
- * exporting `behavior`. Empty for a model-spelled extension.
- */
 async function behaviorSpellingUses(
   input: ExtensionPushPrepareInput,
 ): Promise<string[]> {
@@ -2062,14 +1835,9 @@ async function behaviorSpellingUses(
 }
 
 /**
- * The secret-unsafe-docs findings, over the files the shared selector picks
- * from the archive push builds (swamp-club#3781): Markdown that is not a
- * binary, an include file or data a module imports, the describe and
- * description strings of every code module, and the manifest's parsed
- * description. Findings are reported at the author's own files and lines.
- * Symlinks are never read. Documentation a cap leaves unread is reported
- * as one finding no acceptance can cover, since the registry fails the
- * factor while any is unchecked.
+ * symlinks are never read. Documentation a cap leaves unread is reported as one
+ * finding no acceptance can cover, since the registry fails the factor while
+ * any is unchecked.
  */
 async function secretUnsafeDocs(
   input: ExtensionPushPrepareInput,
@@ -2131,10 +1899,8 @@ async function secretUnsafeDocs(
     }
   }
 
-  // The parsed description, as the registry reads it: a YAML comment or an
-  // escape is never documentation. Its findings all sit on the description
-  // line, so accepting that line accepts them all, as the registry's
-  // fileless description acceptance does.
+  // the parsed description, as the registry reads it. Its findings all sit on
+  // the description line, so accepting that line accepts them all.
   const description = input.manifest.description;
   if (typeof description === "string" && description.length > 0) {
     const manifestPath = input.manifestPath ??
@@ -2173,7 +1939,6 @@ async function secretUnsafeDocs(
   return findings;
 }
 
-/** A file's text, or undefined when it is a symlink or cannot be read. */
 async function readUnlessSymlink(file: string): Promise<string | undefined> {
   try {
     if ((await Deno.lstat(file)).isSymlink) return undefined;
@@ -2184,10 +1949,8 @@ async function readUnlessSymlink(file: string): Promise<string | undefined> {
 }
 
 /**
- * Runs the review rules, the bare-specifier check, the uncatalogued-model
- * check and the declared acceptances over an extension. Push calls it from
- * prepare; quality calls it on every run, including a cache hit, so both
- * report the same findings and the same acceptances for the same source.
+ * quality calls it on every run, including a cache hit, so push and quality
+ * report the same findings for the same source.
  */
 export async function runQualityFindings(
   ctx: LibSwampContext,
@@ -2195,11 +1958,9 @@ export async function runQualityFindings(
   { input, sidecar, safetyWarnings, files, argumentSchemas: schemas }:
     QualityFindingsInput,
 ): Promise<QualityFindings> {
-  // Static review rules, plus the adversarial-review report when the caller
-  // computed a content hash. Report findings are warnings: a missing or
-  // stale report surfaces the "continue despite warnings?" prompt rather
-  // than a hard block, so a benign version bump nudges the reviewer instead
-  // of bricking the push.
+  // report findings are warnings: a missing or stale report prompts rather than
+  // blocks, so a benign version bump nudges the reviewer instead of bricking
+  // the push.
   const reviewInput: ExtensionReviewInput = {
     files: buildReviewFileRefs(input),
   };
@@ -2220,12 +1981,9 @@ export async function runQualityFindings(
   }
   const reviewRulesResult = await deps.checkReviewRules(reviewInput);
 
-  // Bare imports that ship as written: the server-side scorer cannot
-  // resolve them (it strips deno.json and writes a controlled one). Push
-  // rewrites the ones Deno resolves under the project config
-  // (swamp-club#3637, #3612) or to an installed package.json dependency
-  // (swamp-club#3630), so only the rest count; without either, every bare
-  // import does.
+  // the server-side scorer cannot resolve bare imports that ship as written;
+  // push rewrites those Deno resolves or an installed package.json dependency
+  // covers, so only the rest count.
   const sourceFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
@@ -2258,8 +2016,6 @@ export async function runQualityFindings(
     });
   }
 
-  // Config, lock and package files push left out of the archive, and a
-  // package-lock.json that does not count as a lock (swamp-club#3970).
   for (const file of input.leftOutProjectFiles ?? []) {
     reviewRulesResult.warnings.push({
       ruleId: "archive-project-file",
@@ -2298,9 +2054,8 @@ export async function runQualityFindings(
     });
   }
 
-  // Uncatalogued models: an entry point whose type or version the push
-  // metadata cannot read is shipped in the archive but left out of the
-  // registry catalog, so say so per file (swamp-club#2486).
+  // an entry point whose type or version the metadata cannot read ships in the
+  // archive but is left out of the registry catalog, so say so per file.
   for (const file of input.modelEntryPoints) {
     let src: string;
     try {
@@ -2321,9 +2076,8 @@ export async function runQualityFindings(
     }
   }
 
-  // Behavior spelling: an extension written with the behavior export,
-  // directory or manifest key loads only on this release and later, so say
-  // so once (swamp-club#3338).
+  // an extension using the behavior export, directory or manifest key loads
+  // only on this release and later, so say so once.
   const behaviorSpelling = await behaviorSpellingUses(input);
   if (behaviorSpelling.length > 0) {
     reviewRulesResult.warnings.push({
@@ -2341,17 +2095,12 @@ export async function runQualityFindings(
     });
   }
 
-  // Docs that put a secret in plaintext or reference a vault with syntax
-  // swamp does not support (swamp-club#3757).
   for (const finding of await secretUnsafeDocs(input, files, schemas)) {
     reviewRulesResult.warnings.push(finding);
   }
 
-  // Declared acceptances: inline directives from every packaged file with a
-  // comment form, and the sidecar's entries.
   const directives: AcceptanceDirective[] = [];
   const invalid: InvalidAcceptance[] = [];
-  // The warned lines of each file, where the report may offer a comment.
   const warned = new Map<string, number[]>();
   for (const w of [...safetyWarnings, ...reviewRulesResult.warnings]) {
     if (w.line !== undefined) {
@@ -2370,11 +2119,9 @@ export async function runQualityFindings(
     const warnedLines = warned.get(file);
     if (warnedLines) {
       const sites = commentSites(content, file, warnedLines);
-      // A Markdown line no comment can go above (inside a fenced code block)
-      // is accepted by a quality.yaml entry naming its line. A comment
-      // inserted elsewhere in the same file would move that line, so the
-      // whole file then takes line entries and is never edited
-      // (swamp-club#3757).
+      // A Markdown line no comment can go above (inside a fenced block) is
+      // accepted by a quality.yaml line entry, so the whole file takes line
+      // entries.
       const barrier = commentFormFor(file) === "html" &&
         warnedLines.some((line) => sites[line] === undefined);
       commentSitesByFile[file] = barrier ? {} : sites;
@@ -2466,12 +2213,6 @@ function isReviewFinding(
 
 const TESTING_COMPLETENESS_LISTED = 5;
 
-/**
- * Collapses the per-file testing-completeness findings that survive the
- * acceptances into one finding per extension ("N of M entry points have no
- * sibling test"), carrying the remaining files so each can still be
- * accepted on its own. Every other finding passes through unchanged.
- */
 function collapseTestingCompleteness(
   warnings: ReviewFinding[],
   input: ExtensionPushPrepareInput,
@@ -2507,7 +2248,6 @@ function collapseTestingCompleteness(
   ];
 }
 
-/** True when `file` is `dir` itself or lies under it. */
 function isWithin(dir: string, file: string): boolean {
   const rel = relative(dir, file);
   return !(rel === ".." || rel.startsWith(".." + SEPARATOR) ||
@@ -2515,11 +2255,9 @@ function isWithin(dir: string, file: string): boolean {
 }
 
 /**
- * The directory a model source or include file is packed from: the
- * behaviors directory for a file under it, else the models directory
- * (swamp-club#3338). The file lands at `models/<path from that directory>`,
- * so a behavior-spelled extension's archive matches its model-spelled
- * twin's and never holds a `models/../behaviors/` path.
+ * the file lands at models/<path from that directory>, so a behavior-spelled
+ * extension's archive matches its model-spelled twin's and never holds a
+ * models/../behaviors/ path.
  */
 function modelsArchiveBase(
   input: Pick<ExtensionPushPrepareInput, "modelsDir" | "behaviorsDir">,
@@ -2533,10 +2271,9 @@ function modelsArchiveBase(
 }
 
 /**
- * Refuses a source plan whose archive pull would refuse to install
- * (swamp-club#3384): a shared module packed at a path pull's entry rules
- * reject, such as a `deno.json` imported from one level above a kind's
- * directory. Publishing it would ship a version nobody can pull.
+ * refuses a source plan pull would refuse to install, such as a deno.json
+ * imported from above a kind's directory; publishing it would ship a version
+ * nobody can pull.
  */
 function assertPullInstallsSourcePlan(input: ExtensionPushPrepareInput): void {
   for (const entry of input.sourcePlan.entries) {
@@ -2557,9 +2294,8 @@ function assertPullInstallsSourcePlan(input: ExtensionPushPrepareInput): void {
 }
 
 /**
- * Refuses two model sources or include files that would be packed at the
- * same `models/` path, one from the models directory and one from the
- * behaviors directory (swamp-club#3338): the archive can hold only one.
+ * the archive can hold only one file per models/ path, so a models-dir and a
+ * behaviors-dir file that map to the same path are refused.
  */
 function assertDistinctModelArchivePaths(
   input: ExtensionPushPrepareInput,
@@ -2588,11 +2324,7 @@ function assertDistinctModelArchivePaths(
 }
 
 /**
- * The path a packaged file has inside the archive, mirroring
- * {@link createArchive} exactly: additional files and binaries land at
- * `files/<manifest entry>` by index wherever they sit on disk, include
- * files under `models/` by their path from the models directory, and typed
- * sources under their kind. Undefined for a file the archive does not
+ * mirrors createArchive exactly. Undefined for a file the archive does not
  * carry, so no local path ever leaves the machine.
  */
 function archivePathFor(
@@ -2618,8 +2350,6 @@ function archivePathFor(
     const rel = under(modelsArchiveBase(input, file));
     return rel !== undefined ? `models/${rel}` : undefined;
   }
-  // A module copied into several kinds names the copy of the first kind
-  // that lists it, as before; a shared module has a single copy.
   const planned = input.sourcePlan.entries.filter((e) => e.sourcePath === file);
   const typed: Array<[string, string[]]> = [
     ["models", input.allModelFiles],
@@ -2636,10 +2366,7 @@ function archivePathFor(
   return planned[0]?.archivePath;
 }
 
-/**
- * The acceptances as content metadata carries them to the registry: files
- * by their archive path, never a local one.
- */
+/** files by their archive path, never a local one. */
 function toContentMetadataAcceptances(
   acceptances: DeclaredAcceptances,
 ): ExtensionAcceptances {
@@ -2661,12 +2388,6 @@ function isRegistryForbidden(error: unknown): boolean {
   return error instanceof UserError && error.code === REGISTRY_FORBIDDEN_CODE;
 }
 
-// ── Push generator ────────────────────────────────────────────────────
-
-/**
- * Executes the three-phase push to the registry.
- * Yields streaming events for each phase.
- */
 export async function* extensionPush(
   ctx: LibSwampContext,
   deps: ExtensionPushExecuteDeps,
@@ -2739,7 +2460,6 @@ export async function* extensionPush(
           : {}),
       };
 
-      // Phase 1: Initiate
       yield { kind: "pushing" as const, phase: "initiate" as const };
       ctx.logger.debug("Initiating push...");
       let initResult: { uploadUrl: string };
@@ -2757,7 +2477,6 @@ export async function* extensionPush(
         return;
       }
 
-      // Phase 2: Upload archive
       yield { kind: "pushing" as const, phase: "upload" as const };
       ctx.logger.debug("Uploading archive...");
       try {
@@ -2772,7 +2491,6 @@ export async function* extensionPush(
         return;
       }
 
-      // Phase 3: Confirm
       yield { kind: "pushing" as const, phase: "confirm" as const };
       ctx.logger.debug("Confirming push...");
       let confirmResult: {
@@ -2811,8 +2529,8 @@ export async function* extensionPush(
 
       let visibility = confirmResult.visibility ?? "public";
       if (confirmResult.visibility === undefined) {
-        // Legacy servers omit applied visibility. Public/default intent may use
-        // the historical best-effort lookup; explicit privacy was checked above.
+        // legacy servers omit applied visibility; public or default intent uses
+        // a best-effort lookup, since explicit privacy was checked above.
         try {
           const info = await deps.getExtensionVisibility(
             credentials.serverUrl,
@@ -2852,8 +2570,6 @@ export async function* extensionPush(
   );
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────
-
 async function fileExists(path: string): Promise<boolean> {
   try {
     return (await Deno.stat(path)).isFile;
@@ -2862,19 +2578,14 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Reads and validates the `quality.yaml` sidecar beside the manifest.
- * Returns undefined when there is none; throws a validation error, naming
- * every problem, when there is one that does not parse.
- */
 export async function readQualitySidecar(
   manifestDir: string,
 ): Promise<{ path: string; value: QualitySidecar } | undefined> {
   const path = qualitySidecarPath(manifestDir);
   let raw: string | undefined;
   try {
-    // A symlinked sidecar is never read: its parse errors would quote the
-    // target (swamp-club#3420).
+    // a symlinked sidecar is never read: its parse errors would quote the
+    // target.
     if (!(await Deno.lstat(path)).isSymlink) {
       raw = await Deno.readTextFile(path);
     }
@@ -2908,12 +2619,9 @@ const CONTENT_COLLECTIVES_MESSAGE =
   "All behavior types, vault types, workflow names, datastore types, report names, and webhook types must use the same collective as the extension.";
 
 /**
- * Installs the archive into a private temp repository, laid out as an
- * install lays it out (sources under the pulled-extensions root, each
- * shipped bundle where the loader looks for it), and indexes it there. The
- * bundles are the ones this push just built, so the indexer loads them
- * rather than bundling every source a second time. Nothing is written to
- * the real repository, and everything goes with the temp directory.
+ * the bundles are the ones this push just built, so the indexer loads them
+ * rather than bundling every source again. Nothing is written to the real
+ * repository.
  */
 async function indexArchiveTree(
   archiveBytes: Uint8Array,
@@ -2947,7 +2655,6 @@ async function indexArchiveTree(
   }
 }
 
-/** The archive directory that holds a source kind's shipped bundles. */
 function bundleKindOf(
   sourceKind: typeof EXTENSION_BUNDLE_KINDS[number]["sourceKind"],
 ): string {
@@ -2959,10 +2666,6 @@ function loadedKey(kindDir: ExtensionKindDir, fileName: string): string {
   return `${kindDir}\0${fileName}`;
 }
 
-/**
- * The type each loaded source registers, or for an extension source the
- * type it extends, by kind directory and file.
- */
 function loadedTypesByFile(
   runtimeIndex: ExtensionTreeIndex | undefined,
 ): Map<string, string> {
@@ -2977,10 +2680,6 @@ function loadedTypesByFile(
   return out;
 }
 
-/**
- * The loaded-type mismatches the static check has not already reported for
- * the same file, so a source is listed once.
- */
 function newRuntimeMismatches(
   runtimeMismatches: CollectiveMismatch[],
   contentMetadata: ExtensionContentMetadata | undefined,
@@ -2999,9 +2698,8 @@ function newRuntimeMismatches(
 }
 
 /**
- * A source whose type neither the static metadata nor loading it could
- * give: its collective was not checked, so say so rather than pass it
- * silently. A source the static metadata reads was checked statically.
+ * a source whose type neither static metadata nor loading could give was not
+ * collective-checked, so say so rather than pass it silently.
  */
 function unverifiedCollectiveWarnings(
   input: ExtensionPushPrepareInput,
@@ -3057,7 +2755,6 @@ function unverifiedCollectiveWarnings(
   }));
 }
 
-/** Each entry point by its kind directory and content file name. */
 function entryPointsByKey(
   input: ExtensionPushPrepareInput,
 ): Map<string, string> {
@@ -3114,8 +2811,8 @@ function buildResolvedData(
   const extractedWebhooksByFile = new Map(
     (contentMetadata?.webhooks ?? []).map((w) => [w.fileName, w]),
   );
-  // A type the static metadata could not read is shown as the loaded
-  // source registers it, never as the file's path (swamp-club#3456).
+  // a type the static metadata could not read is shown as the loaded source
+  // registers it, never as the file's path.
   const loaded = loadedTypesByFile(runtimeIndex);
 
   const resolvedModels = input.modelEntryPoints.map((f) => {
@@ -3222,10 +2919,9 @@ function buildResolvedData(
 }
 
 /**
- * Every non-test code file the archive ships, as the registry reads it
- * (swamp-club#3781): the planned sources exist before the archive is built
- * and on a cache hit alike; include and additional files ship beside them
- * (a worker under files/ runs as code too).
+ * planned sources exist before the archive is built and on a cache hit alike;
+ * include and additional files ship beside them (a worker under files/ runs as
+ * code too).
  */
 function auditedCodeFiles(input: ExtensionPushPrepareInput): string[] {
   return [
@@ -3241,12 +2937,9 @@ function auditedCodeFiles(input: ExtensionPushPrepareInput): string[] {
 }
 
 /**
- * Refuses a bundle the import scan cannot read. `deno bundle` writes valid
- * JavaScript, so one that does not parse with the shared parse means
- * swamp's parse is wrong, not the extension: the registry, reading the
- * bundle the same way, would see no imports in it (swamp-club#3983). The
- * bundle is read as a `.js` file, as the registry reads it, not with the
- * bundle-output variant `bundle.ts` uses to rewrite imports.
+ * deno bundle writes valid JavaScript, so one that fails the shared parse means
+ * swamp's parse is wrong, and the registry reading it the same way would see no
+ * imports. Read as .js, as the registry does.
  */
 function assertBundlesParse(bundles: ReadonlyMap<string, string>[]): void {
   for (const group of bundles) {
@@ -3270,8 +2963,8 @@ async function bundleAndArchive(
   ctx: LibSwampContext,
   shippedImports: ShippedImport[],
 ): Promise<{ archiveBytes: Uint8Array; totalBundles: number }> {
-  // Under a Deno config the bundler reuses the graph's bare-import
-  // resolutions to decide zod externalization rather than reading it again.
+  // under a Deno config the bundler reuses the graph's bare-import resolutions
+  // to decide zod externalization.
   const base = pushProject(input);
   const project = base && input.denoConfigPath
     ? { ...base, bareImports: input.bareImports }
@@ -3481,10 +3174,8 @@ async function createArchive(
       await Deno.mkdir(join(extDir, dir), { recursive: true });
     }
 
-    // Re-emit the manifest from parsed fields. Path string arrays
-    // pass through verbatim — the on-wire manifest stays
-    // byte-equivalent to the author's intent (no path rewriting),
-    // so what the registry stores matches what was pushed.
+    // path string arrays pass through verbatim, so the on-wire manifest matches
+    // the author's intent and the registry stores what was pushed.
     await Deno.writeTextFile(
       join(extDir, "manifest.yaml"),
       stringifyYaml({
@@ -3537,16 +3228,9 @@ async function createArchive(
       await Deno.copyFile(sidecarPath, join(extDir, QUALITY_SIDECAR_FILENAME));
     }
 
-    // Copy every local module the entry points reach to its planned path,
-    // rewriting the imports the plan names and, under a Deno config, each
-    // bare import Deno resolves from that module to an npm:, jsr:, node: or
-    // URL specifier (swamp-club#3637, #3612), or in a package.json project
-    // to the installed package's npm:<name>@<version> (swamp-club#3630), so
-    // the archive's source resolves without the project config. Data
-    // modules and files with nothing to rewrite are byte for byte.
-    // Every npm: and jsr: import, written out or reached through the import
-    // map, is then pinned to the exact version the bundle holds
-    // (swamp-club#3970).
+    // copy each reached module to its planned path, rewriting resolved bare
+    // imports to npm:, jsr:, node: or URL specifiers so the source resolves
+    // without the project config
     const resolver = bareImportResolverFor(input);
     const versions = input.graphDependencies?.packageVersions ?? {};
     const codeModules = new Set([
@@ -3556,7 +3240,6 @@ async function createArchive(
       ...input.allReportFiles,
       ...input.allWebhookFiles,
     ]);
-    // Each import site a code module writes, as written and as shipped.
     const shippedSites: { written: string; shipped: string; file: string }[] =
       [];
     for (const entry of input.sourcePlan.entries) {
@@ -3613,9 +3296,8 @@ async function createArchive(
       }
     }
 
-    // Copy include files (alongside model sources, not bundled). A file the
-    // source plan already wrote keeps the plan's copy, which may carry
-    // rewritten imports.
+    // a file the source plan already wrote keeps the plan's copy, which may
+    // carry rewritten imports.
     const planned = new Set(
       input.sourcePlan.entries.map((e) => `${e.sourcePath}\0${e.archivePath}`),
     );
@@ -3628,27 +3310,23 @@ async function createArchive(
       await Deno.copyFile(incFile, destPath);
     }
 
-    // Write compiled model bundles
     for (const [entryName, js] of bundles) {
       const destPath = join(extDir, "bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
     }
 
-    // Copy workflow files
     for (const wf of input.workflowFiles) {
       const destPath = join(extDir, "workflows", wf.archiveName);
       await Deno.copyFile(wf.sourcePath, destPath);
     }
 
-    // Write compiled vault bundles
     for (const [entryName, js] of vaultBundles) {
       const destPath = join(extDir, "vault-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
     }
 
-    // Write compiled datastore bundles
     for (const [entryName, js] of datastoreBundles) {
       const destPath = join(
         extDir,
@@ -3659,26 +3337,21 @@ async function createArchive(
       await Deno.writeTextFile(destPath, js);
     }
 
-    // Write compiled report bundles
     for (const [entryName, js] of reportBundles) {
       const destPath = join(extDir, "report-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
     }
 
-    // Write compiled webhook bundles
     for (const [entryName, js] of webhookBundles) {
       const destPath = join(extDir, "webhook-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
     }
 
-    // The dependency audit record (swamp-club#3662), v2 since
-    // swamp-club#3970: each shipped package version, the code from outside
-    // npm and JSR, and a SHA-256 of each bundle file. Always written, so an
-    // empty record tells "nothing to audit" from an archive that predates it.
-    // The bundle format lets a consumer tell it can run these bundles
-    // (swamp-club#3972).
+    // always written, so an empty record tells "nothing to audit" from an
+    // archive that predates it; the bundle format lets a consumer tell it can
+    // run these bundles.
     const record = buildDependencyAuditRecordV2({
       bundleFormat: BUNDLE_FORMAT_VERSION,
       imports: [
@@ -3714,7 +3387,6 @@ async function createArchive(
       serializeDependencyAuditRecordV2(record),
     );
 
-    // Copy skill directories
     for (const { name, absolutePath } of input.skillDirs) {
       const destDir = join(extDir, "skills", name);
       await Deno.mkdir(destDir, { recursive: true });
@@ -3733,9 +3405,9 @@ async function createArchive(
       await copySkillDir(absolutePath, destDir);
     }
 
-    // Copy additional files, preserving the relative paths declared in the
-    // manifest. additionalFiles (relative) and additionalFilePaths (absolute)
-    // are parallel arrays maintained by resolve_extension_files.ts.
+    // additionalFiles (relative) and additionalFilePaths (absolute) are
+    // parallel arrays; copy preserving the relative paths declared in the
+    // manifest.
     if (
       input.manifest.additionalFiles.length !== input.additionalFilePaths.length
     ) {
@@ -3752,7 +3424,6 @@ async function createArchive(
       await Deno.copyFile(absPath, destPath);
     }
 
-    // Copy binary files, preserving executable mode bits.
     if (
       input.manifest.binaries.length !== input.binaryFilePaths.length
     ) {
@@ -3775,12 +3446,8 @@ async function createArchive(
       }
     }
 
-    // Create tar.gz. The Deno-native archiver walks the staged tree
-    // explicitly, so the previous BSD-tar `COPYFILE_DISABLE=1` env var (which
-    // suppressed macOS resource forks) is no longer needed: AppleDouble
-    // siblings are filtered defensively in the archiver itself.
-    // The archive never holds a symlink: staging copies files, so one
-    // here is a bug, refused before it can be packaged (swamp-club#3421).
+    // the archive never holds a symlink: staging copies files, so one here is a
+    // bug, refused before it can be packaged.
     const stagedLink = await firstSymlinkUnder(extDir);
     if (stagedLink !== undefined) {
       throw validationFailed(
@@ -3799,7 +3466,6 @@ async function createArchive(
 
     const archiveBytes = await Deno.readFile(tarPath);
 
-    // Verify gzip magic bytes
     if (archiveBytes[0] !== 0x1F || archiveBytes[1] !== 0x8B) {
       throw validationFailed(
         "Archive creation failed: output is not a valid gzip file.",
@@ -3818,7 +3484,6 @@ async function createArchive(
   }
 }
 
-/** File names push never ships: Deno and npm config, lock and package files. */
 const PROJECT_FILE_NAMES: ReadonlySet<string> = new Set([
   "deno.json",
   "deno.jsonc",
@@ -3828,7 +3493,6 @@ const PROJECT_FILE_NAMES: ReadonlySet<string> = new Set([
   ".npmrc",
 ]);
 
-/** Whether `path` is a config, lock or package file, or inside node_modules. */
 export function isProjectFile(path: string): boolean {
   const parts = path.split(/[\\/]/);
   return PROJECT_FILE_NAMES.has(parts[parts.length - 1]) ||
@@ -3836,13 +3500,9 @@ export function isProjectFile(path: string): boolean {
 }
 
 /**
- * `input` without the config, lock and package files its includes and
- * additionalFiles carry (swamp-club#3970), each named in
- * `leftOutProjectFiles` by its path from the manifest directory. Pull
- * refuses them, and the archive's source ships its dependencies pinned
- * instead. One a module imports (a JSON import of deno.json) stays, so the
- * shared-source check refuses it by name rather than ship a source whose
- * import is missing.
+ * pull refuses config, lock and package files, and the archive's source ships
+ * its dependencies pinned instead; one a module imports stays, so the
+ * shared-source check refuses it by name
  */
 function withoutProjectFiles(
   input: ExtensionPushPrepareInput,
@@ -3862,7 +3522,6 @@ function withoutProjectFiles(
   };
 }
 
-/** Whether the project bundles against a lock: `--frozen` with a deno.lock. */
 async function projectLockInUse(
   input: ExtensionPushPrepareInput,
 ): Promise<boolean> {
@@ -3872,11 +3531,8 @@ async function projectLockInUse(
 }
 
 /**
- * The project push bundles `input` under: its Deno config (with the
- * workspace root whose lock a member reads), its package.json project, or
- * neither; `noConfig` rides with the last two, so no config Deno would
- * discover above the repository applies (swamp-club#3971). Undefined when
- * there is no project and nothing to pass.
+ * noConfig rides with the package.json and no-project cases, so no config Deno
+ * would discover above the repository applies.
  */
 function pushProject(
   input: ExtensionPushPrepareInput,
@@ -3897,13 +3553,9 @@ function pushProject(
 }
 
 /**
- * Each specifier with the version its bundle holds (swamp-club#3970): an
- * exact pin as written, an installed package.json dependency at its
- * installed version, and anything else at the version the module graph
- * resolved it to. A version is locked when the bundle was built against a
- * deno.lock, or, for an installed package, a package-lock.json that
- * node_modules matches. A specifier the graph has no answer for is left to
- * the audit's own resolution; push refuses to ship it unpinned.
+ * a version is locked when the bundle was built against a deno.lock or, for an
+ * installed package, a package-lock.json that node_modules matches; a specifier
+ * the graph cannot answer is left to the audit
  */
 export function withBundledVersions(
   specifiers: readonly DependencySpecifier[],
@@ -3944,7 +3596,6 @@ export function withBundledVersions(
   });
 }
 
-/** What each audited import ships, for the dependency audit record. */
 function shippedImportsOf(
   specifiers: readonly DependencySpecifier[],
 ): ShippedImport[] {
@@ -3960,7 +3611,6 @@ function shippedImportsOf(
   );
 }
 
-/** `sha256:<hex>` of each bundle file, keyed by its path in the archive. */
 async function bundleHashes(
   kinds: readonly [string, ReadonlyMap<string, string>][],
 ): Promise<Record<string, string>> {
@@ -3983,15 +3633,12 @@ async function bundleHashes(
   return hashes;
 }
 
-/** A code module the archive's source copy pins the imports of. */
 const CODE_MODULE_RE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 
 /**
- * Record entries for shipped `npm:` and `jsr:` imports the audit did not
- * read (a test module the plan places, for one), so the record lists every
- * version the archive's source names. Each takes its source from how it
- * was written and the graph: exact as written, installed, or from the lock
- * or the registry.
+ * covers shipped npm: and jsr: imports the audit did not read (a test module
+ * the plan places, for one), so the record lists every version the archive's
+ * source names.
  */
 function unauditedImportsOf(
   sites: readonly { written: string; shipped: string }[],

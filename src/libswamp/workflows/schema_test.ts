@@ -32,7 +32,6 @@ Deno.test("workflowSchema yields completed with schema data", async () => {
     WorkflowSchemaEvent,
     { kind: "completed" }
   >;
-  // The generator now produces real JSON schemas from Zod, not stubs
   assert(typeof completed.data.workflow === "object");
   assert(typeof completed.data.job === "object");
   assert(typeof completed.data.step === "object");
@@ -68,9 +67,9 @@ Deno.test("workflowSchema exposes trigger.inputs in the workflow schema", async 
 });
 
 Deno.test("workflowSchema exposes object properties through the preprocess layers", async () => {
-  // The workflow/job/step schemas are wrapped in two z.preprocess layers
-  // (removed driver fields + unknown-key rejection, swamp-club#1240); the
-  // emitted JSON schema must still surface the object properties.
+  // the workflow/job/step schemas are wrapped in two z.preprocess layers
+  // (removed driver fields and unknown-key rejection); the emitted JSON schema
+  // must still surface the object properties
   const ctx = createLibSwampContext();
   const events = await collect<WorkflowSchemaEvent>(workflowSchema(ctx));
   const completed = events[0] as Extract<

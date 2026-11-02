@@ -271,11 +271,8 @@ Deno.test("vaultAnnotate: merges with existing annotation", async () => {
   assertEquals(completed.data.fieldsUpdated, ["url", "labels"]);
   assertEquals(completed.data.cleared, false);
 
-  // URL should be updated
   assertEquals(savedAnnotation!.url, "https://new.example.com");
-  // Notes should be preserved from existing
   assertEquals(savedAnnotation!.notes, "Old notes");
-  // Labels should be merged
   assertEquals(savedAnnotation!.labels.env, "staging");
   assertEquals(savedAnnotation!.labels.region, "us-east-1");
 });

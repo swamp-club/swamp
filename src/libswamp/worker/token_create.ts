@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Mint a worker enrollment token (see design/enablers/remote-execution.md,
- * "Enrollment tokens").
- *
- * Runs the `mint` method on the built-in `swamp/enrollment-token` model via
- * the same direct type execution path as
- * `swamp model @swamp/enrollment-token method run mint <name>` —
- * auto-creating the model instance named after the token — then reads the
- * plaintext back from the vault so the CLI can show it exactly once.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
@@ -43,7 +32,6 @@ import {
 export type { MaxEnrollments } from "../../domain/models/worker/enrollment_token_model.ts";
 import { createWorkerModelRunDeps } from "./run_deps.ts";
 
-/** Data payload for the completed event. */
 export interface WorkerTokenCreateData {
   name: string;
   /** Token plaintext — shown once, never persisted outside the vault. */
@@ -66,7 +54,6 @@ export interface WorkerTokenCreateInput {
   maxEnrollments?: MaxEnrollments;
 }
 
-/** Dependencies for the worker token create operation. */
 export interface WorkerTokenCreateDeps {
   listVaultNames: () => Promise<string[]>;
   runMint: (
@@ -80,7 +67,6 @@ export interface WorkerTokenCreateDeps {
   readSecret: (vaultName: string, secretKey: string) => Promise<string>;
 }
 
-/** Wires real infrastructure into WorkerTokenCreateDeps. */
 export async function createWorkerTokenCreateDeps(
   ctx: LibSwampContext,
   repoDir: string,
@@ -115,11 +101,6 @@ export async function createWorkerTokenCreateDeps(
   };
 }
 
-/**
- * Resolves the target vault: an explicit name is validated against the
- * configured vaults; otherwise a sole configured vault is used. Returns an
- * error message when resolution is ambiguous or impossible.
- */
 async function resolveVaultName(
   deps: WorkerTokenCreateDeps,
   requested: string | undefined,
@@ -157,9 +138,6 @@ async function resolveVaultName(
 
 const TOKEN_DATA_NAME = "token-main";
 
-/**
- * Mints a named enrollment token and yields the plaintext exactly once.
- */
 export async function* workerTokenCreate(
   ctx: LibSwampContext,
   deps: WorkerTokenCreateDeps,

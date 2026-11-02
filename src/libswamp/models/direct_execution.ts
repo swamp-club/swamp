@@ -112,10 +112,7 @@ export type DirectExecutionResult =
   }
   | { ok: false; error: SwampError };
 
-/**
- * Routes input values between globalArguments and method arguments using
- * the type's Zod schemas. Method arguments take precedence on ambiguous keys.
- */
+/** method arguments take precedence over global arguments on ambiguous keys */
 export function routeInputsBySchema(
   inputs: Record<string, unknown>,
   methodName: string,
@@ -205,9 +202,8 @@ function withRealGlobals(
 }
 
 /**
- * Lock key for serializing concurrent auto-creation of the same definition name.
- * Flattens '/' from scoped names (e.g. @collective/name) to avoid creating
- * intermediate directories in the lock path.
+ * flattens '/' from scoped names so the lock path gets no intermediate
+ * directories
  */
 export function autoDefinitionLockKey(name: string): string {
   const sanitized = name.replace(/\//g, "--");
@@ -215,20 +211,12 @@ export function autoDefinitionLockKey(name: string): string {
 }
 
 /**
- * Initial retry interval for the auto-definition create lock.
- *
- * The lock guards only a re-check and a definition save, so `FileLock`'s 1s
- * default made race losers — sibling forEach iterations creating the same
- * name — sleep through a release that happened milliseconds later. Matches
- * the per-model lock interval (`MODEL_LOCK_RETRY_INTERVAL_MS`); backoff still
- * doubles from here, so sustained contention converges on the same cadence.
+ * short initial interval: the lock guards only a re-check and a save, so the
+ * FileLock default made race losers sleep through a release that came
+ * milliseconds later; matches the per-model lock interval
  */
 export const AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS = 25;
 
-/**
- * Creates the lock that serializes concurrent auto-creation of a definition
- * name under `lockDir`.
- */
 export function createAutoDefinitionLock(
   lockDir: string,
   name: string,
@@ -243,11 +231,9 @@ export function createAutoDefinitionLock(
 }
 
 /**
- * Expressions in the global arguments the caller cannot vouch for: text that
- * arrived through data substitution rather than being written by an author.
- * Persisting such text as it is would turn it into an authored expression on
- * every later load of the definition, so it is stored wrapped in `literal()`
- * or refused (see {@link storableGlobalArgs}).
+ * expressions that arrived through data substitution, not written by an author;
+ * persisting them as-is would make them authored on every later load, so they
+ * are wrapped in literal() or refused
  */
 function findUnvouchedGlobalArgExpressions(
   globalArgs: Record<string, unknown>,
@@ -258,11 +244,9 @@ function findUnvouchedGlobalArgExpressions(
 }
 
 /**
- * Expressions in global arguments about to be persisted that sit in data.
- * Decided by position, whatever the authored set says: once stored, the
- * definition is read back as authored source, so data must never reach it
- * as expression text swamp would evaluate, even text an author also wrote
- * (see {@link storableGlobalArgs}).
+ * decided by position, whatever the authored set says: the stored definition is
+ * read back as authored source, so data must never reach it as expression text
+ * swamp would evaluate
  */
 function findDataRangeGlobalArgExpressions(
   persistedGlobal: Record<string, unknown>,
@@ -289,14 +273,9 @@ function findDataRangeGlobalArgExpressions(
 }
 
 /**
- * The global arguments to store, given the occurrences in them that nothing
- * vouches for (`found`), and a line for each occurrence that cannot be
- * stored. Another templating system's text, such as `${{ github.sha }}`
- * produced by a `literal()` call, is stored wrapped in a `literal()` call of
- * its own (see {@link literalOccurrence}): every later load evaluates that
- * constant to the same text, as data, and evaluates nothing inside it. Text
- * swamp would own is refused (see {@link storedTextRefusal}), and so is any
- * expression text in a sensitive field, which would be stored in cleartext.
+ * another templating system's text is stored wrapped in its own literal() so
+ * later loads evaluate it as data; text swamp would own is refused, as is any
+ * expression text in a sensitive field, which would be stored in cleartext
  */
 function storableGlobalArgs(
   globalArgs: Record<string, unknown>,
@@ -331,12 +310,9 @@ function unvouchedGlobalArgsMessage(
 }
 
 /**
- * Adopts a stored definition for a direct execution: verifies its type, then
- * applies the caller's routed global arguments to it (saving when they
- * differ) so the returned definition runs with the caller's own values.
- * Shared by the lookup fast path and the locked re-check, where a caller that
- * lost the auto-creation race adopts the winner's definition. Exported as
- * the `definition_adopt` diagnostic phase.
+ * shared by the lookup fast path and the locked re-check, where a caller that
+ * lost the auto-creation race adopts the winner's definition and applies its
+ * own global arguments
  */
 function adoptExistingDefinition(
   ...args: Parameters<typeof adoptDefinition>
@@ -358,7 +334,6 @@ async function adoptDefinition(
   persistedGlobal: Record<string, unknown> = routed.globalArguments,
   dataRangeCheck: () => ExpressionLocation[] = () => [],
 ): Promise<DirectExecutionResult> {
-  // Verify type matches
   if (existing.type.normalized !== resolvedType.normalized) {
     return {
       ok: false,
@@ -412,11 +387,9 @@ async function adoptDefinition(
       existing.definition.setGlobalArgument(key, value);
     }
   }
-  // Checked whether or not this run changed the globals: a hand-edited
-  // definition skips the save-time refusal. The persisted form is checked,
-  // never the real values, which may hold plaintext read through data, and
-  // after its upgrade chain too, which can move a literal into a sensitive
-  // field.
+  // checked even when the globals did not change, since a hand-edited
+  // definition skips the save-time refusal; checks the persisted form after its
+  // upgrade chain, never real values, which may hold plaintext
   const leakedArgs = new DefaultModelValidationService()
     .findLiteralSensitiveGlobals(existing.definition, modelDef);
   if (leakedArgs.length > 0) {
@@ -448,19 +421,9 @@ async function adoptDefinition(
 }
 
 /**
- * Resolves an existing definition by name or auto-creates one.
- * When the definition exists, verifies the type matches.
- *
- * `authoredExpressions` is the caller's provenance for `inputs` and
- * `explicitGlobalArgs`: `"unrestricted"` when an operator typed them, or the
- * workflow source's set when they have been through CEL substitution. Global
- * arguments holding expression text outside that set are refused rather than
- * persisted, so a stored definition only ever contains authored expressions.
- *
- * When `lockDir` is provided, concurrent auto-creation of the same name is
- * serialized with a file lock (double-check locking): the fast-path lookup
- * runs without a lock; only when the definition is missing does the lock
- * acquire, re-check, and create.
+ * authoredExpressions is the provenance of the inputs: unrestricted when an
+ * operator typed them, else the workflow source's set; expressions outside it
+ * are refused, not persisted
  */
 export async function resolveOrCreateDefinition(
   deps: DirectExecutionDeps,
@@ -474,11 +437,8 @@ export async function resolveOrCreateDefinition(
   lockDir?: string,
   authoredExpressions: AuthoredExpressions = "unrestricted",
   sensitiveValues?: RunSensitiveValues,
-  /** Where data sits in `inputs` and `explicitGlobalArgs`. */
   provenance?: DirectInputsProvenance,
 ): Promise<DirectExecutionResult> {
-  // When explicit globalArgs are provided, skip routing — treat inputs as
-  // method args only and use the explicit values as global args.
   let routed: RoutedInputs;
   if (explicitGlobalArgs) {
     const method = modelDef.methods[methodName];
@@ -561,7 +521,6 @@ export async function resolveOrCreateDefinition(
       writtenReferenceTexts,
     );
 
-  // Look up existing definition
   const existing = await withDiagnosticAttributes(
     { "swamp.diagnostic.lookup_attempt": "initial" },
     () => deps.lookupDefinition(definitionName),
@@ -597,28 +556,22 @@ export async function resolveOrCreateDefinition(
     };
   }
 
-  // Validate provided global arguments but don't require missing ones.
-  // Direct execution creates ephemeral instances — methods like get/sync/delete
-  // don't need creation-time fields, and the cloud API enforces required-ness
-  // at call time for methods that do (create/update).
+  // validate provided global arguments but not missing ones: direct execution
+  // creates ephemeral instances, and the cloud API enforces required fields at
+  // call time for methods that need them
   if (modelDef.globalArguments) {
-    // Validate only the static fields. Fields holding a `${{ ... }}` expression
-    // (e.g. a `vault.get(...)` reference) are resolved and validated at runtime;
-    // checking them now would reject a sentinel string against a constrained
-    // field, blocking the vault remediation for a sensitive argument.
-    // The stripped keys are passed as skipped, so object-level refinements
-    // never run against an object missing a field that has a value. A schema
-    // without an object shape (a transform) never gets here with a value,
-    // since routing above rejects its global arguments as unknown inputs.
+    // Validate only static fields: expression fields resolve at runtime and a
+    // sentinel would fail constrained schemas; stripped keys are passed as
+    // skipped.
     const staticArgs = stripExpressionFields(routed.globalArguments);
     const strippedKeys = new Set(
       Object.keys(routed.globalArguments).filter((key) =>
         !Object.hasOwn(staticArgs, key)
       ),
     );
-    // Described as a run's refusal is, so the schema's own code cannot
-    // spell a sensitive value here, and a schema that throws while parsing
-    // is reported as a run reports it (swamp-club#3681).
+    // described as a run's refusal is, so the schema's own code cannot spell a
+    // sensitive value, and a schema that throws while parsing is reported as a
+    // run reports it
     const globalArgsSchema = modelDef.globalArguments;
     let result: ReturnType<typeof parseGlobalArgumentsLeniently>;
     try {
@@ -655,9 +608,9 @@ export async function resolveOrCreateDefinition(
     }
   }
 
-  // Refuse a literal value for a sensitive global argument before persisting it
-  // in cleartext (enforced for every writer at the persistence chokepoint; done
-  // here too for a clean, typed error). Expression values (vault.get) pass.
+  // refuse a literal sensitive global argument before persisting it in
+  // cleartext; the persistence chokepoint enforces this too, but checking here
+  // gives a typed error. Expression values pass
   const leakedArgs = findLiteralSensitiveGlobalArgs(
     modelDef.globalArguments,
     persistedGlobal,

@@ -29,11 +29,6 @@ export interface ResolvedSkill {
   absolutePath: string;
 }
 
-/**
- * Reads a source extension's manifest.yaml and resolves skill directories
- * relative to the source. Only searches within the source itself — does not
- * search project-local or global skill directories.
- */
 export async function resolveSourceSkills(
   sourcePath: string,
   tools: string[],
@@ -69,7 +64,6 @@ export async function resolveSourceSkills(
     }
   };
 
-  // Only search within the source — manifest-relative tool dirs
   for (const tool of tools) {
     const rel = SKILL_DIRS[tool];
     if (!rel) continue;
@@ -98,12 +92,6 @@ export async function resolveSourceSkills(
   return resolved;
 }
 
-/**
- * Copies resolved skill directories to the target skills directory.
- * Skips skills whose target directory already exists (from another source
- * or user-authored) and logs a warning. Returns the list of skill names
- * that were actually copied.
- */
 export async function copySourceSkills(
   skills: ResolvedSkill[],
   targetSkillsDir: string,
@@ -130,10 +118,6 @@ export async function copySourceSkills(
   return copied;
 }
 
-/**
- * Removes named skill directories from the target skills directory.
- * Silently skips directories that don't exist.
- */
 export async function removeSourceSkills(
   skillNames: string[],
   targetSkillsDir: string,

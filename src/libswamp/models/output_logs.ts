@@ -41,7 +41,6 @@ import {
 } from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** Data payload for the completed event. */
 export interface ModelOutputLogsData {
   outputId: string;
   methodName: string;
@@ -66,7 +65,6 @@ export interface ModelOutputLogsInput {
   reference?: OutputIdReference<ModelOutput>;
 }
 
-/** Dependencies for the model output logs operation. */
 export interface ModelOutputLogsDeps
   extends OutputIdReferenceDeps<ModelOutput> {
   findDataByName: (
@@ -81,16 +79,14 @@ export interface ModelOutputLogsDeps
   ) => Promise<Uint8Array | null>;
 }
 
-/** Wires real infrastructure into ModelOutputLogsDeps. */
 export function createModelOutputLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   /**
-   * The repository context's lookup, so a read of a record the v3 read model
-   * could not materialise fails loudly (swamp-club#3617). Used by the output
-   * repository built here, and by the data repository when none is
-   * injected; an injected one carries its own.
+   * the repository context's lookup, so a read of a record the v3 read model
+   * could not materialise fails loudly; used by the output repository built
+   * here, and by the data repository when none is injected
    */
   unreadableContent?: UnreadableContentLookup,
 ): ModelOutputLogsDeps {
@@ -102,9 +98,8 @@ export function createModelOutputLogsDeps(
     undefined,
     unreadableContent,
   );
-  // Reuse an injected shared data repo (e.g. serve's process-scoped
-  // RepositoryContext) so we don't open a new file-based catalog store — and
-  // leak its 3 FDs — on every request.
+  // reuse an injected shared data repo so each request does not open a new
+  // file-based catalog store and leak its file descriptors
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
@@ -149,7 +144,6 @@ export function createModelOutputLogsDeps(
   };
 }
 
-/** Yields log artifact content for a model output. */
 export async function* modelOutputLogs(
   _ctx: LibSwampContext,
   deps: ModelOutputLogsDeps,
@@ -196,7 +190,6 @@ export async function* modelOutputLogs(
 
       const { output, type } = reference.match;
 
-      // Get log IDs from artifacts (find all artifacts with type "log")
       const logArtifacts = output.artifacts.dataArtifacts.filter(
         (a) => a.tags.type === "log",
       );
@@ -212,7 +205,6 @@ export async function* modelOutputLogs(
         return;
       }
 
-      // Fetch and collect log lines
       const allEntries: string[] = [];
 
       for (const artifact of logArtifacts) {
@@ -235,7 +227,6 @@ export async function* modelOutputLogs(
         }
       }
 
-      // Apply --tail if specified
       const entriesToShow = input.tail
         ? allEntries.slice(-input.tail)
         : allEntries;

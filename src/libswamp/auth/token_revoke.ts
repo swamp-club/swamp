@@ -33,10 +33,6 @@ import {
   validationFailed,
 } from "../errors.ts";
 
-/**
- * A revoke swamp-club has confirmed. The server's answer carries no token
- * metadata, so this names the token by the id that was revoked.
- */
 export interface AuthTokenRevokeData {
   id: string;
   collective: string;

@@ -43,8 +43,8 @@ function makeRun(id: string, status: "running" | "succeeded"): WorkflowRun {
 }
 
 /**
- * Counting fake. The point of the fix is a call that must NOT happen, so the
- * call counts are the assertion, not an implementation detail.
+ * counting fake: the point is a call that must not happen, so the call counts
+ * are the assertion
  */
 function fakeRepo(runs: WorkflowRun[]) {
   const calls = { findGlobalById: 0, findAllGlobal: 0 };

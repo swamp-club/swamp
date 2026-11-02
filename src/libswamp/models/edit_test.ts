@@ -293,9 +293,6 @@ Deno.test("modelEdit: yields error for broken model with stdin", async () => {
   assertEquals(last.error.code, "validation_failed");
 });
 
-// --- typeVersion reporting (swamp-club#2412) ---
-
-/** A blocking editor: `open()` resolves only after the human has finished. */
 function blockingEditor(editor: string) {
   return (path: string) =>
     Promise.resolve({
@@ -356,7 +353,6 @@ Deno.test("modelEdit: stdin write with a valid typeVersion carries no warning", 
 });
 
 Deno.test("modelEdit: stdin write with no typeVersion carries no warning", async () => {
-  // Absence is a legitimate state for a hand-written definition, not an error.
   const deps = makeDeps({
     lookupDefinition: () =>
       Promise.resolve({ definition: testDefinition, type: testModelType }),
@@ -397,7 +393,6 @@ Deno.test("modelEdit: an editor edit with a malformed typeVersion carries the wa
 
 Deno.test("modelEdit: an editor edit equal to the stored definition saves nothing", async () => {
   let saved = false;
-  // Two loads of the same YAML: separate objects with equal data.
   const load = () =>
     ({
       ...(testDefinition as unknown as Record<string, unknown>),
@@ -450,8 +445,6 @@ Deno.test("modelEdit: invalid YAML from the editor says so", async () => {
 });
 
 Deno.test("modelEdit: re-reads a file opened in place after a blocking editor closes", async () => {
-  // A legacy link to a broken definition: once fixed in the editor it
-  // loads, and a malformed typeVersion is reported.
   let reads = 0;
   const deps = makeDeps({
     lookupDefinition: () => {
@@ -481,10 +474,6 @@ Deno.test("modelEdit: re-reads a file opened in place after a blocking editor cl
 type TestDefinition =
   import("../../domain/definitions/definition.ts").Definition;
 
-/**
- * Deps whose stdin update parses to `candidate`, runs `beforeSave` like the
- * real repository-backed dep, and records whether it saved.
- */
 function makeAuthorizeDeps(candidate: TestDefinition) {
   const saved: TestDefinition[] = [];
   const deps = makeDeps({

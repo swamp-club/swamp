@@ -26,15 +26,10 @@ import {
 } from "../../domain/datastore_v3/datastore_owner.ts";
 import { UserError } from "../../domain/errors.ts";
 
-/** The result of `swamp datastore claim`. */
 export interface DatastoreClaimData {
-  /** The owner's normalized address. */
   address: string;
-  /** When the claim was written. */
   claimedAt: string;
-  /** The log's high-water mark when the claim was written. */
   claimedAtCursor: number;
-  /** True when the datastore was already claimed for this address. */
   alreadyClaimed: boolean;
 }
 
@@ -43,20 +38,11 @@ export type DatastoreClaimEvent =
   | { kind: "completed"; data: DatastoreClaimData }
   | { kind: "error"; error: SwampError };
 
-/**
- * A v3 datastore's commit log, held under this process's writer lease, as
- * the claim and the release see it.
- */
 export interface DatastoreClaimCommitLog {
-  /** The datastore's owner, or undefined while none claimed it. */
   owner(): DatastoreOwner | undefined;
-  /** Applies every commit not yet applied, on every partition. */
   catchUp(signal: AbortSignal): Promise<void>;
-  /** The log's high-water mark. */
   highWaterCursor(): number;
-  /** Writes `owner` as the datastore's owner, under the writer fence. */
   claim(owner: DatastoreOwner): Promise<void>;
-  /** Removes the claim, under the writer fence. */
   release(): Promise<void>;
   /**
    * Confirms the claim as it stands is replicated, for a claim or release
@@ -66,21 +52,15 @@ export interface DatastoreClaimCommitLog {
   confirm(): Promise<void>;
 }
 
-/** Dependencies for {@link datastoreClaim} and `datastoreRelease`. */
 export interface DatastoreClaimDeps {
-  /** The commit log; undefined on a v2 datastore, which has none. */
   commitLog?: DatastoreClaimCommitLog;
-  /** The clock; `new Date()` unless given. */
   now?: () => Date;
 }
 
-/** Input for {@link datastoreClaim}. */
 export interface DatastoreClaimInput {
-  /** The address clients put in serverAddress. */
   address: string;
 }
 
-/** The refusal for a claim or release of a datastore that is not v3. */
 export function notV3Error(command: "claim" | "release"): UserError {
   return new UserError(
     `'swamp datastore ${command}' applies only to v3 datastores: a v2 ` +
@@ -89,14 +69,9 @@ export function notV3Error(command: "claim" | "release"): UserError {
 }
 
 /**
- * Makes serve at `input.address` the owner of a v3 datastore
- * (swamp-club#4063): catches the commit log up, then records the owner and
- * the log position it took over at. From then on a direct writer is
- * refused and writes go through serve. Claiming again for the same address
- * changes nothing; another address is refused until the claim is released.
- *
- * @throws DatastoreClaimedError when another address owns the datastore
- * @throws UserError on a v2 datastore or an address that is not a URL
+ * makes serve at input.address the owner of a v3 datastore: catches the log up,
+ * records the owner and takeover position; direct writers are refused; another
+ * address is refused until released
  */
 export async function* datastoreClaim(
   ctx: LibSwampContext,

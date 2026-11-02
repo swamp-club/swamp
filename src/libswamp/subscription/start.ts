@@ -28,13 +28,10 @@ import type { SwampError } from "../errors.ts";
 import { billingUrl } from "./status.ts";
 
 export interface SubscriptionStartInput {
-  /** Open this collective's billing page instead of the user's own. */
   collective?: string;
-  /** Hand back the URL without opening a browser. */
   noBrowser: boolean;
 }
 
-/** Whether a browser was opened, not asked for, or would not open. */
 export type SubscriptionStartBrowser = "opened" | "skipped" | "failed";
 
 export interface SubscriptionStartResult {
@@ -43,15 +40,13 @@ export interface SubscriptionStartResult {
   browser: SubscriptionStartBrowser;
 }
 
-// Nothing here fails today: the auth gate has already vetted the credential
-// and a browser that will not open is an outcome. `error` is part of the
-// union because every libswamp stream carries both terminals.
+// nothing fails today; `error` stays because every libswamp stream carries both
+// terminals
 export type SubscriptionStartEvent =
   | { kind: "opening_browser"; url: string }
   | { kind: "completed"; result: SubscriptionStartResult }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for {@link subscriptionStart}, injected for testability. */
 export interface SubscriptionStartDeps {
   resolveServerUrl: () => Promise<string>;
   /** Resolves false, never rejects, when no browser could be opened. */
@@ -90,10 +85,9 @@ export function createSubscriptionStartDeps(
 }
 
 /**
- * Opens the Swamp Club billing page, or a collective's. A browser that will
- * not open is an outcome, not an error: the URL is the result either way.
- * The slug is not checked against the user's memberships — the billing page
- * decides what the user may manage.
+ * a browser that will not open is an outcome, not an error; the slug is not
+ * checked against memberships, the billing page decides what the user may
+ * manage
  */
 export async function* subscriptionStart(
   _ctx: LibSwampContext,

@@ -110,7 +110,6 @@ function runWithOneStep(): WorkflowRun {
 }
 
 Deno.test("workflowHistoryGet: reads no step outputs unless asked", async () => {
-  // The default resolveStepOutputs rejects, so any read fails the test.
   const deps = makeDeps({
     findLatestRun: () => Promise.resolve(runWithOneStep()),
   });
@@ -325,7 +324,6 @@ Deno.test("workflowHistoryGet: reports a passed workflow with no runs as today",
   );
 });
 
-/** A run suspended with `review` waiting for a signal opened at `opened`. */
 function runWaitingForSignal(opened: Date, key?: string): WorkflowRun {
   const workflow = RealWorkflow.create({
     name: "my-workflow",
@@ -464,7 +462,6 @@ Deno.test("workflowHistoryGet: a step signalled since the run suspended shows th
   const step = completed.data.jobs[0].steps[0];
   assertEquals(step.status, "waiting");
   assertEquals(step.wait?.receipt, outcome.receipt);
-  // Only a resume writes a suspended run.
   assertEquals(review.status, "waiting_signal");
   assertEquals(review.signalWait?.receipt, undefined);
 });
@@ -687,7 +684,6 @@ const STEP_OUTPUTS_SPAN = "swamp.workflow.step_outputs.resolve";
 const NESTED_WAITS_SPAN = "swamp.workflow.nested_waits.resolve";
 const SIGNAL_WAITS_SPAN = "swamp.workflow.signal_waits.resolve";
 
-/** A suspended parent run whose `call` step waits on a finished child run. */
 function runWaitingOnNestedRun(): {
   parent: WorkflowRun;
   nestedLink: NonNullable<WorkflowHistoryGetDeps["nestedLink"]>;

@@ -32,24 +32,15 @@ import {
   parseDependencyAuditRecordV2,
 } from "@swamp-club/extension-scoring/dependency-audit";
 
-/** What scanning an extension's bundles found. */
 export interface BundleScan {
-  /** Findings that refuse the install. */
   errors: SafetyIssue[];
-  /** Findings in dependency code, reported only. */
   dependencyIssues: BundleDependencyIssue[];
-  /**
-   * Each scanned bundle's forward-slash archive path, unescaped, to the
-   * `sha256:<hex>` of its bytes, as push records it.
-   */
   hashes: Map<string, string>;
 }
 
 /**
- * Scans every bundle of an extracted extension archive (swamp-club#3383),
- * in name order. Each bundle is named by its path in the archive, such as
- * `bundles/foo.js`, with control characters escaped. `listFiles` lists a
- * directory's files recursively and answers an empty list for a missing one.
+ * bundles are named by their archive path, such as bundles/foo.js, with control
+ * characters escaped; listFiles answers an empty list for a missing directory
  */
 export async function scanExtractedBundles(
   extractDir: string,
@@ -70,7 +61,7 @@ export async function scanExtractedBundles(
       // An archive path: printed, so escaped like every archive path pull
       // prints.
       const name = escapeControlCharacters(archivePath);
-      // One read: the bytes hashed are the bytes scanned (swamp-club#3972).
+      // one read: the bytes hashed are the bytes scanned
       const bytes = await Deno.readFile(file);
       scan.hashes.set(archivePath, await sha256Of(bytes));
       const result = analyzeBundleSafety(
@@ -87,18 +78,12 @@ export async function scanExtractedBundles(
   return scan;
 }
 
-/** The lines that list bundle safety errors in a refusal. */
 export function describeBundleErrors(errors: readonly SafetyIssue[]): string {
   return errors.map((e) =>
     `  ${e.file}${e.line !== undefined ? ` line ${e.line}` : ""}: ${e.message}`
   ).join("\n");
 }
 
-/**
- * One pull warning per dependency module with dynamic-code findings,
- * naming the bundles that hold it. A dependency in `reported` was already
- * warned about and is left out.
- */
 export function bundleDependencyWarnings(
   issues: readonly BundleDependencyIssue[],
   reported: ReadonlySet<string> = new Set(),
@@ -125,28 +110,19 @@ async function sha256Of(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   }`;
 }
 
-/** What an archive's dependency audit record says about its bundles. */
 export interface BundleRecordCheck {
   /**
-   * Run the archive's bundles rather than rebuilding them from source:
-   * there is no v2 record (an archive pushed before it), or the record's
-   * bundle format is the one this swamp runs.
+   * run the archive's bundles rather than rebuilding them: there is no v2
+   * record, or its bundle format is the one this swamp runs
    */
   keepArchiveBundles: boolean;
-  /** Why the archive is refused, one line per bundle; empty when it is not. */
   refusals: string[];
 }
 
 /**
- * Checks the scanned bundles against the archive's dependency audit record
- * (swamp-club#3972). `recordText` is the record, or undefined when the
- * archive has none. A v1 record carries no hashes, so its bundles are kept
- * as `extension install` keeps them. A v2 record must list every bundle,
- * with the hash of the bytes scanned, and every bundle it lists must be
- * there: the record and the bundles were written by one push, so a bundle
- * changed apart from its record is refused. That is consistency within the
- * archive, not who published it. The record's keys are only compared with
- * the scanned paths, never opened.
+ * a v2 record must list every bundle with the hash of the bytes scanned, and
+ * every listed bundle must be there, so a bundle changed apart from its record
+ * is refused; that is consistency within the archive, not who published it
  */
 export function checkBundleRecord(
   hashes: ReadonlyMap<string, string>,

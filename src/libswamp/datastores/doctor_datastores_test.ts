@@ -194,7 +194,6 @@ Deno.test("doctorDatastores: filesystem datastore skips vault mismatch check", a
   const completed = events.find((e) => e.kind === "completed");
   assertEquals(completed?.kind, "completed");
   if (completed?.kind === "completed") {
-    // Vault mismatch is not checked for filesystem datastores
     assertEquals(completed.data.vaultMismatchFindings.length, 0);
   }
 });
@@ -212,10 +211,6 @@ Deno.test("doctorDatastores: emits scanning event first", async () => {
   assertEquals(events[0].kind, "scanning");
   assertEquals(events[1].kind, "completed");
 });
-
-// ============================================================================
-// Un-migrated namespace data detection
-// ============================================================================
 
 Deno.test("doctorDatastores: flags un-migrated data when namespace is set", async () => {
   const configWithNs: DatastoreConfig = {
@@ -295,10 +290,6 @@ Deno.test("doctorDatastores: skips namespace check when no namespace configured"
     assertEquals(nsFinding, undefined);
   }
 });
-
-// ============================================================================
-// Namespace contamination detection
-// ============================================================================
 
 const customConfigWithNs: DatastoreConfig = {
   type: "@swamp/s3-datastore",
@@ -426,10 +417,6 @@ Deno.test("doctorDatastores: skips contamination check when no namespace", async
   }
 });
 
-// ============================================================================
-// Repair: namespace contamination cleanup
-// ============================================================================
-
 function makeRepairDeps(
   overrides: Partial<RepairDatastoresDeps> = {},
 ): RepairDatastoresDeps {
@@ -518,7 +505,6 @@ Deno.test("repairDatastoreContamination: confirm mode executes full repair", asy
     }),
   );
 
-  // Verify correct execution order
   assertEquals(callLog, [
     "deleteContamination",
     "wipeLocalCache",
@@ -537,7 +523,6 @@ Deno.test("repairDatastoreContamination: confirm mode executes full repair", asy
     assertEquals(completed.result.catalogInvalidated, true);
   }
 
-  // Verify step events were emitted in order
   const steps = events.filter((e) => e.kind === "step");
   assertEquals(steps.length, 5);
   if (steps[0].kind === "step") {
@@ -632,10 +617,6 @@ Deno.test("repairDatastoreContamination: yields error event on mid-repair failur
   }
   assertEquals(events.find((e) => e.kind === "completed"), undefined);
 });
-
-// ============================================================================
-// Repair: root-level unmigrated data cleanup
-// ============================================================================
 
 function makeUnmigratedDeps(
   overrides: Partial<RepairUnmigratedDataDeps> = {},
@@ -841,10 +822,6 @@ Deno.test("repairUnmigratedData: emits step events during confirm", async () => 
   assertStringIncludes(steps[1].description, "outputs/");
 });
 
-// ============================================================================
-// Catalog completeness check and repair (swamp-club#1580)
-// ============================================================================
-
 const completeSummary: CatalogCompletenessSummary = {
   diskRecords: 42,
   catalogRecords: 42,
@@ -942,7 +919,6 @@ Deno.test("doctorDatastores: catalog check runs without a namespace or custom da
   const completed = events.find((e) => e.kind === "completed");
   if (completed?.kind === "completed") {
     assertEquals(completed.data.isCustom, false);
-    // No namespace configured, so neither namespace check contributed.
     assertEquals(
       completed.data.healthFindings.some((f) =>
         f.check === "namespace_migration"
@@ -1050,8 +1026,6 @@ Deno.test("repairCatalogIndex: reports a failed deletion without claiming succes
     assertStringIncludes(errorEvent.error.message, "No changes were made");
   }
 });
-
-// --- repairCatalogDuplicateLatest tests ---
 
 Deno.test("repairCatalogDuplicateLatest: not_needed when no duplicates", async () => {
   const events = await collect<RepairCatalogDuplicateLatestEvent>(
@@ -1344,8 +1318,6 @@ Deno.test("doctorDatastores: the retention check fails on overdue items or v3 hi
   }
 });
 
-// --- swamp-club#3617: restoring a v3 datastore's lost format marker ---
-
 function markerRepairDeps(
   state: "absent" | "blank" | undefined,
   restore: () => Promise<string>,
@@ -1569,8 +1541,6 @@ Deno.test("doctorDatastores: a v3 content check that throws is a failed finding,
     assertEquals(completed.data.v3ContentFinding, undefined);
   }
 });
-
-// --- swamp-club#3690: moving aside a joining checkout's records ---
 
 function preV3Deps(
   found: string[],
@@ -1886,7 +1856,6 @@ Deno.test("doctorDatastores: no kept replication lineage passes, and one that ca
   assertStringIncludes(finding!.message, "bucket offline");
 });
 
-/** The replica check's finding from one scan with `finding` (swamp-club#3935). */
 async function replicaFinding(
   check: DoctorDatastoresDeps["checkV3ReplicaRestorable"],
 ) {
@@ -1975,8 +1944,6 @@ Deno.test("doctorDatastores: a verified or not yet checked replica passes; none 
   assertEquals(unreadable.health?.passed, false);
   assertStringIncludes(unreadable.health!.message, "permission denied");
 });
-
-// --- swamp-club#3955: unreadable data versions ---
 
 function unreadable(
   overrides: Partial<UnreadableDataVersion> = {},
@@ -2068,7 +2035,6 @@ Deno.test("doctorDatastores: an unreadable_versions scan that throws fails the c
   assertEquals(data.healthFindings[0].passed, true);
 });
 
-/** Fake repair deps: records what ran under the locks, and their release. */
 function fakeUnreadableRepairDeps(
   first: UnreadableDataVersion[],
   underLock: UnreadableDataVersion[] = first,
@@ -2207,10 +2173,6 @@ Deno.test("repairUnreadableVersions: a delete that throws yields an error, and t
   assertStringIncludes(error.error.message, "disk full");
   assertEquals(calls, ["lock", "release"]);
 });
-
-// ============================================================================
-// Unpushed cache files (swamp-club#4112)
-// ============================================================================
 
 function unpushedSummary(
   overrides: Partial<UnpushedFilesSummary> = {},

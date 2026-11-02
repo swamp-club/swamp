@@ -41,7 +41,6 @@ import {
 
 const HOST = "test-host";
 
-/** The chain with its top run cancelled and stored, as a cancel leaves it. */
 function endedChain(levels = 2): NestedChain & { ended: WorkflowRun } {
   const built = nestedChain(levels);
   cancelAndSettle(built.chain[0], undefined, "stop");
@@ -62,7 +61,6 @@ function depsOf(
   };
 }
 
-/** A tracker holding one row, and recording what is completed. */
 function trackerWith(
   row: ActiveRun | null,
 ): RunTrackerRepository & { completed: string[] } {
@@ -92,12 +90,10 @@ Deno.test("createNestedCascade: cancels the suspended child and the runs below i
   const grandchild = built.runs.get(built.chain[2]);
   assertEquals(child.status, "cancelled");
   assertEquals(grandchild.status, "cancelled");
-  // The reason names no other run: it is shown to any reader of the child.
   assertEquals(child.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
   assertEquals(grandchild.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
   assertEquals(grandchild.findWaitingApprovalStep(), undefined);
   assertEquals(tracker.completed, [built.chain[1].id, built.chain[2].id]);
-  // The ended parent is never written.
   assert(!built.runs.saved.includes(built.ended.id));
 });
 
@@ -269,7 +265,6 @@ Deno.test("createNestedCascade: a child whose record is not the datastore's is l
 
 Deno.test("createNestedCascade: a child that changed before its claim is read again and left", async () => {
   const built = endedChain();
-  // An approver resumes the child between the listing and the claim.
   const claims: WorkflowRunClaims = {
     withClaim: (runId, fn) => {
       built.runs.add(WorkflowRun.fromData({
@@ -321,7 +316,6 @@ Deno.test("createNestedCascade: stops at the nesting depth bound", async () => {
     result.cancelledNestedRuns.length,
     MAX_WORKFLOW_NESTING_DEPTH,
   );
-  // The run below the bound is left as it was.
   assertEquals(built.runs.get(built.chain[levels - 1]).status, "suspended");
 });
 

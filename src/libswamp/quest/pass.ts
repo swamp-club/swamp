@@ -24,7 +24,6 @@ import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 
 export interface QuestPassData {
   readonly pass: GenesisPass;
-  /** True when read via the unauthenticated ghost path (progress unclaimed). */
   readonly ghost: boolean;
 }
 
@@ -33,7 +32,6 @@ export type QuestPassEvent =
   | { kind: "error"; error: SwampError };
 
 export interface QuestPassDeps {
-  /** Whether this is the ghost (unauthenticated) read. */
   readonly ghost: boolean;
   /**
    * Fetches the Genesis pass. The command wires this to either the
@@ -43,12 +41,6 @@ export interface QuestPassDeps {
   fetchPass: () => Promise<GenesisPass>;
 }
 
-/**
- * Fetches the operative's Genesis pass from swamp-club — the single source of
- * truth for both the authenticated and ghost reads. Which endpoint is hit is
- * decided by the caller; this generator just streams the result plus whether it
- * came from the ghost path.
- */
 export async function* questPass(
   ctx: LibSwampContext,
   deps: QuestPassDeps,

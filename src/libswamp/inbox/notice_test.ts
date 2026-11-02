@@ -71,7 +71,6 @@ function snapshot(overrides: Partial<InboxSnapshot> = {}): InboxSnapshot {
   };
 }
 
-/** A key polled two hours ago: due again, with a cached snapshot. */
 function polledState(overrides: Partial<InboxSnapshot> = {}): InboxState {
   return {
     snapshot: snapshot(overrides),
@@ -93,16 +92,10 @@ interface Harness {
   key: InboxCacheKey;
 }
 
-/**
- * Runs `fn` against a real per-key cache in a temp config dir, with an
- * injected client and wait. The temp dir is removed whether `fn` passes or
- * fails.
- */
 async function withHarness(
   options: {
     state?: InboxState;
     summary?: (signal: AbortSignal) => Promise<InboxSummaryResult>;
-    /** Resolve the grace wait at once rather than only when aborted. */
     graceElapses?: boolean;
     overrides?: Partial<InboxNoticeDeps>;
   },
@@ -150,7 +143,6 @@ async function withHarness(
   }
 }
 
-/** A summary that answers only when its signal aborts, as the client does. */
 function pendingUntilAborted(
   signal: AbortSignal,
 ): Promise<InboxSummaryResult> {
@@ -171,7 +163,6 @@ Deno.test("startInboxPoll: a poll that settled before teardown is saved without 
 
     assertEquals(rec.summaries.length, 1);
     assertEquals(rec.summaries[0].signal.aborted, false);
-    // The grace wait was cut short as soon as the poll had settled.
     assertEquals(rec.waits.length, 1);
     assertEquals(rec.waits[0].aborted, true);
     const saved = await cache.load(key);
@@ -280,7 +271,6 @@ Deno.test("startInboxPoll: a poll sent before inbox read saved never puts back i
       // The poll is sent at NOW and answers unread 2.
       const poll = await startInboxPoll(deps);
       assert(poll !== null);
-      // Meanwhile inbox read marks the message read and saves unread 0.
       clock = NOW + 10;
       const read = snapshot({ unread: 0, newestId: null, fetchedAt: clock });
       await cache.save(key, { ...(await cache.load(key)), snapshot: read });
@@ -497,11 +487,9 @@ Deno.test("createInboxNoticeDeps: the wait ends when aborted and leaves no timer
   const waiting = wait(60_000, controller.signal);
   controller.abort();
   await waiting;
-  // An already-aborted signal resolves at once.
   await wait(60_000, controller.signal);
 });
 
-/** Every variable the config dir resolves from, unset. */
 const NO_HOME = {
   SWAMP_CONFIG_DIR: undefined,
   SWAMP_HOME: undefined,

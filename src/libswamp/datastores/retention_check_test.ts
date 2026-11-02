@@ -131,7 +131,6 @@ async function saveData(
     data,
     new TextEncoder().encode("{}"),
   );
-  // Age the version on disk, as a version written long ago reads.
   const metadataPath = join(
     repoDir,
     ".swamp",
@@ -277,7 +276,6 @@ Deno.test("scanRetention: lists every kind's items older than the cutoff, and ke
 
     const summary = await scanRetention(
       repo,
-      // Snapshots with their own key can be overdue ahead of their runs.
       RetentionPolicy.fromConfig({
         retention: "30d",
         evaluatedSnapshots: "30d",
@@ -393,7 +391,6 @@ Deno.test("scanRetention: fails v3 history only past the compaction bound plus a
     assertEquals(retentionCheckFailed(past), true);
 
     assertEquals((await scan(null)).v3History?.overdue, false);
-    // Without retention, history is never a failure.
     const unset = await scan(at(30), RetentionPolicy.fromConfig(undefined));
     assertEquals(unset.v3History?.overdue, false);
   });
@@ -409,7 +406,6 @@ Deno.test("scanRetention: no v3 history section without a commit log", async () 
 Deno.test("scanRetention: with automatic retention, an item just past its cutoff waits for the next pass", async () => {
   await withTempDir(async (dir) => {
     const runId = "33333333-3333-4333-8333-333333333333";
-    // One hour past a 30-day cutoff: inside one pass interval.
     const justPast = new Date(NOW.getTime() - 30 * DAY_MS - 60 * 60 * 1000);
     await writeRun(dir, runId, {
       status: "succeeded",

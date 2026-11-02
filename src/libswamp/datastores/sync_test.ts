@@ -108,10 +108,6 @@ Deno.test("datastoreSync: full sync success", async () => {
   assertEquals(completed.data.errors, []);
 });
 
-// ============================================================================
-// createDatastoreSyncDeps: namespace threading
-// ============================================================================
-
 const syncSpyCalls: {
   method: string;
   options: DatastoreSyncOptions | undefined;
@@ -245,8 +241,8 @@ Deno.test("createDatastoreSyncDeps: a successful push or full sync clears an unr
     await deps.pullSync();
     assertEquals((await readLockfilePublishPending(dir)).kind, "unknown");
 
-    // A recorded change is the only copy of it: a push keeps it for the
-    // next extension write to replay (swamp-club#2838).
+    // a recorded change is the only copy of it: a push keeps it for the next
+    // extension write to replay
     await markLockfilePublishPending(dir, { upserts: {}, removals: ["@a/x"] });
     await deps.pushSync();
     assertEquals((await readLockfilePublishPending(dir)).kind, "delta");
@@ -260,10 +256,6 @@ Deno.test("createDatastoreSyncDeps: a successful push or full sync clears an unr
     }
   }
 });
-
-// ============================================================================
-// Push preview + confirm
-// ============================================================================
 
 Deno.test("datastoreSync: push without confirm yields preview when previewPush available", async () => {
   const deps = makeDeps({
@@ -332,10 +324,6 @@ Deno.test("datastoreSync: push preview with zero total pushes directly", async (
   assertEquals(events[0], { kind: "syncing", mode: "push" });
   assertEquals(events[1].kind, "completed");
 });
-
-// ============================================================================
-// Un-migrated data guard
-// ============================================================================
 
 Deno.test("datastoreSync: push blocked when un-migrated data exists", async () => {
   const deps = makeDeps({

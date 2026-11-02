@@ -39,8 +39,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles
-      // yet. Temp dir is ephemeral, OS reclaims.
+      // best-effort: EBUSY can fire when V8 has not GC'd native sqlite handles
+      // yet
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -145,7 +145,8 @@ Deno.test("modelOutputLogs yields log lines", async () => {
 });
 
 Deno.test("modelOutputLogs reads a log with more lines than fit in a spread call", async () => {
-  // push(...lines) threw RangeError above ~125k lines (swamp-club#2565).
+  // push(...lines) throws RangeError on a very large log, so lines must not be
+  // spread
   const count = 150_000;
   const text = Array.from({ length: count }, (_, i) => `line${i}`).join("\n");
   const deps = makeDeps({

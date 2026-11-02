@@ -21,13 +21,10 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
-/** Stats returned by the compact operation. */
 export interface DatastoreCompactData {
   walPagesTotal: number;
   walPagesCheckpointed: number;
-  /** Bytes reclaimed from the main database file after VACUUM. */
   dbBytesReclaimed: number;
-  /** True when VACUUM was skipped due to a runtime limitation. */
   vacuumSkipped: boolean;
 }
 
@@ -37,14 +34,12 @@ export type DatastoreCompactEvent =
   | { kind: "completed"; data: DatastoreCompactData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the datastore compact operation. */
 export interface DatastoreCompactDeps {
   checkpoint: () => { walPagesTotal: number; walPagesCheckpointed: number };
   vacuum: () => boolean;
   catalogDbSize: () => Promise<number>;
 }
 
-/** Checkpoints the catalog WAL and runs VACUUM to reclaim freed pages. */
 export async function* datastoreCompact(
   _ctx: LibSwampContext,
   deps: DatastoreCompactDeps,

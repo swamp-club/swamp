@@ -58,9 +58,6 @@ import type { RetentionWatermarkRepository } from "../../domain/retention/retent
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { v3RunArtifactCheck } from "./run_artifact_check.ts";
-/**
- * Data structure for the data get output.
- */
 export interface DataGetData {
   id: string;
   name: string;
@@ -89,34 +86,23 @@ export interface DataGetData {
   checksum?: string;
   contentPath: string;
   content?: string;
-  /**
-   * How `content` is encoded. Set whenever `content` is: `utf-8` when the
-   * stored bytes are valid UTF-8, `base64` otherwise (e.g. an image).
-   */
   contentEncoding?: ContentEncoding;
-  /**
-   * The `swamp data query` command that reads this same item. `data get` is
-   * deprecated in its favor; for a workflow-scoped read the query names the
-   * run, job and step that produced the item.
-   */
   replacementQuery?: string;
   /**
-   * For a workflow-scoped read without `--run`, the `swamp data query`
-   * command that follows the workflow's latest run, as this read did, where
-   * `replacementQuery` pins the run it found (swamp-club#2957).
+   * for a workflow-scoped read without --run, the data query command that
+   * follows the workflow's latest run, where replacementQuery pins the run it
+   * found
    */
   latestRunQuery?: string;
-  /** Notices about this read, such as the deprecation of `data get`. */
   warnings?: string[];
   /**
-   * For a workflow-scoped read, the other producers in the run whose data
-   * matched the name (swamp-club#2948), each with the query that reads it.
-   * Only producers the caller may read are listed.
+   * for a workflow-scoped read, the other producers in the run whose data
+   * matched the name, each with the query that reads it; only producers the
+   * caller may read are listed
    */
   alternatives?: DataGetAlternative[];
 }
 
-/** Another producer of the same data name in a workflow run. */
 export interface DataGetAlternative {
   modelName: string;
   modelType: string;
@@ -124,7 +110,6 @@ export interface DataGetAlternative {
   jobName?: string;
   stepName?: string;
   version: number;
-  /** The `swamp data query` command that reads it. */
   replacementQuery?: string;
 }
 
@@ -148,11 +133,9 @@ export interface DataGetInput {
   includeContent: boolean;
   repoDir: string;
   /**
-   * For a workflow-scoped read, the item the caller authorized, as
-   * {@link resolveWorkflowData} located it. The read then finds the workflow
-   * by this id and name only, reads exactly this run and version, and reports
-   * not-found if the item it lands on belongs to any other owner — so what is
-   * returned is what was authorized.
+   * the item the caller authorized for a workflow-scoped read: the read finds
+   * the workflow by this id and name only, reads exactly this run and version,
+   * and reports not-found if the item belongs to another owner
    */
   expectedOwner?: WorkflowDataPin;
   /**
@@ -164,14 +147,12 @@ export interface DataGetInput {
   canReadOwner?: (owner: DataOwnerInfo) => Promise<boolean>;
 }
 
-/** The model that owns a data item, as an authorization check sees it. */
 export interface DataOwnerInfo {
   modelType: string;
   modelId: string;
   modelName: string;
 }
 
-/** The workflow-scoped item a caller authorized. */
 export interface WorkflowDataPin {
   workflowId: string;
   workflowName: string;
@@ -181,7 +162,6 @@ export interface WorkflowDataPin {
   version: number;
 }
 
-/** Minimal data item shape from model-scoped lookup. */
 export interface DataItem {
   id: string;
   name: string;
@@ -207,37 +187,28 @@ export interface DataItem {
   checksum?: string;
 }
 
-/** Minimal workflow data item shape from workflow-scoped lookup. */
 export interface WorkflowDataItemInfo {
   data: DataItem;
   modelType: ModelType;
   modelId: string;
   modelName: string;
-  /** The job and step that produced the item; absent for workflow scope. */
   jobName?: string;
   stepName?: string;
   contentPath: string;
 }
 
-/**
- * The item a workflow-run lookup selected by name, and one item for each
- * other producer (job, step and model) whose data matched the name.
- */
 export interface WorkflowDataMatchInfo {
   item: WorkflowDataItemInfo;
   otherProducers: WorkflowDataItemInfo[];
 }
 
-/** Minimal workflow shape. */
 export interface WorkflowInfo {
   id: string;
   name: string;
 }
 
-/** Minimal workflow run shape. */
 export interface WorkflowRunInfo {
   id: string;
-  /** The workflow the run belongs to; scopes its data lookup to that run. */
   workflowId?: string;
   status?: string;
 }
@@ -247,13 +218,10 @@ export type DataGetEvent =
   | { kind: "completed"; data: DataGetData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the data get operation. */
 export interface DataGetDeps {
-  /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  /** Looks up by exact id only; required for a `byId` request. */
   lookupDefinitionById?: (
     id: string,
     expectedName?: string,
@@ -296,13 +264,12 @@ export interface DataGetDeps {
   ) => string;
   toRelativePath: (repoDir: string, absolutePath: string) => string;
   /**
-   * Where retention records how far it has reaped. With it a data item or
-   * run that is not found says what retention has reaped (swamp-club#3473).
+   * where retention records how far it has reaped; with it, a not-found data
+   * item or run says what retention has reaped
    */
   retentionWatermarks?: RetentionWatermarkRepository;
 }
 
-/** Wires real infrastructure into DataGetDeps. */
 export function createDataGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
@@ -313,9 +280,9 @@ export function createDataGetDeps(
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
-  // The injected data repository's lookup, so the run records and
-  // auto-definitions read here fail loudly, as its content does, on a record
-  // the v3 read model could not materialise (swamp-club#3617).
+  // use the injected data repository's lookup so run records and
+  // auto-definitions fail loudly, as its content does, on a record the v3 read
+  // model could not materialise
   const unreadableContent = injectedDataRepo?.unreadableContent;
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(
@@ -409,7 +376,6 @@ export function createDataGetDeps(
   };
 }
 
-/** Retrieves data by model or workflow scope. */
 export async function* dataGet(
   _ctx: LibSwampContext,
   deps: DataGetDeps,
@@ -423,7 +389,6 @@ export async function* dataGet(
 
       const { workflowName, modelIdOrName, dataName, version, repoDir } = input;
 
-      // Validate arguments
       if (workflowName && modelIdOrName && dataName) {
         yield {
           kind: "error",
@@ -467,10 +432,6 @@ export async function* dataGet(
   );
 }
 
-/**
- * Says what retention has reaped on a not-found data item (kind `data`) or
- * workflow run (kind `workflowRuns`). Other errors are returned unchanged.
- */
 async function withReapedDataHint(
   deps: DataGetDeps,
   error: SwampError,
@@ -491,18 +452,14 @@ async function withReapedDataHint(
   return error;
 }
 
-/** A workflow-scoped item, located but not yet read. */
 export interface WorkflowDataLocation {
   workflow: WorkflowInfo;
   run: WorkflowRunInfo;
   item: WorkflowDataItemInfo;
-  /** Other producers in the run whose data matched the name. */
   otherProducers: WorkflowDataItemInfo[];
 }
 
-/** What {@link resolveWorkflowData} locates by. */
 export interface WorkflowDataQuery {
-  /** The workflow's id, looked up by id only (with `workflowName`, both). */
   workflowId: string;
   workflowName?: string;
   runId?: string;
@@ -510,12 +467,6 @@ export interface WorkflowDataQuery {
   version?: number;
 }
 
-/**
- * Locates the item a workflow-scoped read would return — its workflow, run
- * and owner — without reading its content, so a caller can authorize the
- * owner first and then read exactly this item with
- * {@link DataGetInput.expectedOwner}.
- */
 export async function resolveWorkflowData(
   deps: DataGetDeps,
   query: WorkflowDataQuery,
@@ -843,12 +794,6 @@ async function* modelScopedGet(
   yield { kind: "completed", data: output };
 }
 
-/**
- * Builds the `swamp data query` command that reads the same item as a
- * `data get` read. Content that came back base64-encoded — binary, or text
- * that is not UTF-8 — or may (a non-text content type) is selected with its
- * `contentEncoding`, as `data get` reports it.
- */
 function replacementFor(
   data: DataItem,
   target: DataQueryTarget,
@@ -862,11 +807,6 @@ function replacementFor(
   });
 }
 
-/**
- * The deprecation notice a `data get` read carries, naming the query that
- * reads the same item. A read of the latest version is pinned to that
- * version, so the notice says how to follow later versions instead.
- */
 function deprecationWarning(
   query: string,
   readLatest: boolean,
@@ -885,12 +825,6 @@ function deprecationWarning(
     : notice;
 }
 
-/**
- * The query coordinates of a workflow-run item, from what the item itself
- * records — the catalog indexes those fields, not the run's. Step output
- * records its run, job and step. Report output records none, so it is named
- * by its owner's type and id, its data name and version instead.
- */
 function workflowQueryTarget(item: WorkflowDataItemInfo): DataQueryTarget {
   const owner = item.data.ownerDefinition;
   const target: DataQueryTarget = {
@@ -937,7 +871,6 @@ function latestRunCommand(
   );
 }
 
-/** Identifies the job, step and owning model that produced an item. */
 function producerKey(item: WorkflowDataItemInfo): string {
   return JSON.stringify([
     item.modelType.normalized,
@@ -947,10 +880,6 @@ function producerKey(item: WorkflowDataItemInfo): string {
   ]);
 }
 
-/**
- * The producers in `location`'s run, other than the selected item's, whose
- * data matches `dataName` under `version`.
- */
 async function producersBesides(
   deps: DataGetDeps,
   location: WorkflowDataLocation,
@@ -969,7 +898,6 @@ async function producersBesides(
   );
 }
 
-/** Names the producer of a workflow-run item for a warning. */
 function producerLabel(item: WorkflowDataItemInfo): string {
   if (item.jobName === undefined && item.stepName === undefined) {
     return item.modelName;
@@ -1000,10 +928,9 @@ async function isReadable(
 }
 
 /**
- * Notes that other producers in the run wrote data with the same name, so
- * the item returned is one of several (swamp-club#2948), with the query that
- * reads each of them. Only producers the caller may read are named or
- * counted.
+ * notes that other producers in the run wrote data with the same name, with the
+ * query that reads each; only producers the caller may read are named or
+ * counted
  */
 async function sharedNameNotice(
   location: WorkflowDataLocation,
@@ -1042,7 +969,6 @@ async function sharedNameNotice(
   };
 }
 
-/** Whether a located item is exactly the one a caller authorized. */
 function matchesPin(
   location: WorkflowDataLocation,
   pin: WorkflowDataPin,

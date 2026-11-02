@@ -18,17 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Resolving a run's data artifacts on a v3 datastore (swamp-club#3279).
- *
- * A version removed by `delete`, `data gc` or `prune` can be written again
- * on v3, and history compaction removes the commits that held the original,
- * so the live `name@version` a run record names may be another writer's
- * content. `resolveRunArtifact` (swamp-club#3258) decides whether it is the
- * run's: by the ref's `sha256` when it records one, else by the run that
- * wrote it or the time it was written. v2 never writes a version again and
- * takes no check.
- *
- * @module
+ * on v3 a removed version can be rewritten and compaction drops the original
+ * commits, so a run record's name@version may be another writer's;
+ * resolveRunArtifact decides by sha256, else by run or time
  */
 
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
@@ -37,7 +29,6 @@ import { resolveRunArtifact } from "../../domain/datastore_v3/run_artifact_resol
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { RunArtifactCheck } from "../../domain/data/workflow_data_service.ts";
 
-/** The SHA-256 of `content`, as lowercase hex. */
 export async function sha256Hex(content: Uint8Array): Promise<string> {
   const buffer = new Uint8Array(content).buffer;
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", buffer));
@@ -46,10 +37,6 @@ export async function sha256Hex(content: Uint8Array): Promise<string> {
   );
 }
 
-/**
- * The check a workflow run's artifacts go through on a v3 datastore;
- * undefined on v2.
- */
 export function v3RunArtifactCheck(
   datastoreResolver: DatastorePathResolver | undefined,
   dataRepo: Pick<UnifiedDataRepository, "getContent">,

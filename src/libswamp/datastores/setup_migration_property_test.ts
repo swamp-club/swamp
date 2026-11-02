@@ -32,7 +32,6 @@ import {
 } from "../../domain/datastore/datastore_migration_service.ts";
 import { createDatastoreSetupDeps } from "./setup.ts";
 
-/** A file under a datastore subdir: `subdir/dirs.../name`. */
 interface TreeFile {
   readonly subdir: string;
   readonly dirs: readonly string[];
@@ -42,7 +41,6 @@ interface TreeFile {
 
 const SUBDIRS = getDatastoreDirectories({ type: "filesystem", path: "/x" });
 
-// Directory and file names never collide, so any set of files is a tree.
 const arbFile: fc.Arbitrary<TreeFile> = fc.record({
   subdir: fc.constantFrom(...SUBDIRS),
   dirs: fc.array(fc.constantFrom("d1", "d2"), { maxLength: 2 }),
@@ -117,6 +115,5 @@ Deno.test("datastore setup migration: every file either moves intact or stays re
     }),
     { numRuns: 50 },
   );
-  // Both branches of the invariant were exercised.
   assert(seen.moved > 0 && seen.kept > 0, JSON.stringify(seen));
 });

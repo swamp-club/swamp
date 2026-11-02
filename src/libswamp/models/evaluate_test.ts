@@ -46,8 +46,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles
-      // yet. Temp dir is ephemeral, OS reclaims.
+      // best-effort: EBUSY can fire when V8 has not GC'd native sqlite handles
+      // yet
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -284,7 +284,6 @@ Deno.test("modelEvaluate: shows sensitive values masked and caches them as vault
   const deps = makeDeps({
     lookupDefinition: () =>
       Promise.resolve({ definition: evaluated, type: modelType }),
-    // Evaluation read the secret through data.latest, which records it.
     evaluateDefinition: (_definition, type, sensitiveValues) => {
       const sentinel = new VaultSecretBag(sensitiveValues.sentinels)
         .addDataReference(
@@ -623,10 +622,6 @@ Deno.test("modelEvaluate: persist leaves a rejected model unsaved, for one model
   assertEquals(saved, ["runnable"]);
 });
 
-/**
- * A stored definition whose env tag holds an expression, and the evaluated
- * definition evaluation makes of it, with the same id and name.
- */
 function storedAndEvaluated(name: string, stored: string, evaluated: string) {
   const source = Definition.create({ name, version: 1, tags: { env: stored } });
   const definition = Definition.fromData({
@@ -636,7 +631,6 @@ function storedAndEvaluated(name: string, stored: string, evaluated: string) {
   return { source, definition };
 }
 
-/** The items of an all-models evaluation, after asserting it completed. */
 async function evaluateAllItems(
   deps: ModelEvaluateDeps,
   input: Parameters<typeof modelEvaluate>[2],
@@ -655,7 +649,6 @@ async function evaluateAllItems(
 
 Deno.test("modelEvaluate: all decides persist on each stored definition, not its evaluated tags (swamp-club#4090)", async () => {
   const modelType = ModelType.create("aws/ec2");
-  // Stored refused, evaluated allowed; and stored allowed, evaluated refused.
   const planted = storedAndEvaluated("planted", "expr", "prod");
   const kept = storedAndEvaluated("kept", "prod", "expr");
   const saved: string[] = [];

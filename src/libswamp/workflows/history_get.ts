@@ -76,11 +76,9 @@ import {
 import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
 
 /**
- * The nested runs a run waits on, each with its status as read now, and
- * whether the run can resume: suspended, no gate of its own waiting, and
- * every nested run finished. A missing nested run or broken link does not
- * hold the run back: its resume fails that step. A nested run whose record
- * cannot be read does: its resume is refused.
+ * a missing nested run or broken link does not hold the run back (its resume
+ * fails that step); a nested run whose record cannot be read does (its resume
+ * is refused)
  */
 export async function nestedWaitView(
   deps: NestedRunLinkDeps,
@@ -123,10 +121,8 @@ export async function nestedWaitView(
 }
 
 /**
- * Adds, to each step still waiting for a signal, the receipt of a signal
- * that has settled its wait and that the next resume applies
- * (swamp-club#3110). The run record is not written: only a resume writes a
- * suspended run. A wait whose outcome cannot be read is left as open.
+ * the run record is not written, since only a resume writes a suspended run; a
+ * wait whose outcome cannot be read is left open
  */
 export async function showAcceptedSignals(
   signalWaits: SignalWaitSupport,
@@ -141,7 +137,6 @@ export async function showAcceptedSignals(
       try {
         const stored = await signalWaits.store.findOutcome(step.wait.id);
         if (stored.kind === "found" && stored.record.kind === "accepted") {
-          // As stored, heldAsPending included (swamp-club#3214).
           step.wait.receipt = { ...stored.record.receipt };
         }
       } catch {
@@ -156,35 +151,21 @@ export type WorkflowHistoryGetEvent =
   | { kind: "completed"; data: WorkflowRunView }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the workflow history get operation. */
 export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
   getRunPath: (workflowId: WorkflowId, runId: string) => string;
   /**
-   * Reads the nested runs a run's steps wait on, to derive whether it can
-   * resume (swamp-club#2736). Without it, nested waits are not resolved.
+   * reads the nested runs a run's steps wait on, to derive whether it can
+   * resume; without it nested waits are not resolved
    */
   nestedLink?: NestedRunLinkDeps;
-  /**
-   * Where signal wait records are kept. With it a waiting step shows the
-   * receipt of a signal delivered since the run suspended.
-   */
   signalWaits?: SignalWaitSupport;
-  /**
-   * Reads a run's step outputs back from the datastore, stopping once
-   * `signal` aborts.
-   */
   resolveStepOutputs: (
     run: WorkflowRun,
     signal?: AbortSignal,
   ) => Promise<RunStepOutputs>;
-  /**
-   * Where retention records how far it has reaped. With it a run that is not
-   * found says that runs before the cutoff have been reaped (swamp-club#3473).
-   */
   retentionWatermarks?: RetentionWatermarkRepository;
 }
 
-/** Options for {@link workflowHistoryGet}. */
 export interface WorkflowHistoryGetOptions {
   /**
    * Resolve step outputs and data attributes from the datastore. Leave unset
@@ -197,17 +178,16 @@ export interface WorkflowHistoryGetOptions {
    */
   reference?: RunReference;
   /**
-   * Stops resolving step outputs once it aborts: the read then fails with
-   * its reason (swamp-club#3968).
+   * stops resolving step outputs once it aborts; the read then fails with its
+   * reason
    */
   signal?: AbortSignal;
 }
 
 /**
- * Wires real infrastructure into WorkflowHistoryGetDeps. `canRead` limits
- * which resources' attributes may appear in step outputs; serve passes the
- * principal's data-read decision. Sensitive fields are shown as stored,
- * never resolved from their vault.
+ * canRead limits which resources' attributes may appear in step outputs (serve
+ * passes the principal's data-read decision); sensitive fields are shown as
+ * stored, never resolved from their vault
  */
 export function createWorkflowHistoryGetDeps(
   repoDir: string,
@@ -216,8 +196,8 @@ export function createWorkflowHistoryGetDeps(
   canRead?: ResourceReadPolicy,
   signalWaits?: SignalWaitSupport,
   /**
-   * The repository context's lookup, so a run record or step output the
-   * v3 read model could not materialise fails loudly (swamp-club#3617).
+   * the repository context's lookup, so a run record or step output the v3 read
+   * model could not materialise fails loudly
    */
   unreadableContent?: UnreadableContentLookup,
   /**
@@ -251,8 +231,6 @@ export function createWorkflowHistoryGetDeps(
     findLatestRun: (workflowId) => runRepo.findLatestByWorkflowId(workflowId),
     getRunPath: (workflowId, runId) =>
       runRepo.getPath(workflowId, createWorkflowRunId(runId)),
-    // Exported as the step_outputs diagnostic area's phases
-    // (design/enablers/serve-phase-telemetry.md); they observe only.
     resolveStepOutputs: (run, signal) =>
       withDiagnosticArea("step_outputs", async () => {
         // Opened per call: only callers that render outputs pay for it.
@@ -280,7 +258,6 @@ export function createWorkflowHistoryGetDeps(
           throw error;
         }
         try {
-          // Counted for the step outputs span (swamp-club#3741).
           let resourcesRead = 0;
           let resourcesDenied = 0;
           let childRunsRead = 0;
@@ -379,7 +356,6 @@ export function createWorkflowHistoryGetDeps(
   };
 }
 
-/** Retrieves a specific run by ID or the latest run for a workflow. */
 export async function* workflowHistoryGet(
   _ctx: LibSwampContext,
   deps: WorkflowHistoryGetDeps,
@@ -467,7 +443,6 @@ export async function* workflowHistoryGet(
       const data = toRunData(run, path, undefined, stepOutputs);
       const nestedLink = deps.nestedLink;
       if (nestedLink) {
-        // Only a run with nested waits reads anything here.
         const view = () => nestedWaitView(nestedLink, run);
         Object.assign(
           data,

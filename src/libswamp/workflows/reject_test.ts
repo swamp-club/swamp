@@ -68,11 +68,6 @@ function suspendAtGate(workflow: Workflow): WorkflowRun {
   return run;
 }
 
-/**
- * Deps holding `target` and an impostor workflow named with `target`'s id,
- * each with its own suspended run, and recording which workflow's run was
- * saved.
- */
 function makeCollidingDeps(): {
   deps: WorkflowRejectDeps;
   target: Workflow;
@@ -178,10 +173,6 @@ Deno.test("workflowReject: byId does not fall back to a name lookup", async () =
   }
 });
 
-/**
- * Two parallel jobs, each suspended at its own gate, as in swamp-club#2899:
- * rejecting one gate fails the run and settles the other gate.
- */
 function suspendAtParallelGates(): { workflow: Workflow; run: WorkflowRun } {
   const workflow = Workflow.create({
     name: "parallel",
@@ -254,7 +245,6 @@ Deno.test("workflowReject: a run failed by a rejected parallel gate names --from
   );
 });
 
-/** A gate, and a model step that runs once the gate succeeds. */
 function gatedJob(name: string, gateName: string, after: string): Job {
   return Job.create({
     name,
@@ -275,10 +265,6 @@ function gatedJob(name: string, gateName: string, after: string): Job {
   });
 }
 
-/**
- * The workflow of swamp-club#2905: two parallel gated jobs and a teardown
- * job that always follows `main`.
- */
 function issueWorkflow(mainJobName = "main"): Workflow {
   return Workflow.create({
     name: "e2e-wf",
@@ -296,7 +282,6 @@ function issueWorkflow(mainJobName = "main"): Workflow {
   });
 }
 
-/** The run of `workflow`, suspended with both gates waiting. */
 function suspendAtBothGates(
   workflow: Workflow,
   options: { snapshot?: boolean } = {},

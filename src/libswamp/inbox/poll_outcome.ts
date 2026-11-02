@@ -25,12 +25,9 @@ import {
 } from "../../domain/inbox/inbox_state.ts";
 
 /**
- * Translates the HTTP client's summary result into the domain's poll outcome.
- * Values the cache could not store are dropped here, so whatever the poll
- * keeps also loads. `sentAt` is when the request was sent: it orders the
- * snapshot against one fetched by another command, and the send time, not
- * the arrival, is what places a poll sent before a mark-read before the
- * refresh that follows it.
+ * values the cache could not store are dropped so whatever the poll keeps also
+ * loads; sentAt (send time, not arrival) orders the snapshot against other
+ * commands' fetches
  */
 export function toPollOutcome(
   result: InboxSummaryResult,

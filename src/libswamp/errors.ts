@@ -25,25 +25,17 @@ import {
   wordedText,
 } from "../domain/behavior_wording.ts";
 
-/** Structured error returned in event streams. */
 export interface SwampError {
-  /** Machine-readable error code (e.g., "not_authenticated", "cancelled"). */
   readonly code: string;
-  /** Human-readable error message. */
   readonly message: string;
-  /** Original exception for stack traces (e.g., network errors, AbortError). */
   readonly cause?: Error;
-  /** Additional structured data about the error. */
   readonly details?: unknown;
 }
 
 /**
- * True when a value is a thrown `SwampError`. Some libswamp functions throw a
- * `SwampError` (a plain object) rather than an `Error`, so a catch block that
- * reads `error.message` must check for it first. This is a shape check, not a
- * brand check. `Error` instances are excluded even when they carry a string
- * `code` (Deno's `ENOENT`, SDK errors such as Azure's `RestError`), so
- * provider errors keep their own handling.
+ * some libswamp functions throw a SwampError (a plain object) rather than an
+ * Error; this is a shape check, and Error instances are excluded even with a
+ * string code, so provider errors keep their own handling
  */
 export function isSwampError(value: unknown): value is SwampError {
   return typeof value === "object" && value !== null &&
@@ -59,10 +51,7 @@ export function notAuthenticated(): SwampError {
   };
 }
 
-/**
- * Stored credentials that hold identity but no key: an auth.json left by a
- * version that cached an API-key run's identity there.
- */
+/** stored credentials that hold identity but no key */
 export function noStoredLoginKey(): SwampError {
   return {
     code: "not_authenticated",
@@ -98,10 +87,6 @@ export function notFound(entityType: string, idOrName: string): SwampError {
   };
 }
 
-/**
- * A SwampError whose message is `worded`, carrying its model spelling for
- * `swamp model …` (swamp-club#3437).
- */
 export function wordedSwampError(
   code: string,
   worded: WordedText,
@@ -113,7 +98,6 @@ export function wordedSwampError(
   return markModelWording(error, worded.modelText);
 }
 
-/** `Behavior not found: <id>`, or `Model not found: <id>` under `swamp model`. */
 export function behaviorNotFound(idOrName: string): SwampError {
   return wordedSwampError(
     "not_found",
@@ -122,7 +106,6 @@ export function behaviorNotFound(idOrName: string): SwampError {
   );
 }
 
-/** `Behavior type not found: <type>`, or the model spelling. */
 export function behaviorTypeNotFound(type: string): SwampError {
   return wordedSwampError(
     "not_found",
@@ -158,9 +141,8 @@ export function validationFailed(
 }
 
 /**
- * Converts a stream's SwampError into the UserError a CLI command throws,
- * keeping its message and code. Paths marked on the SwampError's cause carry
- * over, so telemetry can still remove them exactly (swamp-club#2830).
+ * paths marked on the SwampError's cause carry over, so telemetry can still
+ * remove them exactly
  */
 export function userErrorFromSwampError(error: SwampError): UserError {
   return carryModelWording(

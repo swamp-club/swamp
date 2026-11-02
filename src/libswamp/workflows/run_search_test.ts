@@ -63,10 +63,6 @@ function makeRun(overrides: {
   };
 }
 
-/**
- * Deps over fixed runs. `findAllRunsByWorkflowId` gives a workflow's runs,
- * which `runIndexOf` serves as that workflow's snapshot.
- */
 function makeDeps(
   overrides: Partial<WorkflowRunSearchDeps> & {
     findAllRunsByWorkflowId?: (id: string) => Promise<WorkflowRunSummary[]>;
@@ -135,7 +131,6 @@ Deno.test("workflowRunSearch: returns all runs sorted by startedAt desc", async 
   >;
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.results.length, 3);
-  // Most recent first
   assertEquals(completed.data.results[0].runId, "run-1");
   assertEquals(completed.data.results[1].runId, "run-3");
   assertEquals(completed.data.results[2].runId, "run-2");
@@ -185,7 +180,6 @@ Deno.test("workflowRunSearch: a bucket status filter matches the whole bucket", 
 
   assertEquals(await ids("failed"), ["run-failed", "run-interrupted"]);
   assertEquals(await ids("RUNNING"), ["run-running", "run-pending"]);
-  // Any other status still matches exactly.
   assertEquals(await ids("interrupted"), ["run-interrupted"]);
   assertEquals(await ids("pending"), ["run-pending"]);
 });
@@ -371,8 +365,6 @@ Deno.test("workflowRunSearch: surfaces awaitingResume and workflowHasInputs", as
   assertEquals(gated?.workflowHasInputs, undefined);
 });
 
-// ── until / workflows / triggerSource filters ───────────────────────────
-
 function completedRunIds(events: WorkflowRunSearchEvent[]): string[] {
   const completed = events.find((e) => e.kind === "completed") as Extract<
     WorkflowRunSearchEvent,
@@ -387,7 +379,6 @@ Deno.test("workflowRunSearch: until keeps runs started before an ISO time, exclu
       until: new Date(now - 3000).toISOString(),
     }),
   );
-  // run-3 started exactly at the bound and is left out.
   assertEquals(completedRunIds(events), ["run-2"]);
 });
 
@@ -425,7 +416,6 @@ Deno.test("workflowRunSearch: with since, echoes it as ISO and the oldest match'
   assertEquals(completed.data.results.map((r) => r.runId), ["run-1"]);
   assertEquals(completed.total, 3);
   assertEquals(completed.since, since);
-  // run-2, the oldest of the three matches, is not on the page.
   assertEquals(
     completed.oldestStartedAt,
     new Date(now - 5000).toISOString(),
@@ -567,7 +557,6 @@ Deno.test("workflowRunSearch: statuses keeps runs with any of them, by bucket", 
       statuses: ["FAILED", "running"],
     }),
   );
-  // "failed" also keeps interrupted runs.
   assertEquals(completedRunIds(events), ["fail-hook", "int-api", "run-cli"]);
 });
 
@@ -634,7 +623,6 @@ Deno.test("workflowRunSearch: a fractional offset and limit cut the page as slic
     WorkflowRunSearchEvent,
     { kind: "completed" }
   >;
-  // Newest first: run-1, run-3, run-2; slice(1.5, 3.5) is slice(1, 3).
   assertEquals(completed.data.results.map((r) => r.runId), ["run-3", "run-2"]);
   assertEquals(completed.total, 3);
 });
@@ -669,7 +657,6 @@ Deno.test("workflowRunSearch: no reaped marker without a runs watermark", async 
 });
 
 Deno.test("workflowRunSearch: records the run selection as a child span with its counts", async () => {
-  // "test" is refused: its one run is scanned but not matched.
   const deps = makeDeps({
     isReadable: (_id, name) => Promise.resolve(name !== "test"),
   });

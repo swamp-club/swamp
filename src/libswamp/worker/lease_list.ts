@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * List the step leases that occupy worker dispatch slots: the leases behind
- * a set of active dispatch ids, plus leases recently written (and so
- * recently ended). Read-only over the records DispatchService writes.
- */
-
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
@@ -36,7 +30,6 @@ import {
   StepLeaseSchema,
 } from "../../domain/models/worker/step_lease_model.ts";
 
-/** One step lease occupying, or recently occupying, a worker slot. */
 export interface WorkerLeaseListItem {
   leaseId: string;
   dispatchId: string;
@@ -63,9 +56,7 @@ export type WorkerLeaseListEvent =
   | { kind: "error"; error: SwampError };
 
 export interface WorkerLeaseListOptions {
-  /** Dispatch ids whose leases to return; a lease is named by its dispatch id. */
   dispatchIds?: readonly string[];
-  /** Also return leases whose latest version was written this recently. */
   endedWithinMs?: number;
 }
 
@@ -92,12 +83,9 @@ export function createWorkerLeaseListDeps(
 }
 
 /**
- * Builds the catalog predicate. Every term is metadata (type, instance,
- * namespace, name, version time). The data query service loads attributes
- * lazily, only for rows that match (swamp-club#2122), so this stays cheap
- * even with `loadAttributes: true`; if that loading turned eager, this query
- * would read every lease kept for the GC window. Values are JSON-quoted,
- * never spliced in raw.
+ * every term is metadata, so the query stays cheap only while the data query
+ * service loads attributes lazily for matching rows; values are JSON-quoted,
+ * never spliced in raw
  */
 export function leaseListPredicate(
   namespace: string,

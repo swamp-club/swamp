@@ -67,7 +67,6 @@ import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
-/** Subdirectories of a per-extension subtree, paired with their kind. */
 const KIND_DIRS = [
   "models",
   "vaults",
@@ -79,46 +78,9 @@ const KIND_DIRS = [
 type KindDir = typeof KIND_DIRS[number];
 
 /**
- * W2 lifecycle service for installing a single extension. **Owns the
- * catalog write surface** end-to-end:
- *
- * 1. Filesystem mutations (download + extract + copy to per-extension
- *    subtree)
- * 2. Lockfile write (`upstream_extensions.json`)
- * 3. Catalog write (`repository.save(extension)` — synchronous type
- *    extraction via each loader's `bundleAndIndexOne`, then save)
- *
- * **Asymmetric ordering with `RemoveExtensionService`.** Install is
- * filesystem → lockfile → catalog. Remove is the inverse. Pinned in
- * plan v4 challenge #3.
- *
- * **I-Repo-1 fires at install time.** Phase 8 builds the
- * `Extension` aggregate from the just-extracted on-disk subtree
- * (calling each loader's `bundleAndIndexOne` per source file) and
- * commits via `repository.save(extension)`. Cross-extension
- * `(kind, typeNormalized)` collision raises `DuplicateTypeError`
- * synchronously — the user-visible payoff for W2.
- *
- * **Commit or rollback after the catalog save.** Phase 8 receives the
- * install uncommitted ({@link PendingInstall}): the previous versions
- * of the extension and its dependencies are still kept aside. SQLite
- * ROLLBACK does not undo filesystem mutations, so on `DuplicateTypeError`
- * the service rolls the install back (lockfile entries restored, then
- * every root moved back) before propagating a {@link UserError} that
- * names both conflicting extensions; an upgrade that collides leaves
- * the previous version installed (swamp-club#2724). Any other outcome
- * commits. Plan v4 calls the collision case "expensive miss #2".
- *
- * **Snapshot semantics inherited from `InstallContext`.** The
- * `lockfileRepository` on the context captures a snapshot at
- * construction. Single-use only — see {@link InstallContext} JSDoc.
- * installExtension refreshes it under the pulled-extensions lock, and
- * the prior entries a rollback restores are read after that refresh.
- *
- * **W4-inherits.** When the unified loader (KindAdapter) lands in W4,
- * the per-loader `bundleAndIndexOne` calls in `buildExtensionFromDisk`
- * collapse to a single dispatch. The service shape is W4-stable;
- * loaders are the deletion surface.
+ * install is filesystem, lockfile, catalog; remove is the inverse. SQLite
+ * rollback does not undo filesystem changes, so on DuplicateTypeError the
+ * service restores lockfile entries and moves roots back
  */
 export class InstallExtensionService {
   private readonly denoRuntime: DenoRuntime;
@@ -130,21 +92,13 @@ export class InstallExtensionService {
     denoRuntime: DenoRuntime;
     repository: ExtensionRepository;
     /**
-     * Test seam — defaults to the real {@link installExtension} from
-     * `pull.ts`. Tests inject a stub that returns a hand-built
-     * {@link InstallResult} so phase 8 can be exercised against a
-     * pre-staged on-disk subtree without driving a real registry,
-     * tarball, or filesystem write. Production callers always omit
-     * this. A stub must call `options.underLock` with its result, or
-     * phase 8 does not run: use `stubInstallExtension` from
-     * `install_test_helpers.ts`.
+     * a stub must call options.underLock with its result, or phase 8 does not
+     * run: use stubInstallExtension from install_test_helpers.ts
      */
     installExtensionFn?: InstallExtensionFn;
     /**
-     * Indexes the installed sources by probing their bundles in isolation
-     * instead of importing them into this isolate (swamp-club#3374).
-     * Released once every installed extension has been indexed: the root
-     * and its dependencies are indexed concurrently and share it.
+     * released once every installed extension has been indexed: the root and
+     * its dependencies are indexed concurrently and share it
      */
     bundleProber?: BundleProber;
   }) {
@@ -155,37 +109,27 @@ export class InstallExtensionService {
   }
 
   /**
-   * Installs `ref` using `ctx`. Returns the {@link InstallResult} on a
-   * fresh install, or `undefined` when the install short-circuited
-   * (alreadyPulled).
-   *
-   * Throws `ConflictError` from filesystem-conflict detection when
-   * `ctx.force` is false. Throws {@link DuplicateTypeUserError} (mapped
-   * from {@link DuplicateTypeError}) when the catalog save detects a
-   * cross-extension type collision, after rolling the install back to
-   * the previous versions; its `rollback` says how that ended.
+   * throws ConflictError on a filesystem conflict when ctx.force is false, and
+   * DuplicateTypeUserError on a cross-extension type collision after rolling
+   * back to the previous versions
    */
   async execute(
     ref: ExtensionRef,
     ctx: InstallContext,
   ): Promise<InstallResult | undefined> {
-    // Phases 1-7: download → extract → stage and swap → lockfile write,
-    // then phase 8 in the underLock hook. installExtension runs apply
-    // and the hook in one pulled-extensions lock section, so the catalog
-    // save and the commit or rollback cannot interleave with another
-    // install or removal on this checkout (swamp-club#2709). Deps recurse
-    // inside apply, land in the same section, and are part of `pending`.
+    // installExtension runs apply and the phase 8 hook in one pulled-extensions
+    // lock section, so catalog save and commit or rollback cannot interleave
+    // with another install or removal; deps recurse in apply
     return await this.installExtensionFn(ref, ctx, {
       underLock: (pending) => this.indexInstalled(ref, pending, ctx),
     });
   }
 
   /**
-   * Phase 8, under the lock, with the install still uncommitted: the
-   * previous versions are kept until the catalog save decides. Commits
-   * on success; rolls back on a type collision, so an upgrade that
-   * collides leaves the previous version installed; commits and
-   * reports the half-state on any other fault.
+   * previous versions are kept until the catalog save decides: commits on
+   * success, rolls back on a type collision so an upgrade that collides keeps
+   * the previous version, and commits and reports the half-state on any other
+   * fault
    */
   private async indexInstalled(
     ref: ExtensionRef,
@@ -193,29 +137,16 @@ export class InstallExtensionService {
     ctx: InstallContext,
   ): Promise<void> {
     const result = pending.result;
-    // Phase 8: build Extension aggregates for top-level + each freshly-
-    // installed dep. **Atomic upgrade pattern** — for each new
-    // extension, tombstone any existing aggregates with the SAME name
-    // but a DIFFERENT version, so the saveAll commits in one SQLite
-    // transaction:
-    //   saveAll([tombstoneAll(v1), v2])
-    // I-Repo-1 then evaluates against the post-save state where only
-    // the new version holds the type. Without this, force-pulling an
-    // already-installed extension (or any version-bump pull) would
-    // fail with DuplicateTypeError even though the only "conflict" is
-    // the user's own prior version. Re-installs of the same version
-    // skip the tombstone — the diff-save in saveAll handles
-    // overwrite semantics.
-    //
-    // On DuplicateTypeError (genuine cross-extension collision —
-    // not the v1→v2 case), roll the entire set back.
+    // for each new extension, tombstone aggregates of the same name and a
+    // different version so one saveAll transaction replaces it; otherwise a
+    // version bump hits DuplicateTypeError against the prior version
     try {
       const installedResults = flattenInstallResults(result);
       let newExtensions: Extension[];
       try {
-        // Settled, not raced: a branch still indexing after another failed
+        // settled, not raced: a branch still indexing after another failed
         // would probe again after the release below and leave a probe host
-        // running (swamp-club#3374).
+        // running
         const settled = await Promise.allSettled(
           installedResults.map((r) =>
             this.buildExtensionFromDisk(r, ctx.repoDir)
@@ -274,14 +205,9 @@ export class InstallExtensionService {
         const ghostRow = await isGhostRow(error);
         throw mapDuplicateTypeErrorToUserError(error, ghostRow, rollback);
       }
-      // Half-state from any other fault during phase 8, bundling
-      // included: the install commits, so files + lockfile entry hold
-      // the new version while the catalog does not (see crash-state
-      // recovery posture in design/primitives/extensions.md). A source
-      // that fails to bundle on this machine must not block installing
-      // the rest. Surface a UserError with the pinned recovery message so
-      // log-mode shows a clean single-line guidance instead of a stack
-      // trace.
+      // half-state from any other fault: the install commits, so files and
+      // lockfile hold the new version while the catalog does not; a source that
+      // fails to bundle here must not block installing the rest
       await pending.commit();
       if (error instanceof UserError) throw error;
       throw new UserError(
@@ -295,14 +221,6 @@ export class InstallExtensionService {
     await pending.commit();
   }
 
-  /**
-   * Walks the per-extension subtree on disk and builds an
-   * {@link Extension} aggregate whose Sources are in `Indexed` state
-   * with `(kind, typeNormalized, bundlePath)` populated. Each source
-   * file is bundled and type-extracted via the appropriate loader's
-   * `bundleAndIndexOne` (Pin 1 contract: NO catalog writes from the
-   * loader; the lifecycle service is the catalog-write owner).
-   */
   private async buildExtensionFromDisk(
     result: InstallResult,
     repoDir: string,
@@ -315,10 +233,9 @@ export class InstallExtensionService {
     const sources: ReturnType<typeof makeSource>[] = [];
     const dependencyIssues: BundleDependencyIssue[] = [];
 
-    // A source that fails for any other reason does not stop the rest:
-    // each must still be rebuilt and scanned, or a failure ahead of it
-    // would let it be committed unscanned. The first failure is thrown
-    // once every source has been tried; a refusal is thrown at once.
+    // a source that fails for any other reason does not stop the rest, or a
+    // later source could be committed unscanned; the first failure is thrown
+    // once every source has been tried, a refusal at once
     let failure: { error: unknown } | undefined;
     for (const kindDir of KIND_DIRS) {
       const dir = join(extRoot, kindDir);
@@ -331,14 +248,12 @@ export class InstallExtensionService {
             absolutePath,
             relativePath,
             baseDir: dir,
-            // The archive's bundle, which pull scanned and checked against
-            // its record, runs as `extension install` runs it; the loader
-            // rebuilds a source the archive has no bundle for
-            // (swamp-club#3972).
+            // the archive's bundle, which pull scanned and checked against its
+            // record, runs as extension install runs it; the loader rebuilds a
+            // source the archive has no bundle for
             trustPulledCache,
-            // A bundle built here runs, not the archive's: scan it before
-            // it is imported (swamp-club#3383). The archive's own bundle
-            // is not passed here.
+            // a bundle built here runs, not the archive's: scan it before it is
+            // imported
             checkBundle: async (js, bundlePath) => {
               const name = `bundle rebuilt from ${
                 relative(extRoot, absolutePath).split(SEPARATOR).join("/")
@@ -348,10 +263,9 @@ export class InstallExtensionService {
                   isUnderPulledExtensions(path, effectivePulledRoot),
               });
               if (scanned.errors.length > 0) {
-                // The loader has written it; a bundle dir the archive had
-                // nothing for is not staged, so the rollback would leave it.
-                // A failed removal must not replace the refusal, which is
-                // what rolls the install back; the refusal names the file.
+                // a bundle dir the archive had nothing for is not staged, so
+                // the rollback would leave it; a failed removal must not
+                // replace the refusal, which is what rolls the install back
                 const leftBehind = bundlePath === "" ? [] : await Deno.remove(
                   bundlePath,
                 ).then(
@@ -431,11 +345,6 @@ export class InstallExtensionService {
     });
   }
 
-  /**
-   * Constructs the loader for a given kind directory. Each loader is
-   * stateless w.r.t. `bundleAndIndexOne` (no catalog write — Pin 1) so
-   * constructing fresh per call is cheap.
-   */
   private makeLoaderForKind(
     kindDir: KindDir,
     repoDir: string,
@@ -519,12 +428,9 @@ export class InstallExtensionService {
 }
 
 /**
- * Whether a module path in a bundle built on this machine is under a
- * pulled-extensions root, so installed extension code: the install path is
- * this machine's, which no archive chooses. esbuild writes the path relative
- * to the working directory or its output file, so the path is matched by its
- * `pulled-extensions` segment, and also resolved against the working
- * directory, which may itself be inside the root.
+ * the install path is this machine's, which no archive chooses; esbuild paths
+ * are relative to the cwd or output file, so match the pulled-extensions
+ * segment and also resolve against the cwd
  */
 function isUnderPulledExtensions(path: string, pulledRoot: string): boolean {
   if (/(?:^|\/)pulled-extensions\//.test(path.replaceAll("\\", "/"))) {
@@ -535,10 +441,6 @@ function isUnderPulledExtensions(path: string, pulledRoot: string): boolean {
     !isAbsolute(fromRoot);
 }
 
-/**
- * The error for an install refused because a bundle built during it holds
- * a safety error, saying how undoing the install ended.
- */
 function bundleRefusalError(
   name: string,
   refusal: BundleSafetyRefusal,
@@ -568,11 +470,6 @@ function bundleRefusalError(
   );
 }
 
-/**
- * Flattens an {@link InstallResult} tree into a depth-first list:
- * `[topLevel, ...deps, ...transitiveDeps]`. Used to drive phase 8
- * across the entire install operation atomically.
- */
 function flattenInstallResults(result: InstallResult): InstallResult[] {
   const out: InstallResult[] = [result];
   for (const dep of result.dependencyResults) {
@@ -581,12 +478,6 @@ function flattenInstallResults(result: InstallResult): InstallResult[] {
   return out;
 }
 
-/**
- * Collects every `.ts` file under `dir` recursively. Returns absolute
- * paths. Returns `[]` when `dir` doesn't exist (the per-extension
- * subtree may not include every kind directory). Skips `_`-prefixed
- * directories (private helpers convention).
- */
 async function collectTsFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   try {
@@ -609,14 +500,9 @@ async function collectTsFiles(dir: string): Promise<string[]> {
 }
 
 /**
- * Wraps a {@link DuplicateTypeError} in a
- * {@link DuplicateTypeUserError} so the top-level CLI error handler
- * renders a clean single-line message in log mode AND emits the
- * pinned JSON shape in JSON mode (plan v4 step 11). Both source paths
- * are named — the W2 user-visible payoff that replaces W1b's silent
- * first-wins. The repository reports the occupant already in the
- * catalog as `firstSource` and the one being installed as
- * `secondSource`, so they map to `existing` and `conflicting`.
+ * the repository reports the occupant already in the catalog as firstSource and
+ * the one being installed as secondSource, which map to existing and
+ * conflicting
  */
 function mapDuplicateTypeErrorToUserError(
   error: DuplicateTypeError,
@@ -634,13 +520,9 @@ function mapDuplicateTypeErrorToUserError(
 }
 
 async function isGhostRow(error: DuplicateTypeError): Promise<boolean> {
-  // Only check firstSource, which the repository reports as the
-  // pre-existing catalog occupant when the other side is being saved.
-  // secondSource is then the extension being installed — its new files
-  // are gone after the rollback, so it can never be a meaningful
-  // ghost-row signal. When both sides are in the same save
-  // (e.g. two dependencies of one install), the order is catalog order
-  // and firstSource may be an incoming extension.
+  // only firstSource is checked: it is the pre-existing catalog occupant, while
+  // secondSource is the extension being installed, whose files are gone after
+  // rollback; in one save the order is catalog order
   try {
     await Deno.stat(error.firstSource.canonicalPath);
   } catch (e) {

@@ -18,17 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Model-based property of automatic retention (swamp-club#3473), over the
- * real collectors and the real filesystem repositories: whatever the items,
- * retention per kind, batch size, and passes cut short in between, once a
- * pass completes
- *
- * (i) no deletable item older than its kind's cutoff remains, and
- * (ii) every item newer than its cutoff, every unfinished run and output,
- *      and every exempt data version remains.
- *
- * Ages sit half a day off any whole-day retention, so the few seconds a run
- * takes never move an item across its cutoff.
+ * ages sit half a day off any whole-day retention, so the few seconds a run
+ * takes never move an item across its cutoff
  */
 
 import "../../domain/models/models.ts";
@@ -89,7 +80,6 @@ const arbOutput = fc.record({
 });
 
 const arbDataName = fc.record({
-  // Half the names are exempt access or serve state.
   type: fc.oneof(
     fc.constantFrom(...DATA_TYPES),
     fc.constantFrom(...EXEMPT_TYPES),
