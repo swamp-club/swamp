@@ -722,10 +722,8 @@ export class ModelRegistry {
   }
 
   /**
-   * re-checks extension sources and swaps changed types for long-lived
-   * processes. Passes never overlap: a call waits for the next pass, which
-   * starts after it, and calls during one pass share that next pass, which is
-   * forced when any of them asked for force.
+   * swaps changed types for long-lived processes. Passes never overlap: calls
+   * during one pass share the next one, which is forced if any caller forced.
    */
   refreshSources(
     schedule: (pass: () => Promise<void>) => Promise<void> = (pass) => pass(),
