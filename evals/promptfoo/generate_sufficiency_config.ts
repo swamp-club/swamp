@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Generates a promptfoo configuration for testing guide sufficiency.
- * Given a user query and ONLY the short guide.md content, can the model
- * answer from the guide alone or does it need reference.md?
- *
- * Two tools are offered: answer_from_guide and need_reference. The eval
- * asserts the correct tool is called based on the answerable_from_guide flag.
- *
- * Usage: deno run --allow-read generate_sufficiency_config.ts [--model <alias>]
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -99,9 +89,8 @@ const GUIDE_DIRS: Record<string, string> = {
 };
 
 /**
- * Guides quote swamp's own `{{ ... }}` expressions (vault.get, for one), which
- * promptfoo renders as template code and rejects, erroring those cases. A raw
- * block makes it pass the text through untouched.
+ * guides quote swamp's own {{ ... }} expressions, which promptfoo would render
+ * as template code; a raw block passes the text through untouched
  */
 function rawBlock(text: string): string {
   return `{% raw %}${text}{% endraw %}`;
@@ -164,14 +153,12 @@ export async function generateConfig(
 
   const skillsDir = join(Deno.cwd(), ".claude", "skills", "swamp");
 
-  // Read guide.md content for each guide topic
   const guideContents: Record<string, string> = {};
   for (const [topic, dir] of Object.entries(GUIDE_DIRS)) {
     const guidePath = join(skillsDir, dir, "guide.md");
     guideContents[topic] = await Deno.readTextFile(guidePath);
   }
 
-  // Build tools
   const tools: PromptfooTool[] = [
     {
       type: "function",
@@ -211,12 +198,10 @@ export async function generateConfig(
     },
   ];
 
-  // Read sufficiency evals
   const evalPath = join(skillsDir, "evals", "guide_sufficiency_evals.json");
   const evalContent = await Deno.readTextFile(evalPath);
   const evals: SufficiencyEval[] = JSON.parse(evalContent);
 
-  // Validate all guide references
   const unknownGuides = evals
     .map((e) => e.guide)
     .filter((g) => !(g in GUIDE_DIRS));
@@ -231,7 +216,6 @@ export async function generateConfig(
     Deno.exit(1);
   }
 
-  // Generate test cases
   const tests: PromptfooTest[] = evals.map((item) => {
     const expectedTool = item.answerable_from_guide
       ? "answer_from_guide"
