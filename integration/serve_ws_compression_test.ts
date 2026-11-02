@@ -112,3 +112,70 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "serve frame limit: an over-limit reply fails one request and the socket stays open for the next",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const request = JSON.parse(event.data as string);
+          send(socket, {
+            type: "workflow.search",
+            id: request.id,
+            payload: {
+              data: {
+                query: request.id === "huge"
+                  ? "x".repeat(64 * 1024 * 1024)
+                  : "",
+                results: [],
+              },
+            },
+          });
+        };
+        return response;
+      },
+    );
+    const socket = new WebSocket(`ws://127.0.0.1:${server.addr.port}`);
+    try {
+      const replies: Record<string, unknown>[] = [];
+      const closed = Promise.withResolvers<void>();
+      const received = Promise.withResolvers<void>();
+      socket.onclose = () => closed.resolve();
+      socket.onmessage = (event) => {
+        replies.push(JSON.parse(event.data as string));
+        if (replies.length === 1) {
+          socket.send(JSON.stringify({ type: "workflow.search", id: "small" }));
+        } else {
+          received.resolve();
+        }
+      };
+      socket.onopen = () =>
+        socket.send(JSON.stringify({ type: "workflow.search", id: "huge" }));
+      await Promise.race([
+        received.promise,
+        closed.promise.then(() => {
+          throw new Error("the socket closed");
+        }),
+      ]);
+
+      assertEquals(replies.map((reply) => [reply.type, reply.id]), [
+        ["error", "huge"],
+        ["workflow.search", "small"],
+      ]);
+      assertEquals(
+        (replies[0].error as { code: string }).code,
+        "frame_too_large",
+      );
+      assertEquals(socket.readyState, WebSocket.OPEN);
+    } finally {
+      socket.close();
+      await server.shutdown();
+    }
+  },
+});

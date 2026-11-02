@@ -72,6 +72,7 @@ import {
   isServerFailureCode,
   LibSwampStreamError,
   listTokenSessions,
+  markUncappedSocket,
   MAX_STREAM_SESSIONS_PER_PRINCIPAL,
   MAX_STREAM_SESSIONS_PER_TOKEN,
   paginate,
@@ -85,6 +86,7 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  sendSerialized,
   sendTraced,
   setConnectionCollectives,
   setConnectionCompression,
@@ -2650,4 +2652,241 @@ Deno.test("runFailureForClient: preserves secret refusal codes for direct, wrapp
     ).code,
     "method_execution_failed",
   );
+});
+
+function incompressibleText(bytes: number): string {
+  const random = new Uint8Array(bytes);
+  for (let offset = 0; offset < bytes; offset += 65_536) {
+    crypto.getRandomValues(random.subarray(offset, offset + 65_536));
+  }
+  let binary = "";
+  for (const byte of random) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeFrames(frames: Array<string | Uint8Array>): ServerMessage[] {
+  return frames.map((frame) =>
+    JSON.parse(
+      typeof frame === "string"
+        ? frame
+        : new TextDecoder().decode(gunzipSync(frame)),
+    )
+  );
+}
+
+const SMALL_FRAME_LIMIT = 1_000;
+
+Deno.test("sendSerialized: an oversize reply is replaced by a frame_too_large error naming type and size", () => {
+  const { socket, frames } = makeFrameSocket();
+  const json = JSON.stringify({
+    type: "data.get",
+    id: "r1",
+    payload: { data: { content: "x".repeat(2_000) } },
+  });
+
+  sendSerialized(
+    socket,
+    json,
+    { type: "data.get", id: "r1" },
+    SMALL_FRAME_LIMIT,
+  );
+
+  const sent = decodeFrames(frames);
+  assertEquals(sent.length, 1);
+  const reply = sent[0];
+  if (reply.type !== "error") {
+    throw new Error(`expected error, got ${reply.type}`);
+  }
+  assertEquals(reply.id, "r1");
+  assertEquals(reply.error.code, "frame_too_large");
+  assertStringIncludes(reply.error.message, "data.get");
+  assertStringIncludes(reply.error.message, String(json.length));
+  assertStringIncludes(reply.error.message, String(SMALL_FRAME_LIMIT));
+});
+
+Deno.test("sendSerialized: a frame exactly at the limit is sent", () => {
+  const { socket, frames } = makeFrameSocket();
+  const prefix = JSON.stringify({ type: "data.get", id: "r", payload: "" });
+  const json = JSON.stringify({
+    type: "data.get",
+    id: "r",
+    payload: "x".repeat(SMALL_FRAME_LIMIT - prefix.length),
+  });
+  assertEquals(json.length, SMALL_FRAME_LIMIT);
+
+  sendSerialized(
+    socket,
+    json,
+    { type: "data.get", id: "r" },
+    SMALL_FRAME_LIMIT,
+  );
+
+  assertEquals(frames, [json]);
+});
+
+Deno.test("sendSerialized: on a gzip socket the compressed size is what counts", () => {
+  const { socket, frames } = makeFrameSocket();
+  setConnectionCompression(socket, "gzip");
+  const compressible = JSON.stringify({
+    type: "data.get",
+    id: "small-gzip",
+    payload: "x".repeat(COMPRESSION_THRESHOLD_BYTES * 4),
+  });
+  const incompressible = JSON.stringify({
+    type: "data.get",
+    id: "big-gzip",
+    payload: incompressibleText(COMPRESSION_THRESHOLD_BYTES * 2),
+  });
+
+  sendSerialized(
+    socket,
+    compressible,
+    { type: "data.get", id: "small-gzip" },
+    SMALL_FRAME_LIMIT,
+  );
+  sendSerialized(
+    socket,
+    incompressible,
+    { type: "data.get", id: "big-gzip" },
+    SMALL_FRAME_LIMIT,
+  );
+
+  const sent = decodeFrames(frames);
+  assertEquals(sent.map((m) => [m.type, m.id]), [
+    ["data.get", "small-gzip"],
+    ["error", "big-gzip"],
+  ]);
+});
+
+Deno.test("sendSerialized: an oversize progress event is dropped and the stream goes on", () => {
+  const { socket, frames } = makeFrameSocket();
+  const event = (text: string) =>
+    JSON.stringify({
+      type: "event",
+      id: "run",
+      event: { kind: "method_output", text },
+    });
+
+  sendSerialized(
+    socket,
+    event("x".repeat(2_000)),
+    { type: "event", id: "run", eventKind: "method_output" },
+    SMALL_FRAME_LIMIT,
+  );
+  sendSerialized(
+    socket,
+    event("next"),
+    { type: "event", id: "run", eventKind: "method_output" },
+    SMALL_FRAME_LIMIT,
+  );
+
+  assertEquals(frames, [event("next")]);
+});
+
+Deno.test("sendSerialized: an oversize run outcome becomes the error and its done frame is dropped", () => {
+  const { socket, frames } = makeFrameSocket();
+  const id = `run-${crypto.randomUUID()}`;
+
+  sendSerialized(
+    socket,
+    JSON.stringify({
+      type: "event",
+      id,
+      event: { kind: "completed", data: "x".repeat(2_000) },
+    }),
+    { type: "event", id, eventKind: "completed" },
+    SMALL_FRAME_LIMIT,
+  );
+  send(socket, { type: "done", id });
+
+  const sent = decodeFrames(frames);
+  assertEquals(sent.length, 1);
+  const reply = sent[0];
+  if (reply.type !== "error") {
+    throw new Error(`expected error, got ${reply.type}`);
+  }
+  assertEquals(reply.error.code, "frame_too_large");
+  assertStringIncludes(reply.error.message, "the run finished");
+});
+
+Deno.test("sendSerialized: an oversize frame with no request id sends nothing", () => {
+  const { socket, frames } = makeFrameSocket();
+
+  sendSerialized(
+    socket,
+    JSON.stringify({ type: "unknown", payload: "x".repeat(2_000) }),
+    { type: "unknown" },
+    SMALL_FRAME_LIMIT,
+  );
+
+  assertEquals(frames, []);
+});
+
+Deno.test("sendSerialized: an uncapped reply channel gets an oversize frame whole", () => {
+  const { socket, frames } = makeFrameSocket();
+  markUncappedSocket(socket);
+  const json = JSON.stringify({
+    type: "data.get",
+    id: "r",
+    payload: "x".repeat(2_000),
+  });
+
+  sendSerialized(
+    socket,
+    json,
+    { type: "data.get", id: "r" },
+    SMALL_FRAME_LIMIT,
+  );
+
+  assertEquals(frames, [json]);
+});
+
+Deno.test("sendSerialized: a refusal logs type, id and size but never the payload", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "frame"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const { socket } = makeFrameSocket();
+    sendSerialized(
+      socket,
+      JSON.stringify({
+        type: "data.get",
+        id: "logged",
+        payload: "SECRET".repeat(400),
+      }),
+      { type: "data.get", id: "logged" },
+      SMALL_FRAME_LIMIT,
+    );
+  } finally {
+    await reset();
+  }
+  assertEquals(records.length, 1);
+  const rendered = JSON.stringify(records[0].properties);
+  assertStringIncludes(rendered, "data.get");
+  assertStringIncludes(rendered, "logged");
+  assertEquals(rendered.includes("SECRET"), false);
+});
+
+Deno.test("send: a reply over the default 64 MiB frame limit is refused, not sent", () => {
+  const { socket, frames } = makeFrameSocket();
+
+  send(socket, {
+    type: "data.get",
+    id: "huge",
+    payload: { data: { content: "x".repeat(64 * 1024 * 1024) } },
+  });
+
+  const sent = decodeFrames(frames);
+  assertEquals(sent.length, 1);
+  assertEquals(sent[0].type, "error");
 });

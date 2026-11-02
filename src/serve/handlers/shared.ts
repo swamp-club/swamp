@@ -27,6 +27,10 @@ import {
   withSpan,
 } from "../../infrastructure/tracing/mod.ts";
 import { gzipSync } from "node:zlib";
+import {
+  FRAME_TOO_LARGE,
+  MAX_RPC_FRAME_BYTES,
+} from "../../domain/remote/rpc_channel.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { GrantUsernameResolver } from "../../domain/access/grant_username_resolution.ts";
 import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_unit_of_work.ts";
@@ -2081,9 +2085,9 @@ export function send(socket: WebSocket, message: ServerMessage): void {
       held.replies.push(message);
       return;
     }
-    // a request a failed confirmation answered: its handler's own reply would
-    // contradict the error the client already has
-    if (unconfirmedRequests.get(socket)?.has(message.id)) return;
+    // a request already answered by an error: its handler's own reply would
+    // contradict it
+    if (answeredByError.get(socket)?.has(message.id)) return;
   }
   sendNow(socket, message);
 }
@@ -2095,20 +2099,91 @@ const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 function sendNow(socket: WebSocket, message: ServerMessage): void {
-  sendSerialized(socket, JSON.stringify(message));
+  sendSerialized(socket, JSON.stringify(message), {
+    type: message.type,
+    id: message.id,
+    ...(message.type === "event" && { eventKind: message.event.kind }),
+  });
 }
 
-export function sendSerialized(socket: WebSocket, json: string): void {
+/** what a refused oversize frame is reported as; never its payload */
+export interface ClientFrameHeader {
+  readonly type: string;
+  readonly id?: string;
+  readonly eventKind?: string;
+}
+
+const frameLogger = getSwampLogger(["serve", "frame"]);
+
+const uncappedSockets = new WeakSet<WebSocket>();
+
+/** for a reply channel with no frame limit, such as an HTTP response stream */
+export function markUncappedSocket(socket: WebSocket): void {
+  uncappedSockets.add(socket);
+}
+
+export function sendSerialized(
+  socket: WebSocket,
+  json: string,
+  header: ClientFrameHeader,
+  maxFrameBytes: number = MAX_RPC_FRAME_BYTES,
+): void {
   if (socket.readyState !== WebSocket.OPEN) return;
+  let frame: string | Uint8Array = json;
+  let bytes: number | undefined;
   if (connectionCompression.get(socket) === "gzip") {
-    const bytes = new TextEncoder().encode(json);
-    if (bytes.byteLength >= COMPRESSION_THRESHOLD_BYTES) {
+    const encoded = new TextEncoder().encode(json);
+    bytes = encoded.byteLength;
+    if (bytes >= COMPRESSION_THRESHOLD_BYTES) {
       // synchronous so frames keep their order
-      socket.send(gzipSync(bytes));
+      frame = gzipSync(encoded);
+      bytes = frame.byteLength;
+    }
+  }
+  if (!uncappedSockets.has(socket)) {
+    // a UTF-16 code unit encodes to at most three UTF-8 bytes
+    if (bytes === undefined && json.length * 3 > maxFrameBytes) {
+      bytes = new TextEncoder().encode(json).byteLength;
+    }
+    if (bytes !== undefined && bytes > maxFrameBytes) {
+      refuseOversizeFrame(socket, header, bytes, maxFrameBytes);
       return;
     }
   }
-  socket.send(json);
+  socket.send(frame);
+}
+
+function refuseOversizeFrame(
+  socket: WebSocket,
+  header: ClientFrameHeader,
+  bytes: number,
+  limit: number,
+): void {
+  frameLogger.warn(
+    "Refused to send a {frameType} frame for request {requestId} (event {eventKind}): {bytes} bytes exceeds the {limit} byte WebSocket frame limit",
+    {
+      frameType: header.type,
+      requestId: header.id ?? "none",
+      eventKind: header.eventKind ?? "none",
+      bytes,
+      limit,
+    },
+  );
+  if (header.id === undefined) return;
+  const outcome = header.type === "event" &&
+    OUTCOME_EVENT_KINDS.has(header.eventKind ?? "");
+  // a progress event is dropped and its run's stream goes on
+  if (header.type === "event" && !outcome) return;
+  const message = outcome
+    ? `The run's ${header.eventKind} event is ${bytes} bytes, over the ` +
+      `${limit} byte WebSocket frame limit; the run finished, but its ` +
+      `outcome could not be sent over the socket. Read it from the run's history`
+    : `The ${header.type} reply is ${bytes} bytes, over the ${limit} byte ` +
+      `WebSocket frame limit; the request ran, but its reply could not be ` +
+      `sent over the socket`;
+  sendError(socket, header.id, FRAME_TOO_LARGE, message);
+  // after the error went out, or the error itself would be dropped
+  markAnsweredByError(socket, header.id);
 }
 
 const MAX_ERRORED_REQUESTS = 10_000;
@@ -2121,7 +2196,19 @@ interface HeldReplies {
 
 const heldReplies = new WeakMap<WebSocket, Map<string, HeldReplies>>();
 
-const unconfirmedRequests = new WeakMap<WebSocket, Set<string>>();
+const answeredByError = new WeakMap<WebSocket, Set<string>>();
+
+function markAnsweredByError(socket: WebSocket, requestId: string): void {
+  let answered = answeredByError.get(socket);
+  if (answered === undefined) {
+    answered = new Set();
+    answeredByError.set(socket, answered);
+  }
+  answered.add(requestId);
+  if (answered.size > MAX_ERRORED_REQUESTS) {
+    answered.delete(answered.values().next().value!);
+  }
+}
 
 /**
  * replies are held around the whole handler, not a root's flush, because
@@ -2172,15 +2259,7 @@ export async function confirmRequest(
     );
     sendError(socket, requestId, code, message);
     // After the error went out: from here on the request's replies drop.
-    let answered = unconfirmedRequests.get(socket);
-    if (answered === undefined) {
-      answered = new Set();
-      unconfirmedRequests.set(socket, answered);
-    }
-    answered.add(requestId);
-    if (answered.size > MAX_ERRORED_REQUESTS) {
-      answered.delete(answered.values().next().value!);
-    }
+    markAnsweredByError(socket, requestId);
   } else {
     // a request that answered with an error never reports its run's outcome or
     // that it finished before the error, so held outcome events and done drop

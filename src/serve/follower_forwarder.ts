@@ -20,7 +20,12 @@
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
-import { closeSession, sendError, sendSerialized } from "./handlers/shared.ts";
+import {
+  type ClientFrameHeader,
+  closeSession,
+  sendError,
+  sendSerialized,
+} from "./handlers/shared.ts";
 
 const logger = getSwampLogger(["serve", "follower-forwarder"]);
 
@@ -281,7 +286,7 @@ export class FollowerForwarder {
       ? this.#pending.get(frame.id)
       : undefined;
     if (frame === undefined || entry === undefined) {
-      sendSerialized(this.#client, data);
+      sendSerialized(this.#client, data, frameHeader(frame));
       return;
     }
     const final = isFinalFrame(frame, entry.type);
@@ -292,7 +297,7 @@ export class FollowerForwarder {
       if (final && frame.type !== "error" && this.#barrier !== undefined) {
         await this.#barrier().catch(() => {});
       }
-      sendSerialized(this.#client, data);
+      sendSerialized(this.#client, data, frameHeader(frame));
       if (final) entry.done();
     });
   }
@@ -338,16 +343,28 @@ interface Frame {
   readonly type: string;
   readonly id?: string;
   readonly payload?: unknown;
+  readonly eventKind?: string;
+}
+
+function frameHeader(frame: Frame | undefined): ClientFrameHeader {
+  if (frame === undefined) return { type: "unknown" };
+  return {
+    type: frame.type,
+    ...(frame.id !== undefined && { id: frame.id }),
+    ...(frame.eventKind !== undefined && { eventKind: frame.eventKind }),
+  };
 }
 
 function parseFrame(raw: string): Frame | undefined {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (typeof parsed.type !== "string") return undefined;
+    const event = parsed.event as Record<string, unknown> | null | undefined;
     return {
       type: parsed.type,
       ...(typeof parsed.id === "string" ? { id: parsed.id } : {}),
       payload: parsed.payload,
+      ...(typeof event?.kind === "string" ? { eventKind: event.kind } : {}),
     };
   } catch {
     return undefined;

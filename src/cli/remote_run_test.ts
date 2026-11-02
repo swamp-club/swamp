@@ -3656,3 +3656,258 @@ Deno.test("withRemoteOptions: a server text alone keeps the default --token text
   assertEquals(optionDescription(command, "--server"), "elsewhere");
   assertEquals(optionDescription(command, "--token"), TOKEN_DESCRIPTION);
 });
+
+function fetchAnswering(
+  answer: (body: { type: string; id: string }) => Response,
+  calls: { url: string; headers: Headers; body: string }[] = [],
+): typeof fetch {
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    const body = String(init?.body ?? "");
+    calls.push({
+      url: String(input),
+      headers: new Headers(init?.headers),
+      body,
+    });
+    return Promise.resolve(answer(JSON.parse(body)));
+  }) as typeof fetch;
+}
+
+function ndjson(...frames: Record<string, unknown>[]): Response {
+  return new Response(
+    frames.map((frame) => JSON.stringify(frame) + "\n").join(""),
+    { status: 200, headers: { "content-type": "application/x-ndjson" } },
+  );
+}
+
+function socketNeverUsed(): () => WebSocket {
+  return () => {
+    throw new Error("the WebSocket must not be used for this request");
+  };
+}
+
+Deno.test("requestServerResponse: a large read goes to the HTTP route with the caller's token", async () => {
+  const calls: { url: string; headers: Headers; body: string }[] = [];
+  const result = await requestServerResponse<{ data: { name: string } }>(
+    {
+      server: "ws://serve.test:9090",
+      token: "secret-token",
+      headers: { "x-proxy": "p" },
+      createSocket: socketNeverUsed(),
+      fetch: fetchAnswering((request) =>
+        ndjson(
+          { type: "event", id: request.id, event: { kind: "resolving" } },
+          {
+            type: "data.get",
+            id: request.id,
+            payload: { data: { name: "d" } },
+          },
+        ), calls),
+    },
+    { type: "data.get", payload: { modelIdOrName: "m", dataName: "d" } },
+  );
+
+  assertEquals(result.data.name, "d");
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].url, "http://serve.test:9090/api/v1/request");
+  assertEquals(calls[0].headers.get("authorization"), "Bearer secret-token");
+  assertEquals(calls[0].headers.get("x-proxy"), "p");
+  assertEquals(JSON.parse(calls[0].body).type, "data.get");
+});
+
+Deno.test("requestServerResponse: a request outside the HTTP allowlist stays on the WebSocket", async () => {
+  let fetched = false;
+  const result = await requestServerResponse<{ grants: unknown[] }>(
+    {
+      server: "ws://serve.test:9090",
+      createSocket: answeringSocket((request) => ({
+        type: "access.grant.list",
+        id: request.id,
+        payload: { grants: [] },
+      })),
+      fetch: (() => {
+        fetched = true;
+        return Promise.reject(new Error("unused"));
+      }) as typeof fetch,
+    },
+    { type: "access.grant.list" },
+  );
+
+  assertEquals(result.grants, []);
+  assertEquals(fetched, false);
+});
+
+Deno.test("requestServerResponse: a serve without the HTTP route (404) is asked over the WebSocket", async () => {
+  const result = await requestServerResponse<{ data: { name: string } }>(
+    {
+      server: "ws://serve.test:9090",
+      fetch: fetchAnswering(() => new Response("Not found", { status: 404 })),
+      createSocket: answeringSocket((request) => ({
+        type: "data.get",
+        id: request.id,
+        payload: { data: { name: "from-socket" } },
+      })),
+    },
+    { type: "data.get" },
+  );
+
+  assertEquals(result.data.name, "from-socket");
+});
+
+Deno.test("requestServerResponse: an error line rejects with ServerResponseError as on the socket", async () => {
+  const error = await assertRejects(
+    () =>
+      requestServerResponse(
+        {
+          server: "ws://serve.test:9090",
+          createSocket: socketNeverUsed(),
+          fetch: fetchAnswering((request) =>
+            ndjson({
+              type: "error",
+              id: request.id,
+              error: { code: "not_found", message: "Data not found" },
+            })
+          ),
+        },
+        { type: "data.get" },
+      ),
+    ServerResponseError,
+  );
+  assertEquals(error.code, "not_found");
+  assertStringIncludes(error.message, "Data not found");
+});
+
+Deno.test("requestServerResponse: an HTTP reply that ends before the request's reply rejects", async () => {
+  await assertRejects(
+    () =>
+      requestServerResponse(
+        {
+          server: "ws://serve.test:9090",
+          createSocket: socketNeverUsed(),
+          fetch: fetchAnswering(() =>
+            ndjson({ type: "event", id: "someone-else", event: {} })
+          ),
+        },
+        { type: "data.get" },
+      ),
+    UserError,
+    "ended before the reply to 'data.get' arrived",
+  );
+});
+
+for (
+  const [status, expected] of [
+    [401, "swamp auth"],
+    [429, "Rate-limited by server"],
+  ] as const
+) {
+  Deno.test(`requestServerResponse: an HTTP ${status} gives the socket path's error`, async () => {
+    await assertRejects(
+      () =>
+        requestServerResponse(
+          {
+            server: "ws://serve.test:9090",
+            createSocket: socketNeverUsed(),
+            fetch: fetchAnswering(() =>
+              Response.json(
+                { code: "x", message: "refused" },
+                { status },
+              )
+            ),
+          },
+          { type: "data.get" },
+        ),
+      UserError,
+      expected,
+    );
+  });
+}
+
+Deno.test("requestServerResponse: a follower's 503 names the leader like the socket's serve_not_leader error", async () => {
+  const error = await assertRejects(
+    () =>
+      requestServerResponse(
+        {
+          server: "ws://serve.test:9090",
+          createSocket: socketNeverUsed(),
+          fetch: fetchAnswering(() =>
+            Response.json(
+              {
+                code: "serve_not_leader",
+                message: "This node does not lead",
+                leader: { instanceId: "i-1", address: "https://leader" },
+              },
+              { status: 503 },
+            )
+          ),
+        },
+        { type: "data.get" },
+      ),
+    ServerResponseError,
+  );
+  assertEquals(error.code, "serve_not_leader");
+  assertEquals(error.details, {
+    leader: { instanceId: "i-1", address: "https://leader" },
+  });
+});
+
+Deno.test("requestServerResponse: a socket error after the request was sent is not called a connection failure", async () => {
+  const error = await assertRejects(
+    () =>
+      requestServerResponse(
+        {
+          server: "ws://serve.test:9090",
+          createSocket: () => {
+            const socket = {
+              binaryType: "blob",
+              onmessage: null,
+              onopen: null as (() => void) | null,
+              onerror: null as ((event: Event) => void) | null,
+              onclose: null as ((event: CloseEvent) => void) | null,
+              send() {
+                queueMicrotask(() =>
+                  socket.onerror?.(
+                    new ErrorEvent("error", { message: "Frame too large" }),
+                  )
+                );
+              },
+              close() {},
+            };
+            queueMicrotask(() => socket.onopen?.());
+            return socket as unknown as WebSocket;
+          },
+        },
+        { type: "access.grant.list" },
+      ),
+    UserError,
+  );
+  assertStringIncludes(
+    error.message,
+    "closed before a response was received: Frame too large",
+  );
+  assertEquals(error.message.includes("Could not connect"), false);
+});
+
+Deno.test("requestServerResponse: an HTTP refusal with a serve code carries the server's reason", async () => {
+  const error = await assertRejects(
+    () =>
+      requestServerResponse(
+        {
+          server: "ws://serve.test:9090",
+          createSocket: socketNeverUsed(),
+          fetch: fetchAnswering(() =>
+            Response.json(
+              {
+                code: "payload_too_large",
+                message: "Request body exceeds 65536 bytes",
+              },
+              { status: 413 },
+            )
+          ),
+        },
+        { type: "data.query" },
+      ),
+    ServerResponseError,
+  );
+  assertEquals(error.code, "payload_too_large");
+  assertStringIncludes(error.message, "Request body exceeds 65536 bytes");
+});

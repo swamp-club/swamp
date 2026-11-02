@@ -252,7 +252,7 @@ import {
 } from "./follower_forwarder.ts";
 export type { ConnectionContext } from "./handlers/shared.ts";
 
-const MAX_ACTIVE_REQUESTS = 100;
+export const MAX_ACTIVE_REQUESTS = 100;
 const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
 
 const WorkflowRunRequestSchema = z.object({
@@ -1881,7 +1881,7 @@ export function handleMessage(
   principal: Principal | null = null,
   activeSubscriptions: Set<string> = new Set(),
   subscriptionTimers: Map<string, ReturnType<typeof setInterval>> = new Map(),
-): void {
+): Promise<void> | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(event.data as string);
@@ -4410,7 +4410,8 @@ export function handleMessage(
     }
   }
 
-  task
+  // settles once the request is answered and never rejects
+  return task
     .catch((error: unknown) => {
       logger.error("Unhandled request error for {requestId}: {error}", {
         requestId: request.id,
