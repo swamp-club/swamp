@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   parseKeyValue,
   resolveKeyValue,
+  skipsOverwriteConfirmation,
   vaultPutCommand,
 } from "./vault_put.ts";
 
@@ -118,4 +119,25 @@ Deno.test("resolveKeyValue - error message includes all usage formats", () => {
     assertEquals(result.error.includes("MY_KEY=<value>"), true);
     assertEquals(result.error.includes("echo"), true);
   }
+});
+
+Deno.test("skipsOverwriteConfirmation: --yes alone skips confirmation", () => {
+  assertEquals(skipsOverwriteConfirmation({ yes: true }), true);
+});
+
+Deno.test("skipsOverwriteConfirmation: --force alone skips confirmation", () => {
+  assertEquals(skipsOverwriteConfirmation({ force: true }), true);
+});
+
+Deno.test("skipsOverwriteConfirmation: --yes with --force skips confirmation", () => {
+  assertEquals(skipsOverwriteConfirmation({ yes: true, force: true }), true);
+});
+
+Deno.test("skipsOverwriteConfirmation: neither flag requires confirmation", () => {
+  assertEquals(skipsOverwriteConfirmation({}), false);
+  assertEquals(
+    skipsOverwriteConfirmation({ yes: undefined, force: undefined }),
+    false,
+  );
+  assertEquals(skipsOverwriteConfirmation({ yes: false, force: false }), false);
 });

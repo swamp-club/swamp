@@ -59,6 +59,12 @@ import { parseLabels } from "./vault_annotate.ts";
 
 const vaultLogger = getSwampLogger(["vault", "put"]);
 
+export function skipsOverwriteConfirmation(
+  options: { yes?: boolean; force?: boolean },
+): boolean {
+  return options.yes === true || options.force === true;
+}
+
 export function parseKeyValue(
   input: string,
 ): { key: string; value: string } | null {
@@ -268,7 +274,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
           vaultName,
           key,
           value,
-          force: options.force as boolean | undefined,
+          force: skipsOverwriteConfirmation(options),
           refreshFrom: options.refreshFrom as string | undefined,
           refreshTtlMs,
           clearRefresh: options.clearRefresh as boolean | undefined,
@@ -371,8 +377,8 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     }
 
     if (
-      preview.secretExists && cliCtx.outputMode === "log" && !options.yes &&
-      !options.force
+      preview.secretExists && cliCtx.outputMode === "log" &&
+      !skipsOverwriteConfirmation(options)
     ) {
       if (stdinContent !== null) {
         throw new UserError(
