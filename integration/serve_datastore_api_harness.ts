@@ -114,6 +114,8 @@ export async function withServer(
      * defaults (swamp-club#4260).
      */
     vouchBudget?: () => VouchBudget;
+    /** Serve's vouch limits, in place of its defaults (swamp-club#4260). */
+    vouchLimits?: { partitions: number; commits: number };
   } = {},
 ): Promise<void> {
   resetRateLimitState();
@@ -184,6 +186,7 @@ export async function withServer(
         locks,
         quarantine,
         vouchBudget: options.vouchBudget,
+        vouchLimits: options.vouchLimits,
         authenticate: (token) => {
           const principalId = TOKENS[token];
           return Promise.resolve(
