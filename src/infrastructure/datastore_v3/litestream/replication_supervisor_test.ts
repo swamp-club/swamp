@@ -639,8 +639,57 @@ Deno.test({
       );
       // The failed check, then one retry 10 minutes on, which records a
       // verdict; nothing more within the hour.
+      // The delay counts from when the failed check settled, which the fake
+      // clock sees at the next tick: 10 minutes, give or take that tick.
       assertEquals(attempts.length, 2);
-      assertEquals(attempts[1] - attempts[0], 10 * MINUTE);
+      const gap = attempts[1] - attempts[0];
+      assert(gap >= 10 * MINUTE && gap <= 11 * MINUTE, `${gap / MINUTE} min`);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: an idle sidecar whose check stalls to its deadline and fails still exits, after one attempt (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await verifySetup(dir, txidOf(1));
+      const h = harness();
+      let attempts = 0;
+      // Every check hangs for 30 minutes (the bucket dropping packets),
+      // then fails without a verdict.
+      h.deps.verifyReplica = () => {
+        attempts++;
+        return new Promise((_, reject) => {
+          const at = h.now() + 30 * MINUTE;
+          stalled.push({ at, reject });
+        });
+      };
+      const stalled: { at: number; reject: (e: Error) => void }[] = [];
+      const sleep = h.deps.sleep;
+      h.deps.sleep = async (ms) => {
+        await sleep(ms);
+        for (const s of stalled.filter((s) => s.at <= h.now())) {
+          stalled.splice(stalled.indexOf(s), 1);
+          s.reject(new Error("restore deadline"));
+        }
+      };
+      h.deps.readSnapshotTxid = () => Promise.resolve(txidOf(1));
+      const started = h.now();
+      assertEquals(
+        await runReplicationSupervisor(
+          { ...options, tickMs: MINUTE, idleMs: 5 * MINUTE },
+          h.deps,
+        ),
+        "idle",
+      );
+      assertEquals(attempts, 1);
+      // It waited out the one stalled check, and no more.
+      assert(
+        h.now() - started < 2 * HOUR,
+        `${(h.now() - started) / MINUTE} min`,
+      );
     });
   },
 });

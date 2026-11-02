@@ -97,6 +97,13 @@ export function snapshotReadAt(
 export interface ReplicaVerifyAttempt {
   readonly startedAtMs: number;
   /**
+   * When it ended, once it has. A check can run up to its 30-minute
+   * deadline, so the retry delay counts from here.
+   */
+  readonly endedAtMs?: number;
+  /** The acknowledged TXID it checked. */
+  readonly txid: string | undefined;
+  /**
    * The snapshot it read through ({@link snapshotReadAt}), if one was
    * known.
    */
@@ -123,6 +130,8 @@ export interface ReplicaVerifyObservation {
   /** The last check this sidecar started, if it started one. */
   readonly lastAttempt: ReplicaVerifyAttempt | undefined;
   readonly nowMs: number;
+  /** Whether the sidecar is about to stop for being idle. */
+  readonly idle: boolean;
   /** {@link REPLICA_VERIFY_BACKSTOP_MS} outside tests. */
   readonly backstopMs: number;
   /** {@link REPLICA_VERIFY_RETRY_MS} outside tests. */
@@ -141,9 +150,11 @@ export interface ReplicaVerifyObservation {
  * After its own last check a sidecar waits, unless a new snapshot appeared
  * since: until the backstop when that check recorded a verdict on this
  * lineage (one dated at or after its start), and only
- * {@link REPLICA_VERIFY_RETRY_MS} when it recorded none, since a check that
- * could not run says nothing about the lineage. Either way one whose check
- * ended without a verdict still reaches its idle exit.
+ * {@link REPLICA_VERIFY_RETRY_MS} from its end when it recorded none, since
+ * a check that could not run says nothing about the lineage. A sidecar
+ * about to idle out never checks the acknowledged TXID it already tried,
+ * however that check ended and however long it took, so it always reaches
+ * its exit.
  */
 export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   if (o.acknowledgedTxid === undefined) return false;
@@ -162,15 +173,14 @@ export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
     marker !== undefined &&
     (seen === undefined || normalizeTxid(seen) !== marker);
   if (o.lastAttempt !== undefined) {
+    const attempt = o.lastAttempt;
+    if (o.idle && normalizeTxid(attempt.txid) === acknowledged) return false;
     const recorded = last !== undefined &&
-      Date.parse(last.checkedAt) >= o.lastAttempt.startedAtMs;
-    const holdMs = recorded ? o.backstopMs : o.retryMs;
-    if (
-      o.nowMs - o.lastAttempt.startedAtMs < holdMs &&
-      !newSnapshotSince(o.lastAttempt.snapshotTxid)
-    ) {
-      return false;
-    }
+      Date.parse(last.checkedAt) >= attempt.startedAtMs;
+    const held = recorded
+      ? o.nowMs - attempt.startedAtMs < o.backstopMs
+      : o.nowMs - (attempt.endedAtMs ?? o.nowMs) < o.retryMs;
+    if (held && !newSnapshotSince(attempt.snapshotTxid)) return false;
   }
   if (last === undefined) return true;
   if (newSnapshotSince(last.snapshotTxid)) return true;

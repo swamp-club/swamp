@@ -1839,11 +1839,14 @@ acknowledgement, is left out, so the next check sees it as new.
   After its own last check a sidecar waits before another, unless a new
   snapshot appeared since: until the backstop when that check recorded a
   verdict (one dated at or after its start), and only 10 minutes
-  (`REPLICA_VERIFY_RETRY_MS`) when it recorded none. A check that could not
-  run says nothing about the lineage, so a blip at a serve's first check of
-  a new lineage, or at a backstop check, costs 10 minutes, not another 4
-  hours. Either way a sidecar whose check ended without a verdict still
-  reaches its idle exit. The check runs beside the tick
+  (`REPLICA_VERIFY_RETRY_MS`) from the check's end when it recorded none. A
+  check that could not run says nothing about the lineage, so a blip at a
+  serve's first check of a new lineage, or at a backstop check, costs 10
+  minutes, not another 4 hours. The delay counts from the end because a
+  check can run to its 30-minute deadline. A sidecar about to idle out
+  never checks an acknowledged TXID it already tried, however that check
+  ended and however long it ran, so a bucket that drops packets cannot keep
+  a CLI sidecar alive restoring. The check runs beside the tick
   loop, never inside a command, so no command waits for it. An idle sidecar
   does not stop while a check or a listing runs, and a stop request cancels
   either.

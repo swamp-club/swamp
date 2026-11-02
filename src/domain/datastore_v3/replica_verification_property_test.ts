@@ -32,6 +32,7 @@ import {
   type ReplicaVerification,
   type ReplicaVerifyAttempt,
   shouldVerifyReplica,
+  snapshotReadAt,
 } from "./replica_verification.ts";
 
 const arbTxid = fc.integer({ min: 1, max: 0xffff }).map((n) =>
@@ -67,6 +68,7 @@ Deno.test("shouldVerifyReplica (property): a verdict on the acknowledged TXID of
             snapshotTxid: snapshot ?? undefined,
             lastAttempt: undefined,
             nowMs: elapsed,
+            idle: false,
             backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
             retryMs: REPLICA_VERIFY_RETRY_MS,
           }),
@@ -98,6 +100,7 @@ Deno.test("shouldVerifyReplica (property): a new lineage is always checked by a 
             snapshotTxid: snapshot ?? undefined,
             lastAttempt: undefined,
             nowMs: now,
+            idle: false,
             backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
             retryMs: REPLICA_VERIFY_RETRY_MS,
           }),
@@ -107,48 +110,74 @@ Deno.test("shouldVerifyReplica (property): a new lineage is always checked by a 
   );
 });
 
-Deno.test("shouldVerifyReplica (property): a sidecar checks at most once per snapshot it sees within the retry delay, so it always reaches its exit", () => {
+Deno.test("shouldVerifyReplica (property): an idle sidecar checks each acknowledged TXID at most once, however long its checks run and however they end, so it always reaches its exit", () => {
   fc.assert(
     fc.property(
       arbFence,
       arbTxid,
-      fc.option(arbTxid),
-      // Each check ends with a verdict (true) or without one (false).
-      fc.array(fc.boolean(), { minLength: 1, maxLength: 20 }),
-      (fence, acked, snapshot, outcomes) => {
-        let last: ReplicaVerification | undefined;
+      // Each tick: how long a check started then would run (up to past the
+      // 30-minute deadline), whether it records a verdict, and the
+      // snapshot listed at that tick (it may change while idle).
+      fc.array(
+        fc.record({
+          durationMs: fc.integer({ min: 0, max: 40 * 60_000 }),
+          recorded: fc.boolean(),
+          snapshot: fc.option(fc.integer({ min: 1, max: 4 })),
+        }),
+        { minLength: 1, maxLength: 30 },
+      ),
+      fc.option(fc.boolean()),
+      (fence, acked, ticks, startCovered) => {
+        // Optionally, an older verdict on this lineage.
+        let last: ReplicaVerification | undefined = startCovered === null
+          ? undefined
+          : {
+            lineageFence: fence,
+            txid: "0000000000000000",
+            checkedAt: new Date(0).toISOString(),
+            ok: true,
+          };
         let lastAttempt: ReplicaVerifyAttempt | undefined;
-        let now = 0;
+        let now = REPLICA_VERIFY_BACKSTOP_MS;
         let checks = 0;
-        for (const recorded of outcomes) {
-          now += 1000;
+        for (const tick of ticks) {
+          now += 2_000;
+          const snapshotTxid = tick.snapshot === null
+            ? undefined
+            : txid(tick.snapshot);
           const due = shouldVerifyReplica({
             lineageFence: fence,
             acknowledgedTxid: acked,
             last,
-            snapshotTxid: snapshot ?? undefined,
+            snapshotTxid,
             lastAttempt,
             nowMs: now,
+            idle: true,
             backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
             retryMs: REPLICA_VERIFY_RETRY_MS,
           });
           if (!due) continue;
           checks++;
+          const startedAtMs = now;
+          now += tick.durationMs;
           lastAttempt = {
-            startedAtMs: now,
-            snapshotTxid: snapshot ?? undefined,
+            startedAtMs,
+            endedAtMs: now,
+            txid: acked,
+            snapshotTxid: snapshotReadAt(snapshotTxid, acked),
           };
-          if (recorded) {
+          if (tick.recorded) {
+            const read = snapshotReadAt(snapshotTxid, acked);
             last = {
               lineageFence: fence,
               txid: acked,
               checkedAt: new Date(now).toISOString(),
               ok: true,
-              ...(snapshot !== null ? { snapshotTxid: snapshot } : {}),
+              ...(read !== undefined ? { snapshotTxid: read } : {}),
             };
           }
         }
-        assert(checks <= 1);
+        assert(checks <= 1, `${checks} checks`);
       },
     ),
   );
@@ -186,12 +215,18 @@ function simulate(
         snapshotTxid: snapshot,
         lastAttempt,
         nowMs: now,
+        idle: false,
         backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
         retryMs: REPLICA_VERIFY_RETRY_MS,
       })
     ) {
       restores++;
-      lastAttempt = { startedAtMs: now, snapshotTxid: snapshot };
+      lastAttempt = {
+        startedAtMs: now,
+        endedAtMs: now,
+        txid: acked,
+        snapshotTxid: snapshot,
+      };
       last = {
         lineageFence: 1,
         txid: acked,

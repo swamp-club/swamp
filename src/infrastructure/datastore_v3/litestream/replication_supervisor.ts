@@ -457,16 +457,19 @@ class ReplicaCheck {
       snapshotTxid,
       lastAttempt: this.#lastAttempt,
       nowMs: now,
+      idle,
       backstopMs: this.options.verifyIntervalMs ?? REPLICA_VERIFY_BACKSTOP_MS,
       retryMs: REPLICA_VERIFY_RETRY_MS,
     });
     if (!due) return;
     // Only a snapshot this check reads through: a newer one is still new
     // to the next decision.
-    this.#lastAttempt = {
+    const attempt: ReplicaVerifyAttempt = {
       startedAtMs: now,
+      txid: acknowledgedTxid,
       snapshotTxid: snapshotReadAt(snapshotTxid, acknowledgedTxid),
     };
+    this.#lastAttempt = attempt;
     this.#track(
       verify({
         paths: this.paths,
@@ -478,7 +481,10 @@ class ReplicaCheck {
         () => {},
         // No verdict: tried again after the retry delay or a new snapshot.
         () => {},
-      ),
+      ).finally(() => {
+        // The retry delay counts from here: a check can run 30 minutes.
+        this.#lastAttempt = { ...attempt, endedAtMs: this.deps.now() };
+      }),
     );
   }
 

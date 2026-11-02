@@ -34,8 +34,11 @@
  *   `restore.lock` (taken by a restore of the copy); and, since
  *   swamp-club#3935, `replica-verify.json` (whether the sidecar could restore
  *   its lineage the way a reader would) and `litestream-state.json` (which
- *   lineage Litestream's local state belongs to). The directory and the
- *   presence record are trusted only when this user owns them.
+ *   lineage Litestream's local state belongs to); and, since
+ *   swamp-club#4261, while a replica check runs, its restored
+ *   `verify-<uuid>.db`, which holds what `commits.db` beside it does. The
+ *   directory and the presence record are trusted only when this user owns
+ *   them.
  * - In a per-user directory, `/tmp/swamp-<uid>/<hash>/`, created 0700 and
  *   checked before every use, what a process trusts for paths: the
  *   Litestream config and the control socket. Another user who can write a
