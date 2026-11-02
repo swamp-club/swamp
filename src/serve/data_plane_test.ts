@@ -2158,3 +2158,22 @@ Deno.test("DataPlane: cancelling a /data/outputs body closes the page source", a
     assertEquals(closed, true);
   }, { workerReads: { streamOutputList: source } });
 });
+
+Deno.test("DataPlane: a page source that throws when opened is a sanitized 400", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/query", { predicate: "true" }),
+    );
+    assertEquals(response?.status, 400);
+    const text = await response!.text();
+    assertStringIncludes(text, "internal error");
+    assert(!text.includes("/home/"));
+  }, {
+    workerReads: {
+      streamQueryData: () => {
+        throw new Error("ENOENT: /home/someone/.swamp/data/x");
+      },
+    },
+  });
+});

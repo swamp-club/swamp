@@ -156,7 +156,10 @@ export class CapabilityService {
 
   constructor(options: CapabilityServiceOptions) {
     this.#repoDir = options.repoDir;
-    this.#readPageSize = options.readPageSize ?? WORKER_READ_PAGE_SIZE;
+    this.#readPageSize = Math.max(
+      1,
+      Math.floor(options.readPageSize ?? WORKER_READ_PAGE_SIZE),
+    );
     this.#repoContext = options.repoContext;
     this.#dispatches = options.dispatches;
     this.#createVaultService = options.createVaultService ??
@@ -236,8 +239,8 @@ export class CapabilityService {
   #assertStillActive(dispatch: ActiveDispatch | null, verb: string): void {
     if (!this.#dispatches || !dispatch) return;
     if (
-      this.#dispatches.forDispatch(dispatch.workerName, dispatch.dispatchId) ===
-        null
+      this.#dispatches.forDispatch(dispatch.workerName, dispatch.dispatchId) !==
+        dispatch
     ) {
       throw new Error(`${verb}: the dispatch ended while its reply was read`);
     }
@@ -338,20 +341,29 @@ export class CapabilityService {
     };
   }
 
+  /** the control socket holds the whole reply anyway, so it reads one page */
   async queryData(
     workerName: string,
     params: QueryDataParams & { dispatchId?: string },
   ): Promise<unknown[]> {
     const records: unknown[] = [];
-    for await (const page of this.streamQueryData(workerName, params)) {
+    for await (const page of this.#queryPages(workerName, params, Infinity)) {
       for (const record of page) records.push(record);
     }
     return records;
   }
 
-  async *streamQueryData(
+  streamQueryData(
     workerName: string,
     params: QueryDataParams & { dispatchId?: string },
+  ): AsyncGenerator<unknown[]> {
+    return this.#queryPages(workerName, params, this.#readPageSize);
+  }
+
+  async *#queryPages(
+    workerName: string,
+    params: QueryDataParams & { dispatchId?: string },
+    pageSize: number,
   ): AsyncGenerator<unknown[]> {
     if (params.options?.select) {
       throw new Error(
@@ -374,7 +386,7 @@ export class CapabilityService {
         );
       }
     }
-    // a negative limit would reach SQLite as LIMIT -1, which is unbounded
+    // a limit of zero or less would leave no room for a page
     let remaining = params.options?.limit ?? Infinity;
     if (!(remaining > 0)) return;
     const excludeModelTypes = workerHiddenStoredTypes(dispatch);
@@ -388,7 +400,7 @@ export class CapabilityService {
     for (let page = 0;; page++) {
       if (page > 0) this.#assertStillActive(dispatch, "queryData");
       const parent = page === 0 ? undefined : laterPageParent;
-      const limit = Math.min(this.#readPageSize, remaining);
+      const limit = Math.min(pageSize, remaining);
       // control-plane records are excluded in the query itself, before any
       // limit, set after the worker's options so a worker cannot replace it
       const { results: records, last } = await observeExecutionWork(

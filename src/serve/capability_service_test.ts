@@ -1670,11 +1670,13 @@ Deno.test("streamQueryData: a worker limit caps the total across pages", async (
   const dispatches = new DispatchRegistry();
   withDispatch(dispatches);
   const recorded = recordingRepoContext({ queryResult: records(5) });
-  const result = await pagedService(recorded, dispatches).queryData(
-    "worker-1",
-    { predicate: "true", options: { limit: 3 } },
+  const pages = await collectPages(
+    pagedService(recorded, dispatches).streamQueryData(
+      "worker-1",
+      { predicate: "true", options: { limit: 3 } },
+    ),
   );
-  assertEquals(result.length, 3);
+  assertEquals(pages.flat().length, 3);
   assertEquals(
     (recorded.queryOptions as { limit: number }[]).map((c) => c.limit),
     [2, 1],
@@ -1699,11 +1701,13 @@ Deno.test("streamQueryData: a fractional limit keeps the unpaged result", async 
   const dispatches = new DispatchRegistry();
   withDispatch(dispatches);
   const recorded = recordingRepoContext({ queryResult: records(5) });
-  const result = await pagedService(recorded, dispatches).queryData(
-    "worker-1",
-    { predicate: "true", options: { limit: 2.5 } },
+  const pages = await collectPages(
+    pagedService(recorded, dispatches).streamQueryData(
+      "worker-1",
+      { predicate: "true", options: { limit: 2.5 } },
+    ),
   );
-  assertEquals(result.length, 3);
+  assertEquals(pages.flat().length, 3);
 });
 
 Deno.test("streamQueryData: refusals are raised before any query runs", async () => {
@@ -1765,10 +1769,10 @@ Deno.test("streamQueryData: a hidden record on a later page fails that page afte
 
 Deno.test("streamQueryData: without a dispatch registry it pages to the end with no liveness check", async () => {
   const recorded = recordingRepoContext({ queryResult: records(5) });
-  const result = await pagedService(recorded).queryData("worker-1", {
-    predicate: "true",
-  });
-  assertEquals(result.length, 5);
+  const pages = await collectPages(
+    pagedService(recorded).streamQueryData("worker-1", { predicate: "true" }),
+  );
+  assertEquals(pages.flat().length, 5);
   assertEquals(recorded.queryOptions.length, 3);
 });
 
@@ -1839,4 +1843,54 @@ Deno.test("streamOutputList: a dispatch released between pages stops the read", 
   assertEquals((await pages.next()).value, [{ id: "a" }]);
   dispatches.unregister("worker-1", "d-1");
   await assertRejects(() => pages.next(), Error, "dispatch ended");
+});
+
+Deno.test("queryData: the control-socket verb reads the whole reply in one sorted query", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const result = await pagedService(recorded, dispatches).queryData(
+    "worker-1",
+    { predicate: "true" },
+  );
+  assertEquals(result.length, 5);
+  const calls = recorded.queryOptions as {
+    limit: number;
+    sort: { field: string; direction: string };
+  }[];
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].limit, Infinity);
+  assertEquals(calls[0].sort, { field: "createdAt", direction: "asc" });
+});
+
+Deno.test("streamQueryData: a dispatch re-registered under the same id between pages stops the read", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(5) });
+  const pages = pagedService(recorded, dispatches).streamQueryData(
+    "worker-1",
+    { predicate: "true" },
+  );
+  assertEquals(((await pages.next()).value as unknown[]).length, 2);
+  dispatches.unregister("worker-1", "d-1");
+  withDispatch(dispatches);
+  await assertRejects(() => pages.next(), Error, "dispatch ended");
+  assertEquals(recorded.queryOptions.length, 1);
+});
+
+Deno.test("CapabilityService: a read page size below one pages one record at a time", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const recorded = recordingRepoContext({ queryResult: records(3) });
+  const service = new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: recorded.context,
+    dispatches,
+    createVaultService: () => Promise.reject(new Error("no vault")),
+    readPageSize: 0,
+  });
+  const pages = await collectPages(
+    service.streamQueryData("worker-1", { predicate: "true" }),
+  );
+  assertEquals(pages.map((page) => page.length), [1, 1, 1]);
 });

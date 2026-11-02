@@ -149,6 +149,7 @@ function pagedNdjsonResponse(
     async pull(controller) {
       try {
         while (!current.done && index >= current.value.length) {
+          // drop the sent page before awaiting, so only one page is held
           current = { done: false, value: [] };
           index = 0;
           current = await pages.next();
@@ -688,10 +689,11 @@ export class DataPlane {
     return await this.#streamWorkerRead(
       "queryData",
       workerName,
-      this.#options.workerReads.streamQueryData(workerName, {
-        ...params,
-        dispatchId: dispatch.dispatchId,
-      }),
+      () =>
+        this.#options.workerReads.streamQueryData(workerName, {
+          ...params,
+          dispatchId: dispatch.dispatchId,
+        }),
     );
   }
 
@@ -711,10 +713,11 @@ export class DataPlane {
     return await this.#streamWorkerRead(
       "readOutput",
       workerName,
-      this.#options.workerReads.streamOutputList(workerName, {
-        ...params,
-        dispatchId: dispatch.dispatchId,
-      }),
+      () =>
+        this.#options.workerReads.streamOutputList(workerName, {
+          ...params,
+          dispatchId: dispatch.dispatchId,
+        }),
     );
   }
 
@@ -722,13 +725,15 @@ export class DataPlane {
   async #streamWorkerRead(
     verb: string,
     workerName: string,
-    pages: AsyncIterable<unknown[]>,
+    open: () => AsyncIterable<unknown[]>,
   ): Promise<Response> {
-    const iterator = pages[Symbol.asyncIterator]();
-    const first = await this.#workerRead(
+    const { iterator, first } = await this.#workerRead(
       verb,
       workerName,
-      () => iterator.next(),
+      async () => {
+        const iterator = open()[Symbol.asyncIterator]();
+        return { iterator, first: await iterator.next() };
+      },
     );
     return pagedNdjsonResponse(iterator, first, (error) => {
       logger.warn(
