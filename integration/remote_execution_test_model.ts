@@ -55,10 +55,29 @@ defineModel({
       kind: "action",
       arguments: z.object({
         echo: z.string(),
-        mode: z.enum(["normal", "hang"]).default("normal"),
+        mode: z.enum(["normal", "hang", "clash"]).default("normal"),
       }),
       execute: async (args, context: MethodContext) => {
-        const input = args as { echo: string; mode: "normal" | "hang" };
+        const input = args as {
+          echo: string;
+          mode: "normal" | "hang" | "clash";
+        };
+        if (input.mode === "clash") {
+          const file = await context.createFileWriter!("log", "clash-x")
+            .writeAll(new TextEncoder().encode("file body"));
+          let refusal = "not refused";
+          try {
+            await context.writeResource!("result", "clash-x", { echo: "x" });
+          } catch (error) {
+            refusal = error instanceof Error ? error.message : String(error);
+          }
+          const report = await context.writeResource!(
+            "result",
+            "clash-report",
+            { echo: refusal },
+          );
+          return { dataHandles: [file, report] };
+        }
         if (input.mode === "hang") {
           await new Promise((_resolve, reject) => {
             context.signal.addEventListener(

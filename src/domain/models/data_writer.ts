@@ -49,6 +49,10 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import { isReservedVaultName } from "../vaults/vault_name.ts";
 import { markErrorPaths } from "../errors.ts";
+import type {
+  ExecutionOutputNames,
+  SettleClaim,
+} from "./execution_output_names.ts";
 import {
   type BehaviorWords,
   wordedError,
@@ -1083,6 +1087,20 @@ function checkDataNamePortability(
   }
 }
 
+async function settledBy(
+  settle: () => SettleClaim | undefined,
+  write: Promise<DataHandle>,
+): Promise<DataHandle> {
+  try {
+    const handle = await write;
+    settle()?.(true);
+    return handle;
+  } catch (error) {
+    settle()?.(false);
+    throw error;
+  }
+}
+
 export function createResourceWriter(
   repo: UnifiedDataRepository,
   modelType: ModelType,
@@ -1106,6 +1124,7 @@ export function createResourceWriter(
   redactor?: SecretRedactor,
   deferred = false,
   os: typeof Deno.build.os = Deno.build.os,
+  outputNames?: ExecutionOutputNames,
 ): {
   writeResource: (
     specName: string,
@@ -1132,11 +1151,25 @@ export function createResourceWriter(
     ...(definitionName ? [definitionName] : []),
   ]);
 
-  const writeResource = async (
+  const writeResource = (
     specName: string,
     name: string,
     data: Record<string, unknown>,
     overrides?: ResourceWriteOverrides,
+  ): Promise<DataHandle> => {
+    const claimed: { settle?: SettleClaim } = {};
+    return settledBy(
+      () => claimed.settle,
+      writeClaimedResource(specName, name, data, overrides, claimed),
+    );
+  };
+
+  const writeClaimedResource = async (
+    specName: string,
+    name: string,
+    data: Record<string, unknown>,
+    overrides: ResourceWriteOverrides | undefined,
+    claimed: { settle?: SettleClaim },
   ): Promise<DataHandle> => {
     const spec = resources[specName];
     if (!spec) {
@@ -1247,6 +1280,8 @@ export function createResourceWriter(
 
     // Stamped after every override, so only the writer sets it.
     resolvedTags[RECORD_KIND_TAG] = "resource";
+
+    claimed.settle = outputNames?.claim(instanceName, "resource", specName);
 
     checkDataNamePortability(
       instanceName,
@@ -2302,6 +2337,7 @@ export function createFileWriterFactory(
   definitionName?: string,
   deferred = false,
   os: typeof Deno.build.os = Deno.build.os,
+  outputNames?: ExecutionOutputNames,
 ): {
   createFileWriter: (
     specName: string,
@@ -2445,6 +2481,9 @@ export function createFileWriterFactory(
       },
     };
 
+    // never settled: a file writer can be retried, or allocate a version
+    // before finalize fails, so its name stays held for the run
+    outputNames?.claim(instanceName, "file", specName);
     const writer = new DefaultDataWriter(
       repo,
       modelType,
