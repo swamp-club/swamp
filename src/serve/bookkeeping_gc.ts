@@ -279,6 +279,7 @@ async function listCandidates(
   const candidates: ReapCandidate[] = [];
   let unreadable = 0;
 
+  if (isStopping()) return { candidates, unreadable };
   const tokenKind = await enrollmentTokenKind(deps);
   const kinds = tokenKind
     ? [...BOOKKEEPING_KINDS, tokenKind]

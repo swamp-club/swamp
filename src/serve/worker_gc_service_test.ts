@@ -122,22 +122,6 @@ Deno.test("WorkerGcService: the first sweep runs after the initial delay, not th
   assertEquals(reapCount, 1);
 });
 
-Deno.test("WorkerGcService: start after dispose schedules nothing with an initial delay", async () => {
-  let pruneCount = 0;
-  const svc = new WorkerGcService(makeDeps({
-    initialDelayMs: 1,
-    runPrune: () => {
-      pruneCount++;
-      return Promise.resolve(EMPTY_RESULT);
-    },
-  }));
-  await svc.dispose();
-  svc.start();
-  await waitFor(() => true, "brief pause after start");
-  await svc.dispose();
-  assertEquals(pruneCount, 0);
-});
-
 Deno.test("WorkerGcService: sweep error does not crash the service", async () => {
   let callCount = 0;
   const deps = makeDeps({

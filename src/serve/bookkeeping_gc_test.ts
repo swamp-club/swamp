@@ -401,6 +401,30 @@ Deno.test("reapEndedBookkeepingRecords: stopping while listing reads no more bod
   assertEquals(result.batches, 0);
 });
 
+Deno.test("reapEndedBookkeepingRecords: stopping before the listing starts runs no lookup or query", async () => {
+  const h = harness({
+    leases: [leaseRecord("a", "completed", OLD)],
+    workerTokenNames: [],
+  });
+  let tokenLookups = 0;
+  const listWorkerTokenNames = h.deps.listWorkerTokenNames!;
+  const result = await reapEndedBookkeepingRecords(
+    {
+      ...h.deps,
+      listWorkerTokenNames: () => {
+        tokenLookups++;
+        return listWorkerTokenNames();
+      },
+    },
+    GRACE,
+    () => true,
+  );
+  assertEquals(tokenLookups, 0);
+  assertEquals(h.predicates, []);
+  assertEquals(h.events, []);
+  assertEquals(result.batches, 0);
+});
+
 Deno.test("reapEndedBookkeepingRecords: an unreadable or corrupt record is skipped, the rest are still reaped", async () => {
   const h = harness({
     leases: [
