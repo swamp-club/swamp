@@ -395,6 +395,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       TOOLING,
     "src/infrastructure/datastore_v3/litestream/litestream_restorer.ts: runRestore":
       TOOLING,
+    "src/infrastructure/datastore_v3/litestream/replica_snapshot.ts: readNewestSnapshotTxid":
+      TOOLING,
     "src/infrastructure/datastore_v3/litestream/replication_supervisor_entry.ts: hostSupervisorDeps":
       TOOLING,
     "src/infrastructure/editor/editor_service.ts: EditorService": TOOLING,

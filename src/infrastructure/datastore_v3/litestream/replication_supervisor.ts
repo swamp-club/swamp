@@ -39,12 +39,17 @@
 
 import { shouldIdleExit } from "../../../domain/datastore_v3/litestream_replication.ts";
 import {
-  REPLICA_VERIFY_INTERVAL_MS,
+  REPLICA_VERIFY_BACKSTOP_MS,
+  REPLICA_VERIFY_RETRY_MS,
   type ReplicaVerification,
+  type ReplicaVerifyAttempt,
   shouldVerifyReplica,
+  snapshotReadAt,
 } from "../../../domain/datastore_v3/replica_verification.ts";
+import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
 import {
   clearReplacementMarks,
+  clearVerifyLeftovers,
   ensurePrivateDir,
   ensureSharedDir,
   readCopyState,
@@ -83,8 +88,9 @@ export interface SupervisorOptions {
   /** How often the idle check runs. */
   readonly tickMs: number;
   /**
-   * How often, at most, the sidecar restores its lineage to check it
-   * (swamp-club#3935); {@link REPLICA_VERIFY_INTERVAL_MS} when absent.
+   * The longest the sidecar goes without checking a lineage its writer
+   * keeps acknowledging on (swamp-club#3935, swamp-club#4261);
+   * {@link REPLICA_VERIFY_BACKSTOP_MS} when absent.
    */
   readonly verifyIntervalMs?: number;
 }
@@ -115,6 +121,22 @@ export interface SupervisorDeps {
    * never checks its replica.
    */
   verifyReplica?(request: SupervisorVerifyRequest): Promise<unknown>;
+  /**
+   * The replica's newest snapshot by its max TXID, or undefined when it
+   * could not be read (swamp-club#4261); see `replica_snapshot.ts`. Without
+   * it no snapshot is ever new, and only a new lineage or the backstop
+   * starts a check.
+   */
+  readSnapshotTxid?(
+    request: SupervisorSnapshotRequest,
+  ): Promise<string | undefined>;
+}
+
+/** What a supervisor asks {@link SupervisorDeps.readSnapshotTxid} to list. */
+export interface SupervisorSnapshotRequest {
+  readonly paths: ReplicationPaths;
+  readonly replicaType: LitestreamReplicaType;
+  readonly signal: AbortSignal;
 }
 
 /** What a supervisor asks {@link SupervisorDeps.verifyReplica} to check. */
@@ -123,6 +145,8 @@ export interface SupervisorVerifyRequest {
   readonly lineageFence: number;
   readonly replicaType: LitestreamReplicaType;
   readonly signal: AbortSignal;
+  /** The replica's newest snapshot when the check started, if known. */
+  readonly snapshotTxid?: string;
 }
 
 /** Why a supervisor ended. */
@@ -271,6 +295,7 @@ async function superviseHeld(
   let child: LitestreamChild;
   try {
     await clearReplacementMarks(paths);
+    await clearVerifyLeftovers(paths);
     await touchUseLock(paths, deps.now());
     // A socket a killed sidecar left behind would make Litestream fail to
     // bind.
@@ -343,14 +368,30 @@ async function superviseHeld(
 }
 
 /**
+ * How often, at most, a sidecar lists its replica's snapshots while its
+ * writer has acknowledged something no verdict covers (swamp-club#4261):
+ * one LIST request each.
+ */
+export const SNAPSHOT_POLL_INTERVAL_MS = 15 * 60 * 1000;
+
+/** How long one listing of the replica's snapshots may take. */
+const SNAPSHOT_POLL_DEADLINE_MS = 60 * 1000;
+
+/**
  * The sidecar's checks of its own replica (swamp-club#3935): at most one
  * at a time, started from the tick loop and never awaited by it, so a long
- * restore delays neither a stop request nor noticing Litestream exit.
+ * restore delays neither a stop request nor noticing Litestream exit. Which
+ * checks run is `shouldVerifyReplica`'s rule (swamp-club#4261); the
+ * replica's newest snapshot is listed the same way, in the background, and
+ * only while there is something a check could cover: at most every
+ * {@link SNAPSHOT_POLL_INTERVAL_MS}, and once more when the sidecar goes
+ * idle, so its idle exit sees a snapshot written since.
  */
 class ReplicaCheck {
   #running: Promise<void> | undefined;
-  #lastStartedAtMs: number | undefined;
-  #lastAttemptedTxid: string | undefined;
+  #lastAttempt: ReplicaVerifyAttempt | undefined;
+  #snapshot: { txid: string | undefined; polledAtMs: number } | undefined;
+  #polledThisIdle = false;
   readonly #abort = new AbortController();
 
   constructor(
@@ -363,13 +404,14 @@ class ReplicaCheck {
     return this.#running !== undefined;
   }
 
-  /** Starts a check when one is due; see `shouldVerifyReplica`. */
+  /** Starts a snapshot listing or a check when one is due. */
   async maybeStart(idle: boolean): Promise<void> {
     const verify = this.deps.verifyReplica;
     const replicaType = this.options.replicaType;
     if (verify === undefined || replicaType === undefined || this.running) {
       return;
     }
+    if (!idle) this.#polledThisIdle = false;
     const copy = await readCopyState(this.paths);
     const acknowledgedTxid = copy?.lineageFence === this.options.lineageFence
       ? copy.txid
@@ -377,37 +419,97 @@ class ReplicaCheck {
     const last: ReplicaVerification | undefined = await readReplicaVerification(
       this.paths,
     );
+    if (!this.#uncovered(acknowledgedTxid, last)) return;
+    const now = this.deps.now();
+    const readSnapshot = this.deps.readSnapshotTxid;
+    if (
+      readSnapshot !== undefined &&
+      (this.#snapshot === undefined ||
+        now - this.#snapshot.polledAtMs >= SNAPSHOT_POLL_INTERVAL_MS ||
+        (idle && !this.#polledThisIdle))
+    ) {
+      if (idle) this.#polledThisIdle = true;
+      this.#track(
+        readSnapshot({
+          paths: this.paths,
+          replicaType,
+          signal: AbortSignal.any([
+            this.#abort.signal,
+            AbortSignal.timeout(SNAPSHOT_POLL_DEADLINE_MS),
+          ]),
+        }).then(
+          (txid) => {
+            this.#snapshot = { txid, polledAtMs: this.deps.now() };
+          },
+          // Unknown: no snapshot is new until a listing succeeds.
+          () => {
+            this.#snapshot = { txid: undefined, polledAtMs: this.deps.now() };
+          },
+        ),
+      );
+      return;
+    }
+    const snapshotTxid = this.#snapshot?.txid;
     const due = shouldVerifyReplica({
       lineageFence: this.options.lineageFence,
       acknowledgedTxid,
       last,
-      lastStartedAtMs: this.#lastStartedAtMs,
-      lastAttemptedTxid: this.#lastAttemptedTxid,
-      nowMs: this.deps.now(),
+      snapshotTxid,
+      lastAttempt: this.#lastAttempt,
+      nowMs: now,
       idle,
-      intervalMs: this.options.verifyIntervalMs ?? REPLICA_VERIFY_INTERVAL_MS,
+      backstopMs: this.options.verifyIntervalMs ?? REPLICA_VERIFY_BACKSTOP_MS,
+      retryMs: REPLICA_VERIFY_RETRY_MS,
     });
     if (!due) return;
-    this.#lastStartedAtMs = this.deps.now();
-    this.#lastAttemptedTxid = acknowledgedTxid;
-    this.#running = verify({
-      paths: this.paths,
-      lineageFence: this.options.lineageFence,
-      replicaType,
-      signal: this.#abort.signal,
-    }).then(
-      () => {},
-      // No verdict: tried again after the interval.
-      () => {},
-    ).finally(() => {
-      this.#running = undefined;
-    });
+    // Only a snapshot this check reads through: a newer one is still new
+    // to the next decision.
+    const attempt: ReplicaVerifyAttempt = {
+      startedAtMs: now,
+      txid: acknowledgedTxid,
+      snapshotTxid: snapshotReadAt(snapshotTxid, acknowledgedTxid),
+    };
+    this.#lastAttempt = attempt;
+    this.#track(
+      verify({
+        paths: this.paths,
+        lineageFence: this.options.lineageFence,
+        replicaType,
+        signal: this.#abort.signal,
+        ...(snapshotTxid !== undefined ? { snapshotTxid } : {}),
+      }).then(
+        () => {},
+        // No verdict: tried again after the retry delay or a new snapshot.
+        () => {},
+      ).finally(() => {
+        // The retry delay counts from here: a check can run 30 minutes.
+        this.#lastAttempt = { ...attempt, endedAtMs: this.deps.now() };
+      }),
+    );
   }
 
-  /** Cancels a running check and waits for it. */
+  /** Cancels a running listing or check and waits for it. */
   async stop(): Promise<void> {
     this.#abort.abort();
     await this.#running;
+  }
+
+  /** Whether the writer acknowledged something `last` does not cover. */
+  #uncovered(
+    acknowledgedTxid: string | undefined,
+    last: ReplicaVerification | undefined,
+  ): boolean {
+    const acknowledged = normalizeTxid(acknowledgedTxid);
+    if (acknowledged === undefined) return false;
+    return last === undefined ||
+      last.lineageFence !== this.options.lineageFence ||
+      normalizeTxid(last.txid) !== acknowledged;
+  }
+
+  #track(work: Promise<void>): void {
+    this.#running = work.finally(() => {
+      this.#running = undefined;
+    });
   }
 }
 

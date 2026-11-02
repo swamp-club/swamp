@@ -112,8 +112,9 @@ export interface ReplicatorTimings {
   /** How often a waiting command looks again. */
   readonly pollMs: number;
   /**
-   * How often, at most, the sidecar checks its replica can be restored
-   * (swamp-club#3935); the supervisor's default when absent.
+   * The longest the sidecar goes without checking a lineage its writer
+   * keeps acknowledging on (swamp-club#3935, swamp-club#4261); the
+   * supervisor's default when absent.
    */
   readonly verifyIntervalMs?: number;
 }

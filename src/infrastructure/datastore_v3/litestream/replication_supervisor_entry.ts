@@ -29,6 +29,7 @@
 
 import { defaultLitestreamBinaryProvider } from "./litestream_binary_provider.ts";
 import { verifyReplica } from "./replica_verifier.ts";
+import { readNewestSnapshotTxid } from "./replica_snapshot.ts";
 import { litestreamChildEnv } from "./sidecar_env.ts";
 import {
   type LitestreamChild,
@@ -83,6 +84,17 @@ export function hostSupervisorDeps(
         ...request,
         binary: await resolveBinary(),
         now: () => Date.now(),
+      });
+    },
+    async readSnapshotTxid(request) {
+      return await readNewestSnapshotTxid({
+        binary: await resolveBinary(),
+        // The sidecar's own config names `commits.db` and its replica; the
+        // listing never opens the database.
+        config: request.paths.config,
+        source: request.paths.commitsDb,
+        replicaType: request.replicaType,
+        signal: request.signal,
       });
     },
   };

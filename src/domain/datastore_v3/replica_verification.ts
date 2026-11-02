@@ -33,8 +33,24 @@
 
 import { normalizeTxid } from "./published_lineage.ts";
 
-/** How often, at most, a sidecar restores its lineage to check it. */
-export const REPLICA_VERIFY_INTERVAL_MS = 10 * 60 * 1000;
+/**
+ * The longest a lineage goes unchecked while its writer keeps acknowledging
+ * (swamp-club#4261). A compaction writes new LTX files and deletes the ones
+ * it merged, so later restores read through files the last check never
+ * read; checking after every compacted level would cost a full restore an
+ * hour or more. Damage a compaction introduces is found within this
+ * backstop instead, and until then the writer's intact copy is what a
+ * lineage found broken restarts from.
+ */
+export const REPLICA_VERIFY_BACKSTOP_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * How long a sidecar waits before it tries again after a check that
+ * recorded no verdict (swamp-club#4261): the replica was unreachable for a
+ * moment, or the restore passed its deadline. Such a check says nothing
+ * about the lineage, so the backstop does not apply to it.
+ */
+export const REPLICA_VERIFY_RETRY_MS = 10 * 60 * 1000;
 
 /** The verdict of one check of a lineage, recorded beside `commits.db`. */
 export interface ReplicaVerification {
@@ -48,6 +64,50 @@ export interface ReplicaVerification {
   readonly ok: boolean;
   /** Why it failed; present only when `ok` is false. */
   readonly error?: string;
+  /**
+   * The newest snapshot (Litestream level 9) the check's restore read
+   * through, by its max TXID: the replica's newest when the check started,
+   * if it is at or below `txid`. Absent when it was not known or was newer,
+   * and in verdicts recorded before swamp-club#4261; then the next known
+   * snapshot counts as new, which costs one more check.
+   */
+  readonly snapshotTxid?: string;
+}
+
+/**
+ * The snapshot a restore at `txid` reads through, by its max TXID: the
+ * replica's newest, `snapshotTxid`, only when it is at or below `txid`. A
+ * newer one was written after the writer's last acknowledgement and is
+ * read only by later restores, so neither a verdict nor a sidecar's own
+ * attempt records it, and the next decision still sees it as new.
+ */
+export function snapshotReadAt(
+  snapshotTxid: string | undefined,
+  txid: string | undefined,
+): string | undefined {
+  const snapshot = normalizeTxid(snapshotTxid);
+  const restored = normalizeTxid(txid);
+  return snapshot !== undefined && restored !== undefined &&
+      snapshot <= restored
+    ? snapshot
+    : undefined;
+}
+
+/** A check this sidecar started, whatever it ended with. */
+export interface ReplicaVerifyAttempt {
+  readonly startedAtMs: number;
+  /**
+   * When it ended, once it has. A check can run up to its 30-minute
+   * deadline, so the retry delay counts from here.
+   */
+  readonly endedAtMs?: number;
+  /** The acknowledged TXID it checked. */
+  readonly txid: string | undefined;
+  /**
+   * The snapshot it read through ({@link snapshotReadAt}), if one was
+   * known.
+   */
+  readonly snapshotTxid: string | undefined;
 }
 
 /** What a sidecar knows when it decides whether to check its lineage now. */
@@ -61,39 +121,70 @@ export interface ReplicaVerifyObservation {
   readonly acknowledgedTxid: string | undefined;
   /** The last recorded verdict, whatever lineage it names. */
   readonly last: ReplicaVerification | undefined;
-  /** When the last check this sidecar ran started, if it ran one. */
-  readonly lastStartedAtMs: number | undefined;
   /**
-   * The TXID that check restored. A check can end without a verdict (the
-   * replica could not be reached), and is then tried again only after the
-   * interval, never again at an idle exit.
+   * The newest snapshot on the replica, by its max TXID, or undefined when
+   * it is not known. An unknown snapshot is never a new one, and neither is
+   * one above the acknowledged TXID until the writer reaches it.
    */
-  readonly lastAttemptedTxid: string | undefined;
+  readonly snapshotTxid: string | undefined;
+  /** The last check this sidecar started, if it started one. */
+  readonly lastAttempt: ReplicaVerifyAttempt | undefined;
   readonly nowMs: number;
   /** Whether the sidecar is about to stop for being idle. */
   readonly idle: boolean;
-  readonly intervalMs: number;
+  /** {@link REPLICA_VERIFY_BACKSTOP_MS} outside tests. */
+  readonly backstopMs: number;
+  /** {@link REPLICA_VERIFY_RETRY_MS} outside tests. */
+  readonly retryMs: number;
 }
 
 /**
- * Whether a sidecar restores its lineage now: only when the writer has
- * acknowledged something the last verdict did not cover, and at most once
- * per interval, except that a sidecar about to idle out checks what it
- * replicated since, once. A verdict on another lineage covers nothing.
+ * Whether a sidecar restores its lineage now (swamp-club#4261): only when
+ * the writer has acknowledged something the last verdict does not cover,
+ * and only when a check can change the answer — the lineage has no verdict
+ * yet, the replica holds a snapshot the last verdict did not read through,
+ * or the backstop has passed since that verdict was recorded. New
+ * acknowledgements alone never start one, so neither a serve that writes
+ * all day nor a run of short-lived CLI sidecars restores on a timer.
+ *
+ * After its own last check a sidecar waits, unless a new snapshot appeared
+ * since: until the backstop when that check recorded a verdict on this
+ * lineage (one dated at or after its start), and only
+ * {@link REPLICA_VERIFY_RETRY_MS} from its end when it recorded none, since
+ * a check that could not run says nothing about the lineage. A sidecar
+ * about to idle out never checks the acknowledged TXID it already tried,
+ * however that check ended and however long it took, so it always reaches
+ * its exit.
  */
 export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   if (o.acknowledgedTxid === undefined) return false;
   const acknowledged = normalizeTxid(o.acknowledgedTxid);
   if (acknowledged === undefined) return false;
-  const covered = o.last !== undefined &&
-    o.last.lineageFence === o.lineageFence &&
-    normalizeTxid(o.last.txid) === acknowledged;
-  if (covered) return false;
-  const attempted = o.lastAttemptedTxid !== undefined &&
-    normalizeTxid(o.lastAttemptedTxid) === acknowledged;
-  if (o.idle) return !attempted;
-  if (o.lastStartedAtMs === undefined) return true;
-  return o.nowMs - o.lastStartedAtMs >= o.intervalMs;
+  const last = o.last !== undefined && o.last.lineageFence === o.lineageFence
+    ? o.last
+    : undefined;
+  if (last !== undefined && normalizeTxid(last.txid) === acknowledged) {
+    return false;
+  }
+  // Only a snapshot a restore at the acknowledged TXID reads through: one
+  // written ahead of it is new only once the writer passes it.
+  const marker = snapshotReadAt(o.snapshotTxid, acknowledged);
+  const newSnapshotSince = (seen: string | undefined): boolean =>
+    marker !== undefined &&
+    (seen === undefined || normalizeTxid(seen) !== marker);
+  if (o.lastAttempt !== undefined) {
+    const attempt = o.lastAttempt;
+    if (o.idle && normalizeTxid(attempt.txid) === acknowledged) return false;
+    const recorded = last !== undefined &&
+      Date.parse(last.checkedAt) >= attempt.startedAtMs;
+    const held = recorded
+      ? o.nowMs - attempt.startedAtMs < o.backstopMs
+      : o.nowMs - (attempt.endedAtMs ?? o.nowMs) < o.retryMs;
+    if (held && !newSnapshotSince(attempt.snapshotTxid)) return false;
+  }
+  if (last === undefined) return true;
+  if (newSnapshotSince(last.snapshotTxid)) return true;
+  return o.nowMs - Date.parse(last.checkedAt) >= o.backstopMs;
 }
 
 /**
@@ -131,11 +222,18 @@ export function parseReplicaVerification(
   ) {
     return undefined;
   }
+  const snapshotTxid = record.snapshotTxid === undefined
+    ? undefined
+    : normalizeTxid(record.snapshotTxid);
+  if (record.snapshotTxid !== undefined && snapshotTxid === undefined) {
+    return undefined;
+  }
   return {
     lineageFence: record.lineageFence,
     txid,
     checkedAt: record.checkedAt,
     ok: record.ok,
     ...(typeof record.error === "string" ? { error: record.error } : {}),
+    ...(snapshotTxid !== undefined ? { snapshotTxid } : {}),
   };
 }

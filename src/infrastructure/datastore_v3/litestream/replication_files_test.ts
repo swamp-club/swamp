@@ -27,6 +27,7 @@ import { join } from "@std/path";
 import { UserError } from "../../../domain/errors.ts";
 import {
   clearReplacementMarks,
+  clearVerifyLeftovers,
   ensurePrivateDir,
   ensureSharedDir,
   isMarkedForReplacement,
@@ -39,6 +40,8 @@ import {
   renderLitestreamConfig,
   renderLitestreamRestoreConfig,
   replicationPathsFor,
+  verifyTempFiles,
+  verifyTempPath,
   writeLineage,
   writePresence,
 } from "./replication_files.ts";
@@ -224,6 +227,45 @@ Deno.test({
       assertEquals(await isMarkedForReplacement(paths, 11), false);
       await clearReplacementMarks(paths);
       assertEquals(await isMarkedForReplacement(paths, 10), false);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "verify temp files: beside commits.db, and a killed check's leftovers are cleared at a new start, nothing else (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const paths = await replicationPathsFor(
+        await database(dir),
+        join(dir, "priv"),
+      );
+      await ensureSharedDir(paths);
+      const temp = verifyTempPath(paths);
+      assert(temp.startsWith(paths.sharedDir));
+      assert(!temp.startsWith(join(dir, "priv")));
+      // Every file a stopped restore can leave, and more of them than the
+      // directory reads in one batch.
+      const leftovers = [
+        temp,
+        ...Array.from({ length: 60 }, () => verifyTempPath(paths)),
+      ]
+        .flatMap(verifyTempFiles);
+      for (const file of leftovers) await Deno.writeTextFile(file, "");
+      const kept = [
+        "lineage.json",
+        "verify-notes.db",
+        "verify-0000.db",
+        "replica-verify.json",
+      ].map((name) => join(paths.sharedDir, name));
+      for (const file of kept) await Deno.writeTextFile(file, "");
+      await clearVerifyLeftovers(paths);
+      const left: string[] = [];
+      for await (const entry of Deno.readDir(paths.sharedDir)) {
+        left.push(join(paths.sharedDir, entry.name));
+      }
+      assertEquals(left.sort(), kept.sort());
     });
   },
 });

@@ -24,9 +24,13 @@ import {
   type ReplicaVerification,
   type ReplicaVerifyObservation,
   shouldVerifyReplica,
+  snapshotReadAt,
 } from "./replica_verification.ts";
 
-const INTERVAL = 600_000;
+const BACKSTOP = 4 * 60 * 60 * 1000;
+const RETRY = 10 * 60 * 1000;
+/** 2026-10-25T12:00:00.000Z, the default verdict's checkedAt. */
+const CHECKED_AT_MS = Date.parse("2026-10-25T12:00:00.000Z");
 
 function observe(
   overrides: Partial<ReplicaVerifyObservation> = {},
@@ -35,11 +39,12 @@ function observe(
     lineageFence: 7,
     acknowledgedTxid: "0000000000000010",
     last: undefined,
-    lastStartedAtMs: undefined,
-    lastAttemptedTxid: undefined,
-    nowMs: 1_000_000,
+    snapshotTxid: "0000000000000001",
+    lastAttempt: undefined,
+    nowMs: CHECKED_AT_MS + 60_000,
     idle: false,
-    intervalMs: INTERVAL,
+    backstopMs: BACKSTOP,
+    retryMs: RETRY,
     ...overrides,
   };
 }
@@ -52,12 +57,18 @@ function verdict(
     txid: "0000000000000010",
     checkedAt: "2026-10-25T12:00:00.000Z",
     ok: true,
+    snapshotTxid: "0000000000000001",
     ...overrides,
   };
 }
 
-Deno.test("shouldVerifyReplica: checks a lineage it never checked", () => {
+/** The writer has acknowledged past the default verdict. */
+const moved = { last: verdict(), acknowledgedTxid: "0000000000000011" };
+
+Deno.test("shouldVerifyReplica: checks a new lineage", () => {
   assertEquals(shouldVerifyReplica(observe()), true);
+  // Even when the replica's snapshot is not known.
+  assertEquals(shouldVerifyReplica(observe({ snapshotTxid: undefined })), true);
 });
 
 Deno.test("shouldVerifyReplica: nothing acknowledged, nothing to check", () => {
@@ -74,7 +85,12 @@ Deno.test("shouldVerifyReplica: nothing acknowledged, nothing to check", () => {
 Deno.test("shouldVerifyReplica: a verdict on the acknowledged TXID covers it", () => {
   assertEquals(
     shouldVerifyReplica(
-      observe({ last: verdict(), acknowledgedTxid: "10", idle: true }),
+      observe({
+        last: verdict(),
+        acknowledgedTxid: "10",
+        snapshotTxid: "99",
+        nowMs: CHECKED_AT_MS + 10 * BACKSTOP,
+      }),
     ),
     false,
   );
@@ -92,51 +108,268 @@ Deno.test("shouldVerifyReplica: a verdict on another lineage covers nothing", ()
   );
 });
 
-Deno.test("shouldVerifyReplica: waits out the interval after its last check", () => {
-  const moved = { last: verdict(), acknowledgedTxid: "0000000000000011" };
+Deno.test("shouldVerifyReplica: new acknowledgements alone wait for the backstop", () => {
   assertEquals(
     shouldVerifyReplica(
-      observe({ ...moved, lastStartedAtMs: 1_000_000 - INTERVAL + 1 }),
+      observe({ ...moved, nowMs: CHECKED_AT_MS + BACKSTOP - 1 }),
+    ),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(observe({ ...moved, nowMs: CHECKED_AT_MS + BACKSTOP })),
+    true,
+  );
+});
+
+Deno.test("shouldVerifyReplica: the backstop counts from the recorded verdict, not the sidecar's start", () => {
+  // A fresh sidecar (no attempt of its own) shortly after another's check.
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...moved, lastAttempt: undefined, nowMs: CHECKED_AT_MS + 1 }),
+    ),
+    false,
+  );
+  // A verdict dated after now (a clock moved back) never starts a loop.
+  assertEquals(
+    shouldVerifyReplica(observe({ ...moved, nowMs: CHECKED_AT_MS - 1 })),
+    false,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a new snapshot is checked before the backstop", () => {
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...moved, snapshotTxid: "0000000000000011" }),
+    ),
+    true,
+  );
+  // Spelled differently, the same snapshot is not new.
+  assertEquals(
+    shouldVerifyReplica(observe({ ...moved, snapshotTxid: "1" })),
+    false,
+  );
+});
+
+Deno.test("shouldVerifyReplica: an unknown snapshot is never a new one", () => {
+  assertEquals(
+    shouldVerifyReplica(observe({ ...moved, snapshotTxid: undefined })),
+    false,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a verdict from before snapshots were recorded is checked once", () => {
+  const old = verdict({ snapshotTxid: undefined });
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ last: old, acknowledgedTxid: "0000000000000011" }),
+    ),
+    true,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({
+        last: old,
+        acknowledgedTxid: "0000000000000011",
+        snapshotTxid: undefined,
+      }),
+    ),
+    false,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a new lineage whose first check recorded no verdict is tried again after the retry delay, not the backstop", () => {
+  // The check started, and the replica could not be reached: no verdict.
+  const attempt = {
+    startedAtMs: CHECKED_AT_MS,
+    endedAtMs: CHECKED_AT_MS,
+    txid: "0000000000000010",
+    snapshotTxid: "0000000000000001",
+  };
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ lastAttempt: attempt, nowMs: CHECKED_AT_MS + RETRY - 1 }),
     ),
     false,
   );
   assertEquals(
     shouldVerifyReplica(
-      observe({ ...moved, lastStartedAtMs: 1_000_000 - INTERVAL }),
+      observe({ lastAttempt: attempt, nowMs: CHECKED_AT_MS + RETRY }),
     ),
     true,
   );
-});
-
-Deno.test("shouldVerifyReplica: a sidecar about to idle out checks what it replicated", () => {
+  // A new snapshot does not wait for the delay.
   assertEquals(
     shouldVerifyReplica(
       observe({
-        last: verdict(),
-        acknowledgedTxid: "0000000000000011",
-        lastStartedAtMs: 1_000_000 - 1,
-        idle: true,
+        lastAttempt: attempt,
+        nowMs: CHECKED_AT_MS + 1,
+        acknowledgedTxid: "0000000000000010",
+        snapshotTxid: "0000000000000002",
       }),
     ),
     true,
   );
 });
 
-Deno.test("shouldVerifyReplica: an idle sidecar tries a TXID once, then may exit", () => {
-  const unreached = {
-    lastStartedAtMs: 1_000_000 - 1,
-    lastAttemptedTxid: "0000000000000010",
+Deno.test("shouldVerifyReplica: a backstop check that recorded no verdict is tried again after the retry delay", () => {
+  // The verdict is a backstop old; the check it started recorded nothing.
+  const started = CHECKED_AT_MS + BACKSTOP;
+  const attempt = {
+    startedAtMs: started,
+    endedAtMs: started,
+    txid: "0000000000000011",
+    snapshotTxid: "0000000000000001",
   };
   assertEquals(
-    shouldVerifyReplica(observe({ ...unreached, idle: true })),
+    shouldVerifyReplica(
+      observe({ ...moved, lastAttempt: attempt, nowMs: started + RETRY - 1 }),
+    ),
     false,
   );
-  // Running on, it tries again once the interval has passed.
   assertEquals(
     shouldVerifyReplica(
-      observe({ ...unreached, lastStartedAtMs: 1_000_000 - INTERVAL }),
+      observe({ ...moved, lastAttempt: attempt, nowMs: started + RETRY }),
     ),
     true,
+  );
+});
+
+Deno.test("shouldVerifyReplica: the retry delay counts from the end of a check that ran up to its deadline", () => {
+  // The restore stalled for 30 minutes and recorded nothing.
+  const ended = CHECKED_AT_MS + 30 * 60_000;
+  const attempt = {
+    startedAtMs: CHECKED_AT_MS,
+    endedAtMs: ended,
+    txid: "0000000000000010",
+    snapshotTxid: "0000000000000001",
+  };
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ lastAttempt: attempt, nowMs: ended + RETRY - 1 }),
+    ),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ lastAttempt: attempt, nowMs: ended + RETRY }),
+    ),
+    true,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a sidecar about to idle out never checks a TXID it already tried, however long ago", () => {
+  const attempt = {
+    startedAtMs: CHECKED_AT_MS,
+    endedAtMs: CHECKED_AT_MS + 30 * 60_000,
+    txid: "0000000000000010",
+    snapshotTxid: "0000000000000001",
+  };
+  for (const nowMs of [CHECKED_AT_MS + RETRY, CHECKED_AT_MS + 10 * BACKSTOP]) {
+    assertEquals(
+      shouldVerifyReplica(
+        observe({
+          lastAttempt: attempt,
+          idle: true,
+          nowMs,
+          snapshotTxid: "0000000000000002",
+        }),
+      ),
+      false,
+    );
+  }
+  // A TXID acknowledged since is still checked on the way out, once the
+  // retry delay from the failed check's end has passed.
+  assertEquals(
+    shouldVerifyReplica(
+      observe({
+        lastAttempt: attempt,
+        idle: true,
+        acknowledgedTxid: "0000000000000011",
+        nowMs: attempt.endedAtMs + RETRY,
+      }),
+    ),
+    true,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a check that recorded a verdict holds back the next until the backstop or a new snapshot", () => {
+  // The verdict is dated at the attempt's start: that attempt recorded it.
+  const attempt = {
+    startedAtMs: CHECKED_AT_MS,
+    endedAtMs: CHECKED_AT_MS,
+    txid: "0000000000000010",
+    snapshotTxid: "0000000000000001",
+  };
+  const after = { ...moved, lastAttempt: attempt };
+  assertEquals(
+    shouldVerifyReplica(observe({ ...after, nowMs: CHECKED_AT_MS + RETRY })),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...after, nowMs: CHECKED_AT_MS + BACKSTOP - 1 }),
+    ),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(observe({ ...after, nowMs: CHECKED_AT_MS + BACKSTOP })),
+    true,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({
+        ...after,
+        nowMs: CHECKED_AT_MS + RETRY,
+        snapshotTxid: "0000000000000002",
+      }),
+    ),
+    true,
+  );
+});
+
+Deno.test("snapshotReadAt: only a snapshot at or below the restored TXID", () => {
+  assertEquals(snapshotReadAt("5", "0000000000000010"), "0000000000000005");
+  assertEquals(snapshotReadAt("10", "10"), "0000000000000010");
+  assertEquals(snapshotReadAt("12", "10"), undefined);
+  assertEquals(snapshotReadAt(undefined, "10"), undefined);
+  assertEquals(snapshotReadAt("12", undefined), undefined);
+});
+
+Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it", () => {
+  // Checked at 0x10 while the replica already held a snapshot at 0x12: the
+  // restore did not read it, so neither the verdict nor the attempt has it.
+  const attempt = {
+    startedAtMs: CHECKED_AT_MS,
+    endedAtMs: CHECKED_AT_MS,
+    txid: "0000000000000010",
+    snapshotTxid: snapshotReadAt("12", "10"),
+  };
+  const last = verdict({
+    txid: "10",
+    snapshotTxid: snapshotReadAt("12", "10"),
+  });
+  assertEquals(
+    shouldVerifyReplica(
+      observe({
+        last,
+        lastAttempt: attempt,
+        acknowledgedTxid: "20",
+        snapshotTxid: "12",
+        nowMs: CHECKED_AT_MS + 15 * 60_000,
+      }),
+    ),
+    true,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a snapshot ahead of the acknowledged TXID is not new yet", () => {
+  // Litestream snapshotted past what the writer has acknowledged: checking
+  // now would not read it, so it waits rather than checking every tick.
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...moved, snapshotTxid: "0000000000000012" }),
+    ),
+    false,
   );
 });
 
@@ -156,11 +389,23 @@ Deno.test("parseReplicaVerification: reads a recorded verdict", () => {
       ok: false,
       error: "integrity check failed",
     }),
-    verdict({
+    {
+      lineageFence: 7,
       txid: "000000000000001a",
+      checkedAt: "2026-10-25T12:00:00.000Z",
       ok: false,
       error: "integrity check failed",
+    },
+  );
+  assertEquals(
+    parseReplicaVerification({
+      lineageFence: 7,
+      txid: "10",
+      checkedAt: "2026-10-25T12:00:00.000Z",
+      ok: true,
+      snapshotTxid: "1",
     }),
+    verdict(),
   );
 });
 
@@ -183,6 +428,8 @@ Deno.test("parseReplicaVerification: anything else reads as no verdict", () => {
       { ...good, checkedAt: "yesterday" },
       { ...good, ok: "false" },
       { ...good, error: 3 },
+      { ...good, snapshotTxid: "xyz" },
+      { ...good, snapshotTxid: 1.5 },
     ]
   ) {
     assertEquals(parseReplicaVerification(bad), undefined);
