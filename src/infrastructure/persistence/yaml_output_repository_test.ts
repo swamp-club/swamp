@@ -5277,3 +5277,161 @@ Deno.test(
     });
   },
 );
+
+async function collectPages(
+  pages: AsyncIterable<ModelOutput[]>,
+): Promise<ModelOutput[][]> {
+  const collected: ModelOutput[][] = [];
+  for await (const page of pages) collected.push(page);
+  return collected;
+}
+
+Deno.test("YamlOutputRepository.findPages: yields pages of the requested size in findAll order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    for (let day = 1; day <= 5; day++) {
+      await repo.save(
+        testType,
+        "create",
+        outputAt(crypto.randomUUID(), `2023-01-0${day}T00:00:00Z`),
+      );
+    }
+
+    const pages = await collectPages(
+      repo.findPages(testType, { pageSize: 2 }),
+    );
+
+    assertEquals(pages.map((page) => page.length), [2, 2, 1]);
+    assertEquals(
+      pages.flat().map((o) => o.id),
+      (await repo.findAll(testType)).map((o) => o.id),
+    );
+  });
+});
+
+Deno.test("YamlOutputRepository.findPages: yields nothing for a type with no outputs", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    assertEquals(
+      await collectPages(repo.findPages(testType, { pageSize: 2 })),
+      [],
+    );
+  });
+});
+
+Deno.test("YamlOutputRepository.findPages: a definition filter keeps that definition's outputs, reading an unnamed file on its content and skipping a file named for another definition", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const defId = crypto.randomUUID();
+    const kept = outputAt(defId, "2023-01-01T00:00:00Z");
+    const other = outputAt(crypto.randomUUID(), "2023-01-02T00:00:00Z");
+    const unnamed = outputAt(defId, "2023-01-03T00:00:00Z");
+    const misnamed = outputAt(defId, "2023-01-04T00:00:00Z");
+    await repo.save(testType, "create", kept);
+    await repo.save(testType, "create", other);
+    await repo.save(testType, "create", unnamed);
+    await repo.save(testType, "create", misnamed);
+    const unnamedPath = repo.getPath(testType, "create", unnamed);
+    await Deno.rename(
+      unnamedPath,
+      join(dirname(unnamedPath), "hand-written.yaml"),
+    );
+    const misnamedPath = repo.getPath(testType, "create", misnamed);
+    await Deno.rename(
+      misnamedPath,
+      join(
+        dirname(misnamedPath),
+        basename(misnamedPath).replace(defId, crypto.randomUUID()),
+      ),
+    );
+
+    const found = (await collectPages(
+      repo.findPages(testType, {
+        definitionId: createDefinitionId(defId),
+        pageSize: 1,
+      }),
+    )).flat().map((o) => o.id).sort();
+
+    assertEquals(found, [kept.id, unnamed.id].sort());
+  });
+});
+
+Deno.test("YamlOutputRepository.findPages: a file deleted after the listing is skipped, not fatal", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const first = outputAt(crypto.randomUUID(), "2023-01-01T00:00:00Z");
+    const doomed = outputAt(crypto.randomUUID(), "2023-01-02T00:00:00Z");
+    await repo.save(testType, "create", first);
+    await repo.save(testType, "create", doomed);
+
+    const pages = repo.findPages(testType, { pageSize: 1 });
+    const firstPage = await pages.next();
+    assertEquals(firstPage.done, false);
+    const firstId = (firstPage.value as ModelOutput[])[0].id;
+    const remaining = firstId === first.id ? doomed : first;
+    await Deno.remove(repo.getPath(testType, "create", remaining));
+
+    assertEquals(
+      await collectPages({ [Symbol.asyncIterator]: () => pages }),
+      [],
+    );
+  });
+});
+
+Deno.test("YamlOutputRepository.findPages: warns once naming the unreadable outputs in its scope", async () => {
+  await withTempDir(async (dir) => {
+    const defId = crypto.randomUUID();
+    const readable = outputAt(defId, "2023-01-02T00:00:00Z");
+    const lostOfDefinition = outputAt(defId, "2023-01-01T00:00:00Z");
+    const lostOfOther = outputAt(crypto.randomUUID(), "2023-01-01T00:00:00Z");
+    const { repo, paths } = repoWithUnreadable(dir, [
+      { type: testType, method: "create", output: lostOfDefinition },
+      { type: testType, method: "create", output: lostOfOther },
+    ]);
+    await repo.save(testType, "create", readable);
+
+    const warnings = await captureUnreadableWarnings(async () => {
+      assertEquals(
+        (await collectPages(repo.findPages(testType, {
+          definitionId: createDefinitionId(defId),
+          pageSize: 1,
+        }))).flat().map((o) => o.id),
+        [readable.id],
+      );
+    });
+
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0], paths[0]);
+    assert(!warnings[0].includes(paths[1]), warnings[0]);
+  });
+});
+
+Deno.test("YamlOutputRepository.findPages: closing the iterator early stops reading", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    for (let day = 1; day <= 4; day++) {
+      await repo.save(
+        testType,
+        "create",
+        outputAt(crypto.randomUUID(), `2023-01-0${day}T00:00:00Z`),
+      );
+    }
+
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea(
+        "output_search",
+        () =>
+          observeDiagnosticPhase("candidate_scan", {}, async () => {
+            for await (
+              const _page of repo.findPages(testType, { pageSize: 1 })
+            ) {
+              break;
+            }
+          }),
+      );
+
+      const scan = phaseAttributes(spans, "candidate_scan");
+      assertEquals(scan["swamp.diagnostic.files_read"], 1);
+    });
+  });
+});

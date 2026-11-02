@@ -24,6 +24,10 @@ import {
   observeExecutionWork,
 } from "../domain/remote/observability.ts";
 import type { Data } from "../domain/data/data.ts";
+import type {
+  QueryCursorPosition,
+  QuerySort,
+} from "../domain/data/query_sort.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import { createDataId } from "../domain/data/data_id.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -96,6 +100,12 @@ const SLOW_HANDLER_WARN_MS = 5_000;
 
 const MAX_CAPABILITY_PREDICATE_LENGTH = 4096;
 
+/** records or outputs serve holds per worker list read at a time */
+export const WORKER_READ_PAGE_SIZE = 1000;
+
+// createdAt has an index and identity breaks ties, so pages form a total order
+const WORKER_READ_SORT: QuerySort = { field: "createdAt", direction: "asc" };
+
 const RPC_PATH_PATTERN =
   /(?:^|[\s"'`(])\/(?:opt|home|var|tmp|etc|usr|root|Users|private)\//;
 const RPC_SWAMP_PATH_PATTERN = /\/.swamp\//;
@@ -128,6 +138,7 @@ export interface CapabilityServiceOptions {
   repoContext: RepositoryContext;
   dispatches?: DispatchRegistry;
   createVaultService?: () => Promise<VaultService>;
+  readPageSize?: number;
 }
 
 /**
@@ -141,9 +152,11 @@ export class CapabilityService {
   readonly #createVaultService: () => Promise<VaultService>;
   #vaultService: Promise<VaultService> | null = null;
   readonly #claims: ResourceClaimVerifier;
+  readonly #readPageSize: number;
 
   constructor(options: CapabilityServiceOptions) {
     this.#repoDir = options.repoDir;
+    this.#readPageSize = options.readPageSize ?? WORKER_READ_PAGE_SIZE;
     this.#repoContext = options.repoContext;
     this.#dispatches = options.dispatches;
     this.#createVaultService = options.createVaultService ??
@@ -213,6 +226,20 @@ export class CapabilityService {
       return this.#resolveDispatch(workerName, dispatchId, "read");
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * a paged read outlives the request that authorized it, so each later page
+   * re-checks that its dispatch is still registered
+   */
+  #assertStillActive(dispatch: ActiveDispatch | null, verb: string): void {
+    if (!this.#dispatches || !dispatch) return;
+    if (
+      this.#dispatches.forDispatch(dispatch.workerName, dispatch.dispatchId) ===
+        null
+    ) {
+      throw new Error(`${verb}: the dispatch ended while its reply was read`);
     }
   }
 
@@ -315,6 +342,17 @@ export class CapabilityService {
     workerName: string,
     params: QueryDataParams & { dispatchId?: string },
   ): Promise<unknown[]> {
+    const records: unknown[] = [];
+    for await (const page of this.streamQueryData(workerName, params)) {
+      records.push(...page);
+    }
+    return records;
+  }
+
+  async *streamQueryData(
+    workerName: string,
+    params: QueryDataParams & { dispatchId?: string },
+  ): AsyncGenerator<unknown[]> {
     if (params.options?.select) {
       throw new Error(
         "Select projections are not permitted from workers",
@@ -336,37 +374,66 @@ export class CapabilityService {
         );
       }
     }
-    // control-plane records are excluded in the query itself, before any limit,
-    // set after the worker's options so a worker cannot replace it
-    const records = await observeExecutionWork(
-      "query.execute",
-      {},
-      () =>
-        this.#repoContext.dataQueryService.query(
-          params.predicate,
-          {
-            ...params.options,
-            excludeModelTypes: workerHiddenStoredTypes(dispatch),
-          },
-        ),
+    // a negative limit would reach SQLite as LIMIT -1, which is unbounded
+    let remaining = params.options?.limit ?? Infinity;
+    if (!(remaining > 0)) return;
+    const excludeModelTypes = workerHiddenStoredTypes(dispatch);
+    // the request span has ended by the second page, so later pages trace
+    // under the dispatch
+    const laterPageParent = dispatchTraceCarrier(
+      dispatch?.traceHeaders,
+      undefined,
     );
-    // Post-query check: a hidden record in the results means the exclusion
-    // above was bypassed. It judges each result's resolved modelType, in any
-    // spelling, not the predicate text, so CEL tricks (string concatenation,
-    // variables, ternaries) cannot get past it.
-    const leaked = records.some((record) => {
-      const rec = record as { modelType?: string };
-      return rec.modelType !== undefined &&
-        isHiddenFromWorker(rec.modelType, dispatch);
-    });
-    if (leaked) {
-      throw new Error(
-        "Query matched access-control or infrastructure behavior data which is not permitted from workers",
+    let after: QueryCursorPosition | undefined;
+    for (let page = 0;; page++) {
+      if (page > 0) this.#assertStillActive(dispatch, "queryData");
+      const parent = page === 0 ? undefined : laterPageParent;
+      const limit = Math.min(this.#readPageSize, remaining);
+      // control-plane records are excluded in the query itself, before any
+      // limit, set after the worker's options so a worker cannot replace it
+      const { results: records, last } = await observeExecutionWork(
+        "query.execute",
+        { "swamp.query.page": page },
+        () =>
+          this.#repoContext.dataQueryService.queryPage(
+            params.predicate,
+            {
+              ...params.options,
+              limit,
+              sort: WORKER_READ_SORT,
+              after,
+              excludeModelTypes,
+            },
+          ),
+        parent,
       );
+      // Post-query check: a hidden record in the results means the exclusion
+      // above was bypassed. It judges each result's resolved modelType, in any
+      // spelling, not the predicate text, so CEL tricks (string concatenation,
+      // variables, ternaries) cannot get past it.
+      const leaked = records.some((record) => {
+        const rec = record as { modelType?: string };
+        return rec.modelType !== undefined &&
+          isHiddenFromWorker(rec.modelType, dispatch);
+      });
+      if (leaked) {
+        throw new Error(
+          "Query matched access-control or infrastructure behavior data which is not permitted from workers",
+        );
+      }
+      const serialized = await observeExecutionWork(
+        "query.serialize",
+        { "swamp.query.page": page, "swamp.query.items": records.length },
+        () => Promise.resolve(records.map((record) => jsonSafeClone(record))),
+        parent,
+      );
+      if (serialized.length > 0) yield serialized;
+      remaining -= records.length;
+      if (records.length < limit || last === undefined || remaining <= 0) {
+        return;
+      }
+      after = last;
     }
-    return await observeExecutionWork("query.serialize", {
-      "swamp.query.items": records.length,
-    }, () => Promise.resolve(records.map((record) => jsonSafeClone(record))));
   }
 
   listVersions(
@@ -605,34 +672,68 @@ export class CapabilityService {
     workerName: string,
     params: ReadOutputParams & { dispatchId?: string },
   ): Promise<unknown> {
-    const hidden = isHiddenFromWorker(
+    if (params.outputId !== undefined && params.methodName !== undefined) {
+      if (this.#outputTypeHidden(workerName, params)) return { result: null };
+      return jsonSafeClone({
+        result: await this.#repoContext.outputRepo.findById(
+          ModelType.create(params.modelType),
+          params.methodName,
+          createModelOutputId(params.outputId),
+        ),
+      });
+    }
+    if (params.definitionId !== undefined && params.latestOnly) {
+      if (this.#outputTypeHidden(workerName, params)) return { result: null };
+      return jsonSafeClone({
+        result: await this.#repoContext.outputRepo.findLatestByDefinition(
+          ModelType.create(params.modelType),
+          createDefinitionId(params.definitionId),
+        ),
+      });
+    }
+    const result: unknown[] = [];
+    for await (const page of this.streamOutputList(workerName, params)) {
+      result.push(...page);
+    }
+    return { result };
+  }
+
+  /** the list shapes of readOutput: modelType, optionally with definitionId */
+  async *streamOutputList(
+    workerName: string,
+    params: ReadOutputParams & { dispatchId?: string },
+  ): AsyncGenerator<unknown[]> {
+    const dispatch = this.#visibleDispatch(workerName, params.dispatchId);
+    if (isHiddenFromWorker(params.modelType, dispatch)) return;
+    const pages = this.#repoContext.outputRepo.findPages(
+      ModelType.create(params.modelType),
+      {
+        definitionId: params.definitionId === undefined
+          ? undefined
+          : createDefinitionId(params.definitionId),
+        pageSize: this.#readPageSize,
+      },
+    );
+    try {
+      for (let page = 0;; page++) {
+        if (page > 0) this.#assertStillActive(dispatch, "readOutput");
+        const next = await pages.next();
+        if (next.done) return;
+        yield next.value.map((output) => jsonSafeClone(output));
+      }
+    } finally {
+      await pages.return(undefined);
+    }
+  }
+
+  #outputTypeHidden(
+    workerName: string,
+    params: ReadOutputParams & { dispatchId?: string },
+  ): boolean {
+    return isHiddenFromWorker(
       params.modelType,
       this.#visibleDispatch(workerName, params.dispatchId),
     );
-    if (hidden) {
-      const single = params.outputId !== undefined &&
-          params.methodName !== undefined ||
-        params.definitionId !== undefined && params.latestOnly === true;
-      return { result: single ? null : [] };
-    }
-    const type = ModelType.create(params.modelType);
-    const outputRepo = this.#repoContext.outputRepo;
-    let result: unknown;
-    if (params.outputId !== undefined && params.methodName !== undefined) {
-      result = await outputRepo.findById(
-        type,
-        params.methodName,
-        createModelOutputId(params.outputId),
-      );
-    } else if (params.definitionId !== undefined) {
-      const definitionId = createDefinitionId(params.definitionId);
-      result = params.latestOnly
-        ? await outputRepo.findLatestByDefinition(type, definitionId)
-        : await outputRepo.findByDefinition(type, definitionId);
-    } else {
-      result = await outputRepo.findAll(type);
-    }
-    return jsonSafeClone({ result });
   }
 
   async resolveModel(

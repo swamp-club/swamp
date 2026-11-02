@@ -713,9 +713,15 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private async readAll(type: ModelType): Promise<ModelOutput[]> {
-    const tally = currentDiagnosticTally();
     const files = await this.listType(type, "lookup");
+    return await this.readOutputFiles(files);
+  }
 
+  private async readOutputFiles(
+    files: readonly ListedOutput[],
+    signal?: AbortSignal,
+  ): Promise<ModelOutput[]> {
+    const tally = currentDiagnosticTally();
     const outputs = await mapBounded(
       files,
       SCAN_CONCURRENCY,
@@ -727,6 +733,7 @@ export class YamlOutputRepository implements OutputRepository {
           const content = await withScanPermit(
             "lookup",
             () => tally.measure("read", () => Deno.readTextFile(path)),
+            signal,
           );
           tally.add("files_read");
           if (tally.recording) {
@@ -746,8 +753,53 @@ export class YamlOutputRepository implements OutputRepository {
           return undefined;
         }
       },
+      signal,
     );
     return outputs.filter((output) => output !== undefined);
+  }
+
+  /**
+   * the listing is taken once, so a file written after it is not read; a file
+   * named for another definition is skipped unread, as findHistoryByDefinition
+   * does, while a name not in getPath form is read and filtered on content
+   */
+  async *findPages(
+    type: ModelType,
+    options: {
+      definitionId?: DefinitionId;
+      pageSize: number;
+      signal?: AbortSignal;
+    },
+  ): AsyncGenerator<ModelOutput[]> {
+    const { definitionId, signal } = options;
+    const pageSize = Math.max(1, Math.floor(options.pageSize));
+    const files = await this.listType(
+      type,
+      "lookup",
+      definitionId === undefined ? undefined : (name) => {
+        const match = OUTPUT_FILE_NAME.exec(name);
+        return match === null || match[1] === definitionId;
+      },
+      signal,
+    );
+    for (let start = 0; start < files.length; start += pageSize) {
+      const read = await this.readOutputFiles(
+        files.slice(start, start + pageSize),
+        signal,
+      );
+      const page = definitionId === undefined
+        ? read
+        : read.filter((output) => output.definitionId === definitionId);
+      if (page.length > 0) yield page;
+    }
+    await warnUnreadableLeftOut(
+      this.unreadableContent,
+      this.getTypeDir(type),
+      definitionId === undefined
+        ? undefined
+        : (entry) =>
+          parseOutputFileName(entry.path)?.definitionId === definitionId,
+    );
   }
 
   /**

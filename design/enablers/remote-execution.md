@@ -1366,13 +1366,29 @@ on a cache miss. Plain request/response is enough, with no server push.
   them: `POST /data/secrets` loads the references of the dispatch's own bag
   (typed-secrets Phase 5, below). From protocol version 7 the replies that can
   grow without bound also come here: `POST /data/query` and
-  `POST /data/outputs` call the same `CapabilityService.queryData` and
-  `readOutput` as the control-socket verbs and stream one `{"item": ...}` line
-  per record, then a `{"count": n}` trailer, so the worker never takes a cut-off
-  reply for a complete one. HTTP/2's multiplexing and per-stream flow
-  control replace the chunking, credit accounting and priority queues we would
-  otherwise hand-write. Deno streams request and response bodies, so memory
-  stays bounded on both ends.
+  `POST /data/outputs` read through `CapabilityService.streamQueryData` and
+  `streamOutputList`, the generators the control-socket verbs collect from, and
+  stream one `{"item": ...}` line per record, then a `{"count": n}` trailer, so
+  the worker never takes a cut-off reply for a complete one. HTTP/2's
+  multiplexing and per-stream flow control replace the chunking, credit
+  accounting and priority queues we would otherwise hand-write.
+
+  Serve reads these replies a page at a time (`WORKER_READ_PAGE_SIZE`, 1000
+  records or outputs) and reads the next page only once the current one is
+  sent, so its memory per request is bounded by the page; the worker still
+  collects the whole reply. A query pages with `queryPage` sorted by
+  `createdAt`, then record identity, so remote replies come in that order (an
+  in-process query returns catalog order), and a worker's `limit` caps the
+  total across pages; a limit of zero or less returns nothing. An output list
+  lists the type's files once and reads them a page at a time, in listing
+  order. The first page is read before the response starts, so a refusal is
+  still a 400. A failure on a later page (the control-plane check, a read
+  error) or the dispatch ending mid-reply closes the body without its trailer,
+  which the worker reports as a cut-off reply; the reason is in serve's log.
+  Paging is not a snapshot: a version written while a query reply streams
+  sorts after the cursor and appears, so a latest-only read can carry an
+  item's older and newer version, and `latestRun()` and `model()` are resolved
+  again for each page. An output list is fixed when its files are listed.
 
 Request deadlines (`src/worker/data_plane_client.ts`): unary reads give up after
 60 s (`DATA_PLANE_TIMEOUT_MS`), and unary writes (resource write and delete,
@@ -1435,9 +1451,12 @@ semantics and needs almost no new code:
   post-filters results, rejecting outright any query that touches access-control
   or infrastructure behavior data. `listVersions` is the one verb with no scope
   assertion, and `readOutput` applies only the control-plane exclusion.
-  `POST /data/query` and `POST /data/outputs` reuse those methods unchanged and
-  take the dispatch from the credential, not from the request body; their body
-  is capped at `MAX_WORKER_READ_BODY_BYTES` before it is parsed.
+  `POST /data/query` and `POST /data/outputs` apply the same checks through the
+  generators those methods collect from, run the control-plane post-filter on
+  every page before it is sent, re-check before each later page that the
+  dispatch is still registered, and take the dispatch from the credential, not
+  from the request body; their body is capped at `MAX_WORKER_READ_BODY_BYTES`
+  before it is parsed.
 
 ## Scheduling, fan-out, and provisioning
 

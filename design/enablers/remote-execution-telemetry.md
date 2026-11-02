@@ -127,7 +127,9 @@ These fields do not establish end-to-end
 99% coverage by themselves.
 
 `rpc.submit` means handed to the transport, not delivered to the peer. A query
-has separate service and JSON-safe clone observations. RPC timeout/cancellation
+has separate service and JSON-safe clone observations, one pair per page, each
+carrying `swamp.query.page`; on the data plane later pages are parented to the
+dispatch trace because the request span ends when the response starts. RPC timeout/cancellation
 and later peer completion are separate outcomes. Late correlation retains at
 most 1024 entries per channel for five minutes, with lazy expiry and clearing
 on close; later or unretained responses are explicitly `unknown`.
