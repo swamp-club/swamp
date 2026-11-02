@@ -381,6 +381,12 @@ export class ReadModelState {
   readonly #upsertUnsyncedBoot: StatementSync;
   readonly #deleteUnreadable: StatementSync;
   readonly #upsertUnreadable: StatementSync;
+  readonly #stageProgress: StatementSync;
+  readonly #stageRecord: StatementSync;
+  readonly #stageVersion: StatementSync;
+  readonly #stageCatalogRow: StatementSync;
+  readonly #stageForward: StatementSync;
+  readonly #stageFile: StatementSync;
   #closed = false;
   #batchOpen = false;
   /**
@@ -451,6 +457,24 @@ export class ReadModelState {
     this.#upsertUnreadable = db.prepare(
       "INSERT OR REPLACE INTO unreadable_records (namespace, record_key, partition, seq, position, blob, chunk, chunk_size, chunk_mtime, reason, last_attempt, access) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    this.#stageProgress = db.prepare(
+      "INSERT OR REPLACE INTO load_progress (namespace, partition, seq) VALUES (?, ?, ?)",
+    );
+    this.#stageRecord = db.prepare(
+      "INSERT OR REPLACE INTO load_records (namespace, partition, record_key, sha256, inline, blob, access) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    this.#stageVersion = db.prepare(
+      "INSERT OR REPLACE INTO load_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+    );
+    this.#stageCatalogRow = db.prepare(
+      "INSERT OR REPLACE INTO load_catalog (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+    );
+    this.#stageForward = db.prepare(
+      "INSERT OR REPLACE INTO load_forwards (namespace, partition, name, renamed_to) VALUES (?, ?, ?, ?)",
+    );
+    this.#stageFile = db.prepare(
+      "INSERT OR REPLACE INTO load_files (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?)",
     );
   }
 
@@ -862,15 +886,15 @@ export class ReadModelState {
       for (const entry of entries) {
         switch (entry.kind) {
           case "partition":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO load_progress (namespace, partition, seq) VALUES (?, ?, ?)",
-            ).run(entry.namespace, entry.partition, entry.seq);
+            this.#stageProgress.run(
+              entry.namespace,
+              entry.partition,
+              entry.seq,
+            );
             break;
           case "record": {
             const content = entry.record.content;
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO load_records (namespace, partition, record_key, sha256, inline, blob, access) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ).run(
+            this.#stageRecord.run(
               entry.namespace,
               entry.partition,
               entry.key,
@@ -882,9 +906,7 @@ export class ReadModelState {
             break;
           }
           case "version":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO load_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
-            ).run(
+            this.#stageVersion.run(
               entry.namespace,
               entry.partition,
               entry.version.metadata.name,
@@ -893,9 +915,7 @@ export class ReadModelState {
             );
             break;
           case "catalog-row":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO load_catalog (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
-            ).run(
+            this.#stageCatalogRow.run(
               entry.namespace,
               entry.partition,
               entry.metadata.name,
@@ -904,14 +924,15 @@ export class ReadModelState {
             );
             break;
           case "forward":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO load_forwards (namespace, partition, name, renamed_to) VALUES (?, ?, ?, ?)",
-            ).run(entry.namespace, entry.partition, entry.name, entry.to);
+            this.#stageForward.run(
+              entry.namespace,
+              entry.partition,
+              entry.name,
+              entry.to,
+            );
             break;
           case "file":
-            this.#db.prepare(
-              "INSERT OR REPLACE INTO load_files (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?)",
-            ).run(
+            this.#stageFile.run(
               entry.namespace,
               entry.key,
               entry.ownership.owner,

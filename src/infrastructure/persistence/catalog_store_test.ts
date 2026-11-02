@@ -2458,3 +2458,126 @@ Deno.test("CatalogStore.iterateSorted: starts after a position, sorts a missing 
     store.close();
   }
 });
+
+function countPrepares(run: () => void): number {
+  const prepare = DatabaseSync.prototype.prepare;
+  let count = 0;
+  DatabaseSync.prototype.prepare = function (
+    this: DatabaseSync,
+    ...args: Parameters<typeof prepare>
+  ) {
+    count++;
+    return prepare.apply(this, args);
+  };
+  try {
+    run();
+  } finally {
+    DatabaseSync.prototype.prepare = prepare;
+  }
+  return count;
+}
+
+function applyEveryAction(
+  store: CatalogStore,
+  from: number,
+  to: number,
+): void {
+  store.applyInTransaction((writer) => {
+    for (let i = from; i < to; i++) {
+      const kept = `kept-${i}`;
+      writer.upsertNewVersion(makeRow({ data_name: kept, version: 1 }));
+      writer.upsertNewVersion(makeRow({ data_name: kept, version: 2 }));
+      writer.removeVersion(
+        "",
+        "test-model",
+        "model-001",
+        kept,
+        2,
+        computeLatestFlags,
+      );
+      writer.recordRename({
+        namespace: "",
+        type_normalized: "test-model",
+        model_id: "model-001",
+        data_name: kept,
+        renamed_to: `${kept}-new`,
+      });
+      const gone = `gone-${i}`;
+      writer.upsertNewVersion(makeRow({ data_name: gone, version: 1 }));
+      writer.recordRename({
+        namespace: "",
+        type_normalized: "test-model",
+        model_id: "model-001",
+        data_name: gone,
+        renamed_to: `${gone}-new`,
+      });
+      writer.removeRename("", "test-model", "model-001", gone);
+      writer.remove("", "test-model", "model-001", gone);
+    }
+  });
+}
+
+function assertEveryActionApplied(store: CatalogStore, names: number): void {
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, names);
+  for (let i = 0; i < names; i++) {
+    const row = rows.find((r) => r.data_name === `kept-${i}`);
+    assertEquals(row?.version, 1);
+    assertEquals(row?.is_latest, 1);
+    assertEquals(row?.is_step_latest, 1);
+    assertEquals(
+      store.findRenameTarget("", "test-model", "model-001", `kept-${i}`),
+      `kept-${i}-new`,
+    );
+    assertEquals(
+      store.findRenameTarget("", "test-model", "model-001", `gone-${i}`),
+      null,
+    );
+  }
+}
+
+Deno.test("CatalogStore.applyInTransaction: prepares the same statements however many actions it applies", () => {
+  const prepared = [10, 200].map((names) => {
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
+    try {
+      const count = countPrepares(() => applyEveryAction(store, 0, names));
+      assertEveryActionApplied(store, names);
+      return count;
+    } finally {
+      store.close();
+    }
+  });
+  assertEquals(prepared[0], prepared[1]);
+});
+
+Deno.test("CatalogStore.applyInTransaction: applies every action after vacuum reopens the connection", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    applyEveryAction(store, 0, 3);
+    assertEquals(store.vacuum(), true);
+    applyEveryAction(store, 3, 6);
+    assertEveryActionApplied(store, 6);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.upsertNewVersion: sees a higher version another connection wrote after its last call", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  const other = new CatalogStore(tempDb.path);
+  try {
+    store.upsertNewVersion(makeRow({ version: 1 }));
+    other.upsertNewVersion(makeRow({ version: 3 }));
+    store.upsertNewVersion(makeRow({ version: 2 }));
+    const flags = [...store.iterate()]
+      .sort((a, b) => a.version - b.version)
+      .map((row) => [row.version, row.is_latest]);
+    assertEquals(flags, [[1, 0], [2, 0], [3, 1]]);
+  } finally {
+    other.close();
+    store.close();
+  }
+});

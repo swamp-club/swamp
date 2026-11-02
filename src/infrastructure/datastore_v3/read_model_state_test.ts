@@ -24,6 +24,12 @@ import {
   READ_MODEL_STATE_SCHEMA_VERSION,
   ReadModelState,
 } from "./read_model_state.ts";
+import type { CompactedBaseEntry } from "../../domain/datastore_v3/commit_store.ts";
+import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
+import {
+  metadata,
+  modelPartition,
+} from "../../domain/datastore_v3/v3_test_helpers.ts";
 
 async function withStatePath(
   fn: (path: string) => Promise<void> | void,
@@ -233,4 +239,73 @@ Deno.test("ReadModelState.incompletePid: names the process whose reset or base l
       reader.close();
     }
   });
+});
+
+function baseEntries(names: number): CompactedBaseEntry[] {
+  const partition = modelPartition().toString();
+  const entries: CompactedBaseEntry[] = [
+    { kind: "partition", namespace: "", partition, seq: names },
+  ];
+  for (let i = 0; i < names; i++) {
+    const name = `name-${i}`;
+    const key = `data/${name}/1/raw`;
+    const meta = DataMetadataSchema.parse(metadata(name, 1));
+    entries.push(
+      {
+        kind: "record",
+        namespace: "",
+        partition,
+        key,
+        record: { sha256: "a".repeat(64), content: { inline: "eA==" } },
+      },
+      {
+        kind: "version",
+        namespace: "",
+        partition,
+        version: { version: 1, metadata: meta },
+      },
+      { kind: "catalog-row", namespace: "", partition, metadata: meta },
+      { kind: "forward", namespace: "", partition, name, to: `${name}-new` },
+      {
+        kind: "file",
+        namespace: "",
+        key,
+        ownership: { owner: partition, mark: 1, present: true },
+      },
+    );
+  }
+  return entries;
+}
+
+Deno.test("ReadModelState.stageBase: prepares no statement however many entries it stages", async () => {
+  for (const names of [5, 100]) {
+    await withStatePath((path) => {
+      const state = ReadModelState.open(path);
+      try {
+        const prepare = DatabaseSync.prototype.prepare;
+        let prepared = 0;
+        DatabaseSync.prototype.prepare = function (
+          this: DatabaseSync,
+          ...args: Parameters<typeof prepare>
+        ) {
+          prepared++;
+          return prepare.apply(this, args);
+        };
+        try {
+          state.stageBase(baseEntries(names));
+        } finally {
+          DatabaseSync.prototype.prepare = prepare;
+        }
+        assertEquals(prepared, 0);
+        assertEquals(state.stagedFiles().length, names);
+        assertEquals(state.loadCatalogNames().length, names);
+        assertEquals(
+          state.loadContent("", "data/name-0/1/raw"),
+          { inline: "eA==" },
+        );
+      } finally {
+        state.close();
+      }
+    });
+  }
 });
