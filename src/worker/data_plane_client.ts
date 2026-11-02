@@ -551,23 +551,26 @@ async function readStreamedList(
       throw fail("sent a line that is neither a record nor its trailer");
     }
   };
-  let buffered = "";
+  // a record can span thousands of chunks: scan only each new chunk and join
+  // a line's pieces once, so reading stays linear in the reply size
+  let pending: string[] = [];
   if (response.body) {
     for await (
       const chunk of response.body.pipeThrough(new TextDecoderStream())
     ) {
-      buffered += chunk;
       let start = 0;
-      let newline = buffered.indexOf("\n", start);
+      let newline = chunk.indexOf("\n");
       while (newline !== -1) {
-        take(buffered.slice(start, newline));
+        pending.push(chunk.slice(start, newline));
+        take(pending.join(""));
+        pending = [];
         start = newline + 1;
-        newline = buffered.indexOf("\n", start);
+        newline = chunk.indexOf("\n", start);
       }
-      buffered = buffered.slice(start);
+      if (start < chunk.length) pending.push(chunk.slice(start));
     }
   }
-  take(buffered);
+  take(pending.join(""));
   if (count === undefined) {
     throw fail("ended before its trailer; the reply was cut off");
   }

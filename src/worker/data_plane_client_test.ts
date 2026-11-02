@@ -680,3 +680,23 @@ Deno.test("DataPlaneClient.queryData: a refusal names the route and status", asy
     "Data plane POST /data/query failed (400)",
   );
 });
+
+Deno.test("DataPlaneClient.queryData: reassembles a record spread over many chunks, with newlines on chunk boundaries", async () => {
+  const big = { id: "big", pad: "z".repeat(50_000) };
+  const text = JSON.stringify({ item: big }) + "\n" +
+    JSON.stringify({ item: { id: "next" } }) + "\n" + '{"count":2}\n';
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += 97) chunks.push(text.slice(i, i + 97));
+  const firstNewline = text.indexOf("\n");
+  const boundary = [
+    text.slice(0, firstNewline),
+    text.slice(firstNewline, firstNewline + 1),
+    text.slice(firstNewline + 1),
+  ];
+  for (const split of [chunks, boundary]) {
+    const { client } = clientWith(() => chunkedResponse(split));
+    assertEquals(await client.queryData({ predicate: "true" }), [big, {
+      id: "next",
+    }]);
+  }
+});
