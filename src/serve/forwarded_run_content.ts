@@ -21,7 +21,7 @@
  * Content checks for a forwarded run record and run snapshot
  * (swamp-club#3922, swamp-club#4245). {@link judgeRunRecord} decides what a
  * record may set; this module supplies it with the stored workflow and what
- * serve holds (child runs' decisions, signal outcomes), and authorises,
+ * serve holds (child runs' decisions), and authorises,
  * against the caller and again under the forwarded lock, what the record adds
  * that serve acts on when it resumes the run: inputs and expressions it
  * evaluates, vault references it rehydrates, and step outputs it reads data
@@ -47,6 +47,7 @@ import {
 } from "../domain/expressions/expression_references.ts";
 import { parseStoredVaultReference } from "../domain/models/data_writer.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import { parseParentRunLink } from "../domain/workflows/nested_run_ref.ts";
 import { stepResourceRefs } from "../domain/workflows/step_output_resolver.ts";
 import {
@@ -54,11 +55,6 @@ import {
   type StepTarget,
   workflowStepTargets,
 } from "../domain/workflows/step_targets.ts";
-import { parseStoredWait } from "../domain/workflows/signal_wait.ts";
-import {
-  registrationOf,
-  type WaitOutcome,
-} from "../domain/workflows/signal_wait_records.ts";
 import type { Workflow } from "../domain/workflows/workflow.ts";
 import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
 import {
@@ -149,7 +145,17 @@ export async function checkRunRecord(
     ctx.repoContext.workflowRepo,
     intent.run.workflowId,
   );
-  const held = await heldByServe(
+  // A run id names one run: some lookups and deletes select by it alone, so a
+  // first record reusing one would reach the run that holds it, in any workflow.
+  if (before === undefined) {
+    const holder = await ctx.repoContext.workflowRunRepo.findGlobalById(
+      createWorkflowRunId(intent.run.runId),
+    );
+    if (holder !== null && holder.workflowId !== intent.run.workflowId) {
+      return refused(op, "its run id is another workflow's run");
+    }
+  }
+  const children = await heldChildren(
     context,
     intent.run,
     before?.data,
@@ -161,33 +167,9 @@ export async function checkRunRecord(
     before: before?.data,
     after: after.data,
     workflowVaults: workflow?.vaults,
-    heldChild: (jobName, step) =>
-      held.children.get(heldKey(jobName, step.stepName)),
-    heldOutcome: (waitId) => held.outcomes.get(waitId.toLowerCase()),
+    heldChild: (jobName, step) => children.get(heldKey(jobName, step.stepName)),
   });
   if (judgement.refusal !== undefined) return refused(op, judgement.refusal);
-  const stolen = await waitIdRefusal(
-    context,
-    intent.run,
-    before?.data,
-    after.data,
-  );
-  if (stolen !== undefined) return refused(op, stolen);
-
-  // The record guard does not cover the control plane: an outcome is written
-  // once, so the only move left to catch is its removal with the run.
-  if (held.outcomes.size > 0) {
-    const store = ctx.repoContext.signalWaits;
-    context.recheckUnderLock(async () => {
-      if (store === undefined || !store.supported) return false;
-      for (const waitId of held.outcomes.keys()) {
-        if ((await store.store.findOutcome(waitId)).kind !== "found") {
-          return false;
-        }
-      }
-      return true;
-    });
-  }
 
   const authorize = () =>
     additionsRefusal(
@@ -206,116 +188,35 @@ export async function checkRunRecord(
   return undefined;
 }
 
-/**
- * Why a record may not name the signal waits it adds, or undefined. A wait id is
- * how a signal finds a member-driven run, so it belongs to the first run whose
- * record names it: registered here, first writer wins, and any other run naming
- * it is refused. The real run's record holds the id before anyone can read it, so
- * no other run's report can take its signals (swamp-club#4245).
- */
-async function waitIdRefusal(
-  context: ContentCheckContext,
-  run: { readonly workflowId: string; readonly runId: string },
-  before: WorkflowRunData | undefined,
-  after: WorkflowRunData,
-): Promise<string | undefined> {
-  const signalWaits = context.deps.ctx.repoContext.signalWaits;
-  if (signalWaits === undefined || !signalWaits.supported) return undefined;
-  const { store } = signalWaits;
-  const held = new Set(
-    (before?.jobs ?? []).flatMap((job) =>
-      job.steps.flatMap((step) => {
-        const stored = parseStoredWait(step.wait);
-        return stored?.kind === "valid" ? [stored.wait.id.toLowerCase()] : [];
-      })
-    ),
-  );
-  const refusal = "it names a signal wait another run holds";
-  for (const job of after.jobs) {
-    for (const step of job.steps) {
-      const stored = parseStoredWait(step.wait);
-      if (stored?.kind !== "valid") continue;
-      const waitId = stored.wait.id.toLowerCase();
-      if (held.has(waitId)) continue;
-      held.add(waitId);
-      const outcome = await store.findOutcome(waitId);
-      if (outcome.kind === "found" && outcome.record.runId !== run.runId) {
-        return refusal;
-      }
-      await store.register(
-        registrationOf(
-          {
-            workflowId: run.workflowId,
-            workflowName: after.workflowName,
-            runId: run.runId,
-            jobName: job.jobName,
-            stepName: step.stepName,
-          },
-          stored.wait,
-          context.now(),
-        ),
-      );
-      // Read back: the register leaves an existing record as it is.
-      const holder = await store.findRegistration(waitId);
-      if (holder.kind !== "found" || holder.record.runId !== run.runId) {
-        return refusal;
-      }
-    }
-  }
-  return undefined;
-}
-
-/** What serve holds that a record's steps may apply. */
-interface HeldByServe {
-  readonly children: ReadonlyMap<string, HeldChildRun>;
-  readonly outcomes: ReadonlyMap<string, WaitOutcome>;
-}
-
 function heldKey(jobName: string, stepName: string): string {
   return JSON.stringify([jobName, stepName]);
 }
 
 /**
- * Reads what serve holds for the record's steps: the stored child run of each
- * step that links one, when it links back, and the stored outcome of each
- * wait whose step changes status. Bounded by the record's own step count.
+ * The stored child of each step that links one and changes status, when it links
+ * back. Bounded by the record's own step count.
  */
-async function heldByServe(
+async function heldChildren(
   context: ContentCheckContext,
   run: { readonly workflowId: string; readonly runId: string },
   before: WorkflowRunData | undefined,
   after: WorkflowRunData,
-): Promise<HeldByServe> {
+): Promise<ReadonlyMap<string, HeldChildRun>> {
   const children = new Map<string, HeldChildRun>();
-  const outcomes = new Map<string, WaitOutcome>();
-  const signalWaits = context.deps.ctx.repoContext.signalWaits;
   for (const job of after.jobs) {
     const priors = before?.jobs.find((j) => j.jobName === job.jobName)?.steps;
     for (const step of job.steps) {
       const prior = priors?.find((s) => s.stepName === step.stepName);
-      if (prior?.status === step.status) continue;
-      if (step.nestedRun !== undefined) {
-        const child = await heldChildOf(context, run, job.jobName, step);
-        if (child !== undefined) {
-          children.set(heldKey(job.jobName, step.stepName), child);
-        }
+      if (prior?.status === step.status || step.nestedRun === undefined) {
+        continue;
       }
-      for (const raw of [prior?.wait, step.wait]) {
-        const stored = parseStoredWait(raw);
-        if (stored?.kind !== "valid" || signalWaits?.supported !== true) {
-          continue;
-        }
-        const outcome = await signalWaits.store.findOutcome(stored.wait.id);
-        if (
-          outcome.kind === "found" && outcome.record.runId === run.runId &&
-          outcome.record.workflowId === run.workflowId
-        ) {
-          outcomes.set(stored.wait.id.toLowerCase(), outcome.record);
-        }
+      const child = await heldChildOf(context, run, job.jobName, step);
+      if (child !== undefined) {
+        children.set(heldKey(job.jobName, step.stepName), child);
       }
     }
   }
-  return { children, outcomes };
+  return children;
 }
 
 /**

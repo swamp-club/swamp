@@ -1663,8 +1663,6 @@ export interface WorkflowRejectResponse {
  */
 export interface WorkflowSignalResponseData {
   waitId: string;
-  /** Serve does not resume this run: its owner does (swamp-club#4245). */
-  ownerResumes?: boolean;
   /** What swamp recorded about the signal. */
   signal: {
     id: string;

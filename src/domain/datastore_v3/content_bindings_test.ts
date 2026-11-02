@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
-import type { WaitOutcome } from "../workflows/signal_wait_records.ts";
-import {
-  StepRun,
-  type StepRunData,
-  type WorkflowRunData,
+import type {
+  StepRunData,
+  WorkflowRunData,
 } from "../workflows/workflow_run.ts";
 import {
   identityRefusal,
@@ -508,11 +506,6 @@ Deno.test("judgeRunRecord: what a member reports of a run they drive is out of s
       step("deploy", { status: "failed", allowedFailure: true }),
       { status: "succeeded" },
     ],
-    [
-      step("wait", { status: "waiting_signal", wait: { key: "k" } }),
-      step("wait", { status: "succeeded", wait: { key: "k" } }),
-      {},
-    ],
   ];
   for (const [from, to, fields] of reports) {
     assertEquals(
@@ -523,53 +516,58 @@ Deno.test("judgeRunRecord: what a member reports of a run they drive is out of s
   }
 });
 
-const WAIT_ID = "55555555-6666-4777-8888-999999999999";
-const openWait = {
+const OPEN_WAIT = {
   kind: "signal",
-  id: WAIT_ID,
+  id: "55555555-6666-4777-8888-999999999999",
   schema: { type: "object", properties: {} },
   deadline: "2026-10-27T00:00:00.000Z",
 };
 
-Deno.test("judgeRunRecord: a signal's outcome on a record must be the one serve stores, applied as a run applies it", () => {
-  const outcome = {
-    kind: "accepted",
-    waitId: WAIT_ID,
-    workflowId: WORKFLOW,
-    runId: RUN,
-    deadline: openWait.deadline,
-    settledAt: STARTED,
-    receipt: {
-      id: "66666666-7777-4888-8999-aaaaaaaaaaaa",
-      waitId: WAIT_ID,
-      receivedAt: STARTED,
-      submittedBy: "user:ana",
-    },
-    payload: { ok: true },
-  } as unknown as WaitOutcome;
-  const waiting = StepRun.fromData(
-    step("wait", { status: "waiting_signal", wait: openWait }),
+Deno.test("judgeRunRecord: a run a member drives names no signal wait and carries no signal's outcome (swamp-club#4245)", () => {
+  const running = run([step("wait", { status: "running" })]);
+  // Opening one, on a first record or later, or swapping one held.
+  assert(
+    judge(
+      running,
+      run([step("wait", { status: "waiting_signal", wait: OPEN_WAIT })]),
+    ).refusal !== undefined,
   );
-  assert(waiting.applyWaitOutcome(outcome));
-  const settled = waiting.toData();
-  const before = run([
-    step("wait", { status: "waiting_signal", wait: openWait }),
+  assert(
+    judge(
+      undefined,
+      run([step("wait", { status: "waiting_signal", wait: OPEN_WAIT })]),
+    ).refusal !== undefined,
+  );
+  const held = run([
+    step("wait", { status: "waiting_signal", wait: OPEN_WAIT }),
   ]);
-  const judged = (held: WaitOutcome | undefined, after: StepRunData) =>
-    judge(before, run([after]), { heldOutcome: () => held });
-  assertEquals(judged(outcome, settled).refusal, undefined);
-  assert(judged(undefined, settled).refusal !== undefined);
   assert(
-    judged(outcome, {
-      ...settled,
-      output: { type: "wait_for_signal", payload: { ok: false } },
-    }).refusal !== undefined,
+    judge(
+      held,
+      run([
+        step("wait", {
+          status: "waiting_signal",
+          wait: { ...OPEN_WAIT, id: "66666666-7777-4888-8999-aaaaaaaaaaaa" },
+        }),
+      ]),
+    ).refusal !== undefined,
   );
-  // A receipt alone, with no output, is a decision too.
+  // A signal's outcome, with or without a wait to go with it.
   assert(
-    judged(undefined, {
-      ...step("wait", { status: "failed" }),
-      wait: settled.wait,
-    }).refusal !== undefined,
+    judge(
+      running,
+      run([
+        step("wait", {
+          status: "succeeded",
+          output: { type: "wait_for_signal", payload: { ok: true } },
+        }),
+      ]),
+    ).refusal !== undefined,
+  );
+  // One a record already held stays, and a retry may clear it.
+  assertEquals(judge(held, held).refusal, undefined);
+  assertEquals(
+    judge(held, run([step("wait", { status: "pending" })])).refusal,
+    undefined,
   );
 });

@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
-import { hasServeUpstream } from "../../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import { checkLastEvaluation } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
 import {
@@ -395,7 +394,17 @@ export const workflowRunCommand = new Command()
             unlocked.repoContext.workflowRepo,
             workflowIdOrName,
           );
-          return found === null ? null : await trust.workflow(found.name);
+          if (found === null) return undefined;
+          const cache = await trust.workflow(found.name);
+          // The service would read the repository for a missing cache, which
+          // holds what this read did not vouch for: nothing checked, no replay.
+          if (cache === null) {
+            throw new UserError(
+              `No previously evaluated workflow found for "${found.name}" that this checkout can replay.\n\nEvaluate it first:\n  swamp workflow evaluate ${found.name}`,
+              "evaluation_not_checked",
+            );
+          }
+          return cache;
         },
       )
       : undefined;
@@ -723,7 +732,6 @@ export const workflowRunCommand = new Command()
                   commandTarget: formatCommandTarget({
                     repoDir: options.repoDir as string | undefined,
                   }),
-                  signalByIdOnly: hasServeUpstream(),
                 });
               const eventStream = workflowRun(libCtx, deps, {
                 workflowIdOrName,

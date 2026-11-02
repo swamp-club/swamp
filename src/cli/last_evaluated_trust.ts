@@ -83,16 +83,18 @@ const EVALUATION_NOT_CHECKED = "evaluation_not_checked";
 /**
  * What a run may do with its last evaluation. `vetted` holds what the check read:
  * the run replays those bytes, never a later read of the repository, so what it
- * runs is what was checked (swamp-club#4245).
+ * runs is what was checked (swamp-club#4245). A null `cache` means there is none,
+ * which the run reports as it reports any missing evaluation.
  */
 export type LastEvaluationCheck<T> =
   | { readonly stands: true; readonly vetted: false }
-  | { readonly stands: true; readonly vetted: true; readonly cache: T }
+  | { readonly stands: true; readonly vetted: true; readonly cache: T | null }
   | { readonly stands: false };
 
 /**
  * Checks the last evaluation a run would replay. `read` loads it through the
- * trust it is given. A checkout not written through serve stands without
+ * trust it is given, and answers undefined when no workflow or behavior has the
+ * name, which the run then reports as it does any unknown name. A checkout not written through serve stands without
  * reading. An evaluation another member wrote does not stand, and says so in both
  * output modes. Any other failure refuses: the caller asked for an exact replay,
  * and a fresh evaluation could run different inputs.
@@ -103,7 +105,7 @@ export async function checkLastEvaluation<T>(
   repoDir: string,
   repos: EvaluationRepos,
   outputMode: "log" | "json",
-  read: (trust: EvaluationTrust) => Promise<T | null>,
+  read: (trust: EvaluationTrust) => Promise<T | null | undefined>,
   deps: LastEvaluatedDeps = realDeps,
 ): Promise<LastEvaluationCheck<T>> {
   const upstream = await deps.upstream(repoDir);
@@ -115,14 +117,7 @@ export async function checkLastEvaluation<T>(
     // Unknown is not unset: "" matches only serve's own records and takes
     // the checkout's strict path.
     const cache = await read(await deps.trust(repoDir, repos, principal));
-    // Nothing checked means nothing to replay: never a read of the repository,
-    // which could hold what this read did not.
-    if (cache === null) {
-      throw new UserError(
-        "No previous evaluation was found to replay. Evaluate it first, or run without --last-evaluated.",
-        EVALUATION_NOT_CHECKED,
-      );
-    }
+    if (cache === undefined) return { stands: true, vetted: false };
     return { stands: true, vetted: true, cache };
   } catch (error) {
     if (error instanceof UserError && error.code === EVALUATION_NOT_CHECKED) {

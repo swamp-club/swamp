@@ -176,9 +176,7 @@ import {
 } from "./rate_limiter.ts";
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
-import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
 import type { DatastoreRoute } from "./datastore_routes.ts";
-import { workflowAccessResource } from "./handlers/resource_resolution.ts";
 import { ForwardedContentAuthority } from "./forwarded_content_authorization.ts";
 import {
   type DatastoreLockLeases,
@@ -349,10 +347,7 @@ function followerDatastoreRefusal(
   if (gate === undefined || gate.role === "leader") return undefined;
   // Leases live on the leader, so listing them is the leader's to answer
   // (swamp-club#4121).
-  // A signal's outcome is too: a follower that has not seen it yet would answer
-  // that there is none (swamp-club#4245).
-  const reads = (req.method === "GET" && route.kind !== "locks" &&
-    route.kind !== "wait-outcome") ||
+  const reads = (req.method === "GET" && route.kind !== "locks") ||
     route.kind === "has";
   if (reads && !gate.isStale()) return undefined;
   if (!reads && ctx.leaderLink !== undefined) {
@@ -362,10 +357,6 @@ function followerDatastoreRefusal(
     notLeaderResponse(new ServeNotLeaderError(gate.leader(), reads)),
   );
 }
-
-/** A signal wait's id, as outcomes are stored under it. */
-const WAIT_ID_FORM =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The read-access fingerprint of a caller with no authorization to apply. */
 export const UNRESTRICTED_READ_ACCESS = "unrestricted";
@@ -516,10 +507,6 @@ async function answerDatastoreRequest(
       case "quarantine-change":
         return req.method === "GET"
           ? await api.quarantineState(route.txnId)
-          : methodNotAllowed("GET");
-      case "wait-outcome":
-        return req.method === "GET"
-          ? await api.waitOutcome(route.waitId)
           : methodNotAllowed("GET");
     }
   } catch (error) {
@@ -1819,31 +1806,6 @@ class DatastoreApi {
       return failure(404, "not_found", "No such quarantined change");
     }
     return Response.json({ txnId, state: record.state });
-  }
-
-  /**
-   * `GET signal-outcomes/{waitId}`: the outcome serve holds for a signal wait
-   * (swamp-club#4245), so a run in a serve-mode checkout can resume from a
-   * signal serve took. It carries a signal's payload, so it needs what reading
-   * the run does; a wait the caller may not see answers as one that has none.
-   */
-  async waitOutcome(rawWaitId: string): Promise<Response> {
-    const none = () => failure(404, "not_found", "No outcome for this wait");
-    const signalWaits = this.#deps.ctx.repoContext.signalWaits;
-    if (signalWaits === undefined || !signalWaits.supported) return none();
-    const waitId = rawWaitId.toLowerCase();
-    if (!WAIT_ID_FORM.test(waitId)) return none();
-    const stored = await signalWaits.store.findOutcome(waitId);
-    if (stored.kind !== "found") return none();
-    const workflow = await findWorkflowById(
-      this.#deps.ctx.repoContext.workflowRepo,
-      stored.record.workflowId,
-    );
-    const resource = workflow === null
-      ? unresolvedAccessResource("workflow", stored.record.workflowId)
-      : workflowAccessResource(workflow);
-    if (!this.#writeAuthority().allows("read", resource)) return none();
-    return Response.json({ outcome: stored.record });
   }
 
   /**

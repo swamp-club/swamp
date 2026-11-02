@@ -79,7 +79,7 @@ import type {
   WorkflowSignalPendingResponseData,
   WorkflowSignalResponseData,
 } from "./protocol.ts";
-import { continueSettledRun, serveMayActOnRun } from "./resume_launcher.ts";
+import { continueSettledRun } from "./resume_launcher.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import {
   createWorkflowId,
@@ -919,25 +919,6 @@ export function auditTakenSignals(ctx: ConnectionContext): void {
       "workflow.signal.taken",
       `receipt=${taken.receiptId} key=${taken.key} wait=${taken.waitId} run=${taken.runId} workflow=${taken.workflowId}`,
     );
-}
-
-/**
- * `data` with `ownerResumes` set when its run is one serve leaves to its owner.
- */
-export async function withOwnerResumes<
-  T extends { readonly workflowId?: string; readonly runId?: string },
->(ctx: ConnectionContext, data: T): Promise<T & { ownerResumes?: boolean }> {
-  if (
-    ctx.repoContext.takesForwardedRunRecords !== true ||
-    data.workflowId === undefined || data.runId === undefined
-  ) return data;
-  const run = await ctx.repoContext.workflowRunRepo.findById(
-    createWorkflowId(data.workflowId),
-    createWorkflowRunId(data.runId),
-  ).catch(() => null);
-  return run !== null && !serveMayActOnRun(ctx, run)
-    ? { ...data, ownerResumes: true }
-    : data;
 }
 
 /**

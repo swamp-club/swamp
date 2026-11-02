@@ -62,11 +62,6 @@ export type DatastoreRoute =
     readonly kind: "quarantine-change";
     readonly namespace: string;
     readonly txnId: string;
-  }
-  | {
-    readonly kind: "wait-outcome";
-    readonly namespace: string;
-    readonly waitId: string;
   };
 
 /**
@@ -108,9 +103,6 @@ export function matchDatastoreRoute(
   }
   if (rest.length === 2 && rest[0] === "locks") {
     return { kind: "lease", namespace, leaseId: rest[1] };
-  }
-  if (rest.length === 2 && rest[0] === "signal-outcomes") {
-    return { kind: "wait-outcome", namespace, waitId: rest[1] };
   }
   if (rest.length === 1 && rest[0] === "quarantine") {
     return { kind: "quarantine", namespace };
@@ -156,7 +148,5 @@ export function datastoreRouteTemplate(route: DatastoreRoute): string {
       return "/api/v1/datastore/{namespace}/quarantine/{txnId}/discard";
     case "quarantine-change":
       return "/api/v1/datastore/{namespace}/quarantine/{txnId}";
-    case "wait-outcome":
-      return "/api/v1/datastore/{namespace}/signal-outcomes/{waitId}";
   }
 }

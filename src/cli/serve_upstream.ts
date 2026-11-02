@@ -286,10 +286,11 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
       recover: { applies: true, reason: APPLIES },
       resume: { applies: true, reason: APPLIES },
       approvals: { applies: true, reason: APPLIES },
-      waits: { applies: true, reason: APPLIES },
       schedule: { applies: true, reason: APPLIES },
       schema: { applies: true, reason: APPLIES },
       trigger: { applies: true, reason: APPLIES },
+      // The only waits a checkout can signal are serve's.
+      waits: { applies: false, reason: DECIDED_ON_SERVE },
       approve: { applies: false, reason: DECIDED_ON_SERVE },
       reject: { applies: false, reason: DECIDED_ON_SERVE },
       signal: { applies: false, reason: DECIDED_ON_SERVE },

@@ -1868,7 +1868,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "forwarded content: a wait id copied into a second run is refused, and the victim's wait still settles (swamp-club#4245)",
+    "forwarded content: a record that names a signal wait is refused and writes nothing to serve's wait records (swamp-club#4245)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1884,8 +1884,9 @@ Deno.test({
         const waits = server.ctx.repoContext.signalWaits;
         assert(waits?.supported === true);
         const waitId = crypto.randomUUID();
-        const waiting = (runId: string) =>
-          runRecord(runId, {
+        const planted = await forwardRun(
+          server,
+          runRecord(crypto.randomUUID(), {
             status: "suspended",
             jobs: [{
               jobName: "main",
@@ -1901,22 +1902,15 @@ Deno.test({
                 },
               }],
             }],
-          });
-        const victim = crypto.randomUUID();
-        const first = await forwardRun(server, waiting(victim));
-        assertEquals(first.status, 200, JSON.stringify(first.json));
-        // Serve holds it on the forward, so it can be signalled by id at once.
-        const held = await waits.store.findRegistration(waitId);
-        assert(held.kind === "found");
-        assertEquals(held.record.runId, victim);
-
-        const thief = await forwardRun(server, waiting(crypto.randomUUID()));
-        assertEquals(thief.status, 403, JSON.stringify(thief.json));
-        assertEquals(thief.json.reason, "content-refused");
-
-        const still = await waits.store.findRegistration(waitId);
-        assert(still.kind === "found");
-        assertEquals(still.record.runId, victim);
+          }),
+        );
+        assertEquals(planted.status, 403, JSON.stringify(planted.json));
+        assertEquals(planted.json.reason, "content-refused");
+        assertEquals(
+          (await waits.store.findRegistration(waitId)).kind,
+          "absent",
+        );
+        assertEquals((await waits.store.listRegistrations()).length, 0);
       },
       undefined,
       MANAGED,

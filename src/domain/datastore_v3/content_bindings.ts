@@ -38,12 +38,9 @@
  */
 
 import { canonicalJson } from "../expressions/expression_references.ts";
-import { parseStoredWait } from "../workflows/signal_wait.ts";
-import type { WaitOutcome } from "../workflows/signal_wait_records.ts";
-import {
-  StepRun,
-  type StepRunData,
-  type WorkflowRunData,
+import type {
+  StepRunData,
+  WorkflowRunData,
 } from "../workflows/workflow_run.ts";
 import type { Intent } from "./intent.ts";
 
@@ -218,11 +215,7 @@ export interface RunRecordContext {
     jobName: string,
     step: StepRunData,
   ) => HeldChildRun | undefined;
-  /** The outcome serve holds for a signal wait, by wait id. */
-  readonly heldOutcome?: (waitId: string) => WaitOutcome | undefined;
 }
-
-const WAITING_SIGNAL = new Set(["waiting", "waiting_signal"]);
 
 /**
  * Judges a forwarded run record against the record it replaces and what serve
@@ -412,7 +405,7 @@ function judgeStep(
     }
   }
   return decisionRefusal(context, jobName, prior, step) ??
-    signalDecisionRefusal(context, prior, step);
+    signalRefusal(prior, step);
 }
 
 /**
@@ -441,48 +434,24 @@ function decisionRefusal(
 }
 
 /**
- * A signal's outcome is one serve holds: a record setting a receipt or a
- * signal's output must hold what applying that outcome gives, worked out by the
- * same code a run applies it with. A step's status is the run's to report, so
- * nothing here asks that a step reached `succeeded` through a signal.
+ * A run a member drives cannot wait for a signal: serve can deliver one only to a
+ * wait it registered itself. So a forwarded record names no new wait and carries
+ * no signal's outcome. A wait id on a record would otherwise reach serve's wait
+ * records, which cancel and delete by id, from a member's say-so. A step's status
+ * is the run's to report; nothing here asks how it got there.
  */
-function signalDecisionRefusal(
-  context: RunRecordContext,
+function signalRefusal(
   prior: StepRunData | undefined,
   step: StepRunData,
 ): string | undefined {
-  const receiptOf = (s: StepRunData | undefined) =>
-    (s?.wait as { receipt?: unknown } | undefined)?.receipt;
+  if (step.wait !== undefined && !same(prior?.wait, step.wait)) {
+    return "a run a member drives cannot wait for a signal: run it with --server";
+  }
   const signalOutput =
     (step.output as { type?: unknown } | undefined)?.type === "wait_for_signal";
-  const sets =
-    !same(receiptOf(prior), receiptOf(step)) && receiptOf(step) !== undefined ||
-    (signalOutput && !same(prior?.output, step.output));
-  if (!sets) return undefined;
-  const raw =
-    (prior !== undefined && WAITING_SIGNAL.has(prior.status)
-      ? prior.wait
-      : step.wait) as Record<string, unknown> | undefined;
-  const stored = parseStoredWait(raw);
-  const outcome = stored?.kind === "valid"
-    ? context.heldOutcome?.(stored.wait.id)
+  return signalOutput && !same(prior?.output, step.output)
+    ? "it sets a signal's outcome serve does not hold"
     : undefined;
-  if (outcome?.kind !== "accepted") {
-    return "it sets a signal's outcome serve does not hold";
-  }
-  const { receipt: _receipt, ...open } = raw!;
-  const applied = StepRun.fromData({
-    stepName: step.stepName,
-    status: "waiting_signal",
-    wait: open,
-  });
-  if (!applied.applyWaitOutcome(outcome)) {
-    return "it sets a signal's outcome serve does not hold";
-  }
-  const data = applied.toData();
-  return same(data.output, step.output) && same(data.wait, step.wait)
-    ? undefined
-    : "it sets a signal's outcome serve does not hold";
 }
 
 function stepKey(jobName: string, stepName: string): string {

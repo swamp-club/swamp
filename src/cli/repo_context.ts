@@ -26,7 +26,6 @@
  */
 
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
-import { withServeOutcomes } from "../infrastructure/datastore_v3/serve_wait_outcomes.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import { recordServeUpstreamFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
 import {
@@ -2317,6 +2316,15 @@ export function resolveSignalWaitSupport(
     v3?: V3DatastoreConfig;
   },
 ): SignalWaitSupport {
+  // Serve can deliver a signal only to a wait it registered itself, so a member
+  // driving a run from a checkout cannot wait on one (swamp-club#4245).
+  if (options?.v3 !== undefined && serveUpstreamAt(options.v3.path)) {
+    return {
+      supported: false,
+      reason:
+        "a run that waits for a signal runs on serve in team mode: run it with --server, or from a trigger or schedule",
+    };
+  }
   const bucket = options?.v3 === undefined
     ? undefined
     : v3BucketNamespacedStoreAt(options.v3);
@@ -2328,20 +2336,13 @@ export function resolveSignalWaitSupport(
     };
   }
   if (!isCustomDatastoreConfig(config)) {
-    const local = new ControlPlaneSignalWaitStore(
-      new FileSystemControlPlaneStore(
-        config.namespace ? join(config.path, config.namespace) : config.path,
-      ),
-    );
-    // Serve decides a signal in a checkout written through it: its outcome
-    // is the one a run here resumes from (swamp-club#4245).
-    const upstream = serveUpstreamAt(options?.v3?.path ?? config.path);
     return {
       supported: true,
       localRunAbsenceIsAuthoritative: options?.runsInDatastore === true,
-      store: upstream === undefined ? local : withServeOutcomes(
-        local,
-        (waitId, signal) => upstream.client().waitOutcome(waitId, signal),
+      store: new ControlPlaneSignalWaitStore(
+        new FileSystemControlPlaneStore(
+          config.namespace ? join(config.path, config.namespace) : config.path,
+        ),
       ),
     };
   }

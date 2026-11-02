@@ -6674,12 +6674,10 @@ to the same write. The checks the handlers share are one implementation
      on a nested step, one in the stored record of the child it links to when
      that child links back. A record never creates or changes one. Only a retry
      clears one, back to `pending`, and a step holding one stays in the record.
-     A signal's receipt or output must be what applying its stored outcome gives
-     (the same `applyWaitOutcome` a run uses).
-  3. A signal wait's id belongs to the first run whose record names it: serve
-     registers it when the record is judged, first writer wins, and a record
-     naming an id another run holds is refused. The real run's record holds the
-     id before anyone else can read it.
+     A run a member drives cannot wait for a signal, so a record names no new
+     signal wait and carries no signal's outcome.
+  3. Nothing a forwarded record says reaches serve's wait records. A first record
+     cannot reuse a run id another workflow holds.
   4. Frozen: identity, log file; the triggering principal (only serve records
      one), parent, allowed vaults (a first record's stay within the workflow's
      list), initiator, plan and inherited expressions; what a waiting gate shows
@@ -6700,8 +6698,7 @@ to the same write. The checks the handlers share are one implementation
 The content-derived decisions (`tag`, expression reads, vault reads) are made
 before the forwarded lock, as serve's handlers make theirs before they save;
 under the lock serve re-decides access, a run record's additions among it, and
-checks that no record the content was judged against moved. A signal outcome
-is not a record, so its presence is rechecked under the lock on its own.
+checks that no record the content was judged against moved.
 
 **Known limit.** A retry whose preparation fails restores the run from a snapshot
 that still holds the cleared decision. That record is refused, since serve no
@@ -6715,14 +6712,10 @@ is an error, never a local write. An offline decision cannot be serve's, so thes
 commands do not work offline. `workflow cancel --run` stays local for a run in
 this checkout's run tracker and goes to serve for any other, since a member's pid
 means nothing on another machine. Serve does not resume a run it does not drive:
-approving or signalling one leaves it for its owner, and the reply says so
-(`ownerResumes`). A member-driven wait is signalled by its id only; a signal by key
-reaches only runs serve drives. A signal's outcome lives in serve's control plane:
-a checkout's wait store takes it from `GET signal-outcomes/{waitId}` (read on the
-workflow), and keeps a copy, so its run can resume. A follower forwards that read to
-its leader, since one behind it would answer that there is none. No answer is never
-final: the next read asks again, and an outcome serve holds beats one kept locally.
-A local timeout needs no outcome on serve, and is judged on the member's clock.
+approving one leaves it for its owner, and the reply says so (`ownerResumes`). A
+member-driven run cannot wait for a signal: the checkout refuses such a workflow
+before it starts, naming `--server`. `workflow waits` also goes to serve, whose
+waits are the only ones a checkout can signal.
 
 **Evaluations serve runs.** Serve runs `--last-evaluated` only with an
 evaluation it wrote itself (`EvaluationTrust`,
@@ -6734,7 +6727,7 @@ refused with a request to evaluate on serve. The bytes parsed are the ones
 whose writer was checked. A serve-mode checkout applies the same rule to its own
 `--last-evaluated` (`checkLastEvaluation`): it replays only an evaluation serve or
 its own member wrote, from the bytes it checked, and sets aside one another member
-wrote and evaluates again. Finding none, or failing to check, refuses. A run log is read and appended to only under the
+wrote and evaluates again. Failing to check refuses, and finding none is reported as usual. A run log is read and appended to only under the
 repo's own run-log directories, whatever path a record holds.
 
 **Proof of possession.** A commit may name a chunk only when one of these

@@ -84,7 +84,6 @@ import {
 } from "../domain/workflows/continuation_claim.ts";
 import { decideContinuation } from "../domain/workflows/run_continuation.ts";
 import {
-  ensureRegistered,
   settleExpiredWaits,
   takePendingSignalsOfRun,
 } from "../domain/workflows/signal_wait_cleanup.ts";

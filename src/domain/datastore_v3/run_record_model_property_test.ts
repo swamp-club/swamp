@@ -21,16 +21,16 @@
  * A model-based property test of {@link judgeRunRecord} (swamp-club#3922,
  * swamp-club#4245).
  *
- * It generates member-driven and serve-driven runs of plain steps, gates and
- * signal waits, and drives them through what a real run records and what serve's
+ * It generates member-driven and serve-driven runs of plain steps and gates, and drives them through what a real run records and what serve's
  * handlers record. Between them, a member holding only `run` forges the next
  * record from the current one.
  *
  * A member's report of a run they drive is out of scope ("Run records: the
  * threat model" in `design/enablers/access-control.md`), so the oracle states
  * only what serve guarantees, across the history of what landed:
- * - a decision or signal outcome on a record is one serve's handler made, and a
- *   record never creates, changes or drops one, other than a retry clearing it;
+ * - a decision on a record is one serve's handler made, and a record never
+ *   creates, changes or drops one, other than a retry clearing it;
+ * - a record names no signal wait and carries no signal's outcome;
  * - a run serve drives takes no forwarded record;
  * - who triggered a run, its parent, vaults, initiator, plan and log are frozen;
  * - step keys are unique;
@@ -48,7 +48,6 @@ import {
   type StepRunData,
   type WorkflowRunData,
 } from "../workflows/workflow_run.ts";
-import type { WaitOutcome } from "../workflows/signal_wait_records.ts";
 import {
   canonicalRunLogFile,
   isCanonicalRunLogFile,
@@ -61,7 +60,7 @@ const RUN = "33333333-4444-4555-8666-777777777777";
 const T0 = "2026-10-26T00:00:00.000Z";
 const FORGED_AT = "2020-01-01T00:00:00.000Z";
 
-type Kind = "plain" | "gate" | "signal";
+type Kind = "plain" | "gate";
 
 interface StepSpec {
   readonly job: string;
@@ -71,7 +70,7 @@ interface StepSpec {
 
 const workflowSpec = fc.array(
   fc.record({
-    kind: fc.constantFrom<Kind>("plain", "gate", "signal"),
+    kind: fc.constantFrom<Kind>("plain", "gate"),
     job: fc.constantFrom("main", "post"),
   }),
   { minLength: 1, maxLength: 5 },
@@ -143,39 +142,11 @@ function decision(approved: boolean, decidedBy = "user:approver") {
   return { approved, decidedBy, decidedAt: T0 };
 }
 
-function waitIdOf(spec: { readonly name: string; readonly job: string }) {
-  const hex = [...`${spec.job}/${spec.name}`]
-    .map((c) => c.charCodeAt(0).toString(16).padStart(2, "0"))
-    .join("").slice(-12).padStart(12, "0");
-  return `aaaaaaaa-9999-4aaa-8bbb-${hex}`;
-}
-
-function outcomeOf(spec: StepSpec): WaitOutcome {
-  const waitId = waitIdOf(spec);
-  return {
-    kind: "accepted",
-    waitId,
-    workflowId: WORKFLOW,
-    runId: RUN,
-    deadline: "2030-01-01T00:00:00.000Z",
-    settledAt: T0,
-    receipt: {
-      id: "bbbbbbbb-9999-4aaa-8bbb-000000000000",
-      waitId,
-      receivedAt: T0,
-      submittedBy: "user:signaller",
-    },
-    payload: { ok: true },
-  } as unknown as WaitOutcome;
-}
-
 interface Move {
   readonly label: string;
   readonly record: WorkflowRunData;
   /** Made by serve's handler, so never forwarded or judged. */
   readonly byServe?: boolean;
-  /** The signal outcome the move needs serve to hold. */
-  readonly stores?: WaitOutcome;
 }
 
 /** What a real run, or serve's handlers on its behalf, can record next. */
@@ -209,22 +180,11 @@ function moves(specs: readonly StepSpec[], record: WorkflowRunData): Move[] {
             status: "succeeded",
             output: { type: "model_method", step: spec.name },
           }));
-        } else if (spec.kind === "gate") {
+        } else {
           move("gate waits", (s) => ({
             ...s,
             status: "waiting_approval",
             approvalPrompt: "Deploy?",
-          }));
-        } else {
-          move("wait opens", (s) => ({
-            ...s,
-            status: "waiting_signal",
-            wait: {
-              kind: "signal",
-              id: waitIdOf(spec),
-              schema: { type: "object", properties: {} },
-              deadline: "2030-01-01T00:00:00.000Z",
-            },
           }));
         }
         break;
@@ -246,13 +206,6 @@ function moves(specs: readonly StepSpec[], record: WorkflowRunData): Move[] {
             status: s.approvalDecision!.approved ? "succeeded" : "failed",
           }));
         }
-        break;
-      case "waiting_signal":
-        move("run applies a stored signal", (s) => {
-          const applied = StepRun.fromData(s);
-          applied.applyWaitOutcome(outcomeOf(spec));
-          return applied.toData();
-        }, { stores: outcomeOf(spec) });
         break;
       case "failed":
         if (step.approvalDecision !== undefined) {
@@ -277,7 +230,7 @@ const forgeryChoice = fc.record({
     "rename-step",
     "duplicate-step",
     "forge-signal",
-    "forge-receipt",
+    "forge-wait",
     "gate-fields",
     "frozen-field",
     "log-file",
@@ -352,21 +305,15 @@ function forge(record: WorkflowRunData, c: ForgeryChoice): WorkflowRunData {
         status: "succeeded",
         output: { type: "wait_for_signal", payload: { forged: true } },
       }));
-    case "forge-receipt":
+    case "forge-wait":
       return edit((s) => ({
         ...s,
+        status: "waiting_signal",
         wait: {
-          ...(s.wait as Record<string, unknown> | undefined),
           kind: "signal",
-          id: waitIdOf({ job, name }),
+          id: "cccccccc-9999-4aaa-8bbb-000000000000",
           schema: { type: "object", properties: {} },
           deadline: "2030-01-01T00:00:00.000Z",
-          receipt: {
-            id: "cccccccc-9999-4aaa-8bbb-000000000000",
-            waitId: waitIdOf({ job, name }),
-            receivedAt: T0,
-            submittedBy: "user:forger",
-          },
         },
       }));
     case "gate-fields": {
@@ -418,7 +365,6 @@ function violation(
   before: WorkflowRunData,
   after: WorkflowRunData,
   judged: RunRecordJudgement,
-  held: ReadonlyMap<string, WaitOutcome>,
 ): string | undefined {
   if (before.triggeringPrincipal !== undefined) {
     return "a serve-driven run took a forwarded record";
@@ -467,26 +413,16 @@ function violation(
     if (is.approvalDecision !== undefined && was === undefined) {
       return `decision of ${k} created by a record`;
     }
-    const receipt = (is.wait as { receipt?: { id?: string } } | undefined)
-      ?.receipt;
-    const wasReceipt = (was?.wait as { receipt?: { id?: string } } | undefined)
-      ?.receipt;
     if (
-      receipt !== undefined &&
-      JSON.stringify(receipt) !== JSON.stringify(wasReceipt)
+      is.wait !== undefined &&
+      JSON.stringify(is.wait) !== JSON.stringify(was?.wait)
     ) {
-      const outcome = held.get(
-        receipt.id === undefined ? "" : (is.wait as { id: string }).id,
-      );
-      if (outcome?.kind !== "accepted") {
-        return `signal receipt of ${k} is not one serve holds`;
-      }
+      return `a record named a signal wait on ${k}`;
     }
     if (
       (is.output as { type?: string } | undefined)?.type ===
         "wait_for_signal" &&
-      JSON.stringify(is.output) !== JSON.stringify(was?.output) &&
-      (is.output as { payload?: { forged?: boolean } }).payload?.forged === true
+      JSON.stringify(is.output) !== JSON.stringify(was?.output)
     ) {
       return `signal output of ${k} is not one serve holds`;
     }
@@ -523,14 +459,12 @@ function play(
   scenario: readonly ({ legit: number } | { forge: ForgeryChoice })[],
   coverage: Coverage,
 ): string | undefined {
-  const held = new Map<string, WaitOutcome>();
   const judge = (before: WorkflowRunData, after: WorkflowRunData) =>
     judgeRunRecord({
       workflowId: WORKFLOW,
       runId: RUN,
       before,
       after,
-      heldOutcome: (waitId) => held.get(waitId),
     });
   let record = initial(specs, fields);
   const serveDriven = fields.triggeringPrincipal !== undefined;
@@ -539,9 +473,6 @@ function play(
       const options = moves(specs, record);
       if (options.length === 0) continue;
       const move = options[next.legit % options.length];
-      if (move.stores?.kind === "accepted") {
-        held.set(move.stores.waitId, move.stores);
-      }
       // On a serve-driven run every write is serve's own.
       if (!move.byServe && !serveDriven) {
         const judged = judge(record, move.record);
@@ -565,7 +496,7 @@ function play(
       continue;
     }
     coverage.landed++;
-    const broken = violation(record, forged, judged, held);
+    const broken = violation(record, forged, judged);
     if (broken !== undefined) return `${next.forge.kind}: ${broken}`;
     record = forged;
   }
@@ -604,8 +535,6 @@ Deno.test("judgeRunRecord (model): every step a real run records is accepted", (
       "approver denies",
       "run applies a decision",
       "a retry re-opens a gate",
-      "wait opens",
-      "run applies a stored signal",
     ]
   ) {
     assert((coverage.legit[label] ?? 0) > 0, `never tried: ${label}`);

@@ -2932,31 +2932,3 @@ Deno.test("JsonWorkflowRunRenderer: a suspended run carries the key holders a st
   const plain = await renderJson([suspended]);
   assertEquals("waitKeyHolders" in (plain.stdout[0] as object), false);
 });
-
-Deno.test("createWorkflowRunRenderer: a run a member drives names the signal command by wait id in JSON (swamp-club#4245)", async () => {
-  const original = console.log;
-  const lines: string[] = [];
-  console.log = (line: string) => lines.push(line);
-  try {
-    const renderer = createWorkflowRunRenderer("json", {
-      workflowName: "release",
-      signalByIdOnly: true,
-    });
-    const handlers = renderer.handlers();
-    await handlers.suspended?.({
-      kind: "suspended",
-      run: makeRunView("succeeded"),
-      jobId: "release",
-      stepId: "review",
-      wait: { id: WAIT_ID, deadline: WAIT_DEADLINE, key: "k" },
-    } as never);
-  } finally {
-    console.log = original;
-  }
-  const out = JSON.parse(lines[0]);
-  assertEquals(out.signalRequired.waitId, WAIT_ID);
-  assertEquals(
-    out.signalCommand,
-    `swamp workflow signal ${WAIT_ID} --payload '<json>'`,
-  );
-});

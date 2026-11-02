@@ -94,11 +94,6 @@ export interface WorkflowSignalData {
   /** What swamp recorded about the signal. */
   signal: SignalReceipt;
   /**
-   * Set by serve on a run a member drives: serve does not resume it, and the
-   * run's owner does (swamp-club#4245).
-   */
-  ownerResumes?: boolean;
-  /**
    * True when this signal settled the run's last wait and no gate or nested
    * run is still waited on, so the run can be resumed. Read from the run
    * record as this host has it, which on a shared datastore may be behind.

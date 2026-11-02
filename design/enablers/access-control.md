@@ -1593,15 +1593,14 @@ it, and the commit stamp says who. Nothing outside that run acts on it.
 **For a gate that must bind its runner, run the workflow on serve** (`--server`, a
 trigger or a schedule, optionally on workers).
 
-**Signals in a serve-mode checkout.** A member-driven wait is signalled by its id
-only, and a member-driven run prints that id and the command when it suspends. A
-signal by key, and a signal held under a key (`acceptEarly`), reach only runs serve
-drives. If no serve-driven wait holds the key, the sender is answered as when no
-wait holds it. Why: a member reports the keys and timings on their own record, so
-any match by key would let one member's report choose which run receives a signal,
-and refusing when two waits claim a key would let any member block delivery by key.
-A wait id cannot be guessed, belongs to the first run whose record names it, and
-the real run's record holds it before anyone else can read it.
+**Signals in a serve-mode checkout.** A run that waits for a signal runs on serve.
+In a serve-mode checkout, a workflow with a signal wait is refused before it starts,
+because serve can deliver a signal only to a wait it registered itself. A forwarded
+record names no signal wait, so nothing a member reports reaches serve's wait
+records. Decided on 2026-11-02: local delivery would need the judge to accept
+outcomes a member wrote, and a wait exists for someone else to signal. Approval gates
+are unaffected: `approve` and `reject` go to serve's handlers. Use `--server`, a
+trigger or a schedule.
 
 **Limits of the marker.** On a v3 serve, a run a CLI drove directly against the
 datastore also counts as member-driven, so its owner resumes it. A v2 datastore

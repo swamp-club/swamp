@@ -68,11 +68,6 @@ export interface WorkflowRunRenderOpts {
    * the same server or repository (for example " --server ws://host:9000").
    */
   commandTarget?: string;
-  /**
-   * A run a member drives through serve: signals reach its waits by id only,
-   * so no signal by key is offered (swamp-club#4245).
-   */
-  signalByIdOnly?: boolean;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -96,7 +91,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   private verbose: boolean;
   private failOnSeverity: AssertSeverity;
   private commandTarget: string;
-  private signalByIdOnly: boolean;
   // Runs, nested ones included, whose wait for a signal was shown.
   private readonly runsWaitingForSignal = new Set<string>();
   // The waits shown, so a suspension does not print one a second time.
@@ -130,7 +124,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     this.verbose = opts.verbose ?? false;
     this.failOnSeverity = opts.failOnSeverity ?? "low";
     this.commandTarget = opts.commandTarget ?? "";
-    this.signalByIdOnly = opts.signalByIdOnly ?? false;
   }
 
   private getDisplayName(jobId: string, stepId: string, event?: {
@@ -982,7 +975,6 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
     workflowName: string,
     key: string | undefined,
   ): void {
-    if (this.signalByIdOnly) return;
     // The key and the name can come from a server: anything but a string
     // prints no by-key line rather than failing the stream's rendering.
     if (
@@ -1213,8 +1205,6 @@ interface RequestedGate {
 }
 
 class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
-  constructor(private readonly signalByIdOnly = false) {}
-
   private _failed = false;
   // Gates requested in this stream, nested runs' included, so a run that
   // suspends on a nested run can name the gate to decide (swamp-club#2736).
@@ -1429,12 +1419,6 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
             {
               ...e.run,
               signalRequired,
-              ...(this.signalByIdOnly
-                ? {
-                  signalCommand:
-                    `swamp workflow signal ${signalRequired.waitId} --payload '<json>'`,
-                }
-                : {}),
               ...waitsField,
               ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
               ...this.waitKeyHoldersField(),
@@ -1491,7 +1475,7 @@ export function createWorkflowRunRenderer(
 ): WorkflowRunRenderer {
   switch (mode) {
     case "json":
-      return new JsonWorkflowRunRenderer(opts.signalByIdOnly ?? false);
+      return new JsonWorkflowRunRenderer();
     case "log":
       return new ConsoleWorkflowRunRenderer(opts);
   }

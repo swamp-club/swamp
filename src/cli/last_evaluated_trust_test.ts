@@ -85,19 +85,45 @@ Deno.test("checkLastEvaluation: what the trust vouches for is what the run is ha
   assertEquals(seen, ["user:ana"]);
 });
 
-Deno.test("checkLastEvaluation: finding no evaluation refuses, so nothing falls through to an unchecked read of the repository", async () => {
+Deno.test("checkLastEvaluation: no evaluation is vetted as none, and an unknown name is left for the run to report", async () => {
+  assertEquals(
+    await checkLastEvaluation(
+      "/r",
+      REPOS,
+      "json",
+      () => Promise.resolve(null),
+      deps(),
+    ),
+    { stands: true, vetted: true, cache: null },
+  );
+  assertEquals(
+    await checkLastEvaluation(
+      "/r",
+      REPOS,
+      "json",
+      () => Promise.resolve(undefined),
+      deps(),
+    ),
+    { stands: true, vetted: false },
+  );
+});
+
+Deno.test("checkLastEvaluation: a refusal the caller raises keeps its code and words", async () => {
   const error = await assertRejects(
     () =>
       checkLastEvaluation(
         "/r",
         REPOS,
         "json",
-        () => Promise.resolve(null),
+        () =>
+          Promise.reject(
+            new UserError("Nothing to replay.", "evaluation_not_checked"),
+          ),
         deps(),
       ),
     UserError,
   );
-  assertEquals(error.code, "evaluation_not_checked");
+  assertEquals(error.message, "Nothing to replay.");
 });
 
 Deno.test("checkLastEvaluation: an evaluation it cannot vouch for keeps its own reason and one next step", async () => {

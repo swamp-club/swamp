@@ -8424,6 +8424,7 @@ export class WorkflowExecutionService {
     // the search reads every registration in the store.
     if (this.startedRunIds.has(run.id)) return undefined;
     const earlier = await findRegistrationOfStep(waits, {
+      workflowId: run.workflowId,
       runId: run.id,
       ...at,
     });

@@ -6650,36 +6650,20 @@ Deno.test("cancelOnLeaseLost: a lapse aborts the run with the lapse as its reaso
   assertEquals(local.signal.aborted, false);
 });
 
-Deno.test("resolveSignalWaitSupport: a checkout written through serve reads signal outcomes from serve; any other keeps its own store (swamp-club#4245)", async () => {
-  await withTempDir(async (temp) => {
+Deno.test("resolveSignalWaitSupport: a checkout written through serve cannot wait for a signal, and says how to run one; any other keeps its store (swamp-club#4245)", async () => {
+  await withTempDir((temp) => {
     const root = join(temp, "copy");
-    const asked: string[] = [];
-    const stored = {
-      kind: "timed_out",
-      waitId: "55555555-6666-4777-8888-999999999999",
-      workflowId: "44444444-5555-4666-8777-888888888888",
-      runId: "33333333-4444-4555-8666-777777777777",
-      deadline: "2026-10-27T00:00:00.000Z",
-      settledAt: "2026-10-26T00:00:00.000Z",
-    } as const;
     registerServeUpstream({
       root,
       namespace: "",
       target: {} as ServeUpstreamBinding["target"],
-      client: () =>
-        ({
-          waitOutcome: (waitId: string) => {
-            asked.push(waitId);
-            return Promise.resolve(stored);
-          },
-        }) as unknown as ReturnType<ServeUpstreamBinding["client"]>,
+      client: () => {
+        throw new Error("a refusal needs no client");
+      },
     });
     try {
       const support = resolveSignalWaitSupport(
-        {
-          type: "filesystem",
-          path: join(temp, "marker-path"),
-        } as Parameters<
+        { type: "filesystem", path: join(temp, "marker-path") } as Parameters<
           typeof resolveSignalWaitSupport
         >[0],
         undefined,
@@ -6689,12 +6673,9 @@ Deno.test("resolveSignalWaitSupport: a checkout written through serve reads sign
           >["v3"],
         },
       );
-      assert(support.supported);
-      assertEquals(await support.store.findOutcome(stored.waitId), {
-        kind: "found",
-        record: stored,
-      });
-      assertEquals(asked, [stored.waitId]);
+      assert(!support.supported);
+      assertStringIncludes(support.reason, "--server");
+      assertStringIncludes(support.reason, "trigger or schedule");
 
       const own = resolveSignalWaitSupport(
         { type: "filesystem", path: join(temp, "other") } as Parameters<
@@ -6702,12 +6683,9 @@ Deno.test("resolveSignalWaitSupport: a checkout written through serve reads sign
         >[0],
       );
       assert(own.supported);
-      assertEquals(await own.store.findOutcome(stored.waitId), {
-        kind: "absent",
-      });
-      assertEquals(asked.length, 1);
     } finally {
       resetServeUpstreamBindingsForTesting();
     }
+    return Promise.resolve();
   });
 });

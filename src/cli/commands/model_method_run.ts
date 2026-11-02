@@ -434,7 +434,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 modelIdOrName,
               );
               return found === null
-                ? null
+                ? undefined
                 : await trust.definition(found.type, found.definition.name);
             },
           )

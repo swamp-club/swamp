@@ -2659,27 +2659,3 @@ Deno.test("workflowSignal: the last wait a no_open_wait refusal names carries th
     idempotencyKey: "order-1",
   });
 });
-
-Deno.test("workflowSignal: a signal by key never reaches a wait only a run's record shows (swamp-club#4245)", async () => {
-  const workflow = keyedWorkflow();
-  const run = WorkflowRun.create(workflow);
-  run.start();
-  const job = run.getJob("main")!;
-  job.start();
-  const review = job.getStep("review")!;
-  review.start();
-  const wait = SignalWait.open(SCHEMA, 60, OPENED, undefined, KEY);
-  review.waitForSignal(wait);
-  run.suspend();
-  // Registered, as serve registers a member's wait, but with no key claim.
-  const fixture = await fixtureOf([run], { workflows: [workflow] });
-  assertEquals(
-    refusalOf(await sendByKey(fixture, "release", KEY, { verdict: "ship" }))
-      .kind,
-    "no_open_wait",
-  );
-  assertEquals(await outcomeOf(fixture, wait.id), undefined);
-  // By its id it is delivered.
-  const event = await send(fixture, wait.id, { verdict: "ship" });
-  assert(event.kind === "completed", JSON.stringify(event));
-});

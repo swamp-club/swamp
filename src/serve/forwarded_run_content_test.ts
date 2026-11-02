@@ -68,6 +68,7 @@ function context(
         findById: () => Promise.resolve(null),
         findByName: () => Promise.resolve(null),
       },
+      workflowRunRepo: { findGlobalById: () => Promise.resolve(null) },
     },
   } as unknown as ConnectionContext;
   return {
@@ -419,69 +420,23 @@ Deno.test("checkRunRecord: a nested workflow output must be a child run whose re
   assert(await judged({ [childKey]: child(RUN) }, ["run"]) !== undefined);
 });
 
-Deno.test("checkRunRecord: a signal wait's id belongs to the first run naming it, so another run's record cannot take it (swamp-club#4245)", async () => {
-  const waitId = "55555555-6666-4777-8888-999999999999";
-  const otherRun = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
-  const registrations = new Map<string, Record<string, unknown>>();
-  const signalWaits = {
-    supported: true,
-    store: {
-      findOutcome: () => Promise.resolve({ kind: "absent" }),
-      register: (registration: Record<string, unknown>) => {
-        const id = registration.waitId as string;
-        if (!registrations.has(id)) registrations.set(id, registration);
-        return Promise.resolve();
-      },
-      findRegistration: (id: string) => {
-        const record = registrations.get(id);
-        return Promise.resolve(
-          record === undefined ? { kind: "absent" } : { kind: "found", record },
-        );
-      },
-    },
-  };
-  const waiting = (id: string) =>
-    record({
-      id,
-      status: "suspended",
-      jobs: [{
-        jobName: "main",
-        status: "running",
-        steps: [{
-          stepName: "wait",
-          status: "waiting_signal",
-          wait: {
-            kind: "signal",
-            id: waitId,
-            schema: { type: "object", properties: {} },
-            deadline: "2030-01-01T00:00:00.000Z",
-          },
-        }],
-      }],
-    });
-  const judged = async (runId: string) => {
+Deno.test("checkRunRecord: a first record cannot reuse a run id another workflow holds (swamp-club#4245)", async () => {
+  const op = await runPut("run.create", record());
+  const first = (holderWorkflow: string | null) => {
     const { context: c } = context({}, ["run", "read"]);
-    (c.deps.ctx.repoContext as { signalWaits?: unknown }).signalWaits =
-      signalWaits;
-    return await checkRunRecord(
-      c,
-      await putOp({
-        intent: createIntent({
-          kind: "run.create",
-          run: { workflowId: WORKFLOW, runId },
-        }),
-        key: RecordKey.create(
-          `workflow-runs/${WORKFLOW}/workflow-run-${runId}.yaml`,
+    (c.deps.ctx.repoContext as unknown as {
+      workflowRunRepo: { findGlobalById: () => Promise<unknown> };
+    }).workflowRunRepo = {
+      findGlobalById: () =>
+        Promise.resolve(
+          holderWorkflow === null ? null : { workflowId: holderWorkflow },
         ),
-        inline: btoa(String.fromCharCode(...yaml(waiting(runId)))),
-      }),
-    );
+    };
+    return checkRunRecord(c, op);
   };
-  assertEquals(await judged(RUN), undefined);
-  assertEquals(registrations.get(waitId)?.runId, RUN);
-  const stolen = await judged(otherRun);
-  assert(stolen !== undefined);
-  assertEquals(registrations.get(waitId)?.runId, RUN);
-  // The victim's own later records still land.
-  assertEquals(await judged(RUN), undefined);
+  assertEquals(await first(null), undefined);
+  assertEquals(await first(WORKFLOW), undefined);
+  assert(
+    await first("66666666-7777-4888-8999-aaaaaaaaaaaa") !== undefined,
+  );
 });
