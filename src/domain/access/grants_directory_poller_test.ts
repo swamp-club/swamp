@@ -820,44 +820,79 @@ for (const { kind, source, setup } of EXTERNAL_SOURCES) {
         storedGrant("deny-1", source, aliceDeny),
       ]);
       let commits = 0;
-      let revokedAtSecondCommit: boolean | undefined;
-      const pollCycles = (spans: readonly { name: string }[]) =>
-        spans.filter((s) => s.name === "swamp.serve.poll").length;
-      await withCapturedSpans(async (spans) => {
-        const poller = new GrantsDirectoryPoller({
-          grantsDir,
-          ...options,
-          fileGrantStore: store,
-          policySnapshotLoader: createMockLoader().loader,
-          pollIntervalMs: 20,
-          commitReconcile: async (reconcile) => {
-            await reconcile();
-            commits++;
-            if (commits === 1) {
-              // The writer finishes before the next poll can look again.
-              await atomicWriteTextFile(path, DENY_GRANT_YAML);
-            } else if (commits === 2) {
-              revokedAtSecondCommit = store.written.has("deny-1");
-            }
-          },
-        });
-        await poller.start();
-        try {
-          await atomicWriteTextFile(path, "");
-          await waitFor(() => commits >= 1, "the empty read");
-          // Polls that see the old content again, so the hold has ended.
-          const seen = pollCycles(spans);
-          await waitFor(() => pollCycles(spans) >= seen + 2, "two more polls");
-          assertEquals(commits, 1);
-          assertEquals(store.written.has("deny-1"), false);
-
-          await atomicWriteTextFile(path, "");
-          await waitFor(() => commits >= 2, "the next empty read");
-          assertEquals(revokedAtSecondCommit, false);
-        } finally {
-          await poller.stop();
-        }
+      let writtenAtThirdCommit: boolean | undefined;
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 20,
+        commitReconcile: async (reconcile) => {
+          await reconcile();
+          commits++;
+          if (commits === 1) {
+            // The writer finishes before the next poll can look again.
+            await atomicWriteTextFile(path, DENY_GRANT_YAML);
+          } else if (commits === 3) {
+            writtenAtThirdCommit = store.written.has("deny-1");
+          }
+        },
       });
+      await poller.start();
+      try {
+        await atomicWriteTextFile(path, "");
+        await waitFor(() => commits >= 2, "the poll after the rewrite");
+        assertEquals(store.written.has("deny-1"), false);
+
+        await atomicWriteTextFile(path, "");
+        await waitFor(() => commits >= 3, "the next empty read");
+        assertEquals(writtenAtThirdCommit, false);
+      } finally {
+        await poller.stop();
+      }
+    });
+  });
+
+  Deno.test(`GrantsDirectoryPoller: a file deleted during the hold of a ${kind} file gets its grant back when both return to their old bytes`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const teamPath = join(grantsDir, "team.yaml");
+      await Deno.writeTextFile(teamPath, VALID_GRANT_YAML);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([]);
+      const teamState = () =>
+        [...store.written.values()]
+          .find((g) => g.source === "file:team.yaml")?.state;
+      let restored = false;
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 20,
+        commitReconcile: async (reconcile) => {
+          await reconcile();
+          if (!restored && teamState() === "revoked") {
+            restored = true;
+            await atomicWriteTextFile(path, DENY_GRANT_YAML);
+            await atomicWriteTextFile(teamPath, VALID_GRANT_YAML);
+          }
+        },
+      });
+      // Stores the grants of both files, as a startup reconcile would.
+      await poller.reconcileNow();
+      await poller.start();
+      try {
+        await atomicWriteTextFile(path, "");
+        await Deno.remove(teamPath);
+        await waitFor(
+          () => restored && teamState() === "active",
+          "the deleted file's grant to return",
+        );
+      } finally {
+        await poller.stop();
+      }
     });
   });
 

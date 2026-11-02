@@ -163,12 +163,7 @@ export class GrantsDirectoryPoller {
     this.#reconciling = true;
     try {
       const newHash = await this.#computeContentHash();
-      if (newHash === this.#contentHash) {
-        // A file held back as empty that got its old content back reads as no
-        // change, and must not count as seen empty when it next empties.
-        this.#sourcesSeenEmpty.clear();
-        return;
-      }
+      if (newHash === this.#contentHash) return;
 
       logger.info`Grants directory change detected, reconciling`;
 
@@ -177,8 +172,9 @@ export class GrantsDirectoryPoller {
       // missing --grants-file or --grants-dir - the source keeps its stored
       // grants: reconciling it as empty would revoke them, and a broken deny
       // file would fail open (swamp-club#2823). Where startup accepts the
-      // input - a deleted or emptied file, no repository grants/ directory -
-      // its grants are revoked, as they always have been.
+      // input - a deleted file, no repository grants/ directory - its grants
+      // are revoked, and so are those of an emptied external file once a
+      // second poll confirms it is empty.
       const parsed = new Map<string, ParsedGrantSource>();
       const unavailable = new Set<string>();
       let externalDirUnavailable = false;
@@ -270,6 +266,9 @@ export class GrantsDirectoryPoller {
         ? []
         : [...emptySources].filter((s) => !this.#sourcesSeenEmpty.has(s));
       this.#sourcesSeenEmpty = emptySources;
+      // This poll applies every other source, so the old hash stops describing
+      // the store. Files that return to those bytes must still reconcile.
+      if (heldEmpty.length > 0) this.#contentHash = "";
       for (const source of heldEmpty) {
         logger
           .warn`Grant source ${source} reads as empty, keeping its stored grants until the next poll confirms it`;

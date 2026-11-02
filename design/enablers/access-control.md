@@ -375,8 +375,9 @@ file and a missing repository `grants/` directory at once, and an emptied
 as empty. A rewrite in place reads as empty between its truncate and its write,
 and a single such read must not drop a deny. So revoking an emptied file can
 take up to two poll intervals. A node with no running poller, in manual reload
-mode, revokes it on the one reconcile it runs on taking the lead. Replace grant
-files atomically: a partial write that happens to parse reconciles as what it
+mode, revokes it on the one reconcile it runs on taking the lead. A takeover's
+reconcile counts as a poll, so at a takeover the two reads can fall close
+together. Replace grant files atomically: a partial write that happens to parse reconciles as what it
 contains.
 
 Implementation: `src/domain/access/grant_file.ts`,
