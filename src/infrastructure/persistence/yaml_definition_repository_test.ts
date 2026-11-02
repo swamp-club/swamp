@@ -32,6 +32,7 @@ import { z } from "zod";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import {
   DefinitionIdIndex,
+  type DefinitionIdLookup,
   type DefinitionNameIndex,
 } from "./definition_id_index.ts";
 import {
@@ -54,8 +55,10 @@ import {
 } from "./unreadable_records_test_helpers.ts";
 import {
   observeDiagnosticPhase,
+  PhaseTally,
   withDiagnosticArea,
   withDiagnosticAttributes,
+  withDiagnosticTally,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
 import {
   diagnosticPhases,
@@ -3822,5 +3825,258 @@ Deno.test("YamlDefinitionRepository.findByNameGlobalFromIndex: walks as findByNa
       id,
     );
     assertEquals(await repo.findByNameGlobalFromIndex("missing"), null);
+  });
+});
+
+function idIndexedRepository(
+  dir: string,
+  unreadable?: ConstructorParameters<typeof YamlDefinitionRepository>[5],
+) {
+  const autoDir = join(dir, ".swamp", "auto-definitions");
+  const repo = new YamlDefinitionRepository(
+    dir,
+    undefined,
+    undefined,
+    autoDir,
+    undefined,
+    unreadable,
+  );
+  const index = new DefinitionIdIndex(repo);
+  const calls = { lookups: 0 };
+  repo.useIdIndex({
+    findAllById: (id) => {
+      calls.lookups++;
+      return index.findAllById(id);
+    },
+  });
+  return { repo, calls, autoDir, primaryDir: join(dir, "models") };
+}
+
+// reads inside nested phases (index checks, primary scans) are not counted
+async function filesRead(fn: () => Promise<unknown>): Promise<number> {
+  const tally = new PhaseTally(true);
+  await withDiagnosticTally("step_outputs", tally, fn);
+  return tally.attributes()["swamp.diagnostic.files_read"] ?? 0;
+}
+
+Deno.test("YamlDefinitionRepository.findById: with an id index attached, an auto-definition stored under its name is found reading only its own file", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const ids: DefinitionId[] = [];
+    for (let i = 0; i < 30; i++) {
+      const id = crypto.randomUUID() as DefinitionId;
+      ids.push(id);
+      await writeYaml(
+        join(autoDir, testType.toDirectoryPath(), `run-${i}.yaml`),
+        id,
+        `run-${i}`,
+        testType.normalized,
+      );
+    }
+    const { repo, calls } = idIndexedRepository(dir);
+    // warms the index
+    assertEquals(
+      await repo.findById(testType, crypto.randomUUID() as DefinitionId),
+      null,
+    );
+
+    let found: Definition | null = null;
+    const reads = await filesRead(async () => {
+      found = await repo.findById(testType, ids[3]);
+    });
+    assertEquals((found as Definition | null)?.name, "run-3");
+    assertEquals(reads, 1);
+    assertEquals(calls.lookups, 2);
+    assertPathEquals(
+      repo.getPath(testType, ids[3]),
+      join(autoDir, testType.toDirectoryPath(), "run-3.yaml"),
+    );
+
+    // without an index the lookup reads the directory until it finds the id
+    const scanning = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+    const scanned = await filesRead(async () => {
+      assertEquals((await scanning.findById(testType, ids[3]))?.name, "run-3");
+    });
+    assert(scanned > 1, `scan read ${scanned} files`);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById: with an id index attached, the auto-definition comes from the index, not a scan of the directory", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const id = crypto.randomUUID() as DefinitionId;
+    const path = join(autoDir, testType.toDirectoryPath(), "on-disk.yaml");
+    await writeYaml(path, id, "on-disk", testType.normalized);
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+    const fromIndex = Definition.create({ id, name: "from-index" });
+    const index: DefinitionIdLookup = {
+      findAllById: (asked) =>
+        Promise.resolve(
+          asked === id
+            ? [{
+              definition: fromIndex,
+              type: testType,
+              path,
+              segments: testType.normalized.split("/"),
+              primary: false,
+            }]
+            : [],
+        ),
+    };
+    repo.useIdIndex(index);
+    assertEquals((await repo.findById(testType, id))?.name, "from-index");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById: with an id index attached, an auto-definition filed under another type is not this type's, and a definition still shadows an auto-definition with its id", async () => {
+  await withTempDir(async (dir) => {
+    const otherType = ModelType.create("test/other");
+    const elsewhere = crypto.randomUUID() as DefinitionId;
+    const shared = crypto.randomUUID() as DefinitionId;
+    const { repo, autoDir, primaryDir } = idIndexedRepository(dir);
+    await writeYaml(
+      join(autoDir, otherType.toDirectoryPath(), "elsewhere.yaml"),
+      elsewhere,
+      "elsewhere",
+      otherType.normalized,
+    );
+    await writeYaml(
+      join(autoDir, testType.toDirectoryPath(), "auto.yaml"),
+      shared,
+      "auto",
+      testType.normalized,
+    );
+    await writeYaml(
+      join(primaryDir, testType.toDirectoryPath(), "primary.yaml"),
+      shared,
+      "primary",
+      testType.normalized,
+    );
+
+    assertEquals(await repo.findById(testType, elsewhere), null);
+    assertEquals(
+      (await repo.findById(otherType, elsewhere))?.name,
+      "elsewhere",
+    );
+    assertEquals((await repo.findById(testType, shared))?.name, "primary");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById: with an id index attached, an auto-definition stored under its id that the lookup names unreadable still fails (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const type = ModelType.create("test/registered-nowhere");
+    const id = crypto.randomUUID() as DefinitionId;
+    const byId = join(autoDir, type.toDirectoryPath(), `${id}.yaml`);
+    const { lookup, errors } = fakeUnreadableLookup([byId]);
+    const { repo } = idIndexedRepository(dir, lookup);
+    assertEquals(
+      await assertRejects(() => repo.findById(type, id)),
+      errors.get(byId),
+    );
+    assertEquals(
+      await repo.findById(type, crypto.randomUUID() as DefinitionId),
+      null,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete: with an id index attached, removes an auto-definition stored under its name", async () => {
+  await withTempDir(async (dir) => {
+    const { repo, calls, autoDir } = idIndexedRepository(dir);
+    const id = crypto.randomUUID() as DefinitionId;
+    const path = join(autoDir, testType.toDirectoryPath(), "doomed.yaml");
+    await writeYaml(path, id, "doomed", testType.normalized);
+
+    await repo.delete(testType, id);
+
+    assertEquals(await fileExists(path), false);
+    assert(calls.lookups > 0);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.useIdIndex: refuses a second index", async () => {
+  await withTempDir((dir) => {
+    const { repo } = idIndexedRepository(dir);
+    assertThrows(
+      () => repo.useIdIndex({ findAllById: () => Promise.resolve([]) }),
+      Error,
+      "already has an id index",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByIdFromIndex: undefined without an index; with one, the first file in scan order, typed by what it declares, else its directory, and null when none declares the id", async () => {
+  await withTempDir(async (dir) => {
+    const plain = new YamlDefinitionRepository(dir);
+    const { repo, autoDir, primaryDir } = idIndexedRepository(dir);
+    const shared = crypto.randomUUID() as DefinitionId;
+    const untyped = crypto.randomUUID() as DefinitionId;
+    await writeYaml(
+      join(autoDir, "test", "a", "auto.yaml"),
+      shared,
+      "auto",
+      "test/a",
+    );
+    await writeYaml(
+      join(primaryDir, "test", "b", "primary.yaml"),
+      shared,
+      "primary",
+      "test/declared",
+    );
+    const untypedPath = join(autoDir, "test", "c", "untyped.yaml");
+    await ensureDir(dirname(untypedPath));
+    await Deno.writeTextFile(
+      untypedPath,
+      `id: ${untyped}\nname: untyped\nversion: 1\n`,
+    );
+
+    assertEquals(await plain.findByIdFromIndex(shared), undefined);
+
+    const first = await repo.findByIdFromIndex(shared);
+    assertEquals(first?.definition.name, "primary");
+    assertEquals(first?.type.normalized, "test/declared");
+    assertPathEquals(
+      repo.getPath(ModelType.create("test/b"), shared),
+      join(primaryDir, "test", "b", "primary.yaml"),
+    );
+
+    const fromDir = await repo.findByIdFromIndex(untyped);
+    assertEquals(fromDir?.definition.name, "untyped");
+    assertEquals(fromDir?.type.normalized, "test/c");
+
+    assertEquals(
+      await repo.findByIdFromIndex(crypto.randomUUID() as DefinitionId),
+      null,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByIdFromIndex: a miss still fails on an auto-definition stored under its id that the datastore could not materialise (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const id = crypto.randomUUID() as DefinitionId;
+    const byId = join(autoDir, "test", "registered-nowhere", `${id}.yaml`);
+    const { lookup, errors } = fakeUnreadableLookup([byId]);
+    const { repo } = idIndexedRepository(dir, lookup);
+    assertEquals(
+      await assertRejects(() => repo.findByIdFromIndex(id)),
+      errors.get(byId),
+    );
+    assertEquals(
+      await repo.findByIdFromIndex(crypto.randomUUID() as DefinitionId),
+      null,
+    );
   });
 });

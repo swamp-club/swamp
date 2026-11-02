@@ -154,8 +154,13 @@ file's size on disk when it holds invalid byte sequences.
   span (`name_index.entries`, `name_index.relisted`, `name_index.files_parsed`)
   nests under the scan of the lookup that ran it.
 - `global_index` (`scan_root=all`): the check of serve's definition index (lab
-  #3968) that a `global_index` lookup runs before it reads the files declaring
-  the name. It carries the same attributes as `owner_index` below (`cache`,
+  #3968) that a lookup through the index runs before it reads the files
+  declaring the name or id. A `global_index` lookup by name runs one, and so
+  does each lookup by id the index answers (lab #4280): an auto-definition's
+  `findById` or `delete`, a lookup by id across every type, the authorized
+  name of such a lookup, and a UUID tried as a name first. While no
+  definitions directory changed, the check stats each directory and reads no
+  file. It carries the same attributes as `owner_index` below (`cache`,
   `definitions`, `dirs_checked`, `dirs_relisted`, `dirs_joined`,
   `files_parsed`, `files_joined`), and the
   `swamp.serve.definition_index.validate` span nests under it.

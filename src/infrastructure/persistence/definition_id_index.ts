@@ -74,6 +74,10 @@ export interface DefinitionNameIndex {
   findByName(name: string): Promise<NamedDefinitionMatch | null>;
 }
 
+export interface DefinitionIdLookup {
+  findAllById(id: string): Promise<NamedDefinitionMatch[]>;
+}
+
 export interface DefinitionFileSource {
   definitionRoots(): string[];
   readDefinitionFile(
@@ -145,7 +149,8 @@ const MAX_JOIN_LINKS = 8;
  * them while the file's lstat holds; an in-place overwrite that changes a
  * declared id goes unseen until the directory's stat moves, which fails open
  */
-export class DefinitionIdIndex implements DefinitionOwnerIndex {
+export class DefinitionIdIndex
+  implements DefinitionOwnerIndex, DefinitionNameIndex, DefinitionIdLookup {
   readonly #source: DefinitionFileSource;
   readonly #racyWindowMs: number;
   readonly #now: () => number;
@@ -201,7 +206,22 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       "swamp.diagnostic.scan_root": "all",
       "swamp.diagnostic.scan_strategy": "global_index",
     }, signal);
-    return await this.#firstDeclaring(name, signal);
+    const [found] = await this.#readDeclaring({ name }, true, signal);
+    return found ?? null;
+  }
+
+  // every file is read, unlike an owner lookup, since callers need the whole
+  // definition and its path
+  async findAllById(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<NamedDefinitionMatch[]> {
+    signal?.throwIfAborted();
+    await this.#check("definition_scan", {
+      "swamp.diagnostic.scan_root": "all",
+      "swamp.diagnostic.scan_strategy": "global_index",
+    }, signal);
+    return await this.#readDeclaring({ id }, false, signal);
   }
 
   async #check(
@@ -563,16 +583,23 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 
   /**
-   * the first file indexed under `name` that still declares it, in the order
-   * a scan of every definition reads them; always read, since callers run it
+   * the files indexed under `key` that still declare it, in the order a scan
+   * of every definition reads them; always read, since callers run it
    */
-  async #firstDeclaring(
-    name: string,
+  async #readDeclaring(
+    key: { id: string; name?: undefined } | { id?: undefined; name: string },
+    firstOnly: boolean,
     signal: AbortSignal | undefined,
-  ): Promise<NamedDefinitionMatch | null> {
-    for (
-      const { path, dir } of this.#inScanOrder(this.#pathsByName.get(name))
-    ) {
+  ): Promise<NamedDefinitionMatch[]> {
+    const indexed = key.id !== undefined
+      ? this.#pathsById.get(key.id)
+      : this.#pathsByName.get(key.name);
+    const declares = (definition: Definition) =>
+      key.id !== undefined
+        ? definition.id === key.id
+        : definition.name === key.name;
+    const found: NamedDefinitionMatch[] = [];
+    for (const { path, dir } of this.#inScanOrder(indexed)) {
       signal?.throwIfAborted();
       const file = dir?.files.get(basename(path));
       // Whether it is a symlink now, not when listed: a file swapped for a
@@ -581,7 +608,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       // Gone since it was listed (the view lasts the whole request): it owns
       // nothing, and is no broken definition to warn about.
       if (!dir || !file || live === null) {
-        this.#unindex(file ?? { id: undefined, name }, path);
+        this.#unindex(file ?? { id: key.id, name: key.name }, path);
         continue;
       }
       const read = await this.#source.readDefinitionFile(
@@ -589,14 +616,16 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         [...dir.segments],
         live.isSymlink,
       );
-      if (read?.definition.name === name) {
-        return {
+      if (read && declares(read.definition)) {
+        found.push({
           definition: read.definition,
           type: read.type,
           path,
           segments: [...dir.segments],
           primary: dir.root === 0,
-        };
+        });
+        if (firstOnly) break;
+        continue;
       }
       // Rewritten since it was listed: index it under what it declares now,
       // and read it again on the next check. A listing that replaced the
@@ -605,7 +634,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       file.fingerprint = undefined;
       this.#reassign(path, file, read, live.isSymlink);
     }
-    return null;
+    return found;
   }
 
   #inScanOrder(

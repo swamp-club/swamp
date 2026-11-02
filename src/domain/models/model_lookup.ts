@@ -91,7 +91,7 @@ export async function findDefinitionByIdGlobal(
   // name it authorized gets that definition by name, accepted only if it still
   // has this id; otherwise null
   if (expectedName !== undefined) {
-    const byName = await definitionRepo.findByNameGlobal(expectedName);
+    const byName = await findByNameFromIndex(definitionRepo, expectedName);
     return byName?.definition.id === definitionId
       ? { definition: byName.definition, type: byName.type }
       : null;
@@ -101,6 +101,10 @@ export async function findDefinitionByIdGlobal(
   // the type directories that come before it in registry order.
   const cached = await definitionRepo.findByIdCached?.(definitionId);
   if (cached) return cached;
+
+  // the index holds every definition of every type, so its miss is final
+  const indexed = await definitionRepo.findByIdFromIndex?.(definitionId);
+  if (indexed !== undefined) return indexed;
 
   for (const type of modelRegistry.types()) {
     const definition = await definitionRepo.findById(type, definitionId);
@@ -147,7 +151,10 @@ export async function findDefinitionByIdOrName(
   findByName: (
     name: string,
   ) => Promise<DefinitionLookupResult | null> = (name) =>
-    definitionRepo.findByNameGlobal(name),
+    // a UUID is almost always an id, so its name lookup must not walk
+    isUuid(name)
+      ? findByNameFromIndex(definitionRepo, name)
+      : definitionRepo.findByNameGlobal(name),
 ): Promise<DefinitionLookupResult | null> {
   const byName = await findByName(idOrName);
   if (byName) {
@@ -160,6 +167,15 @@ export async function findDefinitionByIdOrName(
     return null;
   }
   return findDefinitionByIdGlobal(definitionRepo, idOrName);
+}
+
+function findByNameFromIndex(
+  definitionRepo: DefinitionRepository,
+  name: string,
+): Promise<DefinitionLookupResult | null> {
+  return definitionRepo.findByNameGlobalFromIndex
+    ? definitionRepo.findByNameGlobalFromIndex(name)
+    : definitionRepo.findByNameGlobal(name);
 }
 
 export function createModelReferenceResolver(
