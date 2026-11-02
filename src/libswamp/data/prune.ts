@@ -27,8 +27,14 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import {
+  type DefinitionByIdSnapshot,
+  YamlDefinitionRepository,
+} from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import {
+  createDefinitionId,
+  type Definition,
+} from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -127,8 +133,8 @@ export function createDataPruneDeps(
     workflowRunRepo,
   );
 
-  // isModelLive must use this per-item lookup, which resolves models and
-  // auto-definitions; others would flag auto-definition models orphaned.
+  // isModelLive must resolve models and auto-definitions alike; a lookup of
+  // models only would flag auto-definition models orphaned.
   const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
   const definitionRepo = injectedDefinitionRepo ??
     new YamlDefinitionRepository(
@@ -143,35 +149,68 @@ export function createDataPruneDeps(
   // models/ or auto-definitions/, so we need a separate lookup.
   const workflowRepo = new YamlWorkflowRepository(repoDir);
 
-  const isModelLive: IsModelLive = async (type, modelId) => {
-    // Control-plane definitions are minted by `swamp serve` and exist only in
-    // the serve's repo, so a client-side scan can never resolve them: they
-    // are always live.
-    if (isControlPlaneModelType(type.toDirectoryPath())) return true;
-
-    if (type.toDirectoryPath() === "workflow") {
-      return (await workflowRepo.findById(createWorkflowId(modelId))) !== null;
-    }
-
-    const definition = await definitionRepo.findById(
-      type,
-      createDefinitionId(modelId),
-    );
-    if (definition === null) return false;
+  const declaredTypeMatches = (
+    definition: Definition,
+    type: ModelType,
+  ): boolean => {
     // A retyped model leaves its definition file in the old type directory
     // with a different type: field. The data under the old type path is
     // orphaned even though findById locates the file by UUID.
-    if (definition.type !== undefined) {
-      const defType = ModelType.create(definition.type);
-      if (defType.toDirectoryPath() !== type.toDirectoryPath()) return false;
+    if (definition.type === undefined) return true;
+    const defType = ModelType.create(definition.type);
+    return defType.toDirectoryPath() === type.toDirectoryPath();
+  };
+
+  // serve injects its indexed repository, whose lookups need no snapshot; on a
+  // miss, either path keeps data whose type a definition with the id declares
+  const definitionLiveness = (): IsModelLive => {
+    if (injectedDefinitionRepo) {
+      return async (type, modelId) => {
+        const id = createDefinitionId(modelId);
+        const definition = await definitionRepo.findById(type, id);
+        if (definition === null) {
+          return await definitionRepo.declaresTypeById(id, type);
+        }
+        return declaredTypeMatches(definition, type);
+      };
     }
-    return true;
+    // taken at the first lookup, after the data is listed, so it holds every
+    // definition that listed data could belong to
+    let snapshot: Promise<DefinitionByIdSnapshot> | undefined;
+    return async (type, modelId) => {
+      snapshot ??= definitionRepo.snapshotById();
+      const view = await snapshot;
+      const id = createDefinitionId(modelId);
+      const definition = view.find(type, id);
+      if (definition === null) return view.declaresType(id, type);
+      return declaredTypeMatches(definition, type);
+    };
+  };
+
+  const isModelLive = (): IsModelLive => {
+    const definitionIsLive = definitionLiveness();
+    return async (type, modelId) => {
+      // Control-plane definitions are minted by `swamp serve` and exist only in
+      // the serve's repo, so a client-side scan can never resolve them: they
+      // are always live.
+      if (isControlPlaneModelType(type.toDirectoryPath())) return true;
+
+      if (type.toDirectoryPath() === "workflow") {
+        return (await workflowRepo.findById(createWorkflowId(modelId))) !==
+          null;
+      }
+
+      return await definitionIsLive(type, modelId);
+    };
   };
 
   return {
-    findOrphanedData: () => service.findOrphanedData(isModelLive),
+    findOrphanedData: () => service.findOrphanedData(isModelLive()),
     deleteOrphanedData: (opts) =>
-      service.deleteOrphanedData({ isModelLive, dryRun: opts.dryRun }),
+      service.deleteOrphanedData({
+        isModelLive: isModelLive(),
+        dryRun: opts.dryRun,
+      }),
     compactCatalog: () => catalogStore.checkpoint(),
   };
 }
