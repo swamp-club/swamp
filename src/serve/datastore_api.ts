@@ -922,11 +922,13 @@ class DatastoreApi {
       // content (swamp-club#4260).
       const possession = this.#vouchBudget();
       const vouched = new Set<string>();
+      const refused = new Set<string>();
       for (const hash of referenced) {
         if (carried.has(hash)) continue;
         const vouch = await this.#mayReference(hash, possession, resolver);
         if (vouch === "vouched") vouched.add(hash);
-        else if (vouch === "undecided") return chunkNotProvided(hash);
+        else if (vouch === "refused") refused.add(hash);
+        else return chunkNotProvided(hash);
       }
       content = new ForwardedContentAuthority({
         ctx: this.#deps.ctx,
@@ -937,8 +939,9 @@ class DatastoreApi {
         resolver,
         possesses: async (hash) =>
           carried.has(hash) || vouched.has(hash) ||
-          (await this.#mayReference(hash, this.#vouchBudget(), resolver) ===
-            "vouched"),
+          (!refused.has(hash) &&
+            await this.#mayReference(hash, possession, resolver) ===
+              "vouched"),
         signal: req.signal,
       });
       const checked = await authorizeCommit(
@@ -2209,14 +2212,12 @@ class DatastoreApi {
       caller: author,
       requestId: this.#requestId,
       resolver,
+      // Every undeposited chunk the commit names was vouched for above, or
+      // the accept stopped there; anything else spends the same budget.
       possesses: async (hash) =>
         deposited.has(hash) || vouched.has(hash) ||
-        (await this.#mayReference(
-          hash,
-          this.#vouchBudget(),
-          resolver,
-          author,
-        ) === "vouched"),
+        (await this.#mayReference(hash, possession, resolver, author) ===
+          "vouched"),
       signal,
     });
     const checked = await authorizeCommit(
@@ -2617,7 +2618,7 @@ class DatastoreApi {
     const store = this.#v3.commitStore;
     // A compaction between the commits and the base can move a commit
     // naming the chunk into the base already read: decided again once, and
-    // refused (closed) if the point moves twice.
+    // undecided if the point moves twice.
     for (let attempt = 0; attempt < 2; attempt++) {
       const point = await store.compactionPoint();
       // Newest first: the live version's chunk is in the latest commit
@@ -2666,6 +2667,8 @@ class DatastoreApi {
         }
         end = start - 1;
       }
+      // Not budgeted: one config partition's base holds a record per type
+      // of definition sharing the name, a handful at most.
       const keys = await store.baseRecordKeysNaming(
         this.#namespace,
         partition,
@@ -2687,7 +2690,9 @@ class DatastoreApi {
       }
       if (await store.compactionPoint() === point) return "refused";
     }
-    return "refused";
+    // Undecided, never refused: a refusal reads as missing, and this chunk
+    // may well be readable (swamp-club#4260).
+    return "undecided";
   }
 
   async #mayReadCommit(

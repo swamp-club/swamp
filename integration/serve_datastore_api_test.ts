@@ -1804,3 +1804,86 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "datastore API: a definition chunk whose decision a compaction moved twice is undecided, never answered as missing (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      // A control-plane definition: no commit bob may read names v1, so
+      // the decision reaches the compaction-point check.
+      const { v1 } = await supersededDefinition(
+        server,
+        "shared",
+        "@swamp/grant",
+      );
+      // Each look at the compaction point finds it moved.
+      const store = server.v3.commitStore as {
+        compactionPoint: () => Promise<number>;
+      };
+      const original = store.compactionPoint;
+      let point = 0;
+      store.compactionPoint = () => Promise.resolve(++point);
+      try {
+        const read = await fetch(`${server.url}/chunks/${v1}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(read.status, 503);
+        assertEquals((await read.json()).code, "chunk_access_undecided");
+      } finally {
+        store.compactionPoint = original;
+      }
+      // With the point still, the same read is decided: refused.
+      assertEquals((await chunkRead(server, v1)).status, 404);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a forwarded commit decides a chunk it may not name once, within one budget (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let budgets = 0;
+    await withServer(
+      writer(),
+      async (server) => {
+        const type = server.modelType.normalized;
+        // Bytes serve never received, which no partition names.
+        const content = definitionYaml("other", type);
+        const sha = await sha256Hex(content);
+        budgets = 0;
+        const named = await post(
+          configCommitsPath(server, "other"),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: [{
+              kind: "put",
+              intent: {
+                kind: "definition.create",
+                definition: { kind: "model", name: "other" },
+              },
+              key: `config/models/${type}/other.yaml`,
+              blob: { sha256: sha, size: content.length },
+            }],
+            chunks: [],
+          }),
+        );
+        assertEquals(named.status, 403, JSON.stringify(named.json));
+        assertEquals(budgets, 1);
+      },
+      new UploadLedger(),
+      {
+        vouchBudget: () => {
+          budgets++;
+          return new VouchBudget();
+        },
+      },
+    );
+  },
+});
