@@ -2088,3 +2088,37 @@ Deno.test("DefinitionIdIndex.findByName: a kept file a lookup finds swapped for 
     });
   });
 });
+
+Deno.test("DefinitionIdIndex: overlapping passes that read the same keys leave the file settled, so the next check reads nothing", async () => {
+  await withTempDir(async (dir) => {
+    const typeDir = join(dir, ".swamp", "auto-definitions", "test", "a");
+    const path = join(typeDir, "x.yaml");
+    const { source, reads, hold } = heldReads(dir, path);
+    const index = new DefinitionIdIndex(source, {
+      now: () => Date.now() + 60_000,
+    });
+    const id = crypto.randomUUID();
+    await writeDefinition(path, id, "x");
+    await writeDefinition(join(typeDir, "y.yaml"), crypto.randomUUID(), "y");
+    await index.begin();
+    await replaceDefinition(path, id, "x");
+    await index.begin();
+
+    const slow = hold();
+    try {
+      const first = owners(index, crypto.randomUUID());
+      await slow.reached;
+      await writeDefinition(join(typeDir, "z.yaml"), crypto.randomUUID(), "z");
+      assertEquals(await owners(index, crypto.randomUUID()), []);
+      slow.release();
+      assertEquals(await first, []);
+    } finally {
+      slow.release();
+    }
+
+    const settled = reads.length;
+    await index.begin();
+    assertEquals(reads.length, settled);
+    assertEquals((await owners(index, id)).map((o) => o.name), ["x"]);
+  });
+});

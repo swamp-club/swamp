@@ -595,18 +595,42 @@ export class DefinitionIdIndex
       [...segments],
       isSymlink,
     );
-    if (!this.#isCurrent(path, file)) return true;
     // read as a symlink from here on, so its target stays contained
-    if (swapped) file.isSymlink = isSymlink;
-    // Overtaken while it read, by a read that may be older: the next check
-    // stats it and reads again.
-    if (file.generation !== generation) {
-      file.fingerprint = undefined;
-      return true;
-    }
-    file.fingerprint = swapped ? undefined : fingerprint;
-    this.#reassign(path, file, found, isSymlink);
+    if (swapped && this.#isCurrent(path, file)) file.isSymlink = isSymlink;
+    this.#writeBack(
+      path,
+      file,
+      generation,
+      found,
+      isSymlink,
+      swapped ? undefined : fingerprint,
+    );
     return true;
+  }
+
+  /**
+   * a read another read overtook keeps the newer keys, and leaves the file to
+   * be stat'ed and read again only if the two disagree on them
+   */
+  #writeBack(
+    path: string,
+    file: IndexedFile,
+    generation: number,
+    found: FoundDefinition | null | undefined,
+    isSymlink: boolean,
+    fingerprint: RecordFingerprint | undefined,
+  ): void {
+    if (!this.#isCurrent(path, file)) return;
+    if (file.generation !== generation) {
+      if (
+        found?.definition.id !== file.id || found?.definition.name !== file.name
+      ) {
+        file.fingerprint = undefined;
+      }
+      return;
+    }
+    file.fingerprint = fingerprint;
+    this.#reassign(path, file, found, isSymlink);
   }
 
   // the check's sweep clock starts at the first check, so a cold start does not
@@ -774,23 +798,15 @@ export class DefinitionIdIndex
         // the name moves with the kept stat, or a listing trusting that stat
         // would index the file under a name it no longer declares; a symlink's
         // own stat says nothing of its target, so none is kept
-        if (!live.isSymlink && this.#isCurrent(path, file)) {
-          // Overtaken while it read, by a read that may be newer: the next
-          // check stats it and reads again.
-          if (file.generation !== generation) file.fingerprint = undefined;
-          else {
-            file.fingerprint = settled;
-            this.#reassign(path, file, read);
-          }
+        if (!live.isSymlink) {
+          this.#writeBack(path, file, generation, read, false, settled);
         }
         continue;
       }
       // Rewritten since it was listed: index it under what it declares now,
       // and read it again on the next check. A listing that replaced the
       // entry while this read ran already says what the file declares.
-      if (!this.#isCurrent(path, file)) continue;
-      file.fingerprint = undefined;
-      this.#reassign(path, file, read, live.isSymlink);
+      this.#writeBack(path, file, generation, read, live.isSymlink, undefined);
     }
     return found;
   }
@@ -841,6 +857,7 @@ export class DefinitionIdIndex
         this.#forget(file ?? { id: key.id, name: key.name }, path);
         continue;
       }
+      const generation = file.generation;
       const read = await this.#source.readDefinitionFile(
         path,
         [...dir.segments],
@@ -857,12 +874,16 @@ export class DefinitionIdIndex
         // Its other key changed since it was indexed: catch the maps up, and
         // stat it on the next check.
         if (
-          (read.definition.id !== file.id ||
-            read.definition.name !== file.name) &&
-          this.#isCurrent(path, file)
+          read.definition.id !== file.id || read.definition.name !== file.name
         ) {
-          file.fingerprint = undefined;
-          this.#reassign(path, file, read, live.isSymlink);
+          this.#writeBack(
+            path,
+            file,
+            generation,
+            read,
+            live.isSymlink,
+            undefined,
+          );
         }
         if (firstOnly) break;
         continue;
@@ -870,9 +891,7 @@ export class DefinitionIdIndex
       // Rewritten since it was listed: index it under what it declares now,
       // and read it again on the next check. A listing that replaced the
       // entry while this read ran already says what the file declares.
-      if (!this.#isCurrent(path, file)) continue;
-      file.fingerprint = undefined;
-      this.#reassign(path, file, read, live.isSymlink);
+      this.#writeBack(path, file, generation, read, live.isSymlink, undefined);
     }
     return found;
   }

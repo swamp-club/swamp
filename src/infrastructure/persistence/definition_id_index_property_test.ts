@@ -261,6 +261,8 @@ async function assertMatchesScan(
                   for (const owner of [...owners, ...found]) {
                     assert(known.includes(JSON.stringify(owner)));
                   }
+                  // an empty answer runs the miss pass, so some owner is found
+                  assert(owners.length > 0 && found.length > 0);
                   continue;
                 }
                 assertEquals(owners, expected);
