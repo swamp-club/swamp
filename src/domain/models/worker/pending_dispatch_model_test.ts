@@ -17,11 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  endedPendingDispatch,
+  parseStoredPendingDispatch,
+  PENDING_DISPATCH_END_METHODS,
   PENDING_DISPATCH_INSTANCE_NAME,
   PENDING_DISPATCH_MODEL_TYPE,
+  type PendingDispatch,
   pendingDispatchModel,
+  startPendingDispatch,
 } from "./pending_dispatch_model.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
 
@@ -176,4 +181,70 @@ Deno.test("pendingDispatchModel: enqueue without optional fields", async () => {
   assertEquals(record.target, undefined);
   assertEquals(record.labels, undefined);
   assertEquals(record.workflowName, undefined);
+});
+
+Deno.test("startPendingDispatch: records a waiting entry and refuses one that already exists", () => {
+  assertEquals(startPendingDispatch(enqueueArgs, null), {
+    ...enqueueArgs,
+    state: "waiting",
+  });
+  assertThrows(
+    () => startPendingDispatch(enqueueArgs, { queueId: "q-1" }),
+    Error,
+    "Pending dispatch 'q-1' already exists",
+  );
+});
+
+Deno.test("parseStoredPendingDispatch: a missing record fails loudly, a stored one parses", () => {
+  assertThrows(
+    () => parseStoredPendingDispatch("nope", null),
+    Error,
+    "Pending dispatch 'nope' does not exist",
+  );
+  const waiting = startPendingDispatch(enqueueArgs, null);
+  assertEquals(parseStoredPendingDispatch("q-1", { ...waiting }), waiting);
+});
+
+Deno.test("endedPendingDispatch: ends a waiting entry, and leaves a terminal one alone", () => {
+  const waiting: PendingDispatch = startPendingDispatch(enqueueArgs, null);
+  const endedAt = "2026-07-04T00:01:00.000Z";
+  assertEquals(
+    endedPendingDispatch(waiting, {
+      state: "dispatched",
+      dispatchId: "d-1",
+      endedAt,
+    }),
+    { ...waiting, state: "dispatched", dispatchId: "d-1", endedAt },
+  );
+  assertEquals(
+    endedPendingDispatch(waiting, { state: "timed_out", endedAt }),
+    { ...waiting, state: "timed_out", endedAt },
+  );
+  for (const state of ["dispatched", "timed_out", "cancelled", "orphaned"]) {
+    assertEquals(
+      endedPendingDispatch(
+        { ...waiting, state } as PendingDispatch,
+        { state: "cancelled", endedAt },
+      ),
+      null,
+    );
+  }
+});
+
+Deno.test("PENDING_DISPATCH_END_METHODS: names the method for each end state", () => {
+  assertEquals(PENDING_DISPATCH_END_METHODS, {
+    dispatched: "mark_dispatched",
+    timed_out: "timeout",
+    cancelled: "cancel",
+    orphaned: "orphan",
+  });
+  for (const method of Object.values(PENDING_DISPATCH_END_METHODS)) {
+    assertEquals(method in pendingDispatchModel.methods, true);
+  }
+});
+
+Deno.test("pendingDispatchModel: every method's outputs expire after a day", () => {
+  for (const [name, method] of Object.entries(pendingDispatchModel.methods)) {
+    assertEquals(method.outputLifetime, "1d", name);
+  }
 });
