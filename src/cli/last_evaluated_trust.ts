@@ -29,6 +29,7 @@
 
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { UserError } from "../domain/errors.ts";
 import type { EvaluatedDefinitionCache } from "../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import {
@@ -39,6 +40,7 @@ import {
 import { v3DatastoreFor } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
+import { tokenFileBoundTo } from "./remote_run.ts";
 import { resolveDatastoreForRepo, v3LocationOf } from "./repo_context.ts";
 
 type EvaluationRepos = Parameters<typeof v3EvaluationTrust>[1];
@@ -57,11 +59,30 @@ export interface LastEvaluatedDeps {
   ): Promise<EvaluationTrust>;
 }
 
+/**
+ * The member this checkout writes as, undefined when it cannot be told. A bound
+ * token file wins over a stored login when the checkout picks its token, as
+ * `resolveServeUpstream` does, and names no member: the login may be someone else.
+ */
+export async function memberOfUpstream(
+  serverUrl: string,
+  credentials: Pick<ServerCredentialRepository, "get">,
+): Promise<string | undefined> {
+  const tokenFile = Deno.env.get("SWAMP_SERVER_TOKEN_FILE");
+  if (
+    tokenFile && tokenFileBoundTo(serverUrl, [
+      Deno.env.get("SWAMP_SERVE_URL"),
+      Deno.env.get("SWAMP_SERVER_URL"),
+    ])
+  ) return undefined;
+  return (await credentials.get(serverUrl))?.principalId;
+}
+
 const realDeps: LastEvaluatedDeps = {
   upstream: async (repoDir) =>
     (await resolveDatastoreForRepo(repoDir)).serveUpstream?.serverUrl,
-  principal: async (serverUrl) =>
-    (await new FileServerCredentialRepository().get(serverUrl))?.principalId,
+  principal: (serverUrl) =>
+    memberOfUpstream(serverUrl, new FileServerCredentialRepository()),
   trust: async (repoDir, repos, ownPrincipal) =>
     v3EvaluationTrust(
       v3DatastoreFor(
@@ -77,7 +98,7 @@ const realDeps: LastEvaluatedDeps = {
 function adviceFor(error: UserError, knowsMember: boolean): string {
   return knowsMember
     ? `${error.message} Evaluate it from this checkout to replay your own.`
-    : `${error.message} This checkout cannot tell which writes are yours: a token from the environment names no member, so only serve's own evaluations replay.`;
+    : `${error.message} This checkout cannot tell which writes are yours, as with a token from the environment, so only serve's own evaluations replay.`;
 }
 
 /** The code of a refusal to replay: the caller asked for an exact replay. */
@@ -129,7 +150,7 @@ export async function checkLastEvaluation<T>(
     if (error instanceof UserError && error.code === "evaluation_not_trusted") {
       // Its message says why, and what to do.
       throw new UserError(
-        `The last evaluation was not replayed: ${error.message}`,
+        `Not replayed: ${error.message}`,
         EVALUATION_NOT_CHECKED,
       );
     }

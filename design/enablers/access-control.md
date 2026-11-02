@@ -1563,7 +1563,8 @@ runner against their will.
 
 1. **No forged decisions.** A decision (approval, rejection, signal outcome,
    cancel) exists only if serve's handler made it, under the decider's own grant.
-   A forwarded record cannot create, change or drop one. A cancel a caller makes
+   A forwarded record cannot create, change or drop one, other than a retry
+   clearing it for a fresh decision. A cancel a caller makes
    through serve is decided on their grant, recorded and stamped; what the run's
    record says afterwards is a status, which is out of scope, so the member driving
    the run can report past it.
@@ -1603,6 +1604,12 @@ records. Decided on 2026-11-02: local delivery would need the judge to accept
 outcomes a member wrote, and a wait exists for someone else to signal. Approval gates
 are unaffected: `approve` and `reject` go to serve's handlers. Use `--server`, a
 trigger or a schedule.
+
+**Delete and recreate.** A caller with `write` on a workflow can delete a run's record
+and snapshot and forward a new record under the same run id. With nothing stored to
+compare, it reads as a new member-driven run: a serve-driven run's marker and any
+decision it held are gone. This is a known limit. `write` already allows deleting the
+run, the commit stamp records who did it, and serve does not act on the new record.
 
 **Limits of the marker.** When a member-driven parent is cancelled through serve, a
 child that does not link back is not cancelled with it: its owner cancels it.

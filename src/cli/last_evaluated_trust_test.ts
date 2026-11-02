@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
@@ -27,6 +28,7 @@ import {
   checkLastEvaluation,
   lastEvaluatedDefinition,
   type LastEvaluatedDeps,
+  memberOfUpstream,
 } from "./last_evaluated_trust.ts";
 
 const REPOS = {} as Parameters<typeof checkLastEvaluation>[1];
@@ -270,4 +272,37 @@ Deno.test("lastEvaluatedDefinition: with a type, a name no behavior has reads as
     await lastEvaluatedDefinition(trust, repo, "nope", {}),
     undefined,
   );
+});
+
+Deno.test("memberOfUpstream: a bound token file names no member, whatever login is stored for that server (swamp-club#4245)", async () => {
+  const url = "https://serve.example";
+  const stored = {
+    get: () => Promise.resolve({ principalId: "user:alice" }),
+  } as unknown as Parameters<typeof memberOfUpstream>[1];
+  const none = {
+    get: () => Promise.resolve(null),
+  } as unknown as Parameters<typeof memberOfUpstream>[1];
+  await withMockedEnv({
+    SWAMP_SERVER_TOKEN_FILE: "/tokens/bot",
+    SWAMP_SERVE_URL: url,
+    SWAMP_SERVER_URL: undefined,
+  }, async () => {
+    assertEquals(await memberOfUpstream(url, stored), undefined);
+  });
+  // Bound to another server, the file is not what this checkout writes with.
+  await withMockedEnv({
+    SWAMP_SERVER_TOKEN_FILE: "/tokens/bot",
+    SWAMP_SERVE_URL: "https://other.example",
+    SWAMP_SERVER_URL: undefined,
+  }, async () => {
+    assertEquals(await memberOfUpstream(url, stored), "user:alice");
+  });
+  await withMockedEnv({
+    SWAMP_SERVER_TOKEN_FILE: undefined,
+    SWAMP_SERVE_URL: undefined,
+    SWAMP_SERVER_URL: undefined,
+  }, async () => {
+    assertEquals(await memberOfUpstream(url, stored), "user:alice");
+    assertEquals(await memberOfUpstream(url, none), undefined);
+  });
 });
