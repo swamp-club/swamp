@@ -344,7 +344,7 @@ export class CapabilityService {
   ): Promise<unknown[]> {
     const records: unknown[] = [];
     for await (const page of this.streamQueryData(workerName, params)) {
-      records.push(...page);
+      for (const record of page) records.push(record);
     }
     return records;
   }
@@ -693,7 +693,7 @@ export class CapabilityService {
     }
     const result: unknown[] = [];
     for await (const page of this.streamOutputList(workerName, params)) {
-      result.push(...page);
+      for (const output of page) result.push(output);
     }
     return { result };
   }
