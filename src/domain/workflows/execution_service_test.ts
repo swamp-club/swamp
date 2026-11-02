@@ -22921,6 +22921,48 @@ Deno.test("abort cleanup: a failed-gated rollback on a step settled after the ab
   });
 });
 
+Deno.test("abort cleanup: a step settled after the abort does not replace the outcome of a same-named step that ran in another job", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "step-settle-same-name-wf",
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("x")] }),
+        jobOn("j2", "j1", TriggerCondition.succeeded(), [
+          modelStep("a"),
+          modelStep("x", onStep("a", TriggerCondition.succeeded())),
+          modelStep("t", {
+            ...onStep("x", TriggerCondition.always()),
+            guard: "${{ steps.x.status == 'failed' }}",
+          }),
+        ]),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("a", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    service.signalWaits = inMemorySignalWaits();
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      executor.controller.signal,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.getJob("j1")!.getStep("x")!.status, "succeeded");
+    assertCancelledBeforeStart(run, "j2", ["x"]);
+    assertEquals(run.getJob("j2")!.getStep("t")!.status, "succeeded");
+    assertEquals(executor.count("j2/t"), 1);
+    assertEquals(
+      isCleanupGraceSignal(executor.signals.get("j2/t")!),
+      true,
+    );
+  });
+});
+
 Deno.test("abort cleanup: a guarded step reached after the abort stays undecided, and its job ends unknown", async () => {
   await withTempDir(async (tempDir) => {
     const { run, executor } = await runThroughAbort(tempDir, "guarded-wf", [
