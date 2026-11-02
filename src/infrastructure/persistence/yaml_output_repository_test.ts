@@ -5088,7 +5088,7 @@ async function withNewestFirstSorts<T>(
       if (onSort !== undefined && sorts.length === 1) {
         const spent = performance.now() + 10;
         while (performance.now() < spent) {
-          // busy
+          // spin until the slice is spent
         }
       }
     }

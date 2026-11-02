@@ -409,7 +409,7 @@ Deno.test("TimeSlice: is over once its slice is spent, and next yields a turn an
   const slice = new TimeSlice(controller.signal);
   const spent = performance.now() + 10;
   while (performance.now() < spent) {
-    // busy
+    // spin until the slice is spent
   }
   assertEquals(slice.over, true);
   let turned = false;
@@ -452,7 +452,7 @@ Deno.test("sortInTimeSlices: once its signal aborts, rejects with the reason at 
         comparesAtAbort = compares;
         const spent = performance.now() + 10;
         while (performance.now() < spent) {
-          // busy
+          // spin until the slice is spent
         }
       }
       return a - b;

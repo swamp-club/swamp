@@ -27,10 +27,9 @@ interface Waiter {
 }
 
 /**
- * searches and bulk scans together hold at most searchLimit so lookups always
- * have the rest, and bulk scans at most bulkLimit of that; a released permit
- * goes to the first waiter that may take it, so a blocked waiter does not hold
- * up a later one of another kind
+ * searches and bulk scans together hold at most searchLimit, bulk at most
+ * bulkLimit of that, so lookups keep the rest; a released permit goes to the
+ * first waiter that may take it, so a blocked one never holds up a later kind
  */
 export class ScanPermits {
   #held = 0;
