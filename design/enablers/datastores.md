@@ -6486,7 +6486,7 @@ are stamped `@anonymous`.
 |---|---|
 | `POST chunks/has` | `{hashes}` (at most 1,024): the ones serve holds that the caller may reference, touched so GC keeps them |
 | `PUT chunks/{sha256}?partition={p}` | One chunk for a commit to `{p}`, hashed as it streams in, recorded in the upload ledger; needs the partition's least write access (below), `admin` with no partition |
-| `GET chunks/{sha256}` | A chunk's bytes, with one `Range`; 404 to a caller who may not read it |
+| `GET chunks/{sha256}` | A chunk's bytes, with one `Range`; 404 to a caller who may not read it; 503 `chunk_access_undecided` when that could not be decided within the request's limits |
 | `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq}`, or a conflict |
 | `GET partitions/{p}/commits?after=&limit=` | A partition's commits after a seq, and its head: catch-up |
 | `GET changes?cursor=&limit=` | Commits after a feed cursor in this namespace, filtered to what the caller may read |
@@ -6748,6 +6748,37 @@ caller who knew only a hash could commit a reference to it and then read the
 bytes. `chunks/has` and `GET chunks/{sha256}` apply the same rule: an
 unreadable chunk reads as missing.
 
+**Deciding the rule** (swamp-club#4260). Serve pages through every
+partition that references the chunk, 64 at a time in key order, until one
+the caller may read vouches for it or they run out. The work is bounded per
+request, not per chunk: one budget of 1,024 partition checks and 10,000
+behavior definition commits read covers every chunk a request asks about,
+so a `chunks/has` of 1,024 hashes costs no more than one read of a chunk
+named by a thousand partitions. Each partition checked also costs a few
+unbudgeted store reads (a page of keys, a partition head, the compaction
+point, and one config partition's base records, a handful at most). A chunk
+the budget cannot decide is not answered as missing:
+
+- `GET chunks/{sha256}` answers 503 `chunk_access_undecided`, naming no
+  partition. A caller who already knows the hash learns only that more
+  partitions reference it than the partition budget covers, never its
+  content. The commit budget gives no such answer: a definition's history
+  that runs it out without a vouch is refused (404, as for a chunk nothing
+  names), as a superseded chunk was before, so no history, padded with
+  commits the caller may read or not, tells it whether guessed content is
+  in it. Asking again hits the same limit, so the client reports a 503 as a
+  refusal, not a chunk to wait for.
+- `chunks/has` leaves the hash out. Only a writer asks, before it uploads,
+  so it then carries or uploads the bytes, which vouch for themselves.
+- A commit naming the chunk without carrying it is refused
+  `chunk_not_provided`, and the client sends the bytes. A commit's
+  possession checks get at least 64 partition checks per chunk it does not
+  carry, the reach each chunk had before the budget, so a commit that landed
+  then is never refused for the budget now; a commit names at most 1,024
+  chunks it does not carry, which bounds them. The check under the
+  forwarded-commit lock gets a budget of its own, bounding the work done
+  while the lock is held.
+
 `chunk_partitions` (`commits.db` schema 8, backfilled from `commits` and
 `base_records`) records which partitions reference each chunk, for
 `partitionsReferencing`. A chunk in a behavior's partition needs both `read`
@@ -6766,13 +6797,24 @@ decides each op: a control-plane definition can share its name, and so its
 config partition, with an ordinary one (swamp-club#3938). So catch-up also
 filters each commit of the page as the changes feed does (`head` still says
 where the partition ends), and a behavior definition's config partition
-vouches for a chunk only through a record in it that names the chunk now and
-that the caller may read, decided by the type its key names
-(`definitionRecordReadAccessOf`): `admin` for a control-plane or restricted
-type. A chunk only an overwritten or deleted definition named is therefore
-not vouched for by that partition: a non-admin gets 404 for it, and a client
-uploads it again to name it. A read model still being built vouches for
-nothing.
+vouches for a chunk only through records the caller may read: first a record
+live in it now that names the chunk, decided by the type its key names
+(`definitionRecordReadAccessOf`), then history, newest first: a stored
+commit in it that names the chunk, decided as the changes feed and
+`GET commits` decide that commit (`commitReadAccessOf`), or a compacted base
+record that names it, decided as `GET base` decides that record
+(`baseRecordReadAccessOf`). A control-plane or restricted type needs
+`admin` either way. A chunk only an overwritten or deleted definition named
+is still vouched for to a caller who may read the commit that named it, so
+a member catching up past a superseded version gets its chunk
+(swamp-club#4260). The live records are skipped, never waited on, while
+serve's read model is still catching up (after a restart, a restore or a
+takeover): the history decides alone, so an incomplete read model never
+refuses a chunk by itself. A live chunk is vouched for through its record
+whatever history sits in front of it, and only an old superseded version
+can run the commit budget out, which refuses it. A compaction between the
+commits and the base being read is decided again once, and undecided (never
+missing) if the point moves twice.
 
 **The compacted base** (swamp-club#4006). A checkout whose feed cursor is
 below the compaction point loads the base instead of the commits, and serve

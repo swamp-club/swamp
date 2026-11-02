@@ -30,6 +30,7 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import {
   handleDatastoreRequest,
   UNRESTRICTED_READ_ACCESS,
+  VouchBudget,
 } from "../src/serve/datastore_api.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
@@ -43,7 +44,11 @@ import {
 } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
+import { ReadModelIncompleteError } from "../src/domain/datastore_v3/read_model.ts";
+import { CommitsCompactedError } from "../src/domain/datastore_v3/commit_store.ts";
+import { createDefinitionId } from "../src/domain/definitions/definition.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { grant } from "./serve_request_harness.ts";
 import {
   blobSaveOps,
@@ -1313,5 +1318,916 @@ Deno.test({
         delete (store as { changesSince?: unknown }).changesSince;
       }
     });
+  },
+});
+
+/** Bob reads behaviors matching `pattern` and every behavior's data. */
+function bobReads(pattern: string): Grant[] {
+  return [
+    ...writer(),
+    grant({
+      subject: { kind: "user", name: "bob" },
+      actions: ["read"],
+      resource: { kind: "model", pattern },
+    }),
+    grant({
+      subject: { kind: "user", name: "bob" },
+      actions: ["read"],
+      resource: { kind: "data", pattern: "*" },
+    }),
+  ];
+}
+
+/** `GET chunks/{sha}` and `chunks/has` for `sha`, as `token`'s caller. */
+async function chunkRead(
+  server: Server,
+  sha: string,
+  token = "bob-token",
+): Promise<
+  { status: number; body: Record<string, unknown>; held: unknown[] }
+> {
+  const read = await fetch(`${server.url}/chunks/${sha}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const body = read.status === 200
+    ? (await read.body?.cancel(), {})
+    : await read.json();
+  const has = await fetch(`${server.url}/chunks/has`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ hashes: [sha] }),
+  });
+  return { status: read.status, body, held: (await has.json()).held };
+}
+
+/**
+ * Saves `bytes` as data of `others` behaviors that do not exist, whose ids
+ * sort before any random one, then of `web`: `web`'s partition is the last
+ * referencing the chunk in key order. Only the first commit carries it.
+ */
+async function sharedChunk(
+  server: Server,
+  others: number,
+  bytes: Uint8Array,
+): Promise<string> {
+  const sha = await sha256Hex(bytes);
+  const ids = Array.from(
+    { length: others },
+    (_, i) =>
+      createDefinitionId(
+        `00000000-0000-4000-8000-${i.toString().padStart(12, "0")}`,
+      ),
+  );
+  assert(
+    server.model.id > ids[ids.length - 1],
+    "web's partition sorts last",
+  );
+  ids.push(server.model.id);
+  let first = true;
+  for (const id of ids) {
+    const landed = await post(
+      partitionPath(server, id),
+      "alice-token",
+      commitBody({
+        expectedSeq: 0,
+        txnId: crypto.randomUUID(),
+        ops: await blobSaveOps(server, "out", 1, bytes, id),
+        chunks: first ? [{ sha256: sha, size: bytes.length }] : [],
+      }, first ? [bytes] : []),
+    );
+    assertEquals(landed.status, 200, JSON.stringify(landed.json));
+    first = false;
+  }
+  return sha;
+}
+
+/** The commits path of the behavior definition `name`'s config partition. */
+function configCommitsPath(server: Server, name: string): string {
+  return `${server.url}/partitions/${
+    encodeURIComponent(
+      partitionOf({ kind: "config", definitionKind: "model", name })
+        .toString(),
+    )
+  }/commits`;
+}
+
+/** Creates the definition `name` of `type` as `v1`, then edits it to `v2`. */
+async function supersededDefinition(
+  server: Server,
+  name: string,
+  type: string,
+): Promise<{ v1: string; v2: string; v1Bytes: Uint8Array; id: string }> {
+  const id = crypto.randomUUID();
+  const v1 = definitionYaml(name, type, id);
+  const v2 = new TextEncoder().encode(
+    new TextDecoder().decode(definitionYaml(name, type, id)) + "# v2\n",
+  );
+  const versions = [
+    [0, v1, "definition.create"],
+    [1, v2, "definition.edit"],
+  ] as const;
+  for (const [expectedSeq, content, kind] of versions) {
+    const sha = await sha256Hex(content);
+    const landed = await post(
+      configCommitsPath(server, name),
+      "alice-token",
+      commitBody({
+        expectedSeq,
+        txnId: crypto.randomUUID(),
+        ops: [{
+          kind: "put",
+          intent: { kind, definition: { kind: "model", name } },
+          key: `config/models/${type}/${name}.yaml`,
+          blob: { sha256: sha, size: content.length },
+        }],
+        chunks: [{ sha256: sha, size: content.length }],
+      }, [content]),
+    );
+    assertEquals(landed.status, 200, JSON.stringify(landed.json));
+  }
+  return {
+    v1: await sha256Hex(v1),
+    v2: await sha256Hex(v2),
+    v1Bytes: v1,
+    id,
+  };
+}
+
+Deno.test({
+  name:
+    "datastore API: a chunk referenced by more than 64 partitions is served through the last one the caller may read, and refused as missing when it may read none (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("web"), async (server) => {
+      const sha = await sharedChunk(
+        server,
+        64,
+        new TextEncoder().encode("common"),
+      );
+      const read = await chunkRead(server, sha);
+      assertEquals(read.status, 200);
+      assertEquals(read.held, [sha]);
+    });
+    await withServer(bobReads("nothing-here"), async (server) => {
+      const sha = await sharedChunk(
+        server,
+        64,
+        new TextEncoder().encode("common"),
+      );
+      const read = await chunkRead(server, sha);
+      assertEquals(read.status, 404);
+      assertEquals(read.body, { code: "not_found", message: "No such chunk" });
+      assertEquals(read.held, []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a superseded definition's chunk is served to a reader of its commit, and stays hidden for a control-plane definition (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (
+      const [type, readable] of [
+        ["ordinary", true],
+        ["@swamp/grant", false],
+      ] as const
+    ) {
+      await withServer(bobReads("*"), async (server) => {
+        const typeName = type === "ordinary"
+          ? server.modelType.normalized
+          : type;
+        const { v1, v2 } = await supersededDefinition(
+          server,
+          "shared",
+          typeName,
+        );
+        for (const sha of [v1, v2]) {
+          const read = await chunkRead(server, sha);
+          assertEquals(read.status, readable ? 200 : 404, type);
+          assertEquals(read.held, readable ? [sha] : [], type);
+        }
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a superseded definition's chunk is vouched for through the compacted base and the commits after it (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      const type = server.modelType.normalized;
+      const { v1, v2, id } = await supersededDefinition(
+        server,
+        "shared",
+        type,
+      );
+      // Folds v1's commit into the base; v2 is superseded by v3, stored.
+      const store = server.v3.commitStore;
+      const point = (await store.changesSince(0, 1))[0].cursor;
+      const fence = store.writerFence();
+      await store.compactHistory(point, fence === undefined ? {} : { fence });
+      const v3 = new TextEncoder().encode(
+        new TextDecoder().decode(definitionYaml("shared", type, id)) +
+          "# v3\n",
+      );
+      const v3Sha = await sha256Hex(v3);
+      const landed = await post(
+        configCommitsPath(server, "shared"),
+        "alice-token",
+        commitBody({
+          expectedSeq: 2,
+          txnId: crypto.randomUUID(),
+          ops: [{
+            kind: "put",
+            intent: {
+              kind: "definition.edit",
+              definition: { kind: "model", name: "shared" },
+            },
+            key: `config/models/${type}/shared.yaml`,
+            blob: { sha256: v3Sha, size: v3.length },
+          }],
+          chunks: [{ sha256: v3Sha, size: v3.length }],
+        }, [v3]),
+      );
+      assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      for (const sha of [v1, v2, v3Sha]) {
+        assertEquals((await chunkRead(server, sha)).status, 200, sha);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a definition chunk is answered from history while serve's read model is incomplete, never waiting on it (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      const { v2 } = await supersededDefinition(
+        server,
+        "shared",
+        server.modelType.normalized,
+      );
+      // As after a restart, a restore or a takeover: the index is not
+      // complete, for every caller.
+      const readModel = server.v3.readModel as {
+        liveRecords: (...args: unknown[]) => Promise<unknown>;
+      };
+      const original = readModel.liveRecords;
+      let asked = 0;
+      readModel.liveRecords = () => {
+        asked++;
+        return Promise.reject(new ReadModelIncompleteError());
+      };
+      try {
+        for (const token of ["bob-token", "alice-token"]) {
+          const read = await chunkRead(server, v2, token);
+          assertEquals(read.status, 200, token);
+          assertEquals(read.held, [v2], token);
+        }
+        // Asked, refused as incomplete, and decided from history instead.
+        assert(asked > 0, "the live records were asked first");
+      } finally {
+        readModel.liveRecords = original;
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit naming a superseded definition's chunk it may read is vouched for without carrying it (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger({ graceMs: 1 });
+    await withServer(writer(), async (server) => {
+      const { v1, v1Bytes } = await supersededDefinition(
+        server,
+        "shared",
+        server.modelType.normalized,
+      );
+      await waitFor(
+        () => !ledger.holds("user:caller", "_default", v1, Date.now()),
+        "the upload's grace window to end",
+      );
+      const named = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops: await blobSaveOps(server, "copy", 1, v1Bytes),
+          chunks: [],
+        }),
+      );
+      assertEquals(named.status, 200, JSON.stringify(named.json));
+    }, ledger);
+  },
+});
+
+/** A budget that counts what it allowed. */
+class CountingBudget extends VouchBudget {
+  partitionsSpent = 0;
+  override spendPartition(): boolean {
+    const spent = super.spendPartition();
+    if (spent) this.partitionsSpent++;
+    return spent;
+  }
+}
+
+Deno.test({
+  name:
+    "datastore API: past the request's vouch budget a chunk read is undecided, a 503 that names no partition, and has leaves it out; the work stops at the budget (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const budgets: CountingBudget[] = [];
+    let limit = 3;
+    const vouchBudget = () => {
+      const budget = new CountingBudget(limit, 100);
+      budgets.push(budget);
+      return budget;
+    };
+    await withServer(
+      bobReads("web"),
+      async (server) => {
+        // Five partitions reference the chunk; bob may read only the last.
+        const sha = await sharedChunk(
+          server,
+          4,
+          new TextEncoder().encode("common"),
+        );
+        budgets.length = 0;
+        const read = await fetch(`${server.url}/chunks/${sha}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(read.status, 503);
+        const body = await read.json();
+        assertEquals(body.code, "chunk_access_undecided");
+        assert(!JSON.stringify(body).includes("model"), JSON.stringify(body));
+        // Two hashes in one has share one budget: the second gets none.
+        const has = await fetch(`${server.url}/chunks/has`, {
+          method: "POST",
+          headers: { authorization: "Bearer bob-token" },
+          body: JSON.stringify({ hashes: [sha, sha.replace(/^./, "0")] }),
+        });
+        assertEquals((await has.json()).held, []);
+        assertEquals(budgets.map((budget) => budget.partitionsSpent), [3, 3]);
+        // A budget that reaches the last partition serves it.
+        limit = 5;
+        const served = await chunkRead(server, sha);
+        assertEquals(served.status, 200);
+        assertEquals(served.held, [sha]);
+      },
+      new UploadLedger(),
+      { vouchBudget },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a chunk has leaves out is carried by the commit naming it, which lands (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      writer(),
+      async (server) => {
+        const bytes = new TextEncoder().encode("carried");
+        const sha = await sha256Hex(bytes);
+        const has = await fetch(`${server.url}/chunks/has`, {
+          method: "POST",
+          headers: { authorization: "Bearer alice-token" },
+          body: JSON.stringify({ hashes: [sha] }),
+        });
+        assertEquals((await has.json()).held, []);
+        const landed = await post(
+          partitionPath(server),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: await blobSaveOps(server, "out", 1, bytes),
+            chunks: [{ sha256: sha, size: bytes.length }],
+          }, [bytes]),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      },
+      new UploadLedger(),
+      { vouchBudget: () => new VouchBudget(0, 0) },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a definition's history is read newest first, so a recent superseded version is vouched for within a budget an old one runs out, which is refused (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      bobReads("*"),
+      async (server) => {
+        // Four versions, the fourth live: two commit reads reach the third,
+        // never the first.
+        const [first, , third] = await editDefinition(
+          server,
+          "shared",
+          server.modelType.normalized,
+          0,
+          4,
+          "definition.create",
+        );
+        const recent = await chunkRead(server, third);
+        assertEquals(recent.status, 200);
+        assertEquals(recent.held, [third]);
+        const old = await chunkRead(server, first);
+        assertEquals(old.status, 404);
+        assertEquals(old.held, []);
+      },
+      new UploadLedger(),
+      { vouchLimits: { partitions: 1024, commits: 2 } },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a content-checked put naming a chunk the budget cannot decide is answered chunk_not_provided, not refused as content (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger({ graceMs: 1 });
+    await withServer(
+      writer(),
+      async (server) => {
+        const type = server.modelType.normalized;
+        const { v1, v1Bytes } = await supersededDefinition(
+          server,
+          "shared",
+          type,
+        );
+        await waitFor(
+          () => !ledger.holds("user:caller", "_default", v1, Date.now()),
+          "the upload's grace window to end",
+        );
+        // A revert of shared to v1, naming v1's chunk without carrying it.
+        const named = await post(
+          configCommitsPath(server, "shared"),
+          "alice-token",
+          commitBody({
+            expectedSeq: 2,
+            txnId: crypto.randomUUID(),
+            ops: [{
+              kind: "put",
+              intent: {
+                kind: "definition.edit",
+                definition: { kind: "model", name: "shared" },
+              },
+              key: `config/models/${type}/shared.yaml`,
+              blob: { sha256: v1, size: v1Bytes.length },
+            }],
+            chunks: [],
+          }),
+        );
+        assertEquals(named.status, 403, JSON.stringify(named.json));
+        assertEquals(named.json.code, "chunk_not_provided");
+        // No partition checks at all: the chunk is undecided.
+      },
+      ledger,
+      { vouchBudget: () => new VouchBudget(0, 10_000) },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a definition chunk whose decision a compaction moved twice is undecided, never answered as missing (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      // A control-plane definition: no commit bob may read names v1, so
+      // the decision reaches the compaction-point check.
+      const { v1 } = await supersededDefinition(
+        server,
+        "shared",
+        "@swamp/grant",
+      );
+      // Each look at the compaction point finds it moved.
+      const store = server.v3.commitStore as {
+        compactionPoint: () => Promise<number>;
+      };
+      const original = store.compactionPoint;
+      let point = 0;
+      store.compactionPoint = () => Promise.resolve(++point);
+      try {
+        const read = await fetch(`${server.url}/chunks/${v1}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(read.status, 503);
+        assertEquals((await read.json()).code, "chunk_access_undecided");
+      } finally {
+        store.compactionPoint = original;
+      }
+      // With the point still, the same read is decided: refused.
+      assertEquals((await chunkRead(server, v1)).status, 404);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a forwarded commit decides a chunk it may not name once, within one budget (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let budgets = 0;
+    await withServer(
+      writer(),
+      async (server) => {
+        const type = server.modelType.normalized;
+        // Bytes serve never received, which no partition names.
+        const content = definitionYaml("other", type);
+        const sha = await sha256Hex(content);
+        budgets = 0;
+        const named = await post(
+          configCommitsPath(server, "other"),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: [{
+              kind: "put",
+              intent: {
+                kind: "definition.create",
+                definition: { kind: "model", name: "other" },
+              },
+              key: `config/models/${type}/other.yaml`,
+              blob: { sha256: sha, size: content.length },
+            }],
+            chunks: [],
+          }),
+        );
+        assertEquals(named.status, 403, JSON.stringify(named.json));
+        assertEquals(budgets, 1);
+      },
+      new UploadLedger(),
+      {
+        vouchBudget: () => {
+          budgets++;
+          return new VouchBudget();
+        },
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a definition chunk whose history is compacted again mid-read is undecided, and the reply names no partition (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      const { v1 } = await supersededDefinition(
+        server,
+        "shared",
+        "@swamp/grant",
+      );
+      // Every partition read finds its first commit compacted, retried or
+      // not, and the compaction point moves each time it is looked at.
+      const store = server.v3.commitStore as {
+        readPartition: (...args: unknown[]) => Promise<unknown>;
+        compactionPoint: () => Promise<number>;
+      };
+      const read = store.readPartition;
+      const compactionPoint = store.compactionPoint;
+      let point = 0;
+      // Each read is refused as compacted through the seq it starts at, so
+      // the retry from just past it is refused again.
+      store.readPartition = (...args: unknown[]) =>
+        Promise.reject(
+          new CommitsCompactedError(
+            ++point,
+            "compacted meanwhile",
+            args[2] as number,
+          ),
+        );
+      store.compactionPoint = () => Promise.resolve(++point);
+      try {
+        const reply = await fetch(`${server.url}/chunks/${v1}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(reply.status, 503);
+        const body = await reply.json();
+        assertEquals(body.code, "chunk_access_undecided");
+        assert(!JSON.stringify(body).includes("shared"), JSON.stringify(body));
+      } finally {
+        store.readPartition = read;
+        store.compactionPoint = compactionPoint;
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a compacted base vouches for a definition chunk only through the record the caller may read, not a same-named definition of another type (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(bobReads("*"), async (server) => {
+      // Two definitions named shared share one config partition: one of an
+      // ordinary type bob may read, one of a control-plane type only an
+      // admin may.
+      const types = [server.modelType.normalized, "@swamp/grant"];
+      const shas: string[] = [];
+      for (const [expectedSeq, type] of types.entries()) {
+        const content = definitionYaml("shared", type);
+        const sha = await sha256Hex(content);
+        shas.push(sha);
+        const landed = await post(
+          configCommitsPath(server, "shared"),
+          "alice-token",
+          commitBody({
+            expectedSeq,
+            txnId: crypto.randomUUID(),
+            ops: [{
+              kind: "put",
+              intent: {
+                kind: "definition.create",
+                definition: { kind: "model", name: "shared" },
+              },
+              key: `config/models/${type}/shared.yaml`,
+              blob: { sha256: sha, size: content.length },
+            }],
+            chunks: [{ sha256: sha, size: content.length }],
+          }, [content]),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      }
+      // Folds both commits: only the base names either chunk now.
+      const store = server.v3.commitStore;
+      const fence = store.writerFence();
+      await store.compactHistory(
+        Number.MAX_SAFE_INTEGER,
+        fence === undefined ? {} : { fence },
+      );
+      const config = partitionOf({
+        kind: "config",
+        definitionKind: "model",
+        name: "shared",
+      });
+      for (const sha of shas) {
+        assertEquals(
+          (await store.baseRecordKeysNaming(server.v3.namespace, config, sha))
+            .length,
+          1,
+        );
+      }
+      const [ordinary, controlPlane] = shas;
+      const readable = await chunkRead(server, ordinary);
+      assertEquals(readable.status, 200);
+      assertEquals(readable.held, [ordinary]);
+      const hidden = await chunkRead(server, controlPlane);
+      assertEquals(hidden.status, 404);
+      assertEquals(hidden.body, {
+        code: "not_found",
+        message: "No such chunk",
+      });
+      assertEquals(hidden.held, []);
+      for (const sha of shas) {
+        const admin = await chunkRead(server, sha, "alice-token");
+        assertEquals(admin.status, 200, sha);
+        assertEquals(admin.held, [sha], sha);
+      }
+    });
+  },
+});
+
+/** Edits the definition `name` of `type` from `fromSeq`, `count` times. */
+async function editDefinition(
+  server: Server,
+  name: string,
+  type: string,
+  fromSeq: number,
+  count: number,
+  kind: "definition.create" | "definition.edit" = "definition.edit",
+): Promise<string[]> {
+  const id = crypto.randomUUID();
+  const shas: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const content = new TextEncoder().encode(
+      new TextDecoder().decode(definitionYaml(name, type, id)) + `# ${i}\n`,
+    );
+    const sha = await sha256Hex(content);
+    shas.push(sha);
+    const landed = await post(
+      configCommitsPath(server, name),
+      "alice-token",
+      commitBody({
+        expectedSeq: fromSeq + i,
+        txnId: crypto.randomUUID(),
+        ops: [{
+          kind: i === 0 ? kind : "put",
+          intent: {
+            kind: i === 0 ? kind : "definition.edit",
+            definition: { kind: "model", name },
+          },
+          key: `config/models/${type}/${name}.yaml`,
+          blob: { sha256: sha, size: content.length },
+        }].map((op) => ({ ...op, kind: "put" })),
+        chunks: [{ sha256: sha, size: content.length }],
+      }, [content]),
+    );
+    assertEquals(landed.status, 200, JSON.stringify(landed.json));
+  }
+  return shas;
+}
+
+Deno.test({
+  name:
+    "datastore API: a commit budget run out over history the caller may read none of is refused, as for a chunk nothing names, never undecided (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      bobReads("*"),
+      async (server) => {
+        // A control-plane definition bob may not read, edited past the
+        // budget: its first version's chunk sits behind the rest.
+        const [first] = await editDefinition(
+          server,
+          "shared",
+          "@swamp/grant",
+          0,
+          4,
+          "definition.create",
+        );
+        const guessed = await chunkRead(server, first);
+        const unnamed = await chunkRead(server, "e".repeat(64));
+        assertEquals(guessed.status, 404);
+        assertEquals(guessed.body, unnamed.body);
+        assertEquals(guessed.held, []);
+      },
+      new UploadLedger(),
+      { vouchLimits: { partitions: 1024, commits: 2 } },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a live definition record vouches for its chunk whatever the history of a same-named type in front of it (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      bobReads("*"),
+      async (server) => {
+        // bob's readable definition, then a control-plane one of the same name
+        // edited past the budget, which a newest-first scan reads first.
+        const [live] = await editDefinition(
+          server,
+          "shared",
+          server.modelType.normalized,
+          0,
+          1,
+          "definition.create",
+        );
+        await editDefinition(
+          server,
+          "shared",
+          "@swamp/grant",
+          1,
+          4,
+          "definition.create",
+        );
+        const read = await chunkRead(server, live);
+        assertEquals(read.status, 200);
+        assertEquals(read.held, [live]);
+      },
+      new UploadLedger(),
+      { vouchLimits: { partitions: 1024, commits: 2 } },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit naming more held chunks than one request's budget covers lands, as it did before the budget (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // Bob writes web; another behavior's partition, which he may not read,
+    // names each chunk first, so vouching for each costs two checks.
+    const grants = [
+      ...writer(),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["read", "write", "run"],
+        resource: { kind: "model", pattern: "web" },
+      }),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["read"],
+        resource: { kind: "data", pattern: "web" },
+      }),
+    ];
+    await withServer(
+      grants,
+      async (server) => {
+        const other = createDefinitionId(
+          "00000000-0000-4000-8000-000000000000",
+        );
+        assert(server.model.id > other, "web's partition sorts last");
+        const contents = ["one", "two"].map((text) =>
+          new TextEncoder().encode(text)
+        );
+        for (const [i, bytes] of contents.entries()) {
+          const sha = await sha256Hex(bytes);
+          for (const id of [other, server.model.id]) {
+            const landed = await post(
+              partitionPath(server, id),
+              "alice-token",
+              commitBody({
+                expectedSeq: i,
+                txnId: crypto.randomUUID(),
+                ops: await blobSaveOps(server, `held-${i}`, 1, bytes, id),
+                chunks: [{ sha256: sha, size: bytes.length }],
+              }, [bytes]),
+            );
+            assertEquals(landed.status, 200, JSON.stringify(landed.json));
+          }
+        }
+        // Two chunks at two checks each, past a budget of two.
+        const ops = [
+          ...(await blobSaveOps(server, "copy-0", 1, contents[0])),
+          ...(await blobSaveOps(server, "copy-1", 1, contents[1])),
+        ];
+        const named = await post(
+          partitionPath(server),
+          "bob-token",
+          commitBody({
+            expectedSeq: 2,
+            txnId: crypto.randomUUID(),
+            ops,
+            chunks: [],
+          }),
+        );
+        assertEquals(named.status, 200, JSON.stringify(named.json));
+      },
+      new UploadLedger(),
+      { vouchLimits: { partitions: 2, commits: 10_000 } },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit budget run out over a same-named type's commits the caller may read leaves a control-plane chunk refused as missing, never undecided (swamp-club#4260)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(
+      bobReads("*"),
+      async (server) => {
+        // A control-plane definition bob may not read, then a same-named one
+        // of an ordinary type he may, edited past the budget in front of it.
+        const [hidden] = await editDefinition(
+          server,
+          "shared",
+          "@swamp/grant",
+          0,
+          1,
+          "definition.create",
+        );
+        await editDefinition(
+          server,
+          "shared",
+          server.modelType.normalized,
+          1,
+          4,
+          "definition.create",
+        );
+        const guessed = await chunkRead(server, hidden);
+        const unnamed = await chunkRead(server, "e".repeat(64));
+        assertEquals(guessed.status, 404);
+        assertEquals(guessed.body, unnamed.body);
+        assertEquals(guessed.held, []);
+      },
+      new UploadLedger(),
+      { vouchLimits: { partitions: 1024, commits: 2 } },
+    );
   },
 });

@@ -27,6 +27,7 @@ import {
   assertEquals,
   assertGreater,
   assertRejects,
+  assertStringIncludes,
   assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
@@ -1096,6 +1097,120 @@ Deno.test("SqliteCommitStore.partitionsReferencing: compaction keeps a partition
     assertEquals(
       chunkRefs(path).map((row) => row.sha256),
       [hash("c"), hash("d")],
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.partitionsReferencing: pages in key order from just past `after` (swamp-club#4260)", async () => {
+  await withStore(async (store, path) => {
+    await store.append(
+      modelCommit(1, [await blobPut("x", 1, TWO_CHUNKS)], { fence: 1 }),
+    );
+    await store.append(
+      modelCommit(1, [await otherBlobPut("y", OTHER_TWO)], {
+        partition: otherPartition(),
+        fence: 1,
+      }),
+    );
+    const all = [modelPartition().toString(), otherPartition().toString()]
+      .sort();
+    const first = await store.partitionsReferencing("", hash("d"), 1);
+    assertEquals(first.map((key) => key.toString()), [all[0]]);
+    const second = await store.partitionsReferencing(
+      "",
+      hash("d"),
+      1,
+      first[0].toString(),
+    );
+    assertEquals(second.map((key) => key.toString()), [all[1]]);
+    // Past the last one, and past a key that names nothing, in order.
+    assertEquals(
+      await store.partitionsReferencing("", hash("d"), 5, all[1]),
+      [],
+    );
+    assertEquals(
+      (await store.partitionsReferencing("", hash("d"), 5, "")).map((key) =>
+        key.toString()
+      ),
+      all,
+    );
+    // The cursor stays inside the namespace.
+    assertEquals(
+      await store.partitionsReferencing("acme", hash("d"), 5, ""),
+      [],
+    );
+    // A returned key prints as the stored text, so it pages exactly.
+    assertEquals(
+      chunkPartitions(path)
+        .filter((row) => row.sha256 === hash("d"))
+        .map((row) => row.partition),
+      all,
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.baseRecordKeysNaming: a partition's base records whose blob names the chunk, by its parts or its own digest (swamp-club#4260)", async () => {
+  await withStore(async (store) => {
+    await store.append(
+      modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)], { fence: 1 }),
+    );
+    await store.append(
+      modelCommit(2, [await blobPut("w", 1, TWO_CHUNKS)], { fence: 1 }),
+    );
+    await store.append(
+      modelCommit(1, [await otherBlobPut("y", OTHER_TWO)], {
+        partition: otherPartition(),
+        fence: 1,
+      }),
+    );
+    // Nothing is compacted yet: the base names nothing.
+    assertEquals(
+      await store.baseRecordKeysNaming("", modelPartition(), hash("a")),
+      [],
+    );
+    await store.compactHistory(Number.MAX_SAFE_INTEGER);
+    const named = await store.baseRecordKeysNaming(
+      "",
+      modelPartition(),
+      hash("a"),
+    );
+    assertEquals(named.length, 1);
+    assertStringIncludes(named[0], "/x/");
+    // A part names it; the digest of content with parts does not.
+    const part = await store.baseRecordKeysNaming(
+      "",
+      modelPartition(),
+      hash("c"),
+    );
+    assertEquals(part.length, 1);
+    assertStringIncludes(part[0], "/w/");
+    assertEquals(
+      await store.baseRecordKeysNaming("", modelPartition(), hash("b")),
+      [],
+    );
+    // Per partition and per namespace.
+    assertEquals(
+      (await store.baseRecordKeysNaming("", modelPartition(), hash("d")))
+        .length,
+      1,
+    );
+    assertEquals(
+      (await store.baseRecordKeysNaming("", otherPartition(), hash("d")))
+        .length,
+      1,
+    );
+    assertEquals(
+      await store.baseRecordKeysNaming("acme", modelPartition(), hash("a")),
+      [],
+    );
+    // A later write over x, compacted, leaves the base naming a no more.
+    await store.append(
+      modelCommit(3, [await blobPut("x", 1, TWO_CHUNKS)], { fence: 1 }),
+    );
+    await store.compactHistory(Number.MAX_SAFE_INTEGER);
+    assertEquals(
+      await store.baseRecordKeysNaming("", modelPartition(), hash("a")),
+      [],
     );
   });
 });

@@ -719,6 +719,8 @@ export class SqliteCommitStore implements CommitStore {
   readonly #insertChunkRef: StatementSync;
   readonly #insertChunkPartition: StatementSync;
   readonly #selectChunkPartitions: StatementSync;
+  readonly #selectChunkPartitionsAfter: StatementSync;
+  readonly #selectBaseKeysNaming: StatementSync;
   /** `referencedChunks` for a full page of {@link REF_LOOKUP_PAGE} hashes. */
   readonly #selectRefPage: StatementSync;
   readonly #selectPoint: StatementSync;
@@ -796,6 +798,27 @@ export class SqliteCommitStore implements CommitStore {
     this.#insertChunkPartition = db.prepare(INCREMENT_PARTITION_REF_SQL);
     this.#selectChunkPartitions = db.prepare(
       "SELECT partition FROM chunk_partitions WHERE namespace = ? AND sha256 = ? ORDER BY partition LIMIT ?",
+    );
+    this.#selectChunkPartitionsAfter = db.prepare(
+      "SELECT partition FROM chunk_partitions WHERE namespace = ? AND sha256 = ? AND partition > ? ORDER BY partition LIMIT ?",
+    );
+    // As the chunk_partitions backfill reads a base record's blob: its
+    // parts, or its own digest when it has none.
+    this.#selectBaseKeysNaming = db.prepare(
+      `SELECT DISTINCT r.record_key AS record_key
+        FROM base_records AS r
+        LEFT JOIN json_each(
+          CASE WHEN json_valid(r.blob) AND json_type(r.blob, '$.parts') = 'array'
+            THEN json_extract(r.blob, '$.parts') ELSE '[]' END
+        ) AS part
+        WHERE r.namespace = ? AND r.partition = ?
+          AND r.blob IS NOT NULL AND json_valid(r.blob)
+          AND (part.key IS NULL OR part.type = 'object')
+          AND (CASE WHEN part.key IS NULL
+            THEN json_extract(r.blob, '$.sha256')
+            ELSE json_extract(part.value, '$.sha256')
+          END) = ?
+        ORDER BY r.record_key`,
     );
     this.#selectRefPage = db.prepare(selectRefsSql(REF_LOOKUP_PAGE));
     this.#selectPoint = db.prepare(
@@ -1804,6 +1827,7 @@ export class SqliteCommitStore implements CommitStore {
     namespace: string,
     sha256: string,
     limit: number,
+    after?: string,
   ): Promise<readonly PartitionKey[]> {
     if (this.#closed) return Promise.reject(closedError());
     try {
@@ -1811,9 +1835,17 @@ export class SqliteCommitStore implements CommitStore {
     } catch (error) {
       return Promise.reject(error);
     }
-    const rows = this.#selectChunkPartitions.all(namespace, sha256, limit) as {
-      partition: string;
-    }[];
+    const rows =
+      (after === undefined
+        ? this.#selectChunkPartitions.all(namespace, sha256, limit)
+        : this.#selectChunkPartitionsAfter.all(
+          namespace,
+          sha256,
+          after,
+          limit,
+        )) as {
+          partition: string;
+        }[];
     const keys: PartitionKey[] = [];
     for (const row of rows) {
       try {
@@ -1832,6 +1864,20 @@ export class SqliteCommitStore implements CommitStore {
       }
     }
     return Promise.resolve(keys);
+  }
+
+  baseRecordKeysNaming(
+    namespace: string,
+    partition: PartitionKey,
+    sha256: string,
+  ): Promise<readonly string[]> {
+    if (this.#closed) return Promise.reject(closedError());
+    const rows = this.#selectBaseKeysNaming.all(
+      namespace,
+      partition.toString(),
+      sha256,
+    ) as { record_key: string }[];
+    return Promise.resolve(rows.map((row) => row.record_key));
   }
 
   async readPartition(
