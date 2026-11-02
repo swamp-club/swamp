@@ -552,6 +552,26 @@ Deno.test("startStartServer: runs workspace choice, task, harness list, choose a
   });
 });
 
+Deno.test("startStartServer: an agent chosen again at trust stays on trust, and back from trust returns to the task", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    const client = await Client.open(handle.port);
+    try {
+      await walkToTrust(client);
+      const again = await client.request("start.harness.choose", {
+        id: "claude",
+      });
+      assertEquals(again.screen, "trust");
+      assertEquals(again.harness?.id, "claude");
+      const back = await client.request("start.back");
+      assertEquals(back.screen, "task");
+      assertEquals(back.task?.title, "list my pods");
+      assertEquals(fakes.opened, []);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 Deno.test("startStartServer: answers an invalid request and a refused transition with error frames", async () => {
   await withStartServer(async ({ handle }) => {
     const client = await Client.open(handle.port);
