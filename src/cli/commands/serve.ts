@@ -5225,9 +5225,10 @@ export const serveCommand = new Command()
     // authorizing what a request reads finds the owning definitions here, not
     // by scanning every definition per request
     const definitionIndex = new DefinitionIdIndex(repoContext.definitionRepo);
-    // a direct-type workflow step looks its definition name up across every
-    // type; only that lookup reads the index
+    // direct-type name lookups and lookups by id read the index, not a walk
+    // of every definition
     repoContext.definitionRepo.useNameIndex(definitionIndex);
+    repoContext.definitionRepo.useIdIndex(definitionIndex);
     // a follower's route to its team's leader: writes it takes pass on through
     // it with the caller's own credentials
     const leaderLink = v3Location === undefined ? undefined : new LeaderLink({

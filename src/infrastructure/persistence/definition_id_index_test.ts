@@ -1187,3 +1187,118 @@ Deno.test("DefinitionIdIndex.findByName: inside a diagnostic area a lookup's che
     });
   });
 });
+
+Deno.test("DefinitionIdIndex.findAllById: finds every file declaring an id with where it is, definitions first, as a scan does", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, auto, repo, index } = fixture(dir);
+    const id = crypto.randomUUID();
+    await writeDefinition(join(auto, "test", "a", "copy.yaml"), id, "copy");
+    await writeDefinition(
+      join(primary, "test", "b", "original.yaml"),
+      id,
+      "original",
+    );
+    await writeDefinition(
+      join(auto, "test", "a", "other.yaml"),
+      crypto.randomUUID(),
+      "other",
+    );
+
+    const found = await index.findAllById(id);
+    assertEquals(
+      found.map((match) => ({
+        name: match.definition.name,
+        type: match.type.normalized,
+        path: match.path,
+        segments: match.segments,
+        primary: match.primary,
+      })),
+      [
+        {
+          name: "original",
+          type: "test/b",
+          path: join(primary, "test", "b", "original.yaml"),
+          segments: ["test", "b"],
+          primary: true,
+        },
+        {
+          name: "copy",
+          type: "test/a",
+          path: join(auto, "test", "a", "copy.yaml"),
+          segments: ["test", "a"],
+          primary: false,
+        },
+      ],
+    );
+    const scanned = (await repo.findAllIncludingAutoGlobal())
+      .filter((entry) => entry.definition.id === id)
+      .map((entry) => entry.definition.name);
+    assertEquals(found.map((match) => match.definition.name), scanned);
+  });
+});
+
+Deno.test("DefinitionIdIndex.findAllById: once warm a lookup reads only the files declaring the id, and an auto-definition another writer adds is found reading only its file", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, counter, index } = fixture(dir);
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const id = crypto.randomUUID();
+      ids.push(id);
+      await writeDefinition(
+        join(auto, "test", "a", `run-${i}.yaml`),
+        id,
+        `run-${i}`,
+      );
+    }
+    assertEquals(await index.findAllById(crypto.randomUUID()), []);
+    assertEquals(counter.reads, 20);
+
+    const [hit] = await index.findAllById(ids[7]);
+    assertEquals(hit.definition.name, "run-7");
+    assertEquals(counter.reads, 21);
+
+    const added = crypto.randomUUID();
+    await writeDefinition(
+      join(auto, "test", "a", "run-new.yaml"),
+      added,
+      "run-new",
+    );
+    const [found] = await index.findAllById(added);
+    assertEquals(found.path, join(auto, "test", "a", "run-new.yaml"));
+    // The new file when listed, then again when found.
+    assertEquals(counter.reads, 23);
+  });
+});
+
+Deno.test("DefinitionIdIndex.findAllById: a file rewritten in place to declare another id is not returned for its old id", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, index } = fixture(dir);
+    const path = join(auto, "test", "a", "d.yaml");
+    const before = crypto.randomUUID();
+    await writeDefinition(path, before, "d");
+    assertEquals((await index.findAllById(before)).length, 1);
+
+    const after = crypto.randomUUID();
+    await Deno.writeTextFile(path, yamlOf(after, "d"));
+    await bump(path);
+    assertEquals(await index.findAllById(before), []);
+    assertEquals((await index.findAllById(after))[0]?.path, path);
+  });
+});
+
+Deno.test("DefinitionIdIndex.findAllById: inside a diagnostic area a lookup's check is a definition_scan phase with the global_index strategy", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, index } = fixture(dir);
+    const id = crypto.randomUUID();
+    await writeDefinition(join(auto, "test", "a", "d.yaml"), id, "d");
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("step_outputs", () => index.findAllById(id));
+      const [phase] = diagnosticPhases(spans, "definition_scan");
+      assertEquals(phase.attributes["swamp.diagnostic.scan_root"], "all");
+      assertEquals(
+        phase.attributes["swamp.diagnostic.scan_strategy"],
+        "global_index",
+      );
+    });
+  });
+});
