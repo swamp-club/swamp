@@ -78,7 +78,10 @@ export type NestedCascade = (
 
 export interface NestedCascadeDeps {
   workflowRepo: Pick<WorkflowRepository, "findById">;
-  runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
+  runRepo: Pick<
+    WorkflowRunRepository,
+    "findById" | "save" | "recordsAreForwarded"
+  >;
   runClaims: WorkflowRunClaims;
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /**

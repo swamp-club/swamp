@@ -51,6 +51,8 @@ export interface ModelMethodRunRenderOpts {
   quiet?: boolean;
   verbose?: boolean;
   surface?: CommandSurface;
+  /** with --last-evaluated: whether the stored evaluation's inputs were used */
+  inputsReplayed?: boolean;
 }
 
 export interface ModelMethodRunRenderer extends Renderer<ModelMethodRunEvent> {
@@ -281,7 +283,16 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
 class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
   private _failed = false;
 
-  constructor(private readonly surface: CommandSurface) {}
+  constructor(
+    private readonly surface: CommandSurface,
+    private readonly inputsReplayed?: boolean,
+  ) {}
+
+  private result(run: object): object {
+    return this.inputsReplayed === undefined
+      ? run
+      : { ...run, inputsReplayed: this.inputsReplayed };
+  }
 
   handlers(): EventHandlers<ModelMethodRunEvent> {
     return {
@@ -344,11 +355,11 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
-        console.log(JSON.stringify(e.run, null, 2));
+        console.log(JSON.stringify(this.result(e.run), null, 2));
       },
       cancelled: (e) => {
         this._failed = true;
-        console.log(JSON.stringify(e.run, null, 2));
+        console.log(JSON.stringify(this.result(e.run), null, 2));
       },
       auto_gc_started: () => {},
       auto_gc_completed: () => {},
@@ -371,6 +382,7 @@ export function createModelMethodRunRenderer(
     case "json":
       return new JsonModelMethodRunRenderer(
         opts.surface ?? DEFAULT_COMMAND_SURFACE,
+        opts.inputsReplayed,
       );
     case "log":
       return new ConsoleModelMethodRunRenderer(opts);

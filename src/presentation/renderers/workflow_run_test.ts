@@ -842,6 +842,31 @@ Deno.test("JsonWorkflowRunRenderer: completed serializes WorkflowRunView", async
   }
 });
 
+Deno.test("JsonWorkflowRunRenderer: the result says whether --last-evaluated replayed the stored inputs, and says nothing without it (swamp-club#4290)", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    for (const inputsReplayed of [false, true, undefined]) {
+      logs.length = 0;
+      const renderer = createWorkflowRunRenderer("json", {
+        workflowName: "test-pipeline",
+        inputsReplayed,
+      });
+      await consumeStream(
+        toStream(simpleEvents(makeRunView("succeeded"))),
+        renderer.handlers(),
+      );
+      const parsed = JSON.parse(logs[0]);
+      assertEquals(parsed.inputsReplayed, inputsReplayed);
+      assertEquals("inputsReplayed" in parsed, inputsReplayed !== undefined);
+    }
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("JsonWorkflowRunRenderer: step_skipped guarded writes guard fields to stderr", () => {
   const stdout: string[] = [];
   const stderr: string[] = [];

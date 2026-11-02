@@ -37,6 +37,7 @@ function createMockWorkflowRunRepo(
   },
 ): WorkflowRunRepository & { lastCutoff?: Date; lastDryRun?: boolean } {
   const mock = {
+    recordsAreForwarded: false,
     lastCutoff: undefined as Date | undefined,
     lastDryRun: undefined as boolean | undefined,
     findById: () => Promise.resolve(null),

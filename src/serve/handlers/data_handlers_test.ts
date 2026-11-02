@@ -32,6 +32,24 @@ import {
   resolveRunGcInput,
 } from "./data_handlers.ts";
 import type { ConnectionContext } from "./shared.ts";
+import type { Grant } from "../../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../../domain/access/policy_snapshot.ts";
+import {
+  createConditionEvaluator,
+  type PolicySnapshotLoader,
+} from "../../domain/access/policy_snapshot_loader.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { walk } from "@std/fs";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -612,4 +630,139 @@ Deno.test("handleDataList: forwards reason and entity type for an unknown model"
       entityType: "Model",
     });
   });
+});
+
+Deno.test("handleRunGc: where members forward records, a caller's own cut-off needs admin on every workflow; the configured policy and a dry run still need only write (swamp-club#4290)", async () => {
+  const gcAs = async (
+    options: {
+      forwards: boolean;
+      actions: Grant["actions"];
+      payload: Parameters<typeof handleRunGc>[3];
+    },
+  ) => {
+    let outcome: { type: string; kept: boolean } | undefined;
+    await withTempDir(async (dir) => {
+      const { ctx } = await createSyncFixture(dir);
+      const workflow = Workflow.create({
+        name: "gc-wf",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "gate",
+                task: StepTask.model("writer", "execute"),
+              }),
+            ],
+          }),
+        ],
+      });
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      run.getJob("main")!.getStep("gate")!.recordApprovalDecision({
+        approved: true,
+        decidedBy: "user:approver",
+        decidedAt: "2020-01-01T00:00:00.000Z",
+      });
+      run.complete();
+      const old = WorkflowRun.fromData({
+        ...run.toData(),
+        startedAt: "2020-01-01T00:00:00.000Z",
+        completedAt: "2020-01-01T00:00:00.000Z",
+      });
+      const runRepo = new YamlWorkflowRunRepository(dir);
+      await runRepo.save(createWorkflowId(workflow.id), old);
+      for await (const entry of walk(dir, { includeDirs: false })) {
+        if (entry.name === `workflow-run-${run.id}.yaml`) {
+          await Deno.utime(
+            entry.path,
+            new Date(2020, 0, 1),
+            new Date(2020, 0, 1),
+          );
+        }
+      }
+      const grant = (kind: "data" | "workflow"): Grant => ({
+        id: crypto.randomUUID(),
+        subject: { kind: "user", name: "member" },
+        effect: "allow",
+        actions: options.actions,
+        resource: { kind, pattern: "*" },
+        state: "active",
+        source: "method",
+        createdBy: { kind: "user", id: "admin" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const authed = ctx as unknown as Record<string, unknown>;
+      authed.authConfig = {
+        ...(authed.authConfig as Record<string, unknown>),
+        mode: "token",
+      };
+      authed.policySnapshotLoader = {
+        decisionService: new GrantBasedAccessDecisionService(
+          new PolicySnapshot(
+            [grant("data"), grant("workflow")],
+            [],
+            createConditionEvaluator(),
+          ),
+        ),
+      } as unknown as PolicySnapshotLoader;
+      (authed.repoContext as Record<string, unknown>).takesForwardedRunRecords =
+        options.forwards;
+      const socket = createMockSocket();
+      await handleRunGc(
+        socket,
+        ctx,
+        "req-run-gc-guarded",
+        options.payload,
+        new AbortController(),
+        { kind: "user", id: "member" },
+      );
+      outcome = {
+        type: JSON.parse(socket.sent[0]).type,
+        kept: (await new YamlWorkflowRunRepository(dir).findById(
+          createWorkflowId(workflow.id),
+          createWorkflowRunId(run.id),
+        )) !== null,
+      };
+    });
+    return outcome!;
+  };
+  const override = {
+    dryRun: false,
+    workflowRunRetentionDays: 0,
+    outputRetentionDays: 0,
+  };
+
+  assertEquals(
+    await gcAs({ forwards: true, actions: ["write"], payload: override }),
+    { type: "error", kept: true },
+  );
+  assertEquals(
+    await gcAs({
+      forwards: true,
+      actions: ["write", "admin"],
+      payload: override,
+    }),
+    { type: "run.gc", kept: false },
+  );
+  assertEquals(
+    await gcAs({
+      forwards: true,
+      actions: ["write"],
+      payload: { dryRun: false },
+    }),
+    { type: "run.gc", kept: false },
+  );
+  assertEquals(
+    await gcAs({
+      forwards: true,
+      actions: ["write"],
+      payload: { ...override, dryRun: true },
+    }),
+    { type: "run.gc", kept: true },
+  );
+  assertEquals(
+    await gcAs({ forwards: false, actions: ["write"], payload: override }),
+    { type: "run.gc", kept: false },
+  );
 });

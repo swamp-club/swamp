@@ -288,6 +288,7 @@ Deno.test("createNestedCascade: a save that fails leaves the child reported and 
     runRepo: {
       findById: (w, r) => built.runs.findById(w, r),
       save: () => Promise.reject(new Error("disk full")),
+      recordsAreForwarded: false,
     },
   }))(built.ended);
   assertEquals(result.cancelledNestedRuns, []);

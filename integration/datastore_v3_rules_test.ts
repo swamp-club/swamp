@@ -336,6 +336,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/commit_store.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/op.ts",
   "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/commit_read_filter.ts -> src/domain/datastore_v3/read_model.ts",
   "src/serve/commit_read_filter.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
   "src/serve/handlers/commit_feed_handlers.ts -> src/domain/datastore_v3/commit_store.ts",
   // swamp-club#4148: a stale follower's subscription ends with the refusal.

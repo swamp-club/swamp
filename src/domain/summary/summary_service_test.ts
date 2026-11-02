@@ -152,6 +152,7 @@ function createMockWorkflowRunRepo(
   items: Awaited<ReturnType<WorkflowRunRepository["findAllGlobal"]>>,
 ): WorkflowRunRepository {
   return {
+    recordsAreForwarded: false,
     findAllGlobal: () => Promise.resolve(items),
     findAllGlobalSince: (cutoff: Date) =>
       Promise.resolve(

@@ -63,6 +63,8 @@ export interface WorkflowRunRenderOpts {
   verbose?: boolean;
   failOnSeverity?: AssertSeverity;
   commandTarget?: string;
+  /** with --last-evaluated: whether the stored evaluation's inputs were used */
+  inputsReplayed?: boolean;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -1184,10 +1186,20 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   private readonly _waits: RequestedWait[] = [];
   private readonly _waitKeyHolders: WaitKeyHolder[] = [];
 
-  private waitKeyHoldersField(): { waitKeyHolders?: WaitKeyHolder[] } {
-    return this._waitKeyHolders.length > 0
-      ? { waitKeyHolders: this._waitKeyHolders }
-      : {};
+  constructor(private readonly inputsReplayed?: boolean) {}
+
+  private resultFields(): {
+    waitKeyHolders?: WaitKeyHolder[];
+    inputsReplayed?: boolean;
+  } {
+    return {
+      ...(this._waitKeyHolders.length > 0
+        ? { waitKeyHolders: this._waitKeyHolders }
+        : {}),
+      ...(this.inputsReplayed !== undefined
+        ? { inputsReplayed: this.inputsReplayed }
+        : {}),
+    };
   }
 
   handlers(): EventHandlers<WorkflowRunEvent> {
@@ -1292,13 +1304,13 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
         unguardedConsole.log(
-          JSON.stringify({ ...e.run, ...this.waitKeyHoldersField() }, null, 2),
+          JSON.stringify({ ...e.run, ...this.resultFields() }, null, 2),
         );
       },
       cancelled: (e) => {
         this._failed = true;
         unguardedConsole.log(
-          JSON.stringify({ ...e.run, ...this.waitKeyHoldersField() }, null, 2),
+          JSON.stringify({ ...e.run, ...this.resultFields() }, null, 2),
         );
       },
       suspended: (e) => {
@@ -1381,7 +1393,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               signalRequired,
               ...waitsField,
               ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
-              ...this.waitKeyHoldersField(),
+              ...this.resultFields(),
             },
             null,
             2,
@@ -1410,7 +1422,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               },
             ...waitsField,
             ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
-            ...this.waitKeyHoldersField(),
+            ...this.resultFields(),
           },
           null,
           2,
@@ -1433,7 +1445,7 @@ export function createWorkflowRunRenderer(
 ): WorkflowRunRenderer {
   switch (mode) {
     case "json":
-      return new JsonWorkflowRunRenderer();
+      return new JsonWorkflowRunRenderer(opts.inputsReplayed);
     case "log":
       return new ConsoleWorkflowRunRenderer(opts);
   }

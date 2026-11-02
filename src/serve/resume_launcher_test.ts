@@ -1869,6 +1869,33 @@ Deno.test("autoResumeAfterApproval: on a v3 serve a member's run is left for its
   );
 });
 
+Deno.test("ownerResumesRun: a partly approved member-driven run is still its owner's to resume, and serve does not auto-resume it (swamp-club#4290)", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const member = makeApprovedRun(workflow);
+  const harness = makeHarness(workflow, member);
+  (harness.ctx.repoContext as { takesForwardedRunRecords?: boolean })
+    .takesForwardedRunRecords = true;
+  assertEquals(
+    await ownerResumesRun(harness.ctx, outcomeFor(member, false)),
+    true,
+  );
+  assertEquals(
+    await autoResumeAfterApproval(
+      harness.ctx,
+      outcomeFor(member, false),
+      "user:approver",
+    ),
+    false,
+  );
+  assertEquals(harness.registry.registered.length, 0);
+
+  const local = makeHarness(workflow, member);
+  assertEquals(
+    await ownerResumesRun(local.ctx, outcomeFor(member, false)),
+    false,
+  );
+});
+
 Deno.test("continueSettledRun: on a v3 serve the sweep and a signal leave a member's run alone (swamp-club#4245)", async () => {
   const workflow = makeWorkflow({ autoResume: true });
   const run = makeApprovedRun(workflow);

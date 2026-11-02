@@ -1305,6 +1305,23 @@ export async function handleRunGc(
     !authorizeAllOrReject(socket, requestId, principal, "write", "data", ctx)
       .allowed
   ) return;
+  // A caller's own cut-off can delete a guarded run's record, which a forwarded
+  // first record could then replace; the configured policy is serve's own.
+  if (
+    ctx.repoContext.takesForwardedRunRecords === true &&
+    payload?.dryRun !== true &&
+    (payload?.workflowRunRetentionDays !== undefined ||
+      payload?.outputRetentionDays !== undefined) &&
+    !authorizeAllOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      "workflow",
+      ctx,
+    )
+      .allowed
+  ) return;
 
   await runInRootUnitOfWork(
     ctx.repoContext,

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { Command } from "@cliffy/command";
@@ -261,4 +261,18 @@ Deno.test({
       ["Bearer file.secret"],
     );
   },
+});
+
+Deno.test("noReplayableEvaluationError: the evaluate hint quotes a workflow name the shell would split (swamp-club#4290)", async () => {
+  const { noReplayableEvaluationError } = await import("./workflow_run.ts");
+  const error = noReplayableEvaluationError("deploy it's");
+  assertEquals(error.code, "evaluation_not_checked");
+  assertStringIncludes(
+    error.message,
+    `swamp workflow evaluate 'deploy it'"'"'s'`,
+  );
+  assertStringIncludes(
+    noReplayableEvaluationError("plain").message,
+    "swamp workflow evaluate plain",
+  );
 });

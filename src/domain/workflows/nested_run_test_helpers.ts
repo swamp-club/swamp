@@ -26,6 +26,7 @@ import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import { WorkflowRun } from "./workflow_run.ts";
 
 export class InMemoryRuns {
+  recordsAreForwarded = false;
   readonly byId = new Map<string, WorkflowRun>();
   readonly saved: string[] = [];
   readonly unreadable = new Set<string>();

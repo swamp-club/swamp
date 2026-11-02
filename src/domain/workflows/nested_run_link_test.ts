@@ -36,6 +36,7 @@ import { SignalWait } from "./signal_wait.ts";
 import { InMemorySignalWaitStore } from "./signal_wait_store_test_helpers.ts";
 
 class Runs {
+  recordsAreForwarded = false;
   readonly byId = new Map<string, WorkflowRun>();
   add(...runs: WorkflowRun[]): void {
     for (const run of runs) this.byId.set(run.id.toLowerCase(), run);
@@ -661,4 +662,18 @@ Deno.test("NestedRunLink.resolveChild: where records are forwarded, a child with
     },
   }).resolveChild(parent, wait);
   assertEquals(refused.kind, "broken");
+});
+
+Deno.test("NestedRunLink: a run repository that leaves out recordsAreForwarded does not compile (swamp-club#4290)", () => {
+  const { deps } = droppedBackLinkPair();
+  const link = () =>
+    new NestedRunLink({
+      ...deps,
+      // @ts-expect-error a wrapper must say whether records are forwarded
+      runRepo: {
+        findById: (workflowId, runId) =>
+          deps.runRepo.findById(workflowId, runId),
+      },
+    });
+  assert(typeof link === "function");
 });

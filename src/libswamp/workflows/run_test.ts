@@ -91,6 +91,7 @@ class InMemoryWorkflowRepository implements WorkflowRepository {
 }
 
 class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
+  recordsAreForwarded = false;
   private runs = new Map<string, WorkflowRun[]>();
 
   findById(

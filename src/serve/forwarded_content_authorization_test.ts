@@ -72,6 +72,7 @@ function deps(possessed: boolean): {
         workflow: () => Promise.resolve(undefined),
         keyOwner: () => Promise.resolve(undefined),
         isRestrictedType: () => false,
+        runRecordGuarded: () => Promise.resolve(false),
       },
       possesses: () => Promise.resolve(possessed),
       signal: new AbortController().signal,

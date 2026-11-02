@@ -109,6 +109,10 @@ class FakeResolver implements AggregateResourceResolver {
   isRestrictedType(type: ModelType) {
     return this.restricted.has(type.normalized);
   }
+  readonly guardedRuns = new Set<string>();
+  runRecordGuarded(_workflowId: string, runId: string) {
+    return Promise.resolve(this.guardedRuns.has(runId));
+  }
 }
 
 class FakeAuthority implements CallerAuthority {
@@ -942,6 +946,58 @@ Deno.test("partitionWriteAccessOf: an upload needs the least write a partition t
   }
   resolver.restricted.add(MODEL_TYPE.normalized);
   assertEquals(await decided(modelPartition()), "admin access:*");
+});
+
+Deno.test("authorizeCommit: deleting the record or snapshot of a guarded run needs admin on the workflow; an unguarded run's needs write (swamp-club#4290)", async () => {
+  const run = partitionOf({
+    kind: "run",
+    workflowId: SAMPLE_WORKFLOW_ID,
+    runId: SAMPLE_RUN_ID,
+  });
+  const removals = await Promise.all(
+    (["run.delete", "run-snapshot.delete"] as const).map((kind) =>
+      opFor(sampleIntent(kind))
+    ),
+  );
+  const writer = () => new FakeAuthority(["write workflow:deploy"]);
+  const admin = () => new FakeAuthority(["admin workflow:deploy"]);
+  for (const op of removals) {
+    assert(op !== undefined && op.kind === "tombstone");
+    const resolver = new FakeResolver();
+    resolver.workflows.set(SAMPLE_WORKFLOW_ID, { name: "deploy" });
+    assert((await authorizeBase(run, [op], resolver, writer())).ok);
+
+    resolver.guardedRuns.add(SAMPLE_RUN_ID);
+    const asWriter = writer();
+    const refused = await authorizeBase(run, [op], resolver, asWriter);
+    assertRefused(refused, "forbidden", 0);
+    assert(!refused.ok && refused.message.includes("admin workflow:deploy"));
+    assertEquals(asWriter.asked.map((a) => a.action), ["admin"]);
+    assert((await authorizeBase(run, [op], resolver, admin())).ok);
+  }
+});
+
+Deno.test("authorizeCommit: whether a run is guarded never changes what its puts need (swamp-club#4290)", async () => {
+  const run = partitionOf({
+    kind: "run",
+    workflowId: SAMPLE_WORKFLOW_ID,
+    runId: SAMPLE_RUN_ID,
+  });
+  const resolver = new FakeResolver();
+  resolver.workflows.set(SAMPLE_WORKFLOW_ID, { name: "deploy" });
+  resolver.guardedRuns.add(SAMPLE_RUN_ID);
+  for (const kind of ["run.update", "run-snapshot.save"] as const) {
+    const op = await opFor(sampleIntent(kind));
+    assert(op !== undefined && op.kind === "put");
+    assert(
+      (await authorizeBase(
+        run,
+        [op],
+        resolver,
+        new FakeAuthority(["run workflow:deploy"]),
+      )).ok,
+    );
+  }
 });
 
 function grantAuthority(grants: Partial<Grant>[]): CallerAuthority {

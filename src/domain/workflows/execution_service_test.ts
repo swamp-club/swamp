@@ -212,6 +212,7 @@ class InMemoryWorkflowRepository implements WorkflowRepository {
 }
 
 class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
+  recordsAreForwarded = false;
   private runs = new Map<string, WorkflowRun[]>();
 
   findById(
@@ -4371,6 +4372,7 @@ Deno.test({
 });
 
 class TrackingRunRepository implements WorkflowRunRepository {
+  recordsAreForwarded = false;
   private readonly inner = new InMemoryWorkflowRunRepository();
   readonly saves: Array<{ runId: string; status: string }> = [];
 

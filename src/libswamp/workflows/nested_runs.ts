@@ -61,7 +61,7 @@ function serverSuffix(
 }
 
 export async function detachedNestedRunsOf(
-  deps: Pick<NestedRunLinkDeps, "runRepo">,
+  deps: { runRepo: Pick<NestedRunLinkDeps["runRepo"], "findById"> },
   run: WorkflowRun,
 ): Promise<DetachedNestedRunData[]> {
   const result: DetachedNestedRunData[] = [];

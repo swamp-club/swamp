@@ -223,7 +223,7 @@ function workflowOfRunsDir(runsDir: string): Record<string, string> {
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private readonly baseDir: string;
 
-  recordsAreForwarded?: boolean;
+  recordsAreForwarded = false;
 
   /**
    * runs before every save, for what must hold of every saved run but lives
