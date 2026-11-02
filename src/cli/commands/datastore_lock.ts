@@ -219,6 +219,11 @@ const datastoreLockReleaseCommand = new Command()
       return;
     }
 
+    // binds a v3 bucket's lock config, which a behavior's lock needs too
+    const v3 = engine === "v3" && resolution.serveUpstream === undefined
+      ? await v3DatastoreConfigOf(repoDir, config)
+      : undefined;
+
     let lock;
     if (modelSpec) {
       const parsed = parseModelSpec(modelSpec);
@@ -286,10 +291,8 @@ const datastoreLockReleaseCommand = new Command()
         return;
       }
       lock = await createModelLock(config, parsed.modelType, parsed.modelId);
-    } else if (engine === "v3") {
-      lock = v3WriterLockHandle(
-        (await v3DatastoreConfigOf(repoDir, config)).path,
-      );
+    } else if (v3 !== undefined) {
+      lock = v3WriterLockHandle(v3.path);
     } else {
       lock = await createDatastoreLock(config);
     }

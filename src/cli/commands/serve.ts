@@ -1244,6 +1244,13 @@ const CLUB_API_KEY_FILE_DESCRIPTION =
   "used for headless OAuth registration, username lookup, instance " +
   "registration and heartbeat; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY";
 
+// read on every repo, so an unreadable file is refused where no leader link uses it
+export async function loadServeCaCerts(
+  path: string | undefined,
+): Promise<string[] | undefined> {
+  return path ? [await readServeCaCert(path)] : undefined;
+}
+
 async function readServeCaCert(path: string): Promise<string> {
   try {
     return await Deno.readTextFile(path);
@@ -3056,6 +3063,7 @@ export const serveCommand = new Command()
       cert = await readTlsFile("certificate", certFile);
       key = await readTlsFile("private key", keyFile);
     }
+    const caCerts = await loadServeCaCerts(merged.caCert);
 
     if (cert) {
       for (const warning of validateEndEntityCert(cert)) {
@@ -5235,9 +5243,7 @@ export const serveCommand = new Command()
       leader: () => connectionCtx.followerGate?.leader(),
       trustProxy,
       peerToken: () => teamPeerKey?.cachedToken(),
-      ...(merged.caCert
-        ? { caCerts: [await readServeCaCert(merged.caCert)] }
-        : {}),
+      ...(caCerts === undefined ? {} : { caCerts }),
     });
     const datastoreQuarantine = new ControlPlaneQuarantineStore(
       controlPlaneStore,

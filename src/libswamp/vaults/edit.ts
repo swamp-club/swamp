@@ -30,6 +30,7 @@ import {
   VaultConfigDataSchema,
 } from "../../domain/vaults/vault_config.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { UserError } from "../../domain/errors.ts";
 import { moveLocalEncryptionSecrets } from "../../domain/vaults/local_encryption_vault_provider.ts";
 import {
   findChangedKeySourceFields,
@@ -157,6 +158,12 @@ export interface VaultEditLookupDeps {
   findById: (type: string, id: string) => Promise<VaultEditConfigInfo | null>;
   findAll: () => Promise<VaultEditConfigInfo[]>;
 }
+
+/**
+ * a save whose outcome is unknown, such as a request whose reply was lost:
+ * the secrets stay where a landed save needs them
+ */
+export class VaultSaveOutcomeUnknownError extends UserError {}
 
 export interface VaultEditDeps extends VaultEditLookupDeps {
   getVaultPath: (config: VaultEditConfigInfo) => string;
@@ -455,7 +462,7 @@ async function* updateVaultFromStdin(
   try {
     await deps.saveConfigData(updated);
   } catch (error) {
-    if (!undoMove) throw error;
+    if (!undoMove || error instanceof VaultSaveOutcomeUnknownError) throw error;
     try {
       await undoMove();
     } catch (undoError) {

@@ -1395,6 +1395,7 @@ export {
   type VaultEditFile,
   type VaultEditInput,
   type VaultEditLookupDeps,
+  VaultSaveOutcomeUnknownError,
 } from "./vaults/edit.ts";
 
 export {

@@ -25,6 +25,7 @@ import {
   resolveVaultEditFile,
   vaultEdit,
   type VaultEditData,
+  VaultSaveOutcomeUnknownError,
 } from "../../libswamp/vaults/edit.ts";
 import {
   createEditorSessionDeps,
@@ -45,6 +46,7 @@ import {
 import {
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
+  serveUpstreamOf,
 } from "../repo_context.ts";
 import { runManagedConfigMutation } from "../managed_config_sync.ts";
 import { runAsUserConfigEdit } from "../../infrastructure/datastore_v3/config_edit_scope.ts";
@@ -57,9 +59,15 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  ServerResponseError,
   withRemoteOptions,
 } from "../remote_run.ts";
-import { LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS } from "../../domain/vaults/local_encryption_key_source.ts";
+import {
+  isLocalEncryptionType,
+  LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS,
+} from "../../domain/vaults/local_encryption_key_source.ts";
+import type { VaultConfigData } from "../../domain/vaults/vault_config.ts";
+import { stringify as stringifyYaml } from "@std/yaml";
 import type { VaultEditResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -167,9 +175,49 @@ value for them other than the server's defaults, and stores those defaults.`,
     vaultNameOrId = selected.name;
   }
   const stdinContent = await readStdin();
-  const deps = createVaultEditDeps(repoDir);
-  const renderer = createVaultEditRenderer(cliCtx.outputMode);
+  // resolved by name, then by id, as the edit itself does
+  const target = await repoContext.vaultConfigRepo.findByName(vaultNameOrId)
+    .catch(() => null) ??
+    (await repoContext.vaultConfigRepo.findAll().catch(() => [])).find(
+      (vault) => vault.id === vaultNameOrId,
+    );
+  const upstream = target !== undefined && isLocalEncryptionType(target.type)
+    ? await serveUpstreamOf(marker)
+    : undefined;
+  const localDeps = createVaultEditDeps(repoDir);
   const editNameOrId = vaultNameOrId;
+  // serve and each member keep their own local_encryption secrets: these move
+  // here as in a local edit, and serve's vault.edit saves and moves serve's
+  const deps = upstream === undefined ? localDeps : {
+    ...localDeps,
+    saveConfigData: async (data: VaultConfigData) => {
+      try {
+        await requestServerResponse<VaultEditResponse>(
+          {
+            server: upstream.serverUrl,
+            token: upstream.token,
+            headers: { ...upstream.extraHeaders },
+            ...(upstream.caCerts === undefined
+              ? {}
+              : { caCerts: [...upstream.caCerts] }),
+          },
+          {
+            type: "vault.edit",
+            payload: {
+              vaultNameOrId: editNameOrId,
+              vaultType,
+              content: stringifyYaml(
+                data as unknown as Record<string, unknown>,
+              ),
+            },
+          },
+        );
+      } catch (error) {
+        throw serveSaveError(error, target?.name ?? editNameOrId, data.name);
+      }
+    },
+  };
+  const renderer = createVaultEditRenderer(cliCtx.outputMode);
   const runEdit = (content: string | null, editor?: string) =>
     runAsUserConfigEdit(() =>
       runManagedConfigMutation(
@@ -258,13 +306,7 @@ value for them other than the server's defaults, and stores those defaults.`,
     return;
   }
 
-  // a stale stdin edit, a rename's included, is refused before it writes;
-  // resolved by name, then by id, as the edit itself does
-  const target = await repoContext.vaultConfigRepo.findByName(vaultNameOrId)
-    .catch(() => null) ??
-    (await repoContext.vaultConfigRepo.findAll().catch(() => [])).find(
-      (vault) => vault.id === vaultNameOrId,
-    );
+  // a stale stdin edit, a rename's included, is refused before it writes
   if (target) {
     await startConfigEdit(repoContext, "vault", target.name, false);
   }
@@ -273,3 +315,20 @@ value for them other than the server's defaults, and stores those defaults.`,
 
   cliCtx.logger.debug("Vault edit command completed");
 });
+
+// only serve's own refusal says the edit did not land
+export function serveSaveError(
+  error: unknown,
+  from: string,
+  to: string,
+): unknown {
+  if (error instanceof ServerResponseError) return error;
+  return new VaultSaveOutcomeUnknownError(
+    `Serve did not answer the edit of vault '${from}', so whether it ` +
+      `landed is unknown: ${
+        error instanceof Error ? error.message : String(error)
+      }. This checkout's secrets for it are under '${to}'. Run swamp vault ` +
+      `get ${to}: if the vault is still '${from}', run the same edit again.`,
+    "vault_edit_outcome_unknown",
+  );
+}

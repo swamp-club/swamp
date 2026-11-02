@@ -42,10 +42,12 @@ import {
 import { bindKey } from "../domain/datastore_v3/intent_key_paths.ts";
 import type { Op, PutOp } from "../domain/datastore_v3/op.ts";
 import {
+  type DefinitionKind,
   type PartitionKey,
   partitionOf,
   runPartitionsPrefix,
 } from "../domain/datastore_v3/partition_key.ts";
+import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { isDeferredExpression } from "../domain/expressions/deferred_expression.ts";
 import { extractExpressions } from "../domain/expressions/expression_parser.ts";
 import {
@@ -116,6 +118,8 @@ export interface ContentCheckContext {
   prior(partition: PartitionKey, key: string): Promise<PriorRecord>;
   digest(partition: PartitionKey, key: string): Promise<string | null>;
   holdsRecordsUnder(prefix: string): Promise<boolean>;
+  /** undefined while the read model's listing of the partition is incomplete */
+  keysIn(partition: PartitionKey): Promise<readonly string[] | undefined>;
   /**
    * runs again under the forwarded lock, for a check that reads more than
    * records (an id claimed by no definition), which the record guard cannot
@@ -239,6 +243,18 @@ export class ForwardedContentAuthority implements ContentAuthority {
       },
       holdsRecordsUnder: (prefix) =>
         deps.v3.readModel.holdsRecordsUnder(deps.v3.namespace, prefix),
+      keysIn: async (partition) => {
+        try {
+          const records = await deps.v3.readModel.liveRecords(
+            deps.v3.namespace,
+            partition,
+          );
+          return records.map((record) => record.key.toString());
+        } catch (error) {
+          if (error instanceof ReadModelIncompleteError) return undefined;
+          throw error;
+        }
+      },
       recheckUnderLock: (check) => {
         this.#rechecks.push(check);
       },
@@ -328,6 +344,7 @@ async function definitionPrior(
   context: ContentCheckContext,
   op: PutOp,
   commit: readonly Op[],
+  declared: Record<string, unknown>,
 ): Promise<PriorRecord> {
   const intent = op.intent;
   if (!("definition" in intent)) return { kind: "absent" };
@@ -353,10 +370,50 @@ async function definitionPrior(
     intent.definition.name,
     intent.from,
   );
-  if (oldKey === undefined) return { kind: "unreadable" };
-  const old = await context.prior(from, oldKey);
-  // a rename moves a definition that exists: none to move refuses
-  return old.kind === "absent" ? { kind: "unreadable" } : old;
+  if (oldKey !== undefined) {
+    const old = await context.prior(from, oldKey);
+    if (old.kind !== "absent") return old;
+  }
+  // a definition adopted or saved under its id keeps that key under the old
+  // name; a rename moves a definition that exists: none to move refuses
+  return await priorWithId(context, from, intent.definition.kind, declared);
+}
+
+async function priorWithId(
+  context: ContentCheckContext,
+  from: PartitionKey,
+  kind: DefinitionKind,
+  declared: Record<string, unknown>,
+): Promise<PriorRecord> {
+  const prefix = kind === "model"
+    ? "config/models/"
+    : kind === "workflow"
+    ? "config/workflows/workflow-"
+    : undefined;
+  if (prefix === undefined || typeof declared.id !== "string") {
+    return { kind: "unreadable" };
+  }
+  // a rename never changes type: a same-named record of another type, which
+  // may be admin-only, is never the one renamed
+  const sameType = (record: Record<string, unknown>) =>
+    kind !== "model" ||
+    (typeof record.type === "string" && typeof declared.type === "string" &&
+      normalizedType(record.type) !== undefined &&
+      normalizedType(record.type) === normalizedType(declared.type));
+  const keys = await context.keysIn(from);
+  if (keys === undefined) return { kind: "unreadable" };
+  const matches: PriorRecord[] = [];
+  for (const key of keys.filter((key) => key.startsWith(prefix))) {
+    const candidate = await context.prior(from, key);
+    if (candidate.kind === "unreadable") return candidate;
+    const record = candidate.kind === "present"
+      ? parseRecord(candidate.bytes)
+      : undefined;
+    if (record?.id === declared.id && sameType(record)) {
+      matches.push(candidate);
+    }
+  }
+  return matches.length === 1 ? matches[0] : { kind: "unreadable" };
 }
 
 function renamedKey(
@@ -386,7 +443,7 @@ async function checkDefinitionPut(
   if (after === undefined) {
     return refused(op, "its content is not a definition");
   }
-  const prior = await definitionPrior(context, op, commit);
+  const prior = await definitionPrior(context, op, commit, after);
   if (prior.kind === "unreadable") {
     return refused(op, "the definition it replaces cannot be read");
   }
@@ -745,7 +802,10 @@ async function checkVaultDefinition(
     // a local_encryption vault's key and secrets live on serve under its name
     // and only vault.edit moves them, so a forwarded rename would strand them
     if (renamed) {
-      return refused(op, "a local_encryption vault is renamed with vault edit");
+      return refused(
+        op,
+        "a local_encryption vault is renamed by serve's vault edit, which moves its secrets: update swamp, or run swamp vault edit with --server",
+      );
     }
     const keySource = before === undefined
       ? findNonDefaultKeySourceFields(after.config, ctx.repoDir)

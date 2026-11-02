@@ -103,6 +103,7 @@ function context(
         ),
       digest: () => Promise.resolve(null),
       holdsRecordsUnder: () => Promise.resolve(false),
+      keysIn: () => Promise.resolve([]),
       recheckUnderLock: () => {},
       now: () => new Date(STARTED),
     },

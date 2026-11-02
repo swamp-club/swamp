@@ -66,6 +66,9 @@ export function identityRefusal(
   if (stored !== undefined && id !== stored.id.toLowerCase()) {
     return "its declared id is not the id of the definition it replaces";
   }
+  if (stored?.type !== undefined && declared.type !== stored.type) {
+    return "its declared type is not the type of the definition it replaces";
+  }
   switch (intent.kind) {
     case "definition.create":
     case "definition.edit":
