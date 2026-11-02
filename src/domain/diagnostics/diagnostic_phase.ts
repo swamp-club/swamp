@@ -222,6 +222,11 @@ export interface DiagnosticPhaseHandle {
   fail(error: unknown): void;
 }
 
+/** reads event-loop lag sampled since a time on performance.now's clock */
+export interface DiagnosticLagReader {
+  maxLagSince?(at: number): number | undefined;
+}
+
 interface DiagnosticScope {
   readonly area: DiagnosticArea;
   readonly tally?: PhaseTally;
@@ -284,6 +289,18 @@ export function withDiagnosticArea<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   return scope.run({ area, signal }, fn);
+}
+
+const lagScope = new AsyncLocalStorage<DiagnosticLagReader>();
+
+/**
+ * every phase `fn` starts, in any area, records the lag sampled while it ran
+ */
+export function withDiagnosticLag<T>(
+  lag: DiagnosticLagReader | undefined,
+  fn: () => T,
+): T {
+  return lag === undefined ? fn() : lagScope.run(lag, fn);
 }
 
 export function outsideDiagnosticArea<T>(fn: () => T): T {
@@ -371,6 +388,8 @@ export function startDiagnosticPhase(
   const recording = observation.recording ?? false;
   const tally = recording ? new PhaseTally(true) : silentTally;
   const store = { ...current, tally };
+  const lagReader = lagScope.getStore();
+  const startedAt = performance.now();
   let ended = false;
   const quietly = (fn: () => void) => {
     try {
@@ -385,6 +404,12 @@ export function startDiagnosticPhase(
     quietly(() => {
       if (recording) {
         observation.attributes(tally.attributes());
+        const lag = lagReader?.maxLagSince?.(startedAt);
+        if (lag !== undefined) {
+          observation.attributes({
+            "swamp.diagnostic.event_loop_lag_max_ms": lag,
+          });
+        }
         if (current.signal) {
           observation.attributes({
             "swamp.diagnostic.cancel_observed": current.signal.aborted,

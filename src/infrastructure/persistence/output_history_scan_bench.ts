@@ -144,6 +144,35 @@ function contend(): () => Promise<void> {
   };
 }
 
+const lags = new Map<string, number>();
+
+function watchLag(label: string): () => Promise<void> {
+  let running = true;
+  let longest = lags.get(label) ?? 0;
+  const watching = (async () => {
+    while (running) {
+      const due = performance.now() + 5;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      longest = Math.max(longest, performance.now() - due);
+    }
+  })();
+  return async () => {
+    running = false;
+    await watching;
+    lags.set(label, longest);
+  };
+}
+
+async function readNewest(repo: YamlOutputRepository, limit: number) {
+  const read = await repo.findGlobalNewestFirst({ since: cutoff });
+  let found = 0;
+  while (found < limit) {
+    const batch = await read.next(Math.min(1024, limit - found));
+    if (batch.length === 0) return;
+    found += batch.length;
+  }
+}
+
 async function scan(
   label: string,
   read: () => Promise<unknown>,
@@ -181,6 +210,27 @@ for (const size of SIZES) {
       warmup: 1,
       async fn() {
         await scan(label, () => repo.findAllGlobalSince(cutoff), false);
+      },
+    });
+  }
+  const concurrentGroup = `${size} outputs, 8 limited reads at once`;
+  for (const limit of [100, 5000]) {
+    const label = `${concurrentGroup}: limit ${limit}`;
+    Deno.bench({
+      name: label,
+      group: concurrentGroup,
+      baseline: limit === 100,
+      n: 3,
+      warmup: 1,
+      async fn() {
+        const stop = watchLag(label);
+        try {
+          await Promise.all(
+            Array.from({ length: 8 }, () => readNewest(warm.repo, limit)),
+          );
+        } finally {
+          await stop();
+        }
       },
     });
   }
@@ -252,6 +302,9 @@ globalThis.addEventListener("unload", () => {
         (reads / runs).toFixed(0)
       } reads per iteration`,
     );
+  }
+  for (const [label, longest] of lags) {
+    console.log(`${label}: ${longest.toFixed(0)} ms longest event-loop delay`);
   }
   Deno.removeSync(root, { recursive: true });
 });

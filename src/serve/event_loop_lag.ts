@@ -77,6 +77,22 @@ export class EventLoopLagMonitor {
     this.#samples = [];
   }
 
+  /**
+   * samples that fired at or after `at`; a firing's lag can include a block
+   * that began before it
+   */
+  maxLagSince(at: number): number | undefined {
+    if (this.#timer === null) return undefined;
+    this.#prune(this.#now());
+    let max: number | undefined;
+    for (const sample of this.#samples) {
+      if (sample.at >= at && (max === undefined || sample.lagMs > max)) {
+        max = sample.lagMs;
+      }
+    }
+    return max;
+  }
+
   maxLagMs(): number | undefined {
     if (this.#timer === null) return undefined;
     this.#prune(this.#now());

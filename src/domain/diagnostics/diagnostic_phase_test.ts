@@ -30,6 +30,7 @@ import {
   utf8ByteLength,
   withDiagnosticArea,
   withDiagnosticAttributes,
+  withDiagnosticLag,
   withDiagnosticTally,
   withGeneratorDiagnosticPhase,
 } from "./diagnostic_phase.ts";
@@ -611,4 +612,46 @@ Deno.test("withDiagnosticTally: counts into the given tally, in the given area",
   });
   assertEquals(tally.attributes()["swamp.diagnostic.files_read"], 1);
   assertEquals(currentDiagnosticArea(), undefined);
+});
+
+Deno.test("withDiagnosticLag: each phase started inside it records the largest lag sampled since the phase started", async () => {
+  await withObservedSpans(async (spans) => {
+    const asked: number[] = [];
+    const before = performance.now();
+    const reader = {
+      maxLagSince: (at: number) => {
+        asked.push(at);
+        return 42;
+      },
+    };
+    await withDiagnosticLag(
+      reader,
+      () =>
+        withDiagnosticArea(
+          "output_search",
+          () =>
+            observeDiagnosticPhase(
+              "candidate_scan",
+              {},
+              () => Promise.resolve(),
+            ),
+        ),
+    );
+    await withDiagnosticArea(
+      "output_search",
+      () => observeDiagnosticPhase("response", {}, () => Promise.resolve()),
+    );
+    assertEquals(asked.length, 1);
+    assert(asked[0] >= before);
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.candidate_scan")
+        .attributes["swamp.diagnostic.event_loop_lag_max_ms"],
+      42,
+    );
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.response")
+        .attributes["swamp.diagnostic.event_loop_lag_max_ms"],
+      undefined,
+    );
+  });
 });

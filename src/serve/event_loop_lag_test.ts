@@ -210,3 +210,21 @@ Deno.test("EventLoopLagMonitor: real timers are released on stop", () => {
   monitor.stop();
   assertEquals(monitor.maxLagMs(), undefined);
 });
+
+Deno.test("EventLoopLagMonitor: maxLagSince takes only the samples that fired at or after its time", () => {
+  const timers = fakeTimers();
+  const monitor = new EventLoopLagMonitor({
+    ...timers.options,
+    intervalMs: 250,
+  });
+  assertEquals(monitor.maxLagSince(0), undefined);
+  monitor.start();
+  timers.fire(90);
+  const since = timers.options.now();
+  assertEquals(monitor.maxLagSince(since + 1), undefined);
+  timers.fire(30);
+  timers.fire(10);
+  assertEquals(monitor.maxLagSince(since + 1), 30);
+  assertEquals(monitor.maxLagSince(0), 90);
+  monitor.stop();
+});

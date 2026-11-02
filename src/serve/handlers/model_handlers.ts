@@ -208,6 +208,7 @@ import {
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { TimeSlice } from "../../infrastructure/persistence/scan_permits.ts";
 import { containedLogFileReader } from "./log_file_containment.ts";
 import {
   DataVersionConflictError,
@@ -3178,7 +3179,9 @@ export async function redactWorkflowLinks(
   unrestricted: boolean,
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
 ): Promise<void> {
+  const slice = new TimeSlice();
   for (const item of items) {
+    if (slice.over) await slice.next();
     if (
       item.workflowId === undefined && item.workflowRunId === undefined &&
       item.stepName === undefined
@@ -3345,7 +3348,9 @@ async function filterOutputItems(
   if (ctx.authConfig.mode === "none") return items;
   const readable = outputReadability(canonical, socket, principal, ctx);
   const kept: ModelOutputSearchItem[] = [];
+  const slice = new TimeSlice();
   for (const item of items) {
+    if (slice.over) await slice.next();
     if (await readable(item)) kept.push(item);
   }
   return kept;

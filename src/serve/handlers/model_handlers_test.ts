@@ -1557,6 +1557,35 @@ Deno.test("redactWorkflowLinks: keeps every linkage without authorization, drops
   assertEquals(restricted[0].stepName, undefined);
 });
 
+Deno.test("redactWorkflowLinks: over many items, each keeps or drops its own linkage as its workflow is decided", async () => {
+  const items = Array.from({ length: 20_000 }, (_, i) => ({
+    id: `o${i}`,
+    definitionId: "d1",
+    type: "command/shell",
+    methodName: "execute",
+    status: "succeeded",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    triggeredBy: "workflow" as const,
+    workflowId: `w${i % 3}`,
+    workflowName: `workflow-${i % 3}`,
+    workflowRunId: `r${i}`,
+    stepName: "s1",
+  }));
+  await redactWorkflowLinks(
+    items,
+    false,
+    (workflow) => Promise.resolve(workflow.workflowId !== "w1"),
+  );
+  assertEquals(
+    items.every((item, i) =>
+      i % 3 === 1
+        ? item.workflowRunId === undefined && item.workflowId === undefined
+        : item.workflowRunId === `r${i}`
+    ),
+    true,
+  );
+});
+
 Deno.test("handleModelEdit: a rename without allowRename is refused and writes nothing", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);

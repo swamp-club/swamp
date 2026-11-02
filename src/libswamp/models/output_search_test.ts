@@ -1310,3 +1310,36 @@ Deno.test("modelOutputSearch: without a limit, a model's search reads the whole 
 
   assertEquals(reads, 1);
 });
+
+Deno.test("modelOutputSearch: without a limit, sorts many outputs newest first and keeps outputs started in the same millisecond in walk order", async () => {
+  const outputs = Array.from({ length: 3_000 }, (_, i) => ({
+    output: {
+      id: `out-${i}`,
+      definitionId: "def-1",
+      methodName: "run",
+      status: "succeeded",
+      startedAt: new Date(Date.UTC(2026, 0, 1) + (i * 7919) % 50),
+    },
+    type: { normalized: "aws/ec2-instance" },
+  }));
+  const events = await collect<ModelOutputSearchEvent>(
+    modelOutputSearch(
+      createLibSwampContext(),
+      makeDeps({ findAllOutputsGlobal: () => Promise.resolve(outputs) }),
+      {},
+    ),
+  );
+  const completed = events[1] as Extract<
+    ModelOutputSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(
+    completed.data.results.map((r) => r.id),
+    outputs
+      .slice()
+      .sort((a, b) =>
+        b.output.startedAt.getTime() - a.output.startedAt.getTime()
+      )
+      .map(({ output }) => output.id),
+  );
+});

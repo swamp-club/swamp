@@ -49,6 +49,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { OutputKey } from "../../domain/models/repositories.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
+import { BULK_SCAN_SHARE, SCAN_CONCURRENCY } from "./scan_permits.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -3341,7 +3342,10 @@ async function assertScanPermitsFree(reads: HeldReads): Promise<void> {
     for (
       const [expected, scan] of [
         [16, () => repo.findAll(registeredType)],
-        [12, () => repo.findHistoryByDefinition(registeredType, definitionId)],
+        [
+          BULK_SCAN_SHARE,
+          () => repo.findHistoryByDefinition(registeredType, definitionId),
+        ],
       ] as const
     ) {
       reads.hold();
@@ -3374,7 +3378,7 @@ Deno.test(
       const holderId = createDefinitionId(crypto.randomUUID());
       const abortedId = createDefinitionId(crypto.randomUUID());
       const behindId = createDefinitionId(crypto.randomUUID());
-      await saveHistory(holder, holderId, 12);
+      await saveHistory(holder, holderId, BULK_SCAN_SHARE);
       await saveHistory(aborted, abortedId, 3);
       await saveHistory(behind, behindId, 3);
 
@@ -3384,7 +3388,10 @@ Deno.test(
           registeredType,
           holderId,
         );
-        await waitFor(() => reads.inFlight === 12, "the holder's 12 reads");
+        await waitFor(
+          () => reads.inFlight === BULK_SCAN_SHARE,
+          "the holder's reads",
+        );
 
         const controller = new AbortController();
         const reason = new DOMException("request cancelled", "AbortError");
@@ -3404,13 +3411,13 @@ Deno.test(
           settled = true;
         });
         controller.abort(reason);
-        // While searches still hold their whole share: a scan that stayed in
+        // While bulk scans still hold their whole share: a scan that stayed in
         // the queue would only settle once one is released.
         await waitFor(() => settled, "the aborted scan to reject");
         assertEquals(await abortedOutcome, reason);
 
         reads.release();
-        assertEquals((await holding).length, 12);
+        assertEquals((await holding).length, BULK_SCAN_SHARE);
         assertEquals((await behindScan).length, 3);
         assertEquals(reads.startedUnder(join(dir, "aborted")), 0);
         await assertScanPermitsFree(reads);
@@ -3429,7 +3436,7 @@ Deno.test(
         await disableOutputSummaries(join(dir, name));
       }
       const holderId = createDefinitionId(crypto.randomUUID());
-      await saveHistory(holder, holderId, 6);
+      await saveHistory(holder, holderId, BULK_SCAN_SHARE / 2);
       await saveHistory(
         scanned,
         createDefinitionId(crypto.randomUUID()),
@@ -3443,7 +3450,10 @@ Deno.test(
             registeredType,
             holderId,
           );
-          await waitFor(() => reads.inFlight === 6, "the holder's 6 reads");
+          await waitFor(
+            () => reads.inFlight === BULK_SCAN_SHARE / 2,
+            "the holder's reads",
+          );
 
           const controller = new AbortController();
           const reason = new DOMException("request cancelled", "AbortError");
@@ -3451,13 +3461,16 @@ Deno.test(
             new Date(Date.now() - HOUR_MS),
             controller.signal,
           );
-          await waitFor(() => reads.inFlight === 12, "the scan's 6 reads");
+          await waitFor(
+            () => reads.inFlight === BULK_SCAN_SHARE,
+            "the scan's reads",
+          );
           const startedAtAbort = reads.started;
           controller.abort(reason);
 
           reads.release();
           assertEquals(await assertRejects(() => scan), reason);
-          assertEquals((await holding).length, 6);
+          assertEquals((await holding).length, BULK_SCAN_SHARE / 2);
           await waitFor(
             () => reads.inFlight === 0,
             "the aborted scan's reads to settle",
@@ -3591,7 +3604,7 @@ async function sixteenSearches(dir: string) {
 }
 
 Deno.test(
-  "findLatestByDefinition, findAll, findByDefinition: complete while 16 large search listings are held",
+  "findLatestByDefinition, findAll, findByDefinition: complete while large output listings hold the bulk share",
   async () => {
     await withTempDir(async (dir) => {
       const searches = await sixteenSearches(join(dir, "searches"));
@@ -3601,7 +3614,10 @@ Deno.test(
 
       await withHeldListings(searches.holds, async (listings) => {
         const searching = searches.start();
-        await waitFor(() => listings.inFlight === 12, "12 held listings");
+        await waitFor(
+          () => listings.inFlight === BULK_SCAN_SHARE,
+          "the held listings",
+        );
 
         let done = 0;
         const lookups = [
@@ -3614,7 +3630,7 @@ Deno.test(
         assertEquals((latest as ModelOutput | null)?.definitionId, runnerId);
         assertEquals((all as ModelOutput[]).length, 3);
         assertEquals((byDefinition as ModelOutput[]).length, 3);
-        assertEquals(listings.inFlight, 12);
+        assertEquals(listings.inFlight, BULK_SCAN_SHARE);
 
         listings.release();
         for (const found of await Promise.all(searching)) {
@@ -3626,27 +3642,38 @@ Deno.test(
 );
 
 Deno.test(
-  "scan permits: held search listings and lookup reads together open at most 16 files",
+  "scan permits: held output listings and lookup reads together open at most SCAN_CONCURRENCY files",
   async () => {
     await withTempDir(async (dir) => {
       const searches = await sixteenSearches(join(dir, "searches"));
       const runnerDir = join(dir, "runner");
       const runner = new YamlOutputRepository(runnerDir);
-      await saveHistory(runner, createDefinitionId(crypto.randomUUID()), 8);
+      await saveHistory(
+        runner,
+        createDefinitionId(crypto.randomUUID()),
+        SCAN_CONCURRENCY,
+      );
 
       await withHeldListings(searches.holds, async (listings) => {
         await withHeldReads(async (reads) => {
           const searching = searches.start();
-          await waitFor(() => listings.inFlight === 12, "12 held listings");
+          await waitFor(
+            () => listings.inFlight === BULK_SCAN_SHARE,
+            "the held listings",
+          );
 
           reads.hold();
           const lookup = runner.findAll(registeredType);
-          await waitFor(() => reads.inFlight === 4, "the lookup's 4 reads");
-          assertEquals(listings.inFlight + reads.inFlight, 16);
-          assertEquals(reads.startedUnder(runnerDir), 4);
+          const lookupShare = SCAN_CONCURRENCY - BULK_SCAN_SHARE;
+          await waitFor(
+            () => reads.inFlight === lookupShare,
+            "the lookup's reads",
+          );
+          assertEquals(listings.inFlight + reads.inFlight, SCAN_CONCURRENCY);
+          assertEquals(reads.startedUnder(runnerDir), lookupShare);
 
           reads.release();
-          assertEquals((await lookup).length, 8);
+          assertEquals((await lookup).length, SCAN_CONCURRENCY);
           listings.release();
           for (const found of await Promise.all(searching)) {
             assertEquals(found.length, 1);
@@ -3905,7 +3932,10 @@ Deno.test(
             )
           )
         );
-        await waitFor(() => reads.inFlight === 12, "its share of 12 reads");
+        await waitFor(
+          () => reads.inFlight === BULK_SCAN_SHARE,
+          "its share of reads",
+        );
         const startedAtAbort = reads.started;
         for (const controller of controllers) controller.abort(reason);
         for (const outcome of outcomes) assertEquals(await outcome, reason);
@@ -5036,3 +5066,178 @@ Deno.test("YamlOutputRepository.findHistoryNewestFirst: warns only about this de
     assert(!warnings[0].includes(paths[2]), warnings[0]);
   });
 });
+
+/**
+ * the length of each array sorted with the newest-first comparator; with
+ * `onFirst`, the first such sort calls it, then spends its slice, so a sort of
+ * more than one run must yield before it can go on
+ */
+async function withNewestFirstSorts<T>(
+  fn: (sorts: readonly number[]) => Promise<T>,
+  onFirst?: () => void,
+): Promise<T> {
+  const sort = Array.prototype.sort;
+  const sorts: number[] = [];
+  Array.prototype.sort = function <U>(
+    this: U[],
+    compare?: (a: U, b: U) => number,
+  ): U[] {
+    if (compare?.name === "newestFileFirst") {
+      sorts.push(this.length);
+      if (onFirst !== undefined && sorts.length === 1) {
+        onFirst();
+        const spent = performance.now() + 10;
+        while (performance.now() < spent) {
+          // Spend the slice, as a long run would.
+        }
+      }
+    }
+    return sort.call(this, compare) as U[];
+  };
+  try {
+    return await fn(sorts);
+  } finally {
+    Array.prototype.sort = sort;
+  }
+}
+
+Deno.test(
+  "findGlobalNewestFirst: reads sharing one listing sort it once, and each keeps only its own window",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const definitionId = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, definitionId, 6);
+      const all = await repo.findAllGlobalSince(new Date(0));
+      const newest = all
+        .map((found) => found.output)
+        .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+      const since = new Date(Date.now() - HOUR_MS);
+      const until = newest[2].startedAt;
+
+      await withNewestFirstSorts(async (sorts) => {
+        const [wide, narrow] = await Promise.all([
+          repo.findGlobalNewestFirst({ since }),
+          repo.findGlobalNewestFirst({ since, until }),
+        ]);
+        assertEquals(await readAllNewestFirst(wide), newest.map((o) => o.id));
+        assertEquals(
+          await readAllNewestFirst(narrow),
+          newest.slice(3).map((o) => o.id),
+        );
+        assertEquals(sorts, [6]);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: a read cancelled while the shared sort runs rejects at once, and the read still on it gets every output",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      await disableOutputSummaries(dir);
+      await saveHistory(repo, createDefinitionId(crypto.randomUUID()), 1100);
+      const since = new Date(Date.now() - HOUR_MS);
+
+      const controller = new AbortController();
+      const reason = new DOMException("request cancelled", "AbortError");
+      await withNewestFirstSorts(async (sorts) => {
+        const staying = repo.findGlobalNewestFirst({ since });
+        const leaving = repo.findGlobalNewestFirst(
+          { since },
+          controller.signal,
+        );
+        assertEquals(await assertRejects(() => leaving), reason);
+
+        const read = await staying;
+        assertEquals((await read.next(2000)).length, 1100);
+        assertEquals(sorts, [1024, 76]);
+      }, () => controller.abort(reason));
+    });
+  },
+);
+
+Deno.test(
+  "findGlobalNewestFirst: a sort every read on it left stops, and a later read sorts afresh and gets every output",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      await disableOutputSummaries(dir);
+      await saveHistory(repo, createDefinitionId(crypto.randomUUID()), 1100);
+      const since = new Date(Date.now() - HOUR_MS);
+
+      const controller = new AbortController();
+      const reason = new DOMException("request cancelled", "AbortError");
+      await withNewestFirstSorts(async (sorts) => {
+        const leaving = repo.findGlobalNewestFirst(
+          { since },
+          controller.signal,
+        );
+        assertEquals(await assertRejects(() => leaving), reason);
+        for (let turn = 0; turn < 3; turn++) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        assertEquals(sorts, [1024]);
+
+        const later = await repo.findGlobalNewestFirst({ since });
+        assertEquals((await later.next(2000)).length, 1100);
+        assertEquals(sorts, [1024, 1024, 76]);
+      }, () => controller.abort(reason));
+    });
+  },
+);
+
+Deno.test(
+  "findHistoryNewestFirst: sorts only the definition's own files, not its type's whole listing",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      const mine = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, mine, 3);
+      await saveHistory(repo, createDefinitionId(crypto.randomUUID()), 5);
+
+      await withNewestFirstSorts(async (sorts) => {
+        const read = await repo.findHistoryNewestFirst(
+          registeredType,
+          mine,
+          {},
+        );
+        assertEquals((await readAllNewestFirst(read)).length, 3);
+        assertEquals(sorts, [3]);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: with selectReadable over a large listing, asks once about each distinct key and reads only the files it accepts",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+      await disableOutputSummaries(dir);
+      const readable = createDefinitionId(crypto.randomUUID());
+      const refused = createDefinitionId(crypto.randomUUID());
+      await saveHistory(repo, readable, 700);
+      await saveHistory(repo, refused, 700);
+      const asked: string[][] = [];
+
+      const found = await repo.findAllGlobalSince(
+        new Date(Date.now() - HOUR_MS),
+        undefined,
+        (keys) => {
+          asked.push(keys.map((key) => key.definitionId).sort());
+          return Promise.resolve(
+            keys.map((key) => key.definitionId === readable),
+          );
+        },
+      );
+      assertEquals(asked, [[readable, refused].sort()]);
+      assertEquals(found.length, 700);
+      assertEquals(
+        found.every((entry) => entry.output.definitionId === readable),
+        true,
+      );
+    });
+  },
+);

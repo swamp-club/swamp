@@ -19,6 +19,10 @@
 
 import { observeDiagnosticPhase } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  sortInTimeSlices,
+  TimeSlice,
+} from "../../infrastructure/persistence/scan_permits.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { clampRecentLimit } from "../workflows/run_summary.ts";
@@ -168,11 +172,12 @@ export async function* modelUsageSummary(
           return found;
         },
       );
-      const inWindow = candidates
-        .filter(({ output }) => startedInWindow(output, since, until))
-        .sort((a, b) =>
-          b.output.startedAt.getTime() - a.output.startedAt.getTime()
-        );
+      const inWindow = await sortInTimeSlices(
+        candidates.filter(({ output }) =>
+          startedInWindow(output, since, until)
+        ),
+        (a, b) => b.output.startedAt.getTime() - a.output.startedAt.getTime(),
+      );
       await namer.resolve(
         inWindow.map(({ output, type }) => ({
           type,
@@ -181,7 +186,9 @@ export async function* modelUsageSummary(
       );
 
       const groups = new Map<string, GroupTally>();
+      const slice = new TimeSlice();
       for (const { output, type } of inWindow) {
+        if (slice.over) await slice.next();
         const key = JSON.stringify([
           type.normalized,
           output.definitionId,
