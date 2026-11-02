@@ -92,7 +92,10 @@ export function renderApproveResult(
       .info`Serve does not resume a run a member drives: the run's owner resumes ${data.runId}`;
   }
   if (cliCtx.verbosity === "quiet") return;
-  const target = remote ? formatCommandTarget({ server: remote.server }) : "";
+  // The owner resumes where the run is, not on the server named here.
+  const target = remote && data.ownerResumes !== true
+    ? formatCommandTarget({ server: remote.server })
+    : "";
   if (!remote?.serveResuming) {
     writeOutput(
       `${

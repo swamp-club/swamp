@@ -24,11 +24,11 @@ import {
   type EvaluationTrust,
 } from "../infrastructure/datastore_v3/trusted_evaluations.ts";
 import {
+  checkLastEvaluation,
   type LastEvaluatedDeps,
-  lastEvaluatedStands,
 } from "./last_evaluated_trust.ts";
 
-const REPOS = {} as Parameters<typeof lastEvaluatedStands>[1];
+const REPOS = {} as Parameters<typeof checkLastEvaluation>[1];
 const TRUST = {} as EvaluationTrust;
 
 function deps(
@@ -57,50 +57,64 @@ async function stderrOf<T>(fn: () => Promise<T>): Promise<[T, string[]]> {
   }
 }
 
-Deno.test("lastEvaluatedStands: a checkout not written through serve stands without reading", async () => {
+Deno.test("checkLastEvaluation: a checkout not written through serve stands without reading", async () => {
   let read = false;
   assertEquals(
-    await lastEvaluatedStands("/r", REPOS, "log", () => {
+    await checkLastEvaluation("/r", REPOS, "log", () => {
       read = true;
-      return Promise.resolve();
+      return Promise.resolve(null);
     }, deps({ upstream: () => Promise.resolve(undefined) })),
-    true,
+    { stands: true, vetted: false },
   );
   assertEquals(read, false);
 });
 
-Deno.test("lastEvaluatedStands: an evaluation the trust vouches for stands, read as this member", async () => {
+Deno.test("checkLastEvaluation: what the trust vouches for is what the run is handed, read as this member", async () => {
   const seen: string[] = [];
+  const cache = { name: "checked" };
   assertEquals(
-    await lastEvaluatedStands(
+    await checkLastEvaluation(
       "/r",
       REPOS,
       "json",
-      () => Promise.resolve(),
+      () => Promise.resolve(cache),
       deps({ seen }),
     ),
-    true,
+    { stands: true, vetted: true, cache },
   );
   assertEquals(seen, ["user:ana"]);
 });
 
-Deno.test("lastEvaluatedStands: a member it cannot name takes the strict path, never serve's", async () => {
+Deno.test("checkLastEvaluation: no evaluation at all is vetted as none, so the repository is not asked after", async () => {
+  assertEquals(
+    await checkLastEvaluation(
+      "/r",
+      REPOS,
+      "json",
+      () => Promise.resolve(null),
+      deps(),
+    ),
+    { stands: true, vetted: true, cache: null },
+  );
+});
+
+Deno.test("checkLastEvaluation: a member it cannot name takes the strict path, never serve's", async () => {
   for (const principal of [undefined, ""]) {
     const seen: string[] = [];
-    await lastEvaluatedStands(
+    await checkLastEvaluation(
       "/r",
       REPOS,
       "log",
-      () => Promise.resolve(),
+      () => Promise.resolve(null),
       deps({ seen, principal: () => Promise.resolve(principal) }),
     );
     assertEquals(seen, [""]);
   }
 });
 
-Deno.test("lastEvaluatedStands: in JSON mode a refused evaluation is an event naming its cause and the dropped inputs", async () => {
-  const [stands, written] = await stderrOf(() =>
-    lastEvaluatedStands(
+Deno.test("checkLastEvaluation: in JSON mode a refused evaluation is an event naming its cause and the dropped inputs", async () => {
+  const [check, written] = await stderrOf(() =>
+    checkLastEvaluation(
       "/r",
       REPOS,
       "json",
@@ -111,17 +125,18 @@ Deno.test("lastEvaluatedStands: in JSON mode a refused evaluation is an event na
       deps(),
     )
   );
-  assertEquals(stands, false);
+  assertEquals(check, { stands: false });
   assertEquals(written.length, 1);
   const event = JSON.parse(written[0]);
   assertEquals(event.event, "last_evaluated_set_aside");
   assertEquals(event.inputsReplayed, false);
   assertStringIncludes(event.reason, "Evaluate it from this checkout");
+  assertStringIncludes(event.reason, "pass them with --input");
 });
 
-Deno.test("lastEvaluatedStands: the advice fits the cause, and a read that fails evaluates again", async () => {
-  const [unknownMember, written] = await stderrOf(() =>
-    lastEvaluatedStands(
+Deno.test("checkLastEvaluation: the advice says when the member is unknown", async () => {
+  const [check, written] = await stderrOf(() =>
+    checkLastEvaluation(
       "/r",
       REPOS,
       "json",
@@ -132,33 +147,33 @@ Deno.test("lastEvaluatedStands: the advice fits the cause, and a read that fails
       deps({ principal: () => Promise.resolve(undefined) }),
     )
   );
-  assertEquals(unknownMember, false);
+  assertEquals(check, { stands: false });
   assertStringIncludes(
     JSON.parse(written[0]).reason,
     "token from the environment",
   );
 });
 
-Deno.test("lastEvaluatedStands: any other failure refuses, since a fresh evaluation could run different inputs", async () => {
+Deno.test("checkLastEvaluation: any other failure refuses, since a fresh evaluation could run different inputs", async () => {
   for (const mode of ["json", "log"] as const) {
     const error = await assertRejects(
       () =>
-        lastEvaluatedStands(
+        checkLastEvaluation(
           "/r",
           REPOS,
           mode,
-          () => Promise.reject(new Error("disk full")),
+          () => Promise.reject(new Error("disk full.")),
           deps(),
         ),
       UserError,
     );
-    assertStringIncludes(error.message, "disk full");
+    assertStringIncludes(error.message, "disk full. Run without");
   }
 });
 
-Deno.test("lastEvaluatedStands: in log mode it prints no JSON", async () => {
-  const [stands, written] = await stderrOf(() =>
-    lastEvaluatedStands(
+Deno.test("checkLastEvaluation: in log mode it prints no JSON", async () => {
+  const [check, written] = await stderrOf(() =>
+    checkLastEvaluation(
       "/r",
       REPOS,
       "log",
@@ -169,6 +184,6 @@ Deno.test("lastEvaluatedStands: in log mode it prints no JSON", async () => {
       deps(),
     )
   );
-  assertEquals(stands, false);
+  assertEquals(check, { stands: false });
   assertEquals(written, []);
 });

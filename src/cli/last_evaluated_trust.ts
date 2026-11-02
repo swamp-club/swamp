@@ -78,39 +78,49 @@ function adviceFor(error: UserError, knowsMember: boolean): string {
 }
 
 /**
- * Whether a run may use its last evaluation. `read` loads it through the trust
- * it is given. A checkout not written through serve answers true without
- * reading. An evaluation another member wrote answers false, and says so in both
+ * What a run may do with its last evaluation. `vetted` holds what the check read:
+ * the run replays those bytes, never a later read of the repository, so what it
+ * runs is what was checked (swamp-club#4245).
+ */
+export type LastEvaluationCheck<T> =
+  | { readonly stands: true; readonly vetted: false }
+  | { readonly stands: true; readonly vetted: true; readonly cache: T | null }
+  | { readonly stands: false };
+
+/**
+ * Checks the last evaluation a run would replay. `read` loads it through the
+ * trust it is given. A checkout not written through serve stands without
+ * reading. An evaluation another member wrote does not stand, and says so in both
  * output modes. Any other failure refuses: the caller asked for an exact replay,
  * and a fresh evaluation could run different inputs.
  *
  * @throws UserError when it cannot tell who wrote the evaluation
  */
-export async function lastEvaluatedStands(
+export async function checkLastEvaluation<T>(
   repoDir: string,
   repos: EvaluationRepos,
   outputMode: "log" | "json",
-  read: (trust: EvaluationTrust) => Promise<unknown>,
+  read: (trust: EvaluationTrust) => Promise<T | null>,
   deps: LastEvaluatedDeps = realDeps,
-): Promise<boolean> {
+): Promise<LastEvaluationCheck<T>> {
   const upstream = await deps.upstream(repoDir);
-  if (upstream === undefined) return true;
+  if (upstream === undefined) return { stands: true, vetted: false };
   let knowsMember = false;
   try {
     const principal = await deps.principal(upstream) ?? "";
     knowsMember = principal !== "";
     // Unknown is not unset: "" matches only serve's own records and takes
     // the checkout's strict path.
-    await read(await deps.trust(repoDir, repos, principal));
-    return true;
+    const cache = await read(await deps.trust(repoDir, repos, principal));
+    return { stands: true, vetted: true, cache };
   } catch (error) {
     if (
       !(error instanceof UserError && error.code === EVALUATION_OTHER_WRITER)
     ) {
+      const reason = (error instanceof Error ? error.message : String(error))
+        .replace(/\.$/, "");
       throw new UserError(
-        `Could not check who wrote the last evaluation, so it was not replayed: ${
-          error instanceof Error ? error.message : String(error)
-        }. Run again, or without --last-evaluated.`,
+        `The last evaluation was not replayed, since who wrote it could not be confirmed: ${reason}. Run without --last-evaluated to evaluate again.`,
         "evaluation_not_checked",
       );
     }
@@ -119,7 +129,8 @@ export async function lastEvaluatedStands(
       console.error(JSON.stringify({
         event: "last_evaluated_set_aside",
         inputsReplayed: false,
-        reason: advice,
+        reason:
+          `${advice} Stored inputs are not replayed; pass them with --input.`,
       }));
     } else {
       getSwampLogger(["cli", "last-evaluated"]).warn(
@@ -127,6 +138,6 @@ export async function lastEvaluatedStands(
         { advice },
       );
     }
-    return false;
+    return { stands: false };
   }
 }

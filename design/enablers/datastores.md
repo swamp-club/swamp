@@ -4649,8 +4649,8 @@ refused with a request to evaluate on serve. The bytes parsed are the ones
 whose writer was checked. A serve-mode checkout applies the same rule to its own
 `--last-evaluated` (`lastEvaluatedStands`): it uses only an evaluation serve or
 its own member wrote, and otherwise evaluates again; it refuses if any key the
-repository could read holds another writer's record. The check and the read are
-separate reads, so a record replaced between them is not caught. A run log is read and appended to only under the
+repository could read holds another writer's record. The run replays the bytes
+that were checked, never a later read. A run log is read and appended to only under the
 repo's own run-log directories, whatever path a record holds.
 
 **Proof of possession.** A commit may name a chunk only when one of these

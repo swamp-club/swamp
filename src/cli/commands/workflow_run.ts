@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
-import { lastEvaluatedStands } from "../last_evaluated_trust.ts";
+import { checkLastEvaluation } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -383,8 +383,8 @@ export const workflowRunCommand = new Command()
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
-    const lastEvaluated = options.lastEvaluated === true &&
-      await lastEvaluatedStands(
+    const evaluationCheck = options.lastEvaluated === true
+      ? await checkLastEvaluation(
         unlocked.repoDir,
         unlocked.repoContext,
         ctx.outputMode === "json" ? "json" : "log",
@@ -394,9 +394,11 @@ export const workflowRunCommand = new Command()
             unlocked.repoContext.workflowRepo,
             workflowIdOrName,
           );
-          if (found !== null) await trust.workflow(found.name);
+          return found === null ? null : await trust.workflow(found.name);
         },
-      );
+      )
+      : undefined;
+    const lastEvaluated = evaluationCheck?.stands === true;
 
     const stdinContent = options.stdin ? await readStdin() : null;
     let stdinItems: Record<string, unknown>[] | null = null;
@@ -635,8 +637,11 @@ export const workflowRunCommand = new Command()
                   runRepo.findByStatus(workflowId, "suspended", signal),
                 findEvaluatedWorkflow: (runId) =>
                   evaluatedWorkflowRepo.findByRunId(runId),
+                // What was checked is what runs: never a later read.
                 evaluatedCache: (name) =>
-                  evaluatedWorkflowRepo.findByNameWithProvenance(name),
+                  evaluationCheck?.stands === true && evaluationCheck.vetted
+                    ? Promise.resolve(evaluationCheck.cache)
+                    : evaluatedWorkflowRepo.findByNameWithProvenance(name),
                 runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
                 // The suspended nested runs a superseded run waited on are
                 // cancelled with it (swamp-club#2867). The tracker is opened

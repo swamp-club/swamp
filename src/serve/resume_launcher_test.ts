@@ -1940,3 +1940,79 @@ Deno.test("serveMayActOnRun: only where members forward records is a run's state
     true,
   );
 });
+
+Deno.test("autoResumeParentAfterChild: on a v3 serve a member's report of a child ending, or a member-driven parent, moves nothing (swamp-club#4245)", async () => {
+  const parentId = crypto.randomUUID();
+  const workflowId = crypto.randomUUID();
+  const childId = crypto.randomUUID();
+  const child = (instanceId?: string) =>
+    WorkflowRun.fromData({
+      id: childId,
+      workflowId,
+      workflowName: "child",
+      status: "succeeded",
+      tags: {},
+      ...(instanceId === undefined ? {} : { instanceId }),
+      parentRun: {
+        workflowId,
+        workflowName: "parent",
+        runId: parentId,
+        jobName: "main",
+        stepName: "call",
+        nestingDepth: 1,
+        ancestorWorkflowNames: ["parent"],
+      },
+      jobs: [],
+    } as never);
+  const parent = WorkflowRun.fromData({
+    id: parentId,
+    workflowId,
+    workflowName: "parent",
+    status: "suspended",
+    tags: {},
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      steps: [{
+        stepName: "call",
+        status: "waiting_approval",
+        nestedRun: { workflowId, workflowName: "child", runId: childId },
+      }],
+    }],
+  } as never);
+  const attempt = async (reported: WorkflowRun) => {
+    const reads: string[] = [];
+    const registry = new RecordingRegistry();
+    const ctx = {
+      activeRunRegistry: registry,
+      repoContext: {
+        takesForwardedRunRecords: true,
+        workflowRepo: {},
+        workflowRunRepo: {
+          findById: (_workflow: string, runId: string) => {
+            reads.push(runId);
+            return Promise.resolve(runId === childId ? reported : parent);
+          },
+        },
+      },
+    } as unknown as ConnectionContext;
+    const moved = await autoResumeParentAfterChild(
+      ctx,
+      { workflowId, runId: childId },
+      { principal: null } as never,
+    );
+    return { moved, reads, registered: registry.registered.length };
+  };
+  // A member's child: nothing past the child is even read.
+  assertEquals(await attempt(child()), {
+    moved: false,
+    reads: [childId],
+    registered: 0,
+  });
+  // A child serve drove, whose parent a member drives: it reads the parent, and
+  // stops there.
+  const driven = await attempt(child("team-node"));
+  assertEquals(driven.moved, false);
+  assertEquals(driven.registered, 0);
+  assert(driven.reads.includes(parentId));
+});

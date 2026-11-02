@@ -284,6 +284,7 @@ import {
 import {
   continueAfterSignal,
   deliverSignalForCaller,
+  withOwnerResumes,
 } from "../signal_delivery.ts";
 import { SIGNAL_WAITS_NOT_CONFIGURED } from "../../domain/workflows/signal_wait_store.ts";
 import { authorizeWorkflowEdit } from "./workflow_step_authorization.ts";
@@ -1736,7 +1737,7 @@ export async function handleWorkflowSignal(
       send(socket, {
         type: "workflow.signal",
         id: requestId,
-        payload: { data: result.data },
+        payload: { data: await withOwnerResumes(ctx, result.data) },
       });
       await continueAfterSignal(
         ctx,

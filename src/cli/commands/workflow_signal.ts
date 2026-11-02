@@ -180,7 +180,9 @@ export function renderSignalResult(
   }
   // The step shows as waiting until the resume applies the signal.
   writeOutput(
-    data.awaitingResume
+    data.awaitingResume && data.ownerResumes === true
+      ? `Serve does not resume a run a member drives. If you started this run: ${data.resumeCommand}`
+      : data.awaitingResume
       ? `swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${data.resumeCommand}`
       : !data.runRecordAvailable
       ? `This host has no copy of the run, so it cannot tell whether the run still waits on something else. ` +
@@ -313,6 +315,7 @@ export function renderRemoteSignalResult(
       {
         waitId: data.waitId,
         ...(data.key !== undefined ? { key: data.key } : {}),
+        ...(data.ownerResumes === true ? { ownerResumes: true } : {}),
         workflowId: data.workflowId,
         workflowName: data.workflowName,
         runId: data.runId,

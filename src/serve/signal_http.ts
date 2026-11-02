@@ -58,6 +58,7 @@ import {
   deliverSignalForCaller,
   type SignalDeliveryAddress,
   type SignalDeliveryResult,
+  withOwnerResumes,
 } from "./signal_delivery.ts";
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
@@ -335,7 +336,10 @@ export async function handleSignalHttpRequest(
   const { status, run: _run, workflow: _workflow, ...rest } = result as
     & typeof result
     & { run?: unknown; workflow?: unknown };
-  return Response.json({ status, ...rest }, { status: STATUS[status] });
+  const reply = result.status === "delivered"
+    ? { ...rest, data: await withOwnerResumes(ctx, result.data) }
+    : rest;
+  return Response.json({ status, ...reply }, { status: STATUS[status] });
 }
 
 /**

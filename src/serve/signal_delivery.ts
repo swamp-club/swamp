@@ -79,7 +79,7 @@ import type {
   WorkflowSignalPendingResponseData,
   WorkflowSignalResponseData,
 } from "./protocol.ts";
-import { continueSettledRun } from "./resume_launcher.ts";
+import { continueSettledRun, serveMayActOnRun } from "./resume_launcher.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import {
   createWorkflowId,
@@ -613,6 +613,16 @@ export async function deliverSignalForCaller(
     ),
     // One request must not make serve read every run record.
     scanRunRecords: false,
+    ...(ctx.repoContext.takesForwardedRunRecords === true
+      ? {
+        scanSuspendedRuns: true,
+        suspendedRunsOf: (workflowId: string) =>
+          ctx.repoContext.workflowRunRepo.findByStatus(
+            createWorkflowId(workflowId),
+            "suspended",
+          ),
+      }
+      : {}),
     // By key the use case acts on the workflow that was authorized: found
     // by its id and accepted only under the authorized name, so neither a
     // workflow named with that id nor a copy that shares it is reached.
@@ -929,6 +939,25 @@ export function auditTakenSignals(ctx: ConnectionContext): void {
  * signal is stored, and the continuation sweep retries whatever is not
  * launched here.
  */
+/**
+ * `data` with `ownerResumes` set when its run is one serve leaves to its owner.
+ */
+export async function withOwnerResumes<
+  T extends { readonly workflowId?: string; readonly runId?: string },
+>(ctx: ConnectionContext, data: T): Promise<T & { ownerResumes?: boolean }> {
+  if (
+    ctx.repoContext.takesForwardedRunRecords !== true ||
+    data.workflowId === undefined || data.runId === undefined
+  ) return data;
+  const run = await ctx.repoContext.workflowRunRepo.findById(
+    createWorkflowId(data.workflowId),
+    createWorkflowRunId(data.runId),
+  ).catch(() => null);
+  return run !== null && !serveMayActOnRun(ctx, run)
+    ? { ...data, ownerResumes: true }
+    : data;
+}
+
 export async function continueAfterSignal(
   ctx: ConnectionContext,
   result: SignalDeliveryResult,
