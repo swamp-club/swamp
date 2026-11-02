@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { z } from "zod";
 import {
   clearAttachedExtensions,
@@ -1301,5 +1302,130 @@ Deno.test("modelKindAdapter.registerLazy: the lazy type names the extension of i
   } finally {
     modelRegistry.invalidateType(named);
     modelRegistry.invalidateType(unnamed);
+  }
+});
+
+async function withManifestExtension(
+  manifest: string,
+  fn: (ctx: {
+    dir: string;
+    type: string;
+    register: () => void;
+    writeManifest: (content: string) => Promise<void>;
+  }) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-assets-" });
+  const type = `@test/assets-${crypto.randomUUID().slice(0, 8)}`;
+  const writeManifest = (content: string) =>
+    Deno.writeTextFile(join(dir, "manifest.yaml"), content);
+  await writeManifest(manifest);
+  const stubDenoRuntime: DenoRuntime = {
+    ensureDeno: () => Promise.resolve("/usr/bin/false"),
+    getDenoEnv: () => ({}),
+  };
+  const context: RegistrationContext = {
+    absolutePath: join(dir, "model.ts"),
+    denoPath: "/usr/bin/false",
+    denoRuntime: stubDenoRuntime,
+    repoDir: dir,
+  };
+  const validated = modelKindAdapter.validatePrimaryExport(
+    makeValidModel({ type }),
+  );
+  assertEquals(validated.success, true);
+  const register = () => {
+    modelRegistry.invalidateType(type);
+    modelKindAdapter.register(
+      type,
+      (validated as { data: Record<string, unknown> }).data,
+      {},
+      context,
+    );
+  };
+  try {
+    await fn({ dir, type, register, writeManifest });
+  } finally {
+    modelRegistry.invalidateType(type);
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+function manifestDeclaring(files: string[]): string {
+  return [
+    "manifestVersion: 1",
+    "name: '@test/assets'",
+    "version: '2026.01.01.1'",
+    "models:",
+    "  - model.ts",
+    "additionalFiles:",
+    ...files.map((f) => `  - ${f}`),
+    "",
+  ].join("\n");
+}
+
+Deno.test("register: a file newly declared in the manifest is read without re-registering", async () => {
+  await withManifestExtension(
+    manifestDeclaring(["scripts/a.py"]),
+    async ({ dir, type, register, writeManifest }) => {
+      register();
+      const def = modelRegistry.get(type);
+      assertEquals(def?.extensionFilesRoot, dir);
+      assertEquals(await def?.readExtensionAdditionalFiles?.(), [
+        "scripts/a.py",
+      ]);
+
+      await writeManifest(manifestDeclaring(["scripts/a.py", "scripts/b.py"]));
+      assertEquals(await def?.readExtensionAdditionalFiles?.(), [
+        "scripts/a.py",
+        "scripts/b.py",
+      ]);
+    },
+  );
+});
+
+Deno.test("register: re-registering under an edited manifest sees the edit", async () => {
+  await withManifestExtension(
+    manifestDeclaring(["scripts/a.py"]),
+    async ({ type, register, writeManifest }) => {
+      register();
+      await writeManifest(manifestDeclaring(["scripts/b.py"]));
+      register();
+      assertEquals(
+        await modelRegistry.get(type)?.readExtensionAdditionalFiles?.(),
+        ["scripts/b.py"],
+      );
+    },
+  );
+});
+
+Deno.test("register: a manifest corrupted after registration declares nothing and warns, without throwing", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      { category: ["swamp"], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await withManifestExtension(
+      manifestDeclaring(["scripts/a.py"]),
+      async ({ type, register, writeManifest }) => {
+        register();
+        await writeManifest("additionalFiles: [unclosed\n");
+        assertEquals(
+          await modelRegistry.get(type)?.readExtensionAdditionalFiles?.(),
+          [],
+        );
+        assertEquals(records.length, 1);
+        assertStringIncludes(
+          String(records[0].message),
+          "for additionalFiles; defaulting to empty",
+        );
+      },
+    );
+  } finally {
+    await reset();
   }
 });

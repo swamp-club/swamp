@@ -1226,9 +1226,9 @@ export class DispatchService {
   }
 
   /**
-   * the JS is what the definition's factory built; assets are read at each
-   * dispatch so an edited asset ships under a new fingerprint, and recorded
-   * hashes let the data plane refuse bytes changed since
+   * the declared list and assets are read at each dispatch so a change ships
+   * under a new fingerprint; recorded hashes let the data plane refuse bytes
+   * changed since
    */
   async #ensureBundle(modelDef: ModelDefinition): Promise<string> {
     if (!modelDef.bundleSourceFactory) {
@@ -1238,7 +1238,7 @@ export class DispatchService {
     }
     const js = await modelDef.bundleSourceFactory();
     const filesRoot = modelDef.extensionFilesRoot;
-    const additionalFiles = modelDef.extensionAdditionalFiles;
+    const additionalFiles = await modelDef.readExtensionAdditionalFiles?.();
     if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
       const fingerprint = await sha256Hex(js);
       this.#options.bundles.register(fingerprint, {
