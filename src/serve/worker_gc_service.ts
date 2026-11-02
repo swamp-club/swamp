@@ -33,6 +33,8 @@ import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 const logger = getSwampLogger(["serve", "worker-gc"]);
 
 export const DEFAULT_WORKER_GC_INTERVAL_MS = 60 * 60 * 1000;
+// Short of the interval so a serve restarted more often than hourly still reaps.
+export const DEFAULT_WORKER_GC_INITIAL_DELAY_MS = 5 * 60 * 1000;
 export const DEFAULT_WORKER_GC_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -50,6 +52,7 @@ export function bookkeepingGracePeriodMs(
 
 export interface WorkerGcDeps {
   readonly intervalMs: number;
+  readonly initialDelayMs?: number;
   readonly gracePeriodMs: number;
   /**
    * Resolves the grace period at the start of each sweep, so a change to
@@ -116,14 +119,16 @@ export class WorkerGcService {
 
   start(): void {
     if (this.#disposed) return;
+    const initialDelay = this.#deps.initialDelayMs ?? this.#deps.intervalMs;
     logger.info(
-      "Starting worker GC service (interval: {interval}ms, grace period: {grace}ms)",
+      "Starting worker GC service (first sweep in: {initialDelay}ms, interval: {interval}ms, grace period: {grace}ms)",
       {
+        initialDelay,
         interval: this.#deps.intervalMs,
         grace: this.#deps.gracePeriodMs,
       },
     );
-    this.#scheduleNext();
+    this.#scheduleNext(initialDelay);
   }
 
   async dispose(): Promise<void> {
@@ -141,12 +146,12 @@ export class WorkerGcService {
     return await this.#sweep();
   }
 
-  #scheduleNext(): void {
+  #scheduleNext(delayMs = this.#deps.intervalMs): void {
     if (this.#disposed) return;
     this.#timer = runDetached(() =>
       setTimeout(() => {
         void this.#tick();
-      }, this.#deps.intervalMs)
+      }, delayMs)
     );
     Deno.unrefTimer(this.#timer);
   }

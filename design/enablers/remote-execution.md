@@ -695,8 +695,11 @@ counts (worker 20; token, lease, pending-dispatch 10; fleet-probe 1), with
 `lifetime: "infinite"` on all but the fleet probe
 (`src/domain/models/worker/*_model.ts`).
 
-**Worker, token and bookkeeping reaping:** `WorkerGcService` runs periodically
-on the serve side (default interval 1 h, default grace period 24 h). The grace
+**Worker, token and bookkeeping reaping:** `WorkerGcService` runs on the serve
+side 5 minutes after serve starts and then hourly (default grace period 24 h),
+so a serve restarted more often than hourly still reaps (swamp-club#4287). A
+shutdown stops a running bookkeeping reap at its next record, also while it
+is still listing what to reap, so a large backlog never holds up serve's exit. The grace
 period is the repository's `.swamp.yaml` `garbageCollection.bookkeeping` (never the
 shared `retention`) when `automatic` is on, read on every cycle (swamp-club#3473). Each cycle has two
 independent parts, so a failure in one never skips the other:

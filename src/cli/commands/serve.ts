@@ -208,6 +208,7 @@ import {
 import {
   bookkeepingGracePeriodMs,
   DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
+  DEFAULT_WORKER_GC_INITIAL_DELAY_MS,
   DEFAULT_WORKER_GC_INTERVAL_MS,
   workerGcListPredicate,
   WorkerGcService,
@@ -8420,6 +8421,7 @@ export const serveCommand = new Command()
         : undefined;
       workerGcService = new WorkerGcService({
         intervalMs: DEFAULT_WORKER_GC_INTERVAL_MS,
+        initialDelayMs: DEFAULT_WORKER_GC_INITIAL_DELAY_MS,
         gracePeriodMs: DEFAULT_WORKER_GC_GRACE_PERIOD_MS,
         // Read per sweep so a .swamp.yaml retention change needs no restart.
         resolveGracePeriodMs: async () =>
