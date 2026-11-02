@@ -68,6 +68,7 @@ function context(
         findById: () => Promise.resolve(null),
         findByName: () => Promise.resolve(null),
       },
+      workflowRunRepo: { findGlobalById: () => Promise.resolve(null) },
     },
   } as unknown as ConnectionContext;
   return {
@@ -119,6 +120,19 @@ function runPut(kind: "run.create" | "run.update", body: unknown) {
   });
 }
 
+/** `c`, whose stored workflow of this run is `workflow`. */
+function withStoredWorkflow(
+  c: ContentCheckContext,
+  workflow: Workflow,
+): ContentCheckContext {
+  (c.deps.ctx.repoContext as unknown as { workflowRepo: unknown })
+    .workflowRepo = {
+      findById: () => Promise.resolve(workflow),
+      findByName: () => Promise.resolve(workflow),
+    };
+  return c;
+}
+
 Deno.test("checkRunRecord: a record naming a host log path, or a serve instance, is refused before any decision", async () => {
   for (
     const fields of [{ logFile: "/etc/passwd" }, { instanceId: "serve-1" }]
@@ -130,7 +144,7 @@ Deno.test("checkRunRecord: a record naming a host log path, or a serve instance,
   }
 });
 
-Deno.test("checkRunRecord: deciding a gate needs approve on the workflow", async () => {
+Deno.test("checkRunRecord: a record making a decision is refused, whatever the caller holds", async () => {
   const waiting = record({
     status: "suspended",
     jobs: [{
@@ -157,11 +171,143 @@ Deno.test("checkRunRecord: deciding a gate needs approve on the workflow", async
     }],
   });
   const op = await runPut("run.update", decided);
-  const denied = context({ [KEY]: yaml(waiting) }, ["run"]);
-  assert(await checkRunRecord(denied.context, op) !== undefined);
-  assertEquals(denied.asked, ["approve"]);
-  const approver = context({ [KEY]: yaml(waiting) }, ["run", "approve"]);
-  assertEquals(await checkRunRecord(approver.context, op), undefined);
+  for (const allowed of [["run"], ["run", "approve"], ["admin", "approve"]]) {
+    const held = context({ [KEY]: yaml(waiting) }, allowed);
+    assert(await checkRunRecord(held.context, op) !== undefined);
+    assert(!held.asked.includes("approve"), "approve decides nothing here");
+  }
+});
+
+Deno.test("checkRunRecord: what a record adds is decided again under the lock, so a revoked grant refuses the commit", async () => {
+  const childWorkflow = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+  const childRun = "88888888-9999-4aaa-8bbb-cccccccccccc";
+  const op = await runPut(
+    "run.create",
+    record({
+      jobs: [{
+        jobName: "main",
+        status: "running",
+        steps: [{
+          stepName: "call",
+          status: "succeeded",
+          output: {
+            type: "workflow",
+            workflowId: childWorkflow,
+            runId: childRun,
+          },
+        }],
+      }],
+    }),
+  );
+  const child = yaml({
+    ...record({ id: childRun, workflowId: childWorkflow, status: "succeeded" }),
+    parentRun: {
+      workflowId: WORKFLOW,
+      workflowName: "deploy",
+      runId: RUN,
+      jobName: "main",
+      stepName: "call",
+      nestingDepth: 1,
+      ancestorWorkflowNames: ["deploy"],
+    },
+  });
+  const allowed = ["run", "read"];
+  const { context: c } = context(
+    { [`workflow-runs/${childWorkflow}/workflow-run-${childRun}.yaml`]: child },
+    allowed,
+  );
+  const rechecks: (() => Promise<boolean>)[] = [];
+  c.recheckUnderLock = (check) => rechecks.push(check);
+  assertEquals(await checkRunRecord(c, op), undefined);
+  // The run id, then what the record adds.
+  assertEquals(rechecks.length, 2);
+  assertEquals(await rechecks[1](), true);
+  allowed.pop();
+  assertEquals(await rechecks[1](), false);
+});
+
+Deno.test("checkRunRecord: a nested step's decision is its child's, when that child links back", async () => {
+  const childWorkflow = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+  const childRun = "88888888-9999-4aaa-8bbb-cccccccccccc";
+  const decision = {
+    approved: false,
+    decidedBy: "user:ana",
+    decidedAt: STARTED,
+  };
+  const nestedRun = {
+    workflowId: childWorkflow,
+    workflowName: "child",
+    runId: childRun,
+  };
+  const stepOf = (task: StepTask) =>
+    Workflow.create({
+      id: WORKFLOW,
+      name: "deploy",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [Step.create({ name: "call", task })],
+        }),
+      ],
+    });
+  const calling = stepOf(StepTask.workflow("child"));
+  const gated = stepOf(StepTask.manualApproval("Go?"));
+  const parent = (step: Record<string, unknown>) =>
+    record({
+      jobs: [{
+        jobName: "main",
+        status: "running",
+        steps: [{ stepName: "call", nestedRun, ...step }],
+      }],
+    });
+  const childRecord = (linksTo: string, approvalDecision: unknown) =>
+    yaml({
+      ...record({ id: childRun, workflowId: childWorkflow, status: "failed" }),
+      parentRun: {
+        workflowId: WORKFLOW,
+        workflowName: "deploy",
+        runId: linksTo,
+        jobName: "main",
+        stepName: "call",
+        nestingDepth: 1,
+        ancestorWorkflowNames: ["deploy"],
+      },
+      jobs: [{
+        jobName: "main",
+        status: "failed",
+        steps: [{ stepName: "gate", status: "failed", approvalDecision }],
+      }],
+    });
+  const op = await runPut(
+    "run.update",
+    parent({ status: "failed", approvalDecision: decision }),
+  );
+  const childKey =
+    `workflow-runs/${childWorkflow}/workflow-run-${childRun}.yaml`;
+  const judged = async (
+    child: Uint8Array | undefined,
+    stored: Workflow = calling,
+  ) =>
+    await checkRunRecord(
+      withStoredWorkflow(
+        context({
+          [KEY]: yaml(parent({ status: "waiting_approval" })),
+          ...(child === undefined ? {} : { [childKey]: child }),
+        }, ["run", "read"]).context,
+        stored,
+      ),
+      op,
+    );
+  assertEquals(await judged(childRecord(RUN, decision)), undefined);
+  const other = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
+  assert(await judged(childRecord(other, decision)) !== undefined);
+  assert(
+    await judged(childRecord(RUN, { ...decision, approved: true })) !==
+      undefined,
+  );
+  assert(await judged(undefined) !== undefined);
+  // On a step the stored workflow makes a gate, the same decision is refused.
+  assert(await judged(childRecord(RUN, decision), gated) !== undefined);
 });
 
 Deno.test("checkRunRecord: a first record's parent must be a run that has not finished", async () => {
@@ -233,6 +379,28 @@ Deno.test("checkRunSnapshot: a snapshot declares the workflow its run's intent n
       await snapshot("66666666-7777-4888-8999-aaaaaaaaaaaa"),
     ) !== undefined,
   );
+  // Frozen once written: the same bytes, as a replay holds,
+  // land; any others do not.
+  const held = await snapshot(WORKFLOW);
+  const stored = {
+    [held.key.toString()]: Uint8Array.from(
+      atob((held.content as { inline: string }).inline),
+      (char) => char.charCodeAt(0),
+    ),
+  };
+  assertEquals(
+    await checkRunSnapshot(context(stored, ["run"]).context, held),
+    undefined,
+  );
+  const changed = await snapshot(WORKFLOW);
+  assert(
+    await checkRunSnapshot(
+      context({ [held.key.toString()]: new TextEncoder().encode("other") }, [
+        "run",
+      ]).context,
+      changed,
+    ) !== undefined,
+  );
 });
 
 Deno.test("checkRunRecord: a nested workflow output must be a child run whose record links back to this step, and readable", async () => {
@@ -285,4 +453,40 @@ Deno.test("checkRunRecord: a nested workflow output must be a child run whose re
   assert(await judged({ [childKey]: child(RUN, "other") }) !== undefined);
   assert(await judged({}) !== undefined);
   assert(await judged({ [childKey]: child(RUN) }, ["run"]) !== undefined);
+});
+
+Deno.test("checkRunRecord: a first record cannot reuse a run id another workflow holds (swamp-club#4245)", async () => {
+  const op = await runPut("run.create", record());
+  const first = (holderWorkflow: string | null) => {
+    const { context: c } = context({}, ["run", "read"]);
+    (c.deps.ctx.repoContext as unknown as {
+      workflowRunRepo: { findGlobalById: () => Promise<unknown> };
+    }).workflowRunRepo = {
+      findGlobalById: () =>
+        Promise.resolve(
+          holderWorkflow === null ? null : { workflowId: holderWorkflow },
+        ),
+    };
+    return checkRunRecord(c, op);
+  };
+  assertEquals(await first(null), undefined);
+  assertEquals(await first(WORKFLOW), undefined);
+  assert(
+    await first("66666666-7777-4888-8999-aaaaaaaaaaaa") !== undefined,
+  );
+});
+
+Deno.test("checkRunRecord: a run id taken while a first record waits for the lock refuses the commit (swamp-club#4245)", async () => {
+  const op = await runPut("run.create", record());
+  const { context: c } = context({}, ["run", "read"]);
+  let holder: { workflowId: string } | null = null;
+  (c.deps.ctx.repoContext as unknown as {
+    workflowRunRepo: { findGlobalById: () => Promise<unknown> };
+  }).workflowRunRepo = { findGlobalById: () => Promise.resolve(holder) };
+  const rechecks: (() => Promise<boolean>)[] = [];
+  c.recheckUnderLock = (check) => rechecks.push(check);
+  assertEquals(await checkRunRecord(c, op), undefined);
+  assertEquals(await rechecks[0](), true);
+  holder = { workflowId: "66666666-7777-4888-8999-aaaaaaaaaaaa" };
+  assertEquals(await rechecks[0](), false);
 });

@@ -64,6 +64,11 @@ export interface WorkflowApproveData {
    */
   allGatesDecided: boolean;
   /**
+   * Set by serve on a run a member drives: serve does not resume it, and the
+   * run's owner does (swamp-club#4245).
+   */
+  ownerResumes?: boolean;
+  /**
    * The parent run waiting on this nested run: resume it once this run
    * finishes (swamp-club#2736).
    */

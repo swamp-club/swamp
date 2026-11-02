@@ -26,6 +26,11 @@
  * and the member's next command settles its entry.
  */
 
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
@@ -406,6 +411,88 @@ Deno.test({
         assert(
           !(await serve.log()).some((entry) => entry.txnId === txnId),
           "a discarded change never lands",
+        );
+      } finally {
+        await proxy.down();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline flush: a forged decision queued offline is refused when sent, and never lands (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      // Holding approve does not help: a decision is made by serve's handler.
+      const serve = await scratch.serve({
+        grants: [
+          ...BOB_READS,
+          {
+            user: "bob",
+            actions: ["read", "run", "approve"],
+            kind: "workflow",
+            pattern: "*",
+          },
+        ],
+      });
+      const bob = await scratch.client("b");
+      const proxy = startProxy(serve.origin);
+      try {
+        const bobEnv = serveEnv(proxy, "bob-token");
+        const workflow = Workflow.create({
+          name: "gated",
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "gate",
+                  task: StepTask.manualApproval("Go?"),
+                }),
+              ],
+            }),
+          ],
+        });
+        const run = WorkflowRun.create(workflow);
+        run.start();
+        const job = run.getJob("main")!;
+        job.start();
+        const gate = job.getStep("gate")!;
+        gate.start();
+        gate.waitForApproval();
+        run.suspend();
+        await command(
+          scratch,
+          bob,
+          bobEnv,
+          (ctx) => ctx.repoContext.workflowRunRepo.save(workflow.id, run),
+        );
+
+        await proxy.down();
+        gate.recordApprovalDecision({
+          approved: true,
+          decidedBy: "user:bob",
+          decidedAt: new Date().toISOString(),
+        });
+        await command(
+          scratch,
+          bob,
+          bobEnv,
+          (ctx) => ctx.repoContext.workflowRunRepo.save(workflow.id, run),
+        );
+        const queued = await keptEntries(scratch, bob, bobEnv);
+        assertEquals(queued.map((entry) => entry.state), ["offline"]);
+        proxy.up();
+
+        await command(scratch, bob, bobEnv, () => Promise.resolve());
+        const kept = await keptEntries(scratch, bob, bobEnv);
+        assertEquals(kept.map((entry) => entry.state), ["rejected"]);
+        assert(
+          !(await serve.log()).some((entry) => entry.txnId === kept[0].txnId),
+          "serve refused the forged decision",
         );
       } finally {
         await proxy.down();

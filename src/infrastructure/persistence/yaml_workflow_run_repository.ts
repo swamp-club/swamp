@@ -253,6 +253,9 @@ function workflowOfRunsDir(runsDir: string): Record<string, string> {
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private readonly baseDir: string;
 
+  /** Whether a member can forward these records (swamp-club#4245). */
+  recordsAreForwarded?: boolean;
+
   /**
    * Runs before a run is written, whoever saves it. Used for what must
    * hold of every saved run but lives outside its record: a run saved as

@@ -101,6 +101,7 @@ export async function workflowHistoryGetAction(
       undefined,
       signalWaitsOf(repoContext),
       repoContext.unreadableContent,
+      repoContext.workflowRunRepo.recordsAreForwarded,
     ),
     retentionWatermarks: repoContext.retentionWatermarks,
   };

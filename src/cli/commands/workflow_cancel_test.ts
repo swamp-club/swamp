@@ -48,6 +48,7 @@ import {
   cancelLocalRun,
   type CancelTargetDeps,
   findAllActiveRuns,
+  foreignRunServer,
   isServeOwnedRun,
   OWNER_STOP_GRACE_MS,
   resolveLocalCancelTarget,
@@ -2246,4 +2247,26 @@ Deno.test("findAllActiveRuns: a damaged run file under a deleted workflow fails 
 
     await assertRejects(() => findAllActiveRuns(lookup(runRepo)));
   });
+});
+
+Deno.test("foreignRunServer: a run this checkout does not drive goes to serve; its own, and a checkout with no serve, stay local (swamp-club#4245)", async () => {
+  const repoDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(repoDir, ".swamp"), { recursive: true });
+    const tracker = RunTrackerStore.fromSwampDir(join(repoDir, ".swamp"));
+    tracker.register(ActiveRun.createWorkflowRun({
+      id: "own-run",
+      workflowName: "deploy",
+      pid: Deno.pid,
+      hostname: "here",
+    }));
+    tracker.close();
+    const serve = "https://serve.example";
+    assertEquals(foreignRunServer("own-run", repoDir, serve), undefined);
+    assertEquals(foreignRunServer("other-run", repoDir, serve), serve);
+    assertEquals(foreignRunServer("other-run", repoDir, undefined), undefined);
+    assertEquals(foreignRunServer(undefined, repoDir, serve), undefined);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
 });

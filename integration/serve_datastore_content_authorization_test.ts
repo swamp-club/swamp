@@ -28,7 +28,18 @@
  * that names secrets, and evaluations serve would run.
  */
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { NestedRunLink } from "../src/domain/workflows/nested_run_link.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../src/domain/workflows/workflow_id.ts";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -44,15 +55,11 @@ import {
   saveGatedWorkflow,
   sendRequest,
 } from "./serve_request_harness.ts";
-import {
-  judgeRunRecord,
-  type StepKind,
-} from "../src/domain/datastore_v3/content_bindings.ts";
+import { judgeRunRecord } from "../src/domain/datastore_v3/content_bindings.ts";
 import {
   type WorkflowRunData,
   WorkflowRunSchema,
 } from "../src/domain/workflows/workflow_run.ts";
-import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { Workflow as WorkflowEntity } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
@@ -493,7 +500,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "forwarded content: approving a gate needs approve, reaching it needs only run",
+    "forwarded content: a record reaching a gate lands, one making its decision is refused whatever the caller holds",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -507,15 +514,10 @@ Deno.test({
           steps: [{ stepName: "gate", startedAt: started, ...step }],
         }],
       });
-    // Run implies approve unless approve is denied, as here.
+    // Holding approve does not help: a decision is made by serve's handler.
     const runOnly = [
       grant({
-        actions: ["read", "run"],
-        resource: { kind: "workflow", pattern: "*" },
-      }),
-      grant({
-        effect: "deny",
-        actions: ["approve"],
+        actions: ["read", "run", "approve"],
         resource: { kind: "workflow", pattern: "*" },
       }),
     ];
@@ -683,23 +685,6 @@ Deno.test({
   },
 });
 
-/** What the stored workflow says a run's step is. */
-function kindIn(workflow: Workflow) {
-  return (jobName: string, step: { stepName: string }): StepKind => {
-    const defined = workflow.jobs.find((job) => job.name === jobName)?.steps
-      .find((s) => s.name === step.stepName);
-    if (defined === undefined) return "unknown";
-    switch (defined.task.data.type) {
-      case "manual_approval":
-        return "approval";
-      case "wait_for_signal":
-        return "signal";
-      default:
-        return "other";
-    }
-  };
-}
-
 Deno.test({
   name:
     "forwarded content: every run record a real gated run writes, through suspend, approve and reject, is judged as its own transitions need",
@@ -721,7 +706,7 @@ Deno.test({
           const data = JSON.parse(JSON.stringify(run.toPersistedData()));
           saves.push(WorkflowRunSchema.parse(data));
         };
-        const workflow = await runInRootUnitOfWork(
+        await runInRootUnitOfWork(
           server.ctx.repoContext,
           { flush: undefined },
           () =>
@@ -769,7 +754,7 @@ Deno.test({
           byRun.set(save.id, [...(byRun.get(save.id) ?? []), save]);
         }
         assert(byRun.size >= 2, "both runs were saved");
-        let approvals = 0;
+        let decisions = 0;
         for (const sequence of byRun.values()) {
           for (const [index, after] of sequence.entries()) {
             const before = index === 0 ? undefined : sequence[index - 1];
@@ -779,6 +764,8 @@ Deno.test({
               run && {
                 ...run,
                 triggeringPrincipal: undefined,
+                instanceId: undefined,
+                ownerBeforeResume: undefined,
                 // A record holds its log as the repository stores it.
                 logFile: run.logFile === undefined
                   ? undefined
@@ -789,21 +776,27 @@ Deno.test({
               runId: after.id,
               before: canonical(before),
               after: canonical(after)!,
-              stepKind: kindIn(workflow),
-              definitionSteps: (job) =>
-                workflow.jobs.find((j) => j.name === job)?.steps,
-              isServeInstance: () => false,
-              now: new Date(),
             });
-            // Nothing a real run writes is refused.
+            // The record the handler wrote holds a decision the one before
+            // does not: it is serve's own, and a forwarded copy is refused.
+            const decides = after.jobs.some((job, j) =>
+              job.steps.some((step, s) =>
+                step.approvalDecision !== undefined &&
+                before?.jobs[j]?.steps[s]?.approvalDecision === undefined
+              )
+            );
+            if (decides) {
+              decisions++;
+              assert(judged.refusal !== undefined, JSON.stringify(after));
+              continue;
+            }
+            // Nothing else a real run writes is refused.
             assertEquals(judged.refusal, undefined, JSON.stringify(after));
-            if (judged.actions.has("approve")) approvals++;
-            assertEquals(judged.actions.has("signal"), false);
           }
         }
-        // Only the two decisions need approve: starting, reaching the gate and
-        // what follows a decision need run.
-        assertEquals(approvals, 2);
+        // Only the two decisions are serve's: starting, reaching the gate and
+        // what follows a decision are the run's to report.
+        assertEquals(decisions, 2);
       },
       undefined,
       MANAGED,
@@ -1788,6 +1781,293 @@ Deno.test({
           JSON.stringify(evaluated),
         );
         assertEquals((await trust.workflow("deploy"))?.workflow.name, "deploy");
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a member forging a step in a run serve drives is refused, whatever they hold (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const member = [
+      grant({
+        actions: ["read", "write", "run", "approve", "signal"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ];
+    await withServer(
+      member,
+      async (server) => {
+        const runId = crypto.randomUUID();
+        const partition = partitionOf({
+          kind: "run",
+          workflowId: WORKFLOW,
+          runId,
+        });
+        const key = `workflow-runs/${WORKFLOW}/workflow-run-${runId}.yaml`;
+        const steps = (status: string) => ({
+          jobs: [{
+            jobName: "main",
+            status: "running",
+            steps: [{ stepName: "deploy", status }],
+          }],
+        });
+        // A first record may not claim the marker: serve records it.
+        const claimed = await forwardRun(
+          server,
+          runRecord(runId, {
+            instanceId: "other-team-node",
+            ...steps("running"),
+          }),
+        );
+        assertEquals(claimed.status, 403, JSON.stringify(claimed.json));
+        // As serve's own write stores it, on any team node.
+        const landed = await forwardRun(
+          server,
+          runRecord(runId, steps("running")),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+        const update = (fields: Record<string, unknown>) =>
+          forward(server, partition, [
+            put(
+              { kind: "run.update", run: { workflowId: WORKFLOW, runId } },
+              key,
+              yaml(runRecord(runId, fields)),
+            ),
+          ]);
+        // A member-driven run reports what it likes of its own steps.
+        const reported = await update(steps("failed"));
+        assertEquals(reported.status, 200, JSON.stringify(reported.json));
+
+        const driven = await server.ctx.repoContext.workflowRunRepo.findById(
+          createWorkflowId(WORKFLOW),
+          createWorkflowRunId(runId),
+        );
+        assert(driven !== null);
+        driven.start(1, "other-team-node");
+        await runInRootUnitOfWork(
+          server.ctx.repoContext,
+          { flush: undefined },
+          () =>
+            server.ctx.repoContext.workflowRunRepo.save(
+              createWorkflowId(WORKFLOW),
+              driven,
+            ),
+        );
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const forged = await update({
+          instanceId: "other-team-node",
+          ...steps("succeeded"),
+        });
+        assertEquals(forged.status, 403, JSON.stringify(forged.json));
+        assertEquals(forged.json.reason, "content-refused");
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a record that names a signal wait is refused and writes nothing to serve's wait records (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const member = [
+      grant({
+        actions: ["read", "write", "run", "signal"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ];
+    await withServer(
+      member,
+      async (server) => {
+        const waits = server.ctx.repoContext.signalWaits;
+        assert(waits?.supported === true);
+        const waitId = crypto.randomUUID();
+        const planted = await forwardRun(
+          server,
+          runRecord(crypto.randomUUID(), {
+            status: "suspended",
+            jobs: [{
+              jobName: "main",
+              status: "running",
+              steps: [{
+                stepName: "wait",
+                status: "waiting_signal",
+                wait: {
+                  kind: "signal",
+                  id: waitId,
+                  schema: { type: "object", properties: {} },
+                  deadline: "2030-01-01T00:00:00.000Z",
+                },
+              }],
+            }],
+          }),
+        );
+        assertEquals(planted.status, 403, JSON.stringify(planted.json));
+        assertEquals(planted.json.reason, "content-refused");
+        assertEquals(
+          (await waits.store.findRegistration(waitId)).kind,
+          "absent",
+        );
+        assertEquals((await waits.store.listRegistrations()).length, 0);
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a forged child link does not let a cancel reach a run in another workflow (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const member = [
+      grant({
+        actions: ["read", "write", "run"],
+        resource: { kind: "workflow", pattern: WORKFLOW },
+      }),
+    ];
+    await withServer(
+      member,
+      async (server) => {
+        server.ctx.repoContext.workflowRunRepo.recordsAreForwarded = true;
+        const victimWorkflow = WorkflowEntity.create({
+          name: "victim",
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "gate",
+                  task: StepTask.manualApproval("Go?"),
+                }),
+              ],
+            }),
+          ],
+        });
+        await saveWorkflow(server, victimWorkflow);
+        const victim = WorkflowRun.create(
+          victimWorkflow,
+          undefined,
+          "user:alice",
+        );
+        victim.start(1, "team-node");
+        const job = victim.getJob("main")!;
+        job.start();
+        const gate = job.getStep("gate")!;
+        gate.start();
+        gate.waitForApproval();
+        victim.suspend();
+        await runInRootUnitOfWork(
+          server.ctx.repoContext,
+          { flush: undefined },
+          () =>
+            server.ctx.repoContext.workflowRunRepo.save(
+              victimWorkflow.id,
+              victim,
+            ),
+        );
+        const parent = crypto.randomUUID();
+        const started = await forwardRun(
+          server,
+          runRecord(parent, {
+            status: "suspended",
+            initiatedBy: "user:alice",
+            jobs: [{
+              jobName: "main",
+              status: "running",
+              steps: [{
+                stepName: "call",
+                status: "waiting_approval",
+                startedAt: "2020-01-01T00:00:00.000Z",
+                nestedRun: {
+                  workflowId: victimWorkflow.id,
+                  workflowName: "victim",
+                  runId: victim.id,
+                },
+              }],
+            }],
+          }),
+        );
+        assertEquals(started.status, 200, JSON.stringify(started.json));
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const link = new NestedRunLink({
+          runRepo: server.ctx.repoContext.workflowRunRepo,
+          workflowRepo: server.ctx.repoContext.workflowRepo,
+        });
+        const forged = await server.ctx.repoContext.workflowRunRepo.findById(
+          createWorkflowId(WORKFLOW),
+          createWorkflowRunId(parent),
+        );
+        assert(forged !== null);
+        const [wait] = forged.findNestedWaits();
+        assertEquals((await link.resolveChild(forged, wait)).kind, "broken");
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a vault reference a record adds needs read on that vault, whatever else the caller holds (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const withReference = (runId: string) =>
+      runRecord(runId, {
+        writtenReferences: [{
+          path: ["token"],
+          occurrence: 0,
+          vaultName: "prod",
+          key: "api",
+          encoding: "raw",
+          dataOrigin: false,
+        }],
+      });
+    const runs = grant({
+      actions: ["read", "run"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    await withServer(
+      [runs],
+      async (server) => {
+        const refused = await forwardRun(
+          server,
+          withReference(crypto.randomUUID()),
+        );
+        assertEquals(refused.status, 403, JSON.stringify(refused.json));
+        assertEquals(refused.json.reason, "content-refused");
+        assertStringIncludes(String(refused.json.message), "vault:prod");
+      },
+      undefined,
+      MANAGED,
+    );
+    await withServer(
+      [
+        runs,
+        grant({
+          actions: ["read"],
+          resource: { kind: "vault", pattern: "*" },
+        }),
+      ],
+      async (server) => {
+        const landed = await forwardRun(
+          server,
+          withReference(crypto.randomUUID()),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
       },
       undefined,
       MANAGED,

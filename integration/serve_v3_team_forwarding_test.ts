@@ -32,6 +32,9 @@ import { handleDatastoreRequest } from "../src/serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { LeaderLink } from "../src/serve/leader_link.ts";
+import { stringify as stringifyYaml } from "@std/yaml";
+import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
+import { grant } from "./serve_request_harness.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import {
   blobSaveOps,
@@ -102,6 +105,14 @@ async function withFollower(
     leaderLink.close();
     await http.shutdown();
   }
+}
+
+/** Grants the caller every action on workflows, approve among them. */
+function admins() {
+  return [grant({
+    actions: ["read", "write", "run", "approve", "signal"],
+    resource: { kind: "workflow", pattern: "*" },
+  })];
 }
 
 function leaderAt(server: Server): ServeLeader {
@@ -253,6 +264,84 @@ Deno.test({
         listener.close();
         await dropping.catch(() => {});
       }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "team forwarding: a forged decision sent to the follower is refused at the leader, even from a caller holding approve (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const workflowId = "44444444-5555-4666-8777-888888888888";
+    await withServer(admins(), async (server) => {
+      const leader = leaderAt(server);
+      await withFollower(server, () => leader, async (followerUrl) => {
+        const runId = crypto.randomUUID();
+        const key = `workflow-runs/${workflowId}/workflow-run-${runId}.yaml`;
+        const partition = partitionOf({ kind: "run", workflowId, runId });
+        const record = (step: Record<string, unknown>) => ({
+          id: runId,
+          workflowId,
+          workflowName: "deploy",
+          status: "suspended",
+          tags: {},
+          jobs: [{
+            jobName: "main",
+            status: "waiting_approval",
+            steps: [{
+              stepName: "gate",
+              startedAt: "2026-10-26T00:00:00.000Z",
+              ...step,
+            }],
+          }],
+        });
+        const send = async (kind: string, body: unknown) => {
+          const head = await server.v3.commitStore.head(
+            server.v3.namespace,
+            partition,
+          );
+          const bytes = new TextEncoder().encode(
+            stringifyYaml(JSON.parse(JSON.stringify(body))),
+          );
+          return await post(
+            `${followerUrl}/partitions/${
+              encodeURIComponent(partition.toString())
+            }/commits`,
+            "alice-token",
+            commitBody({
+              expectedSeq: head.seq,
+              txnId: crypto.randomUUID(),
+              ops: [{
+                kind: "put",
+                intent: { kind, run: { workflowId, runId } },
+                key,
+                inline: btoa(String.fromCharCode(...bytes)),
+              }],
+              chunks: [],
+            }),
+          );
+        };
+        const waits = await send(
+          "run.create",
+          record({ status: "waiting_approval" }),
+        );
+        assertEquals(waits.status, 200, JSON.stringify(waits.json));
+        const forged = await send(
+          "run.update",
+          record({
+            status: "succeeded",
+            approvalDecision: {
+              approved: true,
+              decidedBy: "user:caller",
+              decidedAt: "2026-10-26T00:00:00.000Z",
+            },
+          }),
+        );
+        assertEquals(forged.status, 403, JSON.stringify(forged.json));
+        assertEquals(forged.json.reason, "content-refused");
+      });
     });
   },
 });

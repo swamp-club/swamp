@@ -28,7 +28,9 @@ import {
   continueSettledRun,
   HELD_ELSEWHERE_RECHECK_MS,
   noteParkedParent,
+  ownerResumesRun,
   RUN_NOT_SUSPENDED_CODE,
+  serveMayActOnRun,
   startDetachedResume,
 } from "./resume_launcher.ts";
 import {
@@ -1863,4 +1865,154 @@ Deno.test("continueSettledRun: gives an open wait the pending signal of its key,
   assertEquals(registry.registered.map((r) => r.runId), [run.id]);
   assertEquals((audit[0].detail ?? "").includes("waitsTimedOut"), false);
   await registry.registered[0].completion;
+});
+
+Deno.test("autoResumeAfterApproval: on a v3 serve a member's run is left for its owner; a run serve drives resumes (swamp-club#4245)", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const member = makeApprovedRun(workflow);
+  const harness = makeHarness(workflow, member);
+  (harness.ctx.repoContext as { takesForwardedRunRecords?: boolean })
+    .takesForwardedRunRecords = true;
+  assertEquals(
+    await ownerResumesRun(harness.ctx, outcomeFor(member)),
+    true,
+  );
+  assertEquals(
+    await autoResumeAfterApproval(
+      harness.ctx,
+      outcomeFor(member),
+      "user:approver",
+    ),
+    false,
+  );
+  assertEquals(harness.registry.registered.length, 0);
+
+  const driven = WorkflowRun.create(workflow);
+  driven.start(1, "team-node-2");
+  const job = driven.getJob("main")!;
+  job.start();
+  const gate = job.getStep("gate")!;
+  gate.start();
+  gate.waitForApproval();
+  driven.suspend();
+  gate.succeed();
+  const serve = makeHarness(workflow, driven);
+  (serve.ctx.repoContext as { takesForwardedRunRecords?: boolean })
+    .takesForwardedRunRecords = true;
+  assertEquals(await ownerResumesRun(serve.ctx, outcomeFor(driven)), false);
+  assertEquals(
+    await autoResumeAfterApproval(
+      serve.ctx,
+      outcomeFor(driven),
+      "user:approver",
+    ),
+    true,
+  );
+});
+
+Deno.test("continueSettledRun: on a v3 serve the sweep and a signal leave a member's run alone (swamp-club#4245)", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry } = makeHarness(workflow, run);
+  (ctx.repoContext as { takesForwardedRunRecords?: boolean })
+    .takesForwardedRunRecords = true;
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      { workflowId: run.workflowId, runId: run.id },
+      { kind: "sweep", principalId: null, takeover: false },
+    ),
+    false,
+  );
+  assertEquals(registry.registered.length, 0);
+});
+
+Deno.test("serveMayActOnRun: only where members forward records is a run's state a report", () => {
+  const ctx = (takes: boolean) =>
+    ({
+      repoContext: { takesForwardedRunRecords: takes },
+    }) as unknown as ConnectionContext;
+  const member = { triggeringPrincipal: undefined, instanceId: undefined };
+  assertEquals(serveMayActOnRun(ctx(false), member), true);
+  assertEquals(serveMayActOnRun(ctx(true), member), false);
+  assertEquals(
+    serveMayActOnRun(ctx(true), { ...member, instanceId: "node" }),
+    true,
+  );
+});
+
+Deno.test("autoResumeParentAfterChild: on a v3 serve a member's report of a child ending, or a member-driven parent, moves nothing (swamp-club#4245)", async () => {
+  const parentId = crypto.randomUUID();
+  const workflowId = crypto.randomUUID();
+  const childId = crypto.randomUUID();
+  const child = (instanceId?: string) =>
+    WorkflowRun.fromData({
+      id: childId,
+      workflowId,
+      workflowName: "child",
+      status: "succeeded",
+      tags: {},
+      ...(instanceId === undefined ? {} : { instanceId }),
+      parentRun: {
+        workflowId,
+        workflowName: "parent",
+        runId: parentId,
+        jobName: "main",
+        stepName: "call",
+        nestingDepth: 1,
+        ancestorWorkflowNames: ["parent"],
+      },
+      jobs: [],
+    } as never);
+  const parent = WorkflowRun.fromData({
+    id: parentId,
+    workflowId,
+    workflowName: "parent",
+    status: "suspended",
+    tags: {},
+    jobs: [{
+      jobName: "main",
+      status: "running",
+      steps: [{
+        stepName: "call",
+        status: "waiting_approval",
+        nestedRun: { workflowId, workflowName: "child", runId: childId },
+      }],
+    }],
+  } as never);
+  const attempt = async (reported: WorkflowRun) => {
+    const reads: string[] = [];
+    const registry = new RecordingRegistry();
+    const ctx = {
+      activeRunRegistry: registry,
+      repoContext: {
+        takesForwardedRunRecords: true,
+        workflowRepo: {},
+        workflowRunRepo: {
+          findById: (_workflow: string, runId: string) => {
+            reads.push(runId);
+            return Promise.resolve(runId === childId ? reported : parent);
+          },
+        },
+      },
+    } as unknown as ConnectionContext;
+    const moved = await autoResumeParentAfterChild(
+      ctx,
+      { workflowId, runId: childId },
+      { principal: null } as never,
+    );
+    return { moved, reads, registered: registry.registered.length };
+  };
+  // A member's child: nothing past the child is even read.
+  assertEquals(await attempt(child()), {
+    moved: false,
+    reads: [childId],
+    registered: 0,
+  });
+  // A child serve drove, whose parent a member drives: it reads the parent, and
+  // stops there.
+  const driven = await attempt(child("team-node"));
+  assertEquals(driven.moved, false);
+  assertEquals(driven.registered, 0);
+  assert(driven.reads.includes(parentId));
 });

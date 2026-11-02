@@ -55,6 +55,9 @@ import {
 } from "../persistence/yaml_evaluated_workflow_repository.ts";
 import type { V3Datastore } from "./v3_datastore.ts";
 
+/** The code of a checkout's refusal of an evaluation another member wrote. */
+export const EVALUATION_OTHER_WRITER = "evaluation_other_writer";
+
 /** The largest evaluation serve reads to run. */
 const MAX_EVALUATION_BYTES = 16 * 1024 * 1024;
 
@@ -86,12 +89,20 @@ export function v3EvaluationTrust(
     readonly definitionRepo: Pick<DefinitionRepository, "findByName">;
     readonly workflowRepo: Pick<WorkflowRepository, "findByName">;
   },
+  /**
+   * Set by a serve-mode checkout, and to "" when its member is unknown: it
+   * trusts serve's evaluations and this principal's, never another member's,
+   * and any other writer's record refuses instead of being passed over
+   * (swamp-club#4245). Serve passes none.
+   */
+  ownPrincipal?: string,
 ): EvaluationTrust {
   /**
    * The trusted bytes at the first key holding serve's own record, or null
-   * when no key holds a record. A key holding another writer's record is
-   * passed over, so a forwarded evaluation cannot hide serve's own; when
-   * only such records exist the evaluation is refused.
+   * when no key holds a record. On serve a key holding another writer's record
+   * is passed over, so a forwarded evaluation cannot hide serve's own; when
+   * only such records exist the evaluation is refused. A checkout stops at
+   * such a key and sets the replay aside.
    */
   const trusted = async (
     partition: PartitionKey,
@@ -113,8 +124,14 @@ export function v3EvaluationTrust(
         key,
       );
       if (record === undefined) continue;
-      if (record.writer !== "") {
+      if (
+        record.writer !== "" &&
+        (ownPrincipal === undefined || record.writer !== ownPrincipal)
+      ) {
         untrusted ??= record.writer === null ? "unknown" : "forwarded";
+        // A checkout stops here: any other writer's evaluation sets the run's
+        // replay aside, rather than serve's rule of preferring its own.
+        if (ownPrincipal !== undefined) break;
         continue;
       }
       if ((record.blob?.size ?? 0) > MAX_EVALUATION_BYTES) {
@@ -138,11 +155,25 @@ export function v3EvaluationTrust(
       }
       return new TextDecoder().decode(found.bytes);
     }
+    if (untrusted === "forwarded" && ownPrincipal !== undefined) {
+      throw new UserError(
+        ownPrincipal === ""
+          ? `Serve did not write the last evaluation of ${what}.`
+          : `Another member wrote the last evaluation of ${what}.`,
+        EVALUATION_OTHER_WRITER,
+      );
+    }
     if (untrusted === "forwarded") {
       throw new UserError(
         `The evaluation of ${what} was not made on this server, so it ` +
           `cannot be run with --last-evaluated here. Evaluate it on this ` +
           `server first.`,
+        "evaluation_not_trusted",
+      );
+    }
+    if (untrusted === "unknown" && ownPrincipal !== undefined) {
+      throw new UserError(
+        `Serve has no record of who wrote the last evaluation of ${what}. Evaluate it again to save a new one, or run without --last-evaluated.`,
         "evaluation_not_trusted",
       );
     }

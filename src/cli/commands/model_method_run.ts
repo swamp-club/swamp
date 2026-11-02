@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  checkLastEvaluation,
+  lastEvaluatedDefinition,
+} from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import {
@@ -254,6 +258,7 @@ Errors follow the --json envelope and exit codes in 'swamp --help'. Error codes 
     model_not_found          No ${syntax.surface} matches the given name
     unknown_model_type       The @type prefix does not match any installed type
     unknown_method           The ${syntax.surface} does not define the requested method
+    evaluation_not_checked   A serve-mode checkout could not confirm the last evaluation to replay (--last-evaluated)
     no_evaluated_definition  No evaluated definition exists (use --last-evaluated)
     evaluated_cache_may_hold_secrets
                              Cached evaluation from an older swamp may hold secrets;
@@ -279,7 +284,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     )
     .option(
       "--last-evaluated",
-      "Skip CEL evaluation, use previously evaluated definition",
+      "Skip CEL evaluation, use previously evaluated definition. In a serve-mode checkout, an evaluation written by another member is not used: the run evaluates again, without its stored inputs",
       { default: false },
     )
     .option("--input <value:string>", "Input values (key=value or JSON)", {
@@ -421,6 +426,21 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
         // A run against a serve-mode checkout sees what other callers
         // commit while it runs (swamp-club#4120).
         watchV3ServeFeeds();
+        const evaluationCheck = options.lastEvaluated === true
+          ? await checkLastEvaluation(
+            repoDir,
+            repoContext,
+            ctx.outputMode === "json" ? "json" : "log",
+            (trust) =>
+              lastEvaluatedDefinition(
+                trust,
+                repoContext.definitionRepo,
+                modelIdOrName,
+                { typeArg, definitionName },
+              ),
+          )
+          : undefined;
+        const lastEvaluated = evaluationCheck?.stands === true;
         const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
         try {
           runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
@@ -483,11 +503,15 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 },
               );
             },
+            // What was checked is what runs: a commit landing while this waits
+            // for the lock never replaces it.
             loadEvaluatedDefinition: (type, name) =>
-              repoContext.evaluatedDefinitionRepo.findByNameWithProvenance(
-                type,
-                name,
-              ),
+              evaluationCheck?.stands === true && evaluationCheck.vetted
+                ? Promise.resolve(evaluationCheck.cache)
+                : repoContext.evaluatedDefinitionRepo.findByNameWithProvenance(
+                  type,
+                  name,
+                ),
             saveEvaluatedDefinition: (
               type,
               definition,
@@ -910,7 +934,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                         methodName,
                         inputs: inputSets[i],
                         literalInputs: options.literalInputs === true,
-                        lastEvaluated: options.lastEvaluated as boolean,
+                        lastEvaluated,
                         typeArg,
                         definitionName,
                         runtimeTags,

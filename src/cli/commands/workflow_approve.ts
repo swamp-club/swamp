@@ -87,11 +87,22 @@ export function renderApproveResult(
   if (remote?.serveResuming) {
     cliCtx.logger.info`Serve is resuming run ${data.runId} automatically`;
   }
+  if (data.ownerResumes === true) {
+    cliCtx.logger
+      .info`Serve does not resume a run a member drives: the run's owner resumes ${data.runId}`;
+  }
   if (cliCtx.verbosity === "quiet") return;
-  const target = remote ? formatCommandTarget({ server: remote.server }) : "";
+  // The owner resumes where the run is, not on the server named here.
+  const target = remote && data.ownerResumes !== true
+    ? formatCommandTarget({ server: remote.server })
+    : "";
   if (!remote?.serveResuming) {
     writeOutput(
-      `After approval: swamp workflow resume ${
+      `${
+        data.ownerResumes === true
+          ? "If you started this run"
+          : "After approval"
+      }: swamp workflow resume ${
         quoteShellWord(data.workflowName)
       } --run ${data.runId}${target}`,
     );
@@ -99,7 +110,7 @@ export function renderApproveResult(
   const parent = data.awaitingParent;
   if (parent) {
     writeOutput(
-      remote
+      remote && data.ownerResumes !== true
         ? `Once it finishes, resume the parent run unless serve resumes it automatically: ${
           parentResumeCommand(parent, remote)
         }`

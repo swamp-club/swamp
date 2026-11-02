@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  registerServeUpstream,
+  resetServeUpstreamBindingsForTesting,
+  type ServeUpstreamBinding,
+} from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
+import {
   assert,
   assertEquals,
   assertExists,
@@ -6643,4 +6648,44 @@ Deno.test("cancelOnLeaseLost: a lapse aborts the run with the lapse as its reaso
   const local = new AbortController();
   cancelOnLeaseLost(undefined, local);
   assertEquals(local.signal.aborted, false);
+});
+
+Deno.test("resolveSignalWaitSupport: a checkout written through serve cannot wait for a signal, and says how to run one; any other keeps its store (swamp-club#4245)", async () => {
+  await withTempDir((temp) => {
+    const root = join(temp, "copy");
+    registerServeUpstream({
+      root,
+      namespace: "",
+      target: {} as ServeUpstreamBinding["target"],
+      client: () => {
+        throw new Error("a refusal needs no client");
+      },
+    });
+    try {
+      const support = resolveSignalWaitSupport(
+        { type: "filesystem", path: join(temp, "marker-path") } as Parameters<
+          typeof resolveSignalWaitSupport
+        >[0],
+        undefined,
+        {
+          v3: { path: root } as NonNullable<
+            Parameters<typeof resolveSignalWaitSupport>[2]
+          >["v3"],
+        },
+      );
+      assert(!support.supported);
+      assertStringIncludes(support.reason, "--server");
+      assertStringIncludes(support.reason, "trigger or schedule");
+
+      const own = resolveSignalWaitSupport(
+        { type: "filesystem", path: join(temp, "other") } as Parameters<
+          typeof resolveSignalWaitSupport
+        >[0],
+      );
+      assert(own.supported);
+    } finally {
+      resetServeUpstreamBindingsForTesting();
+    }
+    return Promise.resolve();
+  });
 });

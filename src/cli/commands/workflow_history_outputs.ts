@@ -81,6 +81,7 @@ export async function workflowHistoryOutputsAction(
       undefined,
       undefined,
       repoContext.unreadableContent,
+      repoContext.workflowRunRepo.recordsAreForwarded,
     );
 
     for await (

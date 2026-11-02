@@ -157,3 +157,22 @@ Deno.test("renderApproveResult: a workflow name carrying an escape sequence neve
   ]);
   assertEquals(lines.join("\n").includes("\u001b"), false);
 });
+
+Deno.test("renderApproveResult: a run its owner resumes says so, with a local resume command, for the run and its parent (swamp-club#4245)", () => {
+  const lines = captureStdout(() =>
+    renderApproveResult(
+      hintTestContext(),
+      approval({
+        ownerResumes: true,
+        awaitingParent: {
+          resumeCommand: "swamp workflow resume parent --run parent-run",
+        },
+      } as Partial<WorkflowApproveData>),
+      { server: "wss://serve.example", serveResuming: false },
+    )
+  );
+  assertEquals(lines, [
+    `If you started this run: swamp workflow resume wipe-drive --run ${RUN_ID}`,
+    "Once it finishes, resume the parent run: swamp workflow resume parent --run parent-run",
+  ]);
+});

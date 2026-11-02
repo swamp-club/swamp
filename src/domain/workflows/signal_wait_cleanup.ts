@@ -146,10 +146,11 @@ export async function ensureRegistered(
  */
 export async function findRegistrationOfStep(
   store: SignalWaitStore,
-  at: { runId: string; jobName: string; stepName: string },
+  at: { workflowId: string; runId: string; jobName: string; stepName: string },
 ): Promise<WaitRegistration | undefined> {
   for (const registration of await store.listRegistrations()) {
     if (
+      registration.workflowId === at.workflowId &&
       registration.runId === at.runId &&
       registration.jobName === at.jobName &&
       registration.stepName === at.stepName

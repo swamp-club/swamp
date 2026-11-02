@@ -18,111 +18,64 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A model-based property test of {@link judgeRunRecord} (swamp-club#3922).
+ * A model-based property test of {@link judgeRunRecord} (swamp-club#3922,
+ * swamp-club#4245).
  *
- * It generates workflows of plain steps, approval gates (with and without a
- * guard, with and without a deadline), signal waits, nested workflow steps
- * and forEach expansions, and drives runs of them through the transitions a
- * real run records: a runner holding only `run`, an approver holding
- * `approve`, a signaller holding `signal`, and a cancel. Between them, an
- * attacker holding only `run` forges the next record from the current one,
- * and may also retype a step in the stored workflow (as a caller with write
- * on it can).
+ * It generates member-driven and serve-driven runs of plain steps and gates, and drives them through what a real run records and what serve's
+ * handlers record. Between them, a member holding only `run` forges the next
+ * record from the current one.
  *
- * Two properties, each against an oracle stated from the records alone:
- * - every transition the model makes is accepted with exactly the actions
- *   it needs;
- * - every forged record the judge would let a run-only caller land keeps
- *   the run's guarantees, across the whole history of what landed: a gate
- *   that waited settles without `approve` only by a cancel's settlement or
- *   its deadline (taken from what the record held when the wait began), or
- *   by completing a decision an approver recorded, and its prompt, timeout
- *   and start hold while it waits; a decided gate is never dropped and,
- *   however it is re-opened, retyped or linked to a child run after, never
- *   settles to an outcome its decision does not allow; a signal wait settles
- *   without `signal` only by a cancel's settlement; a waiting step never
- *   disappears; decisions never change; frozen fields never change; the log
- *   is the run's own; and every output it sets is handed to serve to check.
+ * A member's report of a run they drive is out of scope ("Run records: the
+ * threat model" in `design/enablers/access-control.md`), so the oracle states
+ * only what serve guarantees, across the history of what landed:
+ * - a decision on a record is one serve's handler made, and a record never
+ *   creates, changes or drops one, other than a retry clearing it;
+ * - a record names no signal wait and carries no signal's outcome;
+ * - a run serve drives takes no forwarded record;
+ * - who triggered a run, its parent, vaults, initiator, plan and log are frozen;
+ * - step keys are unique;
+ * - every output a record sets is handed to serve to authorise.
  *
- * Coverage of what was tried is printed per property.
+ * Every step a real runner records must still be accepted.
  *
  * @module
  */
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import type {
-  StepRunData,
-  WorkflowRunData,
+import {
+  StepRun,
+  type StepRunData,
+  type WorkflowRunData,
 } from "../workflows/workflow_run.ts";
 import {
   canonicalRunLogFile,
   isCanonicalRunLogFile,
   judgeRunRecord,
   type RunRecordJudgement,
-  type StepKind,
 } from "./content_bindings.ts";
 
 const WORKFLOW = "44444444-5555-4666-8777-888888888888";
 const RUN = "33333333-4444-4555-8666-777777777777";
-const CHILD_WORKFLOW = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
-const FOREIGN = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
 const T0 = "2026-10-26T00:00:00.000Z";
-const NOW = new Date("2026-10-26T00:20:00.000Z");
-const SETTLED = new Set(["succeeded", "failed", "skipped"]);
-/** Deadlines: one long passed by NOW, one far ahead. */
-const SHORT = 60;
-const LONG = 864_000;
+const FORGED_AT = "2020-01-01T00:00:00.000Z";
 
-type Kind = "plain" | "gate" | "guarded" | "signal" | "nested";
+type Kind = "plain" | "gate";
 
 interface StepSpec {
   readonly job: string;
   readonly name: string;
-  /** The step the definition holds, for a forEach expansion. */
-  readonly template?: string;
   readonly kind: Kind;
-  readonly timeout?: number;
-}
-
-/** What the stored workflow says each step (by job and template) is. */
-type StoredKinds = Map<string, StepKind>;
-
-function storedKindOf(kind: Kind): StepKind {
-  switch (kind) {
-    case "gate":
-    case "guarded":
-      return "approval";
-    case "signal":
-      return "signal";
-    default:
-      return "other";
-  }
 }
 
 const workflowSpec = fc.array(
   fc.record({
-    kind: fc.constantFrom<Kind>("plain", "gate", "guarded", "signal", "nested"),
-    expand: fc.integer({ min: 0, max: 2 }),
-    timeout: fc.constantFrom<number | undefined>(undefined, SHORT, LONG),
+    kind: fc.constantFrom<Kind>("plain", "gate"),
     job: fc.constantFrom("main", "post"),
   }),
   { minLength: 1, maxLength: 5 },
 ).map((specs) =>
-  specs.flatMap((spec, i): StepSpec[] => {
-    const name = `s${i}`;
-    const timeout = spec.kind === "gate" ? spec.timeout : undefined;
-    if (spec.expand === 0) {
-      return [{ job: spec.job, name, kind: spec.kind, timeout }];
-    }
-    return Array.from({ length: spec.expand }, (_, n) => ({
-      job: spec.job,
-      name: `${name}-${n}`,
-      template: name,
-      kind: spec.kind,
-      timeout,
-    }));
-  })
+  specs.map((spec, i): StepSpec => ({ ...spec, name: `s${i}` }))
 );
 
 function key(job: string, name: string): string {
@@ -137,21 +90,14 @@ function stepsOf(record: WorkflowRunData): Map<string, StepRunData> {
   );
 }
 
-function clone<T>(value: T): T {
-  return structuredClone(value);
-}
-
-function initial(specs: readonly StepSpec[]): WorkflowRunData {
+function initial(
+  specs: readonly StepSpec[],
+  fields: Partial<WorkflowRunData>,
+): WorkflowRunData {
   const jobs = new Map<string, StepRunData[]>();
   for (const spec of specs) {
     const steps = jobs.get(spec.job) ?? [];
-    steps.push({
-      stepName: spec.name,
-      status: "pending",
-      ...(spec.template === undefined
-        ? {}
-        : { forEachTemplate: spec.template }),
-    } as StepRunData);
+    steps.push({ stepName: spec.name, status: "pending" } as StepRunData);
     jobs.set(spec.job, steps);
   }
   return {
@@ -168,23 +114,23 @@ function initial(specs: readonly StepSpec[]): WorkflowRunData {
       status: "running",
       steps,
     })),
+    ...fields,
   } as WorkflowRunData;
 }
 
-/** `record` with one step replaced. */
 function withStep(
   record: WorkflowRunData,
   job: string,
   name: string,
   change: (step: StepRunData) => StepRunData | undefined,
 ): WorkflowRunData {
-  const next = clone(record);
+  const next = structuredClone(record);
   next.jobs = next.jobs.map((j) =>
     j.jobName !== job ? j : {
       ...j,
       steps: j.steps.flatMap((s) => {
         if (s.stepName !== name) return [s];
-        const changed = change(clone(s));
+        const changed = change(structuredClone(s));
         return changed === undefined ? [] : [changed];
       }),
     }
@@ -192,325 +138,196 @@ function withStep(
   return next;
 }
 
-/** The run's status as its steps leave it. */
-function settleRunStatus(record: WorkflowRunData): WorkflowRunData {
-  if (record.status === "cancelled" || record.status === "failed") {
-    return record;
-  }
-  const waiting = [...stepsOf(record).values()].some((s) =>
-    s.status === "waiting_approval" || s.status === "waiting_signal"
-  );
-  return { ...record, status: waiting ? "suspended" : "running" };
+function decision(approved: boolean, decidedBy = "user:approver") {
+  return { approved, decidedBy, decidedAt: T0 };
 }
-
-type Action = "approve" | "signal";
 
 interface Move {
   readonly label: string;
   readonly record: WorkflowRunData;
-  /** The actions the mover holds beyond run, which the move needs. */
-  readonly needs: readonly Action[];
+  /** Made by serve's handler, so never forwarded or judged. */
+  readonly byServe?: boolean;
 }
 
-/** Every transition a real run, approver, signaller or cancel can record next. */
-function legitimateMoves(
-  specs: readonly StepSpec[],
-  record: WorkflowRunData,
-): Move[] {
-  if (record.status === "cancelled") return [];
-  const moves: Move[] = [];
+/** What a real run, or serve's handlers on its behalf, can record next. */
+function moves(specs: readonly StepSpec[], record: WorkflowRunData): Move[] {
+  const out: Move[] = [];
   const steps = stepsOf(record);
-  const move = (
-    label: string,
-    spec: StepSpec,
-    change: (step: StepRunData) => StepRunData,
-    needs: readonly Action[] = [],
-  ) =>
-    moves.push({
-      label,
-      needs,
-      record: settleRunStatus(
-        withStep(record, spec.job, spec.name, change),
-      ),
-    });
   for (const spec of specs) {
     const step = steps.get(key(spec.job, spec.name));
     if (step === undefined) continue;
+    const move = (
+      label: string,
+      change: (s: StepRunData) => StepRunData,
+      extra: Partial<Move> = {},
+    ) =>
+      out.push({
+        label,
+        record: withStep(record, spec.job, spec.name, change),
+        ...extra,
+      });
     switch (step.status) {
       case "pending":
-        if (spec.kind === "guarded") {
-          move(
-            "guard skips a gate",
-            spec,
-            (s) => ({ ...s, status: "skipped" }),
-          );
-        }
-        move("step starts", spec, (s) => ({
-          ...s,
-          status: "running",
-          startedAt: T0,
-        }));
+        move(
+          "step starts",
+          (s) => ({ ...s, status: "running", startedAt: T0 }),
+        );
         break;
       case "running":
-        switch (spec.kind) {
-          case "plain":
-            move("step succeeds", spec, (s) => ({
-              ...s,
-              status: "succeeded",
-              completedAt: T0,
-              output: { type: "model_method", step: spec.name },
-            }));
-            move("step fails", spec, (s) => ({
-              ...s,
-              status: "failed",
-              error: "boom",
-            }));
-            break;
-          case "gate":
-          case "guarded":
-            move("gate waits", spec, (s) => ({
-              ...s,
-              status: "waiting_approval",
-              approvalPrompt: "Deploy?",
-              ...(spec.timeout === undefined
-                ? {}
-                : { approvalTimeout: spec.timeout }),
-            }));
-            break;
-          case "signal":
-            move("wait opens", spec, (s) => ({
-              ...s,
-              status: "waiting_signal",
-              wait: { key: `k-${spec.name}` },
-            }));
-            break;
-          case "nested":
-            move("nested call waits on its child", spec, (s) => ({
-              ...s,
-              status: "waiting_approval",
-              nestedRun: {
-                workflowId: CHILD_WORKFLOW,
-                workflowName: "child",
-                runId: childRunOf(spec),
-              },
-            }));
-            break;
+        if (spec.kind === "plain") {
+          move("step succeeds", (s) => ({
+            ...s,
+            status: "succeeded",
+            output: { type: "model_method", step: spec.name },
+          }));
+        } else {
+          move("gate waits", (s) => ({
+            ...s,
+            status: "waiting_approval",
+            approvalPrompt: "Deploy?",
+          }));
         }
         break;
       case "waiting_approval":
-        if (spec.kind === "nested") {
-          move("child ends, nested call succeeds", spec, (s) => ({
-            ...s,
-            status: "succeeded",
-            output: {
-              type: "workflow",
-              workflowId: CHILD_WORKFLOW,
-              runId: childRunOf(spec),
-            },
-          }));
-          break;
-        }
         if (step.approvalDecision === undefined) {
-          move("approver approves", spec, (s) => ({
-            ...s,
-            status: "succeeded",
-            approvalDecision: decision(true),
-          }), ["approve"]);
-          move("approver rejects", spec, (s) => ({
-            ...s,
-            status: "failed",
-            approvalDecision: decision(false),
-          }), ["approve"]);
-          move("approver decides, run continues later", spec, (s) => ({
-            ...s,
-            approvalDecision: decision(true),
-          }), ["approve"]);
-          if (spec.timeout === SHORT) {
-            move("gate times out", spec, (s) => ({
-              ...s,
-              status: "failed",
-              error: "approval timed out",
-            }));
-          }
+          move(
+            "approver decides",
+            (s) => ({ ...s, approvalDecision: decision(true) }),
+            { byServe: true },
+          );
+          move(
+            "approver denies",
+            (s) => ({ ...s, approvalDecision: decision(false) }),
+            { byServe: true },
+          );
         } else {
-          move("run completes a decided gate", spec, (s) => ({
+          move("run applies a decision", (s) => ({
             ...s,
             status: s.approvalDecision!.approved ? "succeeded" : "failed",
           }));
         }
         break;
-      case "waiting_signal":
-        move("signal arrives", spec, (s) => ({
-          ...s,
-          status: "succeeded",
-          output: { type: "wait_for_signal", payload: { ok: true } },
-        }), ["signal"]);
+      case "failed":
+        if (step.approvalDecision !== undefined) {
+          move("a retry re-opens a gate", (s) => {
+            const applied = StepRun.fromData(s);
+            applied.resetToPending();
+            return applied.toData();
+          });
+        }
         break;
     }
   }
-  const waiting = [...steps.values()].filter((s) =>
-    s.status === "waiting_approval" || s.status === "waiting_signal"
-  );
-  if (waiting.length > 0) {
-    const cancelled = clone(record);
-    cancelled.status = "cancelled";
-    for (const job of cancelled.jobs) {
-      job.steps = job.steps.map((s) =>
-        s.status === "waiting_approval" || s.status === "waiting_signal"
-          ? {
-            ...s,
-            status: "failed",
-            settledByAbort: true,
-            error: "cancelled",
-          }
-          : s
-      );
-    }
-    moves.push({ label: "run is cancelled", record: cancelled, needs: [] });
-  }
-  return moves;
+  return out;
 }
 
-function childRunOf(spec: StepSpec): string {
-  const n = (spec.name.length * 7919 + spec.job.length) % 0xfff;
-  return `88888888-9999-4aaa-8bbb-${n.toString(16).padStart(12, "0")}`;
-}
-
-function decision(approved: boolean) {
-  return { approved, decidedBy: "user:approver", decidedAt: T0 };
-}
-
-/** One forgery's choices, drawn up front so a failure shrinks. */
 const forgeryChoice = fc.record({
   kind: fc.constantFrom(
-    "settle-gate",
-    "settle-signal",
+    "decide",
+    "change-decision",
+    "clear-decision",
     "drop-step",
     "rename-step",
-    "retype",
-    "decision",
+    "duplicate-step",
+    "forge-signal",
+    "forge-wait",
     "gate-fields",
     "frozen-field",
     "log-file",
-    "nested-link",
-    "nested-output",
-    "reopen",
-    "retype-and-link",
+    "set-output",
+    "report-status",
+    "take-over",
   ),
   pick: fc.nat(),
+  field: fc.nat(),
+  approved: fc.boolean(),
   status: fc.constantFrom<StepRunData["status"]>(
-    "succeeded",
-    "failed",
-    "skipped",
     "pending",
     "running",
     "waiting_approval",
-  ),
-  abort: fc.boolean(),
-  runStatus: fc.constantFrom<WorkflowRunData["status"] | undefined>(
-    undefined,
-    "cancelled",
+    "waiting_signal",
+    "succeeded",
     "failed",
-    "running",
+    "skipped",
+    "unknown",
   ),
-  withDecision: fc.constantFrom<boolean | undefined>(undefined, true, false),
-  retypeTo: fc.constantFrom<StepKind>("other", "unknown", "signal", "approval"),
-  field: fc.nat(),
-  /** Leave the step's status as it is: a forgery that keeps a wait open. */
-  keepStatus: fc.boolean(),
 });
 type ForgeryChoice = typeof forgeryChoice extends fc.Arbitrary<infer T> ? T
   : never;
 
-/** The attacker's next record (and stored kinds), from the current one. */
-function forge(
-  record: WorkflowRunData,
-  kinds: StoredKinds,
-  choice: ForgeryChoice,
-): { record: WorkflowRunData; kinds: StoredKinds } {
+function forge(record: WorkflowRunData, c: ForgeryChoice): WorkflowRunData {
   const all = [...stepsOf(record).entries()];
-  if (all.length === 0) return { record, kinds };
-  const [stepKey, picked] = all[choice.pick % all.length];
+  if (all.length === 0) return record;
+  const [stepKey] = all[c.pick % all.length];
   const [job, name] = stepKey.split("/");
-  const kindKey = key(job, picked.forEachTemplate ?? name);
-  const status = choice.keepStatus ? picked.status : choice.status;
-  const runStatus = (r: WorkflowRunData) =>
-    choice.runStatus === undefined ? r : { ...r, status: choice.runStatus };
-  switch (choice.kind) {
-    case "settle-gate":
-    case "reopen":
-      return {
-        kinds,
-        record: runStatus(withStep(record, job, name, (s) => ({
-          ...s,
-          status: choice.kind === "reopen"
-            ? (choice.abort ? "pending" : "running")
-            : choice.status,
-          ...(choice.abort ? { settledByAbort: true } : {}),
-          ...(choice.withDecision === undefined
-            ? {}
-            : { approvalDecision: decision(choice.withDecision) }),
-        }))),
-      };
-    case "settle-signal":
-      return {
-        kinds,
-        record: runStatus(withStep(record, job, name, (s) => ({
-          ...s,
-          status: choice.status === "waiting_approval"
-            ? "succeeded"
-            : choice.status,
-          output: { type: "wait_for_signal", payload: { forged: true } },
-          ...(choice.abort ? { settledByAbort: true } : {}),
-        }))),
-      };
+  const edit = (change: (s: StepRunData) => StepRunData | undefined) =>
+    withStep(record, job, name, change);
+  switch (c.kind) {
+    case "decide":
+      return edit((s) => ({
+        ...s,
+        status: c.status,
+        approvalDecision: decision(c.approved, "user:forger"),
+      }));
+    case "change-decision":
+      return edit((s) => ({
+        ...s,
+        approvalDecision: decision(
+          !(s.approvalDecision?.approved ?? c.approved),
+          s.approvalDecision?.decidedBy ?? "user:forger",
+        ),
+      }));
+    case "clear-decision":
+      return edit((s) => {
+        const { approvalDecision: _dropped, ...cleared } = s;
+        return { ...cleared, status: c.status };
+      });
     case "drop-step":
-      return { kinds, record: withStep(record, job, name, () => undefined) };
+      return edit(() => undefined);
     case "rename-step":
+      return edit((s) => ({ ...s, stepName: `${s.stepName}-renamed` }));
+    case "duplicate-step":
       return {
-        kinds,
-        record: withStep(record, job, name, (s) => ({
-          ...s,
-          stepName: `${s.stepName}-renamed`,
-          status,
-        })),
+        ...record,
+        jobs: record.jobs.map((j) =>
+          j.jobName !== job ? j : {
+            ...j,
+            steps: [
+              ...j.steps,
+              { ...j.steps[c.field % j.steps.length], status: c.status },
+            ],
+          }
+        ),
       };
-    case "retype": {
-      const retyped = new Map(kinds);
-      retyped.set(kindKey, choice.retypeTo);
-      // The retype lands with the settle it is meant to enable.
-      return {
-        kinds: retyped,
-        record: runStatus(withStep(record, job, name, (s) => ({
-          ...s,
-          status,
-        }))),
-      };
-    }
-    case "decision":
-      return {
-        kinds,
-        record: withStep(record, job, name, (s) => ({
-          ...s,
-          approvalDecision: decision(choice.withDecision ?? true),
-        })),
-      };
+    case "forge-signal":
+      return edit((s) => ({
+        ...s,
+        status: "succeeded",
+        output: { type: "wait_for_signal", payload: { forged: true } },
+      }));
+    case "forge-wait":
+      return edit((s) => ({
+        ...s,
+        status: "waiting_signal",
+        wait: {
+          kind: "signal",
+          id: "cccccccc-9999-4aaa-8bbb-000000000000",
+          schema: { type: "object", properties: {} },
+          deadline: "2030-01-01T00:00:00.000Z",
+        },
+      }));
     case "gate-fields": {
-      const field = choice.field % 3;
-      return {
-        kinds,
-        record: withStep(record, job, name, (s) => ({
-          ...s,
-          ...(field === 0 ? { approvalPrompt: "Deploy to prod?" } : {}),
-          ...(field === 1 ? { approvalTimeout: 1 } : {}),
-          ...(field === 2 ? { startedAt: "2020-01-01T00:00:00.000Z" } : {}),
-          status,
-        })),
-      };
+      const field = c.field % 3;
+      return edit((s) => ({
+        ...s,
+        ...(field === 0 ? { approvalPrompt: "Deploy to prod?" } : {}),
+        ...(field === 1 ? { approvalTimeout: 1 } : {}),
+        ...(field === 2 ? { startedAt: FORGED_AT } : {}),
+      }));
     }
     case "frozen-field": {
-      const field = choice.field % 6;
-      const next = clone(record);
+      const next = structuredClone(record);
+      const field = c.field % 6;
       if (field === 0) {
         next.triggeringPrincipal = {
           kind: "user",
@@ -518,276 +335,112 @@ function forge(
           membership: { localGroups: [], idpGroups: [], collectives: [] },
         };
       }
-      if (field === 1) next.parentRun = { workflowId: FOREIGN };
+      if (field === 1) next.parentRun = { workflowId: "forged" };
       if (field === 2) next.allowedVaults = ["prod"];
       if (field === 3) next.initiatedBy = "user:root";
       if (field === 4) next.runPlan = { fingerprint: "other" };
       if (field === 5) next.inheritedExpressions = ["injected"];
-      return { kinds, record: next };
+      return next;
     }
     case "log-file":
       return {
-        kinds,
-        record: {
-          ...record,
-          logFile: [
-            "/etc/passwd",
-            "../../.swamp/serve.yaml",
-            `.swamp/workflow-runs/${FOREIGN}/workflow-run-${RUN}.log`,
-          ][choice.field % 3],
-        },
+        ...record,
+        logFile: ["/etc/passwd", "../../.swamp/serve.yaml"][c.field % 2],
       };
-    case "nested-link":
-      return {
-        kinds,
-        record: withStep(record, job, name, (s) => ({
-          ...s,
-          status,
-          nestedRun: {
-            workflowId: FOREIGN,
-            workflowName: "foreign",
-            runId: FOREIGN,
-          },
-        })),
-      };
-    case "retype-and-link": {
-      // Retype the step and link a child in one record, so a later record
-      // can settle it as a nested call's wait.
-      const retyped = new Map(kinds);
-      retyped.set(kindKey, choice.retypeTo);
-      return {
-        kinds: retyped,
-        record: withStep(record, job, name, (s) => ({
-          ...s,
-          status,
-          nestedRun: {
-            workflowId: FOREIGN,
-            workflowName: "foreign",
-            runId: FOREIGN,
-          },
-        })),
-      };
-    }
-    case "nested-output":
-      return {
-        kinds,
-        record: withStep(record, job, name, (s) => ({
-          ...s,
-          status: "succeeded",
-          output: { type: "workflow", workflowId: FOREIGN, runId: FOREIGN },
-        })),
-      };
+    case "set-output":
+      return edit((s) => ({
+        ...s,
+        output: { type: "model_method", forged: c.field },
+      }));
+    case "report-status":
+      return edit((s) => ({ ...s, status: c.status }));
+    case "take-over":
+      return { ...record, instanceId: "some-team-node" };
   }
   throw new Error("unknown forgery");
 }
 
-function judge(
-  kinds: StoredKinds,
-  before: WorkflowRunData | undefined,
+/** Why a record that landed breaks a guarantee, or undefined. */
+function violation(
+  before: WorkflowRunData,
   after: WorkflowRunData,
-): RunRecordJudgement {
-  return judgeRunRecord({
-    workflowId: WORKFLOW,
-    runId: RUN,
-    before,
-    after,
-    stepKind: (job, step) =>
-      kinds.get(key(job, step.forEachTemplate ?? step.stepName)) ?? "unknown",
-    definitionSteps: () => undefined,
-    isServeInstance: (id) => id === "serve-1",
-    now: NOW,
-  });
-}
-
-/** What the oracle remembers of a gate that is waiting. */
-interface WaitingGate {
-  readonly timeout?: number;
-  readonly startedAt?: string;
-  readonly prompt?: string;
-  approved?: boolean;
-}
-
-/** The guarantees the history of landed records must keep. */
-class Oracle {
-  readonly gates = new Map<string, WaitingGate>();
-  readonly waits = new Set<string>();
-  /**
-   * Gates by whether their decision approved, kept after the wait ends. Only an approver
-   * records a decision, so it is noted from the decision itself, never from
-   * what the stored workflow or a child-run link says the step is.
-   */
-  readonly decided = new Map<string, boolean>();
-
-  /** Notes waits that `record` opens; `kinds` is the stored workflow now. */
-  observe(
-    before: WorkflowRunData | undefined,
-    record: WorkflowRunData,
-    kinds: StoredKinds,
-  ): void {
-    const prior = before === undefined ? new Map() : stepsOf(before);
-    for (const [k, step] of stepsOf(record)) {
-      const was = prior.get(k);
-      const [job] = k.split("/");
-      const stored = kinds.get(key(job, step.forEachTemplate ?? step.stepName));
-      if (
-        step.status === "waiting_approval" &&
-        was?.status !== "waiting_approval" &&
-        (stored === "approval" || step.nestedRun === undefined)
-      ) {
-        this.gates.set(k, {
-          timeout: step.approvalTimeout,
-          startedAt: step.startedAt,
-          prompt: step.approvalPrompt,
-        });
-      }
-      const gate = this.gates.get(k);
-      if (gate !== undefined && step.approvalDecision !== undefined) {
-        gate.approved = step.approvalDecision.approved;
-      }
-      if (step.approvalDecision !== undefined && !this.decided.has(k)) {
-        this.decided.set(k, step.approvalDecision.approved);
-      }
-      if (step.status === "waiting_signal") this.waits.add(k);
-    }
-    for (const [k] of this.gates) {
-      const step = stepsOf(record).get(k);
-      if (step !== undefined && step.status !== "waiting_approval") {
-        this.gates.delete(k);
-      }
-    }
-    for (const k of this.waits) {
-      const step = stepsOf(record).get(k);
-      if (step !== undefined && step.status !== "waiting_signal") {
-        this.waits.delete(k);
-      }
+  judged: RunRecordJudgement,
+): string | undefined {
+  if (before.triggeringPrincipal !== undefined) {
+    return "a serve-driven run took a forwarded record";
+  }
+  if (after.instanceId !== undefined) return "a record took the run over";
+  for (
+    const field of [
+      "triggeringPrincipal",
+      "parentRun",
+      "allowedVaults",
+      "initiatedBy",
+      "runPlan",
+      "inheritedExpressions",
+    ] as const
+  ) {
+    if (JSON.stringify(before[field]) !== JSON.stringify(after[field])) {
+      return `frozen field ${field} changed`;
     }
   }
-
-  /**
-   * Why a record a run-only caller landed breaks a guarantee, or undefined.
-   */
-  violation(
-    before: WorkflowRunData,
-    after: WorkflowRunData,
-    judged: RunRecordJudgement,
-  ): string | undefined {
-    for (
-      const field of [
-        "triggeringPrincipal",
-        "parentRun",
-        "allowedVaults",
-        "initiatedBy",
-        "runPlan",
-        "inheritedExpressions",
-      ] as const
+  if (
+    after.logFile !== undefined &&
+    !isCanonicalRunLogFile(after.logFile, WORKFLOW, RUN)
+  ) {
+    return "log file is not the run's own";
+  }
+  const prior = stepsOf(before);
+  const next = stepsOf(after);
+  const count = after.jobs.reduce((sum, job) => sum + job.steps.length, 0);
+  if (next.size !== count) return "a step key is duplicated";
+  for (const [k, was] of prior) {
+    const is = next.get(k);
+    if (was.approvalDecision !== undefined && is === undefined) {
+      return `decided step ${k} dropped`;
+    }
+    if (is === undefined) continue;
+    if (
+      JSON.stringify(was.approvalDecision) !==
+        JSON.stringify(is.approvalDecision) &&
+      !(is.approvalDecision === undefined && is.status === "pending")
     ) {
-      if (JSON.stringify(before[field]) !== JSON.stringify(after[field])) {
-        return `frozen field ${field} changed`;
-      }
+      return `decision of ${k} made or changed by a record`;
+    }
+  }
+  for (const [k, is] of next) {
+    const was = prior.get(k);
+    if (is.approvalDecision !== undefined && was === undefined) {
+      return `decision of ${k} created by a record`;
     }
     if (
-      after.logFile !== undefined &&
-      !isCanonicalRunLogFile(after.logFile, WORKFLOW, RUN)
+      is.wait !== undefined &&
+      JSON.stringify(is.wait) !== JSON.stringify(was?.wait)
     ) {
-      return "log file is not the run's own";
+      return `a record named a signal wait on ${k}`;
     }
-    const prior = stepsOf(before);
-    const next = stepsOf(after);
-    const cancelled = after.status === "cancelled" || after.status === "failed";
-    for (const [k, was] of prior) {
-      const is = next.get(k);
-      if (
-        is !== undefined &&
-        JSON.stringify(was.approvalDecision) !==
-          JSON.stringify(is.approvalDecision)
-      ) {
-        return `decision of ${k} changed`;
-      }
+    if (
+      (is.output as { type?: string } | undefined)?.type ===
+        "wait_for_signal" &&
+      JSON.stringify(is.output) !== JSON.stringify(was?.output)
+    ) {
+      return `signal output of ${k} is not one serve holds`;
     }
-    for (const [k, gate] of this.gates) {
-      const is = next.get(k);
-      if (is === undefined) return `waiting gate ${k} dropped`;
-      if (is.status === "waiting_approval") {
-        // What the approver is shown, and the deadline, hold while it waits.
-        if (
-          is.approvalPrompt !== gate.prompt ||
-          is.approvalTimeout !== gate.timeout ||
-          is.startedAt !== gate.startedAt
-        ) {
-          return `waiting gate ${k}'s prompt, timeout or start changed`;
-        }
-        continue;
-      }
-      const byCancel = is.status === "failed" && is.settledByAbort === true &&
-        cancelled;
-      const byDeadline = is.status === "failed" &&
-        gate.timeout !== undefined && gate.startedAt !== undefined &&
-        NOW.getTime() - new Date(gate.startedAt).getTime() >
-          gate.timeout * 1000;
-      const byDecision = gate.approved !== undefined &&
-        is.status === (gate.approved ? "succeeded" : "failed");
-      if (!byCancel && !byDeadline && !byDecision) {
-        return `waiting gate ${k} settled to ${is.status} without approve`;
-      }
+    if (
+      is.output !== undefined &&
+      JSON.stringify(is.output) !== JSON.stringify(was?.output) &&
+      !judged.addedOutputs.some((o) => key(o.jobName, o.stepName) === k)
+    ) {
+      return `output of ${k} set without being handed to serve`;
     }
-    // A decision stands after the wait: dropping, re-opening, retyping or
-    // linking the gate never lets it settle to an outcome its decision does
-    // not allow. Failing it always is: a settled gate's start and timeout are
-    // no longer frozen, so a run can forge its deadline, but a run can always
-    // fail itself too.
-    for (const [k, approved] of this.decided) {
-      const is = next.get(k);
-      if (is === undefined) return `decided gate ${k} dropped`;
-      if (
-        !SETTLED.has(is.status) || is.status === prior.get(k)?.status ||
-        is.status === "failed"
-      ) {
-        continue;
-      }
-      if (!approved || is.status !== "succeeded") {
-        return `decided gate ${k} settled to ${is.status} against its decision`;
-      }
-    }
-    for (const k of this.waits) {
-      const was = prior.get(k)!;
-      const is = next.get(k);
-      if (is === undefined) return `waiting signal ${k} dropped`;
-      const byCancel = is.status === "failed" && is.settledByAbort === true &&
-        cancelled;
-      if (byCancel) continue;
-      if (
-        is.status !== "waiting_signal" ||
-        JSON.stringify(is.output) !== JSON.stringify(was.output) ||
-        JSON.stringify(is.wait) !== JSON.stringify(was.wait)
-      ) {
-        return `waiting signal ${k} settled without signal`;
-      }
-    }
-    for (const [k, is] of next) {
-      const was = prior.get(k);
-      if (
-        is.output !== undefined &&
-        JSON.stringify(is.output) !== JSON.stringify(was?.output) &&
-        !judged.addedOutputs.some((o) => key(o.jobName, o.stepName) === k)
-      ) {
-        return `output of ${k} set without being handed to serve`;
-      }
-    }
-    return undefined;
   }
+  return undefined;
 }
-
-/** One step of a scenario: a model move, or a forgery. */
-const scenarioStep = fc.oneof(
-  { weight: 3, arbitrary: fc.record({ legit: fc.nat() }) },
-  { weight: 2, arbitrary: fc.record({ forge: forgeryChoice }) },
-);
 
 interface Coverage {
   legit: Record<string, number>;
   forged: Record<string, number>;
   refused: number;
-  needed: number;
   landed: number;
 }
 
@@ -795,118 +448,107 @@ function bump(counts: Record<string, number>, label: string): void {
   counts[label] = (counts[label] ?? 0) + 1;
 }
 
-/**
- * Runs one scenario. Returns a violation message, or undefined. Throws on a
- * legitimate move the judge refuses or judges as needing other actions.
- */
+const scenarioStep = fc.oneof(
+  { weight: 3, arbitrary: fc.record({ legit: fc.nat() }) },
+  { weight: 2, arbitrary: fc.record({ forge: forgeryChoice }) },
+);
+
 function play(
   specs: readonly StepSpec[],
+  fields: Partial<WorkflowRunData>,
   scenario: readonly ({ legit: number } | { forge: ForgeryChoice })[],
   coverage: Coverage,
 ): string | undefined {
-  let kinds: StoredKinds = new Map(
-    specs.map((s) => [key(s.job, s.template ?? s.name), storedKindOf(s.kind)]),
-  );
-  let record = initial(specs);
-  const created = judge(kinds, undefined, record);
-  assertEquals(created.refusal, undefined, "a run's first record");
-  assertEquals([...created.actions], []);
-  const oracle = new Oracle();
-  oracle.observe(undefined, record, kinds);
-  let tampered = false;
+  const judge = (before: WorkflowRunData, after: WorkflowRunData) =>
+    judgeRunRecord({
+      workflowId: WORKFLOW,
+      runId: RUN,
+      before,
+      after,
+    });
+  let record = initial(specs, fields);
+  const serveDriven = fields.triggeringPrincipal !== undefined;
   for (const next of scenario) {
     if ("legit" in next) {
-      const moves = legitimateMoves(specs, record);
-      if (moves.length === 0) continue;
-      const move = moves[next.legit % moves.length];
-      const judged = judge(kinds, record, move.record);
-      if (!tampered) {
-        bump(coverage.legit, move.label);
-        assertEquals(
-          judged.refusal,
-          undefined,
-          `legitimate move refused: ${move.label}`,
-        );
-        assertEquals(
-          [...judged.actions].sort(),
-          [...move.needs].sort(),
-          `legitimate move judged wrong: ${move.label}`,
-        );
-      } else if (judged.refusal !== undefined) {
-        continue;
+      const options = moves(specs, record);
+      if (options.length === 0) continue;
+      const move = options[next.legit % options.length];
+      // On a serve-driven run every write is serve's own.
+      if (!move.byServe && !serveDriven) {
+        const judged = judge(record, move.record);
+        if (judged.refusal !== undefined) {
+          // Only a forgery that landed earlier can make a real move refused.
+          if (coverage.landed === 0) {
+            assertEquals(judged.refusal, undefined, move.label);
+          }
+          continue;
+        }
       }
-      oracle.observe(record, move.record, kinds);
+      bump(coverage.legit, move.label);
       record = move.record;
       continue;
     }
     bump(coverage.forged, next.forge.kind);
-    const forged = forge(record, kinds, next.forge);
-    const judged = judge(forged.kinds, record, forged.record);
+    const forged = forge(record, next.forge);
+    const judged = judge(record, forged);
     if (judged.refusal !== undefined) {
       coverage.refused++;
       continue;
     }
-    if (judged.actions.size > 0) {
-      // The attacker holds only run: the forgery does not land.
-      coverage.needed++;
-      continue;
-    }
     coverage.landed++;
-    const broken = oracle.violation(record, forged.record, judged);
+    const broken = violation(record, forged, judged);
     if (broken !== undefined) return `${next.forge.kind}: ${broken}`;
-    oracle.observe(record, forged.record, forged.kinds);
-    record = forged.record;
-    kinds = forged.kinds;
-    tampered = true;
+    record = forged;
   }
   return undefined;
 }
 
 function newCoverage(): Coverage {
-  return { legit: {}, forged: {}, refused: 0, needed: 0, landed: 0 };
+  return { legit: {}, forged: {}, refused: 0, landed: 0 };
 }
 
-Deno.test("judgeRunRecord (model): every transition a real run records is accepted with exactly the actions it needs", () => {
+const PRINCIPAL = {
+  triggeringPrincipal: {
+    kind: "user",
+    id: "ana",
+    membership: { localGroups: [], idpGroups: [], collectives: [] },
+  },
+} as Partial<WorkflowRunData>;
+
+Deno.test("judgeRunRecord (model): every step a real run records is accepted", () => {
   const coverage = newCoverage();
   fc.assert(
     fc.property(
       workflowSpec,
       fc.array(fc.record({ legit: fc.nat() }), { maxLength: 40 }),
       (specs, scenario) => {
-        assertEquals(play(specs, scenario, coverage), undefined);
+        assertEquals(play(specs, {}, scenario, coverage), undefined);
       },
     ),
     { numRuns: 1000 },
   );
-  console.log("legitimate transitions tried:", JSON.stringify(coverage.legit));
+  console.log("real moves tried:", JSON.stringify(coverage.legit));
   for (
     const label of [
-      "guard skips a gate",
       "gate waits",
-      "approver approves",
-      "approver rejects",
-      "approver decides, run continues later",
-      "run completes a decided gate",
-      "gate times out",
-      "wait opens",
-      "signal arrives",
-      "nested call waits on its child",
-      "child ends, nested call succeeds",
-      "run is cancelled",
+      "approver decides",
+      "approver denies",
+      "run applies a decision",
+      "a retry re-opens a gate",
     ]
   ) {
     assert((coverage.legit[label] ?? 0) > 0, `never tried: ${label}`);
   }
 });
 
-Deno.test("judgeRunRecord (model): no forged record a run-only caller can land breaks the run's guarantees", () => {
+Deno.test("judgeRunRecord (model): no forged record that lands breaks what serve guarantees", () => {
   const coverage = newCoverage();
   fc.assert(
     fc.property(
       workflowSpec,
       fc.array(scenarioStep, { maxLength: 40 }),
       (specs, scenario) => {
-        const broken = play(specs, scenario, coverage);
+        const broken = play(specs, {}, scenario, coverage);
         assertEquals(broken, undefined, broken);
       },
     ),
@@ -917,29 +559,26 @@ Deno.test("judgeRunRecord (model): no forged record a run-only caller can land b
     JSON.stringify(coverage.forged),
     "refused:",
     coverage.refused,
-    "needed approve or signal:",
-    coverage.needed,
     "landed:",
     coverage.landed,
   );
-  for (
-    const kind of [
-      "settle-gate",
-      "settle-signal",
-      "drop-step",
-      "rename-step",
-      "retype",
-      "decision",
-      "gate-fields",
-      "frozen-field",
-      "log-file",
-      "nested-link",
-      "nested-output",
-      "reopen",
-      "retype-and-link",
-    ]
-  ) {
-    assert((coverage.forged[kind] ?? 0) > 0, `never tried: ${kind}`);
-  }
-  assert(coverage.refused > 0 && coverage.needed > 0 && coverage.landed > 0);
+  assert(Object.keys(coverage.forged).length === 14, "a forgery was not tried");
+  assert(coverage.refused > 0 && coverage.landed > 0);
+});
+
+Deno.test("judgeRunRecord (model): no forged record lands on a run serve drives", () => {
+  const coverage = newCoverage();
+  fc.assert(
+    fc.property(
+      workflowSpec,
+      fc.array(scenarioStep, { maxLength: 20 }),
+      (specs, scenario) => {
+        const broken = play(specs, PRINCIPAL, scenario, coverage);
+        assertEquals(broken, undefined, broken);
+      },
+    ),
+    { numRuns: 1000 },
+  );
+  assertEquals(coverage.landed, 0);
+  assert(coverage.refused > 0);
 });

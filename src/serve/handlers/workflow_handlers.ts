@@ -201,6 +201,7 @@ import {
 import {
   autoResumeAfterApproval,
   autoResumeParentAfterChild,
+  ownerResumesRun,
   startDetachedResume,
 } from "../resume_launcher.ts";
 import {
@@ -979,6 +980,7 @@ export async function handleWorkflowHistoryGet(
           dataReadPolicy(socket, ctx, principal, controller.signal),
           ctx.repoContext.signalWaits,
           ctx.repoContext.unreadableContent,
+          ctx.repoContext.takesForwardedRunRecords,
         ),
         retentionWatermarks: ctx.repoContext.retentionWatermarks,
       };
@@ -1635,7 +1637,9 @@ export async function handleWorkflowApprove(
   // The approval is already saved: a failure deciding or launching the
   // auto-resume must not cost the client its reply.
   let autoResumed = false;
+  let ownerResumes = false;
   try {
+    ownerResumes = await ownerResumesRun(ctx, result);
     autoResumed = await autoResumeAfterApproval(
       ctx,
       result,
@@ -1661,7 +1665,13 @@ export async function handleWorkflowApprove(
   send(socket, {
     type: "workflow.approve",
     id: requestId,
-    payload: { data: { ...result, autoResumed } },
+    payload: {
+      data: {
+        ...result,
+        autoResumed,
+        ...(ownerResumes ? { ownerResumes } : {}),
+      },
+    },
   });
 }
 

@@ -19,12 +19,14 @@
 
 /**
  * Content checks for a forwarded run record and run snapshot
- * (swamp-club#3922). {@link judgeRunRecord} decides what a record may set
- * and which transitions need `approve` or `signal`; this module supplies it
- * with the stored workflow and authorises, against the caller, what the
- * record adds that serve acts on when it resumes the run: inputs and
- * expressions it evaluates, vault references it rehydrates, and step
- * outputs it reads data through.
+ * (swamp-club#3922, swamp-club#4245). {@link judgeRunRecord} decides what a
+ * record may set; this module supplies it with the stored workflow and what
+ * serve holds (child runs' decisions), and authorises,
+ * against the caller and again under the forwarded lock, what the record adds
+ * that serve acts on when it resumes the run: inputs and expressions it
+ * evaluates, vault references it rehydrates, and step outputs it reads data
+ * through. A record applies decisions and never makes them, so `approve` and
+ * `signal` are not asked here: serve's handlers ask them when they decide.
  *
  * @module
  */
@@ -32,9 +34,10 @@
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import type { ContentRefusal } from "../domain/datastore_v3/commit_authorization.ts";
 import {
+  type HeldChildRun,
   judgeRunRecord,
   runIdentityRefusal,
-  type StepKind,
+  type RunRecordJudgement,
 } from "../domain/datastore_v3/content_bindings.ts";
 import type { PutOp } from "../domain/datastore_v3/op.ts";
 import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
@@ -44,6 +47,7 @@ import {
 } from "../domain/expressions/expression_references.ts";
 import { parseStoredVaultReference } from "../domain/models/data_writer.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import { parseParentRunLink } from "../domain/workflows/nested_run_ref.ts";
 import { stepResourceRefs } from "../domain/workflows/step_output_resolver.ts";
 import {
@@ -55,6 +59,7 @@ import type { Workflow } from "../domain/workflows/workflow.ts";
 import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
 import {
   type StepRunData,
+  type WorkflowRunData,
   WorkflowRunSchema,
 } from "../domain/workflows/workflow_run.ts";
 import { parseEvaluatedWorkflowCache } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -78,9 +83,11 @@ import {
 
 /**
  * A run snapshot: the evaluated workflow a run settles against, bound to
- * the run its intent names. Nothing in it runs (resume re-evaluates from
- * the stored workflow), so the binding and run on the workflow are all it
- * needs.
+ * the run its intent names, and frozen once written: a cancel settles a
+ * nested run against it, so a later put must hold the same bytes, which a
+ * retried or replayed commit does. Nothing in it runs (resume re-evaluates
+ * from the stored workflow), so the binding and run on the workflow are all
+ * else it needs.
  */
 export async function checkRunSnapshot(
   context: ContentCheckContext,
@@ -97,7 +104,19 @@ export async function checkRunSnapshot(
     return refused(op, "its content is not a run snapshot");
   }
   const identity = runIdentityRefusal(op.intent, { workflowId: workflow.id });
-  return identity === undefined ? undefined : refused(op, identity);
+  if (identity !== undefined) return refused(op, identity);
+  const prior = await context.prior(context.deps.partition, op.key.toString());
+  if (prior.kind === "unreadable") {
+    return refused(op, "the run snapshot it replaces cannot be read");
+  }
+  if (prior.kind === "present" && !sameBytes(prior.bytes, bytes)) {
+    return refused(op, "it changes a run snapshot, which is frozen");
+  }
+  return undefined;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
 /** A run record: what {@link judgeRunRecord} returns, authorised. */
@@ -126,35 +145,171 @@ export async function checkRunRecord(
     ctx.repoContext.workflowRepo,
     intent.run.workflowId,
   );
-  const targets = workflow === null ? [] : workflowStepTargets(workflow);
+  // A run id names one run: some lookups and deletes select by it alone, so a
+  // first record reusing one would reach the run that holds it, in any workflow.
+  if (before === undefined) {
+    const isOurs = async () => {
+      const holder = await ctx.repoContext.workflowRunRepo.findGlobalById(
+        createWorkflowRunId(intent.run.runId),
+      );
+      return holder === null || holder.workflowId === intent.run.workflowId;
+    };
+    if (!(await isOurs())) {
+      return refused(op, "its run id is another workflow's run");
+    }
+    context.recheckUnderLock(isOurs);
+  }
+  const children = await heldChildren(
+    context,
+    intent.run,
+    before?.data,
+    after.data,
+  );
   const judgement = judgeRunRecord({
     workflowId: intent.run.workflowId,
     runId: intent.run.runId,
     before: before?.data,
     after: after.data,
-    stepKind: (jobName, step) => stepKindOf(workflow, jobName, step),
-    definitionSteps: (jobName) =>
-      workflow?.jobs.find((job) => job.name === jobName)?.steps,
     workflowVaults: workflow?.vaults,
-    isServeInstance: (id) =>
-      ctx.instanceId !== undefined && id === ctx.instanceId,
-    now: context.now(),
+    heldChild: (jobName, step) => children.get(heldKey(jobName, step.stepName)),
+    storedStepIsNested: (jobName, step) => {
+      const steps = workflow?.jobs.find((job) => job.name === jobName)?.steps;
+      const stored = steps?.find((s) => s.name === step.stepName) ??
+        steps?.find((s) =>
+          s.name === step.forEachTemplate && s.forEach !== undefined
+        );
+      return stored?.task.data.type === "workflow";
+    },
   });
   if (judgement.refusal !== undefined) return refused(op, judgement.refusal);
 
+  const authorize = () =>
+    additionsRefusal(
+      context,
+      op,
+      workflow,
+      before?.data,
+      after.data,
+      judgement,
+    );
+  const refusal = await authorize();
+  if (refusal !== undefined) return refused(op, refusal);
+  // Decided again under the lock: a grant revoked between here and the
+  // append refuses the commit, as it does a handler's save.
+  context.recheckUnderLock(async () => (await authorize()) === undefined);
+  return undefined;
+}
+
+function heldKey(jobName: string, stepName: string): string {
+  return JSON.stringify([jobName, stepName]);
+}
+
+/**
+ * The stored child of each step that links one and changes status, when it links
+ * back. Bounded by the record's own step count.
+ */
+async function heldChildren(
+  context: ContentCheckContext,
+  run: { readonly workflowId: string; readonly runId: string },
+  before: WorkflowRunData | undefined,
+  after: WorkflowRunData,
+): Promise<ReadonlyMap<string, HeldChildRun>> {
+  const children = new Map<string, HeldChildRun>();
+  for (const job of after.jobs) {
+    const priors = before?.jobs.find((j) => j.jobName === job.jobName)?.steps;
+    for (const step of job.steps) {
+      const prior = priors?.find((s) => s.stepName === step.stepName);
+      if (prior?.status === step.status || step.nestedRun === undefined) {
+        continue;
+      }
+      const child = await heldChildOf(context, run, job.jobName, step);
+      if (child !== undefined) {
+        children.set(heldKey(job.jobName, step.stepName), child);
+      }
+    }
+  }
+  return children;
+}
+
+/**
+ * The stored record of the child `step` links to, when that child's parent
+ * link names this run, job and step. Read through `context.prior`, so a child
+ * that moves before the commit lands sends the commit back to be judged again.
+ */
+async function heldChildOf(
+  context: ContentCheckContext,
+  run: { readonly workflowId: string; readonly runId: string },
+  jobName: string,
+  step: StepRunData,
+): Promise<HeldChildRun | undefined> {
+  const link = step.nestedRun as
+    | { workflowId?: unknown; runId?: unknown }
+    | null;
+  if (link === null || typeof link !== "object") return undefined;
+  if (typeof link.workflowId !== "string" || typeof link.runId !== "string") {
+    return undefined;
+  }
+  let partition;
+  try {
+    partition = partitionOf({
+      kind: "run",
+      workflowId: link.workflowId,
+      runId: link.runId,
+    });
+  } catch {
+    return undefined;
+  }
+  const record = await context.prior(
+    partition,
+    `workflow-runs/${link.workflowId.toLowerCase()}/workflow-run-${link.runId.toLowerCase()}.yaml`,
+  );
+  if (record.kind !== "present") return undefined;
+  const child = WorkflowRunSchema.safeParse(parseRecord(record.bytes));
+  if (!child.success) return undefined;
+  const parent = parseParentRunLink(child.data.parentRun);
+  if (
+    parent?.kind !== "valid" ||
+    parent.ref.workflowId.toLowerCase() !== run.workflowId ||
+    parent.ref.runId.toLowerCase() !== run.runId ||
+    parent.ref.jobName !== jobName ||
+    parent.ref.stepName !== (step.forEachTemplate ?? step.stepName) &&
+      parent.ref.stepName !== step.stepName
+  ) {
+    return undefined;
+  }
+  return {
+    decisions: child.data.jobs.flatMap((j) =>
+      j.steps.flatMap((s) =>
+        s.approvalDecision === undefined ? [] : [s.approvalDecision]
+      )
+    ),
+  };
+}
+
+/**
+ * Why what a record adds may not stand, or undefined: decided against the
+ * caller, before the lock and again under it.
+ */
+async function additionsRefusal(
+  context: ContentCheckContext,
+  op: PutOp,
+  workflow: Workflow | null,
+  before: WorkflowRunData | undefined,
+  after: WorkflowRunData,
+  judgement: RunRecordJudgement,
+): Promise<string | undefined> {
+  const intent = op.intent;
+  if (!("run" in intent)) return "it is not a run's record";
+  const { ctx } = context.deps;
+  const targets = workflow === null ? [] : workflowStepTargets(workflow);
   const authority = context.authority;
   const runOn: AccessResource = workflow === null
     ? unresolvedAccessResource("workflow", intent.run.workflowId)
     : workflowAccessResource(workflow);
-  for (const action of judgement.actions) {
-    if (!authority.allows(action, runOn)) {
-      return refused(op, `not authorized to ${action} workflow:${runOn.name}`);
-    }
-  }
 
-  if (before === undefined && after.data.parentRun !== undefined) {
-    const parent = await parentRefusal(context, after.data.parentRun);
-    if (parent !== undefined) return refused(op, parent);
+  if (before === undefined && after.parentRun !== undefined) {
+    const parent = await parentRefusal(context, after.parentRun);
+    if (parent !== undefined) return parent;
   }
 
   // What serve evaluates on resume is authorised as run inputs are: data it
@@ -162,8 +317,8 @@ export async function checkRunRecord(
   const expressions = [
     ...(judgement.inputsChanged
       ? expressionsAddedByEdit(
-        analyzeContentExpressions(before?.data.inputs ?? {}),
-        analyzeContentExpressions(after.data.inputs ?? {}),
+        analyzeContentExpressions(before?.inputs ?? {}),
+        analyzeContentExpressions(after.inputs ?? {}),
         false,
       )
       : []),
@@ -176,7 +331,7 @@ export async function checkRunRecord(
     expressions,
     runOn,
   );
-  if (refusal !== undefined) return refused(op, refusal.message);
+  if (refusal !== undefined) return refusal.message;
 
   // A vault reference the record holds is rehydrated to its secret on
   // resume: the caller must be able to read it.
@@ -184,7 +339,7 @@ export async function checkRunRecord(
     ...judgement.addedReferences.flatMap((entry) =>
       isReference(entry) ? [entry] : []
     ),
-    ...(judgement.inputsChanged ? storedReferences(after.data.inputs) : []),
+    ...(judgement.inputsChanged ? storedReferences(after.inputs) : []),
   ];
   for (const { vaultName, key } of references) {
     if (
@@ -195,7 +350,7 @@ export async function checkRunRecord(
         key,
       }, ctx)
     ) {
-      return refused(op, `not authorized to read vault:${vaultName}`);
+      return `not authorized to read vault:${vaultName}`;
     }
   }
 
@@ -205,37 +360,15 @@ export async function checkRunRecord(
       intent.run,
       targets,
       added.jobName,
-      after.data.jobs
+      after.jobs
         .find((job) => job.jobName === added.jobName)?.steps
         .find((step) => step.stepName === added.stepName),
       added.output,
       added.dataArtifacts,
     );
-    if (outputRefusal !== undefined) return refused(op, outputRefusal);
+    if (outputRefusal !== undefined) return outputRefusal;
   }
   return undefined;
-}
-
-/** What a run's step is, by the stored workflow's step of its name. */
-function stepKindOf(
-  workflow: Workflow | null,
-  jobName: string,
-  step: StepRunData,
-): StepKind {
-  const job = workflow?.jobs.find((candidate) => candidate.name === jobName);
-  const defined = job?.steps.find((s) => s.name === step.stepName) ??
-    (step.forEachTemplate === undefined
-      ? undefined
-      : job?.steps.find((s) => s.name === step.forEachTemplate));
-  if (defined === undefined) return "unknown";
-  switch (defined.task.data.type) {
-    case "manual_approval":
-      return "approval";
-    case "wait_for_signal":
-      return "signal";
-    default:
-      return "other";
-  }
 }
 
 /**

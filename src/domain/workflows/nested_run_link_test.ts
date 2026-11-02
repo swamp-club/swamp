@@ -655,3 +655,18 @@ Deno.test("NestedRunLink.describeWait: an unreadable grandchild is not followed,
   assertEquals(action.kind, "resume");
   assertEquals(action.target.runId, child.id);
 });
+
+Deno.test("NestedRunLink.resolveChild: where records are forwarded, a child with no back-link is never accepted on what the parent's record says (swamp-club#4245)", async () => {
+  const { parent, deps } = droppedBackLinkPair();
+  const [wait] = parent.findNestedWaits();
+  const accepted = await new NestedRunLink(deps).resolveChild(parent, wait);
+  assertEquals(accepted.kind, "resolved");
+  const refused = await new NestedRunLink({
+    ...deps,
+    runRepo: {
+      findById: (workflowId, runId) => deps.runRepo.findById(workflowId, runId),
+      recordsAreForwarded: true,
+    },
+  }).resolveChild(parent, wait);
+  assertEquals(refused.kind, "broken");
+});

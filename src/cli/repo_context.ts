@@ -25,6 +25,7 @@
  * - Throwing clear errors when not initialized
  */
 
+import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import { recordServeUpstreamFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
 import {
@@ -1353,6 +1354,8 @@ export async function requireInitializedRepoReadOnly(
     ...factoryConfig,
   });
 
+  markForwardedRunRecords(repoContext, v3);
+
   // A read shows what a wait record says of a step, such as the receipt of
   // a signal no resume has applied yet (swamp-club#3110). Only a filesystem
   // or v3 datastore's records are read here: a v2 custom datastore's store
@@ -1752,6 +1755,7 @@ export function requireInitializedRepo(
       ...v3Factory,
       ...factoryConfig,
     });
+    markForwardedRunRecords(repoContext, v3);
     attachSignalWaits(
       repoContext,
       resolveSignalWaitSupport(datastoreConfig, syncService, {
@@ -1981,6 +1985,7 @@ export async function requireInitializedRepoUnlocked(
     ...v3Factory,
     ...factoryConfig,
   });
+  markForwardedRunRecords(repoContext, v3);
   attachSignalWaits(
     repoContext,
     resolveSignalWaitSupport(datastoreConfig, syncService, {
@@ -2315,6 +2320,15 @@ export function resolveSignalWaitSupport(
     v3?: V3DatastoreConfig;
   },
 ): SignalWaitSupport {
+  // Serve can deliver a signal only to a wait it registered itself, so a member
+  // driving a run from a checkout cannot wait on one (swamp-club#4245).
+  if (options?.v3 !== undefined && serveUpstreamAt(options.v3.path)) {
+    return {
+      supported: false,
+      reason:
+        "in a serve-mode checkout such a run executes on serve, so use --server, or a trigger or schedule",
+    };
+  }
   const bucket = options?.v3 === undefined
     ? undefined
     : v3BucketNamespacedStoreAt(options.v3);
@@ -2591,6 +2605,19 @@ export function resolveRetentionWatermarks(
     `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent)`,
   );
   return new ControlPlaneRetentionWatermarkRepository(remote.store);
+}
+
+/**
+ * Marks a checkout written through serve: other members forward run records it
+ * reads, so a record's fields are their report (swamp-club#4245).
+ */
+function markForwardedRunRecords(
+  repoContext: Pick<RepositoryContext, "workflowRunRepo">,
+  v3: V3DatastoreConfig | undefined,
+): void {
+  if (v3 !== undefined && serveUpstreamAt(v3.path) !== undefined) {
+    repoContext.workflowRunRepo.recordsAreForwarded = true;
+  }
 }
 
 /**

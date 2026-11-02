@@ -518,6 +518,7 @@ Deno.test("findRegistrationOfStep: finds the wait a step of a run registered, an
   await waitingRun(["a"], store);
 
   const found = await findRegistrationOfStep(store, {
+    workflowId: run.workflowId,
     runId: run.id,
     jobName: "main",
     stepName: "b",
@@ -526,6 +527,7 @@ Deno.test("findRegistrationOfStep: finds the wait a step of a run registered, an
   assertEquals(found?.waitId, stepOf(run, "b").signalWait!.id);
   assertEquals(
     await findRegistrationOfStep(store, {
+      workflowId: run.workflowId,
       runId: run.id,
       jobName: "main",
       stepName: "c",
@@ -534,9 +536,20 @@ Deno.test("findRegistrationOfStep: finds the wait a step of a run registered, an
   );
   assertEquals(
     await findRegistrationOfStep(store, {
+      workflowId: run.workflowId,
       runId: crypto.randomUUID(),
       jobName: "main",
       stepName: "a",
+    }),
+    undefined,
+  );
+  // The same run id under another workflow is not this wait (swamp-club#4245).
+  assertEquals(
+    await findRegistrationOfStep(store, {
+      workflowId: crypto.randomUUID(),
+      runId: run.id,
+      jobName: "main",
+      stepName: "b",
     }),
     undefined,
   );

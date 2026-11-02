@@ -404,3 +404,19 @@ Deno.test("serveUpstreamRunsLocally: the data plane runs locally with serve as i
     assertEquals(serveUpstreamRunsLocally(path), false, path.join(" "));
   }
 });
+
+Deno.test("serveUpstreamAppliesTo: a decision on a run goes to serve; the rest of workflow runs locally (swamp-club#4245)", () => {
+  for (const decides of ["approve", "reject", "signal"]) {
+    assertEquals(serveUpstreamAppliesTo(["workflow", decides]), false);
+    assertEquals(serveUpstreamRunsLocally(["workflow", decides]), false);
+  }
+  for (const local of ["run", "resume", "cancel", "history"]) {
+    assertEquals(serveUpstreamAppliesTo(["workflow", local]), true);
+    assertEquals(serveUpstreamRunsLocally(["workflow", local]), true);
+  }
+});
+
+Deno.test("serveUpstreamAppliesTo: workflow waits goes to serve, whose waits are the ones a checkout can signal (swamp-club#4245)", () => {
+  assertEquals(serveUpstreamAppliesTo(["workflow", "waits"]), false);
+  assertEquals(serveUpstreamRunsLocally(["workflow", "waits"]), false);
+});

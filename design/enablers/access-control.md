@@ -1077,6 +1077,12 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   forwarded write is decided as serve's handlers decide the same write, its
   content checked as theirs is (swamp-club#3922). See "Team mode: serve's
   datastore API" in `design/enablers/datastores.md`.
+- **Run control.** `approve`, `reject` and `signal` are decided only by serve's
+  handlers, which authorise the caller and record the decision. A forwarded run
+  record may carry a decision serve holds and never makes one, so holding
+  `approve` or `signal` lets no record carry a decision (swamp-club#4245). A
+  serve-mode checkout sends these commands to the handlers, and `cancel --run` of
+  a run it does not drive. See "Run records: the threat model" below.
 - **Decided as admin.** The decision service decides every action on a
   control-plane record as `admin`, whatever the request asked for
   (`isControlPlaneRecordResource`). So `read`, `write` or `run` on `data:*` or
@@ -1540,3 +1546,76 @@ matter.
 Implementation: `src/libswamp/access/explained_resource.ts` (used by
 `src/cli/commands/access_check.ts` and `src/serve/handlers/access_handlers.ts`),
 `src/domain/access/access_resources.ts`.
+
+## Run records: the threat model
+
+Decided on 2026-11-01 and approved by stack72 (swamp-club#4245).
+
+**Serve does not try to stop a member forging the record of a run they drive. It
+stops that forgery reaching anything outside the member's own run.**
+
+A member who drives a run locally owns the process. They can patch the CLI to skip
+a gate and run the next step anyway, and no record check can prevent that. A gate
+in a member-driven run binds people who run the CLI unmodified. It never binds the
+runner against their will.
+
+**In scope.** Serve guarantees all four:
+
+1. **No forged decisions.** A decision (approval, rejection, signal outcome,
+   cancel) exists only if serve's handler made it, under the decider's own grant.
+   A forwarded record cannot create, change or drop one, other than a retry
+   clearing it for a fresh decision. A cancel a caller makes
+   through serve is decided on their grant, recorded and stamped; what the run's
+   record says afterwards is a status, which is out of scope, so the member driving
+   the run can report past it.
+2. **Runs serve drives take no forwarded record at all.** On those runs, gates do
+   bind. A run is serve-driven when its record has a triggering principal or names
+   an instance as owner; only serve records either.
+3. **Serve never acts on a member-driven run's state with anyone else's
+   authority.** On its own account serve does not resume such a run: after an
+   approval, a signal, a child ending, or on its continuation sweep. Its owner
+   resumes it. A caller who asks to resume it, or to cancel it, does so on their
+   own grant.
+4. **Serve records who wrote each record.** Any member with `run` on a workflow is
+   trusted to report runs of that workflow, and serve's commit stamp records who
+   did. There is no per-run ownership refusal: one member resuming another's run
+   works.
+
+**Out of scope:**
+
+- the step, job and run statuses, outputs and timings a member reports for a run
+  they drive;
+- splitting such a report across commits.
+- `initiatedBy` and `triggerSource`, which are the member's report: the commit
+  stamp says who wrote the record.
+
+So a member-driven run's record can show a gate passed with no decision on it, or
+a nested step succeeded with no child. That is what it means: the member reported
+it, and the commit stamp says who. Nothing outside that run acts on it.
+
+**For a gate that must bind its runner, run the workflow on serve** (`--server`, a
+trigger or a schedule, optionally on workers).
+
+**Signals in a serve-mode checkout.** A run that waits for a signal runs on serve.
+In a serve-mode checkout, a workflow with a signal wait is refused before it starts,
+because serve can deliver a signal only to a wait it registered itself. A forwarded
+record names no signal wait, so nothing a member reports reaches serve's wait
+records. Decided on 2026-11-02: local delivery would need the judge to accept
+outcomes a member wrote, and a wait exists for someone else to signal. Approval gates
+are unaffected: `approve` and `reject` go to serve's handlers. Use `--server`, a
+trigger or a schedule.
+
+**Delete and recreate.** A caller with `write` on a workflow can delete a run's record
+and snapshot and forward a new record under the same run id. With nothing stored to
+compare, it reads as a new member-driven run: a serve-driven run's marker and any
+decision it held are gone. This is a known limit. `write` already allows deleting the
+run, the commit stamp records who did it, and serve does not act on the new record.
+
+**Limits of the marker.** When a member-driven parent is cancelled through serve, a
+child that does not link back is not cancelled with it: its owner cancels it.
+On a v3 serve, a run a CLI drove directly against the
+datastore also counts as member-driven, so its owner resumes it. A v2 datastore
+has no forwarded records, so serve still acts on its runs as before. Bookkeeping
+serve does on any run's state (interrupting a run whose owner died, superseding a
+suspended run with matching inputs, closing wait records) changes only that run's
+record and runs no step.
