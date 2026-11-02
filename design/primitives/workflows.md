@@ -3463,8 +3463,12 @@ as before. A pid only the record names is never signalled:
   `--run` does, and `--all` reports it under `skipped`, to be cancelled with
   `--run`;
 - a row that serve owns refuses the cancel with the `--server` hint, whatever
-  the record says, and a row of the run under another pid (a resume whose first
-  save came before its row's hand-over) refuses it with "cancel it again".
+  the record says;
+- a row of the run under another pid is either a local resume whose first save
+  came just before it handed the row over (it does so right after releasing the
+  run's claim) or a run another machine resumed. Cancel re-reads the row for up
+  to `ROW_HAND_OVER_WAIT_MS` (1s): a row that comes to name the record's pid is
+  the resume's, which is stopped; one that never does is settled as above.
 
 **On Windows** Deno turns a SIGTERM sent to another process into
 `TerminateProcess`, so cancel sends a stop request instead

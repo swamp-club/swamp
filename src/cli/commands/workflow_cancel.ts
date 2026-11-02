@@ -368,8 +368,9 @@ function workflowNameOf(
  * - `serveOwned`: a serve instance drives the run, so its pid is the serve
  *   process. The row decides, not the record's `instanceId`.
  * - `mismatch`: a row of this run on this host that does not name the
- *   record's pid as its running owner, such as a resume whose first save
- *   landed before its row was handed over.
+ *   record's pid as its running owner: a local resume whose first save
+ *   landed before its row was handed over, or a run another machine
+ *   resumed. See {@link awaitRowHandOver}.
  * - `untracked`: no row of this run on this host. The pid names no process
  *   this checkout started.
  */
@@ -422,6 +423,34 @@ function waitsOnOwner(
 ): boolean {
   const pid = ownerPidToStop(run, runTracker, liveness);
   return pid !== undefined && isProcessAlive(pid);
+}
+
+/**
+ * How long cancel waits for a local resume to hand a run's tracker row to
+ * itself. The resume does so in the statement after it releases the run's
+ * claim, so the wait only spans a scheduler gap; a row that still does not
+ * name the record's pid after it belongs to a run resumed on another
+ * machine.
+ */
+export const ROW_HAND_OVER_WAIT_MS = 1_000;
+const ROW_HAND_OVER_POLL_MS = 25;
+
+/**
+ * Re-reads `run`'s tracker row for up to {@link ROW_HAND_OVER_WAIT_MS} while
+ * it is a `mismatch`, and returns the first other verdict, or `mismatch`
+ * when the row never changes (swamp-club#4274).
+ */
+async function awaitRowHandOver(
+  run: Pick<WorkflowRun, "id" | "pid">,
+  runTracker: Pick<RunTrackerRepository, "findById">,
+  liveness: Pick<OwnerLiveness, "hostname" | "instanceId">,
+): Promise<TrackedOwner> {
+  const deadline = Date.now() + ROW_HAND_OVER_WAIT_MS;
+  for (;;) {
+    const owner = trackedOwner(run, runTracker, liveness);
+    if (owner.kind !== "mismatch" || Date.now() >= deadline) return owner;
+    await new Promise((resolve) => setTimeout(resolve, ROW_HAND_OVER_POLL_MS));
+  }
 }
 
 function serveTookOverMessage(runId: string): string {
@@ -600,7 +629,14 @@ async function settleCancelledRun(
       }
       // The record's pid is stopped only when this checkout's tracker says
       // the process is the run's (swamp-club#4274).
-      const owner = trackedOwner(current, runTracker, liveness);
+      let owner = trackedOwner(current, runTracker, liveness);
+      // A local resume hands its row over just after it releases the claim,
+      // so a row still under the old owner may be about to name the
+      // record's pid. A row that never does is a run resumed on another
+      // machine: its pid names nothing here, and it is settled.
+      if (owner.kind === "mismatch") {
+        owner = await awaitRowHandOver(current, runTracker, liveness);
+      }
       switch (owner.kind) {
         case "stop":
           return { takenOverBy: owner.pid };
@@ -610,12 +646,6 @@ async function settleCancelledRun(
             current.status,
           );
         case "mismatch":
-          // A resume saved its pid before its row was handed over: the run
-          // is not settled over a live owner, nor its process stopped.
-          throw new RunNotCancelledError(
-            `Run ${run.id} is being taken over by another process and was not cancelled. Cancel it again.`,
-            current.status,
-          );
         case "untracked":
         case "none":
           // No process of this checkout's: the record is settled.

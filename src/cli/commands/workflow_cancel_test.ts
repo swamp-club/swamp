@@ -2431,57 +2431,79 @@ Deno.test("cancelLocalRun and cancelAllLocalRuns: never kill a pid only a run re
   }
 });
 
-Deno.test("cancelLocalRun: a row from another host, or under another pid, does not vouch for the record's pid (swamp-club#4274)", async () => {
+Deno.test("cancelLocalRun: a row from another host, or under another pid that never hands over, does not vouch for the record's pid, and the run is settled (swamp-club#4274)", async () => {
+  // Under another pid: this checkout started the run, then another machine
+  // resumed it, so the record names that machine's pid, which may happen to
+  // be live here (a container's pid 1). The row is never handed over.
   const cases = [
     {
       name: "another host",
       deps: ownedBy(() => OWNER_PID, { hostname: `not-${hostname()}` }),
-      settles: true,
     },
-    {
-      name: "another pid",
-      deps: ownedBy(() => OWNER_PID + 7),
-      settles: false,
-    },
+    { name: "another pid", deps: ownedBy(() => OWNER_PID + 7) },
   ];
-  for (const { name, deps, settles } of cases) {
+  for (const { name, deps } of cases) {
     await withTempDir(async (dir) => {
       const runRepo = new YamlWorkflowRunRepository(dir);
       const workflowId = createWorkflowId(WORKFLOW_ID);
       const run = WorkflowRun.fromData(snapshotData(crypto.randomUUID()));
       await runRepo.save(workflowId, run);
       const killed: number[] = [];
-      const cancel = () =>
-        cancelLocalRun(run, WORKFLOW, "No longer needed", {
-          runRepo,
-          findEvaluatedWorkflow: noSnapshot,
-          runClaims: unclaimedRuns,
-          ...deps,
-          liveness: { hostname: hostname(), isDead: () => false },
-          killProcess: (pid) => {
-            killed.push(pid);
-            return Promise.resolve(true);
-          },
-        });
-      if (settles) {
-        assertEquals((await cancel())?.status, "cancelled", name);
-      } else {
-        // A row of this run here under another pid: a resume whose first
-        // save landed before its row was handed over. Nothing is saved.
-        await assertRejects(
-          cancel,
-          RunNotCancelledError,
-          "is being taken over by another process",
-        );
-        assertEquals(
-          (await runRepo.findById(workflowId, run.id))?.status,
-          "running",
-          name,
-        );
-      }
+      const result = await cancelLocalRun(run, WORKFLOW, "No longer needed", {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...deps,
+        liveness: { hostname: hostname(), isDead: () => false },
+        killProcess: (pid) => {
+          killed.push(pid);
+          return Promise.resolve(true);
+        },
+      });
+      assertEquals(result?.status, "cancelled", name);
       assertEquals(killed, [], name);
     });
   }
+});
+
+Deno.test("cancelLocalRun: stops a local resume whose row is handed over while cancel waits for it (swamp-club#4274)", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(suspendedData(runId));
+    // The resume saved its pid; its row still names the old owner for the
+    // first reads, then is handed over, as handOverTrackerRow does just
+    // after the resume releases the claim.
+    const RESUMER_PID = Deno.pid + 2;
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(snapshotData(runId, RESUMER_PID)),
+    );
+    let reads = 0;
+    const killed: number[] = [];
+    const result = await cancelLocalRun(
+      snapshot,
+      WORKFLOW,
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...ownedBy(() => (++reads > 2 ? RESUMER_PID : OWNER_PID)),
+        liveness: {
+          hostname: hostname(),
+          isDead: (pid) => killed.includes(pid),
+        },
+        killProcess: (pid) => {
+          killed.push(pid);
+          return Promise.resolve(true);
+        },
+      },
+    );
+    assertEquals(killed, [RESUMER_PID]);
+    assertEquals(result?.status, "cancelled");
+  });
 });
 
 Deno.test("cancelLocalRun: a forged record stripped of its instance id never reaches the pid of a serve the tracker names (swamp-club#4274)", async () => {
