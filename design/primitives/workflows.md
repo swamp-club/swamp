@@ -3944,7 +3944,11 @@ engine evaluates the remaining steps in topological order:
   other step is settled as above, so a resume runs it. A `failed`-gated rollback
   on a settled step runs. A step recorded `running` fails as cancelled rather
   than starting, and a finished step or one re-entering a wait is not decided
-  here.
+  here. In a run another job has suspended, a level entered after the
+  cancellation instead leaves every step yet to start pending, whether or not
+  its steps share the level, so the resume runs it (swamp-club#4179). A job
+  that starts beside the suspended one reaches its first level after the
+  cancellation when its forEach expansion reads a vault.
 - Across a serve shutdown such a cleanup step, like any cleanup step or cleanup
   job, runs at least once rather than once: it can outlast
   `SHUTDOWN_ABORT_GRACE_MS`, the run write fence then drops its saves, and a

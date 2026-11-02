@@ -42,6 +42,8 @@ import { RunSensitiveValues } from "../secrets/mod.ts";
 import { stepOutputSourcesOf } from "../expressions/step_output_sources.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import { VaultConfig } from "../vaults/vault_config.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { currentVaultAccess } from "../vaults/run_vault_access.ts";
 import {
   assert,
@@ -14126,6 +14128,333 @@ Deno.test("abort cleanup: a level that suspends at an approval gate keeps its qu
     assertEquals(main.getStep("gate")!.status, "waiting_approval");
     assertEquals(main.getStep("work2")!.status, "pending");
     assertEquals(executor.count("main/work2"), 0);
+  });
+});
+
+class InvocationSignalRecorder extends AbortingStepExecutor {
+  readonly abortedAtInvocation = new Map<string, boolean>();
+
+  override execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    this.abortedAtInvocation.set(
+      `${ctx.jobName}/${ctx.stepName}`,
+      ctx.signal?.aborted ?? false,
+    );
+    return super.execute(step, ctx);
+  }
+
+  assertNeverInvokedAborted(): void {
+    for (const [key, aborted] of this.abortedAtInvocation) {
+      assertEquals(aborted, false, key);
+    }
+  }
+}
+
+const PROBE_VAULT = "probe-vault";
+
+// A vault read does real I/O, so a job whose forEach reads one is still
+// expanding when the abort fires, and enters its first level after it.
+async function withProbeVault(tempDir: string): Promise<void> {
+  await new YamlVaultConfigRepository(tempDir).save(
+    VaultConfig.create(crypto.randomUUID(), PROBE_VAULT, "local_encryption", {
+      auto_generate: true,
+      base_dir: tempDir,
+    }),
+  );
+  const vault = await VaultService.fromRepository(tempDir);
+  await vault.put(PROBE_VAULT, "probe", "present");
+}
+
+function vaultGated(list: string): string {
+  return `\${{ vault.get('${PROBE_VAULT}', 'probe') == null ? [] : ${list} }}`;
+}
+
+function probeAfter(step: string): Step {
+  return modelStep("probe", {
+    ...onStep(step, TriggerCondition.succeeded()),
+    forEach: { item: "target", in: vaultGated("['p']") },
+  });
+}
+
+// Workflow concurrency 1 runs job a to its suspension before job b starts.
+function besideSuspendedSibling(
+  name: string,
+  bSteps: Step[],
+  aSteps: Step[] = [
+    Step.create({ name: "gate", task: StepTask.manualApproval("go?") }),
+  ],
+): Workflow {
+  return Workflow.create({
+    name,
+    concurrency: 1,
+    jobs: [
+      Job.create({ name: "a", steps: aSteps }),
+      Job.create({ name: "b", steps: bSteps }),
+    ],
+  });
+}
+
+function abortAtJobStartOf(
+  jobName: string,
+  stream: AsyncIterable<WorkflowExecutionEvent>,
+  controller: AbortController,
+): Promise<{ run: WorkflowRun; events: WorkflowExecutionEvent[] }> {
+  return finishedRun((async function* () {
+    for await (const event of stream) {
+      if (event.kind === "job_started" && event.jobId === jobName) {
+        controller.abort();
+      }
+      yield event;
+    }
+  })());
+}
+
+function assertLeftPending(
+  run: WorkflowRun,
+  jobName: string,
+  stepNames: string[],
+): void {
+  for (const name of stepNames) {
+    const step = run.getJob(jobName)!.getStep(name);
+    assert(step !== undefined, `${name} has no record`);
+    assertEquals(step.status, "pending", name);
+    assertEquals(step.startedAt, undefined, name);
+    assertEquals(step.error, undefined, name);
+    assertEquals(step.settledByAbort, false, name);
+  }
+}
+
+async function approveGate(
+  runRepo: InMemoryWorkflowRunRepository,
+  workflow: Workflow,
+  run: WorkflowRun,
+  jobName: string,
+  gateName: string,
+): Promise<void> {
+  const gate = run.getJob(jobName)!.getStep(gateName)!;
+  gate.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:test",
+    decidedAt: new Date().toISOString(),
+  });
+  gate.succeed();
+  await runRepo.save(workflow.id, run);
+}
+
+Deno.test("abort cleanup: a lone step in the first level of a job beside a suspended sibling stays pending, not started under the abort", async () => {
+  await withTempDir(async (tempDir) => {
+    await withProbeVault(tempDir);
+    const workflow = besideSuspendedSibling("beside-suspended-wf", [
+      modelStep("work"),
+      probeAfter("work"),
+    ]);
+    const executor = new InvocationSignalRecorder("never", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await abortAtJobStartOf(
+      "b",
+      service.run(workflow.name, { signal: executor.controller.signal }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "suspended");
+    assertEquals(run.getJob("a")!.getStep("gate")!.status, "waiting_approval");
+    assertEquals(run.getJob("b")!.status, "running");
+    assertEquals(executor.count("b/work"), 0);
+    assertLeftPending(run, "b", ["work"]);
+    executor.assertNeverInvokedAborted();
+  });
+});
+
+for (
+  const [label, step] of [
+    ["approval gate", () =>
+      Step.create({
+        name: "work",
+        task: StepTask.manualApproval("again?"),
+      })],
+    ["nested workflow", () =>
+      Step.create({
+        name: "work",
+        task: StepTask.workflow("no-such-child"),
+      })],
+  ] as const
+) {
+  Deno.test(`abort cleanup: a lone ${label} in the first level of a job beside a suspended sibling is not started`, async () => {
+    await withTempDir(async (tempDir) => {
+      await withProbeVault(tempDir);
+      const workflow = besideSuspendedSibling("beside-suspended-task-wf", [
+        step(),
+        probeAfter("work"),
+      ]);
+      const executor = new InvocationSignalRecorder("never", "succeed");
+      const { service } = await setupRetry(
+        tempDir,
+        workflow,
+        undefined,
+        executor,
+      );
+
+      const { run } = await abortAtJobStartOf(
+        "b",
+        service.run(workflow.name, { signal: executor.controller.signal }),
+        executor.controller,
+      );
+
+      assertEquals(run.status, "suspended");
+      assertEquals(run.getJob("b")!.status, "running");
+      assertLeftPending(run, "b", ["work"]);
+      assertEquals(run.getJob("b")!.getStep("work")!.nestedRun, undefined);
+    });
+  });
+}
+
+Deno.test("abort cleanup: a lone forEach iteration in the first level of a job beside a suspended sibling stays pending", async () => {
+  await withTempDir(async (tempDir) => {
+    await withProbeVault(tempDir);
+    const workflow = besideSuspendedSibling("beside-suspended-foreach-wf", [
+      modelStep("build", {
+        forEach: { item: "target", in: vaultGated("['x']") },
+      }),
+    ]);
+    const executor = new InvocationSignalRecorder("never", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await abortAtJobStartOf(
+      "b",
+      service.run(workflow.name, { signal: executor.controller.signal }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "suspended");
+    assertEquals(executor.count("b/build-x"), 0);
+    assertLeftPending(run, "b", ["build-x"]);
+    executor.assertNeverInvokedAborted();
+  });
+});
+
+Deno.test("resume: a step left pending beside a suspended sibling when the abort fired runs after approval", async () => {
+  await withTempDir(async (tempDir) => {
+    await withProbeVault(tempDir);
+    const workflow = besideSuspendedSibling("beside-suspended-resume-wf", [
+      modelStep("work"),
+      probeAfter("work"),
+    ]);
+    const executor = new InvocationSignalRecorder("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run: suspended } = await abortAtJobStartOf(
+      "b",
+      service.run(workflow.name, { signal: executor.controller.signal }),
+      executor.controller,
+    );
+    assertEquals(suspended.status, "suspended");
+    await approveGate(runRepo, workflow, suspended, "a", "gate");
+
+    const resumed = await drainResume(service, workflow.name, suspended.id);
+
+    assert(resumed !== undefined);
+    assertEquals(resumed.status, "succeeded");
+    assertEquals(resumed.getJob("b")!.getStep("work")!.status, "succeeded");
+    assertEquals(executor.count("b/work"), 1);
+    assertEquals(executor.count("b/probe-p"), 1);
+    executor.assertNeverInvokedAborted();
+  });
+});
+
+Deno.test("suspend: without an abort a lone step in the first level of a job beside a suspended sibling still runs", async () => {
+  await withTempDir(async (tempDir) => {
+    await withProbeVault(tempDir);
+    const workflow = besideSuspendedSibling("beside-suspended-no-abort-wf", [
+      modelStep("work"),
+      probeAfter("work"),
+    ]);
+    const executor = new InvocationSignalRecorder("never", "succeed");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await finishedRun(
+      service.run(workflow.name, { signal: executor.controller.signal }),
+    );
+
+    assertEquals(run.status, "suspended");
+    assertEquals(run.getJob("a")!.getStep("gate")!.status, "waiting_approval");
+    assertEquals(run.getJob("b")!.getStep("work")!.status, "succeeded");
+    assertEquals(executor.count("b/work"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a forEach iteration first added on resume beside a suspended sibling is left pending with a record", async () => {
+  await withTempDir(async (tempDir) => {
+    await withProbeVault(tempDir);
+    const workflow = besideSuspendedSibling(
+      "beside-suspended-grown-wf",
+      [
+        modelStep("build", {
+          forEach: {
+            item: "target",
+            in: vaultGated("inputs.?targets.orValue(['x', 'y'])"),
+          },
+        }),
+        modelStep("after", onStep("build", TriggerCondition.succeeded())),
+      ],
+      [
+        Step.create({ name: "gate1", task: StepTask.manualApproval("go?") }),
+        Step.create({
+          name: "gate2",
+          task: StepTask.manualApproval("again?"),
+          ...onStep("gate1", TriggerCondition.succeeded()),
+        }),
+      ],
+    );
+    const executor = new InvocationSignalRecorder("never", "succeed");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const suspended = await service.execute(workflow.name, { inputs: {} });
+    assertEquals(suspended.status, "suspended");
+    assertEquals(
+      suspended.getJob("b")!.getStep("build-y")!.status,
+      "succeeded",
+    );
+    assertEquals(suspended.getJob("b")!.getStep("after")!.status, "pending");
+    await approveGate(runRepo, workflow, suspended, "a", "gate1");
+
+    const { run } = await abortAtJobStartOf(
+      "b",
+      service.resume(workflow.name, suspended.id, {
+        signal: executor.controller.signal,
+        inputs: { targets: ["x", "y", "z"] },
+      }),
+      executor.controller,
+    );
+
+    assertEquals(run.status, "suspended");
+    assertEquals(run.getJob("a")!.getStep("gate2")!.status, "waiting_approval");
+    assertEquals(run.getJob("b")!.status, "running");
+    assertEquals(executor.count("b/build-z"), 0);
+    assertLeftPending(run, "b", ["build-z", "after"]);
+    executor.assertNeverInvokedAborted();
   });
 });
 

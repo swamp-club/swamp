@@ -5262,18 +5262,25 @@ export class WorkflowExecutionService {
           // re-entering a wait, keeps the run's signal.
           let stepOptions: StepOptions = levelOptions;
           const levelStepRun = jobRun.getStep(stepName);
-          if (
-            reachedAfterAbort &&
-            (levelStepRun
-              ? levelStepRun.status === "pending"
-              : levelIterations.has(stepName))
-          ) {
+          const yetToStart: boolean = levelStepRun
+            ? levelStepRun.status === "pending"
+            : levelIterations.has(stepName);
+          if (reachedAfterAbort && yetToStart) {
             if (!levelStep || !runsAfterFailure(levelStep, job, jobRun)) {
               settleLevelStep(stepName);
               return undefined;
             }
             levelStartsCleanup = true;
             stepOptions = cleanupOptions;
+          }
+          // A suspended run keeps such a step pending for its resume, at any
+          // level size: merge() would start a lone stream under the abort.
+          if (
+            run.status === "suspended" && yetToStart &&
+            (stepOptions.signal?.aborted ?? false)
+          ) {
+            if (!levelStepRun) jobRun.addExpandedStep(stepName);
+            return undefined;
           }
 
           const stepConc = originalStep?.concurrency ??
