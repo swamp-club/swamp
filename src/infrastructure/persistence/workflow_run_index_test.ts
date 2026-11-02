@@ -339,28 +339,34 @@ Deno.test("withIndexQueue: a compaction waits for another holder of the index lo
   });
 });
 
-Deno.test("withIndexQueue: a waiter whose lock file its holder removed locks a new one", async () => {
-  await withTempDir(async (dir) => {
-    const lockPath = join(dir, RUNS_INDEX_LOCK_FILENAME);
-    const other = await Deno.open(lockPath, {
-      read: true,
-      write: true,
-      create: true,
-    });
-    let queued: Promise<boolean> | undefined;
-    try {
-      await other.lock(true);
-      queued = withIndexQueue(dir, async () => {
-        const named = await Deno.stat(lockPath);
-        return named.isFile;
+Deno.test({
+  name:
+    "withIndexQueue: a waiter whose lock file its holder removed locks a new one",
+  // Windows may keep a removed file's name until every handle on it closes
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const lockPath = join(dir, RUNS_INDEX_LOCK_FILENAME);
+      const other = await Deno.open(lockPath, {
+        read: true,
+        write: true,
+        create: true,
       });
-      await removeRunIndexFiles(dir);
-    } finally {
-      other.close();
-    }
+      let queued: Promise<boolean> | undefined;
+      try {
+        await other.lock(true);
+        queued = withIndexQueue(dir, async () => {
+          const named = await Deno.stat(lockPath);
+          return named.isFile;
+        });
+        await removeRunIndexFiles(dir);
+      } finally {
+        other.close();
+      }
 
-    assertEquals(await queued, true);
-  });
+      assertEquals(await queued, true);
+    });
+  },
 });
 
 Deno.test("removeRunIndexFiles: removes the index and its lock file, and is a no-op where neither exists", async () => {

@@ -612,16 +612,41 @@ async function openLockFile(
   }
 }
 
+/**
+ * a file index is unique within a volume; where there is none, a file made
+ * since shows a new creation time
+ */
 async function namesFile(path: string, file: Deno.FsFile): Promise<boolean> {
   const held = await file.stat();
   let named: Deno.FileInfo;
   try {
     named = await Deno.stat(path);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return false;
+    // Windows refuses to stat a removed file whose name waits on other handles
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.PermissionDenied
+    ) return false;
     throw error;
   }
-  return held.ino === null || named.ino === held.ino;
+  if (named.dev !== held.dev) return false;
+  if (held.ino !== null && named.ino !== null) return named.ino === held.ino;
+  return named.birthtime?.getTime() === held.birthtime?.getTime();
+}
+
+/** false where a queued change could only make the directory and lock file */
+export async function runIndexFilesExist(
+  workflowRunsDir: string,
+): Promise<boolean> {
+  for (const name of [RUNS_INDEX_FILENAME, RUNS_INDEX_LOCK_FILENAME]) {
+    try {
+      await Deno.lstat(join(workflowRunsDir, name));
+      return true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) return true;
+    }
+  }
+  return false;
 }
 
 /**

@@ -52,6 +52,7 @@ import {
   readRunIndexHeader,
   type RecordFingerprint,
   removeRunIndexFiles,
+  runIndexFilesExist,
   type RunIndexLine,
   statRecord,
   withIndexQueue,
@@ -2014,6 +2015,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   ): Promise<void> {
     const indexDir = this.getLocalIndexDir(workflowId);
     this.runIndexCache.delete(workflowId);
+    if (!await runIndexFilesExist(indexDir)) return;
     await withIndexQueue(indexDir, async () => {
       try {
         if (countYamlRunFiles(await listDirEntries(runsDir)) === 0) {

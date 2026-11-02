@@ -3192,6 +3192,30 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the repo-local log
   });
 });
 
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: makes no local index directory or lock file for records in another datastore with no local index", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const old = await saveFinishedRun(repo, workflow);
+    await saveFinishedRun(repo, workflow);
+    const path = join(storeDir, workflow.id, `workflow-run-${old.id}.yaml`);
+    const data = parseYaml(await Deno.readTextFile(path)) as Record<
+      string,
+      unknown
+    >;
+    const longAgo = new Date(Date.now() - 400 * 86_400_000).toISOString();
+    data.startedAt = longAgo;
+    data.completedAt = longAgo;
+    await Deno.writeTextFile(path, stringifyYaml(data));
+    await backdate(path, 400 * 86_400_000);
+    await Deno.remove(localRunsDir(repoDir, workflow.id), { recursive: true });
+
+    const result = await repo.deleteOlderThan(RETENTION_CUTOFF());
+
+    assertEquals(result.deletedRunIds, [old.id]);
+    assertEquals(await pathExists(localRunsDir(repoDir, workflow.id)), false);
+  });
+});
+
 Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the repo-local log of an unparseable record in another datastore", async () => {
   await withRepoAndStore(async (repoDir, storeDir, repo) => {
     const workflowId = crypto.randomUUID();
