@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { markErrorPaths, UserError } from "../errors.ts";
 import {
+  CONTROL_SOCKET_READS_PROTOCOL_VERSION,
   dispatchErrorCode,
   dispatchErrorPaths,
   DispatchParamsSchema,
@@ -426,7 +427,7 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
   // worker is refused at enrollment
   assertEquals(
     [REMOTE_PROTOCOL_VERSION, SENTINEL_SOURCE],
-    [6, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
+    [7, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
   );
   assertEquals(
     DispatchParamsSchema.safeParse(
@@ -436,13 +437,18 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
   );
 });
 
-Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5 and 6 until typed-secrets 5.3", () => {
+Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5, 6 and 7 until typed-secrets 5.3", () => {
   assertEquals(
-    [4, 5, 6, 7].map(isSupportedRemoteProtocolVersion),
-    [false, true, true, false],
+    [4, 5, 6, 7, 8].map(isSupportedRemoteProtocolVersion),
+    [false, true, true, true, false],
   );
   assertEquals(LEGACY_PLAINTEXT_PROTOCOL_VERSION, 5);
+  assertEquals(CONTROL_SOCKET_READS_PROTOCOL_VERSION, 6);
   assertEquals(shipsReferencesOnly(LEGACY_PLAINTEXT_PROTOCOL_VERSION), false);
+  assertEquals(
+    shipsReferencesOnly(CONTROL_SOCKET_READS_PROTOCOL_VERSION),
+    true,
+  );
   assertEquals(shipsReferencesOnly(REMOTE_PROTOCOL_VERSION), true);
 });
 

@@ -202,6 +202,7 @@ async function startOrchestrator(
     sessions: gateway.sessions,
     dispatches,
     bundles,
+    workerReads: capabilityService,
     onFirstWrite: (dispatch) => dispatchService.recordFirstWrite(dispatch),
   });
   dispatchService.setOnDispatchEnd((id) => dataPlane.releaseDispatch(id));

@@ -3415,6 +3415,7 @@ export const serveCommand = new Command()
       sessions: workerGateway.sessions,
       dispatches: dispatchRegistry,
       bundles: bundleRegistry,
+      workerReads: capabilityService,
       onFirstWrite: (dispatch) => dispatchService.recordFirstWrite(dispatch),
     });
     dispatchService.setOnDispatchEnd((dispatchId) =>

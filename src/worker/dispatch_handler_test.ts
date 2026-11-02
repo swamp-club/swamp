@@ -540,7 +540,7 @@ Deno.test("scrubRunnerStderr: masks a secret that spans lines, as a PEM key writ
   );
 });
 
-Deno.test("registerDispatchHandler: a version 6 dispatch that carries a plaintext field is refused before a runner is spawned (typed-secrets 5.2)", async () => {
+Deno.test("registerDispatchHandler: a references-only dispatch that carries a plaintext field is refused before a runner is spawned (typed-secrets 5.2)", async () => {
   const { worker, orchestrator } = channelPair();
   const events: WorkerDispatchEvent[] = [];
   registerDispatchHandler({
@@ -572,7 +572,7 @@ Deno.test("registerDispatchHandler: a version 6 dispatch that carries a plaintex
   );
   assertStringIncludes(
     error?.message ?? "",
-    "Refusing a protocol version 6 dispatch that carries secretValues",
+    `Refusing a protocol version ${REMOTE_PROTOCOL_VERSION} dispatch that carries secretValues`,
   );
   assertEquals(error?.message.includes("s3cret"), false);
   assertEquals(spawned, 0);

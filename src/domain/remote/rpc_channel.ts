@@ -91,6 +91,23 @@ export class RpcError extends Error {
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
 /**
+ * one byte under the 64 MiB payload Deno's WebSocket receiver rejects with
+ * "Frame too large", which closes the whole socket; the receiver offers no
+ * setting to raise it
+ */
+export const MAX_RPC_FRAME_BYTES = 64 * 1024 * 1024 - 1;
+
+export const FRAME_TOO_LARGE = "frame_too_large";
+
+export interface RpcChannelOptions {
+  maxFrameBytes?: number;
+}
+
+type SendOutcome =
+  | { sent: true }
+  | { sent: false; tooLargeBytes?: number };
+
+/**
  * after a cooperative cancel, how long to wait for the peer's terminal frame; a
  * handler that ignores its abort signal must not pin the caller forever
  */
@@ -119,10 +136,12 @@ export class RpcChannel {
   readonly #handlers = new Map<string, RpcHandler>();
   readonly #pending = new Map<string, PendingCall>();
   readonly #inflight = new Map<string, AbortController>();
+  readonly #maxFrameBytes: number;
   #closed = false;
 
-  constructor(transport: RpcTransport) {
+  constructor(transport: RpcTransport, options?: RpcChannelOptions) {
     this.#transport = transport;
+    this.#maxFrameBytes = options?.maxFrameBytes ?? MAX_RPC_FRAME_BYTES;
   }
 
   /** Register the handler for an inbound method. Last registration wins. */
@@ -241,15 +260,30 @@ export class RpcChannel {
       }
 
       try {
-        observation.run(() =>
-          this.#sendFrame({
-            type: "rpc.request",
-            id,
+        const outcome = observation.run(() =>
+          this.#sendFrame(
+            {
+              type: "rpc.request",
+              id,
+              method,
+              params,
+              ...(observation.carrier ? { trace: observation.carrier } : {}),
+            },
+            undefined,
             method,
-            params,
-            ...(observation.carrier ? { trace: observation.carrier } : {}),
-          })
+          )
         );
+        if (!outcome.sent && outcome.tooLargeBytes !== undefined) {
+          settleReject(
+            new RpcError({
+              code: FRAME_TOO_LARGE,
+              message:
+                `The request for '${method}' is ${outcome.tooLargeBytes}` +
+                ` bytes, over the ${this.#maxFrameBytes} byte control-frame` +
+                ` limit; it was not sent`,
+            }),
+          );
+        }
       } catch (error) {
         settleReject(
           error instanceof Error ? error : new Error("RPC send failed"),
@@ -374,8 +408,27 @@ export class RpcChannel {
       trace: parent,
       signal: controller.signal,
       stream: (event) => {
-        this.#sendFrame({ type: "rpc.stream", id, event });
+        this.#sendFrame({ type: "rpc.stream", id, event }, undefined, method);
       },
+    };
+    const terminal = (frame: RpcFrame) => {
+      const outcome = this.#sendFrame(frame, ctx.responseTrace, method);
+      if (outcome.sent || outcome.tooLargeBytes === undefined) return;
+      const what = frame.type === "rpc.response" ? "reply" : "error reply";
+      this.#sendFrame(
+        {
+          type: "rpc.error",
+          id,
+          error: {
+            code: FRAME_TOO_LARGE,
+            message: `The ${what} to '${method}' is ${outcome.tooLargeBytes}` +
+              ` bytes, over the ${this.#maxFrameBytes} byte control-frame` +
+              ` limit; the call ran, but its ${what} could not be returned`,
+          },
+        },
+        ctx.responseTrace,
+        method,
+      );
     };
 
     // The handler runs detached from the socket's onmessage callback; every
@@ -385,10 +438,7 @@ export class RpcChannel {
     handler(params, ctx).then(
       (result) => {
         this.#inflight.delete(id);
-        this.#sendFrame(
-          { type: "rpc.response", id, result: result ?? null },
-          ctx.responseTrace,
-        );
+        terminal({ type: "rpc.response", id, result: result ?? null });
       },
       (error: unknown) => {
         this.#inflight.delete(id);
@@ -396,15 +446,15 @@ export class RpcChannel {
           const message = error instanceof Error
             ? error.message
             : String(error);
-          this.#sendFrame({
+          terminal({
             type: "rpc.error",
             id,
             error: { code: "cancelled", message },
-          }, ctx.responseTrace);
+          });
           return;
         }
         if (error instanceof RpcError) {
-          this.#sendFrame({
+          terminal({
             type: "rpc.error",
             id,
             error: {
@@ -412,7 +462,7 @@ export class RpcChannel {
               message: error.message,
               details: error.details,
             },
-          }, ctx.responseTrace);
+          });
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
@@ -420,17 +470,18 @@ export class RpcChannel {
           error instanceof DOMException && error.name === "AbortError"
             ? "cancelled"
             : "handler_failed";
-        this.#sendFrame(
-          { type: "rpc.error", id, error: { code, message } },
-          ctx.responseTrace,
-        );
+        terminal({ type: "rpc.error", id, error: { code, message } });
       },
     );
   }
 
-  #sendFrame(frame: RpcFrame, parent?: TraceCarrier): void {
+  #sendFrame(
+    frame: RpcFrame,
+    parent?: TraceCarrier,
+    method?: string,
+  ): SendOutcome {
     if (this.#closed) {
-      return;
+      return { sent: false };
     }
     const observation = observeExecution("rpc.submit", {
       "swamp.rpc.request_id": frame.id,
@@ -439,16 +490,32 @@ export class RpcChannel {
     }, parent);
     try {
       const encoded = JSON.stringify(frame);
-      observation.attributes({
-        "swamp.rpc.encoded_bytes": new TextEncoder().encode(encoded).byteLength,
-      });
+      const bytes = new TextEncoder().encode(encoded).byteLength;
+      observation.attributes({ "swamp.rpc.encoded_bytes": bytes });
+      if (bytes > this.#maxFrameBytes) {
+        observation.attributes({ "swamp.rpc.refused": FRAME_TOO_LARGE });
+        observation.end("error");
+        logger.warn(
+          "Refused to send RPC {frameType} for {method} (id {requestId}): {bytes} bytes exceeds the {limit} byte control-frame limit",
+          {
+            frameType: frame.type,
+            method: method ?? "unknown",
+            requestId: frame.id,
+            bytes,
+            limit: this.#maxFrameBytes,
+          },
+        );
+        return { sent: false, tooLargeBytes: bytes };
+      }
       this.#transport.send(encoded);
       observation.end("ok");
+      return { sent: true };
     } catch (error) {
       observation.end("error");
       logger.warn("Failed to send RPC frame: {error}", {
         error: error instanceof Error ? error.message : String(error),
       });
+      return { sent: false };
     }
   }
 

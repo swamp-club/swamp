@@ -120,12 +120,12 @@ function harness(
     });
   });
   orchestrator.register(RemoteMethod.queryData, (params) => {
-    calls.push({ method: "queryData", params });
-    const { predicate } = params as { predicate: string };
-    if (predicate.startsWith("modelType == ")) {
-      return Promise.resolve([{ name: "by-identity", version: 1 }]);
-    }
-    return Promise.resolve([{ modelName: "thing" }]);
+    calls.push({ method: "rpc.queryData", params });
+    return Promise.resolve([]);
+  });
+  orchestrator.register(RemoteMethod.readOutput, (params) => {
+    calls.push({ method: "rpc.readOutput", params });
+    return Promise.resolve({ result: { id: "single" } });
   });
   orchestrator.register(RemoteMethod.resolveModel, (params) => {
     calls.push({ method: "resolveModel", params });
@@ -160,6 +160,17 @@ function harness(
     [];
   let writerCounter = 0;
   const client = {
+    queryData: (params: { predicate: string }) => {
+      calls.push({ method: "queryData", params });
+      if (params.predicate.startsWith("modelType == ")) {
+        return Promise.resolve([{ name: "by-identity", version: 1 }]);
+      }
+      return Promise.resolve([{ modelName: "thing" }]);
+    },
+    readOutputList: (params: Record<string, unknown>) => {
+      calls.push({ method: "readOutputList", params });
+      return Promise.resolve([{ id: "o1" }, { id: "o2" }]);
+    },
     readArtifact: (contentPath: string) => {
       calls.push({ method: "readArtifact", params: contentPath });
       return Promise.resolve(
@@ -458,11 +469,13 @@ Deno.test("remote context: readResource returns null for missing data", async ()
   });
 });
 
-Deno.test("remote context: queryData and listVersions ride the control socket", async () => {
+Deno.test("remote context: queryData goes over the data plane and listVersions rides the control socket", async () => {
   await withScratch(async (dir) => {
     const h = harness(dir);
     const records = await h.context.queryData!('modelName == "thing"');
     assertEquals(records, [{ modelName: "thing" }]);
+    assertEquals(h.calls.filter((c) => c.method === "queryData").length, 1);
+    assertEquals(h.calls.some((c) => c.method === "rpc.queryData"), false);
     const versions = await h.context.dataRepository.listVersions(
       MODEL_TYPE,
       "m-1",
@@ -1065,5 +1078,66 @@ Deno.test("remote context: on a version 6 dispatch a readResource claim goes thr
       [{ vaultName: "v", secretKey: "api-key" }],
     );
     assertEquals(h.redact("s3cret refresh-tok-loaded"), "*** ***");
+  });
+});
+
+Deno.test("remote context: dataQueryService.query and readModelData go over the data plane, never the socket", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    await h.context.dataQueryService!.query('modelName == "x"', { limit: 5 });
+    await h.context.readModelData!("def");
+    assertEquals(h.calls.some((c) => c.method === "rpc.queryData"), false);
+    assertEquals(h.calls.find((c) => c.method === "queryData")?.params, {
+      predicate: 'modelName == "x"',
+      options: { limit: 5 },
+    });
+  });
+});
+
+Deno.test("remote context: output list reads go over the data plane, single reads over the socket", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    // ids are plain strings on the wire; the branded types do not apply here
+    const repo = h.context.outputRepository! as unknown as {
+      findAll(type: ModelType): Promise<unknown>;
+      findByDefinition(type: ModelType, id: string): Promise<unknown>;
+      findById(type: ModelType, method: string, id: string): Promise<unknown>;
+      findLatestByDefinition(type: ModelType, id: string): Promise<unknown>;
+    };
+    assertEquals(await repo.findAll(MODEL_TYPE), [{ id: "o1" }, { id: "o2" }]);
+    assertEquals(
+      await repo.findByDefinition(MODEL_TYPE, "def-1"),
+      [{ id: "o1" }, { id: "o2" }],
+    );
+    assertEquals(
+      await repo.findById(MODEL_TYPE, "run", "out-1"),
+      { id: "single" },
+    );
+    assertEquals(
+      await repo.findLatestByDefinition(MODEL_TYPE, "def-1"),
+      { id: "single" },
+    );
+    assertEquals(
+      h.calls.filter((c) => c.method === "readOutputList").map((c) => c.params),
+      [
+        { modelType: MODEL_TYPE.normalized },
+        { modelType: MODEL_TYPE.normalized, definitionId: "def-1" },
+      ],
+    );
+    assertEquals(
+      h.calls.filter((c) => c.method === "rpc.readOutput").map((c) => c.params),
+      [
+        {
+          modelType: MODEL_TYPE.normalized,
+          methodName: "run",
+          outputId: "out-1",
+        },
+        {
+          modelType: MODEL_TYPE.normalized,
+          definitionId: "def-1",
+          latestOnly: true,
+        },
+      ],
+    );
   });
 });

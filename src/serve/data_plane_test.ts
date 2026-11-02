@@ -30,7 +30,12 @@ import {
   currentVaultAccess,
   RunVaultAccess,
 } from "../domain/vaults/run_vault_access.ts";
-import { DataPlane, dataPlaneOperation } from "./data_plane.ts";
+import {
+  DataPlane,
+  dataPlaneOperation,
+  type WorkerReads,
+} from "./data_plane.ts";
+import { MAX_WORKER_READ_BODY_BYTES } from "../domain/remote/protocol.ts";
 import { type ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -218,6 +223,7 @@ interface Harness {
   firstWrites: string[];
   tempDir: string;
   scopesAtSave: (RunVaultAccess | undefined)[];
+  workerReadCalls: { verb: string; workerName: string; params: unknown }[];
 }
 
 async function withHarness(
@@ -225,6 +231,7 @@ async function withHarness(
   options: {
     markDirty?: (path?: string) => Promise<void>;
     onVault?: (h: { dispatches: DispatchRegistry; plane: DataPlane }) => void;
+    workerReads?: Partial<WorkerReads>;
   } = {},
 ): Promise<void> {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-data-plane-test" });
@@ -247,6 +254,19 @@ async function withHarness(
     const dispatches = new DispatchRegistry();
     const bundles = new BundleRegistry();
     const firstWrites: string[] = [];
+    const workerReadCalls: Harness["workerReadCalls"] = [];
+    const workerReads: WorkerReads = {
+      queryData: (workerName, params) => {
+        workerReadCalls.push({ verb: "queryData", workerName, params });
+        return options.workerReads?.queryData?.(workerName, params) ??
+          Promise.resolve([]);
+      },
+      readOutput: (workerName, params) => {
+        workerReadCalls.push({ verb: "readOutput", workerName, params });
+        return options.workerReads?.readOutput?.(workerName, params) ??
+          Promise.resolve({ result: [] });
+      },
+    };
     const plane = new DataPlane({
       repoDir: tempDir,
       repoContext: {
@@ -258,6 +278,7 @@ async function withHarness(
       },
       dispatches,
       bundles,
+      workerReads,
       onFirstWrite: (d) => {
         firstWrites.push(d.dispatchId);
         return Promise.resolve();
@@ -280,6 +301,7 @@ async function withHarness(
       firstWrites,
       tempDir,
       scopesAtSave,
+      workerReadCalls,
     });
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
@@ -1464,6 +1486,11 @@ Deno.test("dataPlaneOperation: names operations from the route shape only", () =
     dataPlaneOperation("POST", ["data", "secrets"]),
     "load_secrets",
   );
+  assertEquals(dataPlaneOperation("POST", ["data", "query"]), "query_data");
+  assertEquals(
+    dataPlaneOperation("POST", ["data", "outputs"]),
+    "read_output_list",
+  );
   assertEquals(dataPlaneOperation("PUT", ["data", "other"]), "unknown");
 });
 
@@ -1742,5 +1769,225 @@ Deno.test("DataPlane: a dispatch released while its write waits keeps no data na
       dispatches.unregister("w1", "d-1");
       plane.releaseDispatch("d-1");
     },
+  });
+});
+
+function ndjsonLines(text: string): unknown[] {
+  return text.split("\n").filter((line) => line.length > 0).map((line) =>
+    JSON.parse(line)
+  );
+}
+
+function postJson(path: string, body: unknown, credential?: string | null) {
+  return request(path, {
+    method: "POST",
+    body: typeof body === "string" ? body : JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+    credential,
+  });
+}
+
+Deno.test("DataPlane: /data/query streams each record then a count trailer", async () => {
+  const records = [{ id: "a", n: 1 }, { id: "b", text: "line\nbreak" }];
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/query", {
+        predicate: 'modelName == "x"',
+        options: { loadAttributes: true },
+      }),
+    );
+    assertEquals(response?.status, 200);
+    assertEquals(
+      response?.headers.get("content-type"),
+      "application/x-ndjson",
+    );
+    assertEquals(ndjsonLines(await response!.text()), [
+      { item: records[0] },
+      { item: records[1] },
+      { count: 2 },
+    ]);
+    assertEquals(h.workerReadCalls, [{
+      verb: "queryData",
+      workerName: "w1",
+      params: {
+        predicate: 'modelName == "x"',
+        options: { loadAttributes: true },
+        dispatchId: "d-1",
+      },
+    }]);
+  }, { workerReads: { queryData: () => Promise.resolve(records) } });
+});
+
+Deno.test("DataPlane: /data/query takes the dispatch from the credential, never the body", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/query", { predicate: "true", dispatchId: "d-other" }),
+    );
+    assertEquals(response?.status, 200);
+    await response?.body?.cancel();
+    assertEquals(
+      (h.workerReadCalls[0].params as { dispatchId: string }).dispatchId,
+      "d-1",
+    );
+  });
+});
+
+Deno.test("DataPlane: /data/query refuses a request without a session credential", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/query", { predicate: "true" }, null),
+    );
+    assertEquals(response?.status, 401);
+    await response?.body?.cancel();
+    assertEquals(h.workerReadCalls, []);
+  });
+});
+
+Deno.test("DataPlane: /data/query refuses a worker with no active dispatch", async () => {
+  await withHarness(async (h) => {
+    const response = await h.plane.handle(
+      postJson("/data/query", { predicate: "true" }),
+    );
+    assertEquals(response?.status, 400);
+    assertStringIncludes(await response!.text(), "no active dispatch");
+    assertEquals(h.workerReadCalls, []);
+  });
+});
+
+Deno.test("DataPlane: /data/query refuses an oversize body before reading it all", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/query", {
+        predicate: "p".repeat(MAX_WORKER_READ_BODY_BYTES + 1),
+      }),
+    );
+    assertEquals(response?.status, 413);
+    await response?.body?.cancel();
+    assertEquals(h.workerReadCalls, []);
+  });
+});
+
+Deno.test("DataPlane: /data/query refuses a body that is not JSON or not the query shape", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const notJson = await h.plane.handle(postJson("/data/query", "{nope"));
+    assertEquals(notJson?.status, 400);
+    assertStringIncludes(await notJson!.text(), "Invalid JSON body");
+    const wrongShape = await h.plane.handle(
+      postJson("/data/query", { predicate: 42 }),
+    );
+    assertEquals(wrongShape?.status, 400);
+    assertStringIncludes(await wrongShape!.text(), "predicate");
+    assertEquals(h.workerReadCalls, []);
+  });
+});
+
+Deno.test("DataPlane: /data/query passes a capability refusal back sanitized", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const refused = await h.plane.handle(
+      postJson("/data/query", { predicate: "true", options: { select: "x" } }),
+    );
+    assertEquals(refused?.status, 400);
+    assertStringIncludes(
+      await refused!.text(),
+      "Select projections are not permitted from workers",
+    );
+  }, {
+    workerReads: {
+      queryData: () =>
+        Promise.reject(
+          new Error("Select projections are not permitted from workers"),
+        ),
+    },
+  });
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const leaky = await h.plane.handle(
+      postJson("/data/query", { predicate: "true" }),
+    );
+    assertEquals(leaky?.status, 400);
+    const text = await leaky!.text();
+    assertStringIncludes(text, "internal error");
+    assert(!text.includes("/home/"));
+  }, {
+    workerReads: {
+      queryData: () =>
+        Promise.reject(new Error("ENOENT: /home/someone/.swamp/data/x")),
+    },
+  });
+});
+
+Deno.test("DataPlane: /data/outputs streams a list read with a count trailer", async () => {
+  const outputs = [{ id: "o1" }, { id: "o2" }, { id: "o3" }];
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/outputs", {
+        modelType: MODEL_TYPE.normalized,
+        definitionId: "def-1",
+      }),
+    );
+    assertEquals(response?.status, 200);
+    assertEquals(ndjsonLines(await response!.text()), [
+      ...outputs.map((item) => ({ item })),
+      { count: 3 },
+    ]);
+    assertEquals(h.workerReadCalls, [{
+      verb: "readOutput",
+      workerName: "w1",
+      params: {
+        modelType: MODEL_TYPE.normalized,
+        definitionId: "def-1",
+        dispatchId: "d-1",
+      },
+    }]);
+  }, {
+    workerReads: { readOutput: () => Promise.resolve({ result: outputs }) },
+  });
+});
+
+Deno.test("DataPlane: /data/outputs answers an empty list when the verb hides the type", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/outputs", { modelType: "swamp/worker" }),
+    );
+    assertEquals(response?.status, 200);
+    assertEquals(ndjsonLines(await response!.text()), [{ count: 0 }]);
+  });
+});
+
+Deno.test("DataPlane: /data/outputs refuses the single-record read shapes", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    for (
+      const body of [
+        { modelType: "t", methodName: "run", outputId: "o1" },
+        { modelType: "t", definitionId: "def-1", latestOnly: true },
+      ]
+    ) {
+      const response = await h.plane.handle(postJson("/data/outputs", body));
+      assertEquals(response?.status, 400);
+      assertStringIncludes(await response!.text(), "Only list reads");
+    }
+    assertEquals(h.workerReadCalls, []);
+  });
+});
+
+Deno.test("DataPlane: /data/outputs fails loudly when the verb returns something other than a list", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const response = await h.plane.handle(
+      postJson("/data/outputs", { modelType: "t" }),
+    );
+    assertEquals(response?.status, 500);
+    assertStringIncludes(await response!.text(), "did not return a list");
+  }, {
+    workerReads: { readOutput: () => Promise.resolve({ result: { id: "x" } }) },
   });
 });

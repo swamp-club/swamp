@@ -281,6 +281,7 @@ export async function startBaselineOrchestrator(
     sessions: gateway.sessions,
     dispatches,
     bundles,
+    workerReads: capabilityService,
     onFirstWrite: (dispatch) => dispatchService.recordFirstWrite(dispatch),
     ...(wrapDataPlaneVault
       ? {

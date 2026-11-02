@@ -159,7 +159,14 @@ frame set carried by `RpcChannel` (`src/domain/remote/rpc_channel.ts`), with a
 
 Both sides share the framing, error envelope and `serializeEvent()`. Bulk bytes
 do not use this socket; they go over the HTTP/2 data plane (see
-[Data plane](#data-plane-two-transports)). Worker verbs are separate message
+[Data plane](#data-plane-two-transports)). `RpcChannel` refuses to send any frame
+larger than `MAX_RPC_FRAME_BYTES`, one byte under the 64 MiB payload Deno's
+WebSocket receiver rejects with "Frame too large", which would close the whole
+socket and fail every dispatch on it. An oversize request rejects its own call
+with `frame_too_large`, and an oversize reply or error is replaced by a
+`frame_too_large` error naming the method and size. An oversize stream event is
+dropped. Each refusal logs the frame type, method, request id and byte count,
+never the payload. Worker verbs are separate message
 types that require enrollment, so an ordinary client and an enrolling worker
 share one listener without ambiguity.
 
@@ -480,7 +487,11 @@ incompatible worker at enrollment rather than mid-run; `swampVersion` is
 recorded but not compared (`src/serve/worker_gateway.ts`). From
 typed-secrets 5.2 enrollment accepts protocol versions 5 and 6
 (`SUPPORTED_REMOTE_PROTOCOL_VERSIONS`) for a deprecation window that 5.3 ends,
-and refuses any other with `protocol_mismatch`. The gateway keeps each worker's
+and refuses any other with `protocol_mismatch`. Version 7 moves `queryData` and
+the `readOutput` list reads to the data plane (`POST /data/query`,
+`POST /data/outputs`); serve accepts 5, 6 and 7 and keeps both verbs on the
+control socket for 5 and 6. A version 7 worker cannot enroll with a version 6
+serve, so serve is upgraded before its workers. The gateway keeps each worker's
 enrolled version on its pool entry and snapshot, and serve builds every
 dispatch for the version of the worker it goes to (see secret delivery below).
 A version 5 enrollment logs a warning naming the worker and the 5.3 sunset. The
@@ -843,13 +854,13 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | Operation        | Backed by                                                                             | Transport | Notes                                                                                                             |
 | ---------------- | ------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------- |
 | `getData`        | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`    | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes (dispatch-scoped)   |
-| `queryData`      | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading | ws        | CEL predicate over the catalog; always live. Control-plane records excluded (below). `select` projection rejected |
+| `queryData`      | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading | h2 (v7)   | `POST /data/query`, streamed; ws for v5/v6. Control-plane records excluded (below). `select` projection rejected  |
 | `listVersions`   | `repo.listVersions`                                                                   | ws        | Version history for one item. No dispatch-scope assertion; control-plane types list nothing                       |
 | `deleteData`     | `repo.delete`, `repo.removeLatestMarker`                                              | ws        | Used by lifecycle/GC-aware methods                                                                                |
 | `resolveSecret`  | `vaultService.get` / `getAnnotation`                                                  | ws        | Authorized per step: denylist + allowlist, or a verified resource claim (below)                                   |
 | `putSecret`      | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                             | ws        | Denylist only (below)                                                                                             |
 | `readDefinition` | `definitionRepository.findByName`                                                     | ws        | Lazy-load; no cache. A control-plane type reads as not found                                                      |
-| `readOutput`     | `outputRepository` execution-history reads                                            | ws        | Optional context member. A control-plane type reads as empty                                                      |
+| `readOutput`     | `outputRepository` execution-history reads                                            | ws + h2   | Single reads on ws; `findAll`/`findByDefinition` via `POST /data/outputs` on v7. A control-plane type reads empty |
 | `resolveModel`   | `findDefinitionByIdOrName` over the definition repository                             | ws        | Workflow step behavior resolution. Skips control-plane definitions, so one cannot shadow a behavior               |
 | resource write   | `POST /data/resource` → `writeResource`                                               | h2        | Durable immediately. Carries the method's `overrides` (tags, lifetime, garbageCollection), validated at serve     |
 | resource delete  | `DELETE /data/resource`                                                               | h2        |                                                                                                                   |
@@ -1353,7 +1364,12 @@ on a cache miss. Plain request/response is enough, with no server push.
   (`POST /data/resource` → `repo.save()`), and fetching a bundle on a cache
   miss (`GET /bundle/{fingerprint}`). One small protected route sits beside
   them: `POST /data/secrets` loads the references of the dispatch's own bag
-  (typed-secrets Phase 5, below). HTTP/2's multiplexing and per-stream flow
+  (typed-secrets Phase 5, below). From protocol version 7 the replies that can
+  grow without bound also come here: `POST /data/query` and
+  `POST /data/outputs` call the same `CapabilityService.queryData` and
+  `readOutput` as the control-socket verbs and stream one `{"item": ...}` line
+  per record, then a `{"count": n}` trailer, so the worker never takes a cut-off
+  reply for a complete one. HTTP/2's multiplexing and per-stream flow
   control replace the chunking, credit accounting and priority queues we would
   otherwise hand-write. Deno streams request and response bodies, so memory
   stays bounded on both ends.
@@ -1418,7 +1434,10 @@ semantics and needs almost no new code:
   dispatch is refused there too. `queryData` caps predicate length and
   post-filters results, rejecting outright any query that touches access-control
   or infrastructure behavior data. `listVersions` is the one verb with no scope
-  assertion.
+  assertion, and `readOutput` applies only the control-plane exclusion.
+  `POST /data/query` and `POST /data/outputs` reuse those methods unchanged and
+  take the dispatch from the credential, not from the request body; their body
+  is capped at `MAX_WORKER_READ_BODY_BYTES` before it is parsed.
 
 ## Scheduling, fan-out, and provisioning
 
@@ -2005,6 +2024,13 @@ Non-goals for v1:
   reaping"), but each lease or dispatch transition also writes a method output
   record and run log under `.swamp/outputs/`. Only a manual `swamp run gc`
   removes those.
+- **Control-socket replies are capped below 64 MiB.** A reply still on the
+  socket that exceeds `MAX_RPC_FRAME_BYTES` (a single `readOutput`, a
+  `worker.dispatch` result, or `queryData` from a version 5 or 6 worker) fails
+  that call with `frame_too_large`. The data-plane read routes load their whole
+  result in serve's memory before streaming it; they do not page, and the
+  worker's unary read deadline (`DATA_PLANE_TIMEOUT_MS`, 60 s) covers the whole
+  streamed reply.
 - **No in-flight resume.** A dispatch that loses its control socket is
   re-dispatched from scratch if no write had landed
   (`src/serve/dispatch_service.ts`); partial progress on the worker is lost.
