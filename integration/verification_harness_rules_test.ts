@@ -83,6 +83,7 @@ const EXPECTED_PROMPTS = [
   "adversarial-review.md",
   "ci-security-review.md",
   "code-review.md",
+  "comment-review.md",
   "ux-review.md",
 ];
 
@@ -97,6 +98,7 @@ const EXPECTED_REVIEW_STEPS: Record<string, string> = {
   "adversarial-review": "Adversarial review",
   "ux-review": "UX review",
   "ci-security-review": "CI security review",
+  "comment-review": "Comment review",
 };
 
 /**
@@ -250,7 +252,9 @@ Deno.test("verify-reviews: both reviewers evaluate to the model the attestation 
       Object.fromEntries(
         Object.keys(EXPECTED_REVIEW_STEPS).map((name) => [
           name,
-          model,
+          reviewer === "claude" && name === "comment-review"
+            ? "claude-sonnet-5-5"
+            : model,
         ]),
       ),
     );

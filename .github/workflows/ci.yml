@@ -750,6 +750,7 @@ jobs:
           check_hash "adversarial-review prompt" '.configIntegrity.prompts."adversarial-review"' "verification/review-prompts/adversarial-review.md"
           check_hash "ux-review prompt" '.configIntegrity.prompts."ux-review"' "verification/review-prompts/ux-review.md"
           check_hash "ci-security-review prompt" '.configIntegrity.prompts."ci-security-review"' "verification/review-prompts/ci-security-review.md"
+          check_hash "comment-review prompt" '.configIntegrity.prompts."comment-review"' "verification/review-prompts/comment-review.md"
           check_hash "verify-build workflow" '.configIntegrity.workflows."verify-build"' "verification/workflow-verify-build.yaml"
           check_hash "verify-reviews workflow" '.configIntegrity.workflows."verify-reviews"' "verification/workflow-verify-reviews.yaml"
           check_hash "verify-skills workflow" '.configIntegrity.workflows."verify-skills"' "verification/workflow-verify-skills.yaml"

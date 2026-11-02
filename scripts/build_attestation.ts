@@ -172,6 +172,10 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     path: "verification/review-prompts/ci-security-review.md",
     jsonPath: ["prompts", "ci-security-review"],
   },
+  {
+    path: "verification/review-prompts/comment-review.md",
+    jsonPath: ["prompts", "comment-review"],
+  },
   ...WORKFLOWS.map((w) => ({
     path: w.path,
     jsonPath: ["workflows", w.name],

@@ -35,7 +35,8 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-reviews \
   --input branch=<branch>
 ```
 
-The default reviewer is Claude (`claude-opus-5-5`). Select Codex (`gpt-6-astra`)
+The default reviewer is Claude (`claude-opus-5-5`, with `claude-sonnet-5-5` for
+`comment-review`). Select Codex (`gpt-6-astra`)
 with `--input reviewer=codex`. Codex runs with a restricted read-only permission
 profile and approvals disabled. The profile allows the verified checkout, diff,
 empty working directory, Codex executable and minimal system runtime paths;
@@ -82,6 +83,7 @@ Reviews are guarded by file path — they skip when no relevant files changed:
 | adversarial-review | `src/cli/`, `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-5-5 |
 | ux-review | `src/cli/commands/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/` | claude-opus-5-5 |
 | ci-security-review | `.github/workflows/` | claude-opus-5-5 |
+| comment-review | `*.ts`, `*.tsx`, `AGENTS.md` | claude-sonnet-5-5 |
 
 The guards filter the changed-file list produced by the `detect-changes` job.
 Those `@swamp/git` steps **must** pass `repoPath` pointing at the verification
@@ -550,7 +552,7 @@ The step names per workflow (from `verification/workflow-verify-*.yaml`):
 - `verify-build`: `lint`, `fmt-check`, `type-check`, `run-tests`,
   `vuln-scan`, `build`, `binary-check`
 - `verify-reviews`: `code-review`, `adversarial-review`, `ux-review`,
-  `ci-security-review`
+  `ci-security-review`, `comment-review`
 - `verify-skills`: `skill-review`, `skill-trigger-eval`
 
 Add `--json` for `{"results": [...], "total": N, "limited": bool}`; the log
