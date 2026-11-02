@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * serve runs only evaluations it wrote itself; one a forwarded commit wrote, or
- * whose writer is unknown, is refused with a request to evaluate on serve. The
- * bytes parsed are the ones vouched for
+ * serve runs only evaluations a commit with no forwarded principal wrote; a
+ * forwarded or unknown writer's is refused. The bytes parsed are those vouched
+ * for
  */
 
 import { isFilenameSafeDefinitionName } from "../../domain/definitions/definition.ts";
@@ -61,15 +61,15 @@ export function v3EvaluationTrust(
   },
   /**
    * set by a serve-mode checkout, and to empty when its member is unknown: it
-   * trusts serve's evaluations and this principal's, never another member's,
-   * and any other writer's record refuses. Serve passes none
+   * trusts records with no forwarded principal and this principal's, never
+   * another member's, and any other writer's record refuses. Serve passes none
    */
   ownPrincipal?: string,
 ): EvaluationTrust {
   /**
    * on serve a key holding another writer's record is passed over, so a
-   * forwarded evaluation cannot hide serve's own; a checkout stops at such a
-   * key and sets the replay aside
+   * forwarded evaluation cannot hide one with no forwarded principal; a checkout
+   * stops at such a key and sets the replay aside
    */
   const trusted = async (
     partition: PartitionKey,
@@ -132,9 +132,9 @@ export function v3EvaluationTrust(
     }
     if (untrusted === "forwarded") {
       throw new UserError(
-        `The evaluation of ${what} was not made on this server, so it ` +
-          `cannot be run with --last-evaluated here. Evaluate it on this ` +
-          `server first.`,
+        `The evaluation of ${what} was saved by a member's forwarded commit, ` +
+          `not by this server, so it cannot be run with --last-evaluated ` +
+          `here. Evaluate it on this server first.`,
         "evaluation_not_trusted",
       );
     }

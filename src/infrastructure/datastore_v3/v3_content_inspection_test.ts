@@ -381,6 +381,13 @@ Deno.test({
           const damaged = await inspect();
           assertEquals(damaged?.status, "broken-copy-damaged");
           assertStringIncludes(damaged!.copyCheck!, "not a database");
+          await Deno.remove(commitsDb);
+          const missing = await inspect();
+          assertEquals(missing?.status, "broken-copy-damaged");
+          assertEquals(
+            missing?.copyCheck,
+            `this checkout has no copy at ${commitsDb}`,
+          );
         },
       );
     });

@@ -390,6 +390,7 @@ function makeStoredRunDeps(
   const stored = { data: run.toData() };
   const saves: string[] = [];
   const claimed: string[] = [];
+  const reads: string[] = [];
   let claimHeld = false;
   const runClaims: WorkflowRunClaims = {
     withClaim: async (runId, fn) => {
@@ -403,7 +404,10 @@ function makeStoredRunDeps(
       }
     },
   };
-  const read = () => Promise.resolve(WorkflowRun.fromData(stored.data));
+  const read = () => {
+    reads.push(claimHeld ? "claimed" : "unclaimed");
+    return Promise.resolve(WorkflowRun.fromData(stored.data));
+  };
   const deps: WorkflowApproveDeps = {
     runClaims,
     workflowRepo: {
@@ -421,7 +425,7 @@ function makeStoredRunDeps(
       },
     } as unknown as WorkflowApproveDeps["runRepo"],
   };
-  return { deps, stored, saves, claimed };
+  return { deps, stored, saves, claimed, reads };
 }
 
 Deno.test("workflowApprove: reads the run and saves the decision under the run's claim", async () => {
@@ -517,6 +521,95 @@ Deno.test("workflowReject: reads the run and saves the decision under the run's 
   assertEquals(claimed, [run.id]);
   assertEquals(saves, ["claimed"]);
   assertEquals(stored.data.status, "failed");
+});
+
+Deno.test("workflowApprove: a given run id is claimed lower-cased and read once, under the claim", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const { deps, saves, claimed, reads } = makeStoredRunDeps(workflow, run);
+
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      runId: run.id.toUpperCase(),
+      decidedBy: "approver",
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(claimed, [run.id]);
+  assertEquals(reads, ["claimed"]);
+  assertEquals(saves, ["claimed"]);
+});
+
+Deno.test("workflowReject: a given run id is claimed lower-cased and read once, under the claim", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const { deps, saves, claimed, reads } = makeStoredRunDeps(workflow, run);
+
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), rejectDeps(deps), {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      runId: run.id.toUpperCase(),
+      decidedBy: "approver",
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(claimed, [run.id]);
+  assertEquals(reads, ["claimed"]);
+  assertEquals(saves, ["claimed"]);
+});
+
+Deno.test("workflowApprove: a run stored under an upper-case id is decided under the claim of that id", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const { deps, stored, saves, claimed } = makeStoredRunDeps(workflow, run);
+  stored.data = { ...stored.data, id: run.id.toUpperCase() };
+
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      runId: run.id,
+      decidedBy: "approver",
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(claimed, [run.id, run.id.toUpperCase()]);
+  assertEquals(saves, ["claimed"]);
+});
+
+Deno.test("workflowApprove: a given run id that is not suspended is refused as before, under its claim", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const { deps, stored, saves } = makeStoredRunDeps(workflow, run);
+  const cancelled = WorkflowRun.fromData(stored.data);
+  cancelAndSettle(cancelled, workflow, "Cancelled by user");
+  stored.data = cancelled.toData();
+
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      runId: run.id,
+      decidedBy: "approver",
+    }),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "validation_failed");
+    assertStringIncludes(
+      last.error.message,
+      `Run ${run.id} is not suspended (status: cancelled)`,
+    );
+  }
+  assertEquals(saves, []);
 });
 
 Deno.test("workflowApprove: reports allGatesDecided false while a step still waits for a signal, open or expired", async () => {

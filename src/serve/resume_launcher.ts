@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isServeDrivenRun } from "../domain/datastore_v3/content_bindings.ts";
 import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
@@ -26,7 +25,10 @@ import {
   resolveResumableRun,
   RunNotSuspendedError,
 } from "../domain/workflows/suspended_run_resolver.ts";
-import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import {
+  isServeDrivenRun,
+  type WorkflowRun,
+} from "../domain/workflows/workflow_run.ts";
 import { createEphemeralStore } from "../infrastructure/persistence/ephemeral_store.ts";
 import {
   extractTraceContext,

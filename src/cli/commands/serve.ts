@@ -3863,8 +3863,8 @@ export const serveCommand = new Command()
         v3: v3Location,
       },
     );
-    // only serve's own evaluations run with --last-evaluated on a v3 datastore,
-    // which team members' clients forward to
+    // only evaluations with no forwarded writer run with --last-evaluated on a
+    // v3 datastore, which team members' clients forward to
     if (v3Location !== undefined) {
       repoContext.takesForwardedRunRecords = true;
       repoContext.workflowRunRepo.recordsAreForwarded = true;

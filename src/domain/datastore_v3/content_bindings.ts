@@ -24,9 +24,10 @@
  */
 
 import { canonicalJson } from "../expressions/expression_references.ts";
-import type {
-  StepRunData,
-  WorkflowRunData,
+import {
+  isServeDrivenRun,
+  type StepRunData,
+  type WorkflowRunData,
 } from "../workflows/workflow_run.ts";
 import type { Intent } from "./intent.ts";
 
@@ -136,17 +137,6 @@ export interface AddedStepOutput {
 
 export interface HeldChildRun {
   readonly decisions: readonly unknown[];
-}
-
-/**
- * only serve records a triggering principal or names an instance as a run's
- * owner, so either marks the run whichever team node holds it; gates bind on
- * such a run and no member writes its record
- */
-export function isServeDrivenRun(
-  run: { readonly triggeringPrincipal?: unknown; readonly instanceId?: string },
-): boolean {
-  return run.triggeringPrincipal !== undefined || run.instanceId !== undefined;
 }
 
 export interface RunRecordJudgement {

@@ -6792,16 +6792,20 @@ before it starts, naming `--server`. `workflow waits` also goes to serve, whose
 waits are the only ones a checkout can signal.
 
 **Evaluations serve runs.** Serve runs `--last-evaluated` only with an
-evaluation it wrote itself (`EvaluationTrust`,
+evaluation a commit with no forwarded principal wrote, which is serve's own
+writer or a local one on the datastore (`EvaluationTrust`,
 `src/infrastructure/datastore_v3/trusted_evaluations.ts`): the read model
 records each live record's writer (schema 8), the principal of the forwarded
 commit that put it or none, and an evaluation a forwarded commit wrote, or
 whose writer is unknown (rows from before schema 8, a compacted base), is
 refused with a request to evaluate on serve. The bytes parsed are the ones
 whose writer was checked. A serve-mode checkout applies the same rule to its own
-`--last-evaluated` (`checkLastEvaluation`): it replays only an evaluation serve or
-its own member wrote, from the bytes it checked, and sets aside one another member
-wrote and evaluates again. Failing to check refuses, and finding none is reported as usual. A run log is read and appended to only under the
+`--last-evaluated` (`checkLastEvaluation`): it replays only an evaluation with no
+forwarded principal or its own member's, from the bytes it checked, and sets aside
+one another member wrote and evaluates again. Failing to check refuses. Finding
+none is reported as usual for a behavior; a workflow with no evaluation the
+checkout can replay is refused with `evaluation_not_checked`, because the run
+would otherwise read the unchecked repository copy. A run log is read and appended to only under the
 repo's own run-log directories, whatever path a record holds.
 
 **Proof of possession.** A commit may name a chunk only when one of these
@@ -7726,6 +7730,15 @@ the copy's truth.
   control-character keys have no length limit, so a pathological commit can
   still pass it and is refused rather than read. A byte bound in serve's
   unit of work would close that.
+
+  The limit bounds bytes, not memory. A reply is held whole before it is
+  parsed: the pieces as they arrive, then one copy joining them, then the
+  decoded text, then the parsed value, with two of these alive at each step.
+  A hostile serve can therefore hold a client at roughly 0.7 to 1 GiB for one
+  one-commit page, and more when the body parses into many small values,
+  since a parsed value takes more memory than its text. The limit counts bytes
+  after `fetch` decompresses them, so a small compressed body can still reach
+  it.
 
 **Run index.** The read model's catch-up rewrites run records directly, and
 the run index trusted itself while its count matched. So a run another

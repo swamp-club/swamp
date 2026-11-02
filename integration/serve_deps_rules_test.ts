@@ -21,6 +21,7 @@ import { assertEquals, assertGreater } from "@std/assert";
 import { walk } from "@std/fs/walk";
 import { join, relative, SEPARATOR } from "@std/path";
 import { UNGATED_PUSH_HANDLERS } from "../src/serve/sync_gate.ts";
+import { callArguments } from "./arch_fitness_helpers.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
 const SERVE_HANDLERS_DIR = join(ROOT, "src", "serve", "handlers");
@@ -286,11 +287,11 @@ Deno.test("serve workflow runs take step locks through createStepLockHook", asyn
     }
     for (
       const call of content.matchAll(
-        /(?<!function )\bcreateWorkflowRunDeps\(([^)]*)\)/g,
+        /(?<!function )\bcreateWorkflowRunDeps\(/g,
       )
     ) {
       calls++;
-      const hook = call[1].split(",")[3]?.trim();
+      const hook = callArguments(content, call.index! + call[0].length)[3];
       if (hook !== "stepLockHook") {
         violations.push(
           `${rel}: createWorkflowRunDeps is passed '${hook}' as its step lock hook`,
@@ -354,7 +355,7 @@ Deno.test("serve handlers must pass vaultsDir to createWorker*Deps", async () =>
   );
 });
 
-function callArguments(content: string, pattern: RegExp): string[] {
+function callBodies(content: string, pattern: RegExp): string[] {
   const calls: string[] = [];
   for (const match of content.matchAll(pattern)) {
     const open = match.index! + match[0].length - 1;
@@ -392,16 +393,16 @@ Deno.test("every workflow run entry point passes the repo's defaultVault", async
       return args.length;
     };
     counts.services += check(
-      callArguments(content, /\bnew WorkflowExecutionService\(/g),
+      callBodies(content, /\bnew WorkflowExecutionService\(/g),
       "new WorkflowExecutionService(...)",
     );
     counts.runDeps += check(
-      callArguments(content, /(?<!function )\bcreateWorkflowRunDeps\(/g),
+      callBodies(content, /(?<!function )\bcreateWorkflowRunDeps\(/g),
       "createWorkflowRunDeps(...)",
     );
     if (entry.path.startsWith(SERVE_DIR) || entry.path === serveCli) {
       counts.triggered += check(
-        callArguments(content, /\b(?:executeWorkflowWithLocks|execute)\(/g)
+        callBodies(content, /\b(?:executeWorkflowWithLocks|execute)\(/g)
           .filter((args) => /triggerSource: "/.test(args)),
         "a triggered executeWorkflowWithLocks(...)",
       );
@@ -437,7 +438,7 @@ Deno.test("every WorkflowExecutionService passes the repository's write sync", a
     const content = await Deno.readTextFile(entry.path);
     const rel = normalise(relative(ROOT, entry.path));
     for (
-      const args of callArguments(content, /\bnew WorkflowExecutionService\(/g)
+      const args of callBodies(content, /\bnew WorkflowExecutionService\(/g)
     ) {
       services++;
       if (!/\.(?:durableW|w)riteSync\b/.test(args)) {
@@ -482,11 +483,11 @@ Deno.test("every serve workflow run entry point passes the run write fence", asy
       return args.length;
     };
     counts.runDeps += check(
-      callArguments(content, /(?<!function )\bcreateWorkflowRunDeps\(/g),
+      callBodies(content, /(?<!function )\bcreateWorkflowRunDeps\(/g),
       "createWorkflowRunDeps(...)",
     );
     counts.triggered += check(
-      callArguments(content, /\b(?:executeWorkflowWithLocks|execute)\(/g)
+      callBodies(content, /\b(?:executeWorkflowWithLocks|execute)\(/g)
         .filter((args) => /triggerSource: "/.test(args)),
       "a triggered executeWorkflowWithLocks(...)",
     );
@@ -552,8 +553,11 @@ Deno.test("CLI workflow runs take step locks through workflowStepLockHook, which
         "workflowStepLockHook: its syncGate must default to createSyncGate()",
       );
     }
-    const call = body[2].match(/createStepLockHook\(([\s\S]*?)\);/);
-    const gateArg = call?.[1].split(",")[4]?.trim();
+    const open = body[2].indexOf("createStepLockHook(");
+    const gateArg = open < 0 ? undefined : callArguments(
+      body[2],
+      open + "createStepLockHook(".length,
+    )[4];
     if (gateArg !== "syncGate") {
       violations.push(
         `workflowStepLockHook: passes '${gateArg}' to createStepLockHook as its gate`,

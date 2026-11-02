@@ -25,6 +25,7 @@ import type {
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import {
   resolveSuspendedRun,
+  suspendedRunClaimKey,
   type SuspendedRunInfo,
 } from "../../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
@@ -145,6 +146,7 @@ export function createWorkflowRejectDeps(
 
 type RejectOutcome =
   | { error: SwampError }
+  | { storedAs: string }
   | {
     run: WorkflowRun;
     workflowName: string;
@@ -160,6 +162,7 @@ async function rejectClaimedRun(
   deps: WorkflowRejectDeps,
   input: WorkflowRejectInput,
   runId: string,
+  claimKey: string,
 ): Promise<RejectOutcome> {
   let resolved: SuspendedRunInfo;
   try {
@@ -179,6 +182,8 @@ async function rejectClaimedRun(
   }
 
   const { run, workflowName, workflowId, workflow } = resolved;
+  // decided only under the claim of the id as stored
+  if (run.id !== claimKey) return { storedAs: run.id };
 
   const orphaned = await settleOrphanedNestedRun(deps, run, workflow);
   if (orphaned) return { error: orphanedNestedRunError(orphaned) };
@@ -262,11 +267,10 @@ export async function* workflowReject(
       (async function* () {
         yield { kind: "resolving" };
 
-        // Resolved once to learn which run is meant, then again under that
-        // run's claim: only the second read is decided on.
-        let located: SuspendedRunInfo;
+        // Only the read under the run's claim is decided on.
+        let claimKey: string;
         try {
-          located = await resolveSuspendedRun(
+          claimKey = await suspendedRunClaimKey(
             deps.workflowRepo,
             deps.runRepo,
             input.workflowIdOrName,
@@ -283,10 +287,27 @@ export async function* workflowReject(
           return;
         }
 
-        const outcome = await deps.runClaims.withClaim(
-          located.run.id,
-          () => rejectClaimedRun(deps, input, located.run.id),
+        const readId = input.runId ?? claimKey;
+        let outcome = await deps.runClaims.withClaim(
+          claimKey,
+          () => rejectClaimedRun(deps, input, readId, claimKey),
         );
+        if ("storedAs" in outcome) {
+          const storedAs = outcome.storedAs;
+          outcome = await deps.runClaims.withClaim(
+            storedAs,
+            () => rejectClaimedRun(deps, input, storedAs, storedAs),
+          );
+        }
+        if ("storedAs" in outcome) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Workflow run ${readId} changed while it was claimed. Reject it again.`,
+            ),
+          };
+          return;
+        }
         if ("error" in outcome) {
           yield { kind: "error", error: outcome.error };
           return;

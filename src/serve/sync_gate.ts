@@ -23,7 +23,10 @@
  * reentrant; model lock before gate, global lock after.
  */
 
-import { ReadWriteLock } from "../infrastructure/stream/read_write_lock.ts";
+import {
+  createSyncGate,
+  type SyncGate,
+} from "../infrastructure/persistence/sync_gate_lock.ts";
 import { type RunSyncLane, RunSyncLanes } from "./run_sync_lanes.ts";
 import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -37,12 +40,7 @@ import {
 
 const logger = getSwampLogger(["serve", "sync-gate"]);
 
-/** FIFO among queued acquirers, so a queued exclusive acquirer cannot be starved */
-export type SyncGate = ReadWriteLock;
-
-export function createSyncGate(): SyncGate {
-  return new ReadWriteLock();
-}
+export { createSyncGate, type SyncGate };
 
 /**
  * deliberately below GATE_WAIT_TIMEOUT_MS so a handler behind a slow pull gets
