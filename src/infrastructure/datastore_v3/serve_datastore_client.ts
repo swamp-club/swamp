@@ -184,11 +184,11 @@ export interface LockLease {
   readonly leaseId: string;
   readonly lockKey: string;
   readonly ttlMs: number;
+  readonly expiresAt: string;
   /**
    * a fenced lease's fence; absent when serve does not fence leases (an older
    * serve), so the lease is unfenced
    */
-  readonly expiresAt: string;
   readonly fence?: number;
   /**
    * a fenced model lease's data-version floor when taken: each data name's

@@ -538,10 +538,6 @@ export type WebhookRunAuthorizer = (
   request: WebhookRunRequest,
 ) => Promise<WebhookRunAuthorization>;
 
-/**
- * up to maxConcurrentRuns queued runs execute at once; runs of the same route
- * or workflow may overlap since per-model locks guard shared state
- */
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_QUEUE_DEPTH = 100;
 /**
@@ -557,6 +553,10 @@ export interface WebhookEndpointInfo {
   readonly scheme: string;
 }
 
+/**
+ * up to maxConcurrentRuns queued runs execute at once; runs of the same route
+ * or workflow may overlap since per-model locks guard shared state
+ */
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private readonly maxConcurrentRuns: number;
