@@ -168,7 +168,7 @@ export function classifyOutsideGraph(path: string): OutsideGraphEffect {
     return { effect: "none", rule: `directory:${segments[0]}` };
   }
   if (
-    /_test\.tsx?$/.test(name) || /_test_helpers\.tsx?$/.test(name) ||
+    /_(test|bench)\.tsx?$/.test(name) || /_test_helpers\.tsx?$/.test(name) ||
     segments.includes("test_helpers")
   ) {
     return { effect: "none", rule: "test" };

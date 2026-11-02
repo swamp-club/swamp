@@ -161,6 +161,8 @@ Deno.test("classifyOutsideGraph: docs, skills, tests and tooling affect no comma
       "src/presentation/renderers/thing_test.tsx",
       "src/infrastructure/persistence/path_test_helpers.ts",
       "src/infrastructure/persistence/test_helpers/install_crash.ts",
+      "src/infrastructure/persistence/definition_name_lookup_bench.ts",
+      "src/presentation/renderers/thing_bench.tsx",
       "main_test.ts",
       "src/domain/notes.md",
       "logo.png",
@@ -177,6 +179,8 @@ Deno.test("classifyOutsideGraph: a file no rule recognises affects every command
     const file of [
       "src/cli/commands/worker_exec_dispatch_entry.ts",
       "src/domain/assets/template.yaml",
+      "src/lib/mybench.ts",
+      "src/lib/bench_runner.ts",
       "new-top-level/thing.ts",
       "Makefile",
     ]
@@ -186,6 +190,23 @@ Deno.test("classifyOutsideGraph: a file no rule recognises affects every command
       rule: "unclassified",
     }, file);
   }
+});
+
+Deno.test("classifyOutsideGraph: a bench file is classified as a test", () => {
+  assertEquals(
+    classifyOutsideGraph("src/libswamp/extensions/module_reload_bench.ts"),
+    { effect: "none", rule: "test" },
+  );
+});
+
+Deno.test("computeAffectedCommands: a changed bench file does not force every command", () => {
+  const result = affected([
+    "src/infrastructure/persistence/definition_name_lookup_bench.ts",
+    "src/lib/vault_lib.ts",
+  ]);
+  assertEquals(result.commands, ["vault"]);
+  assertEquals(result.scope, "some");
+  assertEquals(result.forcedAll.count, 0);
 });
 
 Deno.test("computeAffectedCommands: a module selects the commands whose closure contains it", () => {
