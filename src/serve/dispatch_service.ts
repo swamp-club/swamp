@@ -61,9 +61,10 @@ import {
   type StepPlacement,
   unmetPlacement,
 } from "../domain/remote/scheduler.ts";
-import type {
-  RemoteStepRequest,
-  RemoteStepResult,
+import {
+  type RemoteStepRequest,
+  type RemoteStepResult,
+  withRemoteOutputs,
 } from "../domain/remote/remote_dispatch.ts";
 import type { ModelMethodRunner } from "./worker_gateway.ts";
 import type { WorkerSnapshot } from "./worker_gateway.ts";
@@ -983,11 +984,14 @@ export class DispatchService {
         // a coded UserError the worker's method threw comes back as one, its
         // code scrubbed like the message
         const message = scrub(result.error ?? "Remote execution failed");
-        throw markErrorPaths(
-          result.errorCode !== undefined
-            ? new UserError(message, scrub(result.errorCode))
-            : new Error(message),
-          result.errorPaths ?? [],
+        throw withRemoteOutputs(
+          markErrorPaths(
+            result.errorCode !== undefined
+              ? new UserError(message, scrub(result.errorCode))
+              : new Error(message),
+            result.errorPaths ?? [],
+          ),
+          result.outputs,
         );
       }
       leaseSettled = true;

@@ -61,6 +61,7 @@ import {
   recoveredDataHandles,
   writtenVersionsOf,
 } from "../../domain/models/method_execution_service.ts";
+import { remoteOutputsOf } from "../../domain/remote/remote_dispatch.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
@@ -1593,7 +1594,13 @@ export async function* modelMethodRun(
 
                 deps.onWrittenVersions?.([
                   ...writtenVersionsOfHandles(
-                    [...recoveredDataHandles(error), ...failedReportHandles],
+                    [
+                      // a failed dispatch's writes arrive as writtenVersions
+                      ...(remoteOutputsOf(error).length > 0
+                        ? []
+                        : recoveredDataHandles(error)),
+                      ...failedReportHandles,
+                    ],
                     modelType,
                     evaluatedDefinition.id,
                   ),
