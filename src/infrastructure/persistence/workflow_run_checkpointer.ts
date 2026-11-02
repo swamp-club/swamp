@@ -37,9 +37,9 @@ const logger = getSwampLogger(["workflow", "checkpoint"]);
 export const RUN_CHECKPOINT_INTERVAL_MS = 2_000;
 
 /**
- * a save checkpoints at once if none started within the interval or a top-level
- * run ends; otherwise one trailing checkpoint starts when the interval ends.
- * One in flight at a time.
+ * a save checkpoints at once if none started within the interval, a top-level
+ * run ends, or a step starts, or ends beside a running sibling; otherwise one
+ * trailing checkpoint starts when the interval ends. One in flight at a time.
  */
 export class WorkflowRunCheckpointer implements RunCheckpointer {
   readonly #repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">;
@@ -47,8 +47,14 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   #committedThrough = 0;
   readonly #runs = new Map<
     string,
-    { first: number; latest: number; unknownSteps: readonly string[] }
+    {
+      first: number;
+      latest: number;
+      unknownSteps: readonly string[];
+      startedSteps: readonly string[];
+    }
   >();
+  readonly #checkpointedStarts = new Map<string, ReadonlySet<string>>();
   readonly #committedUnknownSteps = new Map<string, readonly string[]>();
   #current: Promise<void> | undefined;
   #next: Promise<void> | undefined;
@@ -73,24 +79,33 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   async checkpoint(run: WorkflowRun): Promise<void> {
     const save = ++this.#saves;
     const seen = this.#runs.get(run.id);
+    const startedSteps = runningStepsOf(run);
     this.#runs.set(run.id, {
       first: seen?.first ?? save,
       latest: save,
       unknownSteps: run.unknownStepsIfOrphaned(),
+      startedSteps,
     });
     if (this.#refused || this.#closed) return;
+    const checkpointed = this.#checkpointedStarts.get(run.id);
+    const newStart = startedSteps.some((step) => !checkpointed?.has(step));
+    // A step that ends while a sibling runs has no next start to carry its
+    // end, so recovery would count it with the sibling as maybe-run.
+    const endedBesideSibling = startedSteps.length > 0 &&
+      [...checkpointed ?? []].some((step) => !startedSteps.includes(step));
     // a top-level run's last save commits at once, so whether its final record
     // landed is known before its root ends; a nested child's is covered by its
     // parent's
     const ended = run.status !== "pending" && run.status !== "running" &&
       run.parentRun === undefined;
-    if (ended && this.#trailingTimer !== undefined) {
+    const atOnce = ended || newStart || endedBesideSibling;
+    if (atOnce && this.#trailingTimer !== undefined) {
       clearTimeout(this.#trailingTimer);
       this.#trailingTimer = undefined;
     }
-    if (!ended && this.#trailingTimer !== undefined) return;
+    if (!atOnce && this.#trailingTimer !== undefined) return;
     const wait = this.#lastStarted + this.#intervalMs - this.#now();
-    if (ended || wait <= 0) {
+    if (atOnce || wait <= 0) {
       await this.#schedule();
       return;
     }
@@ -180,6 +195,9 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     const unknownSteps = [...this.#runs].map(([runId, saves]) =>
       [runId, saves.unknownSteps] as const
     );
+    for (const [runId, saves] of this.#runs) {
+      this.#checkpointedStarts.set(runId, new Set(saves.startedSteps));
+    }
     this.#lastStarted = this.#now();
     const started = (async () => {
       if (this.#refused) return;
@@ -213,4 +231,15 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     });
     return current;
   }
+}
+
+/** a step run again keeps its name but not its start time */
+function runningStepsOf(run: WorkflowRun): string[] {
+  return run.jobs.flatMap((job) =>
+    job.steps
+      .filter((step) => step.status === "running")
+      .map((step) =>
+        `${job.jobName}/${step.stepName}@${step.startedAt?.getTime() ?? ""}`
+      )
+  );
 }

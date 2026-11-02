@@ -19,7 +19,6 @@
 
 import "../src/domain/models/models.ts";
 import { z } from "zod";
-import { waitFor } from "@swamp-club/swamp-testing";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -149,11 +148,10 @@ export function registerBigWriter(cut = true): ModelType {
 }
 
 /**
- * the step's start is saved before the method runs, so a trailing checkpoint
- * commits it and the committed record shows the step running, as a mid-step cut
- * leaves it
+ * the step's start commits before the method runs, so the committed record
+ * shows the step running, as a mid-step cut leaves it
  */
-export function registerMidStepCutter(repos: RowRepos): ModelType {
+export function registerMidStepCutter(): ModelType {
   const type = ModelType.create(`test/mid-step-cutter-${crypto.randomUUID()}`);
   modelRegistry.register({
     type,
@@ -168,21 +166,10 @@ export function registerMidStepCutter(repos: RowRepos): ModelType {
     },
     methods: {
       write: {
-        description: "Wait for a checkpoint of the running step, then cut",
+        description: "Write the payload, then cut the running step",
         kind: "update",
         arguments: z.object({}),
         execute: async (_args, context) => {
-          const config = repos.a.datastoreConfig;
-          if (isCustomDatastoreConfig(config)) {
-            throw new Error("these cases run on a filesystem datastore");
-          }
-          const store = v3DatastoreFor(repos.repoA, config).commitStore;
-          const entered = store.highWaterMark().cursor;
-          await waitFor(
-            () => store.highWaterMark().cursor > entered,
-            "a checkpoint of the running step",
-            { timeoutMs: 15_000 },
-          );
           const writer = context.createFileWriter!("payload", "payload");
           await Deno.writeTextFile(await writer.getFilePath(), PAYLOAD);
           const payload = await writer.finalize();

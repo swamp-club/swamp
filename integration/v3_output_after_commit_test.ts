@@ -218,13 +218,13 @@ for (const mode of ["json", "log"] as const) {
             ],
           });
           assertPartlyCommittedRun(result, mode, workflow.id);
-          // only the run's start was committed, before its step started, so
-          // recover needs no acknowledgement
+          // the step's start commits before its method runs, so recover is
+          // told the step may have run
           const [run] = (result.error as RunPartlyCommittedError).runs;
-          assertEquals(run.unknownSteps, []);
-          assert(
-            !String(result.error).includes("--acknowledge-unknown"),
+          assertEquals(run.unknownSteps, ["write"]);
+          assertStringIncludes(
             String(result.error),
+            "--acknowledge-unknown",
           );
           assertEquals(await payloadCommitted(repos, type), false);
         } finally {
@@ -260,7 +260,7 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   async fn() {
     await withFaults(async (repos) => {
-      const type = registerMidStepCutter(repos);
+      const type = registerMidStepCutter();
       try {
         const name = `cutter-${crypto.randomUUID().slice(0, 8)}`;
         await seedModel(repos, type, name);

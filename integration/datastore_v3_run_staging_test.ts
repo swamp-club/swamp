@@ -37,6 +37,7 @@ import { ModelType } from "../src/domain/models/model_type.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import {
   createWorkflowRunId,
@@ -315,7 +316,7 @@ async function runWorkflow(
     sink?: CommitSink;
     onRefused?: CommitLogRootOptions<unknown>["onRefused"];
     abort?: AbortController;
-    checkpoints?: boolean;
+    checkpoints?: boolean | RunCheckpointer;
   } = {},
 ): Promise<string> {
   const unit = unitOptions(options.sink ?? env.store, env.storage, {
@@ -330,7 +331,11 @@ async function runWorkflow(
     },
     undefined,
     undefined,
-    options.checkpoints === true ? { runCheckpointer: unitCheckpoints } : {},
+    options.checkpoints === true
+      ? { runCheckpointer: unitCheckpoints }
+      : options.checkpoints
+      ? { runCheckpointer: options.checkpoints }
+      : {},
   );
   let runId: string | undefined;
   await runInCommitLogRoot(
@@ -529,6 +534,61 @@ Deno.test("v3 run staging: with checkpoints, a run whose consumer stops before a
     // The run stays running, as v2 leaves its file, for the dead-owner
     // settling to find.
     assertEquals((await storedRun(env, stopped, runId))?.status, "running");
+  });
+});
+
+/** The engine a v3 context gives WorkflowRunCheckpointer, over this harness's units. */
+const unitEngine: CommitLogEngine = {
+  openUnit: () => {
+    throw new Error("not used");
+  },
+  hasOpenUnit: () => currentUnitOfWork() !== undefined,
+  async checkpointOpenUnit() {
+    const unit = currentUnitOfWork();
+    if (unit === undefined) return "no-unit";
+    try {
+      return await checkpointFrom(unit) ? "committed" : "no-unit";
+    } catch (error) {
+      if (error instanceof PartitionsRefusedError) return "refused";
+      throw error;
+    }
+  },
+  committedBeforeThrowing: () => false,
+  runRoot: () => Promise.reject(new Error("not used")),
+};
+
+Deno.test("v3 run staging: a run stopped as its second step starts, inside the checkpoint interval, keeps that step's start in the committed record (swamp-club#4295)", async () => {
+  await withAuditedV3Env(async (env) => {
+    const type = registerWriter();
+    const definition = Definition.create({ name: "writer" });
+    const second = Step.create({
+      name: "b",
+      task: StepTask.model("writer", "write", { text: "b" }),
+      dependsOn: [{ step: "a", condition: TriggerCondition.succeeded() }],
+    });
+    const context = await runContext(env, "cut", type, definition, [
+      writeStep("a"),
+      second,
+    ]);
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog: unitEngine },
+      { intervalMs: 60_000 },
+    );
+    const runId = await runWorkflow(env, context, async (stream) => {
+      for await (const event of stream) {
+        const started = event as { kind: string; stepId?: string };
+        if (started.kind === "step_started" && started.stepId === "b") break;
+      }
+    }, { checkpoints: checkpointer });
+    await checkpointer.close();
+
+    const run = await storedRun(env, context, runId);
+    const steps = run?.jobs[0].steps.map((step) => [
+      step.stepName,
+      step.status,
+    ]);
+    assertEquals(steps, [["a", "succeeded"], ["b", "running"]]);
+    assertEquals(run?.unknownStepsIfOrphaned(), ["b"]);
   });
 });
 

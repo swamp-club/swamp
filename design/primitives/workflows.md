@@ -3444,6 +3444,17 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
+**Cancel on a v3 datastore.** A run's owner holds a directly bound v3
+datastore's writer for the whole run, so a cancel that took the writer first
+would wait for the run to end. Cancel therefore finds its runs through a
+read-only open, stops their owners (`stopLocalRunOwners`), and only then takes
+the writer to settle the records, with the stopped owners passed on so none is
+stopped twice. An owner that stopped on SIGTERM saved its own outcome and
+released the writer; one killed after its grace left a lease the writer's open
+takes over on this host. A cancel never answers with
+`datastore_v3_writer_busy`: when another process holds the writer after the
+owners stopped, it says what it stopped and what to do next (swamp-club#4295).
+
 **Which process cancel stops.** A run record is data: a v2 S3 or GCS datastore
 syncs it between members' checkouts, and a team-mode checkout takes it from
 serve's feed, so its `pid` is whatever its writer put there, and a pid from

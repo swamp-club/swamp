@@ -53,7 +53,7 @@ const PINNED = [
   // doctor datastores --repair -y on v2 rolls unreadable data versions back;
   // opened only when there are findings to repair
   "src/cli/commands/doctor_datastores.ts :: createUnreadableVersionsRepairDeps",
-  "src/cli/commands/model_cancel.ts :: createModelCancelCommand",
+  "src/cli/commands/model_cancel.ts :: createModelCancelCommand (x2)",
   "src/cli/commands/model_create.ts :: createModelCreateCommand",
   "src/cli/commands/model_delete.ts :: createModelDeleteCommand",
   "src/cli/commands/model_edit.ts :: createModelEditCommand",
