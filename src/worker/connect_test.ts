@@ -34,9 +34,6 @@ import {
   RemoteMethod,
 } from "../domain/remote/protocol.ts";
 
-/**
- * A scripted in-memory WebSocket wired to an orchestrator-side RpcChannel.
- */
 class FakeSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
@@ -69,7 +66,6 @@ class FakeSocket {
     queueMicrotask(() => this.onclose?.());
   }
 
-  /** Server-initiated drop. */
   drop(): void {
     this.close();
   }
@@ -100,7 +96,6 @@ Deno.test("runWorker: connects, enrolls, and reports status", async () => {
     onStatus: (event) => {
       events.push(event);
       if (event.kind === "enrolled") {
-        // Drop the socket so the (reconnect: false) loop exits.
         queueMicrotask(() => socket!.drop());
       }
     },
@@ -315,7 +310,6 @@ Deno.test("runWorker: a stable cache directory keeps the machine id across resta
       });
     };
 
-    // Two process lifetimes: fresh instance uuids, one machine identity.
     await runOnce();
     await runOnce();
     assertEquals(enrollments.length, 2);
@@ -324,7 +318,6 @@ Deno.test("runWorker: a stable cache directory keeps the machine id across resta
       enrollments[0].instanceUuid === enrollments[1].instanceUuid,
       false,
     );
-    // The caller's directory is the caller's: exit leaves it in place.
     await Deno.stat(join(cacheDir, "machine-id"));
   } finally {
     await Deno.remove(cacheDir, { recursive: true }).catch(() => {});
@@ -358,11 +351,6 @@ async function exists(path: string): Promise<boolean> {
   return await Deno.stat(path).then(() => true, () => false);
 }
 
-/**
- * A socket that immediately closes without calling onopen — simulates
- * an HTTP-level rejection (401, 403, 429) where the WebSocket upgrade
- * never completes.
- */
 class RejectingSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
@@ -475,7 +463,6 @@ Deno.test("runWorker: pre-enrollment failure counter resets after successful enr
     },
     createSocket: () => {
       socketCount++;
-      // First two attempts fail before enrollment, third succeeds.
       if (socketCount <= 2) {
         return new RejectingSocket() as unknown as WebSocket;
       }
@@ -553,13 +540,11 @@ Deno.test("runWorker: a coded permanent rejection stops the loop", async () => {
 Deno.test("runWorker: a token name that reads like a reason does not make a retryable rejection permanent", async () => {
   for (
     const error of [
-      // Coded and retryable.
       new RpcError({
         code: "token_unreadable",
         message:
           "Enrollment token 'expired-runners' could not be read after redemption; retry the connection",
       }),
-      // Uncoded, as an orchestrator without codes sends it.
       new RpcError({
         code: "handler_failed",
         message:
@@ -674,7 +659,6 @@ Deno.test("runWorker: a worker without a credential is admitted on the orchestra
 
   assertEquals(enrollments.length, 2);
   assertEquals(enrollments[0].needsGatePass, true);
-  // Admitted once per process: a reconnect neither asks nor checks again.
   assertEquals("needsGatePass" in enrollments[1], false);
   assertEquals(admitted, ["cHJvb2Y.c2ln"]);
   assertEquals(order, ["admitted", "enrolled", "enrolled"]);
@@ -770,7 +754,6 @@ Deno.test("runWorker: admission that settles after the socket closed does not re
     },
   });
 
-  // The socket drops while admission is still pending.
   await admitSeen;
   socket!.drop();
   await done.catch(() => {});

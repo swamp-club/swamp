@@ -18,12 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Dispatch runner entry point: executes exactly one dispatch in a child
- * process. The supervisor spawns `swamp worker exec-dispatch` with the
- * merged environment and communicates over length-prefixed stdio frames.
- *
- * stdout carries RPC frames ONLY — all logging and console output MUST
- * go to stderr. This is enforced before any model code loads.
+ * stdout carries RPC frames only; all logging and console output must go to
+ * stderr, enforced before any model code loads
  */
 
 import { Definition } from "../domain/definitions/definition.ts";
@@ -81,18 +77,9 @@ function toOutputs(handles: DataHandle[]): DispatchOutput[] {
 }
 
 /**
- * Rebuild the definition named in a remote execution envelope so the worker
- * can run one method against it.
- *
- * The definition already exists on the dispatching side, so this reconstitutes
- * it with `Definition.fromData` rather than creating it. `Definition.create`
- * enforces the naming rule for new definitions (bf0320ef), which a definition
- * named before that rule may not meet; local loading accepts those names, and
- * so must the worker (swamp-club#2926). The path-traversal guard still applies.
- *
- * No typeVersion: the result is never persisted. The upgrade chain does not
- * run here either — only executeWorkflow upgrades, and it does so before
- * dispatching, so `methodArgs` are already migrated.
+ * rebuilt with Definition.fromData, not create, because create's naming rule
+ * may reject names that local loading accepts; methodArgs are already migrated
+ * and the result is never persisted
  */
 export function definitionFromExecution(
   execution: DispatchExecution,
@@ -111,11 +98,9 @@ export function definitionFromExecution(
 }
 
 /**
- * Tells the supervisor, and through it serve, that the step's arguments
- * passed their schema. It is sent as `runner.event` is, without waiting on
- * the supervisor's answer: the frame leaves ahead of the result frame on the
- * same ordered pipe, so serve sees it first. A failed report is logged, not
- * fatal: it only keeps serve from recording the evaluation.
+ * sent without waiting for the answer: the frame leaves ahead of the result on
+ * the same ordered pipe, so serve sees it first; a failed report is logged, not
+ * fatal
  */
 function reportArgumentsValidated(
   channel: RpcChannel,
@@ -130,11 +115,6 @@ function reportArgumentsValidated(
   return Promise.resolve();
 }
 
-/**
- * Run the dispatch runner. Called from the hidden `swamp worker exec-dispatch`
- * CLI command. Reads bootstrap params from the first stdin frame, executes
- * the dispatch, and returns the result over the stdio RPC channel.
- */
 export async function runDispatchRunner(
   stdin: ReadableStream<Uint8Array>,
   stdout: WritableStream<Uint8Array>,
@@ -144,7 +124,6 @@ export async function runDispatchRunner(
   const channel = new RpcChannel(transport);
   const cancelController = new AbortController();
 
-  // Read the bootstrap frame (first frame on stdin).
   let bootstrapParams: RunnerBootstrapParams | null = null;
   let bootstrapResolve: (() => void) | null = null;
   let bootstrapReject: ((err: Error) => void) | null = null;
@@ -171,8 +150,6 @@ export async function runDispatchRunner(
   );
   readerDone.catch(() => {});
 
-  // Register cancel handler — the supervisor forwards rpc.cancel as a
-  // direct "runner.cancel" call on our channel.
   channel.register("runner.cancel", () => {
     cancelController.abort();
     return Promise.resolve({});
@@ -196,18 +173,9 @@ export async function runDispatchRunner(
     prefix: `swamp-dispatch-${dispatch.dispatchId.slice(0, 8)}-`,
   });
 
-  // One redactor for the dispatch, known from the first frame and shared with
-  // the method context so the secrets a method learns on the way join it.
-  // Console lines travel to the orchestrator's run log in the result, so they
-  // are scrubbed like streamed output (swamp-club#3080), and so is the error
-  // message, which serve stores on the step lease (swamp-club#3525). It is
-  // also an active process redactor until the dispatch is over: this
-  // process's stderr is read and re-logged by the worker supervisor, so the
-  // stderr sink and the console guard mask the dispatch's secrets before a
-  // line leaves (swamp-club#3526). CLI entry points retain it until process
-  // exit because buffered console traces flush after this function returns.
-  // In-process callers release it when the dispatch ends. Nothing before
-  // this point handles a secret (bootstrap is parsed, not logged).
+  // one redactor for the dispatch, registered process-wide so stderr and
+  // console output are masked before a line leaves; CLI entry points keep it
+  // until exit because buffered traces flush later
   const redactor = dispatchRedactor(dispatch.secretValues);
   const redactorHandle = runFileSink.registerRedactor(redactor);
 
@@ -279,10 +247,9 @@ export async function runDispatchRunner(
     getHandles = remote.getHandles;
 
     const executor = new DefaultMethodExecutionService();
-    // A version 6 dispatch is delivered here as a local run is: its
-    // references load once through the protected route, then the global and
-    // method arguments are validated, once, on this worker. Serve learns the
-    // parse passed from the runner itself, never from a method's events.
+    // references load once through the protected route before arguments are
+    // validated on this worker; serve learns the parse passed from the runner
+    // itself, never from a method's events
     const run = referencesOnly
       ? () =>
         executor.executeDispatched(
@@ -342,8 +309,6 @@ export async function runDispatchRunner(
 
   result.trace = completionTrace;
   await transport.sendFinal(JSON.stringify({ type: "runner.result", result }));
-  // Return rather than exit: the CLI then ends the runner's swamp.cli span
-  // and flushes tracing before main.ts exits the process. Without that, every
-  // runner span hangs off a root the collector never receives. Standalone
-  // entry points exit themselves after this returns.
+  // return rather than exit so the CLI ends the runner's span and flushes
+  // tracing before main.ts exits
 }

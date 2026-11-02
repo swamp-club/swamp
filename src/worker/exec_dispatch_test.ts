@@ -45,10 +45,6 @@ import {
 } from "../domain/remote/stdio_transport.ts";
 import { definitionFromExecution, runDispatchRunner } from "./exec_dispatch.ts";
 
-/**
- * Runs one dispatch through the runner in this process and returns the
- * result frame it wrote, or undefined when it sent none.
- */
 async function runRunner(
   bootstrap: Record<string, unknown>,
 ): Promise<DispatchResult | undefined> {
@@ -84,10 +80,9 @@ async function runRunner(
 Deno.test("runDispatchRunner: returns after sending its result frame instead of exiting", async () => {
   const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
   try {
-    // stdin: one bootstrap frame for a dispatch whose model type does not
-    // exist, so the runner reports an error result without network access.
-    // Before swamp-club#2467 the runner called Deno.exit(0) after the result
-    // frame, which would end this test process instead of resolving.
+    // a dispatch for a model type that does not exist makes the runner report
+    // an error result without network access; the runner must return, not exit
+    // the process
     const result = await runRunner({
       sessionCredential: "cred",
       dataPlaneUrl: "http://127.0.0.1:9",
@@ -145,7 +140,6 @@ Deno.test("runDispatchRunner: the result error is scrubbed with the dispatch red
         dispatchId: crypto.randomUUID(),
         leaseId: crypto.randomUUID(),
         execution: {
-          // Its secrets travel in the frame, as a version 5 dispatch's do.
           protocolVersion: LEGACY_PLAINTEXT_PROTOCOL_VERSION,
           modelType: type.normalized,
           modelId: crypto.randomUUID(),
@@ -175,10 +169,6 @@ Deno.test("runDispatchRunner: the result error is scrubbed with the dispatch red
   }
 });
 
-/**
- * A version 5 bootstrap for `modelType`'s `run` method, shipping `secret` in
- * the frame.
- */
 function bootstrapFor(cacheDirPath: string, modelType: string, secret: string) {
   const definitionId = crypto.randomUUID();
   return {
@@ -279,7 +269,6 @@ Deno.test("runDispatchRunner: leaves the scratch dir the supervisor made for the
   }
 });
 
-/** Registers a per-run model type whose `run` method throws `thrown`. */
 function throwingRunModel(thrown: Error): ModelType {
   const type = ModelType.create(`swamp/runner-test-${crypto.randomUUID()}`);
   defineModel({
@@ -371,8 +360,7 @@ function executionNamed(name: string): DispatchExecution {
 }
 
 Deno.test("definitionFromExecution: accepts a name that predates the strict naming rule", () => {
-  // A definition named before bf0320ef loads and runs locally; the worker
-  // rejected it with a ZodError until swamp-club#2926.
+  // a definition named before the strict naming rule must still load and run
   const execution = executionNamed("MyServer");
   const definition = definitionFromExecution(execution, { run: "echo hi" });
 
@@ -399,11 +387,6 @@ Deno.test("definitionFromExecution: still rejects a path-traversal name", () => 
   );
 });
 
-/**
- * Runs one dispatch through the runner in this process, answering every call
- * the runner makes of its supervisor as the supervisor does, and returns
- * the result frame with the calls it made.
- */
 async function runRunnerAnswering(
   bootstrap: Record<string, unknown>,
 ): Promise<{ result: DispatchResult | undefined; calls: string[] }> {
@@ -419,7 +402,6 @@ async function runRunnerAnswering(
       joined.set(pending);
       joined.set(chunk, pending.length);
       pending = joined;
-      // Length-prefixed frames, as the stdio transport writes them.
       while (pending.length >= 4) {
         const length = new DataView(pending.buffer, pending.byteOffset)
           .getUint32(0);
@@ -467,7 +449,6 @@ Deno.test("runDispatchRunner: a version 6 dispatch loads its references once thr
       },
     },
   });
-  // Serve's bag, which ships its references and no value.
   const serveBag = new VaultSecretBag(new SecretBagRegistry());
   const endpoint = serveBag.addSecret(
     { vaultName: "v", key: "endpoint" },
@@ -523,7 +504,6 @@ Deno.test("runDispatchRunner: a version 6 dispatch loads its references once thr
     );
     assertEquals(run.result?.status, "success", run.result?.error);
     assertEquals(received, [{ token, endpoint: "https://api.example.com" }]);
-    // One load, through the route, under the dispatch credential.
     assertEquals(calls.length, 1);
     assertEquals(new URL(calls[0].url).pathname, DISPATCH_SECRETS_PATH);
     assertEquals(run.calls, ["runner.argumentsValidated"]);

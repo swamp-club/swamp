@@ -28,10 +28,8 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 const logger = getSwampLogger(["worker", "bridge"]);
 
 /**
- * The 9 metadata-RPC capability verbs that the bridge forwards from the
- * child runner to the orchestrator. Data-plane HTTP operations
- * (persistResource, persistFile, appendData, getData for bytes) go
- * directly from the child to the orchestrator — not through the bridge.
+ * data-plane HTTP operations go directly from the child to the orchestrator,
+ * not through the bridge
  */
 const BRIDGED_VERBS: readonly string[] = [
   RemoteMethod.getData,
@@ -46,32 +44,19 @@ const BRIDGED_VERBS: readonly string[] = [
 ] as const;
 
 export interface RunnerBridgeOptions {
-  /** RPC channel to the child runner (over StdioTransport). */
   childChannel: RpcChannel;
-  /** RPC channel to the orchestrator (over WebSocket). */
   orchestratorChannel: RpcChannel;
-  /** Dispatch ID injected into every bridged call for dispatch-scoped auth. */
   dispatchId: string;
-  /** Signal to abort all bridged calls (e.g. dispatch cancelled). */
   signal: AbortSignal;
-  /** Receives stream events from the child to forward to the orchestrator. */
   onChildStream?: (event: unknown) => void;
 }
 
 /**
- * Safety timeout for bridged capability calls. Strictly larger than
- * DEFAULT_CALL_TIMEOUT_MS (30 s) so the child always observes a stall
- * first. Catches leaked pending calls when a child exits without
- * sending rpc.cancel.
+ * strictly larger than the default call timeout so the child observes a stall
+ * first; catches leaked pending calls when a child exits without rpc.cancel
  */
 export const BRIDGE_CAPABILITY_TIMEOUT_MS = 180_000;
 
-/**
- * Wire the capability RPC bridge: register handlers on the child channel
- * that forward each capability verb to the orchestrator channel and return
- * the response. Call IDs are mapped automatically by RpcChannel — each
- * side generates its own IDs.
- */
 export function bridgeCapabilityVerbs(
   options: RunnerBridgeOptions,
 ): void {

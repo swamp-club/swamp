@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The worker's dispatch handler (see design/enablers/remote-execution.md).
- *
- * Each dispatch spawns a child process (dispatch runner) via
- * `swamp worker exec-dispatch`. The environment snapshot is applied as the
- * child's spawn environment (no global mutation). The supervisor bridges
- * capability RPCs between the child and the orchestrator over a
- * StdioTransport. A runner crash fails only that dispatch, not the worker.
- *
- * Each dispatch spawns one runner. The handler accepts up to `capacity`
- * concurrent dispatches, rejecting with `worker_busy` when all slots are full.
- * Capacity 1 is byte-for-byte identical to the prior serial behavior.
- */
-
 import { hostname } from "node:os";
 import {
   observeExecutionWork,
@@ -81,7 +67,6 @@ import { dispatchRedactor } from "./remote_method_context.ts";
 
 const logger = getSwampLogger(["worker", "dispatch"]);
 
-/** Worker-visible lifecycle of one dispatch, for connect-mode output. */
 export type WorkerDispatchEvent =
   | {
     kind: "dispatch_started";
@@ -104,35 +89,24 @@ export type WorkerDispatchEvent =
 export interface DispatchHandlerOptions {
   lifecycleTrace?: TraceCarrier;
   channel: RpcChannel;
-  /** Session credential getter for the data plane. */
   sessionCredential: () => string;
-  /** Base URL of the orchestrator's HTTP data plane. */
   dataPlaneUrl: string;
-  /** Path to the shared bundle cache directory. */
   cacheDirPath: string;
-  /** PEM-encoded CA certificates the runner trusts for data-plane requests. */
   caCerts?: string[];
-  /** Maximum concurrent dispatches (default 1). */
   capacity: number;
-  /** Receives dispatch start/finish notifications (connect-mode output). */
   onDispatch?: (event: WorkerDispatchEvent) => void;
-  /** Override the runner command + args (test seam). */
   runnerCommand?: { cmd: string; args: string[] };
   /**
-   * Settles once a worker without a credential has been admitted through
-   * the auth gate on its orchestrator's pass. A dispatch that arrives first
-   * waits for it; if admission fails (the worker then stops), the dispatch
-   * is refused as `worker_draining`, so the orchestrator re-queues it.
+   * a dispatch arriving before admission waits for it; if admission fails the
+   * dispatch is refused as worker_draining so the orchestrator re-queues it
    */
   admitted?: Promise<void>;
 }
 
 export interface DispatchHandlerHandle {
-  /** Signal the handler to reject new dispatches and resolve when in-flight work completes. */
   drain: () => Promise<void>;
 }
 
-/** Registers the dispatch handler on an enrolled worker channel. */
 export function registerDispatchHandler(
   options: DispatchHandlerOptions,
 ): DispatchHandlerHandle {
@@ -227,9 +201,8 @@ export function registerDispatchHandler(
 }
 
 /**
- * Builds the bootstrap frame the supervisor sends a dispatch runner. The
- * worker's CA certificates travel here rather than in the spawn environment,
- * which the orchestrator's environment snapshot can overlay.
+ * the worker's CA certificates travel in the bootstrap frame, not the spawn
+ * environment, which the orchestrator's environment snapshot can overlay
  */
 export function buildRunnerBootstrapParams(
   params: DispatchParams,
@@ -251,19 +224,9 @@ export function buildRunnerBootstrapParams(
 }
 
 /**
- * Builds a dispatch runner's environment: the shipped snapshot overlays the
- * worker's own environment, inherited trace context is dropped, the
- * dispatch's own W3C trace context goes on top, and worker control-plane
- * credentials are removed.
- *
- * A runner therefore joins a trace only through its dispatch's trace headers.
- * A `TRACEPARENT` the worker was started with, or one an orchestrator ships,
- * would otherwise put every untraced dispatch into one long-lived trace.
- *
- * When the orchestrator on this host holds per-model locks for the step
- * (`lockHolder`), it is declared an ancestor of the runner, so a swamp the
- * step starts skips those locks (design/enablers/datastores.md,
- * "Parent-Process Lock Awareness").
+ * a runner joins a trace only through its dispatch's trace headers; an
+ * inherited or shipped TRACEPARENT would put every untraced dispatch into one
+ * long-lived trace
  */
 export function buildRunnerEnvironment(
   workerEnv: Record<string, string>,
@@ -287,10 +250,9 @@ export function buildRunnerEnvironment(
 }
 
 /**
- * Spawn options for a dispatch runner. `clearEnv` makes `env` the runner's
- * whole environment: Deno otherwise merges it over the worker's own, which
- * would bring back everything {@link buildRunnerEnvironment} removed — the
- * worker's credentials and its inherited trace context.
+ * clearEnv makes env the runner's whole environment; otherwise Deno merges it
+ * over the worker's own and brings back the credentials and trace context that
+ * were removed
  */
 export function runnerSpawnOptions(
   args: string[],
@@ -307,14 +269,9 @@ export function runnerSpawnOptions(
 }
 
 /**
- * The lines of a runner's stderr as the supervisor logs them, scrubbed with
- * `redactor`. The runner masks its own stderr with the same shipped values
- * and whatever it learned since (swamp-club#3526); this second pass covers
- * bytes written outside its sinks and a runner that died before it
- * registered its redactor. Those raw bytes keep a secret's real newlines, so
- * the whole stream is scrubbed before it is cut into lines: a PEM key split
- * first would never match as a whole. Typed-secrets Phase 5 removes
- * `secretValues` from dispatch, and this pass goes with it.
+ * the whole stream is scrubbed before it is cut into lines, since a PEM key
+ * split first would never match; covers bytes outside the runner's sinks and a
+ * runner that died before registering its redactor
  */
 export function scrubRunnerStderr(
   stderr: string,
@@ -333,8 +290,8 @@ async function handleDispatch(
   let started: WorkerDispatchEvent | undefined;
   let finished = false;
   const start = performance.now();
-  // The runner's scratch directory is the supervisor's: a runner killed
-  // after a cancel never reaches its own cleanup (swamp-club#3854).
+  // the supervisor owns the scratch directory: a runner killed after a cancel
+  // never reaches its own cleanup
   const scratchDir = await Deno.makeTempDir({
     prefix: `swamp-dispatch-${
       DispatchParamsSchema.parse(rawParams).dispatchId.slice(0, 8)
@@ -350,9 +307,8 @@ async function handleDispatch(
       },
     }, scratchDir);
   } catch (error) {
-    // A dispatch that fails before its runner reports (the spawn, the
-    // bootstrap frame) still finishes, so the worker's count of running
-    // dispatches stays exact (swamp-club#3854).
+    // a dispatch that fails before its runner reports still finishes, so the
+    // count of running dispatches stays exact
     if (started !== undefined && !finished) {
       options.onDispatch?.({
         kind: "dispatch_finished",
@@ -425,7 +381,6 @@ async function runDispatch(
   const childChannel = new RpcChannel(childTransport);
   const cancelController = new AbortController();
 
-  // Bridge capability verbs from child → orchestrator.
   bridgeCapabilityVerbs({
     childChannel,
     orchestratorChannel: options.channel,
@@ -433,15 +388,13 @@ async function runDispatch(
     signal: cancelController.signal,
   });
 
-  // Forward stream events from the child to the orchestrator.
   childChannel.register("runner.event", (eventParams: unknown) => {
     const p = eventParams as { event: Record<string, unknown> };
     ctx.stream({ kind: "method_event", event: p.event });
     return Promise.resolve({});
   });
-  // The runner's own report that the arguments passed their schema, which
-  // serve answers with the caller's hook (typed-secrets 5.2). A method's
-  // events travel inside method_event above, so they cannot pass for it.
+  // the runner's own report that arguments passed their schema; method events
+  // travel inside method_event, so they cannot pass for it
   childChannel.register(RUNNER_ARGUMENTS_VALIDATED, () => {
     ctx.stream({ kind: ARGUMENTS_VALIDATED_EVENT });
     return Promise.resolve({});
@@ -477,7 +430,6 @@ async function runDispatch(
     reader.releaseLock();
   })();
 
-  // Send bootstrap params as the first frame (after readers are active).
   childTransport.send(JSON.stringify(bootstrapParams));
 
   let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -499,16 +451,14 @@ async function runDispatch(
   ctx.signal.addEventListener("abort", onCancel, { once: true });
 
   try {
-    // Wait for the child to finish.
     const status = await child.status;
     await readerDone.catch(() => {});
     await stderrDone.catch(() => {});
 
     const durationMs = performance.now() - start;
 
-    // Log child stderr, scrubbed of the dispatch's shipped secrets. A
-    // version 6 dispatch ships none: its runner masks what it loads before a
-    // line leaves (swamp-club#3526), so this pass has nothing to add.
+    // scrub child stderr of the dispatch's shipped secrets; a version 6
+    // dispatch ships none because its runner masks what it loads
     if (stderrChunks.length > 0) {
       const stderr = new TextDecoder().decode(concatChunks(stderrChunks));
       const redactor = dispatchRedactor(params.secretValues);
@@ -545,7 +495,6 @@ async function runDispatch(
       return result;
     }
 
-    // Child exited without sending a result — treat as crash.
     const message = status.success
       ? "Runner exited without sending a result"
       : `Runner crashed with exit code ${status.code}`;
