@@ -60,6 +60,9 @@ Three properties drove the design:
 | **Enrollment token**     | A named, time-boxed credential that enrolls one or more workers (`maxEnrollments`), then re-authenticates each bound instance for its lifetime. A built-in behavior.                                                                                                                                                                         |
 | **Session credential**   | Short-lived credential issued at enrollment. Authenticates the worker's HTTP/2 data-plane requests.                                                                                                                                                                                                                                          |
 | **Dispatch**             | The orchestrator → worker request to run one `ExecutionRequest`. The unit of fan-out.                                                                                                                                                                                                                                                        |
+| **Fan-out plan**         | The members of a fan-out job, each with a disposition (`dispatch`, `waiting`, `skipped`, `failed`, `excluded`), made once from a `WorkerPoolReader` snapshot when the job starts.                                                                                                                                                            |
+| **Lane**                 | One fan-out member's run of the job, pinned to that worker. Only `dispatch` and `waiting` members get one.                                                                                                                                                                                                                                   |
+| **Error budget**         | `maxFailures`: the failed lanes a rollout tolerates, as a count or a percentage of planned lanes rounded down. Once it is spent, no lane starts and the lanes that never started are held.                                                                                                                                                   |
 | **Capability**           | A side-effecting function a method reaches through its context, proxied to the orchestrator. A fixed, closed set.                                                                                                                                                                                                                            |
 | **Step lease**           | The orchestrator's record that a step is in flight on a worker. A built-in behavior.                                                                                                                                                                                                                                                         |
 | **Environment snapshot** | The orchestrator's full process environment, shipped with each dispatch and kept in worker memory only while the step runs.                                                                                                                                                                                                                  |
@@ -1491,6 +1494,45 @@ matching worker is free. As a result, fan-out breadth at any moment is bounded
 by the steps ready in the current level and their concurrency caps. A
 free-running ready-step queue that dispatches across level boundaries is future
 work.
+
+### Fan-out planning (dormant)
+
+The planning core for a job that runs once per matching worker is in place, but
+nothing calls it yet: the job-level `fanOut` field that will use it is the next
+phase of swamp-club#3824. It is all pure domain code apart from one port.
+
+- **`WorkerPoolReader`** (`src/domain/remote/worker_pool.ts`) returns the pool
+  a plan is made from. Serve's implementation
+  (`src/serve/worker_pool_reader.ts`) returns the gateway's live workers,
+  including those inside the reconnection grace window, plus workers in this
+  namespace's `swamp/worker` records that have left the pool while their
+  enrollment token still holds. A token holds when
+  `enrollmentTokenBindingVerdict` keeps it and its `expiresAt` is still ahead.
+  The worker record keeps no mint, so its `enrolledAt` stands in for it: a
+  token created after the worker enrolled is a re-mint. Pool reads stay inside
+  serve; expressions still cannot see control-plane records.
+- **`planFanOut(selector, policy, pool)`** (`src/domain/remote/scheduler.ts`)
+  matches labels and platform exactly as `eligibleWorkers` does and gives every
+  match one disposition, in name order: `excluded` for unverified or draining
+  workers (whatever their connection), `waiting`, `skipped` or `failed` for
+  disconnected ones by `offline`, and `dispatch` for the rest. Only `dispatch`
+  and `waiting` members get a lane. With fewer lanes than `minWorkers`
+  (default 1, never 0), the plan is refused and holds no members.
+- **`planBatches`** and **`nextBatch`** (`src/domain/remote/rollout.ts`).
+  Batches take `dispatch` lanes in name order, then `waiting` lanes, so the
+  canary is a host that is up. A batch percentage rounds up and the last batch
+  (`100%`) takes the rest. The failure budget `maxFailures` is a count, or a
+  percentage of planned lanes rounded down when the plan is made. `nextBatch`
+  is the one place the budget is decided. The lane engine consults it before
+  every lane start, so once more lanes have failed than the budget allows, no
+  lane starts, even inside a batch. Lanes already running finish, and the lanes
+  that never started are held. Plan-time `failed`, `skipped` and `excluded`
+  members are not lanes and never count toward the budget.
+
+The value objects (`FanOutPolicy`, `RolloutPolicy`, `FanOutPlan`,
+`FanOutMember`) live in `src/domain/remote/fan_out.ts`, not with the workflow
+placement fields: workflows already depends on remote, and the reverse import
+would make the two contexts depend on each other.
 
 ### Host launching is a swamp workflow
 
