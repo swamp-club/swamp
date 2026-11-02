@@ -30,7 +30,7 @@ export const RUNS_INDEX_FILENAME = ".runs-index.json";
 // old on-disk indices are rebuilt instead of serving stale data.
 export const INDEX_SCHEMA_VERSION = 5;
 
-/** a v5 header is the first line; a legacy index is one line of any length */
+/** the current header is the first line; a legacy index is one line of any length */
 const HEADER_MAX_BYTES = 4096;
 
 /** below this an index is not worth compacting, whatever it last compacted to */
@@ -387,6 +387,19 @@ export async function writeRunIndex(
   );
 }
 
+async function endsWithNewline(path: string): Promise<boolean> {
+  const file = await Deno.open(path, { read: true });
+  try {
+    if ((await file.stat()).size === 0) return true;
+    await file.seek(-1, Deno.SeekMode.End);
+    const last = new Uint8Array(1);
+    await file.read(last);
+    return last[0] === 10;
+  } finally {
+    file.close();
+  }
+}
+
 export type AppendResult =
   | { kind: "appended"; size: number; compactedBytes: number }
   | { kind: "absent" }
@@ -415,7 +428,11 @@ export async function appendRunIndexLines(
     };
   }
   if (header.version !== INDEX_SCHEMA_VERSION) return { kind: "stale" };
-  await Deno.writeTextFile(path, await linesText(lines), { append: true });
+  // a torn tail would otherwise swallow this run's line along with it
+  const lead = await endsWithNewline(path) ? "" : "\n";
+  await Deno.writeTextFile(path, lead + await linesText(lines), {
+    append: true,
+  });
   return {
     kind: "appended",
     size: (await Deno.stat(path)).size,

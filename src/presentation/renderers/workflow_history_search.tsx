@@ -140,7 +140,10 @@ class InkWorkflowHistorySearchRenderer
                 " ",
               )
               : "";
-            const inputStr = inputPairs(item).join(" ");
+            // matched on listed values only, so "omitted" matches no run
+            const inputStr = Object.entries(item.inputs ?? {})
+              .map(([k, v]) => `${k}=${String(v)}`)
+              .join(" ");
             return `${item.workflowName} ${item.runId} ${item.status} ${tagStr} ${inputStr}`
               .trim();
           },

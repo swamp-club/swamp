@@ -53,7 +53,7 @@ function entryOf(status: string): WorkflowRunIndexEntry {
   };
 }
 
-Deno.test("run index: appends, removals and compactions read back as a map of the last change per run", async () => {
+Deno.test("appendRunIndexLines: appends, removals and compactions read back as a map of the last change per run", async () => {
   const dir = await Deno.makeTempDir();
   try {
     await fc.assert(

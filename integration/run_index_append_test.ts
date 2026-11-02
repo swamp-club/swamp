@@ -107,7 +107,7 @@ async function bytesOneSaveAppends(
   return (await Deno.stat(indexPath)).size - before;
 }
 
-Deno.test("run index: the bytes one save adds do not grow with the large inputs of retained runs", async () => {
+Deno.test("YamlWorkflowRunRepository.save: the bytes one save adds do not grow with the large inputs of retained runs", async () => {
   await withRepoDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = webhookWorkflow();
@@ -136,7 +136,7 @@ Deno.test("run index: the bytes one save adds do not grow with the large inputs 
     // The lines differ only in their record fingerprints' digits.
     assert(Math.abs(withManyRuns - withOneRun) < 64);
     assert(withOneRun < LARGE_INPUT_BYTES / 10);
-    // Each run's entry holds at most the input budget plus its other fields.
+    // 4096 bytes of slack per entry for its fields besides inputs.
     const size = (await Deno.stat(indexPath)).size;
     assert(size < 52 * 2 * (INDEXED_INPUTS_MAX_BYTES + 4096));
     const entries = (await readRunIndex(join(indexPath, "..")))!.entries;
@@ -148,7 +148,7 @@ Deno.test("run index: the bytes one save adds do not grow with the large inputs 
   });
 });
 
-Deno.test("run index: run search and history search match an omitted input exactly through the records", async () => {
+Deno.test("workflowRunSearch and workflowHistorySearch: match an omitted input exactly through the records", async () => {
   await withRepoDir(async (dir) => {
     const workflowRepo = new YamlWorkflowRepository(dir);
     const runRepo = new YamlWorkflowRunRepository(dir);

@@ -5190,3 +5190,46 @@ Deno.test("getValidatedIndex: a torn line is repaired and dropped from the index
     assertEquals((await readRunIndex(indexDir))?.damaged, undefined);
   });
 });
+
+Deno.test("findPersistedInputs: a record that does not parse reads as no inputs rather than failing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    await Deno.writeTextFile(repo.getPath(workflow.id, run.id), "status: [");
+
+    assertEquals(
+      await repo.findPersistedInputs(workflow.id, run.id),
+      undefined,
+    );
+  });
+});
+
+Deno.test("save: compacting a damaged index past the bound repairs it, so later saves only append", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const indexPath = getIndexPath(indexDir);
+    await Deno.writeTextFile(indexPath, "torn\n", { append: true });
+    const entry = (await readRunIndex(indexDir))!.entries[run.id];
+    const filler = `${JSON.stringify({ id: run.id, entry })}\n`;
+    await Deno.writeTextFile(
+      indexPath,
+      filler.repeat(Math.ceil(INDEX_COMPACTION_FLOOR_BYTES / filler.length)),
+      { append: true },
+    );
+
+    run.interruptOrphaned("test");
+    await repo.save(workflow.id, run);
+
+    const repaired = await readRunIndex(indexDir);
+    assertEquals(repaired?.damaged, undefined);
+    assertEquals(repaired?.entries[run.id].status, "interrupted");
+    assertEquals(
+      (await Deno.readTextFile(indexPath)).trimEnd().split("\n").length,
+      2,
+    );
+  });
+});

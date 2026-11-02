@@ -37,7 +37,6 @@ import { RunIndexCache, type RunIndexStamp } from "./run_index_cache.ts";
 import { SharedIndexRead } from "./shared_index_read.ts";
 import {
   appendRunIndexLines,
-  compactRunIndex,
   countYamlRunFiles,
   deleteRunIndex,
   fingerprintMatches,
@@ -1442,15 +1441,22 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * the inputs a run's record persists, the form its summary is made from:
-   * vault references, never values; undefined for a run with no record
+   * the persisted form (vault references, never values); undefined for a run
+   * whose record is gone or cannot be read, so one bad record fails no search
    */
   async findPersistedInputs(
     workflowId: WorkflowId,
     runId: WorkflowRunId,
   ): Promise<Record<string, unknown> | undefined> {
-    const run = await this.findById(workflowId, runId);
-    return run ? run.toPersistedData().inputs ?? {} : undefined;
+    try {
+      const run = await this.findById(workflowId, runId);
+      return run ? run.toPersistedData().inputs ?? {} : undefined;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      logger
+        .warn`Could not read run ${runId} of workflow ${workflowId} to match its inputs: ${reason}`;
+      return undefined;
+    }
   }
 
   /**
@@ -1937,6 +1943,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // with no fingerprint is read and corrected by verifyIndexes.
         const record = await fingerprintIfContent(path, written);
         await this.appendIndexLines(
+          this.getRunsDir(workflowId),
           indexDir,
           [{ id: run.id, entry: indexEntryOf(summary, record) }],
           true,
@@ -1954,6 +1961,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * than appended to: its entries lack the fields this version writes
    */
   private async appendIndexLines(
+    runsDir: string,
     indexDir: string,
     lines: RunIndexLine[],
     create: boolean,
@@ -1962,8 +1970,31 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     if (appended.kind === "stale") {
       await deleteRunIndex(indexDir);
     } else if (appended.kind === "appended" && needsCompaction(appended)) {
-      await compactRunIndex(indexDir);
+      await this.compactIndexUnqueued(runsDir, indexDir);
     }
+  }
+
+  /**
+   * a damaged index is checked against its records first, as the repair pass
+   * does, so a torn line does not make every later save read it again
+   */
+  private async compactIndexUnqueued(
+    runsDir: string,
+    indexDir: string,
+  ): Promise<void> {
+    const result = await readRunIndex(indexDir);
+    if (!result || result.version !== INDEX_SCHEMA_VERSION) return;
+    if (result.damaged) {
+      try {
+        const suspects = await this.findSuspectRecords(runsDir, result.entries);
+        await this.reconcileSuspects(runsDir, result.entries, suspects);
+      } catch (error) {
+        logger
+          .warn`Not compacting the damaged run index ${indexDir}, which the next read repairs: ${error}`;
+        return;
+      }
+    }
+    await writeRunIndex(indexDir, result.entries);
   }
 
   /**
@@ -1995,8 +2026,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           if (await statRecord(path) !== null) continue;
           removed.push({ id: runId, removed: true });
         }
+        // a removal line for a run never indexed replays as nothing
         if (removed.length > 0) {
-          await this.appendIndexLines(indexDir, removed, false);
+          await this.appendIndexLines(runsDir, indexDir, removed, false);
         }
       } catch (error) {
         logger
@@ -2029,7 +2061,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         const result = await readRunIndex(indexDir);
         if (!current || !result || !indexEntryDiffers(result, current)) return;
         const summary = parseWorkflowRunSummary(current.toPersistedData());
-        await this.appendIndexLines(indexDir, [{
+        await this.appendIndexLines(this.getRunsDir(workflowId), indexDir, [{
           id: current.id,
           entry: indexEntryOf(summary, sameFingerprint(before, after)),
         }], false);

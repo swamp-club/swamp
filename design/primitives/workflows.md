@@ -3343,13 +3343,17 @@ kept values reach 8 KiB, and lists the other keys in `inputsOmitted`
 (`boundIndexedInputs`, `src/domain/workflows/workflow_run_summary.ts`). A
 summary read from a record when there is no usable index is bounded the same
 way. Run search and history search rows carry the bounded inputs and
-`inputsOmitted`; the full values stay in the run's record, for `workflow run
-get` and `workflow history get`. An `--input` filter on an omitted key, and a
+`inputsOmitted`; the full values stay in the run's record, for `workflow
+history get <runId>`. An `--input` filter on an omitted key, and a
 history `--filter` whose CEL expression names `inputs` on a run with omitted
-keys, read that run's record (`runInputsOf`) and match exactly as before. A
-record is read only for a run that passed every other check and that the
-caller may read, under the workflow whose directory listed the run, never the
-id its entry records, and its values are compared, never returned.
+keys, read that run's record (`runInputsOf`) and match exactly as before. An
+`--input` reads the record only of a run that passed every other check; a
+`--filter` cannot be split, so it reads the record of every listed run with
+omitted keys. Either way a record is read only for a run the caller may read,
+under the workflow whose directory listed the run, never the id its entry
+records. Records are read a few at a time and each is judged and let go, and
+its values are compared, never returned. A record that cannot be read matches
+nothing.
 
 Readers whose repairs wait behind the same index work share one validation
 pass, including approvals and run selection (swamp-club#3857). The group closes

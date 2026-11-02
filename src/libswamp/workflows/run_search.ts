@@ -108,12 +108,7 @@ export interface WorkflowRunSearchDeps {
    * name. Asked once per distinct pair. Without it every run is readable.
    */
   isReadable?(workflowId: string, workflowName: string): Promise<boolean>;
-  /**
-   * the persisted inputs of a run the search has already listed, read from its
-   * record when an --input filter names a key the index omits; workflowId is
-   * the workflow whose runs listed it, never the id the index entry records.
-   * Undefined for a run whose record is gone
-   */
+  /** workflowId is the workflow that listed the run, never its entry's id */
   runInputsOf(
     workflowId: string,
     runId: string,

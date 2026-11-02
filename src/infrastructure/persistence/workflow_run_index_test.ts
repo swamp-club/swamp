@@ -575,3 +575,21 @@ Deno.test("needsCompaction: only past the floor and twice the compacted size", (
     true,
   );
 });
+
+Deno.test("appendRunIndexLines: a line appended after a torn tail still reads", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, {});
+    await Deno.writeTextFile(getIndexPath(dir), '{"id":"run-1","ent', {
+      append: true,
+    });
+
+    await appendRunIndexLines(dir, [{
+      id: "run-2",
+      entry: SAMPLE_INDEX["run-2"],
+    }], { create: false });
+
+    const result = await readRunIndex(dir);
+    assertEquals(result?.entries, { "run-2": SAMPLE_INDEX["run-2"] });
+    assertEquals(result?.damaged, true);
+  });
+});
