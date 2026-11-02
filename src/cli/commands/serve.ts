@@ -374,6 +374,7 @@ import {
   stopHeartbeatAtShutdown,
 } from "../../serve/shutdown_interrupt.ts";
 import { ShutdownDeadline } from "../../serve/shutdown_deadline.ts";
+import { ShutdownStages } from "../../serve/shutdown_stages.ts";
 import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
 import {
   clearCommittedAtBoot,
@@ -7732,13 +7733,22 @@ export const serveCommand = new Command()
         logger.info`Shutting down, aborting in-flight runs immediately...`;
       }
       const drainStarted = Date.now();
-      // every later stage that waits on datastore storage takes its bound from
-      // this one deadline, so a slow bucket cannot hold shutdown past the drain
+      // every later stage takes its bound from this one deadline, so neither a
+      // slow bucket nor a stalled background pass holds shutdown past the drain
       // timeout plus a fixed margin
       const shutdownDeadline = ShutdownDeadline.forShutdown(
         drainStarted,
         shutdownDrainTimeoutMs,
       );
+      const stages = new ShutdownStages(shutdownDeadline, {
+        onTimedOut: (stage) => {
+          if (isJson) {
+            console.log(
+              JSON.stringify({ status: "shutdown_stage_timed_out", stage }),
+            );
+          }
+        },
+      });
       const remaining = await runShutdownDrain({
         webhookService,
         scheduledExecution,
@@ -7756,113 +7766,163 @@ export const serveCommand = new Command()
       if ((activeRunRegistry?.size ?? 0) > 0) keepV3WriterMarkers();
       // before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does
-      const interruptResult = await interruptShutdownRuns(remaining, {
-        repoContext,
-        syncService,
-        namespace: serveNamespace,
-        syncGate,
-        runWriteFence,
-        runTracker,
-        unpushedMarkerPath,
-        pushTimeoutMs: shutdownDeadline.remaining(SHUTDOWN_PUSH_TIMEOUT_MS),
-        onInterrupted: (runId) => {
-          if (isJson) {
-            console.log(JSON.stringify({ status: "interrupted", runId }));
-          }
-          logger.info`Interrupted workflow run ${runId} (server shutdown)`;
-        },
-      });
-      const unpushedRunIds = interruptResult.unpushed ?? [];
+      let unpushedRunIds: readonly string[] = [];
+      await stages.run("interrupted run push", async () => {
+        const interruptResult = await interruptShutdownRuns(remaining, {
+          repoContext,
+          syncService,
+          namespace: serveNamespace,
+          syncGate,
+          runWriteFence,
+          runTracker,
+          unpushedMarkerPath,
+          pushTimeoutMs: shutdownDeadline.remaining(SHUTDOWN_PUSH_TIMEOUT_MS),
+          onInterrupted: (runId) => {
+            if (isJson) {
+              console.log(JSON.stringify({ status: "interrupted", runId }));
+            }
+            logger.info`Interrupted workflow run ${runId} (server shutdown)`;
+          },
+        });
+        unpushedRunIds = interruptResult.unpushed ?? [];
+      }, "self");
       if (isJson && unpushedRunIds.length > 0) {
         console.log(JSON.stringify({
           status: "interrupt_push_failed",
           runIds: unpushedRunIds,
         }));
       }
-      await runIndexWarmup.finished();
+      await stages.run("run index warm-up", () => runIndexWarmup.finished());
       // The locks callers of the datastore API hold, once no request can
       // take another: released, and acquires still waiting given up.
-      await datastoreApiLocks.dispose();
+      await stages.run(
+        "datastore API locks",
+        () => datastoreApiLocks.dispose(),
+        "floor",
+      );
       setOwnLockGate(undefined);
       if (workerGcService) {
-        await workerGcService.dispose();
+        const service = workerGcService;
+        await stages.run("worker GC", () => service.dispose());
       }
       if (retentionGcService) {
-        await retentionGcService.dispose();
+        const service = retentionGcService;
+        await stages.run("retention GC", () => service.dispose());
       }
       if (serverTokenGcService) {
-        await serverTokenGcService.dispose();
+        const service = serverTokenGcService;
+        await stages.run("server token GC", () => service.dispose());
       }
       // Before the heartbeat stops: a claim taken by a pass in flight must
       // still be a live instance's.
       if (continuationSweepService) {
-        await continuationSweepService.dispose();
+        const service = continuationSweepService;
+        await stages.run("continuation sweep", () => service.dispose());
       }
       // No promotion during teardown: the lease is released below. Team
       // mode stays on until the datastores close, so a follower still
       // commits nothing.
-      await serveLeadership?.stop();
-      await serveCommitEffects?.stop();
+      if (serveLeadership) {
+        const leadership = serveLeadership;
+        await stages.run("leadership", () => leadership.stop());
+      }
+      if (serveCommitEffects) {
+        const effects = serveCommitEffects;
+        await stages.run("commit effects", () => effects.stop());
+      }
       leaderLink?.close();
       if (heartbeatService) {
-        await stopHeartbeatAtShutdown(heartbeatService, {
-          store: controlPlaneStore,
-          instanceId,
-          aborted: remaining,
-          unpushed: unpushedRunIds,
-          writeTimeoutMs: shutdownDeadline.remaining(
-            STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
-          ),
-        });
+        const service = heartbeatService;
+        await stages.run(
+          "stopped heartbeat",
+          () =>
+            stopHeartbeatAtShutdown(service, {
+              store: controlPlaneStore,
+              instanceId,
+              aborted: remaining,
+              unpushed: unpushedRunIds,
+              writeTimeoutMs: shutdownDeadline.remaining(
+                STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
+              ),
+            }),
+          "self",
+        );
       }
       // Stop revalidation before the gateway it cuts workers off from.
-      await workerTokenRevalidationService.dispose();
+      await stages.run(
+        "worker token revalidation",
+        () => workerTokenRevalidationService.dispose(),
+      );
       workerGateway.dispose();
       if (collectiveRefreshService) {
-        await collectiveRefreshService.dispose();
+        const service = collectiveRefreshService;
+        await stages.run("collective refresh", () => service.dispose());
       }
       if (tokenSessionRevalidationService) {
-        await tokenSessionRevalidationService.dispose();
+        const service = tokenSessionRevalidationService;
+        await stages.run("token session revalidation", () => service.dispose());
       }
       if (clubHeartbeatService) {
         clubHeartbeatService.stop();
       }
       if (grantsDirectoryPoller) {
-        await grantsDirectoryPoller.stop();
+        const poller = grantsDirectoryPoller;
+        await stages.run("grants poller", () => poller.stop());
       }
       if (accessDataPoller) {
-        await accessDataPoller.stop();
+        const poller = accessDataPoller;
+        await stages.run("access data poller", () => poller.stop());
       }
       if (runtimeDataPoller) {
-        await runtimeDataPoller.stop();
+        const poller = runtimeDataPoller;
+        await stages.run("runtime data poller", () => poller.stop());
       }
       if (configPoller) {
-        await configPoller.stop();
+        const poller = configPoller;
+        await stages.run("config poller", () => poller.stop());
       }
-      await policySnapshotLoader.dispose();
-      await v3Maintenance?.stop();
+      await stages.run(
+        "policy snapshot loader",
+        () => policySnapshotLoader.dispose(),
+      );
+      if (v3Maintenance) {
+        const maintenance = v3Maintenance;
+        await stages.run("v3 maintenance", () => maintenance.stop());
+      }
       // no sidecar replacement runs past here; the closing sync and lease
       // release get what the shutdown deadline has left when each starts
-      await v3Replication?.stop({
-        waitMs: shutdownDeadline.remaining(V3_UPKEEP_STOP_BOUND_MS),
-      });
+      if (v3Replication) {
+        const replication = v3Replication;
+        await stages.run("v3 replication", () =>
+          replication.stop({
+            waitMs: shutdownDeadline.remaining(V3_UPKEEP_STOP_BOUND_MS),
+          }), "self");
+      }
       setV3ClosingDeadline(shutdownDeadline);
       // final telemetry flush after runs drain so their entries are included;
       // must come before ac.abort(), which releases server.finished and the
       // CLI's own teardown flush
       if (telemetryFlushService) {
-        await telemetryFlushService.stop();
+        const service = telemetryFlushService;
+        await stages.run("telemetry flush", () => service.stop(), "floor");
       }
-      await gatePassKeeper?.stop();
-      if (connectionCtx.auditEmitter) {
-        emitSystemAuditEvent(connectionCtx, "instance.stop");
-        await connectionCtx.auditEmitter.flush();
-        await connectionCtx.auditEmitter.close();
-        if (connectionCtx.auditWal) {
-          await connectionCtx.auditWal.saveChainState(
-            connectionCtx.auditEmitter.chainState.snapshot(),
-          );
-        }
+      if (gatePassKeeper) {
+        const keeper = gatePassKeeper;
+        await stages.run("gate pass keeper", () => keeper.stop());
+      }
+      // one stage, so close never runs beside a flush that timed out
+      const auditEmitter = connectionCtx.auditEmitter;
+      if (auditEmitter) {
+        await stages.run("audit", async () => {
+          emitSystemAuditEvent(connectionCtx, "instance.stop");
+          await auditEmitter.flush();
+          await auditEmitter.close();
+          if (connectionCtx.auditWal) {
+            await connectionCtx.auditWal.saveChainState(
+              auditEmitter.chainState.snapshot(),
+            );
+          }
+        }, "floor");
       }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);

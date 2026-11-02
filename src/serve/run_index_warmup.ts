@@ -74,8 +74,8 @@ export class RunIndexWarmup {
     let warmed = 0;
     const { stopped, release } = stoppedBy(signal);
     try {
-      const ids = await this.#deps.listWorkflowIds();
-      for (const id of ids) {
+      const listed = await untilStopped(this.#deps.listWorkflowIds(), stopped);
+      for (const id of listed === STOPPED ? [] : listed) {
         if (signal.aborted) break;
         try {
           const runs = await untilStopped(

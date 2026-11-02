@@ -24,10 +24,10 @@
  */
 
 /**
- * stays a little below 25 s because a floor that bites once the budget is spent
- * can add up to SHUTDOWN_STAGE_FLOOR_MS per stage
+ * 22 s so that the up to six floored or self-capped stages, each adding at most
+ * SHUTDOWN_STAGE_FLOOR_MS once the budget is spent, keep shutdown near 25 s
  */
-export const SHUTDOWN_AFTER_DRAIN_BUDGET_MS = 23_000;
+export const SHUTDOWN_AFTER_DRAIN_BUDGET_MS = 22_000;
 
 /**
  * The least any stage is given, so that one whose turn comes after the
@@ -54,8 +54,12 @@ export class ShutdownDeadline {
   }
 
   remaining(capMs?: number): number {
-    const left = this.at - this.now();
-    const bounded = capMs === undefined ? left : Math.min(capMs, left);
-    return Math.max(SHUTDOWN_STAGE_FLOOR_MS, bounded);
+    return Math.max(SHUTDOWN_STAGE_FLOOR_MS, this.left(capMs));
+  }
+
+  /** what is left with no floor, so a stage whose turn comes too late gets 0 */
+  left(capMs?: number): number {
+    const left = Math.max(0, this.at - this.now());
+    return capMs === undefined ? left : Math.min(capMs, left);
   }
 }

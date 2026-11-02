@@ -1473,19 +1473,30 @@ Otherwise it deletes its heartbeat. On v3 it then stops its sidecar upkeep,
 syncs the replica one last time and releases its writer lease
 (`design/enablers/datastore-litestream.md`), and it exits.
 
-Every one of these stages that waits on the datastore's storage takes its
-bound from one shutdown deadline: the drain timeout plus 23 s from SIGTERM
-(`ShutdownDeadline` in `src/serve/shutdown_deadline.ts`, swamp-club#3961).
-Each gets the smaller of its own bound and what is left, and at least 0.5 s,
-so a slow or stalled bucket cannot hold the process past its grace period:
-before it, a bucket that held each write 15 s kept a v3 serve shutting down
-for 97 s with the default 30 s drain. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 25 s (the
-23 s shutdown deadline after the drain, covering the 5 s abort grace, up to 2 s
-for the write fence, the 5 s interrupt push or commit and, when that misses,
-5 s each for the active-run records and the stopped heartbeat, and on v3 the
-closing sync and lease release from what is left, plus the 0.5 s floors), and
-use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
+Every stage after the drain takes its bound from one shutdown deadline: the
+drain timeout plus 22 s from SIGTERM (`ShutdownDeadline` in
+`src/serve/shutdown_deadline.ts`, swamp-club#3961), run in turn by
+`ShutdownStages` (`src/serve/shutdown_stages.ts`, swamp-club#4286). A stage
+that only stops background work (the GC services, the continuation sweep, the
+pollers, revalidation, the run-index warm-up, leadership) gets what is left,
+nothing once it is spent. A stage that writes state other processes rely on
+(the datastore API lock release, the final telemetry flush, the audit flush and
+close) gets what is left and at least 0.5 s. The interrupt push, the stopped
+heartbeat and the v3 replication stop are capped by their own arguments and are
+awaited, never cut off, so the closing sync never runs beside a replication
+stop still in flight. A stage still running at the deadline is logged by name
+as a warning and left behind for process exit to end; one past 1 s is logged
+as still waiting, and one that throws is logged without skipping the stages
+after it. Before this, a bucket that held each write 15 s kept a v3 serve
+shutting down for 97 s with the default 30 s drain, and a background pass
+stalled on a large datastore held shutdown for minutes after the drain. Set
+the pod's `terminationGracePeriodSeconds` above the drain timeout plus about
+25 s (the 22 s shutdown deadline after the drain, covering the 5 s abort
+grace, up to 2 s for the write fence, the 5 s interrupt push or commit and,
+when that misses, 5 s each for the active-run records and the stopped
+heartbeat, and on v3 the closing sync and lease release from what is left,
+plus up to six 0.5 s floors), and use a `preStop` sleep so traffic leaves the
+Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
 instance drains. After a stop that pushed everything, peers see no heartbeat,
 so nothing is reaped.
@@ -1556,7 +1567,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
 - **Graceful shutdown.** SIGINT/SIGTERM run the sequence above, then stop the
   heartbeat, worker gateway, pollers and telemetry, remove the PID file and
   abort the listener. In `--json` mode each phase is emitted as a
-  `{ status: "stopping" | "aborting" | "interrupted" | "stopped" }` line.
+  `{ status: "stopping" | "aborting" | "interrupted" | "stopped" }` line, and a
+  stage cut off at the shutdown deadline as
+  `{ status: "shutdown_stage_timed_out", stage }`.
 - **Telemetry flush.** The CLI flushes telemetry at process exit, which a daemon
   never reaches. `DaemonTelemetryFlushService` flushes every 60 s, at most 20
   batches per tick. It isolates a batch after 5 consecutive failures and

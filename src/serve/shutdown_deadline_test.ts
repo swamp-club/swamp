@@ -65,3 +65,19 @@ Deno.test("ShutdownDeadline.remaining: never goes below the floor once spent", (
   now = 0;
   assertEquals(deadline.remaining(100), SHUTDOWN_STAGE_FLOOR_MS);
 });
+
+Deno.test("ShutdownDeadline.left: is capped like remaining but has no floor", () => {
+  let now = 0;
+  const deadline = ShutdownDeadline.forShutdown(0, 0, {
+    now: () => now,
+    budgetMs: 20_000,
+  });
+  assertEquals(deadline.left(5_000), 5_000);
+  now = 17_000;
+  assertEquals(deadline.left(5_000), 3_000);
+  assertEquals(deadline.left(), 3_000);
+  now = 20_000;
+  assertEquals(deadline.left(), 0);
+  now = 60_000;
+  assertEquals(deadline.left(5_000), 0);
+});

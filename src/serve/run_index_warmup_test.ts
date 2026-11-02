@@ -193,6 +193,33 @@ Deno.test("RunIndexWarmup: finished does not wait for a load that ignores the si
   }
 });
 
+Deno.test("RunIndexWarmup: finished does not wait for a workflow listing that ignores the stop", async () => {
+  const { promise: listed, resolve: release } = Promise.withResolvers<
+    string[]
+  >();
+  const warmed: string[] = [];
+  let listing = false;
+  const warmup = new RunIndexWarmup(warmupDeps([], {
+    listWorkflowIds: () => {
+      listing = true;
+      return listed;
+    },
+    warm: (id) => {
+      warmed.push(id);
+      return Promise.resolve();
+    },
+  }));
+  try {
+    warmup.start();
+    await waitFor(() => Promise.resolve(listing), "the listing to start");
+    warmup.stop();
+    await warmup.finished();
+  } finally {
+    release(["late"]);
+  }
+  assertEquals(warmed, []);
+});
+
 Deno.test("RunIndexWarmup: a load that fails after the warm-up let go of it is not reported", async () => {
   const unhandled: unknown[] = [];
   const onUnhandled = (event: PromiseRejectionEvent) => {
