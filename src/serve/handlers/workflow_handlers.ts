@@ -2578,6 +2578,20 @@ export async function handleWorkflowCreate(
   );
 }
 
+/** a run file serve cannot read counts as guarded, as a forwarded delete's does */
+async function holdsGuardedRun(
+  ctx: ConnectionContext,
+  workflowId: string,
+): Promise<boolean> {
+  try {
+    return (await ctx.repoContext.workflowRunRepo.findAllByWorkflowId(
+      createWorkflowId(workflowId),
+    )).some((run) => isGuardedRunRecord(run.toData()));
+  } catch {
+    return true;
+  }
+}
+
 export async function handleWorkflowDelete(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2605,9 +2619,7 @@ export async function handleWorkflowDelete(
   // forward a first record under its id that drops the marker or decision.
   if (
     ctx.repoContext.takesForwardedRunRecords === true && workflow.byId &&
-    (await ctx.repoContext.workflowRunRepo.findAllByWorkflowId(
-      createWorkflowId(workflow.idOrName),
-    )).some((run) => isGuardedRunRecord(run.toData())) &&
+    await holdsGuardedRun(ctx, workflow.idOrName) &&
     !authorizeResolved(
       socket,
       requestId,

@@ -2436,7 +2436,7 @@ Deno.test("handleWorkflowDelete: where members forward records, deleting a workf
   const deleteAs = async (
     options: {
       forwards: boolean;
-      guarded: boolean;
+      guarded: boolean | "unreadable";
       actions: Grant["actions"];
     },
   ) => {
@@ -2445,7 +2445,7 @@ Deno.test("handleWorkflowDelete: where members forward records, deleting a workf
     await withWorkflowRepo(async (dir, repo) => {
       const workflow = await saveEditWorkflow(repo, "guarded-wf");
       const run = WorkflowRun.create(workflow);
-      if (options.guarded) run.start(1, "serve-node");
+      if (options.guarded === true) run.start(1, "serve-node");
       const ctx = {
         ...workflowEditCtx(dir, repo, [
           workflowGrant({ actions: options.actions }),
@@ -2457,7 +2457,12 @@ Deno.test("handleWorkflowDelete: where members forward records, deleting a workf
       ctx.repoContext = {
         workflowRepo: repo,
         takesForwardedRunRecords: options.forwards,
-        workflowRunRepo: { findAllByWorkflowId: () => Promise.resolve([run]) },
+        workflowRunRepo: {
+          findAllByWorkflowId: () =>
+            options.guarded === "unreadable"
+              ? Promise.reject(new Error("unparseable run file"))
+              : Promise.resolve([run]),
+        },
       };
       ctx.auditEmitter = {
         emit: (event: AuditEvent) => {
@@ -2492,9 +2497,18 @@ Deno.test("handleWorkflowDelete: where members forward records, deleting a workf
   assertEquals(refused.frames.map((f) => f.type), ["error"]);
   assertEquals(refused.denials.map((e) => e.action), ["admin"]);
 
+  const unreadable = await deleteAs({
+    forwards: true,
+    guarded: "unreadable",
+    actions: ["write"],
+  });
+  assertEquals(unreadable.deleted, false);
+  assertEquals(unreadable.denials.map((e) => e.action), ["admin"]);
+
   for (
     const allowed of [
       { forwards: true, guarded: true, actions: ["write", "admin"] },
+      { forwards: true, guarded: "unreadable", actions: ["write", "admin"] },
       { forwards: true, guarded: false, actions: ["write"] },
       { forwards: false, guarded: true, actions: ["write"] },
     ] as const
