@@ -81,3 +81,29 @@ Deno.test("createWorkflowRunSearchRenderer: non-interactive log lists every run 
   assertEquals(lines[2], "runs: 1");
   assertEquals(lines[3], reapedRunsLine(REAPED));
 });
+
+Deno.test("createWorkflowRunSearchRenderer: an omitted input is named in log mode and listed in json mode", async () => {
+  const item = {
+    runId: "r1",
+    workflowId: "w1",
+    workflowName: "deploy",
+    status: "succeeded",
+    inputs: { region: "eu" },
+    inputsOmitted: ["body"],
+  };
+  const event = {
+    kind: "completed" as const,
+    data: { query: "", results: [item] },
+    total: 1,
+  };
+  const lines = await captureLog(() =>
+    createWorkflowRunSearchRenderer("log", undefined, { interactive: false })
+      .handlers().completed(event)
+  );
+  assertStringIncludes(lines.join("\n"), "region=eu, body=… (omitted)");
+
+  const json = await captureLog(() =>
+    createWorkflowRunSearchRenderer("json").handlers().completed(event)
+  );
+  assertEquals(JSON.parse(json.join("\n")).results[0].inputsOmitted, ["body"]);
+});

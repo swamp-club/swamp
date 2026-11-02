@@ -19,7 +19,13 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { fromFileUrl } from "@std/path";
-import { parseWorkflowRunSummary } from "./workflow_run_summary.ts";
+import {
+  boundIndexedInputs,
+  boundSummaryInputs,
+  INDEXED_INPUT_MAX_BYTES,
+  INDEXED_INPUTS_MAX_BYTES,
+  parseWorkflowRunSummary,
+} from "./workflow_run_summary.ts";
 
 Deno.test("parseWorkflowRunSummary: projects the displayed fields", () => {
   const summary = parseWorkflowRunSummary({
@@ -389,4 +395,59 @@ Deno.test("parseWorkflowRunSummary: a run with a nested wait and a signal wait d
   assertEquals(both.waitingOnRun, [nestedRun]);
   assertEquals(both.waitsOnlyOnNestedRuns, undefined);
   assertEquals(nestedOnly.waitsOnlyOnNestedRuns, true);
+});
+
+Deno.test("boundIndexedInputs: keeps small values and omits one over the per-value limit", () => {
+  const big = "x".repeat(INDEXED_INPUT_MAX_BYTES);
+  const bounded = boundIndexedInputs({ region: "eu", count: 3, intent: big });
+
+  assertEquals(bounded.inputs, { region: "eu", count: 3 });
+  assertEquals(bounded.omitted, ["intent"]);
+});
+
+Deno.test("boundIndexedInputs: measures encoded UTF-8 bytes, not characters", () => {
+  // Each "é" is two bytes, so this fits in characters but not in bytes.
+  const value = "é".repeat(INDEXED_INPUT_MAX_BYTES / 2);
+  assertEquals(boundIndexedInputs({ v: value }).omitted, ["v"]);
+});
+
+Deno.test("boundIndexedInputs: omits keys past the total budget in key order", () => {
+  const chunk = "y".repeat(INDEXED_INPUT_MAX_BYTES - 2);
+  const inputs: Record<string, unknown> = {};
+  const fitting = INDEXED_INPUTS_MAX_BYTES / INDEXED_INPUT_MAX_BYTES;
+  for (let i = 0; i < fitting + 2; i++) inputs[`k${i}`] = chunk;
+
+  const bounded = boundIndexedInputs(inputs);
+
+  assertEquals(Object.keys(bounded.inputs).length, fitting);
+  assertEquals(bounded.omitted, [`k${fitting}`, `k${fitting + 1}`]);
+});
+
+Deno.test("boundIndexedInputs: omits a value that cannot be encoded instead of throwing", () => {
+  const bounded = boundIndexedInputs({ n: 10n, ok: true });
+  assertEquals(bounded.inputs, { ok: true });
+  assertEquals(bounded.omitted, ["n"]);
+});
+
+Deno.test("boundIndexedInputs: keeps an input named __proto__ as an own key", () => {
+  const bounded = boundIndexedInputs(JSON.parse('{"__proto__":"a"}'));
+  assertEquals(Object.hasOwn(bounded.inputs, "__proto__"), true);
+  assertEquals(Object.getPrototypeOf(bounded.inputs), Object.prototype);
+});
+
+Deno.test("boundSummaryInputs: lists the omitted keys and returns a small summary unchanged", () => {
+  const summary = parseWorkflowRunSummary({
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    status: "succeeded",
+    inputs: { region: "eu", body: "z".repeat(INDEXED_INPUT_MAX_BYTES * 2) },
+  });
+
+  const bounded = boundSummaryInputs(summary);
+
+  assertEquals(bounded.inputs, { region: "eu" });
+  assertEquals(bounded.inputsOmitted, ["body"]);
+  const small = { ...summary, inputs: { region: "eu" } };
+  assertEquals(boundSummaryInputs(small), small);
 });

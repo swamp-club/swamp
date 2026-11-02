@@ -72,6 +72,7 @@ function makeDeps(
       }
       return Promise.resolve([]);
     },
+    runInputsOf: () => Promise.resolve(undefined),
     ...overrides,
   };
 }
@@ -298,6 +299,7 @@ Deno.test("workflowHistorySearch: returns empty results when no runs exist", asy
 
 function makeDepsWithInputs(): WorkflowHistorySearchDeps {
   return {
+    runInputsOf: () => Promise.resolve(undefined),
     findAllWorkflows: () =>
       Promise.resolve([
         { id: "wf-1", name: "verify-reviews" },
@@ -410,6 +412,7 @@ Deno.test("workflowHistorySearch: filter with compound expression", async () => 
 
 Deno.test("workflowHistorySearch: filter handles runs with missing input keys", async () => {
   const deps: WorkflowHistorySearchDeps = {
+    runInputsOf: () => Promise.resolve(undefined),
     findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "verify" }]),
     findAllRunsByWorkflowId: () =>
       Promise.resolve([
@@ -494,4 +497,118 @@ Deno.test("workflowHistorySearch: no reaped marker without a runs watermark", as
     { kind: "completed" }
   >;
   assertEquals("reapedBefore" in completed.data, false);
+});
+
+function makeDepsOmitting(): {
+  deps: WorkflowHistorySearchDeps;
+  calls: Array<[string, string]>;
+} {
+  const calls: Array<[string, string]> = [];
+  const recorded: Record<string, Record<string, unknown>> = {
+    "run-a": { commit: "abc123", body: "deploy the fleet" },
+    "run-b": { commit: "def456", body: "hold" },
+  };
+  return {
+    calls,
+    deps: {
+      findAllWorkflows: () =>
+        Promise.resolve([{ id: "wf-1", name: "webhook" }]),
+      findAllRunsByWorkflowId: () =>
+        Promise.resolve([
+          {
+            id: "run-a",
+            workflowId: "recorded-elsewhere",
+            workflowName: "webhook",
+            status: "succeeded",
+            startedAt: new Date(now - 1000),
+            tags: {},
+            inputs: { commit: "abc123" },
+            inputsOmitted: ["body"],
+          },
+          {
+            id: "run-b",
+            workflowId: "wf-1",
+            workflowName: "webhook",
+            status: "succeeded",
+            startedAt: new Date(now - 2000),
+            tags: {},
+            inputs: { commit: "def456" },
+            inputsOmitted: ["body"],
+          },
+        ]),
+      runInputsOf: (workflowId, runId) => {
+        calls.push([workflowId, runId]);
+        return Promise.resolve(recorded[runId]);
+      },
+    },
+  };
+}
+
+async function historyResults(
+  deps: WorkflowHistorySearchDeps,
+  input: Parameters<typeof workflowHistorySearch>[2],
+) {
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, input),
+  );
+  const completed = events[events.length - 1] as Extract<
+    WorkflowHistorySearchEvent,
+    { kind: "completed" }
+  >;
+  return completed.data.results;
+}
+
+Deno.test("workflowHistorySearch: rows carry the listed inputs and the keys left out", async () => {
+  const { deps, calls } = makeDepsOmitting();
+  const results = await historyResults(deps, {});
+
+  assertEquals(results[0].inputs, { commit: "abc123" });
+  assertEquals(results[0].inputsOmitted, ["body"]);
+  assertEquals(calls, []);
+});
+
+Deno.test("workflowHistorySearch: an --input filter on an omitted key reads the record under the listing workflow", async () => {
+  const { deps, calls } = makeDepsOmitting();
+  const results = await historyResults(deps, {
+    inputs: { body: "deploy the fleet" },
+  });
+
+  assertEquals(results.map((r) => r.runId), ["run-a"]);
+  assertEquals(calls.sort(), [["wf-1", "run-a"], ["wf-1", "run-b"]]);
+  assertEquals(results[0].inputs, { commit: "abc123" });
+});
+
+Deno.test("workflowHistorySearch: a --filter on inputs evaluates the values only the record holds", async () => {
+  const { deps } = makeDepsOmitting();
+  const results = await historyResults(deps, {
+    filter: 'inputs.body.contains("fleet")',
+  });
+
+  assertEquals(results.map((r) => r.runId), ["run-a"]);
+});
+
+Deno.test("workflowHistorySearch: a --filter that cannot read inputs, or an --input on a kept key, reads no record", async () => {
+  const { deps, calls } = makeDepsOmitting();
+  assertEquals(
+    (await historyResults(deps, { filter: 'status == "succeeded"' })).length,
+    2,
+  );
+  assertEquals(
+    (await historyResults(deps, { inputs: { commit: "def456" } })).map((r) =>
+      r.runId
+    ),
+    ["run-b"],
+  );
+  assertEquals(calls, []);
+});
+
+Deno.test("workflowHistorySearch: a run the caller may not read never has its record read", async () => {
+  const { deps, calls } = makeDepsOmitting();
+  const results = await historyResults(
+    { ...deps, isReadable: () => Promise.resolve(false) },
+    { inputs: { body: "deploy the fleet" } },
+  );
+
+  assertEquals(results, []);
+  assertEquals(calls, []);
 });

@@ -37,6 +37,7 @@ import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { dim } from "@std/fmt/colors";
+import { inputPairs } from "./run_input_pairs.ts";
 
 type ReapedBefore = NonNullable<WorkflowRunSearchData["reapedBefore"]>;
 
@@ -129,10 +130,7 @@ class InkWorkflowRunSearchRenderer implements WorkflowRunSearchRenderer {
                 " ",
               )
               : "";
-            const inputStr = item.inputs
-              ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`)
-                .join(" ")
-              : "";
+            const inputStr = inputPairs(item).join(" ");
             return `${item.workflowName} ${item.runId} ${item.status} ${tagStr} ${inputStr}`
               .trim();
           },
@@ -195,11 +193,7 @@ function renderRunResultLine(
   const tagStr = item.tags && Object.keys(item.tags).length > 0
     ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
     : "";
-  const inputStr = item.inputs && Object.keys(item.inputs).length > 0
-    ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
-      ", ",
-    )
-    : "";
+  const inputStr = inputPairs(item).join(", ");
 
   return (
     <Text>
@@ -264,11 +258,7 @@ function renderRunPreview(
         <Text key="tags" dimColor wrap="truncate-end">tags: {tagStr}</Text>,
       );
     }
-    const previewInputStr = item.inputs && Object.keys(item.inputs).length > 0
-      ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
-        ", ",
-      )
-      : "";
+    const previewInputStr = inputPairs(item).join(", ");
     if (previewInputStr) {
       lines.push(
         <Text key="inputs" dimColor wrap="truncate-end">
@@ -376,11 +366,7 @@ function renderRunScrollback(
     if (tagStr) {
       lines.push(`tags: ${tagStr}`);
     }
-    const scrollInputStr = item.inputs && Object.keys(item.inputs).length > 0
-      ? Object.entries(item.inputs).map(([k, v]) => `${k}=${String(v)}`).join(
-        ", ",
-      )
-      : "";
+    const scrollInputStr = inputPairs(item).join(", ");
     if (scrollInputStr) {
       lines.push(`inputs: ${scrollInputStr}`);
     }

@@ -23,7 +23,10 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
-import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../src/domain/workflows/workflow_id.ts";
 import {
   getIndexPath,
   INDEX_SCHEMA_VERSION,
@@ -112,6 +115,11 @@ function depsOn(dir: string): WorkflowRunSearchDeps {
   return {
     findAllWorkflows: () => workflowRepo.findAllListings(),
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
+    runInputsOf: (workflowId, runId) =>
+      runRepo.findPersistedInputs(
+        createWorkflowId(workflowId),
+        createWorkflowRunId(runId),
+      ),
   };
 }
 

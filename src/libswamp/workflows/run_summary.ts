@@ -264,7 +264,7 @@ export type WorkflowRunSummaryEvent =
  * Runs `isReadable` refuses never reach the counts, so an unreadable
  * workflow cannot show in totals or the timeline.
  */
-export type WorkflowRunSummaryDeps = WorkflowRunSearchDeps;
+export type WorkflowRunSummaryDeps = Omit<WorkflowRunSearchDeps, "runInputsOf">;
 
 export interface WorkflowRunSummaryInput {
   since?: string;

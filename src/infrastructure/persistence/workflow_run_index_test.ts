@@ -20,15 +20,20 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { join, relative } from "@std/path";
 import {
+  appendRunIndexLines,
+  compactRunIndex,
   countYamlRunFiles,
   deleteRunIndex,
   dropRunIndexEntries,
   fingerprintMatches,
   getIndexPath,
+  INDEX_COMPACTION_FLOOR_BYTES,
   INDEX_SCHEMA_VERSION,
   indexQueueGeneration,
   isIndexStale,
+  needsCompaction,
   readRunIndex,
+  readRunIndexHeader,
   removeRunIndexes,
   removeStaleRunIndexes,
   RUNS_INDEX_FILENAME,
@@ -94,19 +99,12 @@ Deno.test("readRunIndex: returns null for missing file", async () => {
   });
 });
 
-Deno.test("readRunIndex: returns null for corrupt JSON", async () => {
+Deno.test("readRunIndex: a file that is not a v5 index reads as version 0 with no entries", async () => {
   await withTempDir(async (dir) => {
-    await Deno.writeTextFile(getIndexPath(dir), "not valid json{{{");
-    const result = await readRunIndex(dir);
-    assertEquals(result, null);
-  });
-});
-
-Deno.test("readRunIndex: returns null for JSON array", async () => {
-  await withTempDir(async (dir) => {
-    await Deno.writeTextFile(getIndexPath(dir), "[]");
-    const result = await readRunIndex(dir);
-    assertEquals(result, null);
+    for (const content of ["not valid json{{{", "[]", "[]\n", "{}\n"]) {
+      await Deno.writeTextFile(getIndexPath(dir), content);
+      assertEquals(await readRunIndex(dir), { entries: {}, version: 0 });
+    }
   });
 });
 
@@ -187,30 +185,42 @@ Deno.test("isIndexStale: outdated version is stale even with correct count", () 
   assertEquals(isIndexStale(outdated, 2), true);
 });
 
-Deno.test("readRunIndex: returns version 0 for unversioned legacy format", async () => {
+Deno.test("readRunIndex: an unversioned legacy index reads as stale", async () => {
   await withTempDir(async (dir) => {
-    await Deno.writeTextFile(
-      getIndexPath(dir),
-      JSON.stringify(SAMPLE_INDEX),
-    );
-    const result = await readRunIndex(dir);
-    assertEquals(result?.entries, SAMPLE_INDEX);
-    assertEquals(result?.version, 0);
+    await Deno.writeTextFile(getIndexPath(dir), JSON.stringify(SAMPLE_INDEX));
+    assertEquals(await readRunIndex(dir), { entries: {}, version: 0 });
   });
 });
 
-Deno.test("readRunIndex: preserves entries from outdated schema version", async () => {
+Deno.test("readRunIndex: a legacy JSON index of any size is reported stale without reading its body", async () => {
   await withTempDir(async (dir) => {
+    const inputs = { intent: "x".repeat(1024 * 1024) };
+    const entries = Object.fromEntries(
+      Array.from({ length: 8 }, (_, i) => [`run-${i}`, {
+        ...SAMPLE_INDEX["run-1"],
+        inputs,
+      }]),
+    );
     await Deno.writeTextFile(
       getIndexPath(dir),
-      JSON.stringify({
-        version: INDEX_SCHEMA_VERSION - 1,
-        entries: SAMPLE_INDEX,
-      }),
+      JSON.stringify({ version: INDEX_SCHEMA_VERSION - 1, entries }),
     );
-    const result = await readRunIndex(dir);
-    assertEquals(result?.entries, SAMPLE_INDEX);
-    assertEquals(result?.version, INDEX_SCHEMA_VERSION - 1);
+    const original = Deno.readFile;
+    let bodyReads = 0;
+    Deno.readFile = ((...args: Parameters<typeof original>) => {
+      bodyReads++;
+      return original(...args);
+    }) as typeof original;
+    try {
+      assertEquals(await readRunIndex(dir), { entries: {}, version: 0 });
+      assertEquals(await readRunIndexHeader(dir), {
+        version: 0,
+        compactedBytes: 0,
+      });
+    } finally {
+      Deno.readFile = original;
+    }
+    assertEquals(bodyReads, 0);
   });
 });
 
@@ -391,4 +401,177 @@ Deno.test("dropRunIndexEntries: drops the entries of the run records named, keep
     );
     assertEquals(await readRunIndex(join(runs, "wf-none")), null);
   });
+});
+
+Deno.test("appendRunIndexLines: the last line for a run wins and a removal line drops it", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, SAMPLE_INDEX);
+    const succeeded = { ...SAMPLE_INDEX["run-2"], status: "succeeded" };
+    const result = await appendRunIndexLines(dir, [
+      { id: "run-2", entry: succeeded },
+      { id: "run-1", removed: true },
+      { id: "run-3", entry: SAMPLE_INDEX["run-1"] },
+    ], { create: false });
+
+    assertEquals(result.kind, "appended");
+    assertEquals((await readRunIndex(dir))?.entries, {
+      "run-2": succeeded,
+      "run-3": SAMPLE_INDEX["run-1"],
+    });
+  });
+});
+
+Deno.test("appendRunIndexLines: adds to the file without rewriting it", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, SAMPLE_INDEX);
+    const before = await Deno.readTextFile(getIndexPath(dir));
+    const line = { id: "run-3", entry: SAMPLE_INDEX["run-1"] };
+    await appendRunIndexLines(dir, [line], { create: false });
+
+    assertEquals(
+      await Deno.readTextFile(getIndexPath(dir)),
+      `${before}${JSON.stringify(line)}\n`,
+    );
+  });
+});
+
+Deno.test("appendRunIndexLines: creates a missing index only when asked, and leaves a legacy one for the caller", async () => {
+  await withTempDir(async (dir) => {
+    const line = { id: "run-1", entry: SAMPLE_INDEX["run-1"] };
+    assertEquals(
+      await appendRunIndexLines(dir, [line], { create: false }),
+      { kind: "absent" },
+    );
+    assertEquals(await readRunIndex(dir), null);
+
+    const created = await appendRunIndexLines(dir, [line], { create: true });
+    assertEquals(created.kind, "appended");
+    assertEquals((await readRunIndex(dir))?.entries, {
+      "run-1": SAMPLE_INDEX["run-1"],
+    });
+
+    const legacy = JSON.stringify({ version: 4, entries: SAMPLE_INDEX });
+    await Deno.writeTextFile(getIndexPath(dir), legacy);
+    assertEquals(
+      await appendRunIndexLines(dir, [line], { create: true }),
+      { kind: "stale" },
+    );
+    assertEquals(await Deno.readTextFile(getIndexPath(dir)), legacy);
+  });
+});
+
+Deno.test("readRunIndex: a torn line marks the index damaged, which makes it stale", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, SAMPLE_INDEX);
+    await Deno.writeTextFile(getIndexPath(dir), '{"id":"run-1","ent', {
+      append: true,
+    });
+
+    const result = await readRunIndex(dir);
+
+    assertEquals(result?.entries, SAMPLE_INDEX);
+    assertEquals(result?.damaged, true);
+    assertEquals(isIndexStale(result!, 2), true);
+  });
+});
+
+Deno.test("readRunIndex: a line that is not a change marks the index damaged", async () => {
+  await withTempDir(async (dir) => {
+    for (const line of ["[]", '{"entry":{}}', '{"id":"run-1","entry":[]}']) {
+      await writeRunIndex(dir, SAMPLE_INDEX);
+      await Deno.writeTextFile(getIndexPath(dir), `${line}\n`, {
+        append: true,
+      });
+      assertEquals((await readRunIndex(dir))?.damaged, true);
+    }
+  });
+});
+
+Deno.test("readRunIndex: a run id named __proto__ stays an own entry", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, {});
+    await appendRunIndexLines(dir, [{
+      id: "__proto__",
+      entry: SAMPLE_INDEX["run-1"],
+    }], { create: false });
+
+    const entries = (await readRunIndex(dir))!.entries;
+
+    assertEquals(Object.hasOwn(entries, "__proto__"), true);
+    assertEquals(Object.getPrototypeOf(entries), Object.prototype);
+  });
+});
+
+Deno.test("readRunIndex: an index larger than one decoded chunk reads every entry", async () => {
+  await withTempDir(async (dir) => {
+    const entries: WorkflowRunIndex = {};
+    for (let i = 0; i < 4000; i++) {
+      entries[`run-${i}`] = {
+        ...SAMPLE_INDEX["run-1"],
+        inputs: { note: `é€${"n".repeat(500)}${i}` },
+      };
+    }
+    await writeRunIndex(dir, entries);
+    assertEquals(
+      (await Deno.stat(getIndexPath(dir))).size > 2 * 1024 * 1024,
+      true,
+    );
+
+    assertEquals((await readRunIndex(dir))?.entries, entries);
+  });
+});
+
+Deno.test("compactRunIndex: rewrites one line per live run and records its size in the header", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, SAMPLE_INDEX);
+    for (let i = 0; i < 50; i++) {
+      await appendRunIndexLines(dir, [{
+        id: "run-2",
+        entry: {
+          ...SAMPLE_INDEX["run-2"],
+          stepProgress: { completed: i, total: 50 },
+        },
+      }], { create: false });
+    }
+    const before = (await readRunIndex(dir))!.entries;
+
+    await compactRunIndex(dir);
+
+    const text = await Deno.readTextFile(getIndexPath(dir));
+    const lines = text.trimEnd().split("\n");
+    assertEquals(lines.length, 3);
+    const header = await readRunIndexHeader(dir);
+    assertEquals(header?.version, INDEX_SCHEMA_VERSION);
+    assertEquals(
+      header?.compactedBytes,
+      new TextEncoder().encode(lines.slice(1).join("\n") + "\n").length,
+    );
+    assertEquals((await readRunIndex(dir))?.entries, before);
+  });
+});
+
+Deno.test("compactRunIndex: leaves a damaged index for the repair pass", async () => {
+  await withTempDir(async (dir) => {
+    await writeRunIndex(dir, SAMPLE_INDEX);
+    await Deno.writeTextFile(getIndexPath(dir), "torn", { append: true });
+    const before = await Deno.readTextFile(getIndexPath(dir));
+
+    await compactRunIndex(dir);
+
+    assertEquals(await Deno.readTextFile(getIndexPath(dir)), before);
+  });
+});
+
+Deno.test("needsCompaction: only past the floor and twice the compacted size", () => {
+  const floor = INDEX_COMPACTION_FLOOR_BYTES;
+  assertEquals(needsCompaction({ size: floor, compactedBytes: 0 }), false);
+  assertEquals(needsCompaction({ size: floor + 1, compactedBytes: 0 }), true);
+  assertEquals(
+    needsCompaction({ size: 3 * floor, compactedBytes: 2 * floor }),
+    false,
+  );
+  assertEquals(
+    needsCompaction({ size: 4 * floor + 1, compactedBytes: 2 * floor }),
+    true,
+  );
 });

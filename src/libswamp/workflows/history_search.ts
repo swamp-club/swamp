@@ -60,6 +60,7 @@ export interface WorkflowHistorySearchDeps {
       duration?: number;
       tags: Record<string, string>;
       inputs: Record<string, unknown>;
+      inputsOmitted?: string[];
       instanceId?: string;
       triggerSource?: string;
       failedStep?: string;
@@ -67,6 +68,21 @@ export interface WorkflowHistorySearchDeps {
       stepProgress?: { completed: number; total: number };
     }>
   >;
+  /**
+   * the persisted inputs of a listed run, read from its record when a filter
+   * needs a value the index omits; workflowId is the workflow whose runs listed
+   * it, never the id its summary records. Undefined for a run whose record is
+   * gone
+   */
+  runInputsOf(
+    workflowId: string,
+    runId: string,
+  ): Promise<Readonly<Record<string, unknown>> | undefined>;
+  /**
+   * whether the caller may read runs under this workflow id and name; a run it
+   * may not read never has its record read for a filter
+   */
+  isReadable?(workflowId: string, workflowName: string): Promise<boolean>;
   retentionWatermarks?: RetentionWatermarkRepository;
 }
 
@@ -75,6 +91,43 @@ export interface WorkflowHistorySearchInput {
   workflow?: string;
   inputs?: Record<string, string>;
   filter?: string;
+}
+
+/**
+ * read only for runs whose filters need a value the index omits, and only for
+ * workflows the caller may read; the values are compared, never returned
+ */
+async function recordInputsOf(
+  deps: WorkflowHistorySearchDeps,
+  owners: ReadonlyMap<WorkflowHistorySearchItem, string>,
+  runs: readonly WorkflowHistorySearchItem[],
+): Promise<
+  Map<WorkflowHistorySearchItem, Readonly<Record<string, unknown>> | undefined>
+> {
+  const readable = new Map<string, Promise<boolean>>();
+  const canRead = (run: WorkflowHistorySearchItem): Promise<boolean> => {
+    if (!deps.isReadable) return Promise.resolve(true);
+    const key = JSON.stringify([run.workflowId, run.workflowName]);
+    let allowed = readable.get(key);
+    if (allowed === undefined) {
+      allowed = deps.isReadable(run.workflowId, run.workflowName);
+      readable.set(key, allowed);
+    }
+    return allowed;
+  };
+  const loaded = await collectBounded(
+    runs,
+    RUN_FANOUT_CONCURRENCY,
+    async (run) => [
+      [
+        run,
+        await canRead(run)
+          ? await deps.runInputsOf(owners.get(run)!, run.runId)
+          : undefined,
+      ] as const,
+    ],
+  );
+  return new Map(loaded);
 }
 
 export async function* workflowHistorySearch(
@@ -96,8 +149,13 @@ export async function* workflowHistorySearch(
       const allRuns = await collectBounded(
         allWorkflows,
         RUN_FANOUT_CONCURRENCY,
-        (workflow) => deps.findAllRunsByWorkflowId(workflow.id),
+        async (workflow) =>
+          (await deps.findAllRunsByWorkflowId(workflow.id)).map((run) => ({
+            ...run,
+            ownerId: workflow.id,
+          })),
       );
+      const owners = new Map<WorkflowHistorySearchItem, string>();
 
       allRuns.sort((a, b) => {
         const aTime = a.startedAt?.getTime() ?? 0;
@@ -114,8 +172,11 @@ export async function* workflowHistorySearch(
         const inputs = run.inputs && Object.keys(run.inputs).length > 0
           ? { ...run.inputs }
           : undefined;
+        const inputsOmitted = run.inputsOmitted && run.inputsOmitted.length > 0
+          ? [...run.inputsOmitted]
+          : undefined;
 
-        return {
+        const item: WorkflowHistorySearchItem = {
           runId: run.id,
           workflowId: run.workflowId,
           workflowName: run.workflowName,
@@ -125,12 +186,15 @@ export async function* workflowHistorySearch(
           duration: startTime && endTime ? endTime - startTime : undefined,
           tags,
           inputs,
+          inputsOmitted,
           instanceId: run.instanceId,
           triggerSource: run.triggerSource,
           failedStep: run.failedStep,
           failureReason: run.failureReason,
           stepProgress: run.stepProgress,
         };
+        owners.set(item, run.ownerId);
+        return item;
       });
 
       if (input.workflow) {
@@ -140,25 +204,47 @@ export async function* workflowHistorySearch(
         );
       }
 
-      if (input.inputs) {
-        const inputEntries = Object.entries(input.inputs);
-        results = results.filter((r) =>
-          inputEntries.every(([k, v]) => String(r.inputs?.[k]) === v)
-        );
+      const validation = input.filter
+        ? validateWorkflowRunFilter(input.filter)
+        : undefined;
+      if (validation && !validation.valid) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Invalid --filter expression: ${validation.error}`,
+          ),
+        };
+        return;
       }
 
-      if (input.filter) {
-        const validation = validateWorkflowRunFilter(input.filter);
-        if (!validation.valid) {
-          yield {
-            kind: "error",
-            error: validationFailed(
-              `Invalid --filter expression: ${validation.error}`,
-            ),
-          };
-          return;
-        }
+      const inputEntries = Object.entries(input.inputs ?? {});
+      if (inputEntries.length > 0) {
+        // An omitted key is decided from the record once the cheap checks pass.
+        results = results.filter((r) =>
+          inputEntries.every(([k, v]) =>
+            r.inputsOmitted?.includes(k) || String(r.inputs?.[k]) === v
+          )
+        );
+      }
+      const filterReadsInputs = validation?.referencesInputs === true;
+      const recorded = await recordInputsOf(
+        deps,
+        owners,
+        results.filter((r) =>
+          r.inputsOmitted !== undefined &&
+          (filterReadsInputs ||
+            inputEntries.some(([k]) => r.inputsOmitted!.includes(k)))
+        ),
+      );
+      // A run whose record was needed but is gone or unreadable matches nothing.
+      results = results.filter((r) => {
+        if (!recorded.has(r)) return true;
+        const full = recorded.get(r);
+        return full !== undefined &&
+          inputEntries.every(([k, v]) => String(full[k]) === v);
+      });
 
+      if (input.filter) {
         results = results.filter((r) =>
           evaluateWorkflowRunFilter(input.filter!, {
             workflowName: r.workflowName,
@@ -166,7 +252,7 @@ export async function* workflowHistorySearch(
             startedAt: r.startedAt,
             completedAt: r.completedAt,
             duration: r.duration,
-            inputs: r.inputs,
+            inputs: recorded.has(r) ? { ...recorded.get(r) } : r.inputs,
             tags: r.tags,
             instanceId: r.instanceId,
             triggerSource: r.triggerSource,

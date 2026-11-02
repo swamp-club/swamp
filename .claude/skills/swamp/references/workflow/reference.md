@@ -420,6 +420,11 @@ rather than erroring.
 }
 ```
 
+An input whose JSON value is over 1 KiB (or past 8 KiB for the run) is left out
+of a search row's `inputs` and named in `inputsOmitted` instead; this applies to
+`workflow run search` too. Read the full value with `workflow history get` or
+`workflow run get`. `--input` and `--filter` still match omitted values exactly.
+
 ### Get Latest Run
 
 ```bash

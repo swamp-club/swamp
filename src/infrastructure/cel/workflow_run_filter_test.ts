@@ -41,43 +41,43 @@ const RUN: WorkflowRunFilterContext = {
 
 Deno.test("validateWorkflowRunFilter: simple string equality", () => {
   const result = validateWorkflowRunFilter('status == "succeeded"');
-  assertEquals(result, { valid: true });
+  assertEquals(result, { valid: true, referencesInputs: false });
 });
 
 Deno.test("validateWorkflowRunFilter: inputs map access", () => {
   const result = validateWorkflowRunFilter(
     'inputs.commit == "b3ff3a8a"',
   );
-  assertEquals(result, { valid: true });
+  assertEquals(result, { valid: true, referencesInputs: true });
 });
 
 Deno.test("validateWorkflowRunFilter: tags map access", () => {
   const result = validateWorkflowRunFilter('tags.env == "ci"');
-  assertEquals(result, { valid: true });
+  assertEquals(result, { valid: true, referencesInputs: false });
 });
 
 Deno.test("validateWorkflowRunFilter: duration numeric comparison", () => {
   const result = validateWorkflowRunFilter("duration > 60000");
-  assertEquals(result, { valid: true });
+  assertEquals(result, { valid: true, referencesInputs: false });
 });
 
 Deno.test("validateWorkflowRunFilter: compound expression", () => {
   const result = validateWorkflowRunFilter(
     'status == "failed" && inputs.branch == "main"',
   );
-  assertEquals(result, { valid: true });
+  assertEquals(result, { valid: true, referencesInputs: true });
 });
 
 Deno.test("validateWorkflowRunFilter: startedAt string comparison", () => {
   const result = validateWorkflowRunFilter('startedAt > "2026-08-01"');
-  assertEquals(result, { valid: true });
+  assertEquals(result, { valid: true, referencesInputs: false });
 });
 
 Deno.test("validateWorkflowRunFilter: matches with literal pattern", () => {
   const result = validateWorkflowRunFilter(
     'workflowName.matches("verify-.*")',
   );
-  assertEquals(result, { valid: true });
+  assertEquals(result, { valid: true, referencesInputs: false });
 });
 
 Deno.test("validateWorkflowRunFilter: syntax error", () => {
@@ -259,5 +259,11 @@ Deno.test("evaluateWorkflowRunFilter: every WorkflowRunFilterContext field resol
       true,
       `${field} does not resolve to the run's value`,
     );
+  }
+});
+
+Deno.test("validateWorkflowRunFilter: reports a filter that reads inputs through has, in or size", () => {
+  for (const filter of ["has(inputs.x)", '"a" in inputs', "size(inputs) > 0"]) {
+    assertEquals(validateWorkflowRunFilter(filter).referencesInputs, true);
   }
 });

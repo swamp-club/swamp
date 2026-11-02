@@ -28,6 +28,8 @@ export const MAX_FILTER_COST = 500;
 export interface WorkflowRunFilterValidationResult {
   valid: boolean;
   error?: string;
+  /** whether the filter can read inputs: one that cannot needs none loaded */
+  referencesInputs?: boolean;
 }
 
 interface ASTNode {
@@ -46,6 +48,7 @@ interface ASTMetrics {
   nodeCount: number;
   weightedCost: number;
   matchesCalls: MatchesCallInfo[];
+  identifiers: Set<string>;
 }
 
 const COMPREHENSION_MACROS = new Set([
@@ -65,6 +68,7 @@ function collectASTMetrics(node: ASTNode): ASTMetrics {
     nodeCount: 0,
     weightedCost: 0,
     matchesCalls: [],
+    identifiers: new Set(),
   };
   walkNode(node, 0, 0, metrics);
   return metrics;
@@ -93,6 +97,7 @@ function walkNode(
 
   if (op === "id") {
     metrics.weightedCost++;
+    if (typeof args === "string") metrics.identifiers.add(args);
     return;
   }
 
@@ -320,7 +325,7 @@ export function validateWorkflowRunFilter(
     }
   }
 
-  return { valid: true };
+  return { valid: true, referencesInputs: metrics.identifiers.has("inputs") };
 }
 
 export interface WorkflowRunFilterContext {

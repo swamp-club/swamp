@@ -227,6 +227,11 @@ async function searchRuns(h: Harness): Promise<WorkflowRunSearchItem[]> {
     workflowRunSearch(createLibSwampContext(), {
       findAllWorkflows: () => h.workflowRepo.findAllListings(),
       runIndexOf: (id) => h.runRepo.runIndexSnapshot(createWorkflowId(id)),
+      runInputsOf: (workflowId, runId) =>
+        h.runRepo.findPersistedInputs(
+          createWorkflowId(workflowId),
+          createWorkflowRunId(runId),
+        ),
     }, {}),
   );
   return data.results;

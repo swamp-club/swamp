@@ -152,7 +152,10 @@ import {
   resolveResumableRun,
   resolveSuspendedRun,
 } from "../../domain/workflows/suspended_run_resolver.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import { isGuardedRunRecord } from "../../domain/workflows/workflow_run.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import {
@@ -1164,12 +1167,25 @@ export async function handleWorkflowHistorySearch(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
+    const canonical = canonicalResources(ctx);
     const deps: WorkflowHistorySearchDeps = {
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
       findAllRunsByWorkflowId: (id) =>
         ctx.repoContext.workflowRunRepo.findAllSummariesFromIndex(
           createWorkflowId(id),
         ),
+      runInputsOf: (workflowId, runId) =>
+        ctx.repoContext.workflowRunRepo.findPersistedInputs(
+          createWorkflowId(workflowId),
+          createWorkflowRunId(runId),
+        ),
+      isReadable: resourceReadability(
+        (id: string, name: string) => canonical.workflowOwners(id, name),
+        socket,
+        principal,
+        "read",
+        ctx,
+      ),
       retentionWatermarks: ctx.repoContext.retentionWatermarks,
     };
 
@@ -1201,7 +1217,6 @@ export async function handleWorkflowHistorySearch(
       results?: Array<{ workflowId: string; workflowName: string }>;
     };
     if (data.results) {
-      const canonical = canonicalResources(ctx);
       data.results = await filterByResources(
         data.results,
         (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
@@ -1256,6 +1271,11 @@ export async function handleWorkflowRunSearch(
       findAllWorkflows: () => listWorkflows(ctx.repoContext.workflowRepo),
       runIndexOf: (id) =>
         ctx.repoContext.workflowRunRepo.runIndexSnapshot(createWorkflowId(id)),
+      runInputsOf: (workflowId, runId) =>
+        ctx.repoContext.workflowRunRepo.findPersistedInputs(
+          createWorkflowId(workflowId),
+          createWorkflowRunId(runId),
+        ),
       isReadable: resourceReadability(
         (id: string, name: string) => canonical.workflowOwners(id, name),
         socket,

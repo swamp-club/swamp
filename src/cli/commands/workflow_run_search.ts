@@ -153,6 +153,11 @@ export async function workflowRunSearchAction(
     // hydrating every run with its inline step outputs runs out of memory on
     // large histories, and the snapshot narrows by time first
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
+    runInputsOf: (workflowId, runId) =>
+      runRepo.findPersistedInputs(
+        createWorkflowId(workflowId),
+        createWorkflowRunId(runId),
+      ),
     retentionWatermarks: repoContext.retentionWatermarks,
   };
 

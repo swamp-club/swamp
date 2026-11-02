@@ -108,6 +108,11 @@ function processOn(dir: string) {
   const deps: WorkflowRunSearchDeps = {
     findAllWorkflows: () => workflowRepo.findAllListings(),
     runIndexOf: (id) => runRepo.runIndexSnapshot(createWorkflowId(id)),
+    runInputsOf: (workflowId, runId) =>
+      runRepo.findPersistedInputs(
+        createWorkflowId(workflowId),
+        createWorkflowRunId(runId),
+      ),
   };
   return {
     workflowRepo,
@@ -392,6 +397,11 @@ for (
         findAllWorkflows: () => workflowRepo.findAllListings(),
         runIndexOf: (id: string) =>
           runRepo.runIndexSnapshot(createWorkflowId(id)),
+        runInputsOf: (workflowId: string, runId: string) =>
+          runRepo.findPersistedInputs(
+            createWorkflowId(workflowId),
+            createWorkflowRunId(runId),
+          ),
       };
       const approvalDeps = createWorkflowApprovalsDeps(
         workflowRepo,
@@ -416,6 +426,7 @@ for (
         ? withIndexQueue(runsDir, () => release.promise)
         : Promise.resolve();
       const originalRead = Deno.readTextFile;
+      const originalReadFile = Deno.readFile;
       const originalStat = Deno.stat;
       const originalRename = Deno.rename;
       const statsBySpan = new Map<string, number>();
@@ -431,8 +442,11 @@ for (
           entered.resolve();
           await release.promise;
         }
+        return await originalRead(...args);
+      };
+      Deno.readFile = async (...args: Parameters<typeof originalReadFile>) => {
         try {
-          return await originalRead(...args);
+          return await originalReadFile(...args);
         } finally {
           if (String(args[0]) === indexPath) indexReads++;
         }
@@ -548,6 +562,7 @@ for (
         await held;
         await Promise.allSettled(reading);
         Deno.readTextFile = originalRead;
+        Deno.readFile = originalReadFile;
         Deno.stat = originalStat;
         Deno.rename = originalRename;
       }
