@@ -17,27 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// ---------------------------------------------------------------------------
-// Linked Issue Fan-out Policy
-// ---------------------------------------------------------------------------
-//
-// A lifecycle can carry other issues alongside its own (`link_issue`). This
-// module decides how each upstream write reaches them, alongside
-// `lifecycle_recorder.ts`, which makes the same call for the primary issue.
-//
-// Status walks and PR links are fatal. Both are idempotent — a status that
-// already landed is a no-op and the PR PATCH writes the same value — so a
-// raised failure rolls the method back and the re-run converges.
-//
-// Mirrored entries are best-effort. An entry post cannot be taken back, so
-// raising after the first of several would re-post it on the re-run. The
-// primary issue's own entry stays the audit record.
-//
-// A mirror is never a copy of the primary's entry. It is a fixed sentence
-// per milestone carrying only structured fields, so operator free text and
-// the primary's title never reach a linked issue — the primary may be
-// restricted to admins (security, platform) while the linked issue is
-// public.
+// status walks and PR links raise (idempotent, so a re-run converges); mirrored
+// posts are best-effort since a post cannot be undone; mirrors carry only
+// structured fields, not the primary's title or text
 
 import type { ForwardStatus } from "./issue_status.ts";
 import type { LinkedIssueData, LinkedIssuesData } from "./schemas.ts";
@@ -48,7 +30,6 @@ import {
   recordUpstreamChange,
 } from "./lifecycle_recorder.ts";
 
-/** Read the linked issues, or none when the lifecycle carries none. */
 export async function readLinkedIssues(
   readResource:
     | ((instanceName: string) => Promise<Record<string, unknown> | null>)
@@ -61,7 +42,6 @@ export async function readLinkedIssues(
   return data?.issues ?? [];
 }
 
-/** Walk every linked issue to `target`. Raises on the first failure. */
 export async function advanceLinked(
   sc: SwampClubClient | null,
   linked: LinkedIssueData[],
@@ -78,7 +58,6 @@ export async function advanceLinked(
   }
 }
 
-/** Record the PR on every linked issue. Raises on the first failure. */
 export async function linkPrOnLinked(
   sc: SwampClubClient | null,
   linked: LinkedIssueData[],
@@ -95,7 +74,6 @@ export async function linkPrOnLinked(
   }
 }
 
-/** The primary-issue milestones a linked issue hears about. */
 export type Milestone =
   | { step: "implementation_started" }
   | { step: "verification_passed"; commit: string }
@@ -105,10 +83,6 @@ export type Milestone =
   | { step: "pr_failed"; url: string; attempt: number }
   | { step: "complete" };
 
-/**
- * Render a milestone as the entry a linked issue receives. Only the fields
- * named in `Milestone` can appear, which is what keeps free text out.
- */
 export function milestoneEntry(
   milestone: Milestone,
   primaryIssueNumber: number,
@@ -198,7 +172,6 @@ export function milestoneEntry(
   }
 }
 
-/** Post a milestone on every linked issue, warning on each failure. */
 export async function mirrorMilestone(
   sc: SwampClubClient | null,
   linked: LinkedIssueData[],

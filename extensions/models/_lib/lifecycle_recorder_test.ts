@@ -27,10 +27,6 @@ import {
 } from "./lifecycle_recorder.ts";
 import { SwampClubClient } from "./swamp_club.ts";
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 interface LoggedLine {
   level: "info" | "warning";
   props: Record<string, unknown>;
@@ -47,7 +43,6 @@ function buildLogger(): { logger: RecorderLogger; lines: LoggedLine[] } {
   };
 }
 
-/** A client whose every request returns the given status and body. */
 function buildClient(
   status: number,
   body: string,
@@ -72,10 +67,6 @@ const ENTRY = {
   payload: {},
 };
 
-// ---------------------------------------------------------------------------
-// No client — offline operation stays supported
-// ---------------------------------------------------------------------------
-
 Deno.test("recordLifecycle: is a quiet no-op with no client", async () => {
   await recordLifecycle(null, ENTRY);
 });
@@ -95,10 +86,6 @@ Deno.test("recordUpstreamChange: is a quiet no-op when nothing was attempted", (
   recordUpstreamChange(logger, "status transition", undefined);
   assertEquals(lines.length, 0);
 });
-
-// ---------------------------------------------------------------------------
-// Mandatory records raise
-// ---------------------------------------------------------------------------
 
 Deno.test("recordLifecycle: raises naming the step, status and server body", async () => {
   const body = JSON.stringify({ error: "payload keys must not start with $" });
@@ -172,10 +159,6 @@ Deno.test("recordUpstreamChange: stays silent on an ordinary success", () => {
   recordUpstreamChange(logger, "status transition to triaged", { ok: true });
   assertEquals(lines.length, 0);
 });
-
-// ---------------------------------------------------------------------------
-// Courtesy records warn instead
-// ---------------------------------------------------------------------------
 
 Deno.test("recordLifecycleBestEffort: warns instead of raising when rejected", async () => {
   const { client, restore } = buildClient(400, "nope");

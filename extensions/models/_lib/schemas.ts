@@ -19,10 +19,6 @@
 
 import { z } from "zod";
 
-// ---------------------------------------------------------------------------
-// Global Arguments
-// ---------------------------------------------------------------------------
-
 export const GlobalArgsSchema = z.object({
   issueNumber: z.number().describe(
     "Swamp Club lab issue number (the issue must already exist in swamp-club)",
@@ -35,10 +31,6 @@ export const GlobalArgsSchema = z.object({
   ),
 });
 
-// ---------------------------------------------------------------------------
-// Phases (state machine)
-// ---------------------------------------------------------------------------
-
 export const Phase = z.enum([
   "created",
   "triaging",
@@ -49,8 +41,8 @@ export const Phase = z.enum([
   "verifying",
   "pr_open",
   "pr_failed",
-  // Legacy: pr_merged moved here before merging became shipping. No method
-  // enters it now; stored records that hold it close out with `complete`.
+  // legacy: no method enters pr_merged now; stored records that hold it close
+  // out with complete
   "releasing",
   "notify",
   "summarizing",
@@ -59,13 +51,11 @@ export const Phase = z.enum([
 
 export type Phase = z.infer<typeof Phase>;
 
-/** Minimum time (ms) between link_pr and pr_merged/pr_failed to allow CI to run. */
 export const PR_COOLDOWN_MS = 3 * 60 * 1000;
 
 /**
- * Phases in which other issues can be linked to or unlinked from this one:
- * from the start of triage until the primary ships. Once it has shipped,
- * a late duplicate is handled by `mark_duplicate` on its own lifecycle.
+ * from the start of triage until the primary ships; a later duplicate is
+ * handled by mark_duplicate on its own lifecycle
  */
 const LINKABLE_PHASES: Phase[] = [
   "triaging",
@@ -79,7 +69,6 @@ const LINKABLE_PHASES: Phase[] = [
   "releasing",
 ];
 
-/** Valid transitions: method name → allowed source phases */
 export const TRANSITIONS: Record<string, Phase[]> = {
   start: [
     "created",
@@ -119,17 +108,8 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   mark_duplicate: ["triaging", "classified"],
 };
 
-// ---------------------------------------------------------------------------
-// Issue Classification Types
-// ---------------------------------------------------------------------------
-
-/** Issue types supported by swamp-club. */
 export const IssueType = z.enum(["bug", "feature", "platform", "security"]);
 export type IssueType = z.infer<typeof IssueType>;
-
-// ---------------------------------------------------------------------------
-// Resource Schemas
-// ---------------------------------------------------------------------------
 
 export const StateSchema = z.object({
   phase: Phase,
@@ -235,10 +215,6 @@ export const AdversarialReviewSchema = z.object({
 
 export type AdversarialReviewData = z.infer<typeof AdversarialReviewSchema>;
 
-// ---------------------------------------------------------------------------
-// Code Conformance Review Schemas
-// ---------------------------------------------------------------------------
-
 export const StepVerificationSchema = z.object({
   order: z.number().describe(
     "Plan step order number, or a new number for unplanned changes",
@@ -276,10 +252,6 @@ export type CodeConformanceReviewData = z.infer<
   typeof CodeConformanceReviewSchema
 >;
 
-// ---------------------------------------------------------------------------
-// Verification Result Schema
-// ---------------------------------------------------------------------------
-
 export const VerificationStepResultSchema = z.object({
   job: z.string(),
   step: z.string(),
@@ -303,29 +275,9 @@ export const VerificationResultSchema = z.object({
 
 export type VerificationResultData = z.infer<typeof VerificationResultSchema>;
 
-// ---------------------------------------------------------------------------
-// Verification Attestation Schema
-// ---------------------------------------------------------------------------
-
 /**
- * The document swamp-club stores and CI validates before a PR may merge.
- *
- * The shape was real long before this schema was: `.github/workflows/ci.yml`
- * reads two dozen specific paths out of it with `jq`, and
- * `agent-constraints/verification-conventions.md` tells an agent how to
- * assemble each one by hand. Between those two, nothing checked anything —
- * `post_attestation` took a string, `JSON.parse`d it, and posted whatever came
- * back, so a document missing `subject` entirely was accepted and CI reported
- * the mismatch after the PR was already public.
- *
- * This is that shape, written down once. `scripts/build_attestation.ts`
- * validates what it emits against it and `post_attestation` validates what it
- * is handed, so the contract is enforced where the document is produced and
- * again where it leaves the machine, rather than in bash on the far side.
- *
- * `postedBy` and `postedAt` are deliberately absent: swamp-club stamps those
- * on acceptance, so they appear on the stored attestation CI fetches but never
- * on the one being posted.
+ * postedBy and postedAt are absent on purpose: swamp-club stamps them on
+ * acceptance, so they never appear on the document being posted
  */
 export const AttestationStepSchema = z.object({
   job: z.string().min(1).describe("Workflow job the step belongs to."),
@@ -364,10 +316,6 @@ export const AttestationStepSchema = z.object({
 
 export type AttestationStepData = z.infer<typeof AttestationStepSchema>;
 
-/**
- * The CLI commands a change can affect, as `scripts/affected_commands.ts`
- * computes them from the static import graph at the verified commit.
- */
 export const AffectedCommandsSchema = z.object({
   granularity: z.string().describe(
     "What a name in `commands` stands for. `root` means a top-level command " +
@@ -536,10 +484,6 @@ export const PullRequestSchema = z.object({
 });
 
 export type PullRequestData = z.infer<typeof PullRequestSchema>;
-
-// ---------------------------------------------------------------------------
-// Linked Issues and Duplicates
-// ---------------------------------------------------------------------------
 
 /**
  * How a linked issue relates to the primary. `related_to` is shown as

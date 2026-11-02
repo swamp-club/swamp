@@ -17,18 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// ---------------------------------------------------------------------------
-// Lifecycle Recording Policy
-// ---------------------------------------------------------------------------
-//
-// Deciding whether a dropped upstream write should fail the step is the
-// model's policy, not the API adapter's job. `SwampClubClient` reports what
-// happened; this module decides what it means.
-//
-// The split it encodes already existed implicitly in the model: `start`
-// raises when swamp-club is unreachable or the issue is missing, while
-// auto-assignment only warns. One function per kind of call site makes that
-// distinction something a call site declares rather than implies.
+// whether a dropped upstream write fails the step is model policy, not the
+// adapter's: start raises when swamp-club is unreachable or the issue is
+// missing, auto-assignment only warns
 
 import type {
   LifecycleEntryParams,
@@ -36,18 +27,14 @@ import type {
   UpstreamOutcome,
 } from "./swamp_club.ts";
 
-/** The logger shape every model method already receives. */
 export interface RecorderLogger {
   info: (msg: string, props: Record<string, unknown>) => void;
   warning: (msg: string, props: Record<string, unknown>) => void;
 }
 
 /**
- * Render an outcome as an operator-facing sentence.
- *
- * The server's own response body is included verbatim: it carries the reason
- * the write was refused, which is what the operator needs to fix the payload
- * and re-run.
+ * the server body is included verbatim: it carries the reason the write was
+ * refused, which the operator needs to fix the payload
  */
 function explain(label: string, outcome: UpstreamOutcome): string {
   if (outcome.ok) return `${label} succeeded`;
@@ -61,12 +48,8 @@ function explain(label: string, outcome: UpstreamOutcome): string {
 }
 
 /**
- * Post a mandatory audit entry. Raises when it is not accepted.
- *
- * Returns quietly with no client: no credentials, or swamp-club failed the
- * reachability probe, both of which `createSwampClubClient` already warned
- * about. Offline operation stays supported; a reachable server silently
- * dropping the record does not.
+ * returns quietly with no client (offline is supported, and the warning was
+ * already given); a reachable server dropping the record raises
  */
 export async function recordLifecycle(
   sc: SwampClubClient | null,
@@ -79,9 +62,8 @@ export async function recordLifecycle(
 }
 
 /**
- * Post an entry that reports on a courtesy action, logging a warning instead
- * of raising. Use only where the action being reported is itself best-effort
- * — otherwise the audit trail and the step's exit status disagree.
+ * use only where the reported action is itself best-effort, otherwise the audit
+ * trail and the step's exit status disagree
  */
 export async function recordLifecycleBestEffort(
   sc: SwampClubClient | null,
@@ -96,7 +78,6 @@ export async function recordLifecycleBestEffort(
   });
 }
 
-/** Submit a contributor ripple. Raises when it is not accepted. */
 export async function recordRipple(
   sc: SwampClubClient | null,
   body: string,
@@ -108,10 +89,8 @@ export async function recordRipple(
 }
 
 /**
- * Submit a ripple that is a courtesy rather than the step's deliverable,
- * logging a warning instead of raising. Returns whether it was posted.
- * Used where a raise after an earlier ripple posted would make the re-run
- * post that one twice.
+ * used where raising after an earlier ripple posted would make the re-run post
+ * that one twice
  */
 export async function recordRippleBestEffort(
   sc: SwampClubClient | null,
@@ -127,13 +106,6 @@ export async function recordRippleBestEffort(
   return false;
 }
 
-/**
- * Interpret an outcome already produced by `transitionStatus` or
- * `updateType`. Raises on failure, so the two differ only in the benign rule
- * the client gives them and share one failure policy here.
- *
- * `undefined` means no client, so nothing was attempted.
- */
 export function recordUpstreamChange(
   logger: RecorderLogger,
   label: string,
