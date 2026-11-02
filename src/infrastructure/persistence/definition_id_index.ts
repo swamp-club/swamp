@@ -122,7 +122,8 @@ interface IndexedFile {
    * otherwise undefined and the file is stat'ed on every check
    */
   fingerprint: RecordFingerprint | undefined;
-  readonly isSymlink: boolean;
+  // as listed, or as a later lstat found it once swapped for a symlink
+  isSymlink: boolean;
   /**
    * tickets ordering a relist that kept the file without a stat against the
    * last stat of it; it is unverified while carriedAt is the later
@@ -578,8 +579,7 @@ export class DefinitionIdIndex
     return parsed;
   }
 
-  // isSymlink is the path now where the caller lstat'ed it; a refresh another
-  // refresh overtook during its read leaves the newer keys in place
+  // isSymlink is the path now where the caller lstat'ed it
   async #refresh(
     path: string,
     segments: readonly string[],
@@ -595,7 +595,13 @@ export class DefinitionIdIndex
       [...segments],
       isSymlink,
     );
-    if (!this.#isCurrent(path, file) || file.generation !== generation) {
+    if (!this.#isCurrent(path, file)) return true;
+    // read as a symlink from here on, so its target stays contained
+    if (swapped) file.isSymlink = isSymlink;
+    // Overtaken while it read, by a read that may be older: the next check
+    // stats it and reads again.
+    if (file.generation !== generation) {
+      file.fingerprint = undefined;
       return true;
     }
     file.fingerprint = swapped ? undefined : fingerprint;
@@ -617,12 +623,19 @@ export class DefinitionIdIndex
     // a clock stepped back sweeps at once rather than waiting out the step
     const elapsed = now - this.#sweptAt;
     if (elapsed >= 0 && elapsed < this.#reverifyIntervalMs) return;
-    if (this.#hasUnverified()) {
+    // set before the pass so concurrent checks do not each start one, and put
+    // back if it fails so the next check sweeps again
+    const sweptAt = this.#sweptAt;
+    this.#sweptAt = now;
+    if (!this.#hasUnverified()) return;
+    try {
       const verified = await this.#verify("sweep", signal);
       counts.filesVerified += verified.verified;
       counts.filesParsed += verified.reread;
+    } catch (error) {
+      if (this.#sweptAt === now) this.#sweptAt = sweptAt;
+      throw error;
     }
-    this.#sweptAt = now;
   }
 
   #hasUnverified(): boolean {
