@@ -495,7 +495,7 @@ export async function readAccessOf(
     const write = await definitionAccessOf(op, intent.definition, resolver);
     return write.action === "admin"
       ? write
-      : { action: "read", resource: write.resource };
+      : { action: "read", resource: readOfDefinition(write.resource) };
   }
   if ("autoDefinition" in intent) {
     const binding = bindKey(intent, op.kind, op.key);
@@ -538,7 +538,7 @@ export async function definitionRecordReadAccessOf(
   );
   return write.action === "admin"
     ? write
-    : { action: "read", resource: write.resource };
+    : { action: "read", resource: readOfDefinition(write.resource) };
 }
 
 /**
@@ -611,7 +611,7 @@ export async function baseRecordReadAccessOf(
       return [
         write.action === "admin"
           ? write
-          : { action: "read", resource: write.resource },
+          : { action: "read", resource: readOfDefinition(write.resource) },
       ];
     }
     case "definition": {
@@ -824,6 +824,13 @@ export async function partitionWriteAccessOf(
     case "lockfile":
       return { action: "admin", resource: ADMIN_RESOURCE };
   }
+}
+
+// reading a definition is the same read however it was written
+function readOfDefinition(resource: AccessResource): AccessResource {
+  return resource.kind === "vault"
+    ? vaultKindResource(resource.name, undefined, "describe")
+    : resource;
 }
 
 function vaultDefinitionMethod(intent: Intent): VaultMethod {
