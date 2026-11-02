@@ -25,8 +25,11 @@ import {
 } from "../context.ts";
 import {
   createWorkflowRunClaims,
+  requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
+  resolveDatastoreForRepo,
 } from "../repo_context.ts";
+import { V3_WRITER_BUSY_CODE } from "../../domain/datastore_v3/writer_lease.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { renderNestedCascade } from "./nested_run_hints.ts";
@@ -331,6 +334,8 @@ export interface CancelLocalRunDeps {
   ) => Promise<boolean>;
   /** Whether a stopped owner is gone; defaults to this host's process table. */
   liveness?: OwnerLiveness;
+  /** Owners {@link stopLocalRunOwners} stopped before the writer was taken. */
+  preStopped?: ReadonlySet<number>;
 }
 
 /**
@@ -689,16 +694,12 @@ export async function cancelLocalRun(
   reason: string,
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<WorkflowRun | null> {
-  const stopped = new Set<number>();
-  const pid = ownerPidToStop(
-    run,
-    deps.runTracker,
-    deps.liveness ?? localOwnerLiveness(),
-  );
-  if (pid !== undefined) {
-    await stopOwner(pid, killProcess);
-    await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
+  const stopped = new Set(deps.preStopped);
+  for (const pid of await stopLocalRunOwners([run], { killProcess, ...deps })) {
     stopped.add(pid);
+  }
+  for (const pid of stopped) {
+    await closeStoppedOwnerRuns(pid, new Set([run.id]), reason, deps);
   }
   return await settleStoppingNewOwners(
     run,
@@ -708,6 +709,63 @@ export async function cancelLocalRun(
     killProcess,
     deps,
   );
+}
+
+/**
+ * Stops, together and each once, the owners this checkout's run tracker
+ * vouches for, and returns their pids. Needs no datastore writer: on a v3
+ * datastore the owner holds it for the whole run, so cancel stops it first.
+ */
+export async function stopLocalRunOwners(
+  runs: readonly WorkflowRun[],
+  { killProcess = killProcessTree, runTracker, liveness, preStopped }: Pick<
+    CancelLocalRunDeps,
+    "killProcess" | "runTracker" | "liveness" | "preStopped"
+  >,
+): Promise<Set<number>> {
+  const pids = new Set<number>();
+  for (const run of runs) {
+    const pid = ownerPidToStop(
+      run,
+      runTracker,
+      liveness ?? localOwnerLiveness(),
+    );
+    if (pid !== undefined && !preStopped?.has(pid)) pids.add(pid);
+  }
+  await Promise.all([...pids].map((pid) => stopOwner(pid, killProcess)));
+  return pids;
+}
+
+/**
+ * Whether cancel must stop a run's owner before it takes the datastore's
+ * writer: on a v3 datastore bound directly, not through serve, the owner holds
+ * the writer for the whole run.
+ */
+export async function ownerHoldsWriter(repoDir: string): Promise<boolean> {
+  const { engine, serveUpstream } = await resolveDatastoreForRepo(repoDir);
+  return engine === "v3" && serveUpstream === undefined;
+}
+
+/**
+ * Opens the writer for a cancel's settle step. A cancel is never answered with
+ * the writer-busy refusal: `busy` names what the cancel did and what to do next.
+ */
+export async function openCancelWriter<T>(
+  open: () => Promise<T>,
+  busy: (holder: string) => UserError,
+): Promise<T> {
+  try {
+    return await open();
+  } catch (error) {
+    if ((error as { code?: unknown })?.code !== V3_WRITER_BUSY_CODE) {
+      throw error;
+    }
+    const holder = (error as { cause?: { holder?: { pid?: number } } }).cause
+      ?.holder?.pid;
+    throw busy(
+      holder === undefined ? "another swamp process" : `process ${holder}`,
+    );
+  }
 }
 
 /** Runs `fn` with the repository's run tracker open. */
@@ -776,13 +834,12 @@ export async function cancelAllLocalRuns(
   reason: string,
   { killProcess = killProcessTree, ...deps }: CancelLocalRunDeps,
 ): Promise<CancelAllResult> {
-  const pids = new Set<number>();
-  const liveness = deps.liveness ?? localOwnerLiveness();
-  for (const { run } of runs) {
-    const pid = ownerPidToStop(run, deps.runTracker, liveness);
-    if (pid !== undefined) pids.add(pid);
-  }
-  await Promise.all([...pids].map((pid) => stopOwner(pid, killProcess)));
+  const pids = new Set(deps.preStopped);
+  const stopping = await stopLocalRunOwners(runs.map(({ run }) => run), {
+    killProcess,
+    ...deps,
+  });
+  for (const pid of stopping) pids.add(pid);
   const cancelled = new Set(runs.map(({ run }) => run.id as string));
   for (const pid of pids) {
     await closeStoppedOwnerRuns(pid, cancelled, reason, deps);
@@ -1217,6 +1274,137 @@ async function cancelOnServe(
   }
 }
 
+type CancelContext = ReturnType<typeof createContext>;
+
+/** What a cancel did before it took the writer, on a datastore whose owner holds it. */
+export type PreStop =
+  | {
+    kind: "all";
+    active: LocalCancelTarget[];
+    unloadable: UnloadableWorkflowRun[];
+    stopped: Set<number>;
+  }
+  | {
+    kind: "one";
+    run: WorkflowRun;
+    workflow: Workflow | undefined;
+    stopped: Set<number>;
+  };
+
+function reportNoActiveRuns(cliCtx: CancelContext): void {
+  if (cliCtx.outputMode === "json") {
+    console.log(
+      JSON.stringify({
+        cancelled: [],
+        finished: [],
+        deleted: [],
+        notCancelled: [],
+        skipped: [],
+      }),
+    );
+  } else {
+    cliCtx.logger.info("No active workflow runs found to cancel.");
+  }
+}
+
+function refuseLocalCancel(run: WorkflowRun): void {
+  if (TERMINAL_STATUSES.has(run.status)) {
+    throw new UserError(
+      `Run ${run.id} is already in a terminal state (status: ${run.status})`,
+    );
+  }
+  if (isServeOwnedRun(run)) {
+    throw new UserError(
+      `Run ${run.id} belongs to a serve instance and cannot be cancelled locally. ` +
+        `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
+    );
+  }
+}
+
+/**
+ * Finds the runs to cancel through a read-only open and stops their owners,
+ * so the writer the owners held is free for the settle that follows.
+ */
+export async function stopOwnersBeforeWriter(
+  cliCtx: CancelContext,
+  input: {
+    repoDir: string;
+    all: boolean;
+    workflowIdOrName?: string;
+    runId?: string;
+  },
+  { killProcess }: Pick<CancelLocalRunDeps, "killProcess"> = {},
+): Promise<PreStop> {
+  const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: input.repoDir,
+    outputMode: cliCtx.outputMode,
+  });
+  const lookup: CancelTargetDeps = {
+    workflowRepo: repoContext.workflowRepo,
+    runRepo: repoContext.workflowRunRepo,
+    listBrokenWorkflows: () => listBrokenWorkflows(workflowsDirFor(repoDir)),
+  };
+  if (input.all) {
+    const { active, unloadable } = await findAllActiveRuns(lookup);
+    const local = active.filter(({ run }) => !isServeOwnedRun(run));
+    const stopped = await withRunTracker(repoDir, async (runTracker) => {
+      const liveness = localOwnerLiveness();
+      const stopping = local.filter(({ run }) =>
+        waitsOnOwner(run, runTracker, liveness)
+      ).length;
+      if (stopping > 0 && cliCtx.outputMode !== "json") {
+        cliCtx.logger
+          .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
+      }
+      return await stopLocalRunOwners(local.map(({ run }) => run), {
+        runTracker,
+        liveness,
+        killProcess,
+      });
+    });
+    return { kind: "all", active, unloadable, stopped };
+  }
+  const { run, workflow } = await resolveLocalCancelTarget(lookup, {
+    workflowIdOrName: input.workflowIdOrName,
+    runId: input.runId,
+  });
+  refuseLocalCancel(run);
+  const stopped = await withRunTracker(repoDir, async (runTracker) => {
+    if (waitsOnOwner(run, runTracker) && cliCtx.outputMode !== "json") {
+      cliCtx.logger
+        .info`Stopping run ${run.id}; waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
+    }
+    return await stopLocalRunOwners([run], { runTracker, killProcess });
+  });
+  return { kind: "one", run, workflow, stopped };
+}
+
+/**
+ * The answer when the writer is still taken after the owners stopped: a
+ * stopped owner saves its own outcome, so the record may already say so.
+ */
+function notSettledError(
+  preStop: PreStop | undefined,
+  holder: string,
+): UserError {
+  const busy = `${holder} is writing the v3 datastore`;
+  if (preStop?.kind === "one") {
+    const id = preStop.run.id;
+    return new UserError(
+      preStop.stopped.size > 0
+        ? `Stopped the process running run ${id}, but could not mark it cancelled: ${busy}. ` +
+          `See where the run ended with 'swamp workflow history get ${id}', or cancel it again once that process finishes.`
+        : `Run ${id} was not cancelled: ${busy}. Cancel it again once that process finishes.`,
+    );
+  }
+  return new UserError(
+    preStop !== undefined && preStop.stopped.size > 0
+      ? `Stopped ${preStop.stopped.size} process(es) running the active runs, but could not mark them cancelled: ${busy}. ` +
+        `Run 'swamp workflow cancel --all' again once that process finishes.`
+      : `No run was cancelled: ${busy}. Cancel again once that process finishes.`,
+  );
+}
+
 export const workflowCancelCommand = withRemoteOptions(
   new Command()
     .name("cancel")
@@ -1292,11 +1480,32 @@ export const workflowCancelCommand = withRemoteOptions(
       );
     }
 
-    const { repoDir, repoContext, datastoreResolver, datastoreConfig } =
-      await requireInitializedRepoUnlocked({
+    const reason = options.reason ?? "Cancelled by user";
+    const preStop = await ownerHoldsWriter(resolveRepoDir(options.repoDir))
+      ? await stopOwnersBeforeWriter(cliCtx, {
         repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+        all: options.all === true,
+        workflowIdOrName,
+        runId: options.run as string | undefined,
+      })
+      : undefined;
+    if (
+      preStop?.kind === "all" && preStop.active.length === 0 &&
+      preStop.unloadable.length === 0
+    ) {
+      reportNoActiveRuns(cliCtx);
+      return;
+    }
+
+    const { repoDir, repoContext, datastoreResolver, datastoreConfig } =
+      await openCancelWriter(
+        () =>
+          requireInitializedRepoUnlocked({
+            repoDir: resolveRepoDir(options.repoDir),
+            outputMode: cliCtx.outputMode,
+          }),
+        (holder) => notSettledError(preStop, holder),
+      );
     const runClaims = createWorkflowRunClaims(datastoreConfig);
 
     const workflowRepo = repoContext.workflowRepo;
@@ -1309,7 +1518,7 @@ export const workflowCancelCommand = withRemoteOptions(
     );
     const findEvaluatedWorkflow: EvaluatedWorkflowLookup = (runId) =>
       evaluatedWorkflowRepo.findByRunId(runId);
-    const reason = options.reason ?? "Cancelled by user";
+    const preStopped = preStop?.stopped;
     const lookup: CancelTargetDeps = {
       workflowRepo,
       runRepo,
@@ -1317,23 +1526,11 @@ export const workflowCancelCommand = withRemoteOptions(
     };
 
     if (options.all) {
-      const { active: activeRuns, unloadable } = await findAllActiveRuns(
-        lookup,
-      );
+      const { active: activeRuns, unloadable } = preStop?.kind === "all"
+        ? preStop
+        : await findAllActiveRuns(lookup);
       if (activeRuns.length === 0 && unloadable.length === 0) {
-        if (cliCtx.outputMode === "json") {
-          console.log(
-            JSON.stringify({
-              cancelled: [],
-              finished: [],
-              deleted: [],
-              notCancelled: [],
-              skipped: [],
-            }),
-          );
-        } else {
-          cliCtx.logger.info("No active workflow runs found to cancel.");
-        }
+        reportNoActiveRuns(cliCtx);
         return;
       }
 
@@ -1380,6 +1577,7 @@ export const workflowCancelCommand = withRemoteOptions(
                   runTracker,
                   runClaims,
                   outputRepo: repoContext.outputRepo,
+                  preStopped,
                 });
                 // A nested run that was itself active is in the list and
                 // already cancelled; the cascade reaches the suspended ones
@@ -1513,32 +1711,24 @@ export const workflowCancelCommand = withRemoteOptions(
       return;
     }
 
-    // Single run cancel path
-    const { run, workflow } = await resolveLocalCancelTarget(lookup, {
-      workflowIdOrName,
-      runId: options.run as string | undefined,
-    });
+    // A pre-stopped run was checked before its owner may have saved it cancelled.
+    const { run, workflow } = preStop?.kind === "one"
+      ? preStop
+      : await resolveLocalCancelTarget(lookup, {
+        workflowIdOrName,
+        runId: options.run as string | undefined,
+      });
     const workflowName = workflowNameOf(run, workflow);
 
-    if (TERMINAL_STATUSES.has(run.status)) {
-      throw new UserError(
-        `Run ${run.id} is already in a terminal state (status: ${run.status})`,
-      );
-    }
-
-    if (isServeOwnedRun(run)) {
-      throw new UserError(
-        `Run ${run.id} belongs to a serve instance and cannot be cancelled locally. ` +
-          `Use --server to cancel it: swamp workflow cancel --run ${run.id} --server <url>`,
-      );
-    }
-
-    // In a serve-mode checkout a run this checkout did not start is
-    // cancelled on serve, as `--run` does for it (swamp-club#4274).
-    const foreignServer = foreignRunServer(run.id, repoDir);
-    if (foreignServer !== undefined) {
-      await cancelOnServe(cliCtx, options, foreignServer, run.id);
-      return;
+    if (preStop === undefined) {
+      refuseLocalCancel(run);
+      // In a serve-mode checkout a run this checkout did not start is
+      // cancelled on serve, as `--run` does for it.
+      const foreignServer = foreignRunServer(run.id, repoDir);
+      if (foreignServer !== undefined) {
+        await cancelOnServe(cliCtx, options, foreignServer, run.id);
+        return;
+      }
     }
 
     const previousStatus = run.status;
@@ -1552,7 +1742,8 @@ export const workflowCancelCommand = withRemoteOptions(
           repoDir,
           async (runTracker) => {
             if (
-              waitsOnOwner(run, runTracker) && cliCtx.outputMode !== "json"
+              preStop === undefined && waitsOnOwner(run, runTracker) &&
+              cliCtx.outputMode !== "json"
             ) {
               cliCtx.logger
                 .info`Stopping run ${run.id}; waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
@@ -1563,6 +1754,7 @@ export const workflowCancelCommand = withRemoteOptions(
               runTracker,
               runClaims,
               outputRepo: repoContext.outputRepo,
+              preStopped,
             });
             // The suspended nested runs a cancelled run waited on are
             // cancelled with it; the rest are reported (swamp-club#2867).

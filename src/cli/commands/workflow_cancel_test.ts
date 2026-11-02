@@ -50,6 +50,7 @@ import {
   findAllActiveRuns,
   foreignRunServer,
   isServeOwnedRun,
+  openCancelWriter,
   OWNER_STOP_GRACE_MS,
   resolveLocalCancelTarget,
   RunNotCancelledError,
@@ -57,6 +58,7 @@ import {
   serverCancelFailure,
   serverCancelRejection,
   splitForeignRuns,
+  stopLocalRunOwners,
   trackedOwner,
 } from "./workflow_cancel.ts";
 import { RUN_CANCEL_GRACE_MS } from "../../serve/suspended_run_cancel.ts";
@@ -2557,4 +2559,133 @@ Deno.test("splitForeignRuns: in serve mode, runs the tracker does not hold are a
     assertEquals(local.own.map(({ run }) => run.id), ["own-run", "their-run"]);
     assertEquals(local.foreign, []);
   });
+});
+
+Deno.test("stopLocalRunOwners: stops each owner the tracker vouches for once, with only the tracker (swamp-club#4295)", async () => {
+  const parent = makeRun({ pid: OWNER_PID });
+  const child = makeRun({ pid: OWNER_PID });
+  const unvouched = makeRun({ pid: OWNER_PID + 1 });
+  const killed: number[] = [];
+  const stopped = await stopLocalRunOwners([parent, child, unvouched], {
+    runTracker: ownedBy((runId) =>
+      runId === unvouched.id ? undefined : OWNER_PID
+    ).runTracker,
+    killProcess: (pid) => {
+      killed.push(pid);
+      return Promise.resolve(true);
+    },
+  });
+  assertEquals(killed, [OWNER_PID]);
+  assertEquals([...stopped], [OWNER_PID]);
+});
+
+Deno.test("cancelLocalRun: an owner stopped before the writer was taken is not stopped again, and keeps the record it cancelled (swamp-club#4295)", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(ownerFinalData(runId, "cancelled")),
+    );
+
+    const result = await cancelLocalRun(snapshot, WORKFLOW, "Too slow", {
+      runRepo,
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+      ...ownedBy(() => OWNER_PID),
+      preStopped: new Set([OWNER_PID]),
+      killProcess: () => Promise.reject(new Error("stopped twice")),
+    });
+
+    assertEquals(result?.status, "cancelled");
+    assertEquals(result?.tags.cancel_reason, "Too slow");
+    assertEquals(stepSummary(result!), ["build-1:failed", "rollback:skipped"]);
+  });
+});
+
+Deno.test("cancelLocalRun: a run whose owner was stopped before the writer and died without saving is settled as owner-stopped (swamp-club#4295)", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(ownerFinalData(runId, "running")),
+    );
+
+    const result = await cancelLocalRun(snapshot, WORKFLOW, "Too slow", {
+      runRepo,
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+      ...ownedBy(() => OWNER_PID),
+      preStopped: new Set([OWNER_PID]),
+      killProcess: () => Promise.reject(new Error("stopped twice")),
+    });
+
+    assertEquals(result?.status, "cancelled");
+    assertEquals(result?.jobs[0].steps[0].error, OWNER_STOPPED_STEP_ERROR);
+  });
+});
+
+Deno.test("cancelAllLocalRuns: owners stopped before the writer was taken are not stopped again (swamp-club#4295)", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(
+      workflowId,
+      WorkflowRun.fromData(ownerFinalData(runId, "cancelled")),
+    );
+
+    const result = await cancelAllLocalRuns(
+      [{ run: snapshot, workflow: WORKFLOW }],
+      "Too slow",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...ownedBy(() => OWNER_PID),
+        preStopped: new Set([OWNER_PID]),
+        killProcess: () => Promise.reject(new Error("stopped twice")),
+      },
+    );
+
+    assertEquals(result.cancelled.map((entry) => entry.runId), [runId]);
+    assertEquals(result.cancelled[0].previousStatus, "running");
+  });
+});
+
+Deno.test("openCancelWriter: answers a busy v3 writer with the cancel's own error, naming the holder, and passes other errors through (swamp-club#4295)", async () => {
+  const busy = Object.assign(new Error("Another swamp process is writing"), {
+    code: "datastore_v3_writer_busy",
+    cause: { holder: { pid: 4242 } },
+  });
+  const error = await assertRejects(
+    () =>
+      openCancelWriter(
+        () => Promise.reject(busy),
+        (holder) => new UserError(`not settled: ${holder} writes`),
+      ),
+    UserError,
+  );
+  assertEquals(error.message, "not settled: process 4242 writes");
+
+  const other = new Error("disk full");
+  assertEquals(
+    await assertRejects(() =>
+      openCancelWriter(
+        () => Promise.reject(other),
+        () => new UserError("unused"),
+      )
+    ),
+    other,
+  );
+  assertEquals(
+    await openCancelWriter(() => Promise.resolve(7), () => new UserError("")),
+    7,
+  );
 });

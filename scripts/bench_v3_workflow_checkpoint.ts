@@ -31,6 +31,7 @@ import {
   openV3Datastore,
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { runInUnitOfWork } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
+import { RUN_CHECKPOINT_INTERVAL_MS } from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
 
 const RECORD_BYTES_PER_STEP = 4_500;
 const RECORD_BASE_BYTES = 1_500;
@@ -87,6 +88,82 @@ async function simulateRun(steps: number, checkpoint: boolean): Promise<void> {
   });
 }
 
+// WorkflowRunCheckpointer's pacing on a simulated clock; `atStart` adds the
+// at-once checkpoint of each step start.
+async function simulatePacedRun(
+  steps: number,
+  stepMs: number,
+  atStart: boolean,
+): Promise<number> {
+  const workflowId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  const run = new RunChanges(workflowId, runId);
+  const recordKey = recordKeyOf([
+    "workflow-runs",
+    workflowId,
+    `workflow-run-${runId}.yaml`,
+  ]);
+  let checkpoints = 0;
+  await engine.runRoot({}, async () => {
+    const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+    await runInUnitOfWork(unit, async () => {
+      let lastStarted = Number.NEGATIVE_INFINITY;
+      let trailingAt: number | undefined;
+      const commit = async (at: number) => {
+        lastStarted = at;
+        checkpoints++;
+        await checkpointFrom(unit);
+      };
+      const save = async (
+        kind: "run.create" | "run.update",
+        size: number,
+        at: number,
+        atOnce: boolean,
+      ) => {
+        if (trailingAt !== undefined && trailingAt <= at) {
+          await commit(trailingAt);
+          trailingAt = undefined;
+        }
+        // Salted per run: the chunk store keeps one copy of equal content.
+        const bytes = new Uint8Array(size).fill(size % 251);
+        bytes.set(new TextEncoder().encode(runId).subarray(0, size));
+        await unit.stageOps([
+          run.write(kind, recordKey, () => ReadableStream.from([bytes])),
+        ]);
+        if (atOnce || at - lastStarted >= RUN_CHECKPOINT_INTERVAL_MS) {
+          trailingAt = undefined;
+          await commit(at);
+        } else {
+          trailingAt ??= lastStarted + RUN_CHECKPOINT_INTERVAL_MS;
+        }
+      };
+      let now = 0;
+      await save("run.create", RECORD_BASE_BYTES, now, false);
+      for (let step = 0; step < steps; step++) {
+        const size = RECORD_BASE_BYTES + step * RECORD_BYTES_PER_STEP;
+        await save("run.update", size, now, atStart);
+        const id = crypto.randomUUID();
+        await unit.stageOps([
+          new AutoDefinitionChanges(id).write(
+            recordKeyOf(["auto-definitions", `${id}.yaml`]),
+            new Uint8Array(512).fill(step % 251),
+          ),
+        ]);
+        now += stepMs;
+        await save("run.update", size + RECORD_BYTES_PER_STEP, now, false);
+      }
+      await save(
+        "run.update",
+        RECORD_BASE_BYTES + steps * RECORD_BYTES_PER_STEP,
+        now,
+        true,
+      );
+    });
+    await unit.commit();
+  });
+  return checkpoints;
+}
+
 async function bytesUnder(path: string): Promise<number> {
   let total = 0;
   for await (const entry of Deno.readDir(path)) {
@@ -119,6 +196,24 @@ for (const steps of [10, 50, 200]) {
       `${steps} steps, ${checkpoint ? "checkpointed" : "end only"}: ` +
         `${mib(after.chunks - before.chunks)} of chunks, ` +
         `commit log grew ${mib(after.log - before.log)}`,
+    );
+  }
+}
+
+for (const steps of [10, 50, 200, 1_000]) {
+  for (const stepMs of steps === 1_000 ? [0] : [0, 100, 500, 2_000]) {
+    const sizes: string[] = [];
+    for (const atStart of [false, true]) {
+      const before = await stored();
+      const checkpoints = await simulatePacedRun(steps, stepMs, atStart);
+      const after = await stored();
+      sizes.push(
+        `${mib(after.chunks - before.chunks)} (${checkpoints} checkpoints)`,
+      );
+    }
+    console.log(
+      `${steps} steps of ${stepMs} ms: paced ${sizes[0]}, ` +
+        `with each step start ${sizes[1]}`,
     );
   }
 }

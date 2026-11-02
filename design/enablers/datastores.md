@@ -2501,7 +2501,33 @@ these.
    checkpoints at once when none started in the last two seconds
    (`RUN_CHECKPOINT_INTERVAL_MS`), and otherwise one trailing checkpoint
    starts when that interval ends, so the latest save lands within about
-   two seconds and a crash loses at most that much of the run. One per save
+   two seconds and a crash loses at most that much of the run. A save that
+   starts a step, one with a step `running` that no started checkpoint saw
+   running, checkpoints at once too, and the step waits for it
+   (swamp-club#4295): a crash never leaves a step that may have run recorded
+   as `pending`, which `workflow recover` would run again without asking. A
+   step that ends while a sibling still runs checkpoints at once as well, or
+   recovery would ask about it with the sibling; a step that ends alone needs
+   none, as the next step's start carries its end.
+   That costs one commit per step start, each storing the whole record: for
+   200 steps the bench stores 86.5 MiB of chunks against 0.86 MiB paced for
+   instant steps, 5.6 MiB for 100 ms steps and 22.6 MiB for 500 ms steps;
+   steps of 2 s or more already checkpoint about once each, and now commit
+   about twice as often. The bench assumes 4.5 KiB of record per step; real
+   run records hold about 2.3 KiB, about half that. The superseded versions
+   are chunks swept once retention drops their commits. Each step start waits
+   for its commit: an 11-step run took about 12 ms more per step on a
+   filesystem and 13 ms on an emulator S3 bucket (release
+   `20261102.155049.0`, interleaved, an A/A control within 5 ms); a real
+   bucket adds its round trip. The cost grows with the record: a 1,000-step
+   sequential `forEach` stored 4.5 GiB against 110 MiB on a filesystem, at
+   333 against 328 ms per step, and 3.1 GiB against 85 MiB on an emulator S3
+   bucket, at 461 against 338 ms per step, since a record above the inline
+   limit is a chunk uploaded before its commit lands. Two windows stay, as on v1: a
+   reader sees the staged record before it commits, and a step of a parallel
+   level or job, whose stream is drained eagerly, starts its method while its
+   start commits. A failed or refused step-start checkpoint is logged like
+   any other and the step runs; the run's end commit then reports it. One per save
    would store the whole record each time, and the record grows with every
    step: a 200-step run stored 80 MiB of chunks instead of 0.86 MiB
    (`scripts/bench_v3_workflow_checkpoint.ts`). A checkpoint

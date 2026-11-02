@@ -27,6 +27,7 @@ import { ActiveRun } from "../../domain/models/active_run.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { KILL_GRACE_MS } from "../../infrastructure/process/process_executor.ts";
 import {
+  abandonedMethodRuns,
   cancelModelMethodRuns,
   findMethodRunsOfModel,
   METHOD_OWNER_STOP_GRACE_MS,
@@ -34,7 +35,9 @@ import {
   modelCancelCommand,
   type OwnerStop,
   selectMethodRunToCancel,
+  settleStoppedMethodRuns,
   splitServeOwnedRuns,
+  stopMethodRunOwners,
 } from "./model_cancel.ts";
 import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
 import type { MethodRunOutputs } from "../../domain/workflows/orphaned_run_reaper.ts";
@@ -891,5 +894,46 @@ Deno.test("findMethodRunsOfModel: a synced method-run record only attributes a t
       killProcess: recordingKill(calls),
     });
     assertEquals(calls.map((c) => c.pid), [OWNER_PID]);
+  });
+});
+
+Deno.test("stopMethodRunOwners: stops the owners with the tracker alone, before any record is read or saved (swamp-club#4295)", async () => {
+  await withTracker(async (tracker) => {
+    const run = methodRun(OWNER_PID);
+    tracker.register(run);
+    const calls: OwnerStop[] = [];
+    const stopped = await stopMethodRunOwners([run], {
+      tracker,
+      killProcess: recordingKill(calls),
+    });
+    assertEquals(calls.map((c) => c.pid), [OWNER_PID]);
+    assertEquals(stopped.stopped.map((r) => r.id), [run.id]);
+    assertEquals(stopped.errors, []);
+    assertEquals(tracker.findById(run.id)?.status, "running");
+  });
+});
+
+Deno.test("abandonedMethodRuns: only a stopped run whose owner died with its row still running needs its record settled (swamp-club#4295)", async () => {
+  await withTracker(async (tracker) => {
+    const saved = methodRun(OWNER_PID);
+    const abandoned = methodRun(OWNER_PID + 1);
+    const alive = methodRun(OWNER_PID + 2);
+    for (const run of [saved, abandoned, alive]) tracker.register(run);
+    tracker.complete(saved.id, "cancelled");
+    const liveness = {
+      hostname: "test-host",
+      isDead: (pid: number) => pid !== OWNER_PID + 2,
+    };
+    assertEquals(
+      abandonedMethodRuns([saved, abandoned, alive], { tracker, liveness })
+        .map((r) => r.id),
+      [abandoned.id],
+    );
+    const outcomes = await settleStoppedMethodRuns(
+      { stopped: [saved, alive], errors: [] },
+      "Stop it",
+      { tracker, outputRepo: noOutputs, liveness },
+    );
+    assertEquals(outcomes.map((o) => o.status), ["cancelled", "cancelled"]);
   });
 });

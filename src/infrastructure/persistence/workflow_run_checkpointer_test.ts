@@ -349,3 +349,192 @@ Deno.test("WorkflowRunCheckpointer.committedUnknownSteps: names the steps in fli
   assertEquals(checkpointer.committedUnknownSteps(cutBetweenSteps.id), []);
   assertEquals(checkpointer.committedUnknownSteps(never.id), undefined);
 });
+
+function twoStepRun(): WorkflowRun {
+  return WorkflowRun.create(Workflow.create({
+    name: "flow",
+    jobs: [Job.create({
+      name: "main",
+      steps: ["a", "b"].map((name) =>
+        Step.create({ name, task: StepTask.model("writer", "write", {}) })
+      ),
+    })],
+  }));
+}
+
+Deno.test("WorkflowRunCheckpointer: a save that starts a step checkpoints at once inside the interval and resolves only once that checkpoint lands (swamp-club#4295)", async () => {
+  let release: (() => void) | undefined;
+  const commitLog = engine(() =>
+    release === undefined ? Promise.resolve("committed") : new Promise<
+      OpenUnitCheckpoint
+    >((resolve) => {
+      const done = release!;
+      release = () => {
+        done();
+        resolve("committed");
+      };
+    })
+  );
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => now,
+  });
+  const run = twoStepRun();
+  await checkpointer.checkpoint(run);
+  now = 10;
+  run.start();
+  run.jobs[0].start();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+
+  let landed = false;
+  release = () => {
+    landed = true;
+  };
+  run.jobs[0].steps[0].start();
+  const saved = checkpointer.checkpoint(run).then(() => landed);
+  await waitFor(() => commitLog.calls() === 2, "the step's checkpoint");
+  release();
+  assertEquals(await saved, true);
+  assertEquals(checkpointer.committedUnknownSteps(run.id), ["a"]);
+  await checkpointer.close();
+});
+
+Deno.test("WorkflowRunCheckpointer: inside the interval a step's progress and its end stay paced; only the next start checkpoints at once (swamp-club#4295)", async () => {
+  const commitLog = engine(() => Promise.resolve("committed"));
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => now,
+  });
+  const run = twoStepRun();
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+  now = 10;
+  await checkpointer.checkpoint(run);
+  run.jobs[0].steps[0].succeed();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+  run.jobs[0].steps[1].start();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 2);
+  await checkpointer.close();
+  assertEquals(commitLog.calls(), 2);
+});
+
+Deno.test("WorkflowRunCheckpointer: steps that start while a checkpoint runs share the one queued after it (swamp-club#4295)", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  const commitLog = engine(async () => {
+    if (first) {
+      first = false;
+      await held;
+    }
+    return "committed";
+  });
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => now,
+  });
+  const run = twoStepRun();
+  run.start();
+  run.jobs[0].start();
+  const inFlight = checkpointer.checkpoint(run);
+  now = 10;
+  run.jobs[0].steps[0].start();
+  const startA = checkpointer.checkpoint(run);
+  run.jobs[0].steps[1].start();
+  const startB = checkpointer.checkpoint(run);
+  release();
+  await Promise.all([inFlight, startA, startB]);
+  assertEquals(commitLog.calls(), 2);
+  assertEquals(checkpointer.committedUnknownSteps(run.id), ["a", "b"]);
+  await checkpointer.close();
+});
+
+Deno.test("WorkflowRunCheckpointer: a step started again under the same name checkpoints at once (swamp-club#4295)", async () => {
+  const commitLog = engine(() => Promise.resolve("committed"));
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => now,
+  });
+  const startedAt = (at: string) => {
+    const data = newRun().toData();
+    return WorkflowRun.fromData({
+      ...data,
+      id: runId,
+      status: "running",
+      jobs: [{
+        ...data.jobs[0],
+        status: "running",
+        steps: [{ stepName: "a", status: "running", startedAt: at }],
+      }],
+    });
+  };
+  const runId = crypto.randomUUID();
+  await checkpointer.checkpoint(startedAt("2026-11-02T10:00:00.000Z"));
+  now = 10;
+  await checkpointer.checkpoint(startedAt("2026-11-02T10:00:00.000Z"));
+  assertEquals(commitLog.calls(), 1);
+  await checkpointer.checkpoint(startedAt("2026-11-02T10:00:05.000Z"));
+  assertEquals(commitLog.calls(), 2);
+  await checkpointer.close();
+});
+
+Deno.test("WorkflowRunCheckpointer: a step start whose checkpoint fails still resolves, and the run goes on (swamp-club#4295)", async () => {
+  let failing = false;
+  const commitLog = engine(() =>
+    failing
+      ? Promise.reject(new Error("the commit store is down"))
+      : Promise.resolve("committed")
+  );
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => now,
+  });
+  const run = newRun();
+  run.start();
+  run.jobs[0].start();
+  await checkpointer.checkpoint(run);
+  now = 10;
+  failing = true;
+  run.jobs[0].steps[0].start();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 2);
+  await checkpointer.close();
+});
+
+Deno.test("WorkflowRunCheckpointer: a step that ends while a sibling runs checkpoints at once; one that ends alone stays paced (swamp-club#4295)", async () => {
+  const commitLog = engine(() => Promise.resolve("committed"));
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => now,
+  });
+  const run = twoStepRun();
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[1].start();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+  now = 10;
+  run.jobs[0].steps[0].succeed();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 2);
+  assertEquals(checkpointer.committedUnknownSteps(run.id), ["b"]);
+  run.jobs[0].steps[1].succeed();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 2);
+  await checkpointer.close();
+});

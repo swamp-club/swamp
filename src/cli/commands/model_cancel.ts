@@ -39,7 +39,9 @@ import {
 } from "../context.ts";
 import {
   createModelLock,
+  requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
+  resolveDatastoreForRepo,
 } from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -56,7 +58,7 @@ import { maxOf } from "../../domain/array_extrema.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
-import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
+import { openCancelWriter, OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   localOwnerLiveness,
@@ -126,14 +128,34 @@ export interface MethodRunCancelOutcome {
 export async function cancelModelMethodRuns(
   runs: readonly ActiveRun[],
   reason: string | undefined,
+  deps: CancelModelMethodRunsDeps,
+): Promise<MethodRunCancelOutcome[]> {
+  return await settleStoppedMethodRuns(
+    await stopMethodRunOwners(runs, deps),
+    reason,
+    deps,
+  );
+}
+
+export interface StoppedMethodRuns {
+  /** The runs whose owner stopped, or was this process. */
+  stopped: ActiveRun[];
+  /** Why an owner could not be stopped; its runs are left running. */
+  errors: unknown[];
+}
+
+/** Needs no datastore writer, so cancel can stop an owner that holds it. */
+export async function stopMethodRunOwners(
+  runs: readonly ActiveRun[],
   {
     tracker,
-    outputRepo,
-    liveness = localOwnerLiveness(),
     killProcess = killProcessTree,
     onStopping,
-  }: CancelModelMethodRunsDeps,
-): Promise<MethodRunCancelOutcome[]> {
+  }: Pick<
+    CancelModelMethodRunsDeps,
+    "tracker" | "killProcess" | "onStopping"
+  >,
+): Promise<StoppedMethodRuns> {
   const runningRows = tracker.findAllRunning();
   const pids = new Set<number>();
   for (const run of runs) {
@@ -158,13 +180,38 @@ export async function cancelModelMethodRuns(
   });
 
   // A run whose owner could not be stopped is left running.
-  const stopped = runs.filter((run) => !unstopped.has(run.pid));
-  const abandoned = stopped.filter((run) =>
+  return { stopped: runs.filter((run) => !unstopped.has(run.pid)), errors };
+}
+
+/**
+ * the stopped runs whose owner died without saving them: only these need the
+ * datastore writer to settle
+ */
+export function abandonedMethodRuns(
+  stopped: readonly ActiveRun[],
+  {
+    tracker,
+    liveness = localOwnerLiveness(),
+  }: Pick<CancelModelMethodRunsDeps, "tracker" | "liveness">,
+): ActiveRun[] {
+  return stopped.filter((run) =>
     run.pid !== Deno.pid &&
     run.isLocalTo(liveness.hostname, liveness.instanceId) &&
     liveness.isDead(run.pid) &&
     tracker.findById(run.id)?.status === "running"
   );
+}
+
+export async function settleStoppedMethodRuns(
+  { stopped, errors }: StoppedMethodRuns,
+  reason: string | undefined,
+  {
+    tracker,
+    outputRepo,
+    liveness = localOwnerLiveness(),
+  }: Pick<CancelModelMethodRunsDeps, "tracker" | "outputRepo" | "liveness">,
+): Promise<MethodRunCancelOutcome[]> {
+  const abandoned = abandonedMethodRuns(stopped, { tracker, liveness });
   // A record that cannot be read or saved does not stop the cancel: its row
   // is marked interrupted, so run doctor --fix settles it later.
   const { failed, errors: outputErrors } = await cancelOrphanedMethodRuns(
@@ -469,14 +516,77 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
         );
       }
 
-      const { repoDir, repoContext, datastoreConfig } =
-        await requireInitializedRepoUnlocked({
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
-        });
+      const resolution = await resolveDatastoreForRepo(
+        resolveRepoDir(options.repoDir),
+      );
+      const { datastoreConfig } = resolution;
+      // On a v3 datastore bound directly, the run's owner holds the writer
+      // for the whole run: it is stopped first, through a read-only open.
+      const ownerHoldsWriter = resolution.engine === "v3" &&
+        resolution.serveUpstream === undefined;
+      const openOptions = {
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      };
+      const { repoDir, repoContext } = ownerHoldsWriter
+        ? await requireInitializedRepoReadOnly(openOptions)
+        : await requireInitializedRepoUnlocked(openOptions);
 
       const reason = options.reason as string | undefined;
       const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+      const cancelRuns = async (
+        runs: readonly ActiveRun[],
+        onStopping: (stops: readonly OwnerStop[]) => void,
+      ): Promise<MethodRunCancelOutcome[]> => {
+        if (!ownerHoldsWriter) {
+          // a root unit with no push: the run saves stage into it rather than
+          // reach the hook through signalChange's fallback
+          return await runCommandInRootUnit(
+            repoContext,
+            { push: undefined },
+            () =>
+              cancelModelMethodRuns(runs, reason, {
+                tracker: runTracker,
+                outputRepo: repoContext.outputRepo,
+                onStopping,
+              }),
+          );
+        }
+        const stopped = await stopMethodRunOwners(runs, {
+          tracker: runTracker,
+          onStopping,
+        });
+        const abandoned = abandonedMethodRuns(stopped.stopped, {
+          tracker: runTracker,
+        });
+        if (abandoned.length === 0) {
+          return await settleStoppedMethodRuns(stopped, reason, {
+            tracker: runTracker,
+            outputRepo: repoContext.outputRepo,
+          });
+        }
+        const writer = await openCancelWriter(
+          () => requireInitializedRepoUnlocked(openOptions),
+          (holder) =>
+            new UserError(
+              `Stopped the process(es) running these method runs, but could not mark ${abandoned.length} of them cancelled: ${holder} is writing the v3 datastore. ` +
+                `See where they ended with '${
+                  syntax.surface === "model"
+                    ? "swamp model method history search"
+                    : "swamp behavior output search"
+                }', or cancel again once that process finishes.`,
+            ),
+        );
+        return await runCommandInRootUnit(
+          writer.repoContext,
+          { push: undefined },
+          () =>
+            settleStoppedMethodRuns(stopped, reason, {
+              tracker: runTracker,
+              outputRepo: writer.repoContext.outputRepo,
+            }),
+        );
+      };
 
       try {
         runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
@@ -502,27 +612,17 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
             return;
           }
 
-          // in a root unit of work with no push, so the run saves stage into it
-          // instead of reaching the hook through signalChange's fallback.
-          // Nothing pushes.
-          const outcomes = await runCommandInRootUnit(
-            repoContext,
-            { push: undefined },
-            () =>
-              cancelModelMethodRuns(cancellable, reason, {
-                tracker: runTracker,
-                outputRepo: repoContext.outputRepo,
-                onStopping: (stops) => {
-                  const waiting = liveStops(stops);
-                  if (!waiting || cliCtx.outputMode === "json") return;
-                  const count = cancellable.filter((r) =>
-                    waiting.live.some(({ pid }) => pid === r.pid)
-                  ).length;
-                  cliCtx.logger
-                    .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
-                },
-              }),
-          );
+          const outcomes = await cancelRuns(cancellable, (stops) => {
+            const waiting = liveStops(stops);
+            if (!waiting || cliCtx.outputMode === "json") return;
+            const count = cancellable.filter((r) =>
+              waiting.live.some(({ pid }) =>
+                pid === r.pid
+              )
+            ).length;
+            cliCtx.logger
+              .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
+          });
           const cancelled = outcomes.filter((o) => o.status === "cancelled")
             .map(({ run }) => methodRunFields(run));
           const finished = outcomes.filter((o) => o.status !== "cancelled")
@@ -616,21 +716,12 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
           );
         }
 
-        const [{ status }] = await runCommandInRootUnit(
-          repoContext,
-          { push: undefined },
-          () =>
-            cancelModelMethodRuns([latest], reason, {
-              tracker: runTracker,
-              outputRepo: repoContext.outputRepo,
-              onStopping: (stops) => {
-                const waiting = liveStops(stops);
-                if (!waiting || cliCtx.outputMode === "json") return;
-                cliCtx.logger
-                  .info`Stopping method run ${latest.id}; waiting up to ${waiting.seconds}s for it to stop (cancel again to stop immediately)`;
-              },
-            }),
-        );
+        const [{ status }] = await cancelRuns([latest], (stops) => {
+          const waiting = liveStops(stops);
+          if (!waiting || cliCtx.outputMode === "json") return;
+          cliCtx.logger
+            .info`Stopping method run ${latest.id}; waiting up to ${waiting.seconds}s for it to stop (cancel again to stop immediately)`;
+        });
 
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({
