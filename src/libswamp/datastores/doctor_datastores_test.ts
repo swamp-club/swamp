@@ -53,6 +53,7 @@ import {
   type UnpushedFilesSummary,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
+import type { MixedKindDataName } from "../../domain/data/mixed_kind_data_name.ts";
 import {
   repairDatastoreFormatMarker,
   type RepairDatastoreFormatMarkerDeps,
@@ -2805,4 +2806,62 @@ Deno.test("cacheWipeRefusal: a pending push comes before the advice to remove fi
     true,
   );
   assertStringIncludes(refusal, "remove nothing from the cache before it");
+});
+
+const MIXED: MixedKindDataName = {
+  modelType: "@test/spec",
+  modelId: "m-1",
+  modelName: "spec",
+  dataName: "x",
+  versions: [
+    { version: 1, kind: "file", specName: "blob" },
+    { version: 2, kind: "resource", specName: "meta" },
+  ],
+};
+
+async function mixedKindCheck(scan: () => Promise<MixedKindDataName[]>) {
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), {
+      ...makeDeps(
+        filesystemConfig,
+        { healthy: true, message: "ok", latencyMs: 1 },
+        [],
+      ),
+      checkMixedKindNames: scan,
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assert(completed?.kind === "completed");
+  return {
+    data: completed.data,
+    finding: completed.data.healthFindings.find((f) =>
+      f.check === "mixed_kind_names"
+    )!,
+  };
+}
+
+Deno.test("doctorDatastores: the mixed_kind_names check passes when no name holds both kinds (swamp-club#4302)", async () => {
+  const { data, finding } = await mixedKindCheck(() => Promise.resolve([]));
+  assertEquals(finding.passed, true);
+  assertEquals(finding.message, "No data name holds versions of both kinds");
+  assertEquals(data.mixedKindNamesFinding, undefined);
+});
+
+Deno.test("doctorDatastores: the mixed_kind_names check fails, names each mixed name and the fix (swamp-club#4302)", async () => {
+  const { data, finding } = await mixedKindCheck(() =>
+    Promise.resolve([MIXED])
+  );
+  assertEquals(finding.passed, false);
+  assertStringIncludes(finding.message, "1 data name(s) hold both");
+  assertStringIncludes(finding.message, "spec/x");
+  assertStringIncludes(finding.message, "swamp data delete");
+  assertEquals(data.mixedKindNamesFinding, { mixedNames: 1, names: [MIXED] });
+});
+
+Deno.test("doctorDatastores: a mixed_kind_names scan that throws fails the check alone (swamp-club#4302)", async () => {
+  const { finding } = await mixedKindCheck(() =>
+    Promise.reject(new Error("catalog locked"))
+  );
+  assertEquals(finding.passed, false);
+  assertStringIncludes(finding.message, "catalog locked");
 });

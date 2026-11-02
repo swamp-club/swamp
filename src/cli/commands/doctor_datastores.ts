@@ -153,6 +153,8 @@ import type { Namespace } from "../../domain/data/namespace.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
 import { scanUnreadableVersions } from "../../infrastructure/persistence/unreadable_data_versions.ts";
+import { scanMixedKindNames } from "../../infrastructure/persistence/mixed_kind_data_names.ts";
+import type { MixedKindDataName } from "../../domain/data/mixed_kind_data_name.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -382,6 +384,7 @@ async function createDoctorDatastoresDeps(
       });
     },
     checkCatalogCompleteness: () => checkCatalogCompleteness(repoDir),
+    checkMixedKindNames: () => scanRepoMixedKindNames(repoDir),
     // only where every file is local: lazy hydration leaves files missing on
     // purpose, and a v3 checkout has its own content check.
     ...(v2Filesystem
@@ -480,6 +483,27 @@ async function checkCatalogCompleteness(
   } finally {
     // Release the SQLite handle before any repair removes the file — Windows
     // refuses to delete a database that still has an open connection.
+    catalogStore.close();
+  }
+}
+
+async function scanRepoMixedKindNames(
+  repoDir: string,
+): Promise<MixedKindDataName[]> {
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoDir),
+  );
+  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
+  const datastoreResolver = new DefaultDatastorePathResolver(repoDir, config);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+  try {
+    return scanMixedKindNames(
+      catalogStore,
+      namespaceFromResolver(datastoreResolver),
+    );
+  } finally {
+    // Released before a later repair stage removes the catalog file, which
+    // Windows refuses while a connection is open.
     catalogStore.close();
   }
 }

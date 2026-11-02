@@ -53,6 +53,13 @@ export const RESERVED_TAG_PREFIX = "_swamp.";
 export const RESTATES_TAG = `${RESERVED_TAG_PREFIX}restates`;
 
 /**
+ * stamped by both writers after every override and under the reserved prefix,
+ * so no user source sets it; records without it keep the schema fallback in
+ * getSensitiveFieldsForResolution and the type tag in dataKindOf
+ */
+export const RECORD_KIND_TAG = `${RESERVED_TAG_PREFIX}kind`;
+
+/**
  * tag keys outside the prefix that data writers set and readers trust, such as
  * specName; refused from every user source like a key under the prefix
  */

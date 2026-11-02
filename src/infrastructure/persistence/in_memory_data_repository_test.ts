@@ -20,8 +20,9 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { InMemoryUnifiedDataRepository } from "./in_memory_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
-import { Data, RESTATES_TAG } from "../../domain/data/data.ts";
+import { Data, RECORD_KIND_TAG, RESTATES_TAG } from "../../domain/data/data.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { DataKindConflictError } from "../../domain/data/data_kind.ts";
 import type { RenameForward } from "../../domain/data/repositories.ts";
 import {
   EphemeralBudgetExceededError,
@@ -781,4 +782,63 @@ Deno.test("save: write-time pruning does not count a restatement toward the cap 
     await repo.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
     [2, 3, 4],
   );
+});
+
+function kindData(kind: "file" | "resource", name = "x"): Data {
+  return Data.create({
+    name,
+    contentType: "application/json",
+    lifetime: "ephemeral",
+    garbageCollection: 5,
+    tags: {
+      type: kind,
+      specName: kind === "file" ? "blob" : "meta",
+      [RECORD_KIND_TAG]: kind,
+    },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+  });
+}
+
+Deno.test("save, saveDeferred and allocateVersion: a version of another kind than the latest is refused (swamp-club#4302)", async () => {
+  const { repo } = createRepo();
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, kindData("file"), TEST_CONTENT);
+  await assertRejects(
+    () =>
+      repo.save(TEST_TYPE, TEST_MODEL_ID, kindData("resource"), TEST_CONTENT),
+    DataKindConflictError,
+  );
+  await assertRejects(
+    () =>
+      repo.saveDeferred(
+        TEST_TYPE,
+        TEST_MODEL_ID,
+        kindData("resource"),
+        TEST_CONTENT,
+      ),
+    DataKindConflictError,
+  );
+  await assertRejects(
+    () => repo.allocateVersion(TEST_TYPE, TEST_MODEL_ID, kindData("resource")),
+    DataKindConflictError,
+  );
+  assertEquals(repo.listVersionsSync(TEST_TYPE, TEST_MODEL_ID, "x"), [1]);
+});
+
+Deno.test("save: after a delete marker a name may be written as another kind (swamp-club#4302)", async () => {
+  const { repo } = createRepo();
+  const file = kindData("file");
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, file, TEST_CONTENT);
+  await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    file.withDeletionMarker({ version: 2 }),
+    TEST_CONTENT,
+  );
+  const { version } = await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    kindData("resource"),
+    TEST_CONTENT,
+  );
+  assertEquals(version, 3);
 });

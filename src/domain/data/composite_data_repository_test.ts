@@ -21,7 +21,8 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { CompositeUnifiedDataRepository } from "./composite_data_repository.ts";
 import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import { Data } from "./data.ts";
+import { Data, RECORD_KIND_TAG } from "./data.ts";
+import { DataKindConflictError } from "./data_kind.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { RenameForward, UnreadableModelRecord } from "./repositories.ts";
 
@@ -656,4 +657,93 @@ Deno.test("CompositeUnifiedDataRepository.rollbackVersions: reaches the owning r
     await ephemeral.listVersions(TEST_TYPE, TEST_MODEL_ID, "scratch"),
     [],
   );
+});
+
+function kindData(
+  kind: "file" | "resource",
+  lifetime: "ephemeral" | "infinite",
+): Data {
+  return Data.create({
+    name: "x",
+    contentType: "application/json",
+    lifetime,
+    garbageCollection: 5,
+    tags: {
+      type: kind,
+      specName: kind === "file" ? "blob" : "meta",
+      [RECORD_KIND_TAG]: kind,
+    },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+  });
+}
+
+Deno.test("CompositeUnifiedDataRepository: a persistent write of another kind than the name's ephemeral versions is refused (swamp-club#4302)", async () => {
+  const { composite, persistent } = createCompositeRepo();
+  await composite.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    kindData("file", "ephemeral"),
+    TEST_CONTENT,
+  );
+  await assertRejects(
+    () =>
+      composite.save(
+        TEST_TYPE,
+        TEST_MODEL_ID,
+        kindData("resource", "infinite"),
+        TEST_CONTENT,
+      ),
+    DataKindConflictError,
+  );
+  await assertRejects(
+    () =>
+      composite.allocateVersion(
+        TEST_TYPE,
+        TEST_MODEL_ID,
+        kindData("resource", "infinite"),
+      ),
+    DataKindConflictError,
+  );
+  assertEquals(
+    await persistent.findByName(TEST_TYPE, TEST_MODEL_ID, "x"),
+    null,
+  );
+});
+
+Deno.test("CompositeUnifiedDataRepository: an ephemeral write of another kind than the name's persistent versions is refused (swamp-club#4302)", async () => {
+  const { composite, ephemeral } = createCompositeRepo();
+  await composite.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    kindData("resource", "infinite"),
+    TEST_CONTENT,
+  );
+  await assertRejects(
+    () =>
+      composite.saveDeferred(
+        TEST_TYPE,
+        TEST_MODEL_ID,
+        kindData("file", "ephemeral"),
+        TEST_CONTENT,
+      ),
+    DataKindConflictError,
+  );
+  assertEquals(await ephemeral.findByName(TEST_TYPE, TEST_MODEL_ID, "x"), null);
+});
+
+Deno.test("CompositeUnifiedDataRepository: a lifetime change that keeps the kind is allowed (swamp-club#4302)", async () => {
+  const { composite } = createCompositeRepo();
+  await composite.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    kindData("resource", "infinite"),
+    TEST_CONTENT,
+  );
+  const { version } = await composite.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    kindData("resource", "ephemeral"),
+    TEST_CONTENT,
+  );
+  assertEquals(version, 1);
 });

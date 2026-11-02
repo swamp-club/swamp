@@ -516,6 +516,14 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   existing name (`Data.isOwnedBy`, enforced in `save` and `allocateVersion`).
 - `tags.type` is always present: writers set `resource` or `file`, and callers
   cannot omit it (`DataMetadataSchema`).
+- A name's live versions share one kind: `save`, `saveDeferred` and
+  `allocateVersion` refuse a version whose kind differs from the latest, with
+  `DataKindConflictError` (`data_kind.ts` `assertKindContinues`). The kind is
+  the reserved `_swamp.kind` tag, else `tags.type` when it names a kind; a
+  delete or rename marker starts a new history. The composite repository also
+  checks the other store, so a lifetime change cannot switch a name's kind
+  between the ephemeral and persistent stores. `swamp doctor datastores`
+  reports names already holding both kinds (`mixed_kind_names`).
 - Names never contain path separators, `..` or NUL, and `latest` is reserved.
   The repository also asserts that every computed path stays under its base
   directory (`assertSafePath`, `assertPathContained`).
@@ -534,6 +542,12 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
   signal (`unified_data_repository.ts`).
 
 ## Known limits
+
+- The kind check reads the latest version, then allocates: two parallel steps
+  of one model writing one name with different kinds at the same moment can
+  both commit, as the ownership check shares the window. A version written
+  before `_swamp.kind` whose spec overrode `tags.type` has no known kind, so
+  the next write to that name is not checked and doctor cannot see it.
 
 - Write-time GC inside `save` enforces only integer version caps
   (`unified_data_repository.ts` `pruneExcessVersions`). Duration-based

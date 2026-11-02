@@ -22,11 +22,13 @@ import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   createDoctorDatastoresRenderer,
+  mixedKindNamesDetailLines,
   retentionDetailLines,
   v3ContentDetailLines,
 } from "./doctor_datastores.ts";
 import type {
   DoctorDatastoresData,
+  MixedKindNamesSummary,
   V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import {
@@ -1026,4 +1028,42 @@ Deno.test("createUnpushedFilesRepairRenderer: both modes fail with the error's m
     assertEquals(thrown instanceof UserError, true);
     assertEquals(renderer.overallStatus, "fail");
   }
+});
+
+const MIXED: MixedKindNamesSummary = {
+  mixedNames: 1,
+  names: [{
+    modelType: "@test/spec",
+    modelId: "m-1",
+    modelName: "spec",
+    dataName: "x",
+    versions: [
+      { version: 1, kind: "file", specName: "blob" },
+      { version: 2, kind: "resource", specName: "meta" },
+    ],
+  }],
+};
+
+Deno.test("mixedKindNamesDetailLines: lists each name's versions with kind and spec, and the fix (swamp-club#4302)", () => {
+  const out = stripAnsiCode(mixedKindNamesDetailLines(MIXED).join("\n"));
+  assertStringIncludes(out, "Data names holding both kinds:");
+  assertStringIncludes(out, "spec/x: v1 file 'blob', v2 resource 'meta'");
+  assertStringIncludes(out, "swamp data delete");
+});
+
+Deno.test("createDoctorDatastoresRenderer: json mode carries the mixed kind names finding, null without one (swamp-club#4302)", () => {
+  const render = (extra: Partial<DoctorDatastoresData>) => {
+    const renderer = createDoctorDatastoresRenderer("json");
+    return JSON.parse(captureStdout(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        data: { ...data(), ...extra },
+      })
+    ));
+  };
+  assertEquals(
+    render({ mixedKindNamesFinding: MIXED }).mixedKindNamesFinding,
+    MIXED,
+  );
+  assertEquals(render({}).mixedKindNamesFinding, null);
 });
