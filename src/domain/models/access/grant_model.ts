@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { findGrantMethodIssues } from "../../access/grant_methods.ts";
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
@@ -78,6 +79,7 @@ export interface GrantCreateInputs {
   resourceKind: string;
   resourcePattern: string;
   condition?: string;
+  methods?: readonly string[];
 }
 
 /**
@@ -116,6 +118,17 @@ export function checkGrantCreateInputs(
     throw new Error(
       `Invalid grant condition:${
         literals.map((finding) => `\n  - ${finding.message}`).join("")
+      }`,
+    );
+  }
+  const methodIssues = findGrantMethodIssues({
+    resource,
+    methods: inputs.methods,
+  });
+  if (methodIssues.length > 0) {
+    throw new Error(
+      `Invalid grant methods:${
+        methodIssues.map((finding) => `\n  - ${finding.message}`).join("")
       }`,
     );
   }

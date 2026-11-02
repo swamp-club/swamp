@@ -48,6 +48,12 @@ const VALID_CREATE_ARGS = {
   createdBy: "user:admin",
 };
 
+const MODEL_CREATE_ARGS = {
+  ...VALID_CREATE_ARGS,
+  resourceKind: "model",
+  resourcePattern: "@acme/*",
+};
+
 Deno.test("create: creates a new grant", async () => {
   const { context, store } = createTestContext();
   const result = await grantModel.methods.create.execute(
@@ -225,7 +231,7 @@ Deno.test("create: source field is set at creation and persisted", async () => {
 Deno.test("create: stores methods field when provided", async () => {
   const { context, store } = createTestContext();
   await grantModel.methods.create.execute(
-    { ...VALID_CREATE_ARGS, methods: ["read", "list"] },
+    { ...MODEL_CREATE_ARGS, methods: ["read", "list"] },
     context,
   );
   const grant = store.get("grant-main") as unknown as Grant;
@@ -242,13 +248,57 @@ Deno.test("create: methods field is undefined when omitted", async () => {
 Deno.test("revoke: preserves methods field", async () => {
   const { context, store } = createTestContext();
   await grantModel.methods.create.execute(
-    { ...VALID_CREATE_ARGS, methods: ["read"] },
+    { ...MODEL_CREATE_ARGS, methods: ["read"] },
     context,
   );
   await grantModel.methods.revoke.execute({}, context);
   const revoked = store.get("grant-main") as unknown as Grant;
   assertEquals(revoked.methods, ["read"]);
   assertEquals(revoked.state, "revoked");
+});
+
+Deno.test("create: refuses methods on a workflow or data grant", async () => {
+  for (const resourceKind of ["workflow", "data"]) {
+    const { context, store } = createTestContext();
+    await assertRejects(
+      () =>
+        grantModel.methods.create.execute(
+          { ...VALID_CREATE_ARGS, resourceKind, methods: ["run"] },
+          context,
+        ),
+      Error,
+      "Invalid grant methods",
+    );
+    assertEquals(store.get("grant-main"), undefined, resourceKind);
+  }
+});
+
+Deno.test("create: refuses a vault grant method that is not a vault verb, and stores vault verbs", async () => {
+  const vault = {
+    ...VALID_CREATE_ARGS,
+    actions: ["read" as const, "write" as const],
+    resourceKind: "vault",
+    resourcePattern: "prod",
+  };
+  const refused = createTestContext();
+  await assertRejects(
+    () =>
+      grantModel.methods.create.execute(
+        { ...vault, methods: ["put", "read"] },
+        refused.context,
+      ),
+    Error,
+    "'read' is not a vault verb",
+  );
+  const { context, store } = createTestContext();
+  await grantModel.methods.create.execute(
+    { ...vault, methods: ["put", "get"] },
+    context,
+  );
+  assertEquals((store.get("grant-main") as unknown as Grant).methods, [
+    "put",
+    "get",
+  ]);
 });
 
 async function capturingWarnings(fn: () => Promise<void>): Promise<string[]> {

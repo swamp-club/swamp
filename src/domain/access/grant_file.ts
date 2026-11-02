@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { findGrantMethodIssues } from "./grant_methods.ts";
 import { getLogger } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
@@ -306,6 +307,14 @@ export function parseGrantFile(
           { effect: raw.effect, resource, condition: raw.condition },
           readTypeLiterals,
         )
+      ) {
+        warnings.push({ filename, entryIndex: i, message: finding.message });
+      }
+      for (
+        const finding of findGrantMethodIssues({
+          resource,
+          methods: raw.methods,
+        })
       ) {
         warnings.push({ filename, entryIndex: i, message: finding.message });
       }
