@@ -117,6 +117,33 @@ export function resolveKeyValue(
 
 import { promptConfirmation } from "../prompt_helpers.ts";
 
+// Reads stdin only when neither argument form supplied a value, and never prompts.
+export async function resolveRemoteKeyValue(
+  argument: string,
+  valueArg: string | undefined,
+  stdinTty: boolean,
+  read: () => Promise<string | null>,
+): Promise<{ key: string; value: string }> {
+  if (valueArg !== undefined) return { key: argument, value: valueArg };
+  const inline = parseKeyValue(argument);
+  if (inline) return inline;
+  if (argument.length === 0) throw new UserError("Key cannot be empty");
+  const result = resolveKeyValue(argument, stdinTty ? null : await read());
+  if ("error" in result) {
+    throw new UserError(
+      `No value given for ${argument}.\n\n` +
+        `Pipe the value on stdin, or pass it as an argument:\n` +
+        `  echo "<value>" | swamp vault put <vault> ${argument} --server <url>\n` +
+        `  swamp vault put <vault> ${argument} <value> --server <url>\n` +
+        `  swamp vault put <vault> ${argument}=<value> --server <url>` +
+        (stdinTty
+          ? `\n\nInteractive prompts are not available with --server.`
+          : ""),
+    );
+  }
+  return result;
+}
+
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
@@ -135,7 +162,7 @@ The value can be provided in several ways:
 
 Piping via stdin is recommended for scripts and CI to avoid exposing secrets in the process argument list.
 
-When using --server, the value must be passed as a positional argument or KEY=VALUE form — stdin and interactive prompts are not available remotely.`,
+With --server, pipe the value on stdin to keep it out of the process argument list. Interactive prompts are not available remotely.`,
     )
     .arguments("<vault_name:string> <key:string> [value:string]")
     .example(
@@ -145,6 +172,10 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     .example(
       "Pipe from stdin (recommended for scripts)",
       'echo "$SECRET" | swamp vault put my-vault API_KEY',
+    )
+    .example(
+      "Pipe to a remote server",
+      "printf '%s' \"$SECRET\" | swamp vault put my-vault API_KEY --server wss://swamp.example.com --force",
     )
     .example(
       "Interactive prompt (value is hidden)",
@@ -228,23 +259,12 @@ When using --server, the value must be passed as a positional argument or KEY=VA
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
-    let key: string;
-    let value: string;
-
-    if (valueArg !== undefined) {
-      key = keyOrKeyValue;
-      value = valueArg;
-    } else {
-      const parsed = parseKeyValue(keyOrKeyValue);
-      if (parsed) {
-        key = parsed.key;
-        value = parsed.value;
-      } else {
-        throw new UserError(
-          "A value must be provided as an argument when using --server (no interactive prompt or stdin reading remotely)",
-        );
-      }
-    }
+    const { key, value } = await resolveRemoteKeyValue(
+      keyOrKeyValue,
+      valueArg,
+      isStdinTty(),
+      readStdin,
+    );
 
     let refreshTtlMs: number | undefined;
     if (options.refreshTtl) {
