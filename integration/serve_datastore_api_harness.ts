@@ -267,7 +267,10 @@ export function definitionYaml(
 }
 
 export async function blobSaveOps(
-  server: Server,
+  server: {
+    readonly modelType: ModelType;
+    readonly model: { readonly id: string };
+  },
   name: string,
   version: number,
   bytes: Uint8Array,
