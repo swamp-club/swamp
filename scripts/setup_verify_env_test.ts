@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The field selection and file rendering are pure so they can be pinned
-// without a 1Password account, an unlock prompt or a home directory. These
-// tests are the only automated coverage this script has: `scripts/` is
-// excluded from `deno fmt` and `deno lint` in deno.json, and `deno run check`
-// only type-checks the main.ts graph.
 
 import { assertEquals } from "@std/assert";
 import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -33,7 +28,6 @@ import {
   verifyEnvPath,
 } from "./setup_verify_env.ts";
 
-// -- selectSecretValue ------------------------------------------------------
 
 Deno.test("selectSecretValue: an API Credential item uses its credential field", () => {
   const item: OpItem = {
@@ -97,7 +91,6 @@ Deno.test("selectSecretValue: prefers credential over an unrelated concealed fie
   assertEquals(selectSecretValue(item), "this-one");
 });
 
-// -- renderEnvFile ----------------------------------------------------------
 
 Deno.test("renderEnvFile: writes keys into an empty file", () => {
   const out = renderEnvFile("", new Map([["TESSL_TOKEN", "tsk-abc"]]));
@@ -120,8 +113,6 @@ Deno.test("renderEnvFile: keeps keys and comments it does not manage", () => {
 
   const out = renderEnvFile(existing, new Map([["TESSL_TOKEN", "new"]]));
 
-  // A setup helper that silently dropped a line somebody added would be a
-  // worse failure than not running at all.
   assertEquals(out, [
     "# set up by hand on 2026-01-02",
     "SOMETHING_ELSE=keep-me",
@@ -139,8 +130,6 @@ Deno.test("renderEnvFile: appends a key the file does not have yet", () => {
 });
 
 Deno.test("renderEnvFile: quotes values so the file survives being sourced", () => {
-  // The documented format was bare `KEY=value`, which works until a credential
-  // contains a space, a `$` or a quote.
   const out = renderEnvFile(
     "",
     new Map([["TESSL_TOKEN", "has space $VAR and 'quote'"]]),
@@ -154,11 +143,10 @@ Deno.test("renderEnvFile: is idempotent", () => {
   assertEquals(renderEnvFile(once, updates), once);
 });
 
-// -- verifyEnvPath ----------------------------------------------------------
 
 Deno.test("verifyEnvPath: prefers XDG_CONFIG_HOME, falls back to HOME", () => {
-  // assertPathEquals rather than assertEquals: `join` yields backslashes on
-  // Windows, and `deno run test` does pick up scripts/ test files.
+  // assertPathEquals, not assertEquals: join yields backslashes on Windows, and
+  // the test runner picks up scripts/ test files
   assertPathEquals(
     verifyEnvPath({ XDG_CONFIG_HOME: "/x/cfg", HOME: "/home/someone" })!,
     "/x/cfg/swamp/verify.env",
@@ -170,13 +158,12 @@ Deno.test("verifyEnvPath: prefers XDG_CONFIG_HOME, falls back to HOME", () => {
   assertEquals(verifyEnvPath({}), null);
 });
 
-// -- VERIFY_KEYS ------------------------------------------------------------
 
 Deno.test("VERIFY_KEYS: lists only what a local run cannot do without", () => {
   const tessl = VERIFY_KEYS.find((k) => k.name === "TESSL_TOKEN");
 
-  // The trigger evals and reviews run on the claude.ai login, so the API key
-  // is no longer a local requirement and must not be fetched into verify.env.
+  // the evals and reviews run on the claude.ai login, so the API key must not
+  // be fetched into verify.env
   assertEquals(tessl?.required, true);
   assertEquals(VERIFY_KEYS.some((k) => k.name === "ANTHROPIC_API_KEY"), false);
   assertEquals(VERIFY_KEYS.every((k) => k.consequence.length > 0), true);

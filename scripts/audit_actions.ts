@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * GitHub Actions audit script that checks workflow files for outdated actions
- * and unpinned references using the GitHub API.
- *
- * Reports outdated actions as warnings and unpinned third-party actions
- * (not using a commit SHA) as errors.
- *
- * Usage: deno run audit-actions
- *
- * Exit codes:
- *   0 - Always (this is a warning-only check, never fails the build)
- */
 
 import { parse as parseYaml } from "@std/yaml";
 
@@ -53,7 +41,6 @@ interface AuditFinding {
   detail: string;
 }
 
-/** Publishers whose actions are acceptable with tag-only pins. */
 const TRUSTED_PUBLISHERS = new Set([
   "actions",
   "anthropics",
@@ -94,10 +81,8 @@ function extractActionRefs(
       const uses = step?.uses;
       if (typeof uses !== "string") continue;
 
-      // Skip Docker and local actions
       if (uses.startsWith("docker://") || uses.startsWith("./")) continue;
 
-      // Parse owner/repo@ref
       const atIndex = uses.indexOf("@");
       if (atIndex === -1) continue;
 
@@ -136,7 +121,6 @@ function apiHeaders(): Record<string, string> {
   return headers;
 }
 
-/** Resolve a git ref to a commit SHA, dereferencing annotated tags if needed. */
 async function resolveCommitSha(
   owner: string,
   repo: string,
@@ -144,7 +128,6 @@ async function resolveCommitSha(
 ): Promise<string> {
   if (refData.type !== "tag") return refData.sha;
 
-  // Annotated tag — dereference to get the underlying commit SHA
   try {
     const response = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/git/tags/${refData.sha}`,
@@ -164,7 +147,6 @@ async function getLatestTag(
   owner: string,
   repo: string,
 ): Promise<TagInfo | null> {
-  // Try releases first, fall back to tags
   try {
     const response = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/releases/latest`,
@@ -175,7 +157,6 @@ async function getLatestTag(
       const release = await response.json();
       const tagName = release.tag_name;
 
-      // Get the SHA for this tag, dereferencing annotated tags
       const tagResponse = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/git/ref/tags/${tagName}`,
         { headers: apiHeaders() },
@@ -197,7 +178,6 @@ async function getLatestTag(
     // Fall through to tags API
   }
 
-  // Fallback: list tags sorted by creation
   try {
     const response = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/tags?per_page=1`,
@@ -217,9 +197,7 @@ async function getLatestTag(
   return null;
 }
 
-/** Check if a tag ref (e.g., "v3") is a major version prefix of the latest tag. */
 function isSameMajor(currentRef: string, latestTag: string): boolean {
-  // Strip 'v' prefix for comparison
   const current = currentRef.replace(/^v/, "");
   const latest = latestTag.replace(/^v/, "");
 
@@ -275,7 +253,6 @@ async function main(): Promise<void> {
   const workflowDir = ".github/workflows";
   const refs: ActionRef[] = [];
 
-  // Collect all action references from workflow files
   try {
     for await (const entry of Deno.readDir(workflowDir)) {
       if (
@@ -299,7 +276,6 @@ async function main(): Promise<void> {
     Deno.exit(0);
   }
 
-  // Deduplicate by action+ref for API calls
   const uniqueActions = new Map<string, ActionRef>();
   for (const ref of refs) {
     const key = `${ref.action}@${ref.ref}`;
@@ -314,7 +290,6 @@ async function main(): Promise<void> {
 
   const findings: AuditFinding[] = [];
 
-  // Check unpinned third-party actions (no API call needed)
   for (const [, actionRef] of uniqueActions) {
     if (!actionRef.isShaPin && !actionRef.isTrustedPublisher) {
       findings.push({
@@ -326,7 +301,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Check for outdated versions in parallel
   const versionChecks = [...uniqueActions.values()].map(async (actionRef) => {
     const tagInfo = await getLatestTag(actionRef.owner, actionRef.repo);
     if (!tagInfo) return;
@@ -352,7 +326,6 @@ async function main(): Promise<void> {
 
   await Promise.all(versionChecks);
 
-  // Write GitHub Actions job summary
   await writeGitHubSummary(findings);
 
   const unpinned = findings.filter((f) => f.kind === "unpinned");

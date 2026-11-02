@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `buildAttestation` is pure so the document's shape can be pinned without a
-// run, a git checkout or a swamp-club. These tests are the only automated
-// coverage this script has: `scripts/` is excluded from `deno fmt` and
-// `deno lint` in deno.json, and `deno run check` only type-checks the main.ts
-// graph.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
@@ -61,7 +56,6 @@ function env(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** A run record with the machinery jobs every verify-* workflow has. */
 function run(
   workflowName: string,
   id: string,
@@ -135,7 +129,6 @@ const SKILLS_DEF: WorkflowDef = {
   ],
 };
 
-/** The happy path: all three workflows, one review guarded out. */
 function sources(): RunSource[] {
   return [
     {
@@ -205,9 +198,8 @@ Deno.test("buildAttestation: machinery jobs are not verification steps", () => {
   const doc = buildAttestation(sources(), env());
   const steps = doc.steps as Array<{ job: string; step: string }>;
 
-  // setup / detect-changes / cleanup ran and succeeded in every run, so a
-  // gate that counted them would read 3 steps higher and call checkout a
-  // verification result.
+  // setup, detect-changes and cleanup succeed in every run; counting them would
+  // present checkout as a verification result
   assertEquals(
     steps.map((s) => `${s.job}:${s.step}`),
     [
@@ -226,9 +218,7 @@ Deno.test("buildAttestation: a review's verdict is its step status", () => {
   >;
 
   assertEquals(steps.find((s) => s.step === "code-review")?.verdict, "pass");
-  // A skipped review has no verdict — it produced no decision to record.
   assertEquals(steps.find((s) => s.step === "ux-review")?.verdict, undefined);
-  // A non-review step is not given one either.
   assertEquals(steps.find((s) => s.step === "lint")?.verdict, undefined);
 });
 
@@ -396,19 +386,16 @@ Deno.test("buildAttestation: timing spans the earliest start to the latest finis
     totalDurationMs: number;
   };
 
-  // The three runs overlap, so summing their durations would describe a
-  // wall-clock span nobody waited through. Earliest start is run 1 at 11:00;
-  // latest finish is run 0, which started at 11:30 and took ten minutes.
+  // the runs overlap, so durations are not summed; timing spans the earliest
+  // start to the latest finish
   assertEquals(timing.startedAt, "2026-09-22T11:00:00.000Z");
   assertEquals(timing.completedAt, "2026-09-22T11:40:00.000Z");
   assertEquals(timing.totalDurationMs, 40 * 60 * 1000);
 });
 
 Deno.test("buildAttestation: completion comes from the runs, not the clock", () => {
-  // `env.now` is an hour after the runs ended. The generator is invoked by
-  // hand after the fact, so quoting the clock would put the moment the
-  // document was written into a field meaning the moment verification
-  // finished — and inflate the duration by the gap.
+  // the generator runs by hand after the fact, so the clock must not stand in
+  // for when verification finished
   const timing = buildAttestation(sources(), env()).timing as {
     completedAt: string;
     totalDurationMs: number;
@@ -426,8 +413,8 @@ Deno.test("buildAttestation: a run with no duration falls back to the clock", ()
     completedAt: string;
   };
 
-  // Nothing in the records says when it ended, so claiming a completion they
-  // do not support would be worse than naming the moment of writing.
+  // nothing in the records says when it ended, so fall back to the time of
+  // writing
   assertEquals(timing.completedAt, "2026-09-22T12:00:00.000Z");
 });
 
@@ -445,7 +432,6 @@ Deno.test("buildAttestation: subject and runs name what was examined", () => {
 
 Deno.test("matchRunsToWorkflows: the records say which run is which", () => {
   const given = sources().map((s) => s.run);
-  // Deliberately out of order — the caller is not asked to label them.
   const matched = matchRunsToWorkflows([given[2], given[0], given[1]]);
 
   assert(!("error" in matched));
@@ -490,9 +476,8 @@ Deno.test("checkCommitBinding: a run of another commit is refused", () => {
 
   assertEquals(errors.length, 1);
   assertStringIncludes(errors[0], "verify-reviews");
-  // Both identifiers in full. Truncating them to eight characters rendered a
-  // SHA and its own abbreviation as the same string, so the message said
-  // "verified cfc7d0eb, not cfc7d0eb" and told the reader nothing.
+  // full identifiers: truncated ones made a SHA and its abbreviation render
+  // identically
   assertStringIncludes(errors[0], "b".repeat(40));
   assertStringIncludes(errors[0], COMMIT);
 });
@@ -511,7 +496,6 @@ Deno.test("checkCommitBinding: matching commits bind cleanly", () => {
   assertEquals(checkCommitBinding(sources(), COMMIT), []);
 });
 
-/** A committed setup job, as the workflow file spells it. */
 function committedDefinition() {
   return {
     name: "verify-reviews",
@@ -532,7 +516,6 @@ function committedDefinition() {
   };
 }
 
-/** The same job as swamp records it after evaluating the run. */
 function evaluatedDefinition() {
   return {
     name: "verify-reviews",
@@ -625,8 +608,6 @@ Deno.test("checkVerificationProvenance: binds reviewer selection and model to va
 });
 
 Deno.test("checkWorkflowProvenance: a run of a different script is refused", () => {
-  // The case that motivated the check: the runs loaded another checkout's
-  // verification/ directory, whose setup step predates the committed one.
   const evaluated = evaluatedDefinition();
   evaluated.jobs[0].steps[0].task.inputs.run = "set -e\n" +
     "git fetch origin main\n" +
@@ -681,7 +662,6 @@ Deno.test("checkWorkflowProvenance: a committed field the run lacks is refused",
   );
 });
 
-/** Bookkeeping swamp writes at the root of every run's evaluated workflow. */
 function runMetadata() {
   return {
     sensitiveFormat: 1,
@@ -772,7 +752,6 @@ Deno.test("reviewModels: a step that names no model yields none", () => {
   assertEquals(reviewModels(BUILD_DEF).size, 0);
 });
 
-// -- affected commands --------------------------------------------------------
 
 const AFFECTED = {
   granularity: "root" as const,

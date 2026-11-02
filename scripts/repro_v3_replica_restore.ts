@@ -16,31 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-/**
- * Reproduces swamp-club#3935 with Litestream alone: a replica that restores
- * to a database failing SQLite's integrity check, while the database it
- * replicates is intact.
- *
- *   SWAMP_LITESTREAM_PATH=<binary> deno run -A \
- *     scripts/repro_v3_replica_restore.ts [--runs 12] [--rounds 60] \
- *     [--autocheckpoint 1000] [--gap]
- *
- * Each run writes a WAL database in bursts the way a v3 writer writes
- * `commits.db` (indexed inserts of mixed sizes, rewrites, and deletes of old
- * rows as history compaction makes them), forces a sync through
- * Litestream's control socket after each burst as a write command does,
- * then restores the file replica and checks it. `--gap` also stops
- * Litestream between some bursts and writes with no sidecar running, as
- * after an idle exit. A run stops at the first restore that fails.
- *
- * Litestream 0.5.17 loses its long read transaction when a sync request
- * runs its setup or a checkpoint (benbjohnson/litestream#1578, fixed on
- * main by #1579 after 0.5.17). SQLite's auto-checkpoint in the writer's
- * own connection (`--autocheckpoint 1000`, the default) can then restart
- * the WAL before Litestream read its newest frames: about half the runs
- * end corrupt. With `--autocheckpoint 0`, as swamp now opens a replicated
- * `commits.db`, none do.
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -59,7 +34,6 @@ if (LITESTREAM === undefined) {
 }
 const AUTOCHECKPOINT = Number(args.autocheckpoint);
 
-/** A seeded generator, so a failing run can be repeated. */
 function random(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -86,7 +60,6 @@ function bytes(size: number): Uint8Array {
   return out;
 }
 
-/** One write command's commits. */
 function burst(path: string, commits: number, rand: () => number): void {
   const db = open(path);
   try {
@@ -136,7 +109,6 @@ function summary(path: string): string {
   }
 }
 
-/** Restores the replica and checks it: "ok", or what was wrong. */
 async function check(dir: string, db: string): Promise<string> {
   const out = join(dir, `restore-${crypto.randomUUID()}.db`);
   const result = await new Deno.Command(LITESTREAM!, {

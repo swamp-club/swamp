@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Analyzes eval results from all models and produces a cross-model comparison.
- * Reads results.json files uploaded as artifacts by each eval job.
- *
- * Usage: deno run --allow-read --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/analyze_eval_results.ts <artifacts-dir>
- */
 
 import { join } from "@std/path";
 
@@ -73,11 +67,8 @@ function extractToolCallName(output: unknown): string | undefined {
 
   if (Array.isArray(output)) {
     for (const item of output) {
-      // OpenAI format
       if (item?.function?.name) return item.function.name;
-      // Google format
       if (item?.functionCall?.name) return item.functionCall.name;
-      // Generic format
       if (item?.name) return item.name;
     }
   }
@@ -142,7 +133,6 @@ async function loadResults(artifactsDir: string): Promise<ModelSummary[]> {
     });
   }
 
-  // Sort by pass rate descending
   summaries.sort((a, b) => b.passRate - a.passRate);
   return summaries;
 }
@@ -150,12 +140,10 @@ async function loadResults(artifactsDir: string): Promise<ModelSummary[]> {
 function findCrossModelFailures(
   summaries: ModelSummary[],
 ): Map<string, string[]> {
-  // Map test description -> list of models that failed it
   const failureMap = new Map<string, string[]>();
 
   for (const summary of summaries) {
     for (const failure of summary.failures) {
-      // Extract just the test description (before →)
       const desc = failure.split(" → ")[0].trim();
       if (!failureMap.has(desc)) {
         failureMap.set(desc, []);
@@ -188,7 +176,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Console output
   console.log("\n=== Cross-Model Skill Trigger Eval Analysis ===\n");
 
   console.log("Model Results:");
@@ -199,7 +186,6 @@ async function main(): Promise<void> {
     );
   }
 
-  // Cross-model failures
   const crossModelFailures = findCrossModelFailures(summaries);
   const multiModelFailures = [...crossModelFailures.entries()]
     .filter(([_, models]) => models.length > 1)
@@ -213,7 +199,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Per-model unique failures
   const singleModelFailures = [...crossModelFailures.entries()]
     .filter(([_, models]) => models.length === 1);
 
@@ -224,7 +209,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Detailed failure list per model
   for (const s of summaries) {
     if (s.failures.length > 0) {
       console.log(`\n${s.model} failures (${s.failures.length}):`);
@@ -234,18 +218,15 @@ async function main(): Promise<void> {
     }
   }
 
-  // Overall verdict
   const allPassed = summaries.every((s) => s.passRate >= 0.9);
   console.log(
     `\nVerdict: ${allPassed ? "ALL MODELS PASS" : "ACTION REQUIRED — some models below 90% threshold"}`,
   );
 
-  // GitHub Actions summary
   const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
   if (summaryFile) {
     let md = "## Cross-Model Skill Trigger Eval Analysis\n\n";
 
-    // Summary table
     md += "### Results\n\n";
     md += "| Model | Pass Rate | Passed | Failed | Tokens | Duration | Status |\n";
     md += "|-------|-----------|--------|--------|--------|----------|--------|\n";
@@ -255,7 +236,6 @@ async function main(): Promise<void> {
         `| ${s.model} | ${(s.passRate * 100).toFixed(1)}% | ${s.passed} | ${s.failed} | ${s.tokens.toLocaleString()} | ${formatDuration(s.durationMs)} | ${status} |\n`;
     }
 
-    // Cross-model failures
     if (multiModelFailures.length > 0) {
       md += "\n### Cross-Model Failures\n\n";
       md +=
@@ -269,7 +249,6 @@ async function main(): Promise<void> {
       }
     }
 
-    // Model-specific failures
     if (singleModelFailures.length > 0) {
       md += "\n### Model-Specific Failures\n\n";
       md +=
@@ -282,7 +261,6 @@ async function main(): Promise<void> {
       }
     }
 
-    // Verdict
     md += "\n### Verdict\n\n";
     if (allPassed) {
       md += "✅ **All models pass** the 90% threshold.\n";

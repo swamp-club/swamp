@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What confirming a serve write request costs (swamp-club#3489, Phase 4
- * D3): the latency a write request gains when serve waits for its commit
- * to be replicated and its head published before it answers, on a warm
- * sidecar, alone and with concurrent requests sharing syncs.
- *
- *   SWAMP_LITESTREAM_PATH=<binary> deno run -A scripts/bench_v3_serve_confirm.ts \
- *     [--replica file|s3] [--runs 50] [--concurrency 8]
- *
- * With `--replica s3`, set SWAMP_BENCH_S3_ENDPOINT (and the emulator's
- * AWS_* credentials); put an RTT proxy in front of it to model a far
- * bucket. The control plane, where heads are published, stays on the
- * filesystem.
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -87,7 +73,6 @@ function replica(): V3ReplicaSetting {
   return { type: "file", path: join(root, "replica") };
 }
 
-/** One write request's commit: a small definition, as serve's are. */
 async function commitOne(): Promise<void> {
   const engine = v3DatastoreFor(repoDir, config).engineFor(
     () => Promise.resolve(),
@@ -135,7 +120,6 @@ setV3ReplicationForTesting({
 });
 try {
   await holdV3Writer(config, repoDir, { retakeLost: true });
-  // Warm: the sidecar is up and the lineage confirmed.
   await commitOne();
   await confirmV3Replicated(datastorePath);
 

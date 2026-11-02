@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What keeping a v3 copy current costs (swamp-club#3482, Phase 4 D2): the
- * check a command makes on a current copy, and a full restore (a fresh
- * machine's first command, or a refresh) at 1 MB and 100 MB.
- *
- *   SWAMP_LITESTREAM_PATH=<binary> deno run -A scripts/bench_v3_restore.ts \
- *     [--replica file|s3] [--sizes 1,100] [--runs 5]
- *
- * With `--replica s3`, set SWAMP_BENCH_S3_ENDPOINT (and the emulator's
- * AWS_* credentials); put an RTT proxy in front of it to model a far
- * bucket. The control plane stays on the filesystem in both: its cost is
- * one list and up to four small gets, measured separately on a bucket in
- * Phase 4E.
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -84,7 +70,6 @@ function replicaFor(name: string): V3ReplicaSetting {
   return { type: "file", path: join(root, `replica-${name}`) };
 }
 
-/** A commits.db of about `mb` megabytes, in inline commits of about 8 KB. */
 async function build(path: string, mb: number): Promise<void> {
   const store = SqliteCommitStore.open(path);
   try {
@@ -105,7 +90,6 @@ async function build(path: string, mb: number): Promise<void> {
   }
 }
 
-/** Replicates `db` once, with the real binary, and returns its last TXID. */
 async function replicate(
   db: string,
   replica: V3ReplicaSetting,

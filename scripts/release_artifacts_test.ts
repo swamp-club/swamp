@@ -58,8 +58,6 @@ function objectKey(platform: string): string {
   }.${ext}`;
 }
 
-// Run the real publishing shell scripts and real archive/hash tools against a
-// local object store. No cloud credentials, network, or swamp CLI are used.
 async function withStore(
   fn: (fixture: {
     dist: string;

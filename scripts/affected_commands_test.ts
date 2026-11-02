@@ -28,14 +28,10 @@ import {
   type ImportGraph,
 } from "./affected_commands.ts";
 
-/** A graph written as `{ file: [imports] }`. */
 function graphOf(edges: Record<string, string[]>): ImportGraph {
   return new Map(Object.entries(edges).map(([k, v]) => [k, new Set(v)]));
 }
 
-// main.ts -> mod.ts -> the three root command files. `logger.ts` is reached by
-// startup alone, `shared.ts` by startup and vault, `vault_lib.ts` by vault
-// alone, and `serve.ts` reaches `serve_lib.ts` through a subcommand file.
 const GRAPH = graphOf({
   "main.ts": ["src/cli/mod.ts"],
   "src/cli/mod.ts": [

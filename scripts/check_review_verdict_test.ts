@@ -31,10 +31,6 @@ Deno.test("determineVerdict: an explicit fail marker fails", () => {
 });
 
 Deno.test("determineVerdict: blocking findings in prose without a marker are missing, not a pass", () => {
-  // Verbatim from the run recorded in swamp-club#2265. The harness inferred a
-  // pass from this and the workflow reported success: the word "blocking"
-  // appears in a sentence rather than as a `Blocking:` label, so the severity
-  // regex never matched. This is the exact output that must never pass again.
   const output =
     "Two blocking findings reported. The skill file changes are good, but the " +
     "`pushDataChanges` removal is a correctness regression that would cause data " +
@@ -46,8 +42,6 @@ Deno.test("determineVerdict: blocking findings in prose without a marker are mis
 });
 
 Deno.test("determineVerdict: a clean review without a marker is missing, not a pass", () => {
-  // The benign twin of the case above. Both were inferred as passes; both are
-  // now failures, because a reviewer that skips the format is a human's call.
   const output =
     "No blocking findings. The diff is clean — well-tested, follows codebase " +
     "conventions, and handles errors properly across all paths.";
@@ -75,8 +69,8 @@ Deno.test("determineVerdict: the first line-initial marker wins over a later one
 });
 
 Deno.test("determineVerdict: markdown emphasis around the marker is tolerated", () => {
-  // The shell pattern this replaced accepted emphasised markers; reviewers do
-  // emit them, and dropping that tolerance would turn passes into failures.
+  // reviewers emit emphasised markers; dropping that tolerance would turn
+  // passes into failures
   for (
     const output of [
       "**VERDICT: pass**\n\nNo blocking findings anywhere in the diff.",
@@ -134,7 +128,6 @@ Deno.test("determineVerdict: a provider error outranks an explicit pass marker",
 });
 
 Deno.test("determineVerdict: a review quoting an error code in markdown code is judged on its verdict", () => {
-  // Reviewing an auth change, the reviewer names swamp's own error codes.
   const inline = "VERDICT: pass\n\nThe user then got the `invalid_api_key` " +
     "error, which reads like a revoked key.";
   assertEquals(determineVerdict(inline), { kind: "pass" });
@@ -143,8 +136,6 @@ Deno.test("determineVerdict: a review quoting an error code in markdown code is 
     '{"code":"invalid_api_key","type":"authentication_error"}\n```\n';
   assertEquals(determineVerdict(fenced), { kind: "fail" });
 
-  // A double-backtick span quoting single backticks, as a reviewer of this
-  // checker writes its test inputs.
   const doubled = "VERDICT: pass\n\nThe test covers " +
     "(`` see `whoami\\nrate_limit_error` ``) and ``rate_`x`limit_error``.";
   assertEquals(determineVerdict(doubled), { kind: "pass" });
@@ -162,7 +153,6 @@ Deno.test("determineVerdict: a provider error outside quoted code is still detec
     'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}';
   assertEquals(determineVerdict(output), { kind: "provider-error" });
 
-  // An unclosed backtick does not reach across lines to swallow the error.
   const unclosed = "VERDICT: pass\n\nsee `whoami\nrate_limit_error`";
   assertEquals(determineVerdict(unclosed), { kind: "provider-error" });
 });

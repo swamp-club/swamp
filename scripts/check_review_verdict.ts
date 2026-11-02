@@ -18,22 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The verdict rule for the pre-PR agent reviews.
- *
- * This is the single place that decides whether a review passed. It is shared
- * by every review step in `verification/workflow-verify-reviews.yaml`; the
- * steps own the reviewer invocation, this owns the decision.
- *
- * A review passes only when the reviewer states an explicit `VERDICT: pass`
- * marker. There is deliberately no inference: a reviewer that does not answer
- * in the required format is precisely when a human should look, so a missing
- * marker fails the step rather than being read as either outcome.
+ * a review passes only on an explicit VERDICT: pass marker; there is no
+ * inference, so a missing marker fails and a human looks
  */
 
-/** Why no usable verdict marker was found. */
 export type MissingReason = "empty-output" | "no-marker";
 
-/** The gate's decision about one review's output. */
 export type ReviewVerdict =
   | { readonly kind: "pass" }
   | { readonly kind: "fail" }
@@ -41,36 +31,28 @@ export type ReviewVerdict =
   | { readonly kind: "provider-error" };
 
 /**
- * Output at or below this many bytes cannot be a real review. Reported
- * separately from a marker-less review so the operator can tell "the reviewer
- * said nothing" from "the reviewer answered in the wrong format".
+ * output at or below this size cannot be a real review; reported apart from a
+ * marker-less review
  */
 const MIN_SUBSTANTIVE_OUTPUT_BYTES = 50;
 
 /**
- * Provider failures mean no review ran at all. Detected before the marker so a
- * truncated error page can never be mistaken for a review that declined to
- * answer.
+ * checked before the marker so a truncated error page is never mistaken for a
+ * review that declined to answer
  */
 const PROVIDER_ERROR_PATTERN =
   /hit your (weekly|daily|monthly) limit|rate_limit_error|overloaded_error|authentication_error|invalid_api_key|credit balance is too low|exceeded your.*quota/i;
 
 /**
- * Markdown code: fenced blocks whose fences start a line, then inline spans
- * on a single line, opened and closed by backtick runs of the same length
- * (so a double-backtick span may quote single backticks), as in CommonMark.
- *
- * A reviewer quotes code in these — including swamp's own error codes, such
- * as `invalid_api_key`, when it reviews an auth change. The provider writes
- * its errors as raw text, never as markdown code, so a pattern match inside
- * quoted code is the review talking about the code, not a failed provider.
+ * matched outside markdown code only: reviewers quote error codes like
+ * invalid_api_key, while the provider writes errors as raw text, never as code
  */
 const FENCED_CODE_PATTERN = /^[ \t]*(`{3,})[\s\S]*?^[ \t]*\1/gm;
 const INLINE_CODE_PATTERN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
 
 /**
- * The output with its markdown code replaced by spaces. A space, not
- * nothing, so the text either side cannot join into a new match.
+ * replaced by a space, not nothing, so neighbouring text cannot join into a new
+ * match
  */
 function withoutQuotedCode(output: string): string {
   return output.replace(FENCED_CODE_PATTERN, " ").replace(
@@ -80,20 +62,9 @@ function withoutQuotedCode(output: string): string {
 }
 
 /**
- * The verdict marker, anchored to the start of a line.
- *
- * Anchoring is load-bearing. The reviewer is told to begin its response with
- * the marker, so only a line-initial marker is its answer. An unanchored match
- * would score a review on the first mention anywhere in the text — including a
- * reviewer weighing out loud whether to emit pass or fail, or quoting the
- * instruction back — which, now that a missing marker fails, is the only way a
- * review could be credited with a verdict it never gave.
- *
- * Asterisks and spaces are allowed to interleave freely around the marker,
- * because reviewers emphasise it in markdown in several shapes — `**VERDICT:
- * pass**`, `**VERDICT:** **pass**`, a bulleted `* VERDICT: pass`. The previous
- * shell pattern tolerated emphasis too, and narrowing that here would turn
- * passing reviews into failures.
+ * anchored to line start: only a line-initial marker is the reviewer's answer,
+ * not a mention while weighing pass or fail. asterisks and spaces may
+ * interleave for markdown emphasis
  */
 const VERDICT_MARKER_PATTERN = /^[ \t*]*VERDICT[ \t*]*:[ \t*]*(pass|fail)/im;
 
@@ -102,12 +73,6 @@ function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
-/**
- * Decide the verdict for one review's raw output.
- *
- * Pure: no I/O, no process state. The CLI wrapper below is the only part that
- * touches the filesystem.
- */
 export function determineVerdict(output: string): ReviewVerdict {
   if (PROVIDER_ERROR_PATTERN.test(withoutQuotedCode(output))) {
     return { kind: "provider-error" };
@@ -127,10 +92,8 @@ export function determineVerdict(output: string): ReviewVerdict {
 }
 
 /**
- * The verdict as it is written to the log.
- *
- * The attestation records what the gate decided, so it reads this line rather
- * than the reviewer's prose — after anchoring, the two can legitimately differ.
+ * the attestation reads this line, not the reviewer's prose, which can differ
+ * after anchoring
  */
 export function formatGateVerdict(verdict: ReviewVerdict): string {
   return `GATE_VERDICT: ${verdict.kind}`;

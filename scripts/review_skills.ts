@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Skill review script that runs `npx tessl review run` on each bundled skill
- * and reports scores. Fails if any skill's average score drops below 90%.
- *
- * Usage: deno run review-skills
- *
- * Exit codes:
- *   0 - All skills pass the 90% threshold
- *   1 - One or more skills below threshold or review failure
- */
 
 import { SkillAssets } from "../src/infrastructure/assets/skill_assets.ts";
 
@@ -228,7 +218,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Write GitHub Actions summary
   const summary = buildSummaryTable(scores, allPassed);
   const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
   if (summaryFile) {

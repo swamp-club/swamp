@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Dependency audit script that checks npm packages in deno.lock for known
- * vulnerabilities using the OSV.dev API (https://osv.dev/).
- *
- * Direct dependency vulnerabilities fail the build. Transitive dependency
- * vulnerabilities are reported as warnings with their full dependency chain
- * (since they require upstream fixes). An advisory listed in
- * ACCEPTED_ADVISORIES is reported but does not fail the build until its
- * review date passes.
- *
- * Usage: deno run audit
- *
- * Exit codes:
- *   0 - No direct dependency vulnerabilities found
- *   1 - Direct dependency vulnerabilities found
- */
 
 interface NpmEntry {
   integrity: string;
@@ -79,21 +63,16 @@ interface PackageInfo {
   isDirect: boolean;
 }
 
-/** A direct-dependency advisory accepted for now, with why and until when. */
 export interface AcceptedAdvisory {
-  /** The OSV id, or one of its aliases (a GHSA or CVE id). */
   id: string;
   package: string;
-  /** The exact versions accepted; any other version still fails. */
   versions: string[];
   reason: string;
-  /** YYYY-MM-DD. From this day on the advisory fails the build again. */
   reviewBy: string;
 }
 
 export const ACCEPTED_ADVISORIES: AcceptedAdvisory[] = [];
 
-/** Whether `vuln` on `pkg` is accepted on `today` (YYYY-MM-DD). */
 export function isAcceptedAdvisory(
   pkg: { name: string; version: string },
   vuln: { id: string; aliases?: string[] },
@@ -122,10 +101,6 @@ interface VulnFinding {
   chain: string[];
 }
 
-/**
- * Build a map from package name to the full key(s) in the npm section.
- * e.g. "jws" -> "jws@3.2.2"
- */
 function buildNameToKeyMap(
   npm: Record<string, NpmEntry>,
 ): Map<string, string[]> {
@@ -141,10 +116,6 @@ function buildNameToKeyMap(
   return map;
 }
 
-/**
- * Build a reverse dependency graph: for each package key, which other
- * package keys depend on it?
- */
 function buildReverseDeps(
   npm: Record<string, NpmEntry>,
   nameToKeys: Map<string, string[]>,
@@ -165,16 +136,11 @@ function buildReverseDeps(
   return reverseDeps;
 }
 
-/**
- * Trace the dependency chain from a vulnerable package back to a direct
- * dependency using BFS on the reverse dependency graph.
- */
 function traceDependencyChain(
   targetKey: string,
   reverseDeps: Map<string, string[]>,
   directNames: Set<string>,
 ): string[] {
-  // BFS from target to find path to a direct dependency
   const visited = new Set<string>();
   const queue: Array<{ key: string; path: string[] }> = [
     { key: targetKey, path: [targetKey] },
@@ -189,8 +155,6 @@ function traceDependencyChain(
     if (lastAt > 0) {
       const name = current.key.substring(0, lastAt);
       if (directNames.has(name) && current.path.length > 1) {
-        // Found a direct dependency — return the chain reversed
-        // (from direct dep down to vulnerable package)
         return current.path.reverse();
       }
     }
@@ -203,7 +167,6 @@ function traceDependencyChain(
     }
   }
 
-  // No direct dependency found (orphan transitive)
   return [targetKey];
 }
 
@@ -213,11 +176,9 @@ function parseNpmPackages(
   const npm = lockData.npm;
   if (!npm) return { packages: [], directNames: new Set() };
 
-  // Build set of direct npm dependency names from specifiers
   const directNames = new Set<string>();
   for (const key of Object.keys(lockData.specifiers ?? {})) {
     if (key.startsWith("npm:")) {
-      // specifier keys look like "npm:@aws-sdk/client-cloudcontrol@^3.993.0"
       const withoutPrefix = key.substring(4);
       const lastAt = withoutPrefix.lastIndexOf("@");
       if (lastAt > 0) {
@@ -228,7 +189,6 @@ function parseNpmPackages(
 
   const packages: PackageInfo[] = [];
   for (const key of Object.keys(npm)) {
-    // npm keys look like "@aws-sdk/client-cloudcontrol@3.993.0"
     const lastAt = key.lastIndexOf("@");
     if (lastAt <= 0) continue;
 
@@ -273,12 +233,8 @@ export interface FetchVulnDetailsOptions {
 }
 
 /**
- * Fetch the full OSV record for each vulnerability id. The querybatch endpoint
- * returns only `id` and `modified`, so summaries, details and aliases have to
- * come from `GET /v1/vulns/{id}`. Ids are de-duplicated and fetched with at
- * most `concurrency` requests in flight. A failed lookup is warned about and
- * left out of the result; it never throws, because the batch query has
- * already decided whether the audit passes.
+ * failed lookups warn and are left out, never throw: the batch query already
+ * decided pass or fail. querybatch returns only id and modified
  */
 export async function fetchVulnDetails(
   ids: Iterable<string>,
@@ -399,11 +355,6 @@ async function writeGitHubSummary(
   await Deno.writeTextFile(summaryFile, lines.join("\n"));
 }
 
-/**
- * Parse packages from an npm package-lock.json (lockfileVersion 3).
- * Keys look like "node_modules/@foo/bar" with a version field.
- * Direct dependencies are read from the root entry's dependencies.
- */
 function parseNpmLockfile(
   lockData: NpmLockfile,
   label: string,
@@ -418,7 +369,6 @@ function parseNpmLockfile(
     if (key === "" || entry.link) continue;
     if (!entry.version) continue;
 
-    // key is "node_modules/@scope/pkg" or "node_modules/pkg"
     const name = key.replace(/^node_modules\//, "");
     packages.push({
       name,
@@ -434,7 +384,6 @@ function parseNpmLockfile(
 }
 
 async function main(): Promise<void> {
-  // Read deno.lock
   let lockContent: string;
   try {
     lockContent = await Deno.readTextFile("deno.lock");
@@ -446,7 +395,6 @@ async function main(): Promise<void> {
   const lockData = JSON.parse(lockContent) as DenoLock;
   const { packages, directNames } = parseNpmPackages(lockData);
 
-  // Also scan npm lockfiles (e.g. evals/promptfoo/package-lock.json)
   const npmLockfiles = [
     "evals/promptfoo/package-lock.json",
     "packages/dashboard/package-lock.json",
@@ -456,7 +404,6 @@ async function main(): Promise<void> {
       const content = await Deno.readTextFile(lockPath);
       const npmLock = JSON.parse(content) as NpmLockfile;
       const parsed = parseNpmLockfile(npmLock, lockPath);
-      // Merge packages, deduplicating by name@version
       const existing = new Set(packages.map((p) => `${p.name}@${p.version}`));
       for (const pkg of parsed.packages) {
         const key = `${pkg.name}@${pkg.version}`;
@@ -479,8 +426,8 @@ async function main(): Promise<void> {
     `Scanning ${packages.length} npm packages for vulnerabilities…`,
   );
 
-  // Build dependency graph for chain tracing (deno.lock only — npm lockfile
-  // packages without chains are reported with just the package name)
+  // chains come from deno.lock only; npm lockfile packages are reported by name
+  // alone
   const npm = lockData.npm ?? {};
   const nameToKeys = buildNameToKeyMap(npm);
   const reverseDeps = buildReverseDeps(npm, nameToKeys);
@@ -513,7 +460,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // querybatch returns only ids, so replace each with its full record
   const details = await fetchVulnDetails(
     [...direct, ...transitive].flatMap((f) => f.vulns.map((v) => v.id)),
   );
@@ -540,7 +486,6 @@ async function main(): Promise<void> {
     );
   }
 
-  // Write GitHub Actions job summary
   await writeGitHubSummary(direct, transitive, accepted);
 
   if (direct.length === 0 && transitive.length === 0) {
@@ -548,7 +493,6 @@ async function main(): Promise<void> {
     Deno.exit(0);
   }
 
-  // Report direct vulnerabilities (these fail the build)
   if (direct.length > 0) {
     console.error(
       `\nDirect dependency vulnerabilities (${direct.length} package(s)):\n`,
@@ -562,7 +506,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Report transitive vulnerabilities (warnings only)
   if (transitive.length > 0) {
     const label = transitive.length === 1 ? "package" : "packages";
     console.warn(
@@ -585,7 +528,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Only fail on direct dependency vulnerabilities
   Deno.exit(direct.length > 0 ? 1 : 0);
 }
 

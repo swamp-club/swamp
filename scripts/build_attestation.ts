@@ -18,50 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Builds the verification attestation from the verify-* run records.
- *
- * The attestation used to be assembled by hand. `verification-conventions.md`
- * spent seventy lines telling an agent how: read three run records, pull job
- * and step names and durations and statuses out of each, read every review's
- * verdict out of the `GATE_VERDICT:` line rather than the reviewer's prose,
- * `sha256sum` twelve specific files, work out which reviews were skipped and
- * why, and assemble a JSON object matching a shape written down nowhere but
- * `jq` expressions in CI. Reconstructed from prose every time, it came out
- * slightly different every time.
- *
- * This is that procedure as code. Every field is projected from what the runs
- * already recorded or hashed out of the verified commit, and the result is
- * validated against `AttestationSchema` before it is written, so the document
- * cannot drift from what `post_attestation` and CI will accept.
- *
- * What it does not do is make the attestation trustworthy. Whoever runs this
- * still chooses which runs to name and could post something else entirely; the
- * generator removes the variance, not the agent. Provenance needs the
- * attestation to be produced by a step of the run it describes, which is a
- * workflow change and deliberately not this one.
- *
- * `deno` is in `--allow-run` so the script can run `deno info` and the command
- * index. That is a wide grant — a `deno` child can be started with any flags —
- * and the index child loads the CLI's modules with `--allow-ffi`, so it is
- * not sandboxed in any sense that matters. Both call sites pass a fixed
- * argument list, and what the child runs is this repository's code at the
- * commit being attested.
- *
- * Usage:
- *   deno run --allow-read --allow-env --allow-run=git,swamp,deno \
- *     scripts/build_attestation.ts \
- *       --run <build-run-id> --run <reviews-run-id> --run <skills-run-id> \
- *       --commit <sha> --branch <name>
- *
- * The runs are identified by the `workflowName` on their own records, so the
- * three ids may be given in any order. The attestation JSON goes to stdout and
- * nothing else does, so a caller can capture it directly; diagnostics go to
- * stderr.
- *
- * Run it from a checkout that is at the commit being attested, with no tracked
- * file modified. Everything else here is read out of git at that commit, but
- * the affected-commands list comes from `deno info`, which reads the files on
- * disk — so the script refuses a checkout that is not the tree it names.
+ * deno in --allow-run is a wide grant and the index child runs with
+ * --allow-ffi, so it is not sandboxed; call sites pass fixed arguments and run
+ * this repo's code at the attested commit
  */
 
 import { parseArgs } from "@std/cli/parse-args";
@@ -90,10 +49,8 @@ import {
 } from "./affected_commands.ts";
 
 /**
- * The verification workflows, in the order the attestation lists their steps.
- *
- * `key` is how the run appears under `runs` in the document and how CI labels
- * the workflow's hash under `configIntegrity.workflows`.
+ * key names the run under runs in the document and the workflow's hash under
+ * configIntegrity.workflows
  */
 const WORKFLOWS: ReadonlyArray<{
   key: string;
@@ -117,18 +74,11 @@ const WORKFLOWS: ReadonlyArray<{
   },
 ];
 
-/** The job whose steps are the agent reviews. */
 const REVIEW_JOB = "reviews";
 
 /**
- * Jobs that are how verification is set up rather than verification itself.
- *
- * Creating a worktree, computing the diff the guards filter on, and removing
- * the worktree afterwards say nothing about whether the code is sound. They
- * are also the jobs most likely to be retried or to fail for reasons unrelated
- * to the change, so counting them would put machinery noise into the gate.
- * Excluding them is what makes the documented example's `stepsTotal: 13` come
- * out of 22 recorded steps.
+ * setup, diff and cleanup jobs say nothing about soundness and are the most
+ * often retried, so they are excluded from the gate counts
  */
 const MACHINERY_JOBS: ReadonlySet<string> = new Set([
   "setup",
@@ -136,22 +86,15 @@ const MACHINERY_JOBS: ReadonlySet<string> = new Set([
   "cleanup",
 ]);
 
-/** A file the attestation pins, and where its hash is looked up. */
 export interface ConfigFile {
-  /** Path relative to the repo root, read at the verified commit. */
   path: string;
-  /** Where the hash lands under `configIntegrity`. */
   jsonPath: string[];
 }
 
 /**
- * Files whose content the attestation pins.
- *
- * CI re-hashes the same files at the same commit and compares, so this list
- * and the `check_hash` calls in `.github/workflows/ci.yml` have to stay in
- * step — a fitness rule in `integration/verification_harness_rules_test.ts`
- * fails when they drift, because the drift is silent in the direction that
- * matters: a file this list drops makes CI warn and carry on.
+ * CI re-hashes these files at the same commit; keep in step with the check_hash
+ * calls in ci.yml (a fitness rule enforces it), since a dropped file only makes
+ * CI warn
  */
 export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
   { path: "CLAUDE.md", jsonPath: ["claudeMd"] },
@@ -193,9 +136,8 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     path: "scripts/build_attestation.ts",
     jsonPath: ["scripts", "build-attestation"],
   },
-  // The generator imports the first and runs the second, and between them
-  // they decide what `affectedCommands` says. Pinned for the same reason the
-  // generator pins itself.
+  // the generator imports one and runs the other; together they decide
+  // affectedCommands, so both are pinned
   {
     path: "scripts/affected_commands.ts",
     jsonPath: ["scripts", "affected-commands"],
@@ -204,11 +146,9 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     path: "scripts/command_index.ts",
     jsonPath: ["scripts", "command-index"],
   },
-  // The trigger evals decide whether the skills still route correctly, so the
-  // runner, the CLI provider that answers each case, the generators that
-  // build the cases, and the installer and lockfile that decide which
-  // promptfoo dependency tree runs them are pinned alongside the promptfoo
-  // package.json.
+  // trigger evals decide whether skills still route correctly, so the runner,
+  // provider, case generators, and the installer and lockfile fixing the
+  // promptfoo tree are pinned too
   {
     path: "scripts/eval_skill_triggers_promptfoo.ts",
     jsonPath: ["scripts", "eval-skill-triggers-runner"],
@@ -247,7 +187,6 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
   },
 ];
 
-// -- Run record shapes (the subset this script reads) ------------------------
 
 interface SkipReason {
   kind: "dependency" | "guarded" | "job_skipped";
@@ -274,12 +213,10 @@ export interface RunRecord {
   startedAt?: string;
   duration?: number;
   inputs?: Record<string, unknown>;
-  /** Where the run record is stored; locates the evaluated workflow. */
   path?: string;
   jobs: JobRecord[];
 }
 
-// -- Workflow definition shapes ---------------------------------------------
 
 interface WorkflowStepDef {
   name?: string;
@@ -296,22 +233,11 @@ export interface WorkflowDef {
   jobs?: WorkflowJobDef[];
 }
 
-// -- Helpers ----------------------------------------------------------------
 
 /**
- * The environment child processes inherit, minus the dynamic-linker variables.
- *
- * Deno refuses to spawn under a scoped `--allow-run` while a dynamic-loader
- * variable is set: the loader could be redirected to substitute a library for
- * the binary named in the permission, so the scope would not mean what it
- * says. Dropping them keeps the narrow permission rather than widening to an
- * unscoped `--allow-run` — the tools spawned here are git and swamp, and
- * neither needs them.
- *
- * The match is deliberately broad. This surfaced with LD_DYLD_PATH and
- * dyld_file both set by a nix toolchain — one not matching a DYLD_ prefix and
- * one lower-case — so it tests for either shape, case-insensitively, rather
- * than enumerating names Deno may extend.
+ * drops dynamic-linker variables: Deno refuses to spawn under a scoped
+ * --allow-run while one is set. the match is broad and case-insensitive to
+ * cover LD_ and DYLD spellings
  */
 function childEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -319,15 +245,12 @@ function childEnv(): Record<string, string> {
     if (/^LD_|DYLD/i.test(key)) continue;
     env[key] = value;
   }
-  // Every captured value lands in the attestation verbatim, so no child may
-  // colour its output. swamp honours this on its own since swamp-club#2414, but
-  // the attestation is generated with whatever binary is on PATH — which may
-  // predate that fix.
+  // captured values land in the attestation verbatim, so children must not
+  // colour output; the swamp binary on PATH may not honour NO_COLOR itself
   env.NO_COLOR = "1";
   return env;
 }
 
-/** Runs a command, returning stdout on success and null on any failure. */
 async function capture(
   command: string,
   args: string[],
@@ -347,10 +270,8 @@ async function capture(
 }
 
 /**
- * Reads a file as it stands at the verified commit, not as it stands in the
- * working tree. The two differ exactly when someone edits a prompt or a
- * workflow after launching verification, which is the case config integrity
- * exists to catch.
+ * reads the file at the verified commit, not the working tree; they differ when
+ * a prompt or workflow is edited after verification starts
  */
 async function showAtCommit(
   commit: string,
@@ -371,24 +292,9 @@ async function showAtCommit(
 }
 
 /**
- * The canonical identifier git gives for a revision.
- *
- * Every identifier reaching the document goes through this, so an
- * abbreviation and the full SHA it stands for collapse to one value before
- * anything compares them. The commit binding is an equality check on strings,
- * and two spellings of the same commit used to fail it: a run launched with
- * `--input commit=cfc7d0eb` and an attestation asked for the full SHA name
- * the same tree and were refused anyway.
- *
- * Resolution lives here rather than in the schema on purpose. This script
- * already shells out to git to read files at a revision, so it cannot be
- * anything but git-aware; `AttestationSchema` is a contract shared with CI and
- * swamp-club, and teaching it how one tool spells an identifier would be wrong
- * even for git, whose SHA-256 repositories use 64 characters rather than 40.
- *
- * Returns null when git cannot resolve the revision or it is not a commit,
- * which is itself worth refusing over — an identifier nothing can resolve is
- * not evidence of anything.
+ * canonicalises revisions so an abbreviation and its full SHA compare equal;
+ * kept out of AttestationSchema, which is shared with CI. null when git cannot
+ * resolve a commit
  */
 async function resolveRevision(revision: string): Promise<string | null> {
   const resolved = await capture("git", [
@@ -413,7 +319,6 @@ function setIn(
   node[path[path.length - 1]] = value;
 }
 
-/** One-line rendering of why a step did not run. */
 export function describeSkip(reason: SkipReason | undefined): string {
   if (!reason) return "reason not recorded";
   switch (reason.kind) {
@@ -429,13 +334,8 @@ export function describeSkip(reason: SkipReason | undefined): string {
 }
 
 /**
- * The model name each step ran under, from the provenance-checked evaluated
- * workflow with any remaining `${{ run.id }}` substituted.
- *
- * The run record does not carry it. Reconstructing it from the definition ties
- * the name in the attestation to the file whose hash the attestation also
- * pins, so a reader who distrusts the name can check it against the same
- * commit.
+ * the run record does not carry the model name, so it is rebuilt from the
+ * provenance-checked definition, tying it to the file whose hash is pinned
  */
 export function modelNames(
   workflow: WorkflowDef,
@@ -455,11 +355,6 @@ export function modelNames(
   return names;
 }
 
-/**
- * The reviewer model each review was invoked with, read out of the evaluated
- * review step's shell after checking it against the committed definition.
- * This records the selected model when the workflow chooses it from inputs.
- */
 export function reviewModels(workflow: WorkflowDef): Map<string, string> {
   const models = new Map<string, string>();
   const job = (workflow.jobs ?? []).find((j) => j.name === REVIEW_JOB);
@@ -470,9 +365,7 @@ export function reviewModels(workflow: WorkflowDef): Map<string, string> {
   return models;
 }
 
-// -- Attestation ------------------------------------------------------------
 
-/** A verification run paired with its provenance-checked evaluated definition. */
 export interface RunSource {
   key: string;
   name: string;
@@ -480,7 +373,6 @@ export interface RunSource {
   definition: WorkflowDef;
 }
 
-/** Everything the attestation needs that does not come out of a run record. */
 export interface AttestationEnvironment {
   commit: string;
   branch: string;
@@ -490,22 +382,10 @@ export interface AttestationEnvironment {
   os: string;
   arch: string;
   now: Date;
-  /**
-   * The commands the change can affect. Computed by the caller, like the
-   * hashes: it comes from the commit's files, not from a run record.
-   */
   affectedCommands?: AffectedCommands;
 }
 
-/**
- * Projects the verification runs into the attestation document.
- *
- * Pure: every field is a function of the run records, the workflow definitions
- * at the verified commit, and hashes of that commit's files. There is no
- * parameter through which a caller could assert something the runs did not
- * record — a caller who could state a step's status alongside the run that
- * produced it could state a different one.
- */
+/** pure: no parameter lets a caller assert something the runs did not record */
 export function buildAttestation(
   sources: readonly RunSource[],
   env: AttestationEnvironment,
@@ -523,11 +403,9 @@ export function buildAttestation(
           model: models.get(`${job.name}:${step.name}`),
           status: step.status,
           durationMs: step.duration,
-          // A review step's status IS the gate decision: every review
-          // delegates to check_review_verdict.ts, whose exit code decides the
-          // step. Reading a verdict out of the reviewer's prose would be
-          // reading the input to that decision rather than the decision, and
-          // the two can differ when a marker appears mid-sentence.
+          // a review step's status is the gate decision, since
+          // check_review_verdict.ts decides its exit code; the reviewer's prose
+          // is only its input
           verdict: job.name === REVIEW_JOB && step.status === "succeeded"
             ? "pass"
             : undefined,
@@ -548,10 +426,8 @@ export function buildAttestation(
 
   const succeeded = steps.filter((s) => s.status === "succeeded").length;
   const skipped = steps.filter((s) => s.status === "skipped").length;
-  // Anything that is neither succeeded nor skipped counts against the gate,
-  // not just `failed`. A step left `unknown` by a crashed run, or still
-  // `running`, is a step nobody can vouch for, and a gate that only looked for
-  // `failed` would pass it.
+  // anything neither succeeded nor skipped counts as failed: an unknown or
+  // still-running step is one nobody can vouch for
   const failed = steps.length - succeeded - skipped;
 
   const skippedByKind: Record<string, number> = {};
@@ -572,9 +448,8 @@ export function buildAttestation(
       reviewConfig[step.name] = {
         model: reviewers.get(step.name),
         ran: step.status === "succeeded",
-        // Derived, where it used to be typed by hand. A bare `skipped` could
-        // not tell a path guard that correctly excluded a review from a run
-        // where the whole job never started; the persisted skip reason can.
+        // derived from the persisted skip reason, which tells a path guard
+        // exclusion from a job that never started
         reason: step.status === "skipped"
           ? describeSkip(step.skipReason)
           : undefined,
@@ -585,20 +460,9 @@ export function buildAttestation(
   const runs: Record<string, string> = {};
   for (const source of sources) runs[source.key] = source.run.id;
 
-  // The three workflows run as separate, possibly concurrent runs, so
-  // verification started when the earliest of them did and finished when the
-  // last one did. Summing their durations would double-count the overlap and
-  // describe a wall-clock span nobody waited through.
-  //
-  // `completedAt` is read from the runs rather than taken as the current time.
-  // This generator is not a step of the run — it is invoked afterwards, by
-  // hand, and nothing bounds how long afterwards. Quoting "now" would put the
-  // moment the document was *written* into a field that means the moment
-  // verification *finished*, and inflate `totalDurationMs` by the gap: doing
-  // exactly this by hand turned a 51-second verification into a 71-minute
-  // one. CI measures its freshness window from this field, so it is also the
-  // difference between a stale attestation being caught and being waved
-  // through.
+  // runs may overlap, so duration spans the earliest start to the latest end.
+  // completedAt comes from the runs, not now: this runs afterwards and CI
+  // measures freshness from it
   const startTimes = sources
     .map((s) => s.run.startedAt)
     .filter((t): t is string => Boolean(t))
@@ -615,8 +479,8 @@ export function buildAttestation(
   const startedAt = startTimes.length > 0
     ? new Date(Math.min(...startTimes))
     : undefined;
-  // A run with no recorded duration cannot say when it ended, so fall back to
-  // the clock rather than claim a completion the records do not support.
+  // a run with no recorded duration falls back to the clock rather than claim a
+  // completion the records do not support
   const completedAt = endTimes.length > 0
     ? new Date(Math.max(...endTimes))
     : env.now;
@@ -624,9 +488,8 @@ export function buildAttestation(
   return {
     version: "1",
     type: "verification-attestation",
-    // Stated, not proven. It says the document was projected from the run
-    // records by this script rather than typed out; it does not say the
-    // script was the only thing that could have produced it.
+    // stated, not proven: the document was projected by this script, which does
+    // not mean nothing else could have produced it
     generatedBy: "script",
 
     subject: { commit: env.commit, branch: env.branch },
@@ -643,10 +506,8 @@ export function buildAttestation(
     steps,
 
     gate: {
-      // Two conditions, not one. No step failed, AND every verification
-      // workflow contributed a run. Without the second, naming one run
-      // produces a handful of steps, zero failures, and a green gate for a
-      // verification that mostly never happened.
+      // every verification workflow must contribute a run, else naming one run
+      // gives zero failures and a green gate for mostly missing verification
       allPassed: failed === 0 && sources.length === WORKFLOWS.length,
       stepsCompleted: succeeded,
       stepsTotal: steps.length,
@@ -669,16 +530,10 @@ export function buildAttestation(
   };
 }
 
-// -- I/O shell ---------------------------------------------------------------
 
 /**
- * Matches each run record to the workflow it belongs to, by the name on the
- * record itself.
- *
- * Asking the caller which id is which would put a claim back into the
- * document that the run records can answer for themselves — and a caller who
- * labelled a verify-build run as `reviews` would produce an attestation
- * stating that reviews passed.
+ * matched by the name on each record, since a caller labelling a build run as
+ * reviews would make the attestation claim reviews passed
  */
 export function matchRunsToWorkflows(
   runs: readonly RunRecord[],
@@ -730,12 +585,8 @@ export function matchRunsToWorkflows(
 }
 
 /**
- * Checks that every run examined the commit being attested to.
- *
- * This is the one property today's hand-assembly never checked and the reason
- * the conventions doc had to forbid editing an old attestation in prose: a
- * stale run record produces a perfectly well-formed document describing a
- * different tree.
+ * a stale run record yields a well-formed document describing a different tree,
+ * so each run must have examined the attested commit
  */
 export function checkCommitBinding(
   sources: ReadonlyArray<{ name: string; run: RunRecord }>,
@@ -752,10 +603,8 @@ export function checkCommitBinding(
       continue;
     }
     if (ran !== commit) {
-      // Both identifiers in full. They used to be printed `.slice(0, 8)`,
-      // which rendered a full SHA and its own abbreviation as the same eight
-      // characters — the message read "verified cfc7d0eb, not cfc7d0eb" and
-      // gave the reader nothing to act on.
+      // print both identifiers in full so a SHA and its abbreviation are not
+      // rendered as the same text
       errors.push(
         `${source.name} run ${source.run.id} was launched against ${ran}, ` +
           `but this attestation names ${commit}`,
@@ -765,14 +614,11 @@ export function checkCommitBinding(
   return errors;
 }
 
-/** An expression, `${{ … }}`, as it appears in a committed definition. */
 const EXPRESSION = /\$\{\{[\s\S]*?\}\}/;
 
 /**
- * Keys swamp adds at the root of a run's evaluated workflow for its own
- * bookkeeping — the sensitive-value format version and where the file holds
- * vault references (see `YamlEvaluatedWorkflowRepository.saveForRun`). They
- * describe how the snapshot was written, not what the run executed.
+ * swamp's own bookkeeping at the snapshot root; it describes how the snapshot
+ * was written, not what the run executed
  */
 const RUN_METADATA_KEYS: ReadonlySet<string> = new Set([
   "sensitiveFormat",
@@ -780,12 +626,8 @@ const RUN_METADATA_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Where a run's evaluated workflow is kept, beside the run record itself.
- *
- * The record lives at `<swamp>/workflow-runs/<workflow-id>/workflow-run-<id>.yaml`
- * and the evaluated workflow at `<swamp>/workflows-evaluated/runs/<id>/`, so
- * the record's own path locates it without guessing which repository the run
- * was launched against.
+ * located from the run record's own path, so no guess is needed about which
+ * repository the run was launched against
  */
 export function evaluatedWorkflowPath(run: RunRecord): string | null {
   if (!run.path) return null;
@@ -800,25 +642,9 @@ export function evaluatedWorkflowPath(run: RunRecord): string | null {
 }
 
 /**
- * Checks that a run executed the workflow the attestation pins.
- *
- * `configIntegrity` hashes each workflow as it stands at the verified commit,
- * but the commit is only an input the run was handed — nothing ties it to the
- * file swamp loaded. They part ways when `SWAMP_WORKFLOWS_DIR` is relative and
- * `--repo-dir` points at another checkout: the runs load that checkout's
- * `verification/`, and an attestation for a change to the workflows themselves
- * would pin files the runs never executed (swamp-club#2388).
- *
- * swamp keeps the definition each run executed, after evaluation, so the
- * committed definition is compared to it as a template: every expression in a
- * committed string matches whatever it evaluated to, and everything else must
- * match exactly. Evaluation also fills defaults the file leaves out, so a field
- * present only in the evaluated workflow is accepted when it is empty, zero or
- * false, and refused otherwise. The metadata swamp records beside the
- * definition at the root of the snapshot is not part of what the run executed,
- * so it is set aside unless the committed definition sets it too.
- *
- * Returns one line per difference, each naming where in the document it is.
+ * compares the committed definition, as a template, with the one the run
+ * executed: expressions match anything, else exact; fields only the evaluated
+ * one has pass when empty, zero or false; snapshot metadata is ignored
  */
 export function checkWorkflowProvenance(
   committed: unknown,
@@ -955,18 +781,12 @@ function isEmptyDefault(value: unknown): boolean {
     value === undefined || value === "";
 }
 
-// -- Affected commands --------------------------------------------------------
 
-/** How long `deno info` or the command index may take before it is abandoned. */
 const SUBPROCESS_TIMEOUT_MS = 120 * 1000;
 
 /**
- * Checks that the working tree is the tree the attestation names.
- *
- * `head` is the checkout's commit and `status` is `git status --porcelain`
- * for tracked files. Untracked files are not asked about: one that nothing
- * tracked imports is not in the module graph, and one that something tracked
- * was edited to import shows up as that edit.
+ * untracked files are not checked: one nothing tracked imports is outside the
+ * module graph, and one a tracked file imports shows up as that edit
  */
 export function checkCheckout(
   head: string | null,
@@ -993,7 +813,6 @@ export function checkCheckout(
   return errors;
 }
 
-/** The command index as the subprocess printed it, or null if it is not one. */
 export function parseCommandIndex(stdout: string): CommandIndex | null {
   try {
     const parsed: unknown = JSON.parse(stdout);
@@ -1015,13 +834,9 @@ export function parseCommandIndex(stdout: string): CommandIndex | null {
 }
 
 /**
- * The git arguments that list the files a change touched, NUL-separated.
- *
- * `filter` is git's `--diff-filter`: lower case excludes a status, upper case
- * selects it. Rename detection is switched off, so a moved file is a deletion
- * of the old path and an addition of the new one. Left on, the old path would
- * never be classified — and whether it is on is the caller's git
- * configuration, which must not change what an attestation says.
+ * rename detection is off so a moved file is a deletion plus an addition and
+ * the old path is classified; the caller's git config must not change what an
+ * attestation says
  */
 export function diffNamesArgs(
   filter: string,
@@ -1039,7 +854,6 @@ export function diffNamesArgs(
   ];
 }
 
-/** Runs a command to completion, keeping stderr for the failure message. */
 async function runChild(
   command: string,
   args: string[],
@@ -1072,14 +886,8 @@ async function runChild(
 }
 
 /**
- * Works out which commands the commit can affect, from the files on disk.
- *
- * The caller has already shown the checkout is the commit's tree. The change
- * is the commit against its merge base with `origin/main` — the same
- * three-dot diff the review guards filter on, so the list describes the
- * change the reviews examined. Deleted files are listed apart, because they
- * are in no graph built from this tree; `computeAffectedCommands` says what
- * each kind of deletion means.
+ * diffs against the merge base with origin/main, the same three-dot diff the
+ * review guards use; deleted files are listed apart as they are in no graph
  */
 async function gatherAffectedCommands(
   commit: string,
@@ -1102,7 +910,6 @@ async function gatherAffectedCommands(
       ? null
       : diff.split("\0").filter((file) => file !== "");
   };
-  // Everything that is still present, then everything that was removed.
   const changedFiles = await diffNames("d");
   const deletedFiles = await diffNames("D");
   if (changedFiles === null || deletedFiles === null) {
@@ -1197,10 +1004,8 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  // Resolved once, here, and used for every comparison and every field below.
-  // An abbreviation on the command line is fine; an abbreviation in the
-  // document is not, because CI compares it to the PR head as a string with no
-  // repository to resolve against.
+  // resolved once and used everywhere: CI compares the commit in the document
+  // to the PR head as a string, so it must not be an abbreviation
   const commit = await resolveRevision(requestedCommit);
   if (!commit) {
     console.error(
@@ -1209,9 +1014,8 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Before anything else is read: the affected-commands list is computed from
-  // the files on disk, so a checkout that has moved on would describe a tree
-  // the attestation does not name.
+  // checked before anything else is read: the affected-commands list comes from
+  // files on disk, so a checkout that moved on would describe another tree
   const repoRoot = (await capture("git", ["rev-parse", "--show-toplevel"]))
     ?.trim();
   const checkoutErrors = checkCheckout(
@@ -1247,9 +1051,8 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Each run's recorded input is resolved the same way before it is compared,
-  // so the check asks "did this run examine this commit" rather than "did
-  // whoever launched it happen to type the identifier the same way".
+  // each run's recorded commit is resolved the same way, so the check asks
+  // whether the run examined this commit, not how its launcher spelled it
   const resolvedSources = [];
   for (const source of matched.sources) {
     const recorded = source.run.inputs?.["commit"];
@@ -1274,8 +1077,8 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Definitions are read at the verified commit for the same reason their
-  // hashes are: the file in the working tree may have moved since the run.
+  // definitions are read at the verified commit, as their hashes are: the
+  // working tree file may have moved since the run
   const sources: RunSource[] = [];
   for (const source of matched.sources) {
     const workflow = WORKFLOWS.find((w) => w.name === source.name)!;
@@ -1346,10 +1149,8 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Cliffy's version action branches on which spelling was used: `--version`
-  // takes `showLongVersion()`, which is the program name plus the version, and
-  // `-V` takes `showVersion()`, which is the version alone. Ask for the bare one
-  // — the CI summary supplies the program name itself.
+  // -V gives the bare version; --version prepends the program name, which the
+  // CI summary supplies itself
   const swampVersion = (await capture("swamp", ["-V"]))?.trim();
 
   const attestation = buildAttestation(sources, {
@@ -1364,9 +1165,8 @@ async function main(): Promise<number> {
     affectedCommands: affected.affectedCommands,
   });
 
-  // The generator validates its own output. post_attestation validates it
-  // again on the way out, which is not redundant: the second one is what
-  // catches a document this script did not write.
+  // post_attestation validates again, which is not redundant: it catches a
+  // document this script did not write
   const validated = AttestationSchema.safeParse(attestation);
   if (!validated.success) {
     console.error("generated attestation does not match AttestationSchema:");

@@ -17,34 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * CycloneDX SBOM generator for the swamp CLI.
- *
- * Produces a CycloneDX 1.6 JSON Software Bill of Materials describing every
- * npm and JSR dependency resolved for `main.ts`, with an SPDX license for each
- * component. Intended for license-compliance scanning (Trivy, FOSSA, etc.).
- *
- * Dependency discovery uses `deno info --json main.ts` — the authoritative
- * resolved graph (npm packages with their local cache paths, plus every
- * jsr.io module specifier).
- *
- * License resolution:
- *   - npm  → read `license` from the package's cached `package.json` (offline);
- *            fall back to the npm registry if the package isn't cached.
- *   - jsr  → the JSR per-version API (`api.jsr.io`), persisted to an on-disk
- *            cache (`scripts/jsr_license_cache.json`) so repeat runs and CI are
- *            offline and deterministic. `@std/*` packages that declare no
- *            license resolve to MIT (the Deno standard library license).
- *
- * Usage:
- *   deno run sbom                 # writes sbom.cdx.json
- *   deno run sbom --output -      # writes to stdout
- *   deno run sbom --offline       # cache only, never hit the network
- *
- * Exit codes:
- *   0 - SBOM generated (every component has a resolved license)
- *   1 - SBOM generated but one or more components have no resolvable license
- */
 
 import { parseArgs } from "@std/cli";
 import { dirname, fromFileUrl, join } from "@std/path";
@@ -54,7 +26,6 @@ const JSR_API = "https://api.jsr.io";
 const NPM_REGISTRY = "https://registry.npmjs.org";
 const FETCH_TIMEOUT_MS = 15_000;
 const NOASSERTION = "NOASSERTION";
-/** Author recorded as the BOM creator (CycloneDX metadata.authors). */
 const SBOM_AUTHOR = "Elder Swamp Club, Inc.";
 
 const JSR_LICENSE_CACHE_PATH = join(
@@ -62,7 +33,6 @@ const JSR_LICENSE_CACHE_PATH = join(
   "jsr_license_cache.json",
 );
 
-// --- deno info --json shapes (only the fields we read) ---------------------
 
 interface DenoInfoNpmPackage {
   name: string;
@@ -84,31 +54,22 @@ interface DenoInfoModule {
 interface DenoInfo {
   npmPackages?: Record<string, DenoInfoNpmPackage>;
   modules?: DenoInfoModule[];
-  /** Resolution map from a jsr range specifier to a concrete name@version. */
   packages?: Record<string, string>;
 }
 
-// --- internal component model ----------------------------------------------
 
 interface Component {
   ecosystem: "npm" | "jsr";
   name: string;
   version: string;
-  /** name@version key used to wire dependency edges. */
   key: string;
-  /** Stable CycloneDX bom-ref. */
   bomRef: string;
-  /** Package URL (pkg:npm/… or pkg:jsr/…). */
   purl: string;
-  /** Resolved SPDX expression/id, or NOASSERTION. */
   license: string;
-  /** Supplier/publisher name (npm author or jsr scope). */
   supplier: string;
-  /** Dependency keys (name@version) for the dependency graph. */
   dependsOn: string[];
 }
 
-// --- CycloneDX shapes ------------------------------------------------------
 
 type CdxLicenseChoice =
   | { license: { id: string } }
@@ -147,25 +108,17 @@ interface CdxBom {
   dependencies: Array<{ ref: string; dependsOn: string[] }>;
 }
 
-// --- license helpers -------------------------------------------------------
 
-/** Map an SPDX string (or null) to CycloneDX license choices. */
 export function licenseToCdx(spdx: string | null): CdxLicenseChoice[] {
   if (!spdx || spdx === NOASSERTION) {
     return [{ license: { name: NOASSERTION } }];
   }
-  // Compound SPDX expressions (AND/OR/WITH or parenthesised) use `expression`;
-  // a bare identifier uses `license.id`.
   if (/\s|\(/.test(spdx)) {
     return [{ expression: spdx }];
   }
   return [{ license: { id: spdx } }];
 }
 
-/**
- * Normalize the many shapes of an npm `license`/`licenses` field to a single
- * SPDX string. Returns null when no license is declared.
- */
 export function normalizeNpmLicense(
   pkg: { license?: unknown; licenses?: unknown },
 ): string | null {
@@ -173,14 +126,12 @@ export function normalizeNpmLicense(
   if (typeof license === "string" && license.trim() !== "") {
     return license.trim();
   }
-  // Deprecated object form: { type: "MIT", url: "..." }.
   if (
     license && typeof license === "object" &&
     typeof (license as { type?: unknown }).type === "string"
   ) {
     return (license as { type: string }).type;
   }
-  // Deprecated array form: [{ type: "MIT" }, { type: "Apache-2.0" }].
   if (Array.isArray(licenses)) {
     const types = licenses
       .map((
@@ -196,7 +147,6 @@ export function normalizeNpmLicense(
   return null;
 }
 
-// --- fetch helper ----------------------------------------------------------
 
 async function fetchJson(url: string): Promise<unknown> {
   const res = await fetch(url, {
@@ -208,7 +158,6 @@ async function fetchJson(url: string): Promise<unknown> {
   return await res.json();
 }
 
-// --- JSR license cache -----------------------------------------------------
 
 export class JsrLicenseCache {
   #entries: Record<string, string>;
@@ -248,10 +197,6 @@ export class JsrLicenseCache {
   }
 }
 
-/**
- * Resolve a JSR package's license, consulting the cache first. `@std/*`
- * packages with no declared license resolve to MIT (the Deno std license).
- */
 export async function resolveJsrLicense(
   scope: string,
   name: string,
@@ -283,10 +228,8 @@ export async function resolveJsrLicense(
   return resolved;
 }
 
-/** Extract a supplier name from an npm `author` field (string or object). */
 export function parseNpmAuthor(author: unknown): string | null {
   if (typeof author === "string") {
-    // "Name <email> (url)" → "Name"
     const name = author.split(/[<(]/)[0].trim();
     return name || null;
   }
@@ -300,7 +243,6 @@ export function parseNpmAuthor(author: unknown): string | null {
   return null;
 }
 
-/** Supplier fallback when no author is declared: the scope, else "npm". */
 function npmSupplierFallback(name: string): string {
   return name.startsWith("@") ? name.slice(0, name.indexOf("/")) : "npm";
 }
@@ -317,7 +259,6 @@ async function resolveNpm(
   let license: string | null = null;
   let supplier: string | null = null;
 
-  // Prefer the offline cached package.json.
   if (pkg.localPath) {
     try {
       const text = await Deno.readTextFile(join(pkg.localPath, "package.json"));
@@ -354,9 +295,7 @@ async function resolveNpm(
   };
 }
 
-// --- component extraction --------------------------------------------------
 
-/** percent-encode the leading @ of a scoped npm name for a purl. */
 function npmPurl(name: string, version: string): string {
   const encoded = name.startsWith("@") ? `%40${name.slice(1)}` : name;
   return `pkg:npm/${encoded}@${version}`;
@@ -374,7 +313,6 @@ export function extractNpmComponents(info: DenoInfo): Component[] {
       bomRef: npmPurl(pkg.name, pkg.version),
       purl: npmPurl(pkg.name, pkg.version),
       license: NOASSERTION,
-      // Supplier is resolved later from the package's author field.
       supplier: "",
       dependsOn: pkg.dependencies ?? [],
     });
@@ -387,7 +325,6 @@ const JSR_SPECIFIER = /^https:\/\/jsr\.io\/(@[^/]+\/[^/]+)\/([^/]+)\//;
 export function extractJsrComponents(info: DenoInfo): Component[] {
   const resolve = info.packages ?? {};
   const seen = new Map<string, Component>();
-  // First pass: discover every jsr package from its module specifiers.
   for (const mod of info.modules ?? []) {
     const match = mod.specifier?.match(JSR_SPECIFIER);
     if (!match) continue;
@@ -400,16 +337,12 @@ export function extractJsrComponents(info: DenoInfo): Component[] {
       version,
       key,
       bomRef: `jsr:${key}`,
-      // pkg:jsr is the de-facto purl type for jsr.io packages.
       purl: `pkg:jsr/${nameWithScope}@${version}`,
       license: NOASSERTION,
-      // The jsr scope (e.g. "@std") is the package's publisher/supplier.
       supplier: nameWithScope.slice(0, nameWithScope.indexOf("/")),
       dependsOn: [],
     });
   }
-  // Second pass: jsr→jsr edges. Module deps appear as `jsr:@scope/name@range`
-  // and resolve to a concrete version via the `packages` map.
   const edges = new Map<string, Set<string>>();
   for (const mod of info.modules ?? []) {
     const match = mod.specifier?.match(JSR_SPECIFIER);
@@ -435,7 +368,6 @@ export function extractJsrComponents(info: DenoInfo): Component[] {
   return [...seen.values()];
 }
 
-// --- SBOM assembly ---------------------------------------------------------
 
 interface RootMeta {
   name: string;
@@ -508,7 +440,6 @@ export function buildSbom(
   };
 }
 
-// --- driver ----------------------------------------------------------------
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -577,7 +508,7 @@ async function main(): Promise<void> {
       }
     } else {
       const at = component.name.indexOf("/");
-      const scope = component.name.slice(1, at); // strip leading @
+      const scope = component.name.slice(1, at);
       const name = component.name.slice(at + 1);
       component.license = await resolveJsrLicense(
         scope,

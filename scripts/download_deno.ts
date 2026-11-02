@@ -23,14 +23,12 @@ import { parseArgs } from "@std/cli/parse-args";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 
-/** Repo-root `.tool-versions` — the single source of truth for the toolchain. */
 const TOOL_VERSIONS_PATH = join(
   import.meta.dirname ?? ".",
   "..",
   ".tool-versions",
 );
 
-/** Maps Deno build target triples to GitHub release artifact names. */
 const TARGET_ARTIFACT_MAP: Record<string, string> = {
   "x86_64-unknown-linux-gnu": "deno-x86_64-unknown-linux-gnu.zip",
   "aarch64-unknown-linux-gnu": "deno-aarch64-unknown-linux-gnu.zip",
@@ -40,7 +38,6 @@ const TARGET_ARTIFACT_MAP: Record<string, string> = {
 };
 
 
-/** Maps Deno.build.os + Deno.build.arch to a target triple. */
 function detectCurrentTarget(): string {
   const os = Deno.build.os;
   const arch = Deno.build.arch;
@@ -63,7 +60,6 @@ function detectCurrentTarget(): string {
   throw new Error(`Unsupported platform: ${os}/${arch}`);
 }
 
-/** Parses the deno version from the currently running deno. */
 async function getDenoVersion(): Promise<string> {
   const command = new Deno.Command("deno", {
     args: ["--version"],
@@ -76,17 +72,13 @@ async function getDenoVersion(): Promise<string> {
   if (!match) {
     throw new Error(`Cannot parse deno version from: ${text}`);
   }
-  // Strip build metadata suffix (e.g. "2.7.0+fb4db33" → "2.7.0")
-  // GitHub releases use semver without build metadata
+  // strip build metadata: GitHub releases use plain semver
   return match[1].replace(/\+.*$/, "");
 }
 
 /**
- * Parses the pinned deno version out of `.tool-versions` contents.
- *
- * Matches the same shape `denoland/setup-deno` parses, so CI and this script
- * can never disagree about what the file says. Returns null when the file
- * carries no `deno` line.
+ * matches the shape denoland/setup-deno parses so CI and this script agree;
+ * null when there is no deno line
  */
 export function parsePinnedDenoVersion(contents: string): string | null {
   const match = contents.match(/^deno\s+v?(\S+)\s*$/m);
@@ -94,21 +86,9 @@ export function parsePinnedDenoVersion(contents: string): string | null {
 }
 
 /**
- * Compares the deno running this script against the pin in `.tool-versions`.
- *
- * Whatever deno runs this script is the deno whose release gets downloaded and
- * embedded in the compiled binary, so a drifting toolchain silently changes
- * what ships to users.
- *
- * The asymmetry here is deliberate and is the whole design. Under CI this
- * throws, because release.yml is what compiles the published binary and an
- * off-pin runtime must never reach a release. Off CI it only warns, because
- * the other compile that happens routinely is the one inside verify-build on a
- * maintainer's host, where the binary is a check that the build works rather
- * than a published artifact — hard-failing there would break every local
- * verification run for a contributor sitting a patch release off the pin.
- * Do not tighten this into an unconditional throw without revisiting that
- * trade-off.
+ * throws under CI because release.yml compiles the published binary; off CI it
+ * only warns so a maintainer a patch release off the pin is not blocked in
+ * verify-build. do not make it unconditional
  */
 export function checkVersionAgainstPin(
   running: string,
@@ -140,10 +120,8 @@ export function checkVersionAgainstPin(
 }
 
 /**
- * Reads `.tool-versions` and checks the running deno against it.
- *
- * A missing or unreadable file is a warning, not a failure — this script has
- * to stay runnable outside a full checkout.
+ * a missing or unreadable file only warns, so the script stays runnable outside
+ * a full checkout
  */
 async function verifyRunningVersion(running: string): Promise<void> {
   let contents: string;
@@ -162,7 +140,6 @@ async function verifyRunningVersion(running: string): Promise<void> {
   );
 }
 
-/** Downloads a file from a URL, returning the bytes. */
 async function downloadFile(url: string): Promise<Uint8Array> {
   console.log(`Downloading: ${url}`);
   const response = await fetch(url);
@@ -174,12 +151,10 @@ async function downloadFile(url: string): Promise<Uint8Array> {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** Extracts a zip archive and returns the contents of the deno binary. */
 async function extractDenoFromZip(
   zipBytes: Uint8Array,
   binaryName: string,
 ): Promise<Uint8Array> {
-  // Write zip to temp file, extract with unzip
   const tempDir = await Deno.makeTempDir({ prefix: "swamp_deno_download_" });
   const zipPath = join(tempDir, "deno.zip");
 
@@ -237,7 +212,6 @@ async function main() {
   console.log(`Downloaded ${zipBytes.length} bytes, extracting...`);
   const binaryBytes = await extractDenoFromZip(zipBytes, binaryName);
 
-  // Write to resources/deno/
   const outputDir = join(
     import.meta.dirname ?? ".",
     "..",
@@ -249,12 +223,10 @@ async function main() {
   const outputPath = join(outputDir, binaryName);
   await Deno.writeFile(outputPath, binaryBytes);
 
-  // Set executable permissions on unix
   if (!isWindows) {
     await Deno.chmod(outputPath, 0o755);
   }
 
-  // Write version file
   const versionPath = join(outputDir, "version.txt");
   await Deno.writeTextFile(versionPath, version);
 

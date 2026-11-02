@@ -17,32 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What the v3 chunk barrier costs a commit group (swamp-club#3617): one
- * commit-log unit storing N blobs of non-inline content (each one chunk)
- * through the real `FileSystemStorage`, `ChunkStore` and commit-log unit on
- * a temp directory, with the real file and directory syncs. Each case runs
- * twice, interleaved (A and A'), as an A/A control: the gap between the two
- * medians is the noise. Run with:
- *
- * ```
- * deno run -A scripts/bench_v3_chunk_barrier.ts [--dir <parent>] [--runs <n>]
- * ```
- *
- * Cases:
- * - `new N`: N blobs no process stored before.
- * - `dedupe N, other process`: N blobs another process stored (and made
- *   durable); this process has not synced them.
- * - `dedupe N, this process`: N blobs this process stored and made durable
- *   in an earlier unit.
- *
- * It also runs against a swamp before the batched barrier (a
- * `FileSystemStorage` without the `durableChunks` option ignores it), so the
- * same script measures both. The storage is ordered before a `commits.db`
- * in the datastore root, as an unreplicated datastore's is, so on macOS it
- * takes the ordering barrier (swamp-club#3737); a swamp before it ignores
- * `orderedBefore` and syncs in full.
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
@@ -70,7 +44,6 @@ const COUNTS = [1, 10, 200];
 const args = parseArgs(Deno.args, { string: ["dir", "runs"] });
 const runs = Number(args.runs ?? 9);
 
-/** N distinct blobs; `salt` makes them differ from every other run's. */
 function blobs(count: number, salt: string): Uint8Array[] {
   return Array.from({ length: count }, (_, i) => {
     const bytes = new Uint8Array(BLOB_BYTES);
@@ -80,10 +53,6 @@ function blobs(count: number, salt: string): Uint8Array[] {
   });
 }
 
-/**
- * A storage over `dir` with memos of its own, as a fresh process has; a
- * storage before swamp-club#3617's batched barrier ignores the options.
- */
 function storageOf(
   dir: string,
   memo: Map<string, object> = new Map(),
@@ -98,7 +67,6 @@ function storageOf(
   );
 }
 
-/** Commits one unit putting every blob; returns how long it took, in ms. */
 async function commitGroup(
   storage: FileSystemStorage,
   contents: readonly Uint8Array[],

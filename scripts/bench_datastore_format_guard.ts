@@ -17,76 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Measures what the datastore format guard (swamp-club#3189) costs a command
- * on an S3 or GCS datastore (swamp-club#3191).
- *
- * Each target is an emulator behind a counting HTTP proxy this script runs,
- * so request counts are measured rather than inferred. Every repo's
- * datastore `endpoint` / `apiEndpoint` must point at the proxy's port, not at
- * the emulator. For each repo, command and mode, the binaries run
- * interleaved, `--runs` times each, and the script reports the median and
- * p95 wall time, the median request count, and how many of those requests
- * were the marker read (`_control/datastore-format`) or the S3 preflight
- * (`HEAD /<bucket>`).
- *
- * Modes:
- * - `healthy`: everything is forwarded.
- * - `stall-marker`: requests for the marker key hang until the client gives
- *   up, and everything else is forwarded. This isolates the guard's
- *   degraded-path wait. A fully paused emulator (`docker pause`) is not used,
- *   because there the command's own requests stall for their 30 s timeouts
- *   and drown the guard's wait.
- *
- * Network shape, to approximate a real bucket on top of a local emulator:
- * - `--latency-ms N` delays every forwarded request by N ms, one round trip.
- * - `--handshake-rtts K` (default 2) adds K more round trips to the first
- *   request on each new client connection, standing in for TCP and TLS.
- * - `--creds-port P --creds-delay-ms D` serves AWS container credentials
- *   on 127.0.0.1:P after D ms. Run the binaries with
- *   `AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:P/creds` and no
- *   `AWS_ACCESS_KEY_ID`, so each fresh S3 client resolves credentials
- *   through a slow source, as SSO, IMDS or an assumed role would.
- *
- * To check that the guard still refuses in time under that shape, plant a
- * newer-format marker first and run `--modes healthy`: every run should
- * then fail (exit 1), and `failures` should equal `--runs`.
- *
- * Setup (one repo per target and namespace layout), for example:
- *
- *   docker run -d --name ministack-bench -p 47191:4566 ministackorg/ministack:latest
- *   docker run -d --name fakegcs-bench -p 47192:4443 fsouza/fake-gcs-server:1.56.1 \
- *     -scheme http -port 4443 -public-host localhost:47192
- *   curl -X PUT localhost:47191/bench
- *   curl -X POST 'localhost:47192/storage/v1/b?project=test' -d '{"name":"bench"}'
- *   # with this script's proxies running (--serve-only), in each repo:
- *   swamp repo init --tool none
- *   swamp datastore setup extension @swamp/s3-datastore --config \
- *     '{"bucket":"bench","prefix":"solo","region":"us-east-1",
- *       "endpoint":"http://localhost:47291","forcePathStyle":true}'
- *   swamp behavior create command/shell bench
- *
- * Usage:
- *
- *   deno run -A scripts/bench_datastore_format_guard.ts \
- *     --target s3=http://localhost:47191@47291 \
- *     --target gcs=http://localhost:47192@47292 \
- *     --binary guard=/path/to/swamp --binary noguard=/path/to/patched \
- *     --repo s3:solo=/tmp/bench/s3-solo --repo s3:ns=/tmp/bench/s3-ns \
- *     --runs 20 --modes healthy,stall-marker --out results.json
- *
- * The `noguard` comparison binary is the same commit with
- * `readDatastoreFormatMarker` patched to return `unsupported` before any
- * remote call; it is built in a scratch worktree and never committed.
- * S3 credentials come from the environment (`AWS_ACCESS_KEY_ID=test` and
- * friends for ministack).
- */
 
 import { parseArgs } from "@std/cli/parse-args";
 
 const MARKER_PATH_FRAGMENT = "_control/datastore-format";
 
-/** Gives up on an emulator request that has not answered in this long. */
 const UPSTREAM_TIMEOUT_MS = 60_000;
 
 type Mode = "healthy" | "stall-marker";
@@ -133,7 +68,6 @@ const COMMANDS: Record<string, string[]> = {
   "datastore sync": ["datastore", "sync", "--json"],
 };
 
-/** Response headers that no longer describe a body `fetch` decoded. */
 const DROPPED_RESPONSE_HEADERS = [
   "content-encoding",
   "content-length",
@@ -169,7 +103,6 @@ function startProxy(target: Target, shape: NetworkShape): Proxy {
     mode: "healthy",
     server: undefined as unknown as Deno.HttpServer,
   };
-  // Client ports seen so far: a new one is a new connection.
   const connections = new Set<number>();
   proxy.server = Deno.serve(
     { port: target.port, hostname: "127.0.0.1", onListen: () => {} },
@@ -348,7 +281,6 @@ async function main(): Promise<void> {
             failures: 0,
           }]),
         );
-        // One warm-up per binary, not recorded.
         for (const [, binary] of binaries) {
           await runOnce(binary, repoDir, args, timeoutMs);
         }

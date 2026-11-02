@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What the dashboard's run queries cost against a large run history
- * (swamp-club#3443): the Workflows page's 24 h summary, a run page's
- * all-time summary of one workflow, a workflow page's 20 newest runs, and a
- * live run page's lookup of one run by id. Each shape runs cold (fresh
- * repositories, as on a first request) and warm (repositories that served
- * the same request before, as serve's are). The history is synthetic: a
- * valid run index per workflow and a placeholder record per run, spread
- * over 90 days. Run with:
- *
- * ```
- * deno bench -A scripts/bench_run_search.ts
- * ```
- */
 
 import { join } from "@std/path";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -68,7 +54,6 @@ interface Repo {
   runId: string;
 }
 
-/** A repo with `workflows` workflows of `runs` runs each. */
 async function repoOf(workflows: number, runs: number): Promise<Repo> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-run-search-bench-" });
   const workflowRepo = new YamlWorkflowRepository(dir);
@@ -161,8 +146,8 @@ for (const shape of SHAPES) {
     ],
   ];
   for (const [name, run] of cases) {
-    // Deno.bench awaits only async functions; a few iterations are enough
-    // at hundreds of milliseconds each.
+    // Deno.bench awaits only async functions; a few iterations are enough for
+    // slow cases
     Deno.bench({
       name: `${name}: cold`,
       group: `${shape.name} ${name}`,
