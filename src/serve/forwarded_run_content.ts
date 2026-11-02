@@ -55,7 +55,10 @@ import {
   workflowStepTargets,
 } from "../domain/workflows/step_targets.ts";
 import { parseStoredWait } from "../domain/workflows/signal_wait.ts";
-import type { WaitOutcome } from "../domain/workflows/signal_wait_records.ts";
+import {
+  registrationOf,
+  type WaitOutcome,
+} from "../domain/workflows/signal_wait_records.ts";
 import type { Workflow } from "../domain/workflows/workflow.ts";
 import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
 import {
@@ -163,6 +166,13 @@ export async function checkRunRecord(
     heldOutcome: (waitId) => held.outcomes.get(waitId.toLowerCase()),
   });
   if (judgement.refusal !== undefined) return refused(op, judgement.refusal);
+  const stolen = await waitIdRefusal(
+    context,
+    intent.run,
+    before?.data,
+    after.data,
+  );
+  if (stolen !== undefined) return refused(op, stolen);
 
   // The record guard does not cover the control plane: an outcome is written
   // once, so the only move left to catch is its removal with the run.
@@ -193,6 +203,65 @@ export async function checkRunRecord(
   // Decided again under the lock: a grant revoked between here and the
   // append refuses the commit, as it does a handler's save.
   context.recheckUnderLock(async () => (await authorize()) === undefined);
+  return undefined;
+}
+
+/**
+ * Why a record may not name the signal waits it adds, or undefined. A wait id is
+ * how a signal finds a member-driven run, so it belongs to the first run whose
+ * record names it: registered here, first writer wins, and any other run naming
+ * it is refused. The real run's record holds the id before anyone can read it, so
+ * no other run's report can take its signals (swamp-club#4245).
+ */
+async function waitIdRefusal(
+  context: ContentCheckContext,
+  run: { readonly workflowId: string; readonly runId: string },
+  before: WorkflowRunData | undefined,
+  after: WorkflowRunData,
+): Promise<string | undefined> {
+  const signalWaits = context.deps.ctx.repoContext.signalWaits;
+  if (signalWaits === undefined || !signalWaits.supported) return undefined;
+  const { store } = signalWaits;
+  const held = new Set(
+    (before?.jobs ?? []).flatMap((job) =>
+      job.steps.flatMap((step) => {
+        const stored = parseStoredWait(step.wait);
+        return stored?.kind === "valid" ? [stored.wait.id.toLowerCase()] : [];
+      })
+    ),
+  );
+  const refusal = "it names a signal wait another run holds";
+  for (const job of after.jobs) {
+    for (const step of job.steps) {
+      const stored = parseStoredWait(step.wait);
+      if (stored?.kind !== "valid") continue;
+      const waitId = stored.wait.id.toLowerCase();
+      if (held.has(waitId)) continue;
+      held.add(waitId);
+      const outcome = await store.findOutcome(waitId);
+      if (outcome.kind === "found" && outcome.record.runId !== run.runId) {
+        return refusal;
+      }
+      await store.register(
+        registrationOf(
+          {
+            workflowId: run.workflowId,
+            workflowName: after.workflowName,
+            runId: run.runId,
+            jobName: job.jobName,
+            stepName: step.stepName,
+          },
+          stored.wait,
+          context.now(),
+        ),
+      );
+      // Read back: the register leaves an existing record as it is.
+      const holder = await store.findRegistration(waitId);
+      if (holder.kind !== "found" || holder.record.runId !== run.runId) {
+        return refusal;
+      }
+    }
+  }
   return undefined;
 }
 

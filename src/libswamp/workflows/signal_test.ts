@@ -2660,7 +2660,7 @@ Deno.test("workflowSignal: the last wait a no_open_wait refusal names carries th
   });
 });
 
-Deno.test("workflowSignal: where a key's holder may be recorded only on its run, a signal by key reaches the wait a suspended run's record shows (swamp-club#4245)", async () => {
+Deno.test("workflowSignal: a signal by key never reaches a wait only a run's record shows (swamp-club#4245)", async () => {
   const workflow = keyedWorkflow();
   const run = WorkflowRun.create(workflow);
   run.start();
@@ -2671,80 +2671,15 @@ Deno.test("workflowSignal: where a key's holder may be recorded only on its run,
   const wait = SignalWait.open(SCHEMA, 60, OPENED, undefined, KEY);
   review.waitForSignal(wait);
   run.suspend();
-  // No claim and no registration: they are in the member's checkout.
-  const fixture = await fixtureOf([run], {
-    registered: false,
-    workflows: [workflow],
-  });
+  // Registered, as serve registers a member's wait, but with no key claim.
+  const fixture = await fixtureOf([run], { workflows: [workflow] });
   assertEquals(
     refusalOf(await sendByKey(fixture, "release", KEY, { verdict: "ship" }))
       .kind,
     "no_open_wait",
   );
-
-  const asked: string[] = [];
-  const event = await sendByKey(
-    {
-      deps: {
-        ...fixture.deps,
-        suspendedRunsOf: (workflowId) => {
-          asked.push(workflowId);
-          return Promise.resolve([run]);
-        },
-      },
-    },
-    "release",
-    KEY,
-    { verdict: "ship" },
-  );
+  assertEquals(await outcomeOf(fixture, wait.id), undefined);
+  // By its id it is delivered.
+  const event = await send(fixture, wait.id, { verdict: "ship" });
   assert(event.kind === "completed", JSON.stringify(event));
-  assertEquals(event.data.waitId, wait.id);
-  assertEquals(asked, [workflow.id]);
-  const outcome = await outcomeOf(fixture, wait.id);
-  assert(outcome?.kind === "accepted");
-
-  // Another key, or a wait already settled, is not this wait.
-  assertEquals(
-    refusalOf(
-      await sendByKey(
-        {
-          deps: {
-            ...fixture.deps,
-            suspendedRunsOf: () => Promise.resolve([run]),
-          },
-        },
-        "release",
-        KEY,
-        { verdict: "fix" },
-      ),
-    ).kind,
-    "no_open_wait",
-  );
-});
-
-Deno.test("workflowSignal: with run records unscanned, a wait only a suspended run's record holds is found where suspended runs are scanned, without reading every run (swamp-club#4245)", async () => {
-  const { run, waitId } = suspendedAtWait(makeWorkflow());
-  const fixture = await fixtureOf([run], { registered: false });
-  const unscanned = { deps: { ...fixture.deps, scanRunRecords: false } };
-  assertEquals(
-    signalRefusalKind(
-      errorOf(await send(unscanned, waitId, { verdict: "ship" })),
-    ),
-    "unknown",
-  );
-  fixture.calls.length = 0;
-  const event = await send(
-    {
-      deps: {
-        ...fixture.deps,
-        scanRunRecords: false,
-        scanSuspendedRuns: true,
-      },
-    },
-    waitId,
-    { verdict: "ship" },
-  );
-  assert(event.kind === "completed", JSON.stringify(event));
-  assert(fixture.calls.includes("findGlobalByStatus"));
-  assert(!fixture.calls.includes("findAllGlobal"));
 });

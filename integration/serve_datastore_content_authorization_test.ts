@@ -1865,3 +1865,61 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "forwarded content: a wait id copied into a second run is refused, and the victim's wait still settles (swamp-club#4245)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const member = [
+      grant({
+        actions: ["read", "write", "run", "signal"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ];
+    await withServer(
+      member,
+      async (server) => {
+        const waits = server.ctx.repoContext.signalWaits;
+        assert(waits?.supported === true);
+        const waitId = crypto.randomUUID();
+        const waiting = (runId: string) =>
+          runRecord(runId, {
+            status: "suspended",
+            jobs: [{
+              jobName: "main",
+              status: "running",
+              steps: [{
+                stepName: "wait",
+                status: "waiting_signal",
+                wait: {
+                  kind: "signal",
+                  id: waitId,
+                  schema: { type: "object", properties: {} },
+                  deadline: "2030-01-01T00:00:00.000Z",
+                },
+              }],
+            }],
+          });
+        const victim = crypto.randomUUID();
+        const first = await forwardRun(server, waiting(victim));
+        assertEquals(first.status, 200, JSON.stringify(first.json));
+        // Serve holds it on the forward, so it can be signalled by id at once.
+        const held = await waits.store.findRegistration(waitId);
+        assert(held.kind === "found");
+        assertEquals(held.record.runId, victim);
+
+        const thief = await forwardRun(server, waiting(crypto.randomUUID()));
+        assertEquals(thief.status, 403, JSON.stringify(thief.json));
+        assertEquals(thief.json.reason, "content-refused");
+
+        const still = await waits.store.findRegistration(waitId);
+        assert(still.kind === "found");
+        assertEquals(still.record.runId, victim);
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});

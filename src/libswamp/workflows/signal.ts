@@ -331,19 +331,6 @@ export interface WorkflowSignalDeps {
    * is then answered as unknown until `workflow waits` registers it.
    */
   scanRunRecords?: boolean;
-  /**
-   * With `scanRunRecords` off, still look through the suspended runs: a
-   * member-driven run's wait is registered only in its own checkout, so its
-   * record is all serve has of it (swamp-club#4245). An open wait lives in a
-   * suspended run, so this never reads every run.
-   */
-  scanSuspendedRuns?: boolean;
-  /**
-   * The suspended runs of a workflow, set where a key's holder may be recorded
-   * only on its run: a member-driven run claims its key in its own checkout, so
-   * serve finds its wait on the record the member forwarded (swamp-club#4245).
-   */
-  suspendedRunsOf?: (workflowId: string) => Promise<readonly WorkflowRun[]>;
 }
 
 export function createWorkflowSignalDeps(
@@ -398,20 +385,6 @@ async function locateInRunRecords(
     if (found) return { run, ...found };
   }
   for (const { run } of await deps.runRepo.findAllGlobal()) {
-    const found = findStepByWaitId(run, waitId);
-    if (found) return { run, ...found };
-  }
-  return undefined;
-}
-
-/** The suspended run whose record holds a wait, its step included. */
-async function locateInSuspendedRuns(
-  deps: WorkflowSignalDeps,
-  waitId: string,
-): Promise<{ run: WorkflowRun; jobName: string; step: StepRun } | undefined> {
-  for (
-    const { run } of await deps.runRepo.findGlobalByStatus("suspended")
-  ) {
     const found = findStepByWaitId(run, waitId);
     if (found) return { run, ...found };
   }
@@ -606,9 +579,7 @@ async function resolveRegistration(
   // No registration, or one that cannot be read: the run record still
   // holds the whole wait, so it is asked, and the registration rebuilt.
   const held = deps.scanRunRecords === false
-    ? deps.scanSuspendedRuns === true
-      ? await locateInSuspendedRuns(deps, waitId)
-      : undefined
+    ? undefined
     : await locateInRunRecords(deps, waitId);
   const outcome = await store.findOutcome(waitId);
   if (!held) {
@@ -726,51 +697,6 @@ async function resolveRegistration(
       ),
     ),
   };
-}
-
-/**
- * The open wait a suspended run's record shows under `key`, registered so it can
- * be delivered to; the latest to open when several do. Bounded by that one
- * workflow's suspended runs. A wait with an outcome has already settled.
- */
-async function waitRecordedUnderKey(
-  deps: WorkflowSignalDeps,
-  store: SignalWaitStore,
-  workflowId: string,
-  key: string,
-): Promise<string | undefined> {
-  let latest:
-    | { run: WorkflowRun; jobName: string; step: StepRun; opened: Date }
-    | undefined;
-  for (const run of await deps.suspendedRunsOf?.(workflowId) ?? []) {
-    for (const job of run.jobs) {
-      for (const step of job.steps) {
-        if (!step.isSignalWait || step.signalWait?.key !== key) continue;
-        const opened = step.startedAt ?? new Date(0);
-        if (latest === undefined || opened > latest.opened) {
-          latest = { run, jobName: job.jobName, step, opened };
-        }
-      }
-    }
-  }
-  const wait = latest?.step.signalWait;
-  if (latest === undefined || wait === undefined) return undefined;
-  if ((await store.findOutcome(wait.id)).kind !== "absent") return undefined;
-  await ensureRegistered(
-    store,
-    registrationOf(
-      {
-        workflowId: latest.run.workflowId,
-        workflowName: latest.run.workflowName,
-        runId: latest.run.id,
-        jobName: latest.jobName,
-        stepName: latest.step.stepName,
-      },
-      wait,
-      latest.opened,
-    ),
-  );
-  return wait.id.toLowerCase();
 }
 
 /** The wait a signal is delivered to, once its address is resolved. */
@@ -1113,17 +1039,6 @@ async function deliverByKey(
   const holder = await findKeyHolder(store, workflow.id, input.key);
   if (holder.kind === "unreadable") {
     return { error: unreadableRecord(typedId) };
-  }
-  if (holder.kind === "free" && deps.suspendedRunsOf) {
-    const recorded = await waitRecordedUnderKey(
-      deps,
-      store,
-      workflow.id,
-      input.key,
-    );
-    if (recorded !== undefined) {
-      return await deliverToHolder(deps, store, input, workflow, recorded);
-    }
   }
   // A step that sets `acceptEarly` has a signal with no open wait held for
   // its next one (swamp-club#3212).

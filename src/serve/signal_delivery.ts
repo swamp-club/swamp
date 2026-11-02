@@ -613,16 +613,6 @@ export async function deliverSignalForCaller(
     ),
     // One request must not make serve read every run record.
     scanRunRecords: false,
-    ...(ctx.repoContext.takesForwardedRunRecords === true
-      ? {
-        scanSuspendedRuns: true,
-        suspendedRunsOf: (workflowId: string) =>
-          ctx.repoContext.workflowRunRepo.findByStatus(
-            createWorkflowId(workflowId),
-            "suspended",
-          ),
-      }
-      : {}),
     // By key the use case acts on the workflow that was authorized: found
     // by its id and accepted only under the authorized name, so neither a
     // workflow named with that id nor a copy that shares it is reached.
@@ -932,14 +922,6 @@ export function auditTakenSignals(ctx: ConnectionContext): void {
 }
 
 /**
- * Tries to continue the run a delivered signal belongs to, now that one
- * more of its waits is settled (swamp-club#3108). The WebSocket handler
- * calls it after sending its reply; the HTTP route before building its own,
- * which waits only for the launch, not for the run. Never throws: the
- * signal is stored, and the continuation sweep retries whatever is not
- * launched here.
- */
-/**
  * `data` with `ownerResumes` set when its run is one serve leaves to its owner.
  */
 export async function withOwnerResumes<
@@ -958,6 +940,14 @@ export async function withOwnerResumes<
     : data;
 }
 
+/**
+ * Tries to continue the run a delivered signal belongs to, now that one
+ * more of its waits is settled (swamp-club#3108). The WebSocket handler
+ * calls it after sending its reply; the HTTP route before building its own,
+ * which waits only for the launch, not for the run. Never throws: the
+ * signal is stored, and the continuation sweep retries whatever is not
+ * launched here.
+ */
 export async function continueAfterSignal(
   ctx: ConnectionContext,
   result: SignalDeliveryResult,

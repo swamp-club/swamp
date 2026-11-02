@@ -169,6 +169,12 @@ export function v3EvaluationTrust(
         "evaluation_not_trusted",
       );
     }
+    if (untrusted === "unknown" && ownPrincipal !== undefined) {
+      throw new UserError(
+        `Serve has no record of who wrote the last evaluation of ${what}. Evaluate it again to save a new one, or run without --last-evaluated.`,
+        "evaluation_not_trusted",
+      );
+    }
     if (untrusted === "unknown") {
       throw new UserError(
         `The evaluation of ${what} was saved before this server recorded ` +

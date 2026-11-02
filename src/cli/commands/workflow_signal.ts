@@ -139,8 +139,13 @@ export function renderSignalResult(
 ): void {
   const data = {
     ...result,
-    resumeCommand: `${result.resumeCommand}${commandTarget}`,
+    // The owner resumes where the run is, not on the server named here.
+    resumeCommand: result.ownerResumes === true
+      ? result.resumeCommand
+      : `${result.resumeCommand}${commandTarget}`,
   };
+  const ownerAdvice =
+    `Serve does not resume a run a member drives. If you started this run: ${data.resumeCommand}`;
   if (cliCtx.outputMode === "json") {
     console.log(JSON.stringify(data));
     return;
@@ -169,7 +174,9 @@ export function renderSignalResult(
     // The step took the signal as it opened its wait, or another reader gave
     // it to a wait that was open already. Only the run tells the two apart.
     writeOutput(
-      data.awaitingResume
+      data.awaitingResume && data.ownerResumes === true
+        ? `The step's wait took the signal while its run was suspended. ${ownerAdvice}`
+        : data.awaitingResume
         ? `The step's wait took the signal while its run was suspended. swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${data.resumeCommand}`
         : !data.runRecordAvailable
         ? `The step's wait took the signal. This host has no copy of the run, so it cannot tell whether the run went on by itself. ` +
@@ -181,7 +188,7 @@ export function renderSignalResult(
   // The step shows as waiting until the resume applies the signal.
   writeOutput(
     data.awaitingResume && data.ownerResumes === true
-      ? `Serve does not resume a run a member drives. If you started this run: ${data.resumeCommand}`
+      ? ownerAdvice
       : data.awaitingResume
       ? `swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${data.resumeCommand}`
       : !data.runRecordAvailable

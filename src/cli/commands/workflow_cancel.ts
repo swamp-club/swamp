@@ -1039,7 +1039,7 @@ export const workflowCancelCommand = withRemoteOptions(
       }
       if (options.all) {
         throw new UserError(
-          "--all cannot be combined with --run: pass one or the other",
+          "--all is not supported when cancelling on serve: pass --run alone",
         );
       }
       const token = await resolveServerTokenFromOptions(

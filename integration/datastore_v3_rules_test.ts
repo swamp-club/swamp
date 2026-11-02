@@ -202,6 +202,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // A serve-mode checkout's --last-evaluated trusts only serve's and its own
   // member's evaluations, and its signal outcomes are serve's (swamp-club#4245).
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
+  // A member's run offers signals by id only (swamp-club#4245).
+  "src/cli/commands/workflow_run.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   // A run serve drives is the one it may act on (swamp-club#4245).
   "src/serve/resume_launcher.ts -> src/domain/datastore_v3/content_bindings.ts",
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",

@@ -85,17 +85,45 @@ Deno.test("checkLastEvaluation: what the trust vouches for is what the run is ha
   assertEquals(seen, ["user:ana"]);
 });
 
-Deno.test("checkLastEvaluation: no evaluation at all is vetted as none, so the repository is not asked after", async () => {
-  assertEquals(
-    await checkLastEvaluation(
-      "/r",
-      REPOS,
-      "json",
-      () => Promise.resolve(null),
-      deps(),
-    ),
-    { stands: true, vetted: true, cache: null },
+Deno.test("checkLastEvaluation: finding no evaluation refuses, so nothing falls through to an unchecked read of the repository", async () => {
+  const error = await assertRejects(
+    () =>
+      checkLastEvaluation(
+        "/r",
+        REPOS,
+        "json",
+        () => Promise.resolve(null),
+        deps(),
+      ),
+    UserError,
   );
+  assertEquals(error.code, "evaluation_not_checked");
+});
+
+Deno.test("checkLastEvaluation: an evaluation it cannot vouch for keeps its own reason and one next step", async () => {
+  const error = await assertRejects(
+    () =>
+      checkLastEvaluation(
+        "/r",
+        REPOS,
+        "json",
+        () =>
+          Promise.reject(
+            new UserError(
+              "It changed while it was read. Run again.",
+              "evaluation_not_trusted",
+            ),
+          ),
+        deps(),
+      ),
+    UserError,
+  );
+  assertEquals(error.code, "evaluation_not_checked");
+  assertStringIncludes(
+    error.message,
+    "It changed while it was read. Run again.",
+  );
+  assertEquals(error.message.includes("without --last-evaluated"), false);
 });
 
 Deno.test("checkLastEvaluation: a member it cannot name takes the strict path, never serve's", async () => {
@@ -105,7 +133,7 @@ Deno.test("checkLastEvaluation: a member it cannot name takes the strict path, n
       "/r",
       REPOS,
       "log",
-      () => Promise.resolve(null),
+      () => Promise.resolve({}),
       deps({ seen, principal: () => Promise.resolve(principal) }),
     );
     assertEquals(seen, [""]);
@@ -167,7 +195,7 @@ Deno.test("checkLastEvaluation: any other failure refuses, since a fresh evaluat
         ),
       UserError,
     );
-    assertStringIncludes(error.message, "disk full. Run without");
+    assertStringIncludes(error.message, "disk full. Run again");
   }
 });
 

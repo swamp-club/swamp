@@ -77,6 +77,9 @@ function adviceFor(error: UserError, knowsMember: boolean): string {
     : `${error.message} This checkout cannot tell which writes are yours: a token from the environment names no member, so only serve's own evaluations replay.`;
 }
 
+/** The code of a refusal to replay: the caller asked for an exact replay. */
+const EVALUATION_NOT_CHECKED = "evaluation_not_checked";
+
 /**
  * What a run may do with its last evaluation. `vetted` holds what the check read:
  * the run replays those bytes, never a later read of the repository, so what it
@@ -84,7 +87,7 @@ function adviceFor(error: UserError, knowsMember: boolean): string {
  */
 export type LastEvaluationCheck<T> =
   | { readonly stands: true; readonly vetted: false }
-  | { readonly stands: true; readonly vetted: true; readonly cache: T | null }
+  | { readonly stands: true; readonly vetted: true; readonly cache: T }
   | { readonly stands: false };
 
 /**
@@ -112,16 +115,34 @@ export async function checkLastEvaluation<T>(
     // Unknown is not unset: "" matches only serve's own records and takes
     // the checkout's strict path.
     const cache = await read(await deps.trust(repoDir, repos, principal));
+    // Nothing checked means nothing to replay: never a read of the repository,
+    // which could hold what this read did not.
+    if (cache === null) {
+      throw new UserError(
+        "No previous evaluation was found to replay. Evaluate it first, or run without --last-evaluated.",
+        EVALUATION_NOT_CHECKED,
+      );
+    }
     return { stands: true, vetted: true, cache };
   } catch (error) {
+    if (error instanceof UserError && error.code === EVALUATION_NOT_CHECKED) {
+      throw error;
+    }
+    if (error instanceof UserError && error.code === "evaluation_not_trusted") {
+      // Its message says why, and what to do.
+      throw new UserError(
+        `The last evaluation was not replayed: ${error.message}`,
+        EVALUATION_NOT_CHECKED,
+      );
+    }
     if (
       !(error instanceof UserError && error.code === EVALUATION_OTHER_WRITER)
     ) {
       const reason = (error instanceof Error ? error.message : String(error))
         .replace(/\.$/, "");
       throw new UserError(
-        `The last evaluation was not replayed, since who wrote it could not be confirmed: ${reason}. Run without --last-evaluated to evaluate again.`,
-        "evaluation_not_checked",
+        `The last evaluation could not be read, so it was not replayed: ${reason}. Run again, or run without --last-evaluated.`,
+        EVALUATION_NOT_CHECKED,
       );
     }
     const advice = adviceFor(error, knowsMember);

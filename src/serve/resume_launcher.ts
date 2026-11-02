@@ -24,7 +24,6 @@
  * its client, and by auto-resume on approval, which has no client at all.
  */
 
-import { registrationOf } from "../domain/workflows/signal_wait_records.ts";
 import { isServeDrivenRun } from "../domain/datastore_v3/content_bindings.ts";
 import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
@@ -617,51 +616,6 @@ export function serveMayActOnRun(
     isServeDrivenRun(run);
 }
 
-/**
- * Gives a member-driven run's open waits the signals serve holds under their
- * keys: its runner reads only its own checkout, so nothing else ever would, and
- * the signal would be lost. It settles those waits' outcomes and runs nothing;
- * the run's owner resumes it (swamp-club#4245).
- */
-async function takePendingSignalsForOwner(
-  ctx: ConnectionContext,
-  run: WorkflowRun,
-): Promise<void> {
-  const waits = ctx.repoContext.signalWaits;
-  if (waits === undefined || !waits.supported) return;
-  try {
-    for (const job of run.jobs) {
-      for (const step of job.steps) {
-        const wait = step.signalWait;
-        if (!step.isSignalWait || wait?.early === undefined) continue;
-        await ensureRegistered(
-          waits.store,
-          registrationOf(
-            {
-              workflowId: run.workflowId,
-              workflowName: run.workflowName,
-              runId: run.id,
-              jobName: job.jobName,
-              stepName: step.stepName,
-            },
-            wait,
-            step.startedAt ?? new Date(),
-          ),
-        );
-      }
-    }
-    await takePendingSignalsOfRun(waits.store, run);
-  } catch (error) {
-    logger.warn(
-      "Could not give run {runId} the signals held for it: {error}",
-      {
-        runId: run.id,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    );
-  }
-}
-
 /** Whether an approved run is left for its owner to resume. */
 export async function ownerResumesRun(
   ctx: ConnectionContext,
@@ -1090,10 +1044,7 @@ export async function continueSettledRun(
   if (!run || run.status !== "suspended") return false;
   // Before the verdict, which would take a pending signal someone else sent
   // and settle the run's waits on its report.
-  if (!serveMayActOnRun(ctx, run)) {
-    await takePendingSignalsForOwner(ctx, run);
-    return false;
-  }
+  if (!serveMayActOnRun(ctx, run)) return false;
 
   // The policy first: it is read from this host, where the verdict below
   // reads one wait outcome per wait from the datastore, and most runs
