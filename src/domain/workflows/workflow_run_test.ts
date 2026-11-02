@@ -3640,3 +3640,59 @@ Deno.test("WorkflowRun.unknownStepsIfOrphaned: names what interruptOrphaned then
   }
   assertEquals(checked, 6 * 9 * 343);
 });
+
+// --- Run-record probe, fleet fan-out baseline (swamp-club#4271) ---
+//
+// Fan-out stores its plan on the job run. These pin what a binary built
+// from this schema does with a stored job run carrying a field it does not
+// know: it reads the run, and drops the field when it writes the run back.
+
+function storedRunWithUnknownJobField(): Record<string, unknown> {
+  return {
+    id: crypto.randomUUID(),
+    workflowId: crypto.randomUUID(),
+    workflowName: "fleet",
+    status: "failed",
+    jobs: [{
+      jobName: "patch",
+      status: "failed",
+      fanOut: {
+        planned: [{ worker: "host-a", disposition: "dispatch" }],
+      },
+      steps: [{ stepName: "apply", status: "failed", error: "boom" }],
+    }],
+  };
+}
+
+Deno.test("WorkflowRun.fromData: a stored job run with an unknown optional field is read, not refused", () => {
+  const data = storedRunWithUnknownJobField();
+  const run = WorkflowRun.fromData(
+    data as Parameters<typeof WorkflowRun.fromData>[0],
+  );
+  assertEquals(run.status, "failed");
+  assertEquals(run.jobs.map((job) => job.jobName), ["patch"]);
+  assertEquals(run.getJob("patch")?.getStep("apply")?.error, "boom");
+});
+
+Deno.test("WorkflowRun.toData: an unknown job-run field read from a stored run is dropped when the run is written back", () => {
+  const data = storedRunWithUnknownJobField();
+  const run = WorkflowRun.fromData(
+    data as Parameters<typeof WorkflowRun.fromData>[0],
+  );
+  const job = run.toData().jobs[0] as Record<string, unknown>;
+  assertEquals("fanOut" in job, false);
+  assertEquals(job.jobName, "patch");
+});
+
+Deno.test("JobRun.fromData: an unknown optional field is read and dropped, not refused", () => {
+  const job = JobRun.fromData(
+    {
+      jobName: "patch",
+      status: "succeeded",
+      fanOut: { planned: [] },
+      steps: [],
+    } as Parameters<typeof JobRun.fromData>[0],
+  );
+  assertEquals(job.status, "succeeded");
+  assertEquals("fanOut" in (job.toData() as Record<string, unknown>), false);
+});

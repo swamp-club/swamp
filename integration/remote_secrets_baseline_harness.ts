@@ -196,7 +196,12 @@ export interface BaselineOrchestrator {
   shutdown: () => Promise<void>;
 }
 
-async function initRepo(repoDir: string): Promise<void> {
+/**
+ * Initializes `repoDir` as a swamp repo with no tool scaffolding and a
+ * local_encryption vault named {@link BASELINE_VAULT}, which enrollment
+ * tokens are minted into.
+ */
+export async function initRepo(repoDir: string): Promise<void> {
   const libCtx = createLibSwampContext({});
   await consumeStream(
     repoInit(libCtx, createRepoInitDeps("20260101.120000.0"), {
