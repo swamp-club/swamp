@@ -17,43 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Extension-author-facing subset of swamp's vault types.
- *
- * These types mirror the fields that extension vault implementations
- * actually use. A CI test in the main swamp repo verifies structural
- * compatibility with the canonical types.
- */
-
-/**
- * Options for the VaultProvider.put() method.
- */
 export interface VaultPutOptions {
-  /** Provider-native tags to attach to the secret at creation time. */
   tags?: Record<string, string>;
 }
 
-/**
- * Interface for vault providers that securely store and retrieve secrets.
- *
- * Extension authors implement this interface to create custom vault backends.
- */
 export interface VaultProvider {
-  /** Retrieves a secret value from the vault. */
   get(secretKey: string): Promise<string>;
-  /** Stores a secret value in the vault. */
   put(
     secretKey: string,
     secretValue: string,
     options?: VaultPutOptions,
   ): Promise<void>;
-  /** Lists all secret keys in the vault (names only, not values). */
   list(): Promise<string[]>;
-  /** Gets the name/type of this vault provider. */
   getName(): string;
 }
 
-/** Serializable representation of a vault annotation. */
 export interface VaultAnnotationData {
   url?: string;
   notes?: string;
@@ -61,7 +39,6 @@ export interface VaultAnnotationData {
   updatedAt: string;
 }
 
-/** Value object representing metadata attached to a vault secret. */
 export class VaultAnnotation {
   readonly url: string | undefined;
   readonly notes: string | undefined;
@@ -149,10 +126,6 @@ export class VaultAnnotation {
   }
 }
 
-/**
- * Interface for vault providers that support secret annotations.
- * Separate from VaultProvider — providers opt in by implementing both.
- */
 export interface VaultAnnotationProvider {
   getAnnotation(secretKey: string): Promise<VaultAnnotation | null>;
   putAnnotation(
@@ -164,17 +137,9 @@ export interface VaultAnnotationProvider {
 }
 
 /**
- * Optional interface for vault providers that can answer whether a secret
- * exists without reading its value. Separate from VaultProvider — providers
- * opt in by implementing both.
- *
- * `has(secretKey)` resolves `true` exactly when `get(secretKey)` would succeed
- * under the same provider credentials, `false` for a key that does not exist,
- * and rejects with the same error `get` raises when the caller is not
- * authorized. It never reads the value, and presence in a listing or a
- * describe call is not enough. Implement it only where the backing API can
- * answer without reading the value; swamp otherwise falls back to one probe
- * read per reference per run.
+ * optional: has() resolves true exactly when get() would succeed under the same
+ * credentials, false for a missing key, and rejects with get()'s error when
+ * unauthorized; it never reads the value
  */
 export interface VaultExistenceProvider {
   has(secretKey: string): Promise<boolean>;

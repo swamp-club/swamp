@@ -26,13 +26,9 @@ import type {
 } from "./datastore_types.ts";
 import { FENCE_DIGITS } from "./replica_path_fence.ts";
 
-/** Options for {@link assertReplicaPathConformance}. */
 export interface ReplicaPathConformanceOptions {
-  /** The provider's `replicaTarget()`: its `prefix` locates `_litestream/`. */
   replicaTarget: () => V3ReplicaTarget;
-  /** The provider's `replicaPaths()`. */
   openReplicaPaths: () => ReplicaPathStore | Promise<ReplicaPathStore>;
-  /** The provider's `storage()`, for a chunk removal must leave alone. */
   openStorage: () => DatastoreStorage | Promise<DatastoreStorage>;
   /**
    * Writes an object at `key`, a full key in the provider's bucket, with
@@ -40,14 +36,11 @@ export interface ReplicaPathConformanceOptions {
    * would.
    */
   writeObject: (key: string, bytes: Uint8Array) => Promise<void>;
-  /** Deletes the object at `key` with the test's own client. */
   deleteObject: (key: string) => Promise<void>;
-  /** Whether an object exists at `key`, read with the test's own client. */
   objectExists: (key: string) => Promise<boolean>;
   /**
-   * Objects the suite writes under each fence. Default 3. Raise it above
-   * the backend's listing page size (1000 on S3 and GCS) against an
-   * emulator to check that `removePath` pages.
+   * objects the suite writes under each fence; raise it above the backend's
+   * listing page size against an emulator to check that removePath pages.
    */
   objectsPerFence?: number;
 }
@@ -67,34 +60,9 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 /**
- * Checks a provider's `replicaPaths()` against the contract swamp's v3
- * lineage collection relies on.
- *
- * The suite writes objects under two fences of its own (nested keys, as
- * Litestream writes them), one under a look-alike directory whose name
- * starts with the first fence, and one `storage/1` chunk. Checked: `list`
- * returns both fences, as names without a slash; `removePath` deletes
- * every object under exactly one fence and leaves the other fence, the
- * look-alike and the chunk; the removed fence is no longer listed;
- * removing it again succeeds; and malformed fences (empty, short, long,
- * non-digit, all zeros, with a slash or `..`) are refused without
- * deleting anything. It removes what it wrote.
- *
- * ```ts
- * import { assertReplicaPathConformance } from "@swamp-club/swamp-testing";
- *
- * Deno.test("replica path conformance", async () => {
- *   const provider = createProvider(config);
- *   await assertReplicaPathConformance({
- *     replicaTarget: () => provider.replicaTarget!(),
- *     openReplicaPaths: () => provider.replicaPaths!(),
- *     openStorage: () => provider.storage!(),
- *     writeObject: (key, bytes) => putObject(config.bucket, key, bytes),
- *     deleteObject: (key) => deleteObject(config.bucket, key),
- *     objectExists: (key) => headObject(config.bucket, key),
- *   });
- * });
- * ```
+ * checks replicaPaths() against the contract v3 lineage collection relies on:
+ * list returns both suite fences, removePath deletes exactly one and refuses
+ * malformed fences. It removes what it wrote.
  */
 export async function assertReplicaPathConformance(
   options: ReplicaPathConformanceOptions,

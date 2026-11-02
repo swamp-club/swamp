@@ -23,7 +23,6 @@ import { createRequestRunner } from "./request_runner.ts";
 import { readHandlers, type ReadState } from "./useRequest.ts";
 import type { RequestErrorInfo } from "./stream.ts";
 
-/** The hook state a read leaves behind, plus the replies the test answers. */
 function hookState() {
   const replies: PromiseWithResolvers<string>[] = [];
   const shown = {

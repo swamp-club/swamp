@@ -70,7 +70,6 @@ Deno.test("typeaheadMatch: prefix match after the current option", () => {
 
 Deno.test("typeaheadMatch: repeating a letter cycles, skipping disabled", () => {
   assertEquals(typeaheadMatch(opts, "b", 0), 1);
-  // "billing" is disabled, so "bb" wraps back around to "backup".
   assertEquals(typeaheadMatch(opts, "bb", 1), 1);
 });
 

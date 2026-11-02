@@ -17,15 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Cron expressions as serve's scheduler (croner) reads them: five fields
-// (minute hour day-of-month month day-of-week), or six with a leading
-// seconds field, plus the @hourly-style nicknames. Parses them to validate
-// an edit as it is typed, describes common patterns in English ("Every 5
-// minutes", "Every weekday at 09:00") and lists upcoming fire times for a
-// preview. Patterns it cannot describe return null, and the caller shows
-// the raw expression; syntax it does not model (L, W, #, and `?`, which
-// croner replaces with the current date's value when the schedule is
-// loaded) parses as unsupported, so serve stays the judge of what is valid.
+// Reads cron as serve's scheduler does; unmodelled syntax parses as unsupported
+// so serve judges validity; undescribable patterns return null.
 
 export interface CronSchedule {
   hasSeconds: boolean;
@@ -34,12 +27,9 @@ export interface CronSchedule {
   hours: number[];
   days: number[];
   months: number[];
-  /** 0 = Sunday. */
   weekdays: number[];
-  /** Day-of-month / day-of-week were `*` (unrestricted). */
   daysAny: boolean;
   weekdaysAny: boolean;
-  /** The fields as written, after nickname expansion. */
   fields: string[];
 }
 
@@ -102,7 +92,6 @@ interface FieldSpec {
   min: number;
   max: number;
   names?: string[];
-  /** Offset added to a name's index (months are 1-based). */
   nameBase?: number;
 }
 
@@ -180,10 +169,9 @@ function parseField(raw: string, spec: FieldSpec): Set<number> {
       }
       lo = parseValue(a, spec);
       hi = parseValue(b, spec);
-      // A weekday range's upper bound named "SUN" means the following
-      // Sunday (7), not the week's first day (0) — croner rewrites a
-      // trailing "-sun" to "-7" the same way, so "MON-SUN" is the whole
-      // week and "SAT-SUN" is the weekend, not a backwards range.
+      // a weekday range ending in SUN means the following Sunday (7), as croner
+      // rewrites a trailing -sun to -7, so MON-SUN is the whole week and
+      // SAT-SUN the weekend
       if (spec === WEEKDAY && hi === 0 && lo > 0 && b.toUpperCase() === "SUN") {
         hi = 7;
       }
@@ -192,9 +180,8 @@ function parseField(raw: string, spec: FieldSpec): Set<number> {
       }
     } else {
       lo = parseValue(range, spec);
-      // "5/15" means every 15 from 5 to the field's end. Croner stops
-      // stepping the weekday field at 6 (Saturday) even though a literal
-      // 7 is still accepted as an alias for Sunday elsewhere.
+      // croner stops stepping the weekday field at 6 (Saturday) even though a
+      // literal 7 is accepted as Sunday elsewhere
       hi = stepText !== undefined ? (spec.max === 7 ? 6 : spec.max) : lo;
     }
     for (let v = lo; v <= hi; v += step) values.add(v);
@@ -204,7 +191,6 @@ function parseField(raw: string, spec: FieldSpec): Set<number> {
 
 const sorted = (set: Set<number>) => [...set].sort((a, b) => a - b);
 
-/** Parses an expression; errors are short sentences fit for a form. */
 export function parseCron(expression: string): CronParse {
   const trimmed = expression.trim();
   if (trimmed === "") return { ok: false, error: "Enter a cron expression" };
@@ -255,8 +241,6 @@ export function parseCron(expression: string): CronParse {
   }
 }
 
-// ── Description ─────────────────────────────────────────────────────────
-
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const clock = (h: number, m: number) => `${pad2(h)}:${pad2(m)}`;
 
@@ -275,13 +259,11 @@ function ordinal(n: number): string {
   }
 }
 
-/** "a", "a and b", "a, b and c". */
 function joinList(items: string[]): string {
   if (items.length <= 1) return items.join("");
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-/** The step of a field written as `*` + `/n` covering the whole range. */
 function evenStep(values: number[], min: number, span: number): number | null {
   if (values.length < 2 || values[0] !== min) return null;
   const step = values[1] - values[0];
@@ -307,9 +289,8 @@ function sameList(a: number[], b: number[]): boolean {
 }
 
 /**
- * The days a schedule fires on, phrased to follow a time ("at 09:00") or a
- * frequency ("every 5 minutes"). Null when both day fields are restricted:
- * cron then fires on either, which no short phrase says clearly.
+ * null when both day fields are restricted: cron then fires on either, which no
+ * short phrase says clearly
  */
 function dayPhrase(
   s: CronSchedule,
@@ -365,7 +346,6 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** Times of day a schedule fires at, when there are only a few. */
 function clockTimes(s: CronSchedule): string[] | null {
   if (s.hours.length * s.minutes.length > 6) return null;
   if (isFull(s.hours, 0, 23) || isFull(s.minutes, 0, 59)) return null;
@@ -377,9 +357,8 @@ function clockTimes(s: CronSchedule): string[] | null {
 }
 
 /**
- * Describes an expression in English: "Every 5 minutes", "Every weekday at
- * 09:00", "On the 1st of every month at 00:00". Null for anything it can't
- * say clearly — show the raw expression instead.
+ * null for anything it cannot say clearly; the caller shows the raw expression
+ * instead
  */
 export function describeCron(expression: string): string | null {
   const parsed = parseCron(expression);
@@ -439,8 +418,6 @@ export function describeCron(expression: string): string | null {
   return capitalize(`${days.lead} at ${joinList(times)}`);
 }
 
-// ── Upcoming fire times ─────────────────────────────────────────────────
-
 interface Calendar {
   get(d: Date): {
     second: number;
@@ -450,7 +427,6 @@ interface Calendar {
     month: number;
     weekday: number;
   };
-  /** The first instant of the next unit after `d`. */
   nextMonth(d: Date): Date;
   nextDay(d: Date): Date;
   nextHour(d: Date): Date;
@@ -506,9 +482,9 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 /**
- * A calendar in an IANA time zone, or null when the runtime doesn't know
- * the zone. Wall times are read with `Intl`; the start of the next day or
- * month is found from the zone's UTC offset there, so DST days work.
+ * wall times are read with Intl and the start of the next day or month comes
+ * from the zone's UTC offset there, so DST days work; null when the runtime
+ * does not know the zone
  */
 function zonedCalendar(timeZone: string): Calendar | null {
   let format: Intl.DateTimeFormat;
@@ -540,7 +516,6 @@ function zonedCalendar(timeZone: string): Calendar | null {
       weekday: WEEKDAY_INDEX[parts.weekday] ?? 0,
     };
   };
-  /** Milliseconds the zone is ahead of UTC at `ms`. */
   const offsetAt = (ms: number) => {
     const w = wall(ms);
     const asUtc = Date.UTC(
@@ -606,14 +581,11 @@ function zonedCalendar(timeZone: string): Calendar | null {
   };
 }
 
-/** How far ahead a preview looks before giving up on a rare schedule. */
 const HORIZON_MS = 30 * 366 * 24 * 3_600_000;
 
 /**
- * The next `count` times a schedule fires strictly after `from`, in the
- * browser's time zone, UTC, or an IANA `timeZone` (serve's, so a preview
- * matches when serve's scheduler fires; an unknown zone falls back to the
- * browser's). Fewer when it fires rarely or never (e.g. February 30th).
+ * an unknown zone falls back to the browser's; returns fewer times when the
+ * schedule fires rarely or never (e.g. February 30th)
  */
 export function nextFireTimes(
   schedule: CronSchedule,
@@ -662,7 +634,6 @@ export function nextFireTimes(
   return out;
 }
 
-/** The viewer's IANA time zone, when the runtime reports one. */
 export function viewerTimeZone(): string | undefined {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -671,7 +642,6 @@ export function viewerTimeZone(): string | undefined {
   }
 }
 
-/** "Mon, Oct 12, 09:00" in `timeZone` (the viewer's when omitted or unknown). */
 export function formatFireTime(d: Date, timeZone?: string): string {
   const options: Intl.DateTimeFormatOptions = {
     weekday: "short",
@@ -687,11 +657,7 @@ export function formatFireTime(d: Date, timeZone?: string): string {
   }
 }
 
-/**
- * A fire time as serve's scheduler sees it (`timeZone`), plus the viewer's
- * own wall time when that reads differently. `local` is null when the
- * zones agree or serve's zone is unknown.
- */
+/** local is null when the zones agree or serve's zone is unknown */
 export function fireTimeLabels(
   d: Date,
   timeZone: string | undefined,
@@ -703,7 +669,6 @@ export function fireTimeLabels(
   return { primary, local: local === primary ? null : local };
 }
 
-/** Common schedules offered as one-click starting points in the editor. */
 export const CRON_PRESETS: ReadonlyArray<
   { label: string; expression: string }
 > = [

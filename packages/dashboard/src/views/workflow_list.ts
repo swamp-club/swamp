@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// How the Workflows page orders, hides and pages its cards. Pure functions
-// over the catalog and the run summary so the page stays a thin view.
-
 import type { Group } from "../lib/workflow_facets.ts";
 
-/** What the page knows about a workflow's runs in the current time range. */
 export interface RunStats {
   runs: number;
   succeeded: number;
@@ -31,10 +27,6 @@ export interface RunStats {
   lastStartedAt?: string;
 }
 
-/**
- * "auto" is the default: best match while a search query is typed, most
- * recent activity otherwise. The rest are explicit choices.
- */
 export type WorkflowSort =
   | "auto"
   | "recent"
@@ -52,7 +44,6 @@ export const WORKFLOW_SORTS: readonly WorkflowSort[] = [
   "time",
 ];
 
-/** The order actually applied; "relevance" keeps the fuzzy ranking. */
 export type EffectiveSort = Exclude<WorkflowSort, "auto"> | "relevance";
 
 export function resolveSort(sort: WorkflowSort, query: string): EffectiveSort {
@@ -60,7 +51,6 @@ export function resolveSort(sort: WorkflowSort, query: string): EffectiveSort {
   return query.trim() ? "relevance" : "recent";
 }
 
-/** True when the workflow has no run in the time range. */
 export function neverRan(stats: RunStats | undefined): boolean {
   return !stats || stats.runs === 0;
 }
@@ -74,9 +64,9 @@ function lastStarted(stats: RunStats | undefined): number {
 }
 
 /**
- * Orders workflows. Every order but "relevance" and "name" puts workflows
- * that never ran last (by name), and breaks ties by most recent run, then
- * name. "relevance" keeps the incoming (fuzzy-ranked) order.
+ * every order but relevance and name puts never-run workflows last (by name)
+ * and breaks ties by most recent run, then name; relevance keeps the incoming
+ * fuzzy-ranked order
  */
 export function sortWorkflows<T extends { name: string }>(
   items: readonly T[],
@@ -111,7 +101,6 @@ export function sortWorkflows<T extends { name: string }>(
   });
 }
 
-/** Splits items into those that ran in the range and those that never did. */
 export function partitionByActivity<T>(
   items: readonly T[],
   statsOf: (item: T) => RunStats | undefined,
@@ -123,10 +112,8 @@ export function partitionByActivity<T>(
 }
 
 /**
- * The first `limit` items across groups, in order, for progressive
- * rendering. Groups emptied by the limit are dropped; `total` counts every
- * item in every group (a workflow in two groups counts twice, as it renders
- * twice).
+ * groups emptied by the limit are dropped; total counts a workflow in two
+ * groups twice, as it renders twice
  */
 export function takeAcrossGroups<T>(
   groups: readonly Group<T>[],
@@ -148,7 +135,6 @@ export function takeAcrossGroups<T>(
 export interface GroupAggregate {
   runs: number;
   failed: number;
-  /** succeeded / (succeeded + failed), or null when nothing finished. */
   passRate: number | null;
 }
 

@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Facets computed from a table's own rows (a webhook's workflow, its last
-// run's status…), for pages whose filters aren't the shared workflow
-// facets. Values carry how many rows have them; selections combine with
-// AND, like the chips in the search box.
-
 import { formatCount } from "./format.ts";
 import type { FacetDef } from "./search_facets.ts";
 
@@ -29,18 +24,14 @@ export interface RowFacetSpec<R> {
   key: string;
   label: string;
   description: string;
-  /** The row's value for this facet; null rows never match a selection. */
   valueOf: (row: R) => string | null;
-  /** Display label for a value (defaults to the value). */
   labelOf?: (value: string) => string;
-  /** Fixed value order (e.g. statuses); others sort by label after. */
   order?: readonly string[];
 }
 
 /**
- * One facet per spec with every value present in `rows` and its count.
- * A facet whose rows all share one value (or none) can't narrow anything,
- * so it's left without values and the search box doesn't offer it.
+ * a facet whose rows all share one value (or none) cannot narrow anything, so
+ * it has no values and the search box does not offer it
  */
 export function buildRowFacets<R>(
   rows: readonly R[],

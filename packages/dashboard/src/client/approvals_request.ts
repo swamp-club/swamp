@@ -26,12 +26,10 @@ export interface ApprovalsSnapshot {
   loading: boolean;
   error: string | null;
   errorInfo: RequestErrorInfo | null;
-  /** Replies and failures applied so far. Neither ever decreases. */
   replies: number;
   failures: number;
 }
 
-/** The counts a page saw when it mounted. */
 export type ApprovalsMark = Pick<ApprovalsSnapshot, "replies" | "failures">;
 
 /**
@@ -53,15 +51,12 @@ export function sinceMark(
   };
 }
 
-/** One dashboard's listing; consumers observe the same snapshot and read. */
 export interface ApprovalsRequest {
   getSnapshot(): ApprovalsSnapshot;
   subscribe(listener: () => void): () => void;
   start(): Promise<ApprovalsReply | null>;
   stop(): void;
-  /** Joins the read in flight, or starts one. Failures resolve to null. */
   reload(): Promise<ApprovalsReply | null>;
-  /** Reads after a mutation, retiring any pre-mutation reply. */
   refresh(): Promise<ApprovalsReply | null>;
 }
 

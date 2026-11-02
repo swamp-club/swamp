@@ -57,8 +57,8 @@ import { scheduleQueueLabel } from "./schedule_queue.ts";
 import "../styles/triggers.css";
 
 /**
- * Webhook routes resolved to workflow names. Health names each route's
- * workflow as configured — an id or a name — so ids are looked up.
+ * health names each route's workflow as configured, an id or a name, so ids are
+ * looked up
  */
 export function useResolvedWebhooks(health: HealthSnapshot | null) {
   const webhooks = health?.webhooks;
@@ -86,7 +86,6 @@ const LAST_RUN_LABELS: Record<string, string> = {
   never: "No runs in range",
 };
 
-/** What the webhook table can be filtered by, beyond free text. */
 const WEBHOOK_FACETS: readonly RowFacetSpec<WebhookRow>[] = [
   {
     key: "workflow",

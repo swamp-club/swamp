@@ -28,7 +28,6 @@ import {
 
 const BASE = "https://ops.example.com/dashboard/models/m/data/d";
 
-/** Every string in the tree, to check nothing executable survives as markup. */
 function collectTypes(nodes: unknown): string[] {
   const types: string[] = [];
   const walk = (value: unknown) => {

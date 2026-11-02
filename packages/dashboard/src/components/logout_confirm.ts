@@ -17,13 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** Where the sidebar's Logout is in its two-step confirm. */
 export type LogoutStep = "idle" | "confirming";
 
-/**
- * What moved it: a click on Logout, Keep or Log out, or a dismiss (a click
- * outside, or the rail toggled).
- */
 export type LogoutEvent = "ask" | "keep" | "confirm" | "dismiss";
 
 /**
@@ -37,7 +32,6 @@ export function nextLogoutStep(
   return event === "ask" ? "confirming" : "idle";
 }
 
-/** Only Log out from an open confirm logs out; one click never does. */
 export function logoutConfirmed(step: LogoutStep, event: LogoutEvent): boolean {
   return step === "confirming" && event === "confirm";
 }

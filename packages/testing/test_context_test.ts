@@ -57,14 +57,11 @@ Deno.test("createModelTestContext: createCelEnvironment returns a working Enviro
   const { context } = createModelTestContext();
   const env = context.createCelEnvironment();
 
-  // Baseline arithmetic overloads work (double + int).
   assertEquals(env.evaluate("a + 2", { a: 1.5 }), 3.5);
 
-  // Custom function registration works.
   env.registerFunction("triple(int): int", (x: bigint) => x * 3n);
   assertEquals(env.evaluate("triple(7)"), 21n);
 
-  // Compile-once-evaluate-many pattern.
   const predicate = env.parse('name == "web"');
   assertEquals(predicate({ name: "web" }), true);
   assertEquals(predicate({ name: "db" }), false);
@@ -149,7 +146,6 @@ Deno.test("createModelTestContext: readResource returns clone of seeded data", a
 
   const result = await context.readResource("main");
   assertEquals(result, original);
-  // Mutating the result should not affect subsequent reads
   result!.status = "stopped";
   const result2 = await context.readResource("main");
   assertEquals(result2!.status, "running");
@@ -272,7 +268,6 @@ Deno.test("createModelTestContext: inspection helpers return copies", async () =
   const resources1 = getWrittenResources();
   const resources2 = getWrittenResources();
   assertEquals(resources1, resources2);
-  // They should be different array instances
   resources1.push(resources1[0]);
   assertEquals(getWrittenResources().length, 1);
 
@@ -449,8 +444,8 @@ Deno.test("createModelTestContext: readResource uses instanceName not specName",
   assertEquals(await context.readResource("config"), null);
 });
 
-// swamp-club#3849: context.globalArgs takes the type of the globalArgs option.
-// These assignments fail `deno check` if the inference regresses.
+// context.globalArgs takes the type of the globalArgs option; these assignments
+// fail deno check if the inference regresses
 interface InterfaceGlobalArgs {
   appId: number;
   apiKey: string;
@@ -493,7 +488,6 @@ Deno.test("createModelTestContext: context passes to execute functions typed nar
   assertEquals(await byDefault(context), "us-east-1");
 });
 
-// swamp-club#3847: text writes expose the string alongside the bytes.
 Deno.test("createModelTestContext: writeText records text beside content", async () => {
   const { context, getWrittenFiles } = createModelTestContext();
 

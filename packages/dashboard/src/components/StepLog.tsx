@@ -29,11 +29,6 @@ import { Skeleton, SkeletonRegion } from "./Skeleton.tsx";
 import { logFromOutputs, parseLog, pickLogArtifact } from "./step_log.ts";
 import type { ArtifactRefLike } from "./run_graph_model.ts";
 
-/**
- * A step's own log — the `file` item its model wrote (stdout and stderr
- * for a shell command) — tail first, scrolled to the end where a failure's
- * reason usually is. Falls back to captured stdout/stderr outputs.
- */
 export function StepLog(
   { artifacts, outputs, failed, onOpenItem }: {
     artifacts?: ArtifactRefLike[];

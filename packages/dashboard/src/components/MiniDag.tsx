@@ -37,28 +37,12 @@ interface ScrollBox {
 
 interface MiniDagProps {
   nodes: readonly MiniDagNode[];
-  /** `from` runs before `to`. Edges naming unknown nodes are skipped. */
   edges: readonly MiniDagEdge[];
-  /**
-   * Nodes to emphasise. When set, the rest are muted and only edges
-   * between emphasised nodes are drawn in the accent color.
-   */
   highlight?: readonly string[];
-  /** Accessible name for the whole graph ("Jobs of deploy"). */
   label: string;
-  /** Geometry overrides; see `DAG_DEFAULTS`. */
   layout?: DagLayoutOptions;
 }
 
-/**
- * A small left-to-right DAG: one column per dependency depth, an edge per
- * dependency. Node tones follow run statuses (`succeeded`, `failed`,
- * `running`, `suspended`, `cancelled`, `pending`) plus `waiting` for work
- * held back by something upstream. Wide graphs scroll horizontally.
- *
- * Styles live in `src/styles/mini-dag.css`; a view that renders a MiniDag
- * imports that stylesheet once (components stay importable from tests).
- */
 export function MiniDag(
   { nodes, edges, highlight = [], label, layout: options }: MiniDagProps,
 ) {

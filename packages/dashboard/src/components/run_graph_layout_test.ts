@@ -42,7 +42,6 @@ const edge = (from: string, to: string): LayoutEdgeInput => ({ from, to });
 const byId = (layout: GraphLayout) =>
   new Map(layout.nodes.map((n) => [n.id, n]));
 
-/** Real cards in one column never overlap, whatever the graph. */
 function assertNoOverlap(layout: GraphLayout, nodeHeight: number) {
   const map = byId(layout);
   for (const column of layout.levels) {
@@ -137,7 +136,6 @@ Deno.test("layoutGraph: is deterministic", () => {
 });
 
 Deno.test("layoutGraph: barycentre ordering removes an avoidable crossing", () => {
-  // Input order would cross: a→d and b→c with c listed above d.
   const edges = [edge("a", "d"), edge("b", "c")];
   const input = nodes("a", "b", "c", "d");
   assertEquals(countCrossings([["a", "b"], ["c", "d"]], edges), 1);
@@ -147,7 +145,6 @@ Deno.test("layoutGraph: barycentre ordering removes an avoidable crossing", () =
 });
 
 Deno.test("layoutGraph: reduces crossings on a known three-column case", () => {
-  // A twisted ladder: listed order has 3 crossings, the best has 0.
   const input = nodes("a1", "a2", "a3", "b1", "b2", "b3", "c1", "c2", "c3");
   const edges = [
     edge("a1", "b3"),
@@ -167,7 +164,6 @@ Deno.test("layoutGraph: reduces crossings on a known three-column case", () => {
   );
   const layout = layoutGraph(input, edges, opts);
   assertEquals(countCrossings(layout.levels, edges), 0);
-  // Chains are straight once untangled.
   const map = byId(layout);
   assertEquals(map.get("a1")!.y, map.get("b3")!.y);
   assertEquals(map.get("b3")!.y, map.get("c1")!.y);
@@ -180,7 +176,6 @@ Deno.test("layoutGraph: long edges route around cards, never through them", () =
     opts,
   );
   const long = layout.edges.find((e) => e.from === "a" && e.to === "d")!;
-  // Source side, two columns crossed (in and out of each), target side.
   assertEquals(long.points.length, 6);
   const map = byId(layout);
   for (const id of ["b", "c"]) {
@@ -242,7 +237,6 @@ Deno.test("layoutGraph: disconnected components stay apart, in input order", () 
 });
 
 Deno.test("layoutGraph: dozens of jobs never overlap and edges avoid cards", () => {
-  // A deterministic pseudo-random DAG: 60 jobs, edges only forward.
   let seed = 7;
   const rand = () => {
     seed = (seed * 1103515245 + 12345) % 2147483648;
@@ -316,7 +310,6 @@ Deno.test("neighborInDirection: arrows move within and across columns", () => {
   assertEquals(neighborInDirection(layout, "b", "up"), "a");
   assertEquals(neighborInDirection(layout, "a", "up"), null);
   assertEquals(neighborInDirection(layout, "a", "right"), "c");
-  // Prefers a connected job, the nearest one in height.
   const right = neighborInDirection(layout, "b", "right");
   assert(right === "d" || right === "e");
   assertEquals(neighborInDirection(layout, "e", "left"), "b");

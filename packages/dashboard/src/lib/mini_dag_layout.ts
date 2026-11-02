@@ -19,20 +19,13 @@
 
 import { maxOf } from "./array_extrema.ts";
 
-// Layered layout for small DAGs (a workflow's jobs, a job's steps): nodes
-// flow left to right in columns by dependency depth. Pure, so it is unit
-// tested and reusable outside React.
-
-/** A node to draw. `status` picks its tone (a run status, or "waiting"). */
 export interface MiniDagNode {
   id: string;
   label: string;
   status?: string;
-  /** Hover text; defaults to the label. */
   title?: string;
 }
 
-/** `from` must finish before `to` starts. */
 export interface MiniDagEdge {
   from: string;
   to: string;
@@ -41,23 +34,18 @@ export interface MiniDagEdge {
 export interface DagLayoutOptions {
   nodeWidth?: number;
   nodeHeight?: number;
-  /** Horizontal space between columns, where edges run. */
   columnGap?: number;
-  /** Vertical space between nodes in a column. */
   rowGap?: number;
 }
 
 export interface PlacedNode extends MiniDagNode {
-  /** Column: 0 for nodes with no dependencies, else one past the deepest. */
   level: number;
-  /** Position within the column, top to bottom. */
   row: number;
   x: number;
   y: number;
 }
 
 export interface PlacedEdge extends MiniDagEdge {
-  /** SVG path data from the right of `from` to the left of `to`. */
   path: string;
 }
 
@@ -68,7 +56,6 @@ export interface DagLayout {
   height: number;
   nodeWidth: number;
   nodeHeight: number;
-  /** Number of columns. */
   levels: number;
 }
 
@@ -80,9 +67,8 @@ export const DAG_DEFAULTS: Required<DagLayoutOptions> = {
 };
 
 /**
- * Each node's column: the length of the longest dependency chain leading
- * to it. Edges naming unknown nodes and self-loops are ignored; nodes
- * caught in a cycle are placed after their already-placed predecessors.
+ * edges naming unknown nodes and self-loops are ignored; nodes caught in a
+ * cycle are placed after their already-placed predecessors
  */
 export function dagLevels(
   nodes: readonly MiniDagNode[],
@@ -141,7 +127,6 @@ export function dagLevels(
   return level;
 }
 
-/** Places nodes in columns and routes an edge for every dependency. */
 export function layoutDag(
   nodes: readonly MiniDagNode[],
   edges: readonly MiniDagEdge[],

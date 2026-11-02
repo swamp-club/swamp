@@ -18,9 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Mirrors sanitizeReportNameForData in
- * src/domain/reports/report_data_name.ts, which names the data a report is
- * persisted under. report_name_test.ts pins the two together.
+ * mirrors sanitizeReportNameForData in src/domain/reports/report_data_name.ts;
+ * report_name_test.ts pins the two together
  */
 export function sanitizeReportNameForData(reportName: string): string {
   return reportName
@@ -30,7 +29,6 @@ export function sanitizeReportNameForData(reportName: string): string {
     .replace(/\0/g, "");
 }
 
-/** The data name of a report's markdown output (its JSON is `<name>-json`). */
 export function reportDataName(reportName: string, variant?: string): string {
   const base = `report-${sanitizeReportNameForData(reportName)}`;
   return variant ? `${base}-${variant}` : base;

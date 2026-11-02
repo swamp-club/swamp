@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Synthetic agent sessions in the v2 record shape, for tests and the page's
- * sample setup. Every repo, path and command here is made up; the sizes and
- * label mix follow the three sessions of the agent observation prototype
- * (5 turns and 32 calls, 17 and 169, 5 and 29), plus what the prototype did
- * not have: a subagent child, a headless session, a turn over a hundred
- * calls, a truncated call and an unlabeled call. Findings are written here
- * as the importer would write them; the page only renders them.
+ * synthetic sessions in the v2 record shape; every repo, path and command is
+ * made up; findings are written as the importer would write them, and the page
+ * only renders them
  */
 
 import type {
@@ -39,7 +35,6 @@ type CallShape = Omit<AgentSessionToolCall, "id" | "start" | "end">;
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 
-/** A small seeded generator, so the fixtures are the same on every run. */
 function seeded(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -192,7 +187,6 @@ const SWAMP_COMMANDS = [
   "swamp behavior validate web-frontend",
 ];
 
-/** Picks a call from a weighted mix of the shapes above. */
 function mixedCall(
   random: () => number,
   mix: { swamp: number; bypass: number },
@@ -217,12 +211,10 @@ function mixedCall(
 }
 
 interface TurnPlan {
-  /** Idle time before the turn starts, after the previous one ends. */
   idle: number;
   calls: CallShape[];
 }
 
-/** Lays turns and calls out in time and numbers the call ids. */
 function layOut(
   random: () => number,
   plans: TurnPlan[],
@@ -292,7 +284,6 @@ function base(
   };
 }
 
-/** The parent of the subagent, and the agent id the harness gave it. */
 export const SUBAGENT_PARENT_ID = "0b5e7c1a-2f44-4d1b-9a63-5c0f2e8d7a10";
 export const SUBAGENT_AGENT_ID = "a3f9c21b7d";
 /**
@@ -302,7 +293,6 @@ export const SUBAGENT_AGENT_ID = "a3f9c21b7d";
 export const SUBAGENT_CHILD_ID =
   "0b5e7c1a-2f44-4d1b-9a63-5c0f2e8d7a10_4e3a850ce316e40e5947fd48a264afa6";
 
-/** A short session that edits one definition by hand and fails. */
 function editLoopSession(): AgentSessionRecord {
   const random = seeded(11);
   const turns = layOut(random, [
@@ -407,7 +397,6 @@ function editLoopSession(): AgentSessionRecord {
   };
 }
 
-/** A long session with a subagent and one very busy turn. */
 function longSession(): AgentSessionRecord {
   const random = seeded(23);
   const sizes = [6, 4, 5, 3, 110, 4, 3, 5, 4, 3, 6, 2, 3, 4, 3, 2, 2];
@@ -461,7 +450,6 @@ function longSession(): AgentSessionRecord {
   };
 }
 
-/** The subagent the long session started, at full detail. */
 function subagentSession(): AgentSessionRecord {
   const random = seeded(31);
   const turns = layOut(random, [
@@ -500,7 +488,6 @@ function subagentSession(): AgentSessionRecord {
   };
 }
 
-/** A headless run, as automation would start it. */
 function headlessSession(): AgentSessionRecord {
   const random = seeded(47);
   const sizes = [7, 6, 5, 6, 5];
@@ -528,7 +515,6 @@ function headlessSession(): AgentSessionRecord {
   };
 }
 
-/** Every fixture session: three top-level sessions and one subagent child. */
 export function fixtureSessions(): AgentSessionRecord[] {
   return [
     editLoopSession(),

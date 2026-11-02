@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The few DOM APIs the run graph uses, typed structurally. Deno type-checks
-// the dashboard's tests without the DOM library (adding it would change
-// the server's global types in the same check), so components under test
-// reach these through `asDom` instead of the DOM's own types.
+// typed structurally because Deno type-checks dashboard tests without the DOM
+// library; adding it would change the server's global types in the same check
 
 export interface Rect {
   left: number;
@@ -39,7 +37,6 @@ export interface WheelLike {
   preventDefault(): void;
 }
 
-/** The element methods the graph calls. */
 export interface DomElement {
   getBoundingClientRect(): Rect;
   addEventListener(
@@ -53,7 +50,6 @@ export interface DomElement {
   closest(selector: string): unknown;
 }
 
-/** Views a React element ref or event target as a `DomElement`. */
 export function asDom(el: unknown): DomElement {
   return el as DomElement;
 }
@@ -69,7 +65,6 @@ type ResizeObserverCtor = new (
   ) => void,
 ) => ResizeObserverLike;
 
-/** The browser's ResizeObserver, when there is one. */
 export function resizeObserverClass(): ResizeObserverCtor | undefined {
   return (globalThis as { ResizeObserver?: ResizeObserverCtor })
     .ResizeObserver;
@@ -80,7 +75,6 @@ interface HistoryLike {
   replaceState(state: unknown, unused: string, url: string): void;
 }
 
-/** The browser's History, when there is one. */
 export function browserHistory(): HistoryLike | undefined {
   return (globalThis as { history?: HistoryLike }).history;
 }

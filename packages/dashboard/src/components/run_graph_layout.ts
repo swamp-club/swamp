@@ -19,15 +19,8 @@
 
 import { maxOf } from "../lib/array_extrema.ts";
 
-// Layered left-to-right layout for a run's job graph, in the style of a
-// CI run graph: every job sits in the column after its deepest dependency,
-// columns are ordered to keep edges from crossing, and each job is placed
-// level with the jobs that feed it so chains read as straight lines.
-//
-// Pure and deterministic: the same nodes and edges in the same order always
-// produce the same picture, so a live run that only changes statuses never
-// moves a card. No graph library — the graphs are small (dozens of jobs)
-// and the classic Sugiyama steps fit in a few hundred lines.
+// layered left-to-right layout, pure and deterministic, so a live run that only
+// changes statuses never moves a card
 
 export interface LayoutNodeInput {
   id: string;
@@ -41,9 +34,7 @@ export interface LayoutEdgeInput {
 export interface LayoutOptions {
   nodeWidth: number;
   nodeHeight: number;
-  /** Horizontal space between columns, where edges curve. */
   columnGap: number;
-  /** Vertical space between cards in a column. */
   rowGap: number;
   /** Barycentre sweeps (down + up) to run; more rarely helps past 8. */
   sweeps?: number;
@@ -56,24 +47,19 @@ export interface Point {
 
 export interface PositionedNode {
   id: string;
-  /** Column, 0 for jobs with no dependencies. */
   level: number;
-  /** Row within the column, top first. */
   order: number;
-  /** Left edge of the card. */
   x: number;
-  /** Top edge of the card. */
   y: number;
 }
 
 export interface RoutedEdge {
   from: string;
   to: string;
-  /** From the source's right side to the target's left side. */
   points: Point[];
   /**
-   * The edge closes a cycle. Invalid for a workflow, but drawn rather than
-   * crashing; it is routed in layer order (target to source).
+   * the edge closes a cycle: invalid for a workflow, but drawn rather than
+   * crashing, and routed in layer order (target to source)
    */
   reversed: boolean;
 }
@@ -81,7 +67,6 @@ export interface RoutedEdge {
 export interface GraphLayout {
   nodes: PositionedNode[];
   edges: RoutedEdge[];
-  /** Real node ids per column, top to bottom. */
   levels: string[][];
   width: number;
   height: number;
@@ -97,10 +82,8 @@ export const DEFAULT_LAYOUT: LayoutOptions = {
 
 interface Item {
   key: string;
-  /** Real node id, or null for a virtual node on a long edge. */
   id: string | null;
   level: number;
-  /** Initial sort key: component, then first appearance. */
   seed: [number, number, number];
   up: Item[];
   down: Item[];
@@ -116,7 +99,6 @@ export function layoutGraph(
   const { nodeWidth, nodeHeight, columnGap, rowGap } = options;
   const sweeps = options.sweeps ?? 8;
 
-  // ── normalise input ──────────────────────────────────────────────────
   const ids: string[] = [];
   const index = new Map<string, number>();
   for (const n of nodeInputs) {
@@ -134,11 +116,10 @@ export function layoutGraph(
     edges.push({ from: e.from, to: e.to });
   }
 
-  // ── break cycles: DFS in input order, back edges are reversed ───────
   const out: number[][] = ids.map(() => []);
   edges.forEach((e, i) => out[index.get(e.from)!].push(i));
   const reversed = new Set<number>();
-  const state = new Uint8Array(ids.length); // 0 new, 1 on stack, 2 done
+  const state = new Uint8Array(ids.length);
   for (let root = 0; root < ids.length; root++) {
     if (state[root] !== 0) continue;
     // Iterative DFS so a long chain cannot overflow the stack.
@@ -168,7 +149,6 @@ export function layoutGraph(
       : { from: index.get(e.from)!, to: index.get(e.to)! }
   );
 
-  // ── levels: longest path from the sources (Kahn, input order) ───────
   const level = new Array<number>(ids.length).fill(0);
   const indegree = new Array<number>(ids.length).fill(0);
   const succ: number[][] = ids.map(() => []);
@@ -186,10 +166,8 @@ export function layoutGraph(
     }
   }
 
-  // ── weakly connected components, numbered by first appearance ───────
   const component = componentsOf(ids.length, dag);
 
-  // ── items: real nodes plus virtual nodes along long edges ───────────
   const items: Item[] = ids.map((id, i) => ({
     key: id,
     id,
@@ -228,7 +206,6 @@ export function layoutGraph(
   for (const item of items) layers[item.level].push(item);
   for (const layer of layers) layer.sort((a, b) => compareSeed(a.seed, b.seed));
 
-  // ── crossing reduction: barycentre sweeps, keep the best ordering ───
   let best = layers.map((l) => [...l]);
   let bestCrossings = totalCrossings(best);
   for (let s = 0; s < sweeps && bestCrossings > 0; s++) {
@@ -246,7 +223,6 @@ export function layoutGraph(
   }
   layers = best;
 
-  // ── vertical placement: level with neighbours, never overlapping ────
   const virtualGap = rowGap / 2;
   const size = (item: Item) => (item.id === null ? 0 : nodeHeight);
   const separation = (a: Item, b: Item) =>
@@ -262,7 +238,6 @@ export function layoutGraph(
   if (levelCount > 0) {
     place(layers[0], layers[0].map(() => 0));
   }
-  // Left to right: follow the jobs that feed you.
   const forward = (keepFirst: boolean) => {
     for (let l = keepFirst ? 1 : 0; l < levelCount; l++) {
       place(
@@ -272,7 +247,6 @@ export function layoutGraph(
     }
   };
   forward(true);
-  // Right to left: sources move level with what they feed.
   for (let l = levelCount - 2; l >= 0; l--) {
     place(
       layers[l],
@@ -283,7 +257,6 @@ export function layoutGraph(
   }
   forward(true);
 
-  // ── coordinates ──────────────────────────────────────────────────────
   let top = Infinity;
   let bottom = -Infinity;
   for (const item of items) {
@@ -321,7 +294,6 @@ export function layoutGraph(
       if (k === 0) points.push({ x: x + nodeWidth, y });
       else if (k === chain.length - 1) points.push({ x, y });
       else {
-        // Run straight through the column, in the gap kept free for it.
         points.push({ x, y }, { x: x + nodeWidth, y });
       }
     });
@@ -374,11 +346,6 @@ function componentsOf(
   });
 }
 
-/**
- * Orders a layer by the mean position of each item's neighbours in the
- * fixed layer. Items with no neighbours there keep their position; ties
- * keep the current order, so the result is stable.
- */
 function reorder(
   layer: Item[],
   fixed: Item[],
@@ -428,11 +395,6 @@ function countPairCrossings(pairs: ReadonlyArray<[number, number]>): number {
   return crossings;
 }
 
-/**
- * Edge crossings between adjacent columns for a given ordering — the
- * quantity the barycentre sweeps minimise. Exposed for tests and for
- * callers comparing orderings.
- */
 export function countCrossings(
   levels: readonly (readonly string[])[],
   edges: readonly LayoutEdgeInput[],
@@ -453,10 +415,9 @@ export function countCrossings(
 }
 
 /**
- * Centre positions for a column's items, in order, as close as possible to
- * where each wants to be (least squares) while keeping `separation` between
- * neighbours: isotonic regression by pool-adjacent-violators on the
- * positions with the minimum spacing taken out.
+ * least-squares closest positions that keep `separation` between neighbours:
+ * isotonic regression by pool-adjacent-violators on positions with the minimum
+ * spacing taken out
  */
 function placeInOrder(
   layer: Item[],
@@ -469,7 +430,6 @@ function placeInOrder(
     if (i > 0) acc += separation(layer[i - 1], item);
     offsets.push(acc);
   });
-  // Blocks of pooled values: [sum, count].
   const blocks: Array<{ sum: number; count: number }> = [];
   for (let i = 0; i < layer.length; i++) {
     blocks.push({ sum: desired[i] - offsets[i], count: 1 });
@@ -492,10 +452,6 @@ function placeInOrder(
   return result;
 }
 
-/**
- * An SVG path through the points, with each hop drawn as a horizontal
- * S-curve so edges leave and enter cards level, as in a CI run graph.
- */
 export function edgePath(points: readonly Point[]): string {
   if (points.length === 0) return "";
   const f = (n: number) => String(round(n));
@@ -515,7 +471,6 @@ export function edgePath(points: readonly Point[]): string {
   return d;
 }
 
-/** Every node upstream of `id` (that it depends on) and downstream of it. */
 export function relatives(
   id: string,
   edges: readonly LayoutEdgeInput[],
@@ -540,11 +495,6 @@ export function relatives(
 
 export type Direction = "left" | "right" | "up" | "down";
 
-/**
- * The node arrow-key navigation moves to: up/down within the column,
- * left/right to the adjacent column — preferring a node connected to the
- * current one, then the one nearest in height. Null at an edge.
- */
 export function neighborInDirection(
   layout: GraphLayout,
   id: string,

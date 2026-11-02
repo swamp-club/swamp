@@ -18,19 +18,14 @@
 // along with Swamp.  If not, see <https:\/\/www.gnu.org\/licenses\/>.
 
 /**
- * Client-side stream consumption helpers.
- *
- * These mirror the core helpers from libswamp/stream.ts so consumers can use
- * the same patterns (consumeStream, result, withDefaults) without depending
- * on the full swamp CLI.
+ * mirrors libswamp/stream.ts so consumers use the same patterns without
+ * depending on the swamp CLI
  */
 
 import type { SerializedError } from "./protocol.ts";
 
-/** Base constraint for stream events. */
 export type StreamEvent = { kind: string };
 
-/** Compile-time check that E includes both `completed` and `error` terminals. */
 export type HasTerminals<E extends StreamEvent> = Extract<
   E,
   { kind: "completed" }
@@ -38,17 +33,12 @@ export type HasTerminals<E extends StreamEvent> = Extract<
   : Extract<E, { kind: "error" }> extends never ? never
   : E;
 
-/** Mapped type enforcing exhaustive handlers per event kind. */
 export type EventHandlers<E extends StreamEvent> = {
   [K in E["kind"]]: (
     event: Extract<E, { kind: K }>,
   ) => void | Promise<void>;
 };
 
-/**
- * Iterates a stream and dispatches each event to the matching handler.
- * Handlers are exhaustiveness-checked at compile time.
- */
 export async function consumeStream<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
   handlers: EventHandlers<E>,
@@ -79,9 +69,6 @@ export async function result<E extends StreamEvent>(
   throw new Error("Stream ended without a completed or error event");
 }
 
-/**
- * Fills missing handlers with no-ops (or a provided fallback).
- */
 export function withDefaults<E extends StreamEvent>(
   partial: Partial<EventHandlers<E>>,
   fallback?: (event: E) => void | Promise<void>,
@@ -97,9 +84,6 @@ export function withDefaults<E extends StreamEvent>(
   });
 }
 
-/**
- * Error thrown when the server sends an error event.
- */
 export class SwampClientError extends Error {
   readonly code: string;
   readonly details?: unknown;

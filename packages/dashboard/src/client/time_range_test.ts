@@ -66,8 +66,8 @@ Deno.test("requestTimeBounds: custom passes both ISO bounds", () => {
 });
 
 Deno.test("requestTimeBounds: a preset's request does not move with the clock", () => {
-  // The display bounds roll over with the minute; the request must not,
-  // or every open page re-sends it once a minute (swamp-club#3444).
+  // the display bounds roll over with the minute; the request must not, or
+  // every open page re-sends it once a minute
   const range = { kind: "preset" as const, preset: "7d" as const };
   const before = Date.UTC(2026, 9, 14, 16, 0, 59, 900);
   const after = before + 200;

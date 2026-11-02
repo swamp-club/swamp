@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// S3SYNC citations refer to
-// swamp-extensions@7c0b1eacf:datastore/s3/extensions/datastores/_lib/s3_cache_sync.ts.
-// Each "pins" test asserts the extension behaviour of the release range it
-// names (the default semantics: 2026.10.06.1 through 2026.10.07.1),
-// including the gaps, so a change to the fake's semantics fails here on
-// purpose.
+// each pins test asserts the extension behaviour of the release range it names,
+// gaps included, so a change to the fake's semantics fails here on purpose
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -78,7 +74,6 @@ function remoteText(
   return bytes && new TextDecoder().decode(bytes);
 }
 
-/** Two machines on one remote, each with a cache and a clean sidecar. */
 async function twoMachines(
   dir: string,
   options?: Parameters<typeof createInMemoryRemote>[0],
@@ -237,7 +232,6 @@ Deno.test("createInMemoryRemote: a cache with no sidecar pushes with a full walk
     const a = remote.connect(aCache);
     assertEquals(await a.pushChanged(), 2);
 
-    // Dropping the sidecar walks again, and still deletes nothing.
     await remove(aCache, "one");
     remote.resetSidecar(aCache);
     assertEquals(await a.pushChanged(), 0);
@@ -787,10 +781,9 @@ Deno.test("createInMemoryRemote: pins that a mark of the cache root uploads ever
 Deno.test({
   name:
     "createInMemoryRemote: pins that an absolute mark is nested under the cache, so its file is never pushed",
-  // A drive-letter path nested under the cache is not a valid Windows path,
-  // and the extensions' `/`-only containment check sends every Windows mark
-  // to bulk anyway (swamp-club#2573), so this POSIX behaviour has no Windows
-  // counterpart to pin.
+  // a drive-letter path nested under the cache is not a valid Windows path, and
+  // the extensions' slash-only containment check sends every Windows mark to
+  // bulk anyway, so there is nothing to pin there
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withTempDir(async (dir) => {
@@ -905,7 +898,6 @@ Deno.test("pendingPush: reports the next push's uploads, deletes and marks witho
     });
     assertEquals(remote.ops().length, opCount, "no op recorded");
     assertEquals([...remote.files().keys()].sort(), ["gone", "same"]);
-    // The injected failure was not consumed, and the plan matches the push.
     await assertRejects(() => a.pushChanged(), Error, "still queued");
     await a.pushChanged();
     assertEquals(remote.ops().at(-1)?.paths, pending.uploads);
@@ -1198,7 +1190,6 @@ Deno.test("createInMemoryRemote: pins that a pull, push or prepare that fails st
   });
 });
 
-/** A and B both synced to `files`, pushed by A and pulled by B. */
 async function syncedPair(
   dir: string,
   files: Record<string, string>,
@@ -1214,7 +1205,6 @@ async function syncedPair(
   return machines;
 }
 
-/** A deletes `rels` and pushes the deletions. */
 async function peerDeletes(
   machines: Awaited<ReturnType<typeof twoMachines>>,
   rels: string[],
@@ -1439,7 +1429,6 @@ Deno.test("createInMemoryRemote: a full push records the whole remote as synced,
       await a.markDirty({ relPath: "keep" });
       await a.pushChanged();
 
-      // B holds the same bytes without having pulled them.
       await write(bCache, "peer", "same");
       await write(bCache, "own", "o");
       if (scoped) await b.markDirty({ relPath: "own" });
@@ -1719,7 +1708,6 @@ Deno.test("createInMemoryRemote: an aborted control-plane read binds no namespac
       Error,
       "gone",
     );
-    // Still unbound, so the first pull may take a namespace.
     assertEquals(await service.pullChanged({ namespace: "team" }), 0);
   });
 });
@@ -1750,7 +1738,6 @@ Deno.test("createInMemoryRemote: storage is present only with the storage option
     await Array.fromAsync(remote.storage!().list("ns", signal)),
     [{ sha256: sha, lastModified: new Date(0) }],
   );
-  // Chunks are kept apart from files, ops and the control plane.
   assertEquals(remote.files().size, 0);
   assertEquals(remote.ops().length, 0);
 });
@@ -1821,7 +1808,6 @@ Deno.test("createInMemoryRemote: clearDirty on a cache with no marks is a no-op,
   });
 });
 
-/** A cache that pulled once, then gained a file it never marked. */
 async function strandedCache(
   dir: string,
   options?: Parameters<typeof createInMemoryRemote>[0],
@@ -1947,7 +1933,6 @@ Deno.test("repairUnpushedFiles: forgets a peer-deleted key once the remote holds
     await a.pushChanged();
     await remove(bCache, "data/m/y");
     await b.pullChanged();
-    // Written behind the sync service after the record was dropped.
     await write(bCache, "data/m/y", "new");
 
     const summary = await b.repairUnpushedFiles!({ dryRun: true });
@@ -1973,7 +1958,6 @@ Deno.test("repairUnpushedFiles: a marked-path push forgets a peer-deleted key wh
     await write(bCache, "data/m/other", "o");
     await b.markDirty({ relPath: "data/m/other" });
     await b.pushChanged();
-    // Written behind the sync service after the record was dropped.
     await write(bCache, "data/m/x", "new");
 
     const summary = await b.repairUnpushedFiles!({ dryRun: true });
@@ -2078,12 +2062,9 @@ Deno.test("repairUnpushedFiles: a key a peer committed first is alreadyPresent a
 });
 
 Deno.test("repairUnpushedFiles: a key a peer commits while the repair reads files stays the peer's", async () => {
-  // Under any interleaving the peer's bytes win: committed before the
-  // repair reads the key, it is alreadyPresent; after the repair commits,
-  // the peer's push replaces it; in between, the create is refused
-  // (contract rule 7). Either way the key is counted once and never left
-  // unpushed. The peer walks its whole cache and the repair has more files
-  // to read after the key, so the commit tends to land in between.
+  // under any interleaving the peer's bytes win: committed before the repair
+  // reads the key it is alreadyPresent, after the repair commits the peer's
+  // push replaces it, in between the create is refused
   const synced: Record<string, string> = {};
   for (let i = 0; i < 100; i++) synced[`data/m/s${i}`] = "v1";
   for (let attempt = 0; attempt < 5; attempt++) {

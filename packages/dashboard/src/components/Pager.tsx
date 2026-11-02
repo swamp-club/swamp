@@ -18,15 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 interface PagerProps {
-  /** Zero-based current page. */
   page: number;
   pageSize: number;
-  /** Total matches reported by the server. */
   total: number;
   onPageChange: (page: number) => void;
 }
 
-/** Footer pager for server-paged tables; renders nothing for a single page. */
 export function Pager({ page, pageSize, total, onPageChange }: PagerProps) {
   const totalPages = Math.ceil(total / pageSize);
   if (totalPages <= 1) return null;

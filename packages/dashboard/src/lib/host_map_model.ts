@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pure model for the fleet host map: joins workers to their step leases as
- * per-slot state, groups workers by a label key, applies the visibility TTL,
- * and evaluates placement selectors with the scheduler's eligibility rules
- * (src/domain/remote/scheduler.ts, kept in step by an integration test).
+ * placement selectors use the scheduler's eligibility rules
+ * (src/domain/remote/scheduler.ts), kept in step by an integration test
  */
 
 export type WorkerStatus =
@@ -31,7 +29,6 @@ export type WorkerStatus =
   | "unverified"
   | "draining";
 
-/** A worker as `worker.list` returns it. */
 export interface FleetWorker {
   name: string;
   tokenName: string;
@@ -49,7 +46,6 @@ export interface FleetWorker {
 
 export type LeaseState = "active" | "completed" | "failed" | "expired";
 
-/** A step lease as `worker.lease.list` returns it. */
 export interface FleetLease {
   leaseId: string;
   dispatchId: string;
@@ -72,17 +68,15 @@ export interface Slot {
   state: SlotState;
   dispatchId?: string;
   lease?: FleetLease;
-  /** For an ended lease, when its outcome stops showing and the slot frees. */
   until?: number;
 }
 
-/** How long an ended lease's outcome shows before its slot frees. */
 export const OUTCOME_MS = 6_000;
 
 /**
- * Assigns this refresh's leases to slots, keeping each lease in the slot it
- * already had. A lease seen active before and gone now shows its outcome for
- * {@link OUTCOME_MS}; a new active lease takes the first free slot.
+ * keeps each lease in the slot it already had; a lease seen active before and
+ * gone now shows its outcome for OUTCOME_MS, and a new active lease takes the
+ * first free slot
  */
 export function assignSlots(
   previous: readonly Slot[] | undefined,
@@ -140,11 +134,9 @@ export function assignSlots(
 }
 
 /**
- * How the host map draws a render. `skip` while the tab is hidden: browsers
- * pause animation frames there, so a transition scheduled then never starts
- * and is never freed (swamp-club#3660). `snap` on the first draw after a
- * skipped one: straight to the current layout, without replaying what
- * changed while hidden. `animate` otherwise.
+ * skip while the tab is hidden, since paused animation frames would leave a
+ * transition never started or freed; snap on the first draw after a skip,
+ * without replaying what changed; animate otherwise
  */
 export type HostMapDrawMode = "skip" | "snap" | "animate";
 
@@ -155,15 +147,13 @@ export function hostMapDrawMode(
   return skipped ? "snap" : "animate";
 }
 
-/** Workers that count as up: connected and able to take work. */
 export function isUp(worker: FleetWorker): boolean {
   return worker.status === "idle" || worker.status === "busy";
 }
 
 /**
- * Workers whose process is live: every status but disconnected. Wider than
- * {@link isUp} — a draining or unverified worker is connected but takes no
- * new work.
+ * wider than isUp: a draining or unverified worker is connected but takes no
+ * new work
  */
 export function isConnected(worker: FleetWorker): boolean {
   return worker.status !== "disconnected";
@@ -172,13 +162,10 @@ export function isConnected(worker: FleetWorker): boolean {
 export interface FleetCounts {
   connected: number;
   byStatus: Record<WorkerStatus, number>;
-  /** Leased slots on up workers. */
   usedSlots: number;
-  /** Slots on up workers. */
   totalSlots: number;
 }
 
-/** The Workers header's tally: connected workers, each status, and slot use. */
 export function fleetCounts(workers: readonly FleetWorker[]): FleetCounts {
   const counts: FleetCounts = {
     connected: 0,
@@ -203,7 +190,6 @@ export function fleetCounts(workers: readonly FleetWorker[]): FleetCounts {
   return counts;
 }
 
-/** Fraction of the visibility TTL a disconnected worker has used, 0..1. */
 export function fadeFraction(
   worker: FleetWorker,
   nowMs: number,
@@ -215,7 +201,6 @@ export function fadeFraction(
   return Math.min(1, Math.max(0, age / ttlMs));
 }
 
-/** Whether the worker stays on the map under the visibility TTL. */
 export function isVisible(
   worker: FleetWorker,
   nowMs: number,
@@ -229,14 +214,12 @@ export function isVisible(
 export const PLATFORM_GROUP = "platform";
 export const UNLABELED = "(unlabeled)";
 
-/** The value a worker is grouped under for a group-by key. */
 export function groupValue(worker: FleetWorker, key: string): string {
   if (key === PLATFORM_GROUP) return `${worker.platform}/${worker.arch}`;
   if (key === "fleet") return worker.labels.fleet ?? worker.tokenName;
   return worker.labels[key] ?? UNLABELED;
 }
 
-/** Group-by keys available for a set of workers: fleet, other labels, platform. */
 export function groupKeys(workers: readonly FleetWorker[]): string[] {
   const labels = new Set<string>();
   for (const worker of workers) {
@@ -252,7 +235,6 @@ export interface GroupStats extends FleetCounts {
   workers: FleetWorker[];
 }
 
-/** Groups workers by `key`; largest total capacity first, then name. */
 export function groupWorkers(
   workers: readonly FleetWorker[],
   key: string,
@@ -277,13 +259,11 @@ export function groupWorkers(
   });
 }
 
-/** Group cards narrower than this show only their slot use. */
 export const CAPTION_FULL_MIN_WIDTH = 190;
 
 /**
- * A group card's caption. Counts connected workers rather than up out of all
- * listed, so disconnected records inside the visibility TTL never read as
- * workers that are down.
+ * counts connected workers rather than up out of all listed, so disconnected
+ * records inside the visibility TTL never read as workers that are down
  */
 export function groupCaption(stats: FleetCounts, width: number): string {
   const slots = `${stats.usedSlots}/${stats.totalSlots} slots`;
@@ -294,14 +274,12 @@ export function groupCaption(stats: FleetCounts, width: number): string {
 export interface WorkerSummary {
   busy: number;
   idle: number;
-  /** Connected but not taking new work: draining or unverified. */
   unavailable: number;
 }
 
 /**
- * The Overview header's three-state pool summary. Disconnected workers are
- * left out: they are history (a worker that finished or crashed and was
- * replaced), shown on the Workers view until its visibility TTL ends.
+ * disconnected workers are left out: they are history, shown on the Workers
+ * view until the visibility TTL ends
  */
 export function workerSummary(workers: readonly FleetWorker[]): WorkerSummary {
   const summary: WorkerSummary = { busy: 0, idle: 0, unavailable: 0 };
@@ -313,9 +291,6 @@ export function workerSummary(workers: readonly FleetWorker[]): WorkerSummary {
   return summary;
 }
 
-// ── Placement selector ──────────────────────────────────────────────────
-
-/** A step's placement, as written in a selector box. */
 export interface Selector {
   labels: Record<string, string>;
   platform?: string;
@@ -324,14 +299,12 @@ export interface Selector {
 
 export interface ParsedSelector {
   selector: Selector;
-  /** Tokens that were not `key=value`. */
   invalid: string[];
 }
 
 /**
- * Parses `gpu=h100, region=us-west-2, platform=linux/x86_64, target=gpu-1`.
- * Pairs split on commas or whitespace; `platform` and `target` are the
- * placement fields of the same names, every other key is a label.
+ * pairs split on commas or whitespace; platform and target are the placement
+ * fields of the same names, every other key is a label
  */
 export function parseSelector(text: string): ParsedSelector {
   const selector: Selector = { labels: {} };
@@ -352,7 +325,6 @@ export function parseSelector(text: string): ParsedSelector {
   return { selector, invalid };
 }
 
-/** Formats a selector back to text; `parseSelector(formatSelector(s))` round-trips. */
 export function formatSelector(selector: Selector): string {
   const parts = Object.entries(selector.labels).map(([k, v]) => `${k}=${v}`);
   if (selector.platform !== undefined) {
@@ -367,7 +339,6 @@ export function isEmptySelector(selector: Selector): boolean {
     selector.platform === undefined && selector.target === undefined;
 }
 
-/** The scheduler's view of a worker (scheduler.ts `SchedulableWorker`). */
 export interface SchedulableView {
   name: string;
   instanceUuid: string;
@@ -380,7 +351,6 @@ export interface SchedulableView {
   activeDispatchIds: string[];
 }
 
-/** Maps a listed worker to the scheduler's view; disconnected means not connected. */
 export function toSchedulable(worker: FleetWorker): SchedulableView {
   return {
     name: worker.name,
@@ -420,7 +390,6 @@ export function isEligible(
   return true;
 }
 
-/** Free slots a step with this selector could take right now (scheduleStep's view). */
 export function freeSlots(
   selector: Selector,
   workers: readonly FleetWorker[],

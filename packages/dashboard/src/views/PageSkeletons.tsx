@@ -32,15 +32,8 @@ import {
 import { HealthUnavailable } from "../components/HealthUnavailable.tsx";
 import { BEHAVIOR_COLUMN } from "../lib/behavior_labels.ts";
 
-// Loading states for the Overview, Data, Data detail, Vaults, Extensions,
-// System and Login pages. Each is the loaded layout with placeholders where
-// the data goes — same grid, same panels, real titles and column headers —
-// so nothing moves when the answer lands. Views keep their tables' headers
-// in the column lists below so the skeleton and the table never drift.
-// This module imports nothing that needs a bundler, so every skeleton is
-// render-tested in PageSkeletons_test.tsx.
-
-// ── Overview ───────────────────────────────────────────────────────────
+// each skeleton mirrors the loaded layout so nothing moves when the answer
+// lands; views share these column lists so skeleton and table never drift
 
 const CHART_LEGEND: ReadonlyArray<readonly [string, string]> = [
   ["Succeeded", "var(--chart-bar-1)"],
@@ -49,7 +42,6 @@ const CHART_LEGEND: ReadonlyArray<readonly [string, string]> = [
   ["Running / waiting", "var(--chart-bar-4)"],
 ];
 
-/** The Executions chart's panel: title, legend, and the plot area. */
 export function ExecutionChartFrame({ children }: { children: ReactNode }) {
   return (
     <div className="chart-section">
@@ -69,7 +61,6 @@ export function ExecutionChartFrame({ children }: { children: ReactNode }) {
   );
 }
 
-/** The Executions chart while runs load: a bar-chart silhouette. */
 export function ExecutionChartSkeleton() {
   return (
     <ExecutionChartFrame>
@@ -80,12 +71,10 @@ export function ExecutionChartSkeleton() {
   );
 }
 
-/** A stat card's value while its source loads. */
 export function StatValueSkeleton({ width = 80 }: { width?: number }) {
   return <Skeleton width={width} height={26} radius={6} />;
 }
 
-/** Upcoming Schedules rows: name, cron badge, next-fire time. */
 export function ScheduleRowsSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <>
@@ -103,7 +92,6 @@ export function ScheduleRowsSkeleton({ rows = 4 }: { rows?: number }) {
   );
 }
 
-/** The Upcoming Schedules panel body until the health stream delivers. */
 export function UpcomingSchedulesSkeleton() {
   return (
     <HealthUnavailable
@@ -114,12 +102,9 @@ export function UpcomingSchedulesSkeleton() {
   );
 }
 
-/** The panel-title count badge while its list loads. */
 export function CountSkeleton() {
   return <Skeleton width={22} height={14} radius={10} />;
 }
-
-// ── Data ───────────────────────────────────────────────────────────────
 
 export const DATA_COLUMNS: SkeletonColumn[] = [
   { header: "Name" },
@@ -134,8 +119,6 @@ export function DataTableSkeleton({ rows = 10 }: { rows?: number }) {
     <SkeletonTable columns={DATA_COLUMNS} rows={rows} label="Loading data" />
   );
 }
-
-// ── Extensions ─────────────────────────────────────────────────────────
 
 export const EXTENSION_COLUMNS: SkeletonColumn[] = [
   { header: "Extension" },
@@ -154,9 +137,6 @@ export function ExtensionsTableSkeleton({ rows = 5 }: { rows?: number }) {
   );
 }
 
-// ── Vaults ─────────────────────────────────────────────────────────────
-
-/** The vault list: collapsed vault panels with a name and type badge. */
 export function VaultListSkeleton({ count = 3 }: { count?: number }) {
   return (
     <SkeletonRegion
@@ -190,12 +170,10 @@ const VAULT_ROW_STYLE = {
   borderBottom: "1px solid var(--border-subtle)",
 } as const;
 
-/** One section of an expanded vault (configuration, keys, activity). */
 export function VaultSectionSkeleton(
   { label, rows = 3, badge = false }: {
     label: string;
     rows?: number;
-    /** Rows lead with a badge (the audit trail's action). */
     badge?: boolean;
   },
 ) {
@@ -219,8 +197,6 @@ export function VaultSectionSkeleton(
   );
 }
 
-// ── System ─────────────────────────────────────────────────────────────
-
 export const CLUSTER_COLUMNS: SkeletonColumn[] = [
   { header: "Instance", cell: 120 },
   { header: "Status", cell: "pill" },
@@ -231,7 +207,6 @@ export const CLUSTER_COLUMNS: SkeletonColumn[] = [
   { header: "Workers", cell: 24 },
 ];
 
-/** The rows of System's worker summary; the full map is the Workers view. */
 export const WORKER_SUMMARY_KEYS = [
   "Idle",
   "Busy",
@@ -240,10 +215,8 @@ export const WORKER_SUMMARY_KEYS = [
   "Slots in use",
 ] as const;
 
-/** The rows the Deployment panel always shows, before component health. */
 export const DEPLOYMENT_KEYS = ["Mode", "Instances", "Workers", "Uptime"];
 
-/** The rows `serveConfigRows` produces for every config, in order. */
 export const SERVE_CONFIG_KEYS = [
   "Port",
   "TLS",
@@ -269,7 +242,6 @@ function PanelHeader(
   );
 }
 
-/** A titled panel holding a table skeleton (Cluster Instances, Workers). */
 export function TablePanelSkeleton(
   { title, columns, rows, label }: {
     title: string;
@@ -292,7 +264,6 @@ export function TablePanelSkeleton(
   );
 }
 
-/** The Deployment panel until the health stream delivers. */
 export function DeploymentPanelSkeleton() {
   return (
     <div className="panel">
@@ -314,7 +285,6 @@ export function DeploymentPanelSkeleton() {
   );
 }
 
-/** A titled key/value panel (Datastore, Serve Configuration). */
 export function KeyValuePanelSkeleton(
   { title, keys, rows, label }: {
     title: string;
@@ -333,8 +303,6 @@ export function KeyValuePanelSkeleton(
   );
 }
 
-// ── Data detail ────────────────────────────────────────────────────────
-
 // Indents and widths of a pretty-printed document, so the content panel
 // reads as code rather than a paragraph.
 const CODE_LINES: Array<[number, string]> = [
@@ -350,10 +318,8 @@ const CODE_LINES: Array<[number, string]> = [
   [0, "6%"],
 ];
 
-/** The Details panel's rows that every data item has. */
 export const DETAIL_KEYS = ["Version", "Created", "Content type", "Size"];
 
-/** The Versions panel's list while `data.versions` loads. */
 export function VersionsPanelSkeleton({ rows = 5 }: { rows?: number }) {
   return (
     <div className="panel">
@@ -377,11 +343,7 @@ export function VersionsPanelSkeleton({ rows = 5 }: { rows?: number }) {
   );
 }
 
-/**
- * A data item or report page while it loads: the content panel, then
- * Details beside Versions. `versions` is false for a run's report, which
- * has no version list.
- */
+/** versions is false for a run's report, which has no version list */
 export function DataDetailSkeleton(
   { versions = true }: { versions?: boolean },
 ) {
@@ -430,16 +392,13 @@ export function DataDetailSkeleton(
   );
 }
 
-/** The header's version badge while the item loads. */
 export function VersionBadgeSkeleton() {
   return <Skeleton width={34} height={18} radius={4} />;
 }
 
-// ── Login ──────────────────────────────────────────────────────────────
-
 /**
- * The OAuth card while serve starts the device login: shaped like the
- * confirmation-code card that follows, so only the code fills in.
+ * shaped like the confirmation-code card that follows, so only the code fills
+ * in
  */
 export function LoginStartingSkeleton() {
   return (

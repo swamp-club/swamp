@@ -19,31 +19,24 @@
 
 import { escapeHtml } from "./escape_html.ts";
 
-// Leading indentation and any "- " sequence markers.
 const LINE_PREFIX = /^\s*(?:-(?:\s+|$))*/;
 
-// A mapping key: a quoted string or a plain scalar, ending at the first colon
-// followed by whitespace or the end of the line.
 const KEY = /("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'#][^#]*?)(\s*:)(?=\s|$)/y;
 
-// A value that is exactly one scalar token, split from any trailing comment.
 const DOUBLE_QUOTED = /^"(?:[^"\\]|\\.)*"/;
 const SINGLE_QUOTED = /^'(?:[^']|'')*'/;
 const NUMBER = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
 const BOOLEAN = /^(?:true|false)$/;
 const NULL = /^(?:null|~)$/;
 
-// "|" or ">" with optional chomping and indentation indicators.
 const BLOCK_SCALAR = /^[|>][-+]?\d*[-+]?$/;
 
 /**
- * Wraps YAML keys, scalars and comments in highlight spans. Every character
- * of the input is copied through in order, so stripping the tags and
- * decoding the entities always yields the original input. Lines inside a
- * block scalar ("key: |") are string content and are left unhighlighted.
+ * every input character is copied through in order, so stripping the tags and
+ * decoding the entities yields the original; lines inside a block scalar are
+ * string content and stay unhighlighted
  */
 export function highlightYaml(raw: string): string {
-  // Column that block-scalar content must be indented past, or -1.
   let blockIndent = -1;
   return raw.split("\n").map((line) => {
     const indent = line.length - line.trimStart().length;
@@ -89,8 +82,6 @@ export function highlightYaml(raw: string): string {
   }).join("\n");
 }
 
-// Splits a value into its scalar part and the rest of the line, which is
-// whitespace followed by an optional comment.
 function splitComment(value: string): [string, string] {
   const quoted = DOUBLE_QUOTED.exec(value) ?? SINGLE_QUOTED.exec(value);
   const from = quoted ? quoted[0].length : 0;

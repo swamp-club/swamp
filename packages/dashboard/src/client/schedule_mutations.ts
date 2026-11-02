@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Edit and reset a schedule through serve's `workflow.trigger.*` requests,
-// with per-workflow pending state and the message to show beside the
-// controls.
-
 import { useCallback, useState } from "react";
 import { useSwamp } from "./SwampProvider.tsx";
 import { requestErrorInfo } from "./stream.ts";
@@ -32,7 +28,6 @@ import {
 } from "../lib/triggers.ts";
 
 export interface ScheduleMutations {
-  /** The action in flight per workflow. */
   pending: ReadonlyMap<string, ScheduleAction>;
   feedback: ReadonlyMap<string, ScheduleFeedback>;
   save: (
@@ -40,7 +35,6 @@ export interface ScheduleMutations {
     schedule: string,
     inputs: Record<string, unknown>,
   ) => Promise<string | null>;
-  /** Removes the serve override so the workflow file's schedule applies. */
   reset: (workflowName: string) => Promise<boolean>;
   dismiss: (workflowName: string) => void;
 }

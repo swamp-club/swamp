@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Which files in an extension archive the secret-safe-docs check reads,
- * and how. Push and the registry both decide with these, from the archive
- * paths the files have (relative to the manifest root, forward slashes).
- */
-
 import { isAuditedCodeFile } from "../dependency_audit/specifiers.ts";
 import { importedSpecifiers } from "../source/imports.ts";
 import type { SecretDocsForm } from "./detector.ts";
@@ -31,25 +25,16 @@ import {
   MAX_SECRET_DOCS_FILES,
 } from "./detector.ts";
 
-/** A file in the archive. */
 export interface ArchiveFile {
-  /** Relative to the manifest root, forward slashes. */
   path: string;
-  /** Bytes. */
   size: number;
 }
 
-/** A file the check reads, and how. */
 export interface SecretDocsTarget {
   path: string;
   form: SecretDocsForm;
 }
 
-/**
- * Archive paths that are packaged but are not the extension's own docs:
- * `binaries:` entries (under `files/`) and `include:` entries (under
- * `models/`).
- */
 export function nonDocumentationPaths(manifest: {
   binaries?: readonly string[];
   include?: readonly string[];
@@ -61,7 +46,6 @@ export function nonDocumentationPaths(manifest: {
   return out;
 }
 
-/** Joins a relative specifier onto its importer's directory; null when it climbs out. */
 function resolveRelative(importer: string, specifier: string): string | null {
   const parts = importer.split("/").slice(0, -1);
   for (const segment of specifier.split("/")) {
@@ -76,10 +60,6 @@ function resolveRelative(importer: string, specifier: string): string | null {
   return parts.join("/");
 }
 
-/**
- * The Markdown files a code module imports (as data, not docs), resolved
- * against its archive path.
- */
 export function markdownImports(path: string, source: string): string[] {
   const out: string[] = [];
   for (const specifier of importedSpecifiers(source, { path })) {
@@ -92,19 +72,9 @@ export function markdownImports(path: string, source: string): string[] {
 }
 
 /**
- * The files the check reads: every Markdown file except binaries, include
- * files and those a code module imports as data; and every code module
- * that is not a test, in `source` form, wherever it sits, so include files
- * and modules outside the kind directories are read too. A file over
- * {@link MAX_SECRET_DOCS_FILE_BYTES}, or more than
- * {@link MAX_SECRET_DOCS_FILES} files, is not read and marks the scan
- * truncated, which fails the factor. The manifest description is read
- * separately, as `plain` text.
- *
- * @param importedMarkdown the archive paths {@link markdownImports} found
- *   across the archive's code modules
- * @returns the targets, and the documentation left unread (`unread`, with
- *   `truncated` set when there is any)
+ * reads every Markdown file except binaries, include files and data imports,
+ * plus non-test code modules; a file over the byte cap or past the file cap is
+ * unread and marks the scan truncated
  */
 export function secretDocsTargets(
   files: readonly ArchiveFile[],

@@ -45,7 +45,6 @@ const INVOCATION_TEXT = {
   unknown: "The harness did not say whether a person steered this session",
 } as const;
 
-/** A person for an interactive session, a terminal for a headless one. */
 export function InvocationIcon(
   { invocation }: { invocation: keyof typeof INVOCATION_TEXT },
 ) {
@@ -73,7 +72,6 @@ export function InvocationIcon(
   );
 }
 
-/** The swamp, bypass, neutral and not-classified shares of a session's calls. */
 export function LabelMix(
   { summary }: {
     summary: Pick<
@@ -105,7 +103,6 @@ const SEVERITIES = [
   ["low", "low"],
 ] as const;
 
-/** Findings by severity as coloured counts; info findings are not flagged. */
 export function Flags({ summary }: { summary: AgentSessionSummary }) {
   const shown = SEVERITIES.filter(([key]) => summary.findings[key] > 0);
   if (shown.length === 0) {

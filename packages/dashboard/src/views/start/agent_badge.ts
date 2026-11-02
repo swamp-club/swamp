@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How an agent is drawn before its name: initials in its own colour. Swamp
- * shows no vendor logos.
- */
 export interface AgentMark {
   readonly initials: string;
   readonly color: string;
@@ -40,7 +36,6 @@ const MARKS: Record<string, AgentMark> = {
 
 const FALLBACK_COLOR = "#5B6472";
 
-/** The badge for an agent: its initials and colour. */
 export function agentMark(id: string): AgentMark {
   const known = MARKS[id];
   if (known) return known;

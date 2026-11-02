@@ -20,9 +20,6 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 
-// The Schedules and Webhooks tables, and the run list on their detail
-// pages. Presentational: views pass in rows and controls.
-
 import type { ReactNode } from "react";
 import { RouteLink } from "./RouteLink.tsx";
 import { RunHistoryBar, RunningBadge } from "./RunHistoryBar.tsx";
@@ -58,9 +55,9 @@ export const runRoute = (workflowName: string, runId: string): RouteState => ({
 });
 
 /**
- * Row clicks open the row, unless they landed on a control inside it or
- * finished a text selection. Loosely typed DOM access keeps this module
- * free of the DOM library, so it renders in tests.
+ * row clicks skip controls inside the row and finished text selections; loosely
+ * typed DOM access keeps this module free of the DOM library so it renders in
+ * tests
  */
 function rowClick(open: () => void) {
   return (e: { target: unknown }) => {
@@ -76,7 +73,6 @@ function rowClick(open: () => void) {
   };
 }
 
-/** A time as "5m ago" with the exact time on hover. */
 export function RelativeTime(
   { iso, now }: { iso: string; now?: number },
 ) {
@@ -99,15 +95,12 @@ function LastRun(
   );
 }
 
-// ── Schedules ───────────────────────────────────────────────────────────
-
 export interface ScheduleRow {
   workflowName: string;
   cron: string;
   description: string | null;
   nextRun: string | null;
   running: boolean;
-  /** Scheduled runs in progress, when known; at least 1 while running. */
   runningCount: number;
   queueLabel: string | null;
   recent: RecentRun[];
@@ -203,18 +196,14 @@ export function ScheduleTable(
   );
 }
 
-// ── Webhooks ────────────────────────────────────────────────────────────
-
 export interface WebhookRow {
   route: string;
   workflowName: string;
   scheme?: string;
-  /** Other routes that start the same workflow. */
   sharedWith: string[];
   recent: RecentRun[];
   runs: number;
   failed: number;
-  /** Webhook runs of this route in progress, or 0 when unknown. */
   active: number;
   queueLabel: string | null;
 }
@@ -342,15 +331,12 @@ export function WebhookTable(
   );
 }
 
-// ── Run list on a detail page ───────────────────────────────────────────
-
 export const RUN_COLUMNS = ["Status", "Run", "Started", "Duration", "Outcome"];
 
 export function TriggerRunsTable(
   { runs, now, selected, onToggleSelect }: {
     runs: TriggerRun[];
     now?: number;
-    /** Run ids picked for comparison; a Compare column shows when set. */
     selected?: readonly string[];
     onToggleSelect?: (runId: string) => void;
   },

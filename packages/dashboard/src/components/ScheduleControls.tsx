@@ -25,13 +25,11 @@ import type { ScheduleAction, ScheduleFeedback } from "../lib/triggers.ts";
 
 interface ScheduleControlsProps {
   workflowName: string;
-  /** A serve override exists that a reset would remove. */
   canReset: boolean;
   pending?: ScheduleAction;
   feedback?: ScheduleFeedback;
   onEdit: () => void;
   onReset: () => void;
-  /** "row" keeps the controls compact for a table cell. */
   layout?: "row" | "header";
 }
 
@@ -40,11 +38,6 @@ const PENDING_TEXT: Record<ScheduleAction, string> = {
   reset: "Resetting…",
 };
 
-/**
- * Edit and Reset for one schedule. Reset removes the serve
- * override, so it asks for a second click; every control is disabled while
- * a change is in flight, and the outcome is announced beside them.
- */
 export function ScheduleControls(
   {
     workflowName,

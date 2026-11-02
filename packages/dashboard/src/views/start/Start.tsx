@@ -28,7 +28,6 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-// The start page's own type: Space Grotesk headings, IBM Plex Sans body.
 import "@fontsource/space-grotesk/600.css";
 import "@fontsource/space-grotesk/700.css";
 import "@fontsource/ibm-plex-sans/400.css";
@@ -135,16 +134,14 @@ const STOPPED_MESSAGE =
 
 interface PageToken {
   token: string | null;
-  /** True when the token came from the URL fragment on this load. */
   fromHash: boolean;
 }
 
 let cachedToken: PageToken | undefined;
 
 /**
- * Reads the token once per page load: from the fragment, else from
- * sessionStorage so a reload works. Storing it and clearing the fragment
- * happen in an effect (see {@link Start}).
+ * reads the token once per page load: from the fragment, else from
+ * sessionStorage so a reload works
  */
 function readToken(): PageToken {
   if (cachedToken !== undefined) return cachedToken;
@@ -163,10 +160,7 @@ function readToken(): PageToken {
   return cachedToken;
 }
 
-/**
- * Drops the stored token once swamp start has gone or refused it. Each
- * `swamp start` mints a new token, so a reload must not offer the old one.
- */
+/** each swamp start mints a new token, so a reload must not offer the old one */
 function forgetToken(): void {
   try {
     sessionStorage.removeItem(START_TOKEN_KEY);
@@ -183,7 +177,6 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-/** Renders text with `backtick` spans as inline code. */
 function withCode(text: string): ReactNode[] {
   return text.split("`").map((part, i) =>
     i % 2 === 1 ? <code key={i}>{part}</code> : part
@@ -292,17 +285,14 @@ function StartSession({ token }: { token: string }) {
   );
 }
 
-/** What the header's wordmark does while a workspace is open. */
 interface HeaderHome {
   go: () => void;
   disabled: boolean;
 }
 
 /**
- * Where a screen's header parts render: the breadcrumb (all workspaces,
- * this workspace) beside the wordmark, and the signed-in chip on the
- * other side. `setHome` makes the wordmark lead back to all workspaces.
- * The slots are null until the header has mounted.
+ * the slots are null until the header has mounted; setHome makes the wordmark
+ * lead back to all workspaces
  */
 const HeaderSlot = createContext<{
   crumbs: HTMLElement | null;
@@ -353,7 +343,6 @@ function StartFrame({ children }: { children: ReactNode }) {
   );
 }
 
-/** The first-run steps, in order, and the screens that belong to each. */
 const RAIL_STEPS = [
   { label: "Workspace", screens: ["workspace"] },
   { label: "Task", screens: ["task"] },
@@ -361,14 +350,12 @@ const RAIL_STEPS = [
   { label: "Launch", screens: ["trust", "launched"] },
 ] as const;
 
-/** The step a screen belongs to, or -1 for screens outside the steps. */
 function railStep(key: string): number {
   return RAIL_STEPS.findIndex((s) =>
     (s.screens as readonly string[]).includes(key)
   );
 }
 
-/** The getting-started steps beside the screen: done, current, to come. */
 function StepRail({ current }: { current: number }) {
   return (
     <nav className="start-rail" aria-label="Getting started">
@@ -495,11 +482,9 @@ function renderScreen(
 }
 
 /**
- * Arrow-key navigation and a roving tabindex for a group of `role="radio"`
- * buttons. Only the checked option (else the first) is in the tab order;
- * the arrows, Home and End move between enabled options, and selection
- * follows focus. Keys pressed in anything else inside the group (an input)
- * are left alone.
+ * only the checked option (else the first) is in the tab order; arrows, Home
+ * and End move between enabled options and selection follows focus; keys
+ * pressed in anything else inside the group are left alone
  */
 function useRadioGroup(selected: string | null, keys: readonly string[]) {
   const current = selected !== null && keys.includes(selected)
@@ -536,10 +521,6 @@ function useRadioGroup(selected: string | null, keys: readonly string[]) {
   };
 }
 
-/**
- * Lists the agent harnesses on this machine, while `enabled`. `refresh`
- * looks again, showing the list as loading until the reply comes.
- */
 function useHarnesses(client: StartClient, enabled = true) {
   const [harnesses, setHarnesses] = useState<StartHarness[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -570,9 +551,6 @@ function useHarnesses(client: StartClient, enabled = true) {
   return { harnesses, error, refresh };
 }
 
-/**
- * Runs one status-returning request at a time and keeps its error.
- */
 function useAction(
   onStatus: (status: StartStatus) => void,
   describeError?: (error: unknown) => string,
@@ -600,7 +578,6 @@ function useAction(
   return { busy, error, run, setError };
 }
 
-/** Stands in for `onStatus` on screens whose chips can't switch. */
 function ignoreStatus(): void {}
 
 function describeSwitchError(err: unknown): string {
@@ -608,11 +585,9 @@ function describeSwitchError(err: unknown): string {
 }
 
 /**
- * The header parts of every screen: the breadcrumb beside the wordmark
- * (All workspaces / this workspace) and the signed-in chip. Once a
- * workspace is chosen, the wordmark and "All workspaces" lead back to the
- * workspace list, and the workspace's name to its tasks. Screens that can't
- * leave (sign-in, blocked) pass no client, so nothing there is a link.
+ * once a workspace is chosen, the wordmark and "All workspaces" lead back to
+ * the workspace list and its name to its tasks; screens that cannot leave pass
+ * no client, so nothing there is a link
  */
 function StatusChips(
   {
@@ -625,9 +600,7 @@ function StatusChips(
     status: StartStatus;
     client?: StartClient;
     onStatus?: (status: StartStatus) => void;
-    /** True while the screen is busy; Switch waits for it. */
     disabled?: boolean;
-    /** True when switching would throw away unsaved typing. */
     confirmSwitch?: boolean;
   },
 ) {
@@ -656,7 +629,6 @@ function StatusChips(
     }
   };
 
-  // The wordmark leads back to all workspaces, as the breadcrumb does.
   const requestLeaveRef = useRef(requestLeave);
   requestLeaveRef.current = requestLeave;
   const homeDisabled = disabled || switching || confirming;
@@ -777,13 +749,12 @@ function describeChooseError(err: unknown): string {
 }
 
 /**
- * Sentinel option values for the pickers. Each starts with a NUL, which no
- * workspace name or task id can contain.
+ * sentinel option values start with a NUL, which no workspace name or task id
+ * can contain
  */
 const NEW_WORKSPACE = "\u0000new-workspace";
 const IMPORT_WORKSPACE = "\u0000import-workspace";
 
-/** What Swamp is, in one line, under "Welcome to Swamp". */
 const SWAMP_ONE_LINER =
   "Swamp turns what you'd do by hand into automation your AI agent builds, runs and keeps.";
 
@@ -792,44 +763,32 @@ const WORKSPACE_EXPLAINER =
 
 const IMPORT_FOLDER_HINT = "Choose a folder that's already a swamp folder.";
 
-/** Longest folder path shown on a workspace card before it's shortened. */
 const CARD_PATH_MAX = 60;
 
-/** Error codes from an import that are about the name, not the folder. */
 const IMPORT_NAME_ERRORS = new Set(["name_taken", "invalid_name"]);
 
 function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
   const [list, setList] = useState<WorkspaceSummary[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  // What the person typed; empty means "use the suggested name".
   const [name, setName] = useState("");
   const [suggested, setSuggested] = useState("");
-  // The folder typed or chosen for a new workspace; empty means the
-  // default the server reports.
   const [location, setLocation] = useState("");
   const [defaultLocation, setDefaultLocation] = useState("");
-  // The server's check of where the new workspace would be created, for
-  // the name and folder it was asked about.
   const [locationCheck, setLocationCheck] = useState<
     { key: string; reply: LocationCheckReply } | null
   >(null);
   const [locationPickError, setLocationPickError] = useState<string | null>(
     null,
   );
-  // The first-run layout. Set by the first load, and re-checked later only
-  // while nothing is typed (or when the tab regains focus), so the page
-  // never changes layout under someone typing.
+  // re-checked only while nothing is typed or when the tab regains focus, so
+  // the layout never changes under someone typing
   const [firstRun, setFirstRun] = useState(false);
   const { busy: choosing, error, run } = useAction(
     onStatus,
     describeChooseError,
   );
-  // The import form: its folder and optional name, and its own error so it
-  // can be shown under the field it is about.
   const [importPath, setImportPath] = useState("");
-  // The server's check of the folder typed or chosen for import: a tick
-  // when it holds a .swamp.yaml, else why it can't be imported.
   const [folderCheck, setFolderCheck] = useState<
     | { path: string; state: "checking" }
     | { path: string; state: "ok"; registeredAs?: string }
@@ -865,7 +824,6 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       );
     }
   }, [client]);
-  // Check as the user types, once they pause.
   useEffect(() => {
     if (importPath.trim() === "") {
       setFolderCheck(null);
@@ -875,7 +833,6 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     return () => clearTimeout(timer);
   }, [importPath, checkFolder]);
   const [importName, setImportName] = useState("");
-  // The machine's own folder chooser, opened by the server.
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   const [importErrorField, setImportErrorField] = useState<"path" | "name">(
@@ -933,15 +890,12 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
           ? prev
           : workspaces
       );
-      // Keep the suggestion shown first; the server offers a new one each read.
       setSuggested((prev) =>
         keepSuggestion(prev, suggestedName, workspaces.map((w) => w.name))
       );
       setDefaultLocation(defaultLocation);
       setListError(null);
       if (relayout) setFirstRun(workspaces.length === 0);
-      // Keep the choice while it is still listed; else pick up where you
-      // left off: the newest workspace.
       setSelected((prev) =>
         prev === NEW_WORKSPACE || prev === IMPORT_WORKSPACE ||
           (prev !== null && workspaces.some((w) => w.name === prev))
@@ -958,8 +912,6 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
           setListError(errorMessage(err, "Couldn't list your workspaces."));
         }
       });
-    // Keep the list current (another swamp start opening or closing a
-    // workspace) whenever the tab comes back into view, and every so often.
     const refresh = (regained: boolean) => {
       if (document.visibilityState !== "visible") return;
       load()
@@ -1007,9 +959,6 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
     newWorkspaceNameProblem(finalName, existing) === null;
   const importingSelected = selected === IMPORT_WORKSPACE;
   const creating = firstRun ? !importingSelected : selected === NEW_WORKSPACE;
-  // Ask the server where the new workspace would go each time the name or
-  // folder settles: it works the path out, so the preview is always the
-  // folder a create would make.
   const typedLocation = location.trim();
   const checkKey = locationCheckKey(finalName, typedLocation);
   const checkable = creating && list !== null &&
@@ -1033,7 +982,6 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
           }
         })
         .catch((err) => {
-          // Shown under Location; the create itself checks again.
           if (active) {
             setLocationCheck({
               key: locationCheckKey(finalName, typedLocation),
@@ -1066,7 +1014,6 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       !currentCheck.ok && currentCheck.field === "name"
     ? currentCheck.message
     : null;
-  // While a new check runs, the last folder stays shown, dimmed.
   const previewPath = currentCheck?.path ??
     (checkable ? locationCheck?.reply.path : undefined);
   const importCheck = importProblem(
@@ -1531,7 +1478,6 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
   );
 }
 
-/** A small stroke icon for the first-run steps. */
 function StepIcon({ path }: { path: string }) {
   return (
     <svg
@@ -1550,7 +1496,6 @@ function StepIcon({ path }: { path: string }) {
   );
 }
 
-/** What happens after the workspace: the rest of getting started. */
 function FirstRunSteps() {
   return (
     <ol className="start-next-steps" aria-label="What happens next">
@@ -1664,10 +1609,8 @@ function TaskScreen({ status, client, onStatus }: ScreenProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // One idea per visit, so the placeholder doesn't change while shown.
   const [idea] = useState(() => pickFirstTaskIdea(Math.random()));
-  // Typed text that Continue hasn't saved yet; Switch asks before losing it.
   const unsaved = text.trim() !== "" && text !== (status.task?.text ?? "");
   const taskCount = status.tasks?.length ?? 0;
-  // A new task in a workspace that has others: Cancel goes back to them.
   const nextTask = status.taskId === undefined && taskCount > 0;
 
   const submit = (e: React.FormEvent) => {
@@ -1766,10 +1709,6 @@ function TaskScreen({ status, client, onStatus }: ScreenProps) {
   );
 }
 
-/**
- * The quiet "All tasks (N)" link back to the workspace's home, shown once
- * the workspace has a task.
- */
 function AllTasksLink(
   { count, disabled, onClick }: {
     count: number | undefined;
@@ -1793,10 +1732,6 @@ function AllTasksLink(
   );
 }
 
-/**
- * One task in the workspace home's list. Every task is shown the same way;
- * the one open on the page is marked as selected.
- */
 function TaskRow(
   { task, now, selected, disabled, onOpen }: {
     task: TaskSummary;
@@ -1855,9 +1790,8 @@ function SignInScreen({ status, client, onStatus }: ScreenProps) {
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    // Events and the reply are ignored once this screen is gone. Starting
-    // again (a remount, or Try again) is safe: a second `start.signin` joins
-    // the running sign-in and the server replays its device code.
+    // a second start.signin joins the running sign-in and the server replays
+    // its device code, so restarting is safe
     let active = true;
     let failed = false;
     setState({ phase: "starting" });
@@ -1887,7 +1821,6 @@ function SignInScreen({ status, client, onStatus }: ScreenProps) {
       }
     })
       .then((next) => {
-        // An error event leaves the screen showing it, with Try again.
         if (active && !failed) onStatus(next);
       })
       .catch((err) => {
@@ -1902,7 +1835,6 @@ function SignInScreen({ status, client, onStatus }: ScreenProps) {
     };
   }, [attempt, client, onStatus]);
 
-  // Before any workspace is chosen this is a new person's first screen.
   const welcome = !status.workspaceName;
 
   return (
@@ -2241,10 +2173,6 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
   );
 }
 
-/**
- * The "set this workspace up for" tick tiles: enrolled agents are ticked and
- * locked; the others say whether they are installed.
- */
 function ToolTickGrid(
   { rows, enrolled, checked, disabled, onToggle }: {
     rows: readonly StartHarness[];
@@ -2307,7 +2235,6 @@ function ToolTickGrid(
   );
 }
 
-/** One line on what each agent is, for people choosing between them. */
 const HARNESS_BLURBS: Record<string, string> = {
   claude: "Anthropic's coding agent",
   codex: "OpenAI's coding agent",
@@ -2334,7 +2261,6 @@ function HarnessCard(
   { harness, selected, fixed = false, tabIndex, onSelect }: {
     harness: StartHarness;
     selected: boolean;
-    /** Only one agent can open, so the card shows it without a choice. */
     fixed?: boolean;
     tabIndex: number;
     onSelect: () => void;
@@ -2406,10 +2332,6 @@ function launchStepLabel(step: LaunchStep, name: string): string {
   }
 }
 
-/**
- * Streams `start.launch` (or `start.resume`), tracking the furthest step and
- * any error. `launch` resolves true once the agent launched.
- */
 function useLaunch(
   client: StartClient,
   onStatus: (s: StartStatus) => void,
@@ -2461,7 +2383,6 @@ function LaunchChecklist(
   { reached, name, resume = false }: {
     reached: LaunchStep | null;
     name: string;
-    /** Leaves out the brief step, which `start.resume` doesn't have. */
     resume?: boolean;
   },
 ) {
@@ -2560,13 +2481,11 @@ function TrustScreen({ status, client, onStatus }: ScreenProps) {
   );
 }
 
-/** The launch command with a Copy button, for when no window opened. */
 function CommandBlock(
   { client, command }: { client: StartClient; command: string },
 ) {
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
 
-  // "Copied" belongs to the command that was copied.
   useEffect(() => {
     setCopied("idle");
   }, [command]);
@@ -2598,10 +2517,6 @@ function CommandBlock(
   );
 }
 
-/**
- * What to do when no window could be opened: open a terminal, paste the
- * command. The command box comes last, under the steps.
- */
 function CopyCommandSteps(
   { client, command, name }: {
     client: StartClient;
@@ -2742,11 +2657,6 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
   );
 }
 
-/**
- * The workspace's home: every task, equally, and the open one's summary.
- * A launched task reopens its agent without pushing the task to it again;
- * one not launched yet carries on from its step.
- */
 function HomeScreen({ status, client, onStatus }: ScreenProps) {
   const name = status.harness?.displayName ?? "Your agent";
   const { busy, error: actionError, run } = useAction(onStatus);
@@ -2757,10 +2667,8 @@ function HomeScreen({ status, client, onStatus }: ScreenProps) {
   );
   const [resumed, setResumed] = useState(false);
   const other = useOpenAgent(client, onStatus);
-  // Which configured agents can launch here decides the agent toggle.
   const { harnesses, error: harnessError } = useHarnesses(client);
   const taskHarness = status.harness?.id ?? null;
-  // An explicit pick from the toggle; null follows the task's own agent.
   const [choice, setChoice] = useState<string | null>(null);
   const task = splitTask(status.task?.text ?? "");
   const now = new Date();
@@ -3054,17 +2962,12 @@ function HomeScreen({ status, client, onStatus }: ScreenProps) {
   );
 }
 
-/** What the last `start.agent.open` ended with. */
 interface AgentOpened {
   name: string;
   opened: boolean;
   command: string;
 }
 
-/**
- * Streams `start.agent.open`: opens an agent in the workspace without the
- * task, tracking its progress and whether a window opened.
- */
 function useOpenAgent(
   client: StartClient,
   onStatus: (s: StartStatus) => void,
@@ -3128,19 +3031,12 @@ function useOpenAgent(
   return { openAgent, openingId, reached, opened, error, reset };
 }
 
-/**
- * The quiet "Configured agents" panel on the resume, launched and tasks
- * screens: set the workspace up for more agents without starting a new
- * task. Which configured agent to launch is chosen on the home screen.
- */
 function WorkspaceAgentsPanel(
   { status, client, onStatus, disabled = false }: ScreenProps & {
-    /** True while the screen around the panel is busy. */
     disabled?: boolean;
   },
 ) {
   const [expanded, setExpanded] = useState(false);
-  // Looked up each time the panel opens, so it reflects new installs.
   const { harnesses, error: listError } = useHarnesses(client, expanded);
   const [checked, setChecked] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -3220,14 +3116,8 @@ function WorkspaceAgentsPanel(
   );
 }
 
-/** Past this many characters a task is cut down in summaries. */
 const TASK_PREVIEW_CHARS = 140;
 
-/**
- * A task in a summary, however long it is: its first line, cut to two
- * lines, and the whole text behind "Show full task" in a box that scrolls
- * inside itself, so a pasted essay never stretches the page.
- */
 function TaskPreview({ text }: { text: string }) {
   const task = splitTask(text);
   const long = task.rest.length > 0 ||
@@ -3245,7 +3135,6 @@ function TaskPreview({ text }: { text: string }) {
   );
 }
 
-/** The behaviors and workflows a workspace holds, by name, in a summary. */
 function BuiltList(
   { contents, fallback }: {
     contents: StartStatus["contents"];

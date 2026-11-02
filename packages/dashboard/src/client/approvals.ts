@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** A gate that can still be approved or rejected. */
 export interface ApprovalInfo {
   workflowName: string;
   runId: string;
@@ -25,20 +24,16 @@ export interface ApprovalInfo {
   suspendedAt?: string;
   prompt?: string;
   inputs?: Readonly<Record<string, unknown>>;
-  /** Who started the run, as the run recorded it. */
   initiatedBy?: string;
   /**
    * Whether this viewer holds `approve` on the gate's workflow. Absent from
    * a serve that does not say; serve decides on the request either way.
    */
   canDecide?: boolean;
-  /** On a nested workflow's run, the parent that started it. */
   parentRun?: { workflowName: string; runId: string };
-  /** Whether that parent still waits on this run. */
   parentWaiting?: boolean;
 }
 
-/** A gate past its timeout: it can only be cancelled. */
 export interface ExpiredGate {
   workflowId: string;
   workflowName: string;
@@ -51,7 +46,10 @@ export interface ExpiredGate {
   parentWaiting?: boolean;
 }
 
-/** The shared listing, including replies from serve versions without expired gates. */
+/**
+ * the shared listing; `expired` is absent from replies of serve versions that
+ * do not list expired gates
+ */
 export interface ApprovalsReply {
   data?: { approvals?: ApprovalInfo[]; expired?: ExpiredGate[] };
 }
@@ -68,12 +66,10 @@ function listAt<T>(payload: unknown, key: string): T[] {
   return Array.isArray(list) ? list as T[] : [];
 }
 
-/** The gates still waiting for a decision. */
 export function pendingApprovals(payload: unknown): ApprovalInfo[] {
   return listAt<ApprovalInfo>(payload, "approvals");
 }
 
-/** The gates past their timeout. Empty for a serve that does not list them. */
 export function expiredApprovals(payload: unknown): ExpiredGate[] {
   return listAt<ExpiredGate>(payload, "expired");
 }

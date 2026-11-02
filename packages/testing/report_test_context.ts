@@ -29,14 +29,12 @@ import type {
   WorkflowReportContext,
 } from "./report_types.ts";
 
-/** A log entry captured by the report test context's logger. */
 export interface CapturedReportLog {
   level: LogLevel;
   message: string;
   args: unknown[];
 }
 
-/** Stored data artifact for the fake data repository. */
 export interface StoredDataArtifact {
   modelType: string;
   modelId: string;
@@ -44,16 +42,12 @@ export interface StoredDataArtifact {
   content?: Uint8Array;
 }
 
-/** Base options shared by all report context scopes. */
 interface BaseReportTestOptions {
   repoDir?: string;
-  /** Pre-seed data artifacts for the fake data repository. */
   dataArtifacts?: StoredDataArtifact[];
-  /** Pre-seed definitions for the fake definition repository. */
   definitions?: Array<{ modelType: string; definition: TestDefinition }>;
 }
 
-/** Options for creating a method-scope report context. */
 export interface MethodReportTestContextOptions extends BaseReportTestOptions {
   scope: "method";
   modelType?: string;
@@ -67,7 +61,6 @@ export interface MethodReportTestContextOptions extends BaseReportTestOptions {
   dataHandles?: DataHandle[];
 }
 
-/** Options for creating a model-scope report context. */
 export interface ModelReportTestContextOptions extends BaseReportTestOptions {
   scope: "model";
   modelType?: string;
@@ -81,7 +74,6 @@ export interface ModelReportTestContextOptions extends BaseReportTestOptions {
   dataHandles?: DataHandle[];
 }
 
-/** Options for creating a workflow-scope report context. */
 export interface WorkflowReportTestContextOptions
   extends BaseReportTestOptions {
   scope: "workflow";
@@ -93,43 +85,17 @@ export interface WorkflowReportTestContextOptions
   stepExecutions?: WorkflowReportContext["stepExecutions"];
 }
 
-/** Discriminated union of report test context options. */
 export type ReportTestContextOptions =
   | MethodReportTestContextOptions
   | ModelReportTestContextOptions
   | WorkflowReportTestContextOptions;
 
-/** The return value from createReportTestContext. */
 export interface ReportTestContextResult {
-  /** The ReportContext to pass to your report execute function. */
   context: ReportContext;
-  /** Returns all log entries captured during execution. */
   getLogs(): CapturedReportLog[];
-  /** Returns log entries filtered by level. */
   getLogsByLevel(level: LogLevel): CapturedReportLog[];
 }
 
-/**
- * Creates a test report context for unit testing extension report execute
- * functions.
- *
- * ```typescript
- * import { createReportTestContext } from "@swamp-club/swamp-testing";
- *
- * Deno.test("report generates markdown summary", async () => {
- *   const { context } = createReportTestContext({
- *     scope: "method",
- *     modelType: "aws/ec2-instance",
- *     methodName: "create",
- *     executionStatus: "succeeded",
- *     dataHandles: [],
- *   });
- *
- *   const result = await myReport.execute(context);
- *   assertStringIncludes(result.markdown, "## Summary");
- * });
- * ```
- */
 export function createReportTestContext(
   options: ReportTestContextOptions,
 ): ReportTestContextResult {

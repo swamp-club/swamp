@@ -17,24 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The words both dashboards show for what swamp's code and protocol call
-// a model. "Behavior" is the product term (design/primitives/behaviors.md);
-// view ids, routes' view names, request methods and payload fields keep
-// the model name. React-free, so tests can check the wording directly.
+// "behavior" is the product term; view ids, route view names, request methods
+// and payload fields keep the model name
 
-/** The behaviors list: its sidebar entry, page heading and breadcrumb. */
 export const BEHAVIORS_LABEL = "Behaviors";
 
-/** The behaviors list's empty state, when the repo defines none. */
 export const NO_BEHAVIORS_TITLE = "No behaviors defined yet";
 
-/** The data page's filter option for every behavior. */
 export const ALL_BEHAVIORS_LABEL = "All behaviors";
 
-/** The data table's column, and the filter's accessible name. */
 export const BEHAVIOR_COLUMN = "Behavior";
 
-/** "behavior" or "behaviors" for a count, as stat tiles show it. */
 export function behaviorNoun(n: number): string {
   return n === 1 ? "behavior" : "behaviors";
 }

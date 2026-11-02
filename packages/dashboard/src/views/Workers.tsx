@@ -67,7 +67,6 @@ const STATUSES: readonly WorkerStatus[] = [
   "disconnected",
 ];
 
-/** Header breakdown of the connected count, in the order STATUSES lists them. */
 const CONNECTED_STATUSES = STATUSES.filter((s) => s !== "disconnected");
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
@@ -531,7 +530,6 @@ function WorkerDetail(
   );
 }
 
-/** Links a slot's lease to the run it serves, or to its workflow when the run is not known. */
 function SlotLink(
   { lease, children }: { lease: FleetLease; children: string },
 ) {

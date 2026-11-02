@@ -25,7 +25,6 @@ import { ScheduleEditorForm } from "../components/ScheduleEditorForm.tsx";
 import { Skeleton, SkeletonRegion } from "../components/Skeleton.tsx";
 import { isDeniedCode } from "../lib/triggers.ts";
 
-/** `workflow.trigger.get`: the schedule from the file, the override, and what applies. */
 export interface TriggerInfo {
   workflowName: string;
   builtIn: { schedule: string | null; inputs: Record<string, unknown> } | null;
@@ -40,15 +39,13 @@ export interface TriggerInfo {
 }
 
 /**
- * The schedule editor as a modal dialog. Loads the effective schedule and
- * inputs, saves both together with `workflow.trigger.set`, and closes once
- * the change landed; a refusal stays in the dialog.
+ * saves schedule and inputs together with workflow.trigger.set and closes once
+ * the change landed; a refusal stays in the dialog
  */
 export function ScheduleEditDialog(
   { workflowName, mutations, onClose, onSaved, timeZone }: {
     workflowName: string;
     mutations: ScheduleMutations;
-    /** Serve's scheduler time zone, for the preview. */
     timeZone?: string;
     onClose: () => void;
     onSaved?: () => void;

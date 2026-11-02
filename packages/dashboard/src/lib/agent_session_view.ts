@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What the agent sessions page draws, computed from records it has read
- * (swamp-club#4155). Pure, no React. Findings are read from the records and
- * never computed here (swamp-club#4157).
- *
- * A call is addressed by its session id and call id together (`CallKey`):
- * call ids are unique only within a session, and a session's subagents are
- * separate records.
+ * findings are read from the records, never computed here; a call is addressed
+ * by session id and call id together because call ids are unique only within a
+ * session
  */
 
 import type {
@@ -48,7 +44,6 @@ export function clampedDuration(start: number, end: number): number {
   return Math.max(0, end - start);
 }
 
-/** The share of swamp calls among calls that used swamp or went around it. */
 export function swampShare(
   counts: { swamp: number; bypass: number },
 ): number | null {
@@ -56,7 +51,6 @@ export function swampShare(
   return counted === 0 ? null : counts.swamp / counted;
 }
 
-/** Each label's share of all calls, for the mix bar. */
 export function labelMix(
   summary: Pick<
     AgentSessionSummary,
@@ -82,7 +76,6 @@ export function allCalls(
 export interface SessionTiles {
   readonly share: number | null;
   readonly counts: Record<CallLabel, number>;
-  /** Bypasses by category, most first. */
   readonly bypassCategories: ReadonlyArray<readonly [string, number]>;
   readonly calls: number;
   readonly failed: number;
@@ -91,12 +84,10 @@ export interface SessionTiles {
   readonly wallMs: number;
   readonly turns: number;
   readonly outputTokens: number;
-  /** Input plus cache reads and writes: what the model read as context. */
   readonly contextTokens: number;
   readonly cacheShare: number | null;
 }
 
-/** The tiles for one session's own calls. */
 export function sessionTiles(record: AgentSessionRecord): SessionTiles {
   const calls = allCalls(record);
   const counts: Record<CallLabel, number> = {
@@ -151,11 +142,9 @@ export function sessionTiles(record: AgentSessionRecord): SessionTiles {
   };
 }
 
-/** Totals across the listed sessions, read from their summary tags only. */
 export interface ListTotals {
   readonly sessions: number;
   readonly headless: number;
-  /** Sessions without a readable summary, left out of every other total. */
   readonly unsummarized: number;
   readonly share: number | null;
   readonly counts: Record<CallLabel, number>;
@@ -169,9 +158,7 @@ export interface ListTotals {
   readonly contextTokens: number;
   readonly cacheShare: number | null;
   readonly findings: Record<Severity, number>;
-  /** Sessions with a high or medium finding. */
   readonly sessionsToReview: number;
-  /** Sessions with any high, medium or low finding. */
   readonly sessionsWithFindings: number;
 }
 
@@ -254,23 +241,15 @@ export function listTotals(
   };
 }
 
-/** The gap the session strip draws between turns, in place of idle time. */
 export const STRIP_GAP_MS = 1500;
 
 export interface StripSegment {
   readonly n: number;
-  /** Where the turn starts and ends on the strip, idle time removed. */
   readonly from: number;
   readonly to: number;
-  /** The idle time removed before this turn. */
   readonly idleBefore: number;
 }
 
-/**
- * Lays turns end to end with idle time removed: each keeps its own length,
- * and the time between two turns becomes `STRIP_GAP_MS` (or less, when the
- * turns were closer than that). Turns are taken in start order.
- */
 export function compressIdle(
   turns: readonly AgentSessionTurn[],
 ): { segments: StripSegment[]; total: number } {
@@ -297,7 +276,6 @@ export function compressIdle(
   return { segments, total: cursor };
 }
 
-/** A turn's end, stretched to cover a call that ran past it. */
 export function turnEnd(turn: AgentSessionTurn): number {
   return turn.calls.reduce((end, c) => Math.max(end, c.end), turn.end);
 }
@@ -315,7 +293,6 @@ export function turnScale(
   };
 }
 
-/** Where a call sits on its turn's scale, as fractions of the width. */
 export function callBar(
   call: Pick<AgentSessionToolCall, "start" | "end">,
   scale: { start: number; length: number },
@@ -376,7 +353,6 @@ export function spanTree(
   return roots;
 }
 
-/** The subagent each of a session's calls started, by call id. */
 export function subagentLinks(record: AgentSessionRecord): Map<string, string> {
   const links = new Map<string, string>();
   for (const call of allCalls(record)) {
@@ -389,7 +365,6 @@ export function subagentLinks(record: AgentSessionRecord): Map<string, string> {
 
 export interface ShownFinding {
   readonly finding: AgentSessionFinding;
-  /** The session the finding belongs to: the opened one or a subagent. */
   readonly sessionId: string;
   readonly fromSubagent: boolean;
   readonly calls: ReadonlySet<CallKey>;
@@ -402,10 +377,6 @@ const SEVERITY_ORDER: Record<Severity, number> = {
   info: 3,
 };
 
-/**
- * The opened session's findings with those of its loaded subagents, most
- * severe first, the session's own before its subagents' within a severity.
- */
 export function mergedFindings(
   record: AgentSessionRecord,
   children: readonly AgentSessionRecord[],
@@ -434,14 +405,9 @@ export type CallFilter =
   | {
     readonly kind: "calls";
     readonly calls: ReadonlySet<CallKey>;
-    /** The finding the calls come from, so they show in its colour. */
     readonly severity?: Severity;
   };
 
-/**
- * The colour a filter shows in, as an `as-tone-*` class suffix: a label's
- * own colour, red for failed calls, a finding's severity.
- */
 export function filterTone(filter: CallFilter): string {
   switch (filter.kind) {
     case "all":
@@ -455,7 +421,6 @@ export function filterTone(filter: CallFilter): string {
   }
 }
 
-/** Whether a call passes the filter. */
 export function passes(
   filter: CallFilter,
   sessionId: string,
@@ -473,7 +438,6 @@ export function passes(
   }
 }
 
-/** Every call in the sessions that passes the filter. */
 export function matchingCalls(
   filter: CallFilter,
   sessions: readonly AgentSessionRecord[],

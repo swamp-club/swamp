@@ -44,7 +44,6 @@ Deno.test("MiniDag: renders a node per job and an edge per dependency", () => {
   assertEquals(html.match(/class="mini-dag-edge[" ]/g)?.length, 3);
   assertStringIncludes(html, "tone-suspended");
   assertStringIncludes(html, "tone-waiting");
-  // Dependencies are spelled out for screen readers.
   assertStringIncludes(html, ", after approve");
 });
 

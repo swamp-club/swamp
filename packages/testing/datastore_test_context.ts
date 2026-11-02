@@ -27,14 +27,12 @@ import type {
   LockOptions,
 } from "./datastore_types.ts";
 
-/** A recorded lock operation for inspection. */
 export interface LockOperation {
   method: "acquire" | "release" | "withLock" | "inspect" | "forceRelease";
   lockKey?: string;
   timestamp: number;
 }
 
-/** A recorded sync operation for inspection. */
 export interface SyncOperation {
   method: "pullChanged" | "pushChanged" | "markDirty";
   timestamp: number;
@@ -47,47 +45,21 @@ export interface SyncOperation {
   relPath?: string;
 }
 
-/** Options for creating a datastore test context. */
 export interface DatastoreTestContextOptions {
-  /** Datastore path returned by resolveDatastorePath (default: "/tmp/swamp-test-datastore"). */
   datastorePath?: string;
-  /** Cache path returned by resolveCachePath (default: undefined — no cache). */
   cachePath?: string;
-  /** Health check result (default: healthy). */
   healthResult?: Partial<DatastoreHealthResult>;
-  /** If true, lock acquire will fail with an error (default: false). */
   lockAcquireFails?: boolean;
-  /** Whether to provide a sync service (default: false). */
   withSyncService?: boolean;
 }
 
-/** The return value from createDatastoreTestContext. */
 export interface DatastoreTestContextResult {
-  /** The DatastoreProvider to pass to code under test. */
   provider: DatastoreProvider;
-  /** Returns all lock operations recorded during the test. */
   getLockOperations(): LockOperation[];
-  /** Returns all sync operations recorded during the test. */
   getSyncOperations(): SyncOperation[];
-  /** Returns whether any lock is currently held. */
   isLockHeld(): boolean;
 }
 
-/**
- * Creates an in-memory DatastoreProvider for unit testing extension
- * datastore implementations.
- *
- * ```typescript
- * import { createDatastoreTestContext } from "@swamp-club/swamp-testing";
- *
- * Deno.test("datastore creates a healthy verifier", async () => {
- *   const { provider } = createDatastoreTestContext();
- *   const verifier = provider.createVerifier();
- *   const result = await verifier.verify();
- *   assertEquals(result.healthy, true);
- * });
- * ```
- */
 export function createDatastoreTestContext(
   options?: DatastoreTestContextOptions,
 ): DatastoreTestContextResult {

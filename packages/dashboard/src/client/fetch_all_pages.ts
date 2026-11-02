@@ -20,7 +20,6 @@
 import { extractArray, extractTotal } from "./extract.ts";
 
 export interface FetchAllPagesOptions {
-  /** Items asked for per request. */
   pageSize?: number;
   /** Safety stop for a server whose `total` keeps moving. */
   maxPages?: number;

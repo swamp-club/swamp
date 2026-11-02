@@ -44,7 +44,6 @@ Deno.test("fuzzyMatch: a word-start match outranks one mid-word", () => {
 });
 
 Deno.test("fuzzyMatch: finds the best start, not just the first", () => {
-  // The first "a" is inside "data"; the word-start "api" should win.
   const m = fuzzyMatch("api", "data-api")!;
   assertEquals(m.indices, [5, 6, 7]);
 });

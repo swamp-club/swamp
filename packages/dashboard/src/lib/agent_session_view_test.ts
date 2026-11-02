@@ -135,7 +135,6 @@ Deno.test("turnScale and callBar: a call sits inside its turn's own width", () =
     const bar = callBar(call, scale);
     assert(bar.left >= 0 && bar.width >= 0 && bar.left + bar.width <= 1 + 1e-9);
   }
-  // A negative duration draws as zero.
   assertEquals(
     callBar({ start: 50, end: 10 }, { start: 0, length: 100 }).width,
     0,
@@ -172,7 +171,6 @@ Deno.test("mergedFindings: the subagent's findings join the parent's, most sever
   assertEquals(shown.map((f) => f.finding.severity), ["medium", "low", "info"]);
   const fromChild = shown.find((f) => f.fromSubagent);
   assertEquals(fromChild?.sessionId, child.id);
-  // Show calls reaches the subagent's own calls.
   const keys = matchingCalls({ kind: "calls", calls: fromChild!.calls }, [
     long,
     child,

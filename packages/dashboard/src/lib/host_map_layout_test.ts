@@ -69,7 +69,6 @@ Deno.test("layoutGroups: bigger capacity gets more area, cells tile the width", 
     assert(c.y >= 0 && c.y + c.h <= height);
     assert(c.h > HEADER, `${c.key} taller than its header`);
   }
-  // Gutters keep cards apart.
   for (const a of cells) {
     for (const b of cells) {
       if (a === b) continue;

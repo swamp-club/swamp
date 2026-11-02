@@ -59,7 +59,7 @@ Deno.test("addDays: crosses month, year and DST boundaries by whole days", () =>
   assertEquals(addDays("2026-02-28", 1), "2026-03-01");
   assertEquals(addDays("2028-02-28", 1), "2028-02-29");
   assertEquals(addDays("2026-12-31", 1), "2027-01-01");
-  // US DST starts 2026-03-08, EU 2026-03-29: day keys never skip.
+  // day keys never skip across the US and EU daylight-saving starts
   assertEquals(addDays("2026-03-07", 1), "2026-03-08");
   assertEquals(addDays("2026-03-29", -1), "2026-03-28");
   assertEquals(addDays("2026-11-01", 7), "2026-11-08");
@@ -77,7 +77,6 @@ Deno.test("addMonths: wraps years both ways", () => {
 });
 
 Deno.test("monthGrid: pads to whole weeks starting Sunday or Monday", () => {
-  // October 2026 starts on a Thursday and has 31 days.
   const sunday = monthGrid({ year: 2026, month: 9 });
   assertEquals(sunday[0], [
     null,
@@ -99,16 +98,12 @@ Deno.test("monthGrid: pads to whole weeks starting Sunday or Monday", () => {
 Deno.test("bucketByDay: folds UTC hours into New York days across the fall-back change", () => {
   const ny = dayKeyFormatter("America/New_York");
   const days = bucketByDay([
-    // 2026-11-01 03:00Z is Oct 31 23:00 EDT.
     hour("2026-11-01T03:00:00.000Z", 5, 1),
-    // 04:00Z is Nov 1 00:00 EDT.
     hour("2026-11-01T04:00:00.000Z", 2),
     // Clocks fall back at 06:00Z; 05:00Z and 06:00Z are both 01:00 local.
     hour("2026-11-01T05:00:00.000Z", 3, 0, 1),
     hour("2026-11-01T06:00:00.000Z", 4),
-    // 2026-11-02 04:00Z is Nov 1 23:00 EST — still Nov 1.
     hour("2026-11-02T04:00:00.000Z", 1, 1),
-    // 05:00Z is Nov 2 00:00 EST.
     hour("2026-11-02T05:00:00.000Z", 6),
   ], ny);
   assertEquals(days.get("2026-10-31"), {
@@ -128,7 +123,7 @@ Deno.test("bucketByDay: folds UTC hours into New York days across the fall-back 
 
 Deno.test("bucketByDay: spring-forward day in Berlin keeps its 23 hours", () => {
   const berlin = dayKeyFormatter("Europe/Berlin");
-  // 2026-03-29: clocks jump 02:00 → 03:00 CET→CEST (01:00Z).
+  // at the EU change clocks jump 02:00 to 03:00 CET to CEST (01:00Z)
   const buckets = [];
   for (let h = -1; h < 23; h++) {
     buckets.push(
@@ -136,7 +131,6 @@ Deno.test("bucketByDay: spring-forward day in Berlin keeps its 23 hours", () => 
     );
   }
   const days = bucketByDay(buckets, berlin);
-  // Mar 28 23:00Z is Mar 29 00:00 CET; Mar 29 22:00Z is Mar 30 00:00 CEST.
   assertEquals(days.get("2026-03-28"), undefined);
   assertEquals(days.get("2026-03-29")?.runs, 23);
   assertEquals(days.get("2026-03-30")?.runs, 1);
@@ -179,7 +173,6 @@ Deno.test("dayBar: scales to the busiest day and keeps failures visible", () => 
   assertEquals(busiest.succeeded, 1);
   const quiet = dayBar({ runs: 1, succeeded: 1, failed: 0, cancelled: 0 }, 100);
   assert(quiet.total >= 0.2 && quiet.total < 1);
-  // 1 failure in 100 runs still gets a sliver.
   const incident = dayBar(
     { runs: 100, succeeded: 99, failed: 1, cancelled: 0 },
     100,
@@ -240,7 +233,6 @@ Deno.test("moveDay: arrows, week edges and months, never past today", () => {
   assertEquals(moveDay("2026-10-01", "ArrowDown", today), "2026-10-08");
   assertEquals(moveDay("2026-10-08", "ArrowDown", today), "2026-10-12");
   assertEquals(moveDay("2026-10-01", "ArrowUp", today), "2026-09-24");
-  // Oct 1 2026 is a Thursday.
   assertEquals(moveDay("2026-10-01", "Home", today), "2026-09-27");
   assertEquals(moveDay("2026-10-01", "End", today), "2026-10-03");
   assertEquals(moveDay("2026-10-01", "Home", today, 1), "2026-09-28");

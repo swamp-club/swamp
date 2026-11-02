@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Runs started by one trigger (schedule or webhook), for the Schedules and
-// Webhooks pages. Asks serve's `workflow.run.summary` for exact per-workflow
-// counts over the dashboard time range; a serve that predates it is asked
-// for a run search instead, summarised here.
+// asks serve's `workflow.run.summary` for exact per-workflow counts over the
+// dashboard time range; an older serve is asked for a run search instead,
+// summarised here
 
 import { useEffect, useMemo, useRef } from "react";
 import { useRequest } from "./useRequest.ts";
@@ -49,13 +48,11 @@ import { MAX_WORKFLOW_NAMES } from "../lib/run_filters.ts";
 export interface TriggerRunSummaries {
   byWorkflow: Map<string, WorkflowRunSummary>;
   totals: RunCounts;
-  /** No answer yet. */
   loading: boolean;
   error: string | null;
   refetch: () => void;
 }
 
-/** Per-workflow summaries of one trigger's runs in the time range. */
 export function useTriggerRunSummaries(
   triggerSource: "schedule" | "webhook",
   workflows: readonly string[],
@@ -81,7 +78,6 @@ export function useTriggerRunSummaries(
     false,
     JSON.stringify(range),
   );
-  // Older serves don't know the summary request: fall back to a search.
   const fallback = enabled && summary.error !== null;
   const bounds = useTimeBounds();
   const search = useTriggerSearch(
@@ -128,7 +124,6 @@ export function useTriggerRunSummaries(
 
 export interface TriggerRunList {
   runs: TriggerRun[];
-  /** Matches serve reported before the page limit, when it reports one. */
   total: number | null;
   loading: boolean;
   error: string | null;
@@ -182,16 +177,15 @@ function useTriggerSearch(
   bounds: { since?: string; until?: string },
   enabled: boolean,
 ) {
-  // Stable while the range is, so the request is not re-sent as the clock
-  // moves (swamp-club#3444).
+  // stable while the range is, so the request is not re-sent as the clock moves
   const requestBounds = useRequestTimeBounds();
   const current = useRequest(
     "workflow.run.search",
     { ...payload, ...requestBounds },
     { enabled },
   );
-  // On a preset range, read again once the oldest match leaves the window
-  // (swamp-club#3450). An older serve reports no window: nothing is armed.
+  // on a preset range, read again once the oldest match leaves the window; an
+  // older serve reports no window, so nothing is armed
   const searchWindow = extractSearchWindow(current.data);
   useRefetchOnAgeOut(current.refresh, {
     answer: current.data,
@@ -200,7 +194,6 @@ function useTriggerSearch(
       : null,
   }, enabled);
   const legacy = enabled && current.error !== null;
-  // Minute-stable, like the bounds, so the request key doesn't churn.
   const minute = Math.floor(Date.now() / 60_000) * 60_000;
   const since = legacySince(bounds.since, minute);
   const older = useRequest(
@@ -221,10 +214,6 @@ function useTriggerSearch(
   }, [source.data, source.error, source.refetch, legacy, bounds, enabled]);
 }
 
-/**
- * Refetches when `key` changes after the first render — e.g. when a
- * schedule fires (its next run moves on) or starts or stops running.
- */
 export function useRefetchOnChange(key: string, refetch: () => void): void {
   const last = useRef(key);
   useEffect(() => {

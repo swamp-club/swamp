@@ -44,12 +44,10 @@ import {
 } from "./PageSkeletons.tsx";
 import { serveConfigRows } from "./serve_config_rows.ts";
 
-/** Renders a skeleton and checks what every loading state must satisfy. */
 function renderBusy(node: ReactElement, label: string): string {
   const html = renderToStaticMarkup(node);
   assertStringIncludes(html, 'aria-busy="true"');
   assertStringIncludes(html, label);
-  // Loading must never read as "nothing here".
   assert(!html.includes("empty-state"), "renders an empty state");
   assert(!/>No [a-z]/.test(html), "renders empty-state copy");
   assert(!html.includes("Loading…"), "renders bare loading text");

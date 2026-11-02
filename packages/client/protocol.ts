@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https:\/\/www.gnu.org\/licenses\/>.
 
 /**
- * Wire protocol types for the swamp WebSocket API.
- *
- * These types mirror src/serve/protocol.ts in the swamp CLI. They are
- * duplicated here so the client package has zero dependencies on the CLI
- * source tree and can be published independently to JSR.
+ * mirrors src/serve/protocol.ts, duplicated so the package has no dependency on
+ * the CLI source and can be published independently
  */
-
-// ── Inbound (client → server) ────────────────────────────────────────────
 
 export interface WorkflowRunPayload {
   workflowIdOrName: string;
@@ -51,10 +46,8 @@ export interface WorkflowRunPayload {
   lockHolderTokens?: string;
 }
 
-/** `server.version` capability: the server honours `literalInputs`. */
 export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
 
-/** `server.version` capability: the server honours `fromJob` on a resume. */
 export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
 
 export interface ModelMethodRunPayload {
@@ -62,10 +55,9 @@ export interface ModelMethodRunPayload {
   methodName: string;
   inputs?: Record<string, unknown>;
   /**
-   * Treat `inputs` as data: expression text in them is never evaluated
-   * (swamp-club#3205). Only send to a server whose `server.version` reply
-   * lists {@link SERVE_CAPABILITY_LITERAL_INPUTS}; an older server ignores
-   * the field and evaluates.
+   * treat `inputs` as data: expression text is never evaluated. Only send to a
+   * server whose `server.version` lists SERVE_CAPABILITY_LITERAL_INPUTS; an
+   * older server ignores the field and evaluates
    */
   literalInputs?: boolean;
   lastEvaluated?: boolean;
@@ -88,8 +80,6 @@ export interface ModelMethodRunPayload {
    */
   lockHolderTokens?: string;
 }
-
-// ── Data operations ──────────────────────────────────────────────────────
 
 export interface DataGetPayload {
   modelIdOrName?: string;
@@ -157,8 +147,6 @@ export interface DataRenamePayload {
   newName: string;
 }
 
-// ── Model operations ─────────────────────────────────────────────────────
-
 export interface ModelGetPayload {
   modelIdOrName: string;
 }
@@ -206,7 +194,6 @@ export interface ModelUsageSummaryPayload {
    * ago by serve's clock for a duration like `7d`.
    */
   since?: string;
-  /** Counts outputs started before this instant or duration ago (exclusive). */
   until?: string;
   /** Outputs kept per model in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
@@ -214,17 +201,8 @@ export interface ModelUsageSummaryPayload {
 
 export interface ModelOutputSearchPayload {
   query?: string;
-  /** Only outputs of this model, by exact name or id. */
   model?: string;
-  /**
-   * Only outputs started at or after this ISO 8601 instant, or this long
-   * ago by serve's clock for a duration like `7d`.
-   */
   since?: string;
-  /**
-   * Only outputs started before this ISO 8601 instant or duration ago
-   * (exclusive).
-   */
   until?: string;
   /**
    * At most this many results, most recent first, counted among the outputs
@@ -256,8 +234,6 @@ export interface ModelEvaluatePayload {
   modelIdOrName?: string;
 }
 
-// ── Workflow operations ──────────────────────────────────────────────────
-
 export interface WorkflowGetPayload {
   workflowIdOrName: string;
 }
@@ -266,7 +242,6 @@ export interface WorkflowSearchPayload {
   query?: string;
   /** Page size; omitted returns every authorized workflow. */
   limit?: number;
-  /** Number of authorized workflows to skip before the page. */
   offset?: number;
 }
 
@@ -290,14 +265,11 @@ export interface WorkflowRunSearchPayload {
   query?: string;
   /** Runs started at or after: a duration back from now (`7d`) or ISO time. */
   since?: string;
-  /** Runs started before (exclusive): a duration back or ISO time. */
   until?: string;
   status?: string;
-  /** One workflow's runs, by name ignoring case. */
   workflow?: string;
   /** Runs of any of these workflows, by exact name; empty filters nothing. */
   workflows?: string[];
-  /** Runs with this trigger source (`schedule`, `api`…), ignoring case. */
   triggerSource?: string;
   /** Runs with any of these statuses; with `status`, both must hold. */
   statuses?: string[];
@@ -307,11 +279,9 @@ export interface WorkflowRunSearchPayload {
   inputs?: Record<string, string>;
   /** Page size; the server applies a default of 500 when omitted. */
   limit?: number;
-  /** Number of authorized runs to skip before the page. */
   offset?: number;
 }
 
-/** One output in a model's `recent` list. */
 export interface ModelUsageSummaryRecentOutput {
   id: string;
   methodName: string;
@@ -325,7 +295,6 @@ export interface ModelUsageSummaryRecentOutput {
   stepName?: string;
 }
 
-/** Usage of one definition id under one type over the window. */
 export interface ModelUsageSummaryModel {
   definitionId: string;
   modelName: string;
@@ -333,19 +302,14 @@ export interface ModelUsageSummaryModel {
   executions: number;
   failed: number;
   lastStartedAt: string;
-  /** Distinct methods run, most recent first. */
   methods: string[];
-  /** The newest outputs, newest first, at most `recentLimit`. */
   recent: ModelUsageSummaryRecentOutput[];
 }
 
 export interface ModelUsageSummaryData {
-  /** The window as resolved, when bounded. */
   since?: string;
   until?: string;
-  /** Every readable output, including those of definitions no longer named. */
   totals: { executions: number; failed: number };
-  /** Newest use first. */
   models: ModelUsageSummaryModel[];
 }
 
@@ -353,28 +317,18 @@ export interface ModelUsageSummaryResponse {
   data: ModelUsageSummaryData;
 }
 
-/**
- * Asks for run counts across workflows. Counts only runs the caller may
- * read. Every field is optional.
- */
+/** counts only runs the caller may read; every field is optional */
 export interface WorkflowRunSummaryPayload {
-  /** Runs started at or after this ISO time (a duration back also works). */
   since?: string;
-  /** Runs started before this ISO time (exclusive). */
   until?: string;
-  /** Only runs of these workflows, by exact name. */
   workflows?: string[];
-  /** Only runs with this trigger source, ignoring case. */
   triggerSource?: string;
-  /** Only runs with any of these trigger sources, ignoring case. */
   triggerSources?: string[];
   /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
-  /** Include hourly buckets. */
   timeline?: boolean;
 }
 
-/** One run in a workflow's `recent` list. */
 export interface WorkflowRunSummaryRecentRun {
   runId: string;
   status: string;
@@ -397,16 +351,12 @@ export interface WorkflowRunSummaryWorkflow {
   cancelled: number;
   running: number;
   suspended: number;
-  /** Total duration of the finished runs. */
   durationMs: number;
   lastStartedAt?: string;
-  /** The newest runs, newest first. */
   recent: WorkflowRunSummaryRecentRun[];
 }
 
-/** The runs started within one UTC hour. */
 export interface WorkflowRunSummaryBucket {
-  /** Top of the UTC hour, as an ISO timestamp. */
   start: string;
   runs: number;
   succeeded: number;
@@ -414,12 +364,10 @@ export interface WorkflowRunSummaryBucket {
   cancelled: number;
 }
 
-/** Run counts across the workflows the caller may read. */
 export interface WorkflowRunSummaryData {
   since?: string;
   until?: string;
   totals: {
-    /** Workflows with at least one counted run. */
     workflows: number;
     runs: number;
     succeeded: number;
@@ -427,14 +375,11 @@ export interface WorkflowRunSummaryData {
     cancelled: number;
     running: number;
     suspended: number;
-    /** Total duration of the finished runs. */
     durationMs: number;
   };
-  /** One entry per workflow with a counted run, ordered by name. */
   workflows: WorkflowRunSummaryWorkflow[];
   /** Start of the oldest counted run; absent when none has a start. */
   oldestStartedAt?: string;
-  /** Hours with runs, ascending; only when asked for. */
   timeline?: WorkflowRunSummaryBucket[];
 }
 
@@ -473,20 +418,17 @@ export interface WorkflowResumePayload {
   runId?: string;
   from?: string;
   /**
-   * The job of the `from` step, when its name is used in more than one job
-   * (swamp-club#3815). Only send to a server whose `server.version` reply
-   * lists {@link SERVE_CAPABILITY_RESUME_FROM_JOB}; an older server ignores
-   * the field and resets the `from` step in every job that has it.
+   * the job of the `from` step when its name is used in more than one job. Only
+   * send to a server whose `server.version` lists
+   * SERVE_CAPABILITY_RESUME_FROM_JOB; an older server resets the `from` step in
+   * every job that has it
    */
   fromJob?: string;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
-  /** As on {@link WorkflowRunPayload}. */
   lockHolderTokens?: string;
 }
-
-// ── Vault operations ─────────────────────────────────────────────────────
 
 export interface VaultGetPayload {
   vaultNameOrId: string;
@@ -538,8 +480,6 @@ export interface VaultAnnotatePayload {
   clear?: boolean;
 }
 
-// ── Server admin ─────────────────────────────────────────────────────────
-
 export interface WorkerListPayload {
   showAll?: boolean;
   /** Also return workers that disconnected within this many ms (max 24h). */
@@ -547,13 +487,10 @@ export interface WorkerListPayload {
 }
 
 export interface WorkerLeaseListPayload {
-  /** Dispatch ids whose step leases to return. */
   dispatchIds?: string[];
   /** Also return leases written within this many ms (max 5 minutes). */
   endedWithinMs?: number;
 }
-
-// ── Audit / summary / reports ────────────────────────────────────────────
 
 export interface AuditTimelinePayload {
   hours?: number;
@@ -592,8 +529,6 @@ export interface ReportTypeSearchPayload {
   query?: string;
 }
 
-// ── Extension operations ─────────────────────────────────────────────────
-
 export type ExtensionListPayload = Record<string, never>;
 
 export interface ExtensionSearchPayload {
@@ -616,18 +551,10 @@ export interface ExtensionRmPayload {
   extensionName: string;
 }
 
-// ── Doctor operations ────────────────────────────────────────────────────
-
-// Doctor operations have no payload fields.
-
-// ── Run tracking ────────────────────────────────────────────────────────
-
 export interface RunHistoryPayload {
   active?: boolean;
   all?: boolean;
 }
-
-// ── Workflow trigger operations ─────────────────────────────────────────
 
 export interface WorkflowTriggerGetPayload {
   workflowName: string;
@@ -648,19 +575,10 @@ export interface WorkflowTriggerGetResult {
   readonly effective: EffectiveTrigger;
 }
 
-// ── Server admin ─────────────────────────────────────────────────────────
-
-// Worker list, datastore status, cluster instances, and serve config
-// have no payload fields.
-
-// ── ServerRequest union ──────────────────────────────────────────────────
-
 export type ServerRequest =
-  // Streaming operations
   | { type: "workflow.run"; id: string; payload: WorkflowRunPayload }
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
   | { type: "workflow.resume"; id: string; payload: WorkflowResumePayload }
-  // Data operations
   | { type: "data.get"; id: string; payload: DataGetPayload }
   | { type: "data.query"; id: string; payload: DataQueryPayload }
   | { type: "data.list"; id: string; payload: DataListPayload }
@@ -668,7 +586,6 @@ export type ServerRequest =
   | { type: "data.versions"; id: string; payload: DataVersionsPayload }
   | { type: "data.delete"; id: string; payload: DataDeletePayload }
   | { type: "data.rename"; id: string; payload: DataRenamePayload }
-  // Model operations
   | { type: "model.get"; id: string; payload: ModelGetPayload }
   | { type: "model.create"; id: string; payload: ModelCreatePayload }
   | { type: "model.delete"; id: string; payload: ModelDeletePayload }
@@ -708,7 +625,6 @@ export type ServerRequest =
   }
   | { type: "model.validate"; id: string; payload?: ModelValidatePayload }
   | { type: "model.evaluate"; id: string; payload?: ModelEvaluatePayload }
-  // Workflow operations
   | { type: "workflow.get"; id: string; payload: WorkflowGetPayload }
   | {
     type: "workflow.history.get";
@@ -746,7 +662,6 @@ export type ServerRequest =
     id: string;
     payload: WorkflowTriggerGetPayload;
   }
-  // Vault operations
   | { type: "vault.get"; id: string; payload: VaultGetPayload }
   | { type: "vault.put"; id: string; payload: VaultPutPayload }
   | { type: "vault.delete"; id: string; payload: VaultDeletePayload }
@@ -755,7 +670,6 @@ export type ServerRequest =
   | { type: "vault.list-keys"; id: string; payload?: VaultListKeysPayload }
   | { type: "vault.search"; id: string; payload?: VaultSearchPayload }
   | { type: "vault.annotate"; id: string; payload: VaultAnnotatePayload }
-  // Audit / summary / reports
   | { type: "audit.timeline"; id: string; payload?: AuditTimelinePayload }
   | { type: "summarise"; id: string; payload?: SummarisePayload }
   | { type: "report.get"; id: string; payload: ReportGetPayload }
@@ -766,21 +680,17 @@ export type ServerRequest =
     id: string;
     payload?: ReportTypeSearchPayload;
   }
-  // Extensions
   | { type: "extension.list"; id: string }
   | { type: "extension.search"; id: string; payload?: ExtensionSearchPayload }
   | { type: "extension.info"; id: string; payload: ExtensionInfoPayload }
   | { type: "extension.install"; id: string }
   | { type: "extension.rm"; id: string; payload: ExtensionRmPayload }
   | { type: "extension.outdated"; id: string }
-  // Doctor
   | { type: "doctor.vaults"; id: string }
   | { type: "doctor.secrets"; id: string }
   | { type: "doctor.workflows"; id: string }
   | { type: "doctor.extensions"; id: string }
-  // Run tracking
   | { type: "run.history"; id: string; payload?: RunHistoryPayload }
-  // Server admin
   | { type: "worker.list"; id: string; payload?: WorkerListPayload }
   | { type: "worker.queue.list"; id: string }
   | { type: "worker.lease.list"; id: string; payload?: WorkerLeaseListPayload }
@@ -788,10 +698,7 @@ export type ServerRequest =
   | { type: "cluster.instances"; id: string }
   | { type: "serve.config"; id: string }
   | { type: "server.version"; id: string }
-  // Control
   | { type: "cancel"; id: string };
-
-// ── Outbound (server → client) ───────────────────────────────────────────
 
 export interface SerializedEvent {
   kind: string;
@@ -804,15 +711,12 @@ export interface SerializedError {
   details?: unknown;
 }
 
-/** Generic response payload for request-response operations. */
 export interface DataResponse {
   data: Record<string, unknown>;
 }
 
-// ── Flat response payloads (not DataResponse-shaped) ─────────────────────
-//
-// These operations return a payload that is NOT wrapped in { data: ... };
-// the shapes mirror the same-named types in src/serve/protocol.ts.
+// these responses are not wrapped in { data }; their shapes mirror the
+// same-named types in src/serve/protocol.ts
 
 export interface AccessGrantListResponse {
   grants: Record<string, unknown>[];
@@ -824,9 +728,9 @@ export interface AccessGroupListResponse {
 }
 
 /**
- * The run-time decision for a concrete `vault:<name>` (swamp-club#2676):
- * whether a serve run triggered by the principal may read or write the
- * vault, and whether its runs are vault-scoped.
+ * the run-time decision for a concrete `vault:<name>`: whether a serve run
+ * triggered by the principal may read or write the vault, and whether its runs
+ * are vault-scoped
  */
 export interface RunVaultAccessReport {
   vault: string;
@@ -834,7 +738,6 @@ export interface RunVaultAccessReport {
   allowed: boolean;
   /** The principal's runs read only vaults a vault allow names. */
   restricted: boolean;
-  /** The rule that decided, e.g. `vault-scoped` or `no-vault-grants`. */
   rule: string;
   reason: string;
   grantId?: string;
@@ -849,13 +752,13 @@ export interface AccessCheckResponse {
   collectives: string[];
   groups: string[];
   decisions: Record<string, unknown>[];
-  /** The server's approval policy; absent from servers that predate it. */
+  /**
+   * the server's approval policy; absent from older servers, as are the signal
+   * and tag policies below
+   */
   approveRequiresExplicitGrant?: boolean;
-  /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
-  /** The server's tag policy; absent from servers that predate it. */
   tagRequiresExplicitGrant?: boolean;
-  /** For a concrete vault and read or write; absent otherwise. */
   runVaultAccess?: RunVaultAccessReport;
 }
 
@@ -877,13 +780,9 @@ export interface AccessCanIResponse {
   principal: string;
   method?: string;
   decisions: AccessCanIDecision[];
-  /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
-  /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
-  /** The server's tag policy; absent from servers that predate it. */
   tagRequiresExplicitGrant?: boolean;
-  /** For a concrete vault and read or write; absent otherwise. */
   runVaultAccess?: RunVaultAccessReport;
 }
 
@@ -935,11 +834,9 @@ export interface ServeConfigResponse {
 }
 
 export type ServerMessage =
-  // Streaming frames
   | { type: "event"; id: string; event: SerializedEvent }
   | { type: "error"; id: string; error: SerializedError }
   | { type: "done"; id: string }
-  // Data responses
   | { type: "data.get"; id: string; payload: DataResponse }
   | { type: "data.query"; id: string; payload: DataResponse }
   | { type: "data.list"; id: string; payload: DataResponse }
@@ -947,7 +844,6 @@ export type ServerMessage =
   | { type: "data.versions"; id: string; payload: DataResponse }
   | { type: "data.delete"; id: string; payload: DataResponse }
   | { type: "data.rename"; id: string; payload: DataResponse }
-  // Model responses
   | { type: "model.get"; id: string; payload: DataResponse }
   | { type: "model.create"; id: string; payload: DataResponse }
   | { type: "model.delete"; id: string; payload: DataResponse }
@@ -967,7 +863,6 @@ export type ServerMessage =
   | { type: "model.method.history.search"; id: string; payload: DataResponse }
   | { type: "model.validate"; id: string; payload: DataResponse }
   | { type: "model.evaluate"; id: string; payload: DataResponse }
-  // Workflow responses
   | { type: "workflow.get"; id: string; payload: DataResponse }
   | { type: "workflow.history.get"; id: string; payload: DataResponse }
   | { type: "workflow.history.logs"; id: string; payload: DataResponse }
@@ -989,7 +884,6 @@ export type ServerMessage =
     id: string;
     payload: WorkflowTriggerGetResponse;
   }
-  // Vault responses
   | { type: "vault.get"; id: string; payload: DataResponse }
   | { type: "vault.put"; id: string; payload: DataResponse }
   | { type: "vault.delete"; id: string; payload: DataResponse }
@@ -998,28 +892,23 @@ export type ServerMessage =
   | { type: "vault.list-keys"; id: string; payload: DataResponse }
   | { type: "vault.search"; id: string; payload: DataResponse }
   | { type: "vault.annotate"; id: string; payload: DataResponse }
-  // Audit / summary / report responses
   | { type: "audit.timeline"; id: string; payload: DataResponse }
   | { type: "summarise"; id: string; payload: DataResponse }
   | { type: "report.get"; id: string; payload: DataResponse }
   | { type: "report.search"; id: string; payload: DataResponse }
   | { type: "report.describe"; id: string; payload: DataResponse }
   | { type: "report.type.search"; id: string; payload: DataResponse }
-  // Extension responses
   | { type: "extension.list"; id: string; payload: DataResponse }
   | { type: "extension.search"; id: string; payload: DataResponse }
   | { type: "extension.info"; id: string; payload: DataResponse }
   | { type: "extension.install"; id: string; payload: DataResponse }
   | { type: "extension.rm"; id: string; payload: DataResponse }
   | { type: "extension.outdated"; id: string; payload: DataResponse }
-  // Doctor responses
   | { type: "doctor.vaults"; id: string; payload: DataResponse }
   | { type: "doctor.secrets"; id: string; payload: DataResponse }
   | { type: "doctor.workflows"; id: string; payload: DataResponse }
   | { type: "doctor.extensions"; id: string; payload: DataResponse }
-  // Run tracking responses
   | { type: "run.history"; id: string; payload: RunHistoryResponse }
-  // Server admin responses
   | { type: "worker.list"; id: string; payload: DataResponse }
   | { type: "worker.queue.list"; id: string; payload: DataResponse }
   | { type: "worker.lease.list"; id: string; payload: DataResponse }
@@ -1036,16 +925,12 @@ export type ServerMessage =
       capabilities?: string[];
     };
   }
-  // Access responses (internal — not in client package's primary API)
   | { type: "access.grant.list"; id: string; payload: AccessGrantListResponse }
   | { type: "access.group.list"; id: string; payload: AccessGroupListResponse }
   | { type: "access.check"; id: string; payload: AccessCheckResponse }
   | { type: "access.can-i"; id: string; payload: AccessCanIResponse }
   | { type: "access.reload"; id: string; payload: AccessReloadResponse };
 
-// ── Event types (wire-format discriminated unions) ────────────────────────
-
-/** Events emitted during a workflow run. */
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
@@ -1116,7 +1001,6 @@ export type WorkflowRunEvent =
   | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
   | { kind: "error"; error: SerializedError };
 
-/** Events emitted during a model method run. */
 export type ModelMethodRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "resolving_model"; modelIdOrName: string }
@@ -1166,8 +1050,6 @@ export type ModelMethodRunEvent =
     bytesReclaimed: number;
   }
   | { kind: "error"; error: SerializedError };
-
-// ── Completed event payload types ────────────────────────────────────────
 
 export interface WorkflowRunView {
   id: string;

@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Run filtering shared by Executions and Approvals. Runs are paged on the
-// server, so the workflow filter (fuzzy query, prefix, trigger, webhook)
-// is resolved against the workflow catalog into the exact names serve
-// should match, and the run's own filters ride alongside.
+// runs are paged on the server, so the workflow filter is resolved against the
+// catalog into the exact names serve should match
 
 import {
   applyWorkflowFilter,
@@ -39,10 +37,8 @@ export const RUN_STATUSES = [
 ] as const;
 
 export type RunStatus = typeof RUN_STATUSES[number];
-/** "" means every status. */
 export type RunStatusFilter = "" | RunStatus;
 
-/** What started a run, as serve records it in `triggerSource`. */
 export const RUN_SOURCES = ["schedule", "webhook", "api", "manual"] as const;
 export type RunSource = typeof RUN_SOURCES[number];
 
@@ -53,7 +49,6 @@ export function isRunStatus(value: string): value is RunStatus {
 export function isRunSource(value: string): value is RunSource {
   return (RUN_SOURCES as readonly string[]).includes(value);
 }
-/** "" means any source. */
 export type RunSourceFilter = "" | RunSource;
 
 export const RUN_SOURCE_LABELS: Record<RunSource, string> = {
@@ -64,10 +59,9 @@ export const RUN_SOURCE_LABELS: Record<RunSource, string> = {
 };
 
 /**
- * The exact workflow names a filter selects, sorted so the request (and
- * its cache key) is stable. Null when no filter is active: the request
- * then names no workflows and serve matches all of them. An empty array
- * means the filter matches nothing, so there is nothing to request.
+ * sorted so the request and its cache key are stable; null when no filter is
+ * active (serve matches all); an empty array means nothing matches, so there is
+ * nothing to request
  */
 export function workflowNamesForFilter(
   workflows: readonly WorkflowRef[],
@@ -81,10 +75,9 @@ export function workflowNamesForFilter(
 }
 
 /**
- * Filters rows that each name a workflow (approval gates, suspended runs)
- * by that workflow's facets. Rows keep their incoming order — the fuzzy
- * query only selects, it never reranks, so an urgency ordering survives.
- * A workflow missing from the catalog is matched by its name alone.
+ * rows keep incoming order since the query only selects and never reranks, so
+ * an urgency ordering survives; a workflow missing from the catalog matches by
+ * name alone
  */
 export function filterRowsByWorkflow<T>(
   rows: readonly T[],
@@ -108,17 +101,13 @@ export function filterRowsByWorkflow<T>(
 export interface RunSearchQuery {
   page: number;
   pageSize: number;
-  /** Any of these statuses; empty lists every status. */
   statuses: readonly RunStatus[];
-  /** Any of these trigger sources; empty lists every source. */
   sources: readonly RunSource[];
-  /** From {@link workflowNamesForFilter}; null sends no workflow filter. */
   workflows: readonly string[] | null;
   since?: string;
   until?: string;
 }
 
-/** The `workflow.run.search` payload for one page of runs. */
 export function runSearchPayload(q: RunSearchQuery): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     limit: q.pageSize,
@@ -132,16 +121,14 @@ export function runSearchPayload(q: RunSearchQuery): Record<string, unknown> {
   return payload;
 }
 
-/** The dashboard time range, as `client/time_range.ts` defines it. */
 export type RunWindowRange =
   | { kind: "preset"; preset: string }
   | { kind: "custom"; from: string; to: string };
 
 /**
- * The `since`/`until` a run search sends for the dashboard time range. A
- * preset goes as serve's relative duration ("7d"), which every serve
- * accepts and which serve resolves against its own clock; a custom range
- * goes as its ISO bounds. "all" sends neither.
+ * a preset goes as serve's relative duration, resolved against serve's own
+ * clock and accepted by every serve; a custom range goes as ISO bounds; "all"
+ * sends neither
  */
 export function runSearchWindow(
   range: RunWindowRange,
@@ -150,13 +137,11 @@ export function runSearchWindow(
   return range.preset === "all" ? {} : { since: range.preset };
 }
 
-/** The most names serve takes in one `workflows` filter. */
 export const MAX_WORKFLOW_NAMES = 1_000;
 
 /**
- * Splits a resolved workflow filter into what serve is sent and what the
- * caller applies itself: a list over serve's cap would be refused, so it
- * is not sent, and `local` names the workflows to keep. Null means none.
+ * a list over serve's cap would be refused, so it is not sent and `local` names
+ * the workflows to keep instead
  */
 export function splitWorkflowFilter(
   names: readonly string[] | null,
@@ -167,7 +152,6 @@ export function splitWorkflowFilter(
   return { server: null, local: new Set(names) };
 }
 
-/** Run totals summed over the per-workflow summaries `keep` names. */
 export function totalsOfWorkflows(
   workflows: ReadonlyArray<
     RunTotals & { workflowName: string; durationMs: number }
@@ -207,7 +191,6 @@ export interface RunTotals {
   cancelled: number;
 }
 
-/** Runs per status filter, "" being every run. */
 export function statusCounts(
   totals: RunTotals | null | undefined,
 ): Record<RunStatusFilter, number> | null {

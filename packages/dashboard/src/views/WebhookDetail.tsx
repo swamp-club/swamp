@@ -65,7 +65,6 @@ interface WorkflowDef {
   jobs?: WorkflowJobDef[];
 }
 
-/** One run's jobs and steps, as `workflow.history.get` returns them. */
 function useRunJobs(runId: string | undefined) {
   const { data, error } = useRequest(
     "workflow.history.get",

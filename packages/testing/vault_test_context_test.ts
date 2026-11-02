@@ -151,8 +151,6 @@ Deno.test("createVaultTestContext: getStoredSecrets returns a copy", async () =>
   assertEquals(Object.keys(snap2).length, 2);
 });
 
-// --- Annotation support ---
-
 Deno.test("createVaultTestContext: annotationProvider is undefined by default", () => {
   const { annotationProvider } = createVaultTestContext();
   assertEquals(annotationProvider, undefined);

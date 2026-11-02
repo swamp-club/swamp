@@ -29,18 +29,9 @@ interface ResumeActionProps {
    * refetch can still see it suspended for a moment, so no Resume is offered.
    */
   resuming?: boolean;
-  /**
-   * What made the run ready to resume, for the label: every gate approved
-   * (the default), or every wait signalled.
-   */
   readyBecause?: "approved" | "signalled";
 }
 
-/**
- * The resume control for an approved run: a Resume button, plus the CLI
- * command for anyone who cannot resume from here. Renders nothing for a run
- * that is not waiting for a resume.
- */
 export function ResumeAction(
   { run, onResumed, resuming, readyBecause = "approved" }: ResumeActionProps,
 ) {

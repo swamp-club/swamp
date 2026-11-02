@@ -53,18 +53,14 @@ import { RunStatusIcon, statusLabel } from "./RunStatusIcon.tsx";
 import { asDom, resizeObserverClass, type WheelLike } from "./dom_types.ts";
 
 const PAD = 28;
-/** Room above the graph for the zoom controls. */
 const TOP = 56;
 const MIN_HEIGHT = 200;
 const MAX_HEIGHT = 560;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 2;
-/** Below this zoom card text is too small to read. */
 const READABLE = 0.6;
-/** Where a graph too big to fit readably starts: left-aligned, pan for more. */
 const READABLE_START = 0.8;
 const DRAG_THRESHOLD = 4;
-/** Width assumed before the viewport has been measured (and when rendering on the server). */
 const ASSUMED_WIDTH = 960;
 
 interface View {
@@ -75,21 +71,16 @@ interface View {
 
 interface RunGraphProps {
   graph: RunGraphData;
-  /** The job whose panel is open. */
   selected: string | null;
   onSelect: (job: string | null) => void;
-  /** Clock for live durations, in ms since the epoch. */
   now: number;
-  /** In-app navigation for plain clicks; links keep real hrefs. */
   onNavigate: (to: RouteState) => void;
 }
 
-/** The zoom a graph opens at: fitted when that stays readable. */
 function openingZoom(fitted: number): number {
   return fitted >= READABLE ? fitted : READABLE_START;
 }
 
-/** The viewport height that shows the graph at its opening zoom. */
 export function viewportHeight(layout: GraphLayout, width: number): number {
   if (layout.width === 0) return MIN_HEIGHT;
   const k = openingZoom(Math.min(1, (width - 2 * PAD) / layout.width));
@@ -98,12 +89,6 @@ export function viewportHeight(layout: GraphLayout, width: number): number {
   );
 }
 
-/**
- * The view for the graph. `"all"` fits the whole graph, however small.
- * `"readable"` (on load) fits it too when the cards stay legible; a graph
- * too big for that opens at a readable zoom from its first column, where
- * the run starts, and is panned.
- */
 export function fitView(
   layout: GraphLayout,
   width: number,
@@ -134,12 +119,6 @@ function clampZoom(k: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
 }
 
-/**
- * The run's jobs as an interactive graph: cards laid out left to right by
- * dependency, curved edges between them. Drag to pan, ⌘/Ctrl + scroll or
- * pinch to zoom, arrow keys to move between jobs, Enter to open one.
- * Hovering or focusing a job lights its upstream and downstream paths.
- */
 export function RunGraph(
   { graph, selected, onSelect, now, onNavigate }: RunGraphProps,
 ) {
@@ -174,7 +153,6 @@ export function RunGraph(
   /** The user has panned or zoomed: stop refitting on resize. */
   const adjusted = useRef(false);
 
-  // Measure the viewport and keep the graph fitted until the user moves it.
   useEffect(() => {
     const el = viewportRef.current;
     const Observer = resizeObserverClass();
@@ -233,7 +211,6 @@ export function RunGraph(
     return () => asDom(el).removeEventListener("wheel", onWheel);
   }, [zoomAt]);
 
-  // ── pan (drag) and pinch ─────────────────────────────────────────────
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<
     {
@@ -304,7 +281,6 @@ export function RunGraph(
     if (pointers.current.size === 0) gesture.current = null;
   };
 
-  // ── highlight and keyboard focus ─────────────────────────────────────
   const [hovered, setHovered] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
   const hot = hovered ?? focused;
@@ -335,7 +311,6 @@ export function RunGraph(
     ? selected
     : firstId;
 
-  /** Pans just enough to bring a job fully into view. */
   const reveal = useCallback((id: string) => {
     const node = positions.get(id);
     if (!node) return;
@@ -438,7 +413,6 @@ export function RunGraph(
           e.stopPropagation();
         }}
         onClick={(e) => {
-          // A click on empty canvas closes the job panel.
           const target = asDom(e.target);
           if (selected && !target.closest(".rg-node, .rg-controls")) {
             onSelect(null);

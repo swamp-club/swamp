@@ -33,7 +33,6 @@ Deno.test("createRequestSequence: a late reply to an earlier request is dropped"
   const applied: string[] = [];
   const first = seq.next();
   const second = seq.next();
-  // The second reply lands first, then the first one arrives late.
   if (seq.isCurrent(second)) applied.push("v5");
   if (seq.isCurrent(first)) applied.push("v4");
   assertEquals(applied, ["v5"]);

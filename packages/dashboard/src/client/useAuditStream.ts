@@ -58,13 +58,10 @@ export interface AuditStream {
   streaming: boolean;
   liveEnabled: boolean;
   error: string | null;
-  /** Where the feed stands; see `AuditStatus`. */
   status: AuditStatus;
-  /** True once the first `audit.query` answered (or failed). */
   historyLoaded: boolean;
   clearEvents: () => void;
   setLiveEnabled: (enabled: boolean) => void;
-  /** Subscribes again after the live feed failed. */
   reconnect: () => void;
   maxEvents: number;
   setMaxEvents: (n: number) => void;

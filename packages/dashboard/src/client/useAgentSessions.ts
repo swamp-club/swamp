@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The agent sessions page's requests (swamp-club#4155). Payloads and parsing
- * live in `agent_sessions.ts`; this file only sends them.
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRequest } from "./useRequest.ts";
 import { useSwamp } from "./SwampProvider.tsx";
@@ -57,7 +52,6 @@ export interface ListState {
 }
 
 export interface SessionListState extends ListState {
-  /** Reads the next older window; set while there is one to read. */
   readonly loadOlder: (() => void) | null;
   readonly loadingOlder: boolean;
   readonly olderError: string | null;
@@ -120,7 +114,6 @@ export interface DetailState {
   readonly refetch: () => void;
 }
 
-/** One session's record, read only once it is opened. */
 export function useSessionDetail(row: SessionRow | null): DetailState {
   const req = useRequest(
     "data.get",
@@ -139,7 +132,6 @@ export function useSessionDetail(row: SessionRow | null): DetailState {
   };
 }
 
-/** One session's subagents, from their tags; null until a session opens. */
 export function useSessionChildren(sessionId: string | null): ListState {
   const payload = sessionId ? childrenPayload(sessionId) : null;
   const req = useRequest("data.query", payload ?? undefined, {
@@ -154,10 +146,6 @@ export type ChildRecord =
   | { readonly state: "error"; readonly error: string }
   | { readonly state: "read"; readonly reading: AgentSessionReading };
 
-/**
- * Subagent records, each read when it is first asked for (a call expanded,
- * or its findings shown), and kept by data name while the session is open.
- */
 export function useChildRecords(): {
   readonly records: ReadonlyMap<string, ChildRecord>;
   readonly load: (row: SessionRow) => Promise<void>;

@@ -31,11 +31,6 @@ interface RouteLinkProps {
   title?: string;
 }
 
-/**
- * A real link to a dashboard route. A plain left click navigates in-app;
- * middle and modified clicks, and "Copy link address", are left to the
- * browser so any item can be opened in a new tab or shared.
- */
 export function RouteLink(
   { to, children, className, style, title }: RouteLinkProps,
 ) {

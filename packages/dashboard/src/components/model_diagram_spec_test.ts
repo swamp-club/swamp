@@ -112,7 +112,6 @@ Deno.test("modelExtension: infers a scoped type's extension and hides built-ins"
 
 Deno.test("buildDiagramSpec: without serve's new fields falls back to schema, data and reports", () => {
   const spec = buildDiagramSpec(base, rows);
-  // No global arguments: methods carry the inputs, no empty argument group.
   assertEquals(group(spec, "arguments"), undefined);
   const methods = group(spec, "methods")!;
   assertEquals(methods.nodes[0].label, "execute()");

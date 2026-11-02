@@ -82,7 +82,6 @@ Deno.test("workflowNamesForFilter: facets and query narrow to sorted names", () 
     ),
     ["etl-orders", "standalone"],
   );
-  // Fuzzy ranking does not leak into the request: names come back sorted.
   assertEquals(
     workflowNamesForFilter(
       workflows,

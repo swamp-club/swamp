@@ -27,7 +27,6 @@ export function extractArray<T>(payload: unknown): T[] {
   if (Array.isArray(payload)) return payload as T[];
   if (payload && typeof payload === "object") {
     const obj = payload as Record<string, unknown>;
-    // { data: { results: [...] } } — workflow.run.search, workflow.search, model.search
     if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) {
       const inner = obj.data as Record<string, unknown>;
       if (Array.isArray(inner.results)) return inner.results as T[];
@@ -37,19 +36,13 @@ export function extractArray<T>(payload: unknown): T[] {
         if (Array.isArray(v)) return v as T[];
       }
     }
-    // { data: [...] } — direct array in data
     if (Array.isArray(obj.data)) return obj.data as T[];
-    // { results: [...] } — top-level results
     if (Array.isArray(obj.results)) return obj.results as T[];
     if (Array.isArray(obj.items)) return obj.items as T[];
   }
   return [];
 }
 
-/**
- * Extract the server-side match count from a paged search response
- * (`{ data, total }`). Returns null when the server did not report one.
- */
 export function extractTotal(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const total = (payload as Record<string, unknown>).total;
@@ -57,9 +50,8 @@ export function extractTotal(payload: unknown): number | null {
 }
 
 /**
- * Extract a run search's window from a paged response: serve's resolved
- * `since` and the oldest match's start, beside `total`. Older serves send
- * neither.
+ * a run search's window from a paged response: serve's resolved `since` and the
+ * oldest match's start, beside `total`; older serves send neither
  */
 export function extractSearchWindow(
   payload: unknown,
@@ -72,9 +64,6 @@ export function extractSearchWindow(
   };
 }
 
-/**
- * Extract a single object from a WS response payload.
- */
 export function extractObject<T>(payload: unknown): T | null {
   if (!payload || typeof payload !== "object") return null;
   const obj = payload as Record<string, unknown>;

@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * How to treat the health stream's HTTP status: read it, stop because serve
- * refused this token, or try again later (rate limiting, the per-token stream
- * cap, a server error).
- */
 export function healthStreamOutcome(
   status: number,
 ): "ok" | "denied" | "retry" {

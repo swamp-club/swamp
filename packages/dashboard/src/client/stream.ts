@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** A frame from serve, addressed to one request by its id. */
 export interface WireFrame {
   type: string;
   id: string;
@@ -26,7 +25,6 @@ export interface WireFrame {
   event?: unknown;
 }
 
-/** What a pending request does with a frame addressed to it. */
 export type FrameOutcome =
   | { kind: "ignore" }
   | { kind: "resolve"; value: unknown; detach: boolean }
@@ -43,9 +41,6 @@ function rejectFrom(
   };
 }
 
-/**
- * Settles a plain request: it resolves on the frame that carries a payload.
- */
 export function settleRequest(frame: WireFrame): FrameOutcome {
   if (frame.type === "error" && frame.error) {
     return rejectFrom(frame.error);
@@ -86,11 +81,6 @@ export function detachFrame(requestId: string): { type: "cancel"; id: string } {
   return { type: "cancel", id: requestId };
 }
 
-/**
- * A rejected request, keeping serve's error code and the machine-readable
- * reason and entity type serve attaches to data and history errors, so a
- * view can tell an expired version from a missing model or a denial.
- */
 export class RequestError extends Error {
   readonly code: string;
   readonly reason?: string;
@@ -114,7 +104,6 @@ export class RequestError extends Error {
   }
 }
 
-/** The structured parts of a failed request a view branches on. */
 export interface RequestErrorInfo {
   code: string;
   reason?: string;
@@ -122,7 +111,6 @@ export interface RequestErrorInfo {
   reapedBefore?: string;
 }
 
-/** Reads the structured parts of an error thrown by a request. */
 export function requestErrorInfo(error: unknown): RequestErrorInfo | null {
   if (!(error instanceof RequestError)) return null;
   return {

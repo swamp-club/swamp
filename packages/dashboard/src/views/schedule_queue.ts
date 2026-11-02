@@ -17,17 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** The queue fields a health schedule entry carries (swamp-club#3046). */
 export interface ScheduleQueueFields {
   queued?: number;
   oldestQueuedAt?: string | null;
 }
 
 /**
- * What the Schedules and Webhooks views show next to a row's status while
- * runs are waiting, e.g. "2 queued · waiting 12m". Null when nothing is
- * waiting, or for a server that does not report queue state, so those rows
- * render as they did before.
+ * null when nothing is waiting, or for a server that does not report queue
+ * state, so those rows render unchanged
  */
 export function scheduleQueueLabel(
   entry: ScheduleQueueFields,
@@ -42,7 +39,6 @@ export function scheduleQueueLabel(
   return `${queued} queued · waiting ${formatWait(now - oldest)}`;
 }
 
-/** Fires waiting across the given schedules. */
 export function totalQueued(entries: readonly ScheduleQueueFields[]): number {
   return entries.reduce(
     (sum, entry) => sum + Math.max(0, entry.queued ?? 0),

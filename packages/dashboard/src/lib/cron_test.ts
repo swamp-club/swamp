@@ -98,7 +98,7 @@ Deno.test("describeCron: returns null for what it can't say clearly", () => {
     const expr of [
       "not cron",
       "",
-      "0 9 1 * 1", // day-of-month OR day-of-week
+      "0 9 1 * 1",
       "*/7 * * * *", // resets every hour, not "every 7 minutes"
       "0 0,3,6,9,12,15,18,21 * * *".replace("21", "22"),
       "1,2,3,4,5,6,7 * * * *",
@@ -165,7 +165,6 @@ Deno.test("parseCron: a weekday range ending in SUN wraps to the full week", () 
   if (!weekend.ok) return;
   assertEquals(weekend.schedule.weekdays, [0, 6]);
 
-  // SUN-SUN and SUN-SAT are unaffected: the upper bound isn't past Sunday.
   const sunOnly = parseCron("0 9 * * SUN-SUN");
   assert(sunOnly.ok);
   if (!sunOnly.ok) return;
@@ -207,7 +206,6 @@ Deno.test("nextFireTimes: steps through minutes strictly after `from`", () => {
 });
 
 Deno.test("nextFireTimes: weekly and monthly schedules cross boundaries", () => {
-  // 2026-10-12 is a Monday.
   assertEquals(fires("0 9 * * 1", "2026-10-12T09:00:00.000Z", 2), [
     "2026-10-19T09:00:00.000Z",
     "2026-10-26T09:00:00.000Z",
@@ -223,7 +221,6 @@ Deno.test("nextFireTimes: weekly and monthly schedules cross boundaries", () => 
 });
 
 Deno.test("nextFireTimes: both day fields restricted fire on either", () => {
-  // The 15th (a Thursday) or any Monday.
   assertEquals(fires("0 0 15 * 1", "2026-10-12T01:00:00.000Z", 3), [
     "2026-10-15T00:00:00.000Z",
     "2026-10-19T00:00:00.000Z",
@@ -259,17 +256,14 @@ function firesIn(
 }
 
 Deno.test("nextFireTimes: reads the expression in an IANA time zone", () => {
-  // 09:00 in New York (EDT, UTC-4) is 13:00 UTC.
   assertEquals(
     firesIn("America/New_York", "0 9 * * *", "2026-10-12T12:00:00.000Z", 2),
     ["2026-10-12T13:00:00.000Z", "2026-10-13T13:00:00.000Z"],
   );
-  // Half-hour offsets: 09:00 in Kolkata (UTC+5:30) is 03:30 UTC.
   assertEquals(
     firesIn("Asia/Kolkata", "0 9 * * 1", "2026-10-12T00:00:00.000Z", 1),
     ["2026-10-12T03:30:00.000Z"],
   );
-  // Hourly steps stay on the zone's hour boundaries.
   assertEquals(
     firesIn("Asia/Kolkata", "0 * * * *", "2026-10-12T03:31:00.000Z", 1),
     ["2026-10-12T04:30:00.000Z"],
@@ -277,7 +271,6 @@ Deno.test("nextFireTimes: reads the expression in an IANA time zone", () => {
 });
 
 Deno.test("nextFireTimes: crosses a DST change in the zone", () => {
-  // London leaves BST on 2026-10-25: 09:00 is 08:00 UTC before, 09:00 after.
   assertEquals(
     firesIn("Europe/London", "0 9 * * *", "2026-10-24T09:00:00.000Z", 2),
     ["2026-10-25T09:00:00.000Z", "2026-10-26T09:00:00.000Z"],
@@ -305,9 +298,7 @@ Deno.test("fireTimeLabels: adds the viewer's time only when it reads differently
   assertEquals(ny.local, formatFireTime(d, "UTC"));
   assert(ny.primary !== ny.local);
   assertEquals(fireTimeLabels(d, "UTC", "UTC").local, null);
-  // Different names, same wall time.
   assertEquals(fireTimeLabels(d, "Etc/UTC", "UTC").local, null);
-  // Serve's zone unknown: the viewer's time alone.
   assertEquals(fireTimeLabels(d, undefined, "UTC"), {
     primary: formatFireTime(d),
     local: null,

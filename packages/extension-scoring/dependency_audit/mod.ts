@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The extension dependency trust audit: which `npm:` and `jsr:` imports an
- * extension ships, the version each ships, and what npm, OSV and JSR say
- * about it. The caller fetches; these decide.
- *
- * @module
- */
-
 export {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,

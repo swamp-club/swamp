@@ -35,7 +35,6 @@ interface TriggerFilterBarProps {
   children?: ReactNode;
 }
 
-/** The trigger pages' guided search, the same box as the workflow pages. */
 export function TriggerFilterBar(
   {
     query,
@@ -64,10 +63,6 @@ export function TriggerFilterBar(
   );
 }
 
-/**
- * Search facets for a table's rows, wired to selections held elsewhere
- * (usually `useFacetParams`).
- */
 export function rowSearchFacets<R>(
   rows: readonly R[],
   specs: readonly RowFacetSpec<R>[],

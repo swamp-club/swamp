@@ -34,23 +34,19 @@ import { formatAbsoluteTime, formatRelativeTime } from "../lib/format.ts";
 
 interface ScheduleEditorFormProps {
   workflowName: string;
-  /** The effective schedule and inputs the form starts from. */
   initialSchedule: string;
   initialInputs: Record<string, unknown>;
-  /** The workflow file's own schedule, offered as a starting point. */
   builtInSchedule?: string | null;
   saving: boolean;
   error?: string | null;
   onSave: (schedule: string, inputs: Record<string, unknown>) => void;
   onCancel: () => void;
-  /** Clock for the preview; defaults to now. */
   now?: number;
   /**
    * The time zone serve's scheduler reads cron expressions in; the preview
    * is computed and labelled in it. Omitted (an older serve): the viewer's.
    */
   timeZone?: string;
-  /** The viewer's time zone; defaults to the browser's. */
   viewerZone?: string;
 }
 
@@ -66,12 +62,6 @@ function valueOf(e: { target: unknown }): string {
 const PREVIEW_COUNT = 5;
 const INPUTS_PLACEHOLDER = '{\n  "region": "eu-west-1"\n}';
 
-/**
- * Edits a schedule's cron expression and inputs. The expression is checked
- * as it is typed, described in words and previewed as its next fire times;
- * inputs must be a JSON object. Save stays off until something changed
- * and both are valid.
- */
 export function ScheduleEditorForm(
   {
     workflowName,

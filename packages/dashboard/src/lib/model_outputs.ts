@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The `model.output.search` payloads for the dashboard time range. A preset
-// goes as a duration, so the request does not change as the clock moves
-// (swamp-club#3449); the ISO form is for a serve that only reads ISO times.
+// a preset goes as a duration so the request does not change as the clock
+// moves; the ISO form is for a serve that only reads ISO times
 
 import {
   requestTimeBounds,
@@ -27,12 +26,7 @@ import {
   type TimeRange,
 } from "../client/time_range.ts";
 
-/**
- * The search payloads for a range: `current` with the bounds serve reads
- * (a preset as `since: "7d"`), and `legacy` with the ISO bounds at `now`
- * for a serve that only reads ISO times. `legacy` is null when the two
- * would be the same request.
- */
+/** legacy is null when it would be the same request as current */
 export function modelOutputPayloads(
   range: TimeRange,
   payload: Record<string, unknown>,

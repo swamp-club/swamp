@@ -24,10 +24,6 @@ import type { SignalWaitRow } from "../client/signal_wait_state.ts";
 
 interface SignalWaitsPanelProps {
   rows: readonly SignalWaitRow[];
-  /**
-   * The resume control for a signalled wait whose run can be resumed. Left
-   * out, such a row shows only its resume command.
-   */
   renderResume?: (row: SignalWaitRow) => ReactNode;
 }
 
@@ -49,15 +45,6 @@ const DETAIL_STYLE = {
   marginTop: 2,
 };
 
-/**
- * The runs waiting for a signal: each wait with its ID, deadline and what
- * moves it on. An open wait shows the payload schema and the signal command,
- * and a keyed one its key and the command that signals it by key;
- * a signalled wait shows its receipt and the resume that applies it; an
- * expired wait shows the resume that fails its step. Renders nothing when no
- * run waits. Takes its rows as props and reads no context, so it renders the
- * same anywhere.
- */
 export function SignalWaitsPanel(
   { rows, renderResume }: SignalWaitsPanelProps,
 ) {

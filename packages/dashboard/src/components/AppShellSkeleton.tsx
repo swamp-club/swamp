@@ -29,12 +29,9 @@ import {
 } from "./Skeleton.tsx";
 import { parseCollapsed, SIDEBAR_COLLAPSED_KEY } from "./sidebar_state.ts";
 
-// The whole dashboard's frame while the app is still connecting: the
-// sidebar with its real sections, and a page of placeholders shaped like
-// the Overview (header, stat cards, chart, panels). It uses the app
-// shell's own classes, so the collapsed rail and the mobile drawer
-// behave exactly as they will once connected, and inline styles only, so
-// it renders before any view's stylesheet has loaded.
+// uses the app shell's own classes so the collapsed rail and mobile drawer
+// behave as once connected, and inline styles only, so it renders before any
+// view's stylesheet has loaded
 
 const NAV: Array<[string, string[]]> = [
   ["Overview", ["Dashboard"]],
@@ -57,12 +54,6 @@ function readCollapsed(): boolean {
   }
 }
 
-/**
- * The full-layout loading state shown before the dashboard can render —
- * while the auth mode is being discovered and while the connection to
- * serve opens. `label` is the visible and announced status ("Connecting to
- * swamp serve"). `collapsed` defaults to the viewer's saved rail state.
- */
 export function AppShellSkeleton(
   { label = "Connecting", collapsed }: {
     label?: string;
@@ -231,10 +222,6 @@ export function AppShellSkeleton(
   );
 }
 
-/**
- * What the dashboard says while its connection opens: to `swamp serve`, or,
- * on the local dashboard (`swamp start` / `swamp dashboard`), to The Swamp.
- */
 export function connectingLabel(local: boolean): string {
   return local ? "Connecting to The Swamp" : "Connecting to swamp serve";
 }

@@ -20,10 +20,9 @@
 import { Lexer, type Token, type Tokens } from "marked";
 
 /**
- * Report markdown is written by extensions, so it is untrusted. It is parsed
- * with marked's lexer only and mapped to this plain tree, which the Markdown
- * component renders as React elements. No HTML string is ever produced, so
- * raw HTML in a report is shown as text and cannot run.
+ * report markdown comes from extensions and is untrusted: only marked's lexer
+ * is used and no HTML string is produced, so raw HTML shows as text and cannot
+ * run
  */
 export type MdInline =
   | { type: "text"; text: string }
@@ -61,9 +60,8 @@ const SAFE_PROTOCOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Resolves a link against the page and allows it only if it parses to
- * http(s) or mailto — which also rejects protocol-relative tricks and
- * whitespace- or case-obfuscated schemes such as `JaVa\tscript:`.
+ * allow a link only if it parses to http(s) or mailto, which also rejects
+ * protocol-relative and whitespace- or case-obfuscated schemes
  */
 export function safeHref(
   href: string,
@@ -88,24 +86,20 @@ const ENTITIES: Record<string, string> = {
 };
 
 /**
- * marked 14 HTML-escapes inline text, code spans and escapes. The output is
- * React text, which escapes on its own, so undo marked's escaping here to
- * avoid showing `&lt;` literally. Fenced code and html token text is raw
- * and must not go through this.
+ * undo marked's HTML escaping of inline text because React escapes on its own;
+ * fenced code and html token text are raw and must not pass through this
  */
 export function decodeEntities(text: string): string {
   return text.replace(/&(?:amp|lt|gt|quot|#39);/g, (m) => ENTITIES[m]);
 }
 
 /**
- * Nesting deeper than this (quotes, lists, emphasis) is shown as its raw
- * source. Real reports nest a few levels; a hostile one could nest thousands
- * and overflow the stack while rendering.
+ * deeper nesting is shown as raw source, since a hostile report could nest
+ * thousands of levels and overflow the stack
  */
 export const MAX_NESTING = 32;
 
 interface Ctx {
-  /** Resolves relative links. */
   base: string;
   depth: number;
 }
@@ -206,7 +200,6 @@ function block(token: Token, ctx: Ctx): MdBlock | null {
         children: inlines((token as Tokens.Paragraph).tokens, deeper(ctx)),
       };
     case "text": {
-      // Block-level text, e.g. a tight list item's content.
       const t = token as Tokens.Text;
       return {
         type: "paragraph",
@@ -262,7 +255,6 @@ function block(token: Token, ctx: Ctx): MdBlock | null {
   }
 }
 
-/** Parses markdown into the renderable tree. `base` resolves relative links. */
 export function parseMarkdown(markdown: string, base: string): MdBlock[] {
   let tokens: Token[];
   try {

@@ -17,14 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** First retry waits up to this long. */
 export const BASE_DELAY_MS = 500;
-/** No retry waits longer than this. */
 export const MAX_DELAY_MS = 30_000;
 
 /** Serve closes a session after its 8-hour limit; reconnecting re-authenticates. */
 export const SESSION_EXPIRED_CLOSE_CODE = 4002;
-/** Serve closes a session whose principal or token was revoked. */
 export const PRINCIPAL_REVOKED_CLOSE_CODE = 4003;
 
 /**
@@ -55,7 +52,6 @@ export type CloseAction = "retry" | "probe" | "recheck-mode" | "reauth";
 
 export function closeAction(close: {
   code: number;
-  /** Whether the socket reached open before closing. */
   opened: boolean;
   tokenPresented: boolean;
 }): CloseAction {
@@ -66,7 +62,6 @@ export function closeAction(close: {
   return close.tokenPresented ? "probe" : "recheck-mode";
 }
 
-/** The HTTP status of a token probe, or `network-error` if none arrived. */
 export type ProbeResult = number | "network-error";
 
 /**

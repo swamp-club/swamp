@@ -17,37 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Extension-author-facing subset of swamp's MethodContext.
- *
- * These types mirror the fields that extension model `execute` functions
- * actually use. A CI test in the main swamp repo verifies structural
- * compatibility with the canonical types.
- */
-
-// Type-only — used to type the `createCelEnvironment` field below.
-// Extensions get Environment instances via `ctx.createCelEnvironment()` and
-// rely on inference; no consumer-facing re-export is provided.
+// type-only: extensions get Environment instances via
+// ctx.createCelEnvironment() and rely on inference; no re-export is provided.
 import type { Environment } from "cel-js";
 
 /**
- * Lifetime determines how long data should be retained.
- * - Duration strings: "1h", "5m", "10d", "2w", "1mo", "10y"
- * - "ephemeral": Deleted when the process ends
- * - "infinite": Never automatically deleted
- * - "job": Lives until the job completes
- * - "workflow": Lives until the workflow completes
+ * how long data is retained: a duration such as "1h" or "2w", or "ephemeral"
+ * (process end), "infinite", "job" or "workflow" (until it completes).
  */
 export type Lifetime = string;
 
 /**
- * Garbage collection policy determines version retention.
- * - number: Keep N most recent versions
- * - duration string: Keep versions created within the duration
+ * a number keeps the N most recent versions; a duration string keeps versions
+ * created within it.
  */
 export type GarbageCollectionPolicy = number | string;
 
-/** Owner definition tracks who created/owns the data. */
 export interface OwnerDefinition {
   ownerType: "model-method" | "workflow-step" | "manual";
   ownerRef: string;
@@ -56,7 +41,6 @@ export interface OwnerDefinition {
   workflowRunId?: string;
 }
 
-/** Metadata attached to a data handle (excludes auto-generated fields). */
 export interface DataHandleMetadata {
   contentType: string;
   lifetime: Lifetime;
@@ -68,52 +52,32 @@ export interface DataHandleMetadata {
   renamedTo?: string;
 }
 
-/** Lightweight reference to data already written during method execution. */
 export interface DataHandle {
-  /** Human-readable name of this data artifact. */
   name: string;
-  /** The declared spec name (key in resources or files). */
   specName: string;
-  /** Whether this handle is for a resource or file. */
   kind: "resource" | "file";
-  /** Unique data ID. */
   dataId: string;
-  /** Version number on disk. */
   version: number;
-  /** Size in bytes. */
   size: number;
-  /** Tags applied to the data. */
   tags: Record<string, string>;
-  /** Metadata excluding auto-generated fields. */
   metadata: DataHandleMetadata;
-  /** Top-level resource attributes (resource kind only). */
   attributes?: Record<string, unknown>;
 }
 
-/** Writer for binary or text file data. */
 export interface DataWriter {
-  /** The data ID assigned to this writer. */
   readonly dataId: string;
-  /** The data name. */
   readonly name: string;
-  /** Write all content at once. */
   writeAll(content: Uint8Array): Promise<DataHandle>;
-  /** Write text content (encodes to UTF-8). */
   writeText(text: string): Promise<DataHandle>;
-  /** Append a single line (streaming). */
   writeLine(line: string): Promise<void>;
-  /** Pipe a stream to disk. */
   writeStream(
     stream: ReadableStream<Uint8Array>,
     options?: { onLine?: (line: string) => void },
   ): Promise<DataHandle>;
-  /** Get the file path for direct I/O. */
   getFilePath(): Promise<string>;
-  /** Finalize a writer that used writeLine/getFilePath and return the handle. */
   finalize(): Promise<DataHandle>;
 }
 
-/** Definition metadata available during execution. */
 export interface DefinitionInfo {
   id: string;
   name: string;
@@ -121,10 +85,8 @@ export interface DefinitionInfo {
   tags: Record<string, string>;
 }
 
-/** Log level for captured log entries. */
 export type LogLevel = "debug" | "info" | "warning" | "error" | "fatal";
 
-/** A logger interface matching the subset extension authors use. */
 export interface Logger {
   debug(message: string, ...args: unknown[]): void;
   info(message: string, ...args: unknown[]): void;
@@ -134,16 +96,11 @@ export interface Logger {
   fatal(message: string, ...args: unknown[]): void;
 }
 
-/** Event emitted during method execution. */
 export interface MethodExecutionEvent {
   type: string;
   [key: string]: unknown;
 }
 
-/**
- * Record returned by cross-model data reads.
- * Represents a single version of a named data item with parsed content.
- */
 export interface DataRecord {
   id: string;
   name: string;
@@ -165,10 +122,9 @@ export interface DataRecord {
   size: number;
   content: unknown;
   /**
-   * Local filesystem path of the stored content. Swamp sets it for records
-   * returned by the CEL `data.*` functions and leaves it empty elsewhere.
-   * Optional so existing test fixtures that build DataRecord literals keep
-   * type-checking.
+   * local filesystem path of the stored content; set for records from the CEL
+   * data.* functions and empty elsewhere. Optional so existing fixtures that
+   * build literals keep type-checking.
    */
   path?: string;
   ownerRef: string;
@@ -180,82 +136,54 @@ export interface DataRecord {
 }
 
 /**
- * The context object passed to extension model `execute` functions.
- *
- * This is the extension-author-facing subset of swamp's internal MethodContext.
- * It contains only the fields that extension models typically interact with.
- *
- * `TGlobalArgs` lets authoring-time type inference narrow `globalArgs` to the
- * model's inferred global-arguments schema. The default keeps bare
- * `MethodContext` usages (including `createModelTestContext`) backward
- * compatible with the pre-parameterised shape.
+ * TGlobalArgs narrows globalArgs to the model's inferred schema; the default
+ * keeps bare MethodContext usages compatible with the pre-parameterised shape.
  */
 export interface MethodContext<TGlobalArgs = Record<string, unknown>> {
-  /** Cancellation signal for async operations. */
   signal: AbortSignal;
-  /** The base directory for the repository. */
   repoDir: string;
-  /** Pre-validated global arguments from the definition. */
   globalArgs: TGlobalArgs;
-  /** Definition metadata for the current execution. */
   definition: DefinitionInfo;
-  /** The name of the method being executed. */
   methodName: string;
   /**
-   * W3C Trace Context headers (`traceparent`, `tracestate`) for this method
-   * execution. Pass them to any subprocess you spawn (as the
-   * `TRACEPARENT`/`TRACESTATE` env vars) or outbound request to continue the
-   * trace. Unlike the process env, this is always this execution's own
-   * context, even when other methods run concurrently in the same process.
-   * Absent or empty when tracing is disabled.
+   * W3C Trace Context headers for this execution; pass them to subprocesses as
+   * TRACEPARENT/TRACESTATE or on outbound requests. Always this execution's
+   * own, even when methods run concurrently. Absent or empty when tracing is
+   * disabled.
    */
   traceHeaders?: Readonly<Record<string, string>>;
-  /** Logger for emitting log messages. */
   logger: Logger;
-  /** Write a resource — validates against schema, serializes JSON, returns handle. */
   writeResource: (
     specName: string,
     name: string,
     data: Record<string, unknown>,
   ) => Promise<DataHandle>;
   /**
-   * Read a previously stored resource by instance name.
-   *
-   * The `instanceName` is the `name` parameter from `writeResource`, not the
-   * `specName`. For example, after `writeResource("state", "main", data)`,
-   * read it back with `readResource("main")`.
+   * reads back a resource by instance name, the name given to writeResource,
+   * not the specName.
    */
   readResource: (
     instanceName: string,
     version?: number,
   ) => Promise<Record<string, unknown> | null>;
-  /** Create a file writer for binary/streaming content. */
   createFileWriter: (specName: string, name: string) => DataWriter;
   /**
-   * Read data from another model by name.
-   * Resolves the model name, reads all data items, parses JSON content,
-   * and resolves vault references. Optionally filter by spec name.
-   * Returns an empty array if the model doesn't exist or has no data.
+   * reads data from another model by name, parsing JSON and resolving vault
+   * references; an empty array if the model does not exist or has no data.
    */
   readModelData: (
     modelName: string,
     specName?: string,
   ) => Promise<DataRecord[]>;
   /**
-   * Build a fresh, isolated cel-js `Environment` seeded with swamp's
-   * baseline arithmetic-overload registrations. Use this to evaluate
-   * CEL expressions over data the extension already holds (e.g. a
-   * selector predicate over a fleet of hosts). Each call returns a
-   * new Environment — registrations on one returned instance do not
-   * affect any other.
+   * builds a fresh, isolated cel-js Environment with swamp's baseline
+   * arithmetic overloads; registrations on one instance do not affect any
+   * other.
    */
   createCelEnvironment: () => Environment;
-  /** Optional callback for emitting domain events during execution. */
   onEvent?: (event: MethodExecutionEvent) => void;
 }
 
-/** Result returned from a model method execution. */
 export interface MethodResult {
-  /** Data handles referencing artifacts persisted during execution. */
   dataHandles?: DataHandle[];
 }

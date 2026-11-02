@@ -21,10 +21,6 @@
 import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
 import type { WebhookHandler } from "./webhook_types.ts";
 
-/**
- * The webhook export shape that extension authors must produce.
- * Matches the `export const webhook = { ... }` pattern.
- */
 export interface WebhookExport {
   type: string;
   name: string;
@@ -35,22 +31,16 @@ export interface WebhookExport {
   createHandler: (config: Record<string, unknown>) => WebhookHandler;
 }
 
-/** A request fixture for {@link assertWebhookExportConformance}. */
 export interface WebhookRequestFixture {
   body: string | Uint8Array;
   headers: Record<string, string>;
   secret: string;
 }
 
-/** Options for webhook export conformance. */
 export interface WebhookExportConformanceOptions {
-  /** Config passed to createHandler. Defaults to `{}`. */
   config?: Record<string, unknown>;
-  /** Configs that should fail schema validation. */
   invalidConfigs?: Record<string, unknown>[];
-  /** A request that must verify. */
   validRequest: WebhookRequestFixture;
-  /** Requests that must not verify (forged, missing header, wrong secret). */
   invalidRequests: WebhookRequestFixture[];
 }
 
@@ -72,23 +62,6 @@ async function verifies(
   }
 }
 
-/**
- * Asserts that a webhook export has the correct shape and that its handler
- * accepts a valid request and rejects invalid ones the way `swamp serve`
- * evaluates them.
- *
- * ```typescript
- * import { assertWebhookExportConformance } from "@swamp-club/swamp-testing";
- * import { webhook } from "./my_webhook.ts";
- *
- * Deno.test("webhook export conforms", async () => {
- *   await assertWebhookExportConformance(webhook, {
- *     validRequest: { body: "{}", headers: { "x-token": "s" }, secret: "s" },
- *     invalidRequests: [{ body: "{}", headers: { "x-token": "x" }, secret: "s" }],
- *   });
- * });
- * ```
- */
 export async function assertWebhookExportConformance(
   webhookExport: WebhookExport,
   options: WebhookExportConformanceOptions,

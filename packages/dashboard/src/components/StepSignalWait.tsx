@@ -20,26 +20,19 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 
-/** A step's wait for a signal, as the run view carries it. */
 export interface StepSignalWaitInfo {
   id: string;
   deadline: string;
-  /** The key a signal sent by key reaches the wait with. */
   key?: string;
   receipt?: {
     id: string;
     receivedAt: string;
     submittedBy: string;
-    /**
-     * The signal came by key before the wait was open, and serve held it
-     * until the wait took it.
-     */
     heldAsPending?: true;
   };
 }
 
 interface StepSignalWaitProps {
-  /** The step's status, as the run view reports it. */
   status: string;
   wait?: StepSignalWaitInfo;
 }

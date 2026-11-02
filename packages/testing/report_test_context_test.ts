@@ -25,8 +25,6 @@ import type {
   WorkflowReportContext,
 } from "./report_types.ts";
 
-// --- Method scope: defaults ---
-
 Deno.test("createReportTestContext: method scope with defaults", () => {
   const { context } = createReportTestContext({ scope: "method" });
   assertEquals(context.scope, "method");
@@ -39,8 +37,6 @@ Deno.test("createReportTestContext: method scope with defaults", () => {
   assertEquals(ctx.methodArgs, {});
   assertEquals(ctx.repoDir, "/tmp/swamp-test");
 });
-
-// --- Method scope: custom options ---
 
 Deno.test("createReportTestContext: method scope with custom options", () => {
   const { context } = createReportTestContext({
@@ -68,8 +64,6 @@ Deno.test("createReportTestContext: method scope with custom options", () => {
   assertEquals(ctx.repoDir, "/custom/repo");
 });
 
-// --- Model scope ---
-
 Deno.test("createReportTestContext: model scope with defaults", () => {
   const { context } = createReportTestContext({ scope: "model" });
   assertEquals(context.scope, "model");
@@ -77,8 +71,6 @@ Deno.test("createReportTestContext: model scope with defaults", () => {
   assertEquals(ctx.modelType, "test/model");
   assertEquals(ctx.executionStatus, "succeeded");
 });
-
-// --- Workflow scope: defaults ---
 
 Deno.test("createReportTestContext: workflow scope with defaults", () => {
   const { context } = createReportTestContext({ scope: "workflow" });
@@ -90,8 +82,6 @@ Deno.test("createReportTestContext: workflow scope with defaults", () => {
   assertEquals(typeof ctx.workflowId, "string");
   assertEquals(typeof ctx.workflowRunId, "string");
 });
-
-// --- Workflow scope: custom options ---
 
 Deno.test("createReportTestContext: workflow scope with step executions", () => {
   const { context } = createReportTestContext({
@@ -136,8 +126,6 @@ Deno.test("createReportTestContext: workflow scope with step executions", () => 
   assertEquals(ctx.stepExecutions[1].status, "failed");
 });
 
-// --- Logger ---
-
 Deno.test("createReportTestContext: logger captures all levels", () => {
   const { context, getLogs, getLogsByLevel } = createReportTestContext({
     scope: "method",
@@ -162,8 +150,6 @@ Deno.test("createReportTestContext: logger captures extra args", () => {
   context.logger.info("msg", { key: "val" }, 42);
   assertEquals(getLogs()[0].args, [{ key: "val" }, 42]);
 });
-
-// --- Data repository ---
 
 Deno.test("createReportTestContext: dataRepository.findByName returns seeded data", async () => {
   const { context } = createReportTestContext({
@@ -375,8 +361,6 @@ Deno.test("createReportTestContext: dataRepository.findAllGlobal returns all", a
   assertEquals(results[1].modelType, "t2");
 });
 
-// --- Definition repository ---
-
 Deno.test("createReportTestContext: definitionRepository.findByName returns seeded", async () => {
   const { context } = createReportTestContext({
     scope: "method",
@@ -425,8 +409,6 @@ Deno.test("createReportTestContext: definitionRepository.findAll returns matchin
   assertEquals(results.length, 2);
 });
 
-// --- Data returns clones ---
-
 Deno.test("createReportTestContext: dataRepository returns clones", async () => {
   const { context } = createReportTestContext({
     scope: "method",
@@ -452,8 +434,6 @@ Deno.test("createReportTestContext: dataRepository returns clones", async () => 
   const r2 = await context.dataRepository.findByName("t", "m", "main");
   assertEquals(r2!.attributes!.count, 0);
 });
-
-// --- getLogs returns copy ---
 
 Deno.test("createReportTestContext: getLogs returns a copy", () => {
   const { context, getLogs } = createReportTestContext({ scope: "method" });

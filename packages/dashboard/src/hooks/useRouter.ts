@@ -30,16 +30,15 @@ import {
 } from "../routes.ts";
 import { browserHistory } from "../components/dom_types.ts";
 
-// `location` is absent outside a browser (deno test renders components that
-// import this module); start at the overview there.
+// location is absent outside a browser (deno test renders components that
+// import this module); start at the overview there
 function currentPathname(): string {
   return globalThis.location?.pathname ?? "/";
 }
 
 /**
- * The route the address bar shows. A link with an old segment for the
- * behaviors view (`/dashboard/models/...`) is rewritten in place to its
- * canonical `/dashboard/behaviors/...` path, keeping query and hash.
+ * a legacy /dashboard/models/... link is rewritten in place to its canonical
+ * /dashboard/behaviors/... path, keeping query and hash
  */
 function currentRoute(): RouteState {
   const location = globalThis.location;
@@ -86,10 +85,6 @@ function onPopState() {
 
 globalThis.addEventListener?.("popstate", onPopState);
 
-/**
- * Navigates in-app to a route. Links use this directly so a view deep in the
- * tree can link anywhere without having router callbacks passed down to it.
- */
 export function navigateTo(next: RouteState): void {
   pushState(next);
 }
@@ -103,8 +98,8 @@ export interface Router {
   openRun: (workflowName: string, runId?: string) => void;
   closeDetail: () => void;
   /**
-   * Back/Escape: a deep-linked data item or report returns to its model or
-   * run; any other detail closes to its list view, as before.
+   * a deep-linked data item or report returns to its model or run; any other
+   * detail closes to its list view
    */
   goUp: () => void;
 }

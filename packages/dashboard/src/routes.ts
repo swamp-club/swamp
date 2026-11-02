@@ -20,14 +20,11 @@
 import type { View } from "./types.ts";
 import { dashboardBaseFor, PAGE_WORKSPACE } from "./client/workspace_path.ts";
 
-// `/dashboard`, or `/dashboard/w/<workspace>` on the local dashboard.
 const BASE = dashboardBaseFor(PAGE_WORKSPACE);
 
 /**
- * The detail a URL addresses. Model-scoped kinds (`data`, `report`) and the
- * run-scoped `runReport` are the shareable deep links: `data` with a
- * `version` is the permalink for any single data item, including a step's
- * report output.
+ * data with a version is the permalink for any single data item, including a
+ * step's report output
  */
 export type DetailView =
   | { kind: "run"; workflowName: string; runId?: string }
@@ -56,9 +53,8 @@ export interface RouteState {
 }
 
 /**
- * The URL segment of each list view. The view id stays `models` (code,
- * not product language); its pages live under `behaviors`, the product
- * term. Every link the dashboard builds goes through this map.
+ * the view id stays models but its pages live under behaviors, the product
+ * term; every dashboard link goes through this map
  */
 const VIEW_SEGMENTS: Readonly<Record<Exclude<View, "overview">, string>> = {
   workflows: "workflows",
@@ -76,16 +72,12 @@ const VIEW_SEGMENTS: Readonly<Record<Exclude<View, "overview">, string>> = {
   system: "system",
 };
 
-/**
- * Old spellings of a view's segment that still resolve, so links shared
- * before a rename keep working forever.
- */
+/** old spellings of a view's segment still resolve, so shared links keep working */
 const LEGACY_SEGMENTS: Readonly<Record<string, Exclude<View, "overview">>> = {
   models: "models",
   behaviours: "models",
 };
 
-/** Every segment that names a list view, current and legacy. */
 const SEGMENT_VIEWS = new Map<string, View>(Object.entries(LEGACY_SEGMENTS));
 for (const [view, segment] of Object.entries(VIEW_SEGMENTS)) {
   SEGMENT_VIEWS.set(segment, view as View);
@@ -94,10 +86,8 @@ for (const [view, segment] of Object.entries(VIEW_SEGMENTS)) {
 const BEHAVIORS = `${BASE}/${VIEW_SEGMENTS.models}`;
 
 /**
- * The canonical path for a link that uses an old segment for the behaviors
- * view (`/dashboard/models/...` or `/dashboard/behaviours/...`), or null
- * when the path needs no rewrite. Only the leading segment changes; the
- * rest of the raw path is kept byte for byte, so encoded names survive.
+ * only the leading segment changes; the rest of the raw path is kept byte for
+ * byte so encoded names survive
  */
 export function legacyRedirectPath(pathname: string): string | null {
   if (!pathname.startsWith(`${BASE}/`)) return null;
@@ -107,25 +97,22 @@ export function legacyRedirectPath(pathname: string): string | null {
 }
 
 /**
- * True for the `swamp start` page. It is served by `swamp start`'s own
- * loopback server, not by `swamp serve`, so the app renders it before any
- * serve connection, auth probe or sidebar is set up.
+ * served by swamp start's own loopback server, not swamp serve, so the app
+ * renders it before any serve connection, auth probe or sidebar is set up
  */
 export function isStartPath(pathname: string): boolean {
   return pathname === "/dashboard/start" || pathname === "/dashboard/start/";
 }
 
 /**
- * Percent-encodes one path segment. `@` stays readable (it is legal in a
- * path segment) so scoped names read as `@swamp%2Fworkflow-summary`; `/`
- * must be encoded as `%2F`. Links built by hand for scoped names have to
- * follow the same rule, or the extra `/` shifts every later segment.
+ * "@" stays readable so scoped names read @swamp%2Fworkflow-summary; "/" must
+ * be %2F, and hand-built links follow the same rule or the extra "/" shifts
+ * every later segment
  */
 export function encodeSegment(value: string): string {
   return encodeURIComponent(value).replace(/%40/g, "@");
 }
 
-/** Decodes one segment, or returns null for a malformed escape. */
 function safeDecode(segment: string): string | null {
   try {
     return decodeURIComponent(segment);
@@ -284,7 +271,6 @@ export function buildPath(state: RouteState): string {
   return `${BASE}/${VIEW_SEGMENTS[state.view]}`;
 }
 
-/** The sidebar view a detail belongs to. */
 export function viewForDetail(detail: NonNullable<DetailView>): View {
   switch (detail.kind) {
     case "model":
@@ -303,9 +289,8 @@ export function viewForDetail(detail: NonNullable<DetailView>): View {
 }
 
 /**
- * Where Back and Escape go from a deep-linked item: a data item or report
- * returns to its model, a run's report to its run. Existing details have no
- * parent here — they keep closing to their list view.
+ * a data item or report returns to its model, a run's report to its run; other
+ * details have no parent and close to their list view
  */
 export function parentOf(detail: DetailView): DetailView {
   if (!detail) return null;
@@ -324,12 +309,10 @@ export function parentOf(detail: DetailView): DetailView {
   }
 }
 
-/** The full URL of a route, for copying a link to share. */
 export function absoluteUrl(state: RouteState, origin: string): string {
   return `${origin}${buildPath(state)}`;
 }
 
-/** The pointer-event fields needed to tell a plain click from a modified one. */
 export interface ClickLike {
   button: number;
   metaKey: boolean;
@@ -340,9 +323,8 @@ export interface ClickLike {
 }
 
 /**
- * True for an unmodified primary-button click — the only click a nav link
- * should turn into in-app navigation. Modified or middle clicks are left to
- * the browser so they open the link in a new tab or window.
+ * modified or middle clicks are left to the browser so they open the link in a
+ * new tab or window
  */
 export function isPlainLeftClick(event: ClickLike): boolean {
   return event.button === 0 && !event.metaKey && !event.ctrlKey &&

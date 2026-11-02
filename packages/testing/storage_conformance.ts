@@ -21,16 +21,12 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1.0.19";
 import type { DatastoreStorage, StoredChunk } from "./datastore_types.ts";
 
-/** Options for {@link assertStorageConformance}. */
 export interface StorageConformanceOptions {
-  /** How many puts of one hash are raced against each other. Default: 8. */
   concurrency?: number;
   /**
-   * Sets a stored chunk's `lastModified`, so the suite can check that
-   * `touch` and `put` refresh it without waiting. A filesystem storage sets
-   * the mtime; an in-memory one writes the field. Leave it out for a
-   * backend that cannot backdate an object, such as a real bucket: the
-   * refresh checks are then skipped.
+   * sets a chunk's lastModified so the suite can check that touch and put
+   * refresh it without waiting; omit it for a backend that cannot backdate, and
+   * the refresh checks are skipped.
    */
   setLastModified?(
     namespace: string,
@@ -38,34 +34,19 @@ export interface StorageConformanceOptions {
     date: Date,
   ): Promise<void>;
   /**
-   * The namespace the main checks use, for a storage bound to one
-   * namespace. Default: a fresh `conformance-<random>` namespace per run.
-   * With it the suite's chunk contents are unique to the run, so chunks an
-   * earlier run left behind do not change the result.
+   * namespace the main checks use for a storage bound to one namespace; default
+   * is a fresh random one per run, so chunks an earlier run left behind do not
+   * change the result.
    */
   namespace?: string;
   /**
-   * Parts of `storage/1` the storage cannot offer, each with the reason it
-   * cannot, as a non-empty string. Default: none, and every check runs.
-   *
-   * - `list`: the list checks are skipped, and iterating `list` must reject.
-   *   The checks that `touch` and `put` refresh `lastModified` read it
-   *   through `list`, so they are skipped too.
-   * - `delete`: the delete checks are skipped, and `delete` must reject and
-   *   leave the chunk. The suite cannot clean up, so it leaves the chunks it
-   *   wrote behind.
-   * - `namespaces`: the namespace isolation checks, including `_default`,
-   *   are skipped. `namespace` must then be given.
-   *
-   * An unsupported method must still reject on an aborted signal, with
-   * either error.
+   * list skips list and refresh checks, delete skips delete checks and leaves
+   * the suite's chunks, namespaces skips isolation checks; an unsupported
+   * method must still reject
    */
   unsupported?: {
-    /** Why the storage cannot list its chunks. */
     list?: string;
-    /** Why the storage cannot delete chunks. */
     delete?: string;
-    /** Why the storage serves one namespace only. */
     namespaces?: string;
   };
 }
@@ -90,36 +71,9 @@ async function listAll(
 }
 
 /**
- * Checks a `storage/1` {@link DatastoreStorage} against the contract swamp
- * relies on.
- *
- * `openStorage` is called more than once and must return handles onto the
- * same chunks each time, as two swamp processes on one datastore get. The
- * suite writes only under namespaces of its own and deletes what it wrote.
- *
- * Checked: the contract string and capabilities, and that `touch` is
- * implemented exactly when declared; `put` then `get`, `get` of a missing
- * chunk, `has` on present, missing and mixed batches; a re-put leaving one
- * chunk; `delete` and its idempotence; namespace isolation, including the
- * `_default` namespace of an unnamespaced datastore; `list` reporting
- * exactly the stored chunks; that `put` copies its input; `touch` returning
- * the hashes it did not find; that `touch` and `put` refresh
- * `lastModified` (when `setLastModified` is given); concurrent puts of one
- * hash leaving one complete chunk; visibility of one handle's writes to
- * another; and every method rejecting on an aborted signal.
- *
- * A storage that cannot offer `list`, `delete` or more than one namespace
- * says so in `options.unsupported`, with the reason: those checks are then
- * skipped, and an unsupported method must reject. `has`, `get`, `put`,
- * copying, concurrency and visibility are always checked.
- *
- * ```ts
- * import { assertStorageConformance } from "@swamp-club/swamp-testing";
- *
- * Deno.test("storage conformance", async () => {
- *   await assertStorageConformance(() => createProvider(config).storage!());
- * });
- * ```
+ * checks a storage/1 DatastoreStorage against the contract swamp relies on;
+ * openStorage is called more than once and must return handles onto the same
+ * chunks. It writes only under namespaces of its own and deletes what it wrote.
  */
 export async function assertStorageConformance(
   openStorage: () => DatastoreStorage | Promise<DatastoreStorage>,
@@ -165,7 +119,6 @@ export async function assertStorageConformance(
   };
 
   try {
-    // contract and capabilities
     assertEquals(storage.contract, "storage/1", "contract must be storage/1");
     const caps = storage.capabilities();
     assert(
@@ -178,7 +131,6 @@ export async function assertStorageConformance(
       "touch must be implemented exactly when capabilities().touch is true",
     );
 
-    // put, get and has
     const a = await chunk("chunk a");
     const b = await chunk("chunk b");
     const missing = await chunk("never stored");
@@ -210,7 +162,6 @@ export async function assertStorageConformance(
       "has of an empty batch must return an empty set",
     );
 
-    // an empty chunk is a chunk
     const empty = {
       bytes: new Uint8Array(),
       sha256: await sha256Hex(new Uint8Array()),
@@ -222,7 +173,6 @@ export async function assertStorageConformance(
       "an empty chunk must read back as empty, not as null",
     );
 
-    // put copies its input
     const c = await chunk("chunk c");
     const input = c.bytes.slice();
     await put(ns, { bytes: input, sha256: c.sha256 });
@@ -233,7 +183,6 @@ export async function assertStorageConformance(
       "a chunk must not change when the caller later changes the bytes it put",
     );
 
-    // re-put leaves one chunk
     await put(ns, a);
     assertEquals(await storage.get(ns, a.sha256, signal), a.bytes);
     if (canList) {
@@ -257,7 +206,6 @@ export async function assertStorageConformance(
       );
     }
 
-    // namespace isolation
     if (canNamespace) {
       assertEquals(
         await storage.get(otherNs, a.sha256, signal),
@@ -279,7 +227,6 @@ export async function assertStorageConformance(
           "list must not report another namespace's chunks",
         );
       } else {
-        // Without list, the other direction is checked by reading.
         assertEquals(
           await storage.get(ns, d.sha256, signal),
           null,
@@ -319,7 +266,6 @@ export async function assertStorageConformance(
       }
     }
 
-    // touch
     if (storage.touch !== undefined) {
       assertEquals(
         await storage.touch(ns, [a.sha256, missing.sha256], signal),
@@ -333,7 +279,6 @@ export async function assertStorageConformance(
       );
     }
 
-    // touch and put refresh lastModified, as list reports it
     if (options.setLastModified !== undefined && canList) {
       const longAgo = new Date("2000-01-01T00:00:00Z");
       const lastModified = async (sha256: string) =>
@@ -360,8 +305,7 @@ export async function assertStorageConformance(
       );
     }
 
-    // concurrent puts of one hash
-    // Large enough to race, within the storage's own chunk limit.
+    // large enough to race, within the storage's own chunk limit.
     const racedText = "r".repeat(
       Math.max(0, Math.min(256 * 1024, caps.maxChunkBytes) - salt.length),
     );
@@ -392,7 +336,6 @@ export async function assertStorageConformance(
       );
     }
 
-    // delete and its idempotence
     if (canDelete) {
       await storage.delete(ns, b.sha256, signal);
       assertEquals(
@@ -421,7 +364,6 @@ export async function assertStorageConformance(
       );
     }
 
-    // an aborted signal
     const aborted = AbortSignal.abort(new Error("conformance abort"));
     const calls: [string, () => Promise<unknown>][] = [
       ["has", () => storage.has(ns, [a.sha256], aborted)],

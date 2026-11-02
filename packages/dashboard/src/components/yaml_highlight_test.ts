@@ -22,8 +22,6 @@ import { stringify } from "@std/yaml";
 import fc from "fast-check";
 import { highlightYaml } from "./yaml_highlight.ts";
 
-// Removes the highlight tags and decodes the entities escapeHtml adds, which
-// recovers exactly what the browser displays as text.
 function displayed(html: string): string {
   return html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">").replace(/&amp;/g, "&");
@@ -32,8 +30,6 @@ function displayed(html: string): string {
 function assertRoundTrips(raw: string): void {
   assertEquals(displayed(highlightYaml(raw)), raw);
 }
-
-// ── text is never altered ───────────────────────────────────────────────
 
 Deno.test("highlightYaml: keeps extra whitespace after a colon", () => {
   assertRoundTrips("count:   12");
@@ -57,8 +53,6 @@ Deno.test("highlightYaml: escapes HTML-significant characters", () => {
 Deno.test("highlightYaml: keeps CRLF line endings", () => {
   assertRoundTrips("a: 1\r\nb: true\r\n");
 });
-
-// ── token classification ────────────────────────────────────────────────
 
 Deno.test("highlightYaml: highlights sequence items and negatives", () => {
   assertEquals(
@@ -116,8 +110,6 @@ Deno.test("highlightYaml: leaves block scalar content unhighlighted", () => {
     ],
   );
 });
-
-// ── property ────────────────────────────────────────────────────────────
 
 Deno.test("highlightYaml: displayed text equals any stringified YAML", () => {
   fc.assert(

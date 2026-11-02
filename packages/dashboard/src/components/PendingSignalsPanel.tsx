@@ -26,7 +26,6 @@ import { formatAbsoluteTime } from "../lib/format.ts";
 import { formatWait } from "../lib/wait_order.ts";
 
 interface PendingSignalsPanelProps {
-  /** The held signals, soonest to lapse first. */
   rows: readonly PendingSignalRow[];
   /**
    * The time to judge the rows by, from a page that counts them on its own
@@ -48,12 +47,7 @@ const DETAIL_STYLE = {
   marginTop: 2,
 };
 
-/**
- * The time to judge held signals by: re-read every {@link TICK_MS} while
- * `active` and the tab is in view, so a page counting held signals drops a
- * lapsed one when the panel does. A hidden tab stops the clock, and it
- * catches up on coming back into view (swamp-club#3661).
- */
+/** a hidden tab stops the clock, and it catches up on coming back into view */
 export function useHeldSignalClock(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
   const tabVisible = useTabVisible();
@@ -68,11 +62,8 @@ export function useHeldSignalClock(active: boolean): number {
 }
 
 /**
- * The signals sent by key before any wait for the key was open: each with
- * its key, workflow, receipt, when serve received it and how long serve
- * holds it for the next wait on the key. A signal past its hold is hidden,
- * on a clock the panel ticks itself: a signal lapsing changes no run, so
- * nothing refetches the list. Renders nothing when no signal is held.
+ * a signal past its hold is hidden on a clock the panel ticks itself: a signal
+ * lapsing changes no run, so nothing refetches the list
  */
 export function PendingSignalsPanel(
   { rows, now: given }: PendingSignalsPanelProps,

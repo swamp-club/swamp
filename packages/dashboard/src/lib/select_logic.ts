@@ -17,19 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Keyboard and search behaviour for the themed Select, kept pure so it can
-// be tested without a DOM.
-
 import { fuzzyFilter } from "./fuzzy.ts";
 
 export interface OptionLike {
   label: string;
-  /** Secondary text, e.g. a count; also searched. */
   hint?: string;
   disabled?: boolean;
 }
 
-/** Keys that move the active option. */
 export type NavKey =
   | "ArrowDown"
   | "ArrowUp"
@@ -53,11 +48,7 @@ export function isNavKey(key: string): key is NavKey {
 
 const PAGE = 8;
 
-/**
- * The next active index for a navigation key, skipping disabled options
- * and stopping at the ends (no wrap, like a native select). Returns -1
- * when nothing is selectable.
- */
+/** skips disabled options and stops at the ends (no wrap, like a native select) */
 export function moveActive(
   options: readonly OptionLike[],
   current: number,
@@ -95,9 +86,8 @@ export function moveActive(
 }
 
 /**
- * Type-to-select: the first enabled option after `current` whose label
- * starts with `buffer`, wrapping around. Repeating one character cycles
- * through options starting with it, as native selects do. -1 if none.
+ * repeating one character cycles through options starting with it, as native
+ * selects do
  */
 export function typeaheadMatch(
   options: readonly OptionLike[],
@@ -120,7 +110,6 @@ export function typeaheadMatch(
   return -1;
 }
 
-/** Options matching a search query (fuzzy, best first); all when empty. */
 export function filterOptions<T extends OptionLike>(
   options: readonly T[],
   query: string,
@@ -128,5 +117,4 @@ export function filterOptions<T extends OptionLike>(
   return fuzzyFilter(options, query, (o) => [o.label, o.hint ?? ""]);
 }
 
-/** Show a search box once a list is long enough to need one. */
 export const SEARCH_THRESHOLD = 10;

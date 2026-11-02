@@ -17,29 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The guided search: what the search box suggests as the user types. An
-// empty box offers the facets you can filter by; "prefix:" offers that
-// facet's values; anything else searches names and also offers matching
-// facets and values ("git" → webhook /hooks/github-push). Pure, so the
-// suggestion rules are tested without a DOM.
-
 import { fuzzyFilter, fuzzyMatch } from "./fuzzy.ts";
 
 export interface FacetValue {
   value: string;
   label: string;
-  /** Muted right-aligned text, e.g. a count. */
   hint?: string;
-  /** Longer explanation shown in the suggestion list, never on chips. */
   detail?: string;
 }
 
 export interface FacetDef {
-  /** What the user types before the colon: "prefix", "webhook". */
   key: string;
-  /** Shown on chips and headings: "Prefix". */
   label: string;
-  /** One line telling the user what this narrows by. */
   description: string;
   values: readonly FacetValue[];
 }
@@ -49,7 +38,6 @@ export type Suggestion =
   | { kind: "value"; facet: FacetDef; value: FacetValue }
   | { kind: "text"; text: string };
 
-/** "prefix:dep" → the prefix facet and "dep"; null when not `key:` form. */
 export function parseFacetInput(
   input: string,
   facets: readonly FacetDef[],
@@ -64,8 +52,8 @@ export function parseFacetInput(
 }
 
 /**
- * The search box's text once the query changed from outside (Clear filters,
- * Back/Forward): the query, unless the box holds an unfinished `key:`.
+ * after an outside query change (Clear filters, Back/Forward) the box shows the
+ * query, unless it holds an unfinished `key:`
  */
 export function draftForQuery(
   draft: string,
@@ -79,9 +67,8 @@ const MAX_VALUES = 60;
 const MAX_CROSS_VALUES = 6;
 
 /**
- * Suggestions for the current input. Facets that already have a value
- * (`applied`) aren't offered again as a facet, but their values are, so
- * a chip can be swapped by picking another value.
+ * facets that already have a value are not offered again, but their values are,
+ * so a chip can be swapped by picking another value
  */
 export function suggestionsFor(
   input: string,

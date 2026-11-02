@@ -26,7 +26,6 @@ interface UseRequestResult<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
-  /** Serve's error code plus any reason/entity type, when the request failed. */
   errorInfo: RequestErrorInfo | null;
   refetch: () => void;
   /**
@@ -35,26 +34,19 @@ interface UseRequestResult<T> {
    */
   reload: () => Promise<void>;
   /**
-   * Re-reads after something changed (run activity, the tab coming into
-   * view, a run leaving the window): waits for the read still in flight,
-   * so its answer is shown, then reads once more. Never discards a reply
-   * on a slow serve (swamp-club#3960).
+   * re-reads after something changed: waits for the read still in flight so its
+   * answer is shown, then reads once more; never discards a reply on a slow
+   * serve
    */
   refresh: () => void;
 }
 
 interface UseRequestOptions {
-  /**
-   * When false the request is not sent and the hook reports no data, no
-   * error and not loading. Lets a view wait for a request it depends on.
-   */
   enabled?: boolean;
 }
 
-/** How a run reaches the runner: supersede, join, or join and read again. */
 type RunMode = "send" | "join" | "refresh";
 
-/** The hook state a read writes. */
 export interface ReadState<T> {
   setData(value: T): void;
   setLoading(value: boolean): void;
@@ -63,10 +55,9 @@ export interface ReadState<T> {
 }
 
 /**
- * The runner's start and apply for one read. A read clears the last error
- * and shows loading when it goes out, not when it is asked for, so the read
- * a refresh sends after the one in flight settles clears that one's
- * failure too (swamp-club#3960).
+ * a read clears the last error and shows loading when it goes out, not when it
+ * is asked for, so the read a refresh sends after the one in flight settles
+ * clears that one's failure too
  */
 export function readHandlers<T>(
   request: () => Promise<T>,

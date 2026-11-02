@@ -254,7 +254,6 @@ Deno.test("createApprovalsRequest: a synchronous transport error does not wedge 
   owner.stop();
 });
 
-/** What a page mounted now would record, as usePageApprovals does. */
 function markOf(owner: ApprovalsRequest) {
   const { replies, failures } = owner.getSnapshot();
   return { replies, failures };
@@ -270,7 +269,6 @@ Deno.test("sinceMark: a failed read after a page mounts shows its error, not the
   assertEquals(loadState(sinceMark(owner.getSnapshot(), mark)), "loading");
   replies[1].reject(new RequestError("Offline", "unavailable"));
   assertEquals(await entry, null);
-  // The owner keeps the listing for views that saw it load.
   assertStrictEquals(owner.getSnapshot().data, pending);
   const page = sinceMark(owner.getSnapshot(), mark);
   assertEquals(page.data, null);
@@ -290,7 +288,6 @@ Deno.test("sinceMark: a page entered while a decision's refresh is in flight off
   replies[0].resolve(pending);
   await initial;
   const decided = owner.refresh();
-  // The page that decided unmounted; another mounts and joins the refresh.
   const mark = markOf(owner);
   const entry = owner.reload();
   assertEquals(replies.length, 2);

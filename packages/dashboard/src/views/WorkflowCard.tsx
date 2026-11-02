@@ -54,31 +54,26 @@ export interface CardWorkflow {
 
 export interface CardRunSummary extends RunStats {
   running: number;
-  /** Newest first. */
   recent: RunHistoryEntry[];
 }
 
 export interface WorkflowCardProps {
   workflow: CardWorkflow;
   facets: WorkflowFacets;
-  /** The effective cron expression (file or serve override). */
   cron?: string;
-  /** Runs in the dashboard time range; undefined when it never ran. */
   summary?: CardRunSummary;
   /** The summary is still loading: show placeholders, not "No runs". */
   summaryPending?: boolean;
   /** The server can't report runs: say nothing rather than "No runs". */
   summaryUnavailable?: boolean;
   onOpen?: (workflowName: string) => void;
-  /** Clock for relative times; tests pin it. */
   now?: number;
 }
 
 /**
- * One workflow in the Workflows grid. The name is the link (so the card is
- * reachable by Tab and opens in a new tab on cmd/middle-click); clicking
- * anywhere else on the card opens it too, except on the run pips, which
- * open their own run.
+ * the name is the link, so the card is reachable by Tab and opens in a new tab
+ * on cmd/middle-click; clicking elsewhere on the card opens it too, except on
+ * the run pips, which open their own run
  */
 export function WorkflowCard(
   {
@@ -220,7 +215,6 @@ export function WorkflowCard(
 
 const UNFINISHED = new Set(["running", "suspended", "pending"]);
 
-/** Cron expression, webhook route(s), or Manual. */
 function TriggerList(
   { facets, cron }: { facets: WorkflowFacets; cron?: string },
 ) {

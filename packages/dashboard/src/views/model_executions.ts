@@ -20,12 +20,10 @@
 import type { RouteState } from "../routes.ts";
 import type { ModelUsageRow } from "../client/model_usage.ts";
 
-// A model's executions (method runs) from serve's `model.output.search`.
-// Older servers ignore the model and time filters and return every output,
-// so the dashboard filters again on its side: the result is right either
-// way, only the payload size differs.
+// older servers ignore the model and time filters and return every output, so
+// the dashboard filters again; the result is right either way, only the payload
+// size differs
 
-/** Mirrors ModelOutputSearchItem in src/libswamp/models/output_search.ts. */
 export interface ModelOutput {
   id: string;
   definitionId?: string;
@@ -43,14 +41,12 @@ export interface ModelOutput {
 }
 
 export interface OutputFilter {
-  /** Keep only this model's outputs (by name or definition id). */
   modelName?: string;
   modelId?: string;
   since?: string;
   until?: string;
 }
 
-/** Outputs matching `filter`, newest first. */
 export function filterOutputs(
   outputs: readonly ModelOutput[],
   filter: OutputFilter,
@@ -76,7 +72,6 @@ export function filterOutputs(
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 }
 
-/** A RunHistoryBar entry (kept structural so this module stays JSX-free). */
 export interface OutputPip {
   id: string;
   runId: string;
@@ -88,9 +83,8 @@ export interface OutputPip {
 }
 
 /**
- * Run-history pips for outputs (newest first). An output a workflow ran
- * links to that run; a direct run has no page, so its pip is titled with
- * the method instead.
+ * an output a workflow ran links to that run; a direct run has no page, so its
+ * pip is titled with the method
  */
 export function outputPips(outputs: readonly ModelOutput[]): OutputPip[] {
   return outputs.map((o) => {
@@ -112,7 +106,6 @@ export function outputPips(outputs: readonly ModelOutput[]): OutputPip[] {
   });
 }
 
-/** The workflow run an output belongs to, when it has one. */
 export function outputRunRoute(o: ModelOutput): RouteState | null {
   if (!o.workflowName || !o.workflowRunId) return null;
   return {
@@ -129,16 +122,13 @@ export interface ModelUsage {
   executions: number;
   failed: number;
   lastStartedAt: string | null;
-  /** Distinct methods run, most recent first. */
   methods: string[];
-  /** Newest first. */
   recent: ModelOutput[];
 }
 
 /**
- * Usage per definition id from the usage summary's rows (newest use first).
- * Rows sharing an id across types make one entry: a card is one id, and its
- * methods are each row's in turn.
+ * rows sharing an id across types make one entry: a card is one id, and its
+ * methods are each row's in turn
  */
 export function usageFromSummary(
   rows: readonly ModelUsageRow[],

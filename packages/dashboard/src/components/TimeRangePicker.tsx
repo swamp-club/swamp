@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The dashboard-wide time range picker: a button naming the current
-// window that opens a dialog with presets and a calendar. Calendar days
-// show that day's run outcomes, fetched for the visible months only.
-
 import {
   type KeyboardEvent,
   useCallback,
@@ -83,7 +79,6 @@ export function TimeRangePicker() {
   const id = useId();
   const dialogId = `${id}-dialog`;
 
-  // Opening shows the months ending at the range's last day (or today).
   const openPicker = useCallback(() => {
     const t = Date.now();
     const sel = rangeToSelection(range, bounds, t).selection;
@@ -98,7 +93,6 @@ export function TimeRangePicker() {
     if (restoreFocus) triggerRef.current?.focus();
   }, []);
 
-  // Clicking outside closes without applying.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {

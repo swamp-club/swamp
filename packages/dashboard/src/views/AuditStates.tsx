@@ -19,15 +19,11 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-// The Activity page's non-feed states: audit off, access denied, a failed
-// feed, the loading skeleton, and the live/paused indicator. Styles live
-// in styles/activity.css, imported by Activity.tsx.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { AuditStatus } from "../client/audit_state.ts";
 import { Skeleton, SkeletonRegion, widthAt } from "../components/Skeleton.tsx";
 
-/** Manual pages on audit: how it works, and reading it from a server. */
 export const AUDIT_MANUAL_LINKS = [
   {
     label: "How swamp's audit system works",
@@ -40,13 +36,11 @@ export const AUDIT_MANUAL_LINKS = [
   },
 ] as const;
 
-/** The default serve config path (`swamp serve --config`). */
 export const SERVE_CONFIG_PATH = ".swamp/serve.yaml";
 
 /**
- * The smallest config that turns the audit log on. A store without `type`
- * and `config` uses the repo's shared datastore; serve logs a warning
- * recommending a dedicated one.
+ * a store without type and config uses the repo's shared datastore; serve logs
+ * a warning recommending a dedicated one
  */
 export const AUDIT_CONFIG_SNIPPET = `audit:
   stores:
@@ -95,14 +89,9 @@ const ICON_EXPORT =
 const ICON_LOCK =
   '<rect x="3.5" y="8" width="11" height="8" rx="1.5"/><path d="M6 8V5.5a3 3 0 016 0V8"/>';
 
-/** Writes text to the clipboard, resolving whether it worked. */
 export type CopyFn = (text: string) => Promise<boolean>;
 
-/**
- * A copyable code block; announces the copy to screen readers. `copy` is
- * passed in (components/clipboard.ts in the app) so this renders outside a
- * browser.
- */
+/** copy is passed in so this renders outside a browser */
 export function CopyableSnippet(
   { code, label, copy }: { code: string; label: string; copy: CopyFn },
 ) {
@@ -169,7 +158,6 @@ export function Benefit(
   );
 }
 
-/** Serve runs without an audit log: what it would give, and how to turn it on. */
 export function AuditDisabledState({ copy }: { copy: CopyFn }) {
   return (
     <section
@@ -250,7 +238,6 @@ export function AuditDisabledState({ copy }: { copy: CopyFn }) {
   );
 }
 
-/** The signed-in principal may not read the audit log. */
 export function AuditDeniedState({ message }: { message?: string | null }) {
   return (
     <section
@@ -270,7 +257,6 @@ export function AuditDeniedState({ message }: { message?: string | null }) {
   );
 }
 
-/** The live feed failed for a reason other than audit being off. */
 export function AuditErrorState(
   { message, onRetry }: { message?: string | null; onRetry: () => void },
 ) {
@@ -292,11 +278,10 @@ export function AuditErrorState(
 
 const GRID = "act-row-grid";
 
-/** Placeholder rows shaped like the feed while it loads. */
 /**
- * What the feed area shows: only the error when the stream failed with
- * nothing to show (never "No activity yet" for a feed that didn't load), a
- * skeleton until the first answer, else the feed.
+ * only the error when the stream failed with nothing to show (never "No
+ * activity yet" for a feed that did not load); a skeleton until the first
+ * answer; else the feed
  */
 export function auditFeedView(
   status: string,
@@ -341,10 +326,6 @@ const STATUS_TEXT: Record<
   error: { label: "Disconnected", hint: "Reconnect the live feed" },
 };
 
-/**
- * The live/paused toggle. Renders nothing when there is no feed to toggle
- * (audit off or access denied).
- */
 export function AuditLiveToggle(
   { status, onToggle }: { status: AuditStatus; onToggle: () => void },
 ) {

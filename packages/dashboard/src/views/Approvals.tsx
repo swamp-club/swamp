@@ -101,18 +101,15 @@ import "../styles/approvals.css";
 import "../styles/mini-dag.css";
 
 interface ApprovalsProps {
-  /** Serve's live health snapshot; its active runs are runs serve drives. */
   health?: HealthSnapshot | null;
   approvalsRequest: SharedApprovals;
 }
 
-/** A suspended run as the run search lists it. */
 interface SuspendedRun extends ResumableRun {
   startedAt?: string;
 }
 
 const HISTORY_SLOTS = 12;
-/** A wait longer than this reads as overdue. */
 const LONG_WAIT_MS = 60 * 60 * 1000;
 
 export function Approvals(
@@ -134,10 +131,9 @@ export function Approvals(
   } = useRequestAllPages<SuspendedRun>("workflow.run.search", {
     status: "suspended",
   });
-  // Refused to a caller who may read no workflow: nothing is listed then.
-  // Refetched only with the gates, never on a timer: the listing settles
-  // expired waits as it reads. A held signal lapsing changes no run, so the
-  // page and the pending signals panel drop lapsed ones on the same clock.
+  // refused to a caller who may read no workflow, so nothing is listed;
+  // refetched only with the gates, never on a timer, since the listing settles
+  // expired waits as it reads
   const { data: waitsData, refetch: refetchWaits } = useRequest(
     "workflow.waits",
     { includeSignalled: true, includePending: true },
@@ -147,7 +143,7 @@ export function Approvals(
   const heldClock = useHeldSignalClock(heldSignalRows.length > 0);
   const allHeldSignals = heldAt(heldSignalRows, heldClock);
   const suspendedRuns = useMemo(() => suspendedData ?? [], [suspendedData]);
-  // Runs serve drives now, whoever approved them (swamp-club#3005).
+  // runs serve drives now, whoever approved them
   const servedRuns = activeRunIds(health?.activeRuns);
   const refetchGatesAndRuns = useCallback(() => {
     refetch();
@@ -169,7 +165,6 @@ export function Approvals(
   const [error, setError] = useState<string | null>(null);
   // Held here, not by the row: the refetch removes the cancelled run's row.
   const [cancelled, setCancelled] = useState<CancelOutcome | null>(null);
-  // Decisions in flight, by gate: both buttons wait until it lands.
   const [deciding, setDeciding] = useState<ReadonlyMap<string, Decision>>(
     () => new Map(),
   );
@@ -192,9 +187,9 @@ export function Approvals(
     [refresh],
   );
 
-  // A decision that lands holds its gate settled until a listing drops it;
-  // one serve refuses is checked against a fresh listing, so a gate decided
-  // elsewhere reads as decided rather than as a failure (swamp-club#3697).
+  // a decision that lands holds its gate settled until a listing drops it; a
+  // refused one is checked against a fresh listing, so a gate decided elsewhere
+  // reads as decided, not as a failure
   const handleDecision = useCallback(
     async (
       a: ApprovalInfo,
@@ -248,7 +243,6 @@ export function Approvals(
     [request, refresh, markDeciding, hold],
   );
 
-  // Longest wait first in every list: the oldest gate is the most urgent.
   const filterRows = <T,>(rows: readonly T[], nameOf: (row: T) => string) =>
     filterRowsByWorkflow(
       rows,
@@ -648,7 +642,6 @@ function RunLink(
   );
 }
 
-/** "Waiting 2h 13m", with the exact start on hover. */
 function WaitTime({ label, since }: { label: string; since: string }) {
   const t = Date.parse(since);
   if (Number.isNaN(t)) return null;
@@ -665,9 +658,8 @@ function WaitTime({ label, since }: { label: string; since: string }) {
 }
 
 /**
- * Approve and Reject, each confirmed with an optional reason. A gate this
- * viewer cannot decide shows why instead; one decided from this page shows
- * who decided it until the listing drops it.
+ * a gate this viewer cannot decide shows why instead; one decided from this
+ * page shows who decided it until the listing drops it
  */
 function DecisionControl(
   { gate, deciding, decided, onDecide }: {
@@ -822,12 +814,6 @@ interface GateRowProps {
   actions: ReactNode;
 }
 
-/**
- * One gate: what it is and how long it has waited, its workflow's recent
- * runs and its actions. Expanding it shows the run, the gated step, the
- * prompt and the workflow's jobs around the gate, without leaving the
- * page.
- */
 function GateRow(
   {
     gate,
@@ -925,7 +911,6 @@ function GateRow(
   );
 }
 
-/** Reads the gated workflow's jobs only once a row is expanded. */
 function GateContextLoader(
   { workflowName, runId, stepName, prompt, initiatedBy, inputs }: {
     workflowName: string;

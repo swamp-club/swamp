@@ -41,7 +41,6 @@ export interface RunCounts {
   cancelled: number;
   running: number;
   suspended: number;
-  /** Sum of finished runs' durations. */
   durationMs: number;
 }
 
@@ -49,12 +48,10 @@ export interface WorkflowRunSummary extends RunCounts {
   workflowId: string;
   workflowName: string;
   lastStartedAt?: string;
-  /** Newest first. */
   recent: RecentRun[];
 }
 
 export interface TimelineBucket {
-  /** Top of the UTC hour. */
   start: string;
   runs: number;
   succeeded: number;
@@ -67,7 +64,6 @@ export interface RunSummaryData {
   until?: string;
   totals: Omit<RunCounts, "runs"> & { runs: number; workflows: number };
   workflows: WorkflowRunSummary[];
-  /** Start of the oldest counted run; older serves leave it out. */
   oldestStartedAt?: string;
   timeline?: TimelineBucket[];
 }
@@ -75,23 +71,14 @@ export interface RunSummaryData {
 export interface RunSummaryQuery {
   workflows?: string[];
   triggerSource?: string;
-  /** Any of these trigger sources. */
   triggerSources?: string[];
   recentLimit?: number;
   timeline?: boolean;
-  /** Override the dashboard time range (e.g. a calendar's own window). */
   since?: string;
   until?: string;
-  /** Ignore the dashboard time range entirely. */
   allTime?: boolean;
 }
 
-/**
- * Fetches the run summary for the dashboard's current time range (or the
- * query's own bounds), and fetches it again when serve starts or finishes
- * a run, the tab comes back into view, or (on a preset range) the oldest
- * counted run leaves the window. `enabled: false` holds the request.
- */
 export function useRunSummary(
   query: RunSummaryQuery = {},
   options: { enabled?: boolean } = {},
@@ -119,7 +106,6 @@ export function useRunSummary(
   return { ...result, summary };
 }
 
-/** Index summaries by workflow name. */
 export function summariesByName(
   summary: RunSummaryData | null,
 ): Map<string, WorkflowRunSummary> {

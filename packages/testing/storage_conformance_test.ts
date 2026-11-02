@@ -23,7 +23,6 @@ import { createInMemoryRemote } from "./in_memory_remote.ts";
 import type { DatastoreStorage } from "./datastore_types.ts";
 import { assertStorageConformance } from "./storage_conformance.ts";
 
-/** An in-memory storage and its backdating hook. */
 function memory() {
   const remote = createInMemoryRemote({ storage: true });
   return {
@@ -32,7 +31,6 @@ function memory() {
   };
 }
 
-/** `memory()` with some of its methods replaced. */
 function broken(
   change: (storage: DatastoreStorage) => Partial<DatastoreStorage>,
 ) {
@@ -189,7 +187,6 @@ Deno.test("assertStorageConformance: catches handles that do not share their chu
   );
 });
 
-/** `memory()` with `list` and `delete` refusing, as serve's chunk API does. */
 function withoutListOrDelete() {
   return broken(() => ({
     list: (_ns, signal) => ({

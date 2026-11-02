@@ -53,7 +53,6 @@ interface SwampContextValue {
   sessionReady: boolean;
   authMode: AuthInfo["mode"] | null;
   verificationBaseUri: string | null;
-  /** True when served by the local dashboard rather than `swamp serve`. */
   local: boolean;
   login: (token: string) => Promise<void>;
   completeLogin: () => Promise<void>;
@@ -93,7 +92,6 @@ function isDashboardSessionEvent(
 
 function getWsUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  // Ask serve to send large responses as gzip binary frames.
   return `${proto}//${location.host}${serverPath("/")}?compress=gzip`;
 }
 

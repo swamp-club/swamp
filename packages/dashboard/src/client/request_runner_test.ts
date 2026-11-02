@@ -21,7 +21,6 @@ import { assertEquals, assertStrictEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { type ApplyReply, createRequestRunner } from "./request_runner.ts";
 
-/** A request the test answers itself, counting how often it was sent. */
 function controlledRequest() {
   const replies: PromiseWithResolvers<string>[] = [];
   return {
@@ -34,10 +33,6 @@ function controlledRequest() {
   };
 }
 
-/**
- * Waits until `count` requests have been sent: a refresh's read starts once
- * the read before it settles.
- */
 function waitForReplies(
   req: ReturnType<typeof controlledRequest>,
   count: number,
@@ -45,7 +40,6 @@ function waitForReplies(
   return waitFor(() => req.replies.length >= count, `request ${count}`);
 }
 
-/** Records what reached the hook's state. */
 function recorder(label = ""): ApplyReply<string> & { applied: string[] } {
   const applied: string[] = [];
   return {
@@ -90,7 +84,6 @@ Deno.test("createRequestRunner: a late reply to a superseded request is dropped"
   const apply = recorder();
   const first = runner.send(req.start, apply);
   const second = runner.send(req.start, apply);
-  // The second reply lands first, then the first one arrives late.
   req.replies[1].resolve("v5");
   await second;
   req.replies[0].resolve("v4");
@@ -292,8 +285,6 @@ Deno.test("createRequestRunner: refreshes on every change of a slow read show ea
     return req.start().finally(() => inFlight--);
   };
   const settled = [runner.send(start, apply)];
-  // Each run starting or stopping refreshes while the last read is still
-  // on its way; then that read answers.
   for (let i = 1; i <= 3; i++) {
     await waitForReplies(req, i);
     settled.push(runner.refresh(start, apply));

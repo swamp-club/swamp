@@ -17,9 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Client types for serve's `model.usage.summary`: per-model execution counts
-// and newest outputs over a time window, aggregated on the server after
-// authorization so counts are exact (swamp-club#4144).
+// counts are aggregated on the server after authorization, so they are exact
 
 import { useRequest } from "./useRequest.ts";
 import { extractObject } from "./extract.ts";
@@ -46,28 +44,21 @@ export interface ModelUsageRow {
   executions: number;
   failed: number;
   lastStartedAt: string;
-  /** Distinct methods run, most recent first. */
   methods: string[];
-  /** Newest first. */
   recent: ModelUsageRecentOutput[];
 }
 
 export interface ModelUsageSummaryData {
   since?: string;
   until?: string;
-  /** Every readable output, including those of definitions no longer named. */
   totals: { executions: number; failed: number };
-  /** Newest use first. */
   models: ModelUsageRow[];
 }
 
 /**
- * Fetches the usage summary for the dashboard's current time range, and
- * fetches it again when serve starts or finishes a run or the tab comes back
- * into view. Each read goes through every output in the window. Unlike the
- * run summary there is no age-out re-read as well: on a busy repo the oldest
+ * unlike the run summary there is no age-out re-read: on a busy repo the oldest
  * output leaves a preset window every few seconds, which would add a read each
- * time. Run activity alone can already keep one read going on a busy repo.
+ * time
  */
 export function useModelUsageSummary() {
   const bounds = useRequestTimeBounds();

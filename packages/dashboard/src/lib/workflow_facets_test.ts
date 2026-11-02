@@ -177,7 +177,6 @@ Deno.test("applyWorkflowFilter: values within a facet combine with OR", () => {
     ),
     ["deploy-api", "sync-crm", "standalone"],
   );
-  // OR within prefix, AND with trigger.
   assertEquals(
     names(
       applyWorkflowFilter(

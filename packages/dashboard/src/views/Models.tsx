@@ -101,7 +101,6 @@ function useModelFilter(): [ModelFilter, (next: ModelFilter) => void] {
 export function Models({ onOpenModel }: ModelsProps) {
   const { data, error, refetch } = useRequest("model.search");
   const { range } = useTimeRange();
-  // The whole page's usage; one request, no per-card calls.
   const { summary, error: usageError } = useModelUsageSummary();
   const usageState: UsageState = summary !== null
     ? "loaded"
@@ -321,7 +320,6 @@ function ModelCard(
   const chips = methods.slice(0, MAX_CHIPS);
   const extra = methods.length - chips.length;
   const onClick = (e: MouseEvent<HTMLElement>) => {
-    // The name and the pips are real links; let them handle their clicks.
     if ((e.target as Element).closest("a, button")) return;
     onOpen?.(model.name);
   };

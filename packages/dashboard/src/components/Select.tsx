@@ -76,7 +76,6 @@ function viewport(): { width: number; height: number } {
 export interface SelectOption<T extends string> {
   value: T;
   label: string;
-  /** Muted right-aligned text, e.g. a count. */
   hint?: string;
   disabled?: boolean;
 }
@@ -85,25 +84,14 @@ interface SelectProps<T extends string> {
   value: T;
   onChange: (value: T) => void;
   options: ReadonlyArray<SelectOption<T>>;
-  /** Accessible name when there is no visible label to point at. */
   ariaLabel?: string;
-  /** Id of a visible label element. */
   labelledBy?: string;
-  /** Search box in the menu: "auto" shows one for long lists. */
   searchable?: boolean | "auto";
-  /** Placeholder for the trigger when the value matches no option. */
   placeholder?: string;
   className?: string;
   disabled?: boolean;
 }
 
-/**
- * The dashboard's dropdown: a themed listbox in place of the browser's
- * native menu. Follows the ARIA select-only combobox pattern: arrow keys,
- * Home/End, PageUp/PageDown, type-to-select, Enter/Space to choose,
- * Escape to close (without leaving the page), and a search box for long
- * lists. The menu flips above the trigger when there's no room below.
- */
 export function Select<T extends string>(
   {
     value,
@@ -161,7 +149,6 @@ export function Select<T extends string>(
     close(true);
   }, [shown, value, onChange, close]);
 
-  // Focus the search box or the list when the menu opens.
   useEffect(() => {
     if (!open) return;
     el(withSearch ? searchRef.current : listRef.current)?.focus({
@@ -169,7 +156,6 @@ export function Select<T extends string>(
     });
   }, [open, withSearch]);
 
-  // Flip above / align right when the menu would leave the viewport.
   useLayoutEffect(() => {
     if (!open) return;
     const menu = el(listRef.current)?.parentElement;
@@ -184,7 +170,6 @@ export function Select<T extends string>(
     });
   }, [open]);
 
-  // Keep the active option in view.
   useEffect(() => {
     if (!open || active < 0) return;
     el(listRef.current)
@@ -192,7 +177,6 @@ export function Select<T extends string>(
       ?.scrollIntoView({ block: "nearest" });
   }, [open, active]);
 
-  // Close on a pointer press outside.
   useEffect(() => {
     if (!open) return;
     const doc = (globalThis as { document?: DocLike }).document;
@@ -217,7 +201,6 @@ export function Select<T extends string>(
       e.preventDefault();
       openMenu();
     } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      // Typing on a closed select picks the matching option, like native.
       const i = typeaheadMatch(
         options,
         e.key,

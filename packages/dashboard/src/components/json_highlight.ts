@@ -19,20 +19,17 @@
 
 import { escapeHtml } from "./escape_html.ts";
 
-// One token per match: a string literal, a number, or a keyword. The string
-// alternative consumes a whole literal before the others are tried, so
-// numbers and keywords only ever match outside strings. The lookarounds keep
-// digits inside bare words (non-JSON input) from being treated as numbers.
+// the string alternative consumes a whole literal first, so numbers and
+// keywords only match outside strings; lookarounds keep digits in bare words
+// from reading as numbers
 const JSON_TOKEN =
   /("(?:[^"\\]|\\.)*")|(?<![\w.])(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?![\w.])|\b(true|false|null)\b/g;
 
-// Matches the colon that turns a string literal into an object key.
 const KEY_SUFFIX = /\s*:/y;
 
 /**
- * Wraps JSON tokens in highlight spans in a single pass. Text between tokens
- * is copied through unchanged, so stripping the tags and decoding the
- * entities always yields the original input.
+ * text between tokens is copied unchanged, so stripping the tags and decoding
+ * the entities yields the original input
  */
 export function highlightJson(raw: string): string {
   let out = "";

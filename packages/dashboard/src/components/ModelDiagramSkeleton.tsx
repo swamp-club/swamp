@@ -38,10 +38,6 @@ function SkeletonBoxes({ count, offset }: { count: number; offset: number }) {
   );
 }
 
-/**
- * The model diagram's placeholder: input boxes, the model card and output
- * boxes in the diagram's own arrangement, stacking on narrow screens.
- */
 export function ModelDiagramSkeleton() {
   return (
     <SkeletonRegion label="Loading behavior" className="mds">

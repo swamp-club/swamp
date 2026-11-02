@@ -27,11 +27,6 @@ import { Skeleton } from "./Skeleton.tsx";
 import type { CompareRow, TriggerRun } from "../lib/triggers.ts";
 import { runRoute } from "./TriggerTables.tsx";
 
-/**
- * Two runs side by side: status, timing, trigger, inputs and every step's
- * outcome. Rows whose values differ are highlighted; durations show the
- * change from A to B instead.
- */
 export function RunCompare(
   { a, b, rows, stepsLoading, onClear }: {
     a: TriggerRun;

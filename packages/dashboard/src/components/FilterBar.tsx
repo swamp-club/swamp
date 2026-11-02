@@ -51,10 +51,6 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
-/**
- * The shared workflow filter, mirrored to `?q=` and repeated
- * `?prefix=&trigger=&webhook=` params (several values per facet).
- */
 export function useWorkflowFilter(): [
   WorkflowFilter,
   (next: WorkflowFilter) => void,
@@ -91,17 +87,13 @@ interface FilterBarProps {
   prefixes: ReadonlyArray<{ prefix: string; count: number }>;
   webhooks: readonly string[];
   placeholder?: string;
-  /** "12 of 134 workflows" when filtering. */
   shown?: number;
   total?: number;
   noun?: string;
-  /** Page-specific facets after prefix / trigger / webhook (e.g. status). */
   extraFacets?: readonly SearchFacet[];
-  /** Sort, grouping and toggles, behind the View button. */
   view?: readonly ViewSection[];
 }
 
-/** The workflow facets every workflow-based page filters by. */
 export function workflowFacets(
   filter: WorkflowFilter,
   onChange: (next: WorkflowFilter) => void,
@@ -145,11 +137,6 @@ export function workflowFacets(
   ];
 }
 
-/**
- * The workflow pages' guided search: one box for names and every facet
- * (prefix, trigger, webhook, plus any page-specific ones), and a View
- * button for sort and grouping.
- */
 export function FilterBar(
   {
     filter,

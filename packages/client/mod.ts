@@ -18,35 +18,13 @@
 // along with Swamp.  If not, see <https:\/\/www.gnu.org\/licenses\/>.
 
 /**
- * @swamp-club/swamp-lib — TypeScript client for the swamp WebSocket API.
- *
- * ```typescript
- * import { SwampClient } from "@swamp-club/swamp-lib";
- *
- * const client = new SwampClient("ws://localhost:9090");
- * await client.connect();
- *
- * // Callback-based: resolves with completed payload
- * const run = await client.workflowRun(
- *   { workflowIdOrName: "my-workflow", inputs: { env: "dev" } },
- *   { started: (e) => console.log(`Run ${e.runId} started`) },
- * );
- *
- * // AsyncIterable-based: for-await-of event stream
- * for await (const event of client.workflowRunStream({ workflowIdOrName: "my-workflow" })) {
- *   console.log(event.kind);
- * }
- *
- * client.close();
- * ```
- *
- * @module
+ * typed client for the swamp serve WebSocket API, with callback and
+ * AsyncIterable consumption of run events
  */
 
 export { SwampClient } from "./client.ts";
 export type { SwampClientOptions } from "./client.ts";
 
-// Protocol types
 export type {
   DataGetPayload,
   DataListPayload,
@@ -69,7 +47,6 @@ export type {
   WorkflowSearchPayload,
 } from "./protocol.ts";
 
-// Stream helpers
 export {
   consumeStream,
   type EventHandlers,

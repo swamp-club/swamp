@@ -56,7 +56,6 @@ Deno.test("Sidebar: the collapsed Logout shows a power icon, not an arrow", () =
   const html = render();
   assertStringIncludes(html, `d="${POWER}"`);
   assert(!html.includes(OLD_LOGOUT_ARROW), "the old arrow glyph is gone");
-  // The expand toggle keeps its chevron.
   assertStringIncludes(html, 'aria-label="Expand sidebar"');
   assertStringIncludes(html, 'd="M6 3l5 5-5 5"');
 });
@@ -78,7 +77,6 @@ Deno.test("Sidebar: Logout opens a confirm instead of logging out", () => {
   const logOut = html.indexOf(">Log out</button>");
   assert(keep !== -1 && logOut !== -1, "both choices are labelled");
   assert(keep < logOut, "Keep comes before Log out");
-  // Confirming hides the hover label so it can't cover the flyout.
   assert(!html.includes('data-tooltip="Logout"'));
 });
 
@@ -93,7 +91,6 @@ Deno.test("Sidebar: Agent sessions is hidden, not Off, until the viewer can read
   assert(!hidden.includes("Agent sessions"), "no item, faded or otherwise");
   const shown = render({ local: true, agentSessionsVisible: true });
   assertStringIncludes(shown, "Agent sessions");
-  // Shown items are never marked Off.
   const at = shown.indexOf("Agent sessions");
   assert(!shown.slice(at, at + 200).includes("Needs swamp serve"));
 });

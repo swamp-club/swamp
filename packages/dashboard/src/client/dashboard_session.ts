@@ -31,7 +31,6 @@ function dashboardOriginHeader(): Record<string, string> | undefined {
   return { "X-Swamp-Dashboard-Origin": location.origin };
 }
 
-/** The origin header, plus the local token on the local dashboard. */
 function withLocalOrigin(): Record<string, string> | undefined {
   const origin = dashboardOriginHeader();
   return localToken() === null ? origin : withLocalToken(origin);
@@ -42,7 +41,6 @@ function requestSignal(signal?: AbortSignal): AbortSignal {
   return signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
 }
 
-/** Browser adapter for the cookie-backed dashboard session endpoints. */
 export function createDashboardSessionClient(fetchFn: SessionFetch) {
   return {
     async restore(signal?: AbortSignal): Promise<boolean> {

@@ -75,7 +75,6 @@ Deno.test("listPayload: every list query carries a limit and the tag-only select
   const payload = listPayload();
   assertEquals(payload.limit, SESSION_LIST_LIMIT);
   assertEquals(payload.select, AGENT_SESSION_LIST_SELECT);
-  // Newest first in SQL, and an older window follows the cursor.
   assertEquals(payload.sort, { field: "tags.startedAt", direction: "desc" });
   assertEquals("cursor" in payload, false);
   assertEquals(listPayload("abc").cursor, "abc");
@@ -228,7 +227,6 @@ Deno.test("listPredicate: a repo adds its tag, and untagged sessions still pass"
     listPredicate("acme-platform"),
     `${AGENT_SESSION_TOP_LEVEL_PREDICATE} && (tags.repo == "acme-platform" || !has(tags.repo))`,
   );
-  // A repo the record schema refuses lists everything instead of throwing.
   assertEquals(listPredicate(""), AGENT_SESSION_TOP_LEVEL_PREDICATE);
   assertEquals(listPayload("c", "r").predicate, listPredicate("r"));
 });

@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The run graph's read model: a run's jobs as graph nodes with display
-// statuses and step progress, and the workflow definition's `dependsOn` as
-// edges, each knowing whether its condition was met. Pure, so the page and
-// its tests read a run the same way.
-
-/** A dependency condition, as `workflow.get` returns it. */
 export type ConditionData =
   | { type: "always" }
   | { type: "succeeded" }
@@ -40,7 +34,6 @@ export interface ArtifactRefLike {
   tags?: Record<string, string>;
 }
 
-/** The parts of a `workflow.history.get` step the graph and panels read. */
 export interface StepRunLike {
   name: string;
   status: string;
@@ -71,7 +64,6 @@ export interface RunLike {
   nestedWaits?: { runId: string; stepName: string; status?: string }[];
 }
 
-/** The parts of a `workflow.get` definition the graph reads. */
 export interface WorkflowDefinitionLike {
   jobs?: Array<{
     name: string;
@@ -80,7 +72,6 @@ export interface WorkflowDefinitionLike {
   }>;
 }
 
-/** What a node or step shows: one icon and color per value. */
 export type DisplayStatus =
   | "succeeded"
   | "failed"
@@ -101,19 +92,14 @@ export interface NestedRunRef {
 export interface RunGraphJob {
   name: string;
   status: DisplayStatus;
-  /** The status as the run records it. */
   rawStatus: string;
   startedAt?: string;
   completedAt?: string;
   duration?: number;
   stepsTotal: number;
-  /** Steps that reached an outcome (succeeded, failed or skipped). */
   stepsDone: number;
-  /** The first step that failed the job, with its error. */
   failedStep?: { name: string; error?: string };
-  /** Steps that failed but were allowed to. */
   allowedFailures: number;
-  /** Why a waiting job waits. */
   waitingOn?: "approval" | "signal" | "nested";
   nested: NestedRunRef[];
 }
@@ -125,11 +111,10 @@ export interface RunGraphEdge {
   to: string;
   condition?: ConditionData;
   /**
-   * Met/unmet once the upstream job finished; pending until then. Unmet
-   * when the upstream job was cancelled.
+   * met or unmet once the upstream job finished, pending until then; unmet when
+   * the upstream job was cancelled
    */
   state: EdgeState;
-  /** Work is flowing along it now: met, into a running or waiting job. */
   active: boolean;
 }
 
@@ -142,7 +127,6 @@ export interface RunGraph {
 
 const FINISHED_RUN = new Set(["cancelled", "interrupted", "failed"]);
 
-/** The display status of a job or step status within a run. */
 export function displayStatus(
   status: string,
   runStatus?: string,
@@ -171,15 +155,10 @@ export function displayStatus(
 
 const FINISHED_STEP = new Set(["succeeded", "failed", "skipped"]);
 
-/** True for a status that keeps the clock running. */
 export function isLive(status: DisplayStatus): boolean {
   return status === "running" || status === "waiting";
 }
 
-/**
- * How long a job or step has taken: its recorded duration, or — while it
- * is still going — the time since it started.
- */
 export function elapsed(
   item: { startedAt?: string; completedAt?: string; duration?: number },
   now: number,
@@ -196,10 +175,6 @@ export function elapsed(
   return live ? Math.max(0, now - start) : undefined;
 }
 
-/**
- * Whether a dependency's condition holds for the upstream job's status.
- * Null while the upstream job has not finished.
- */
 export function evaluateCondition(
   condition: ConditionData | undefined,
   upstreamStatus: string,
@@ -231,7 +206,6 @@ function evaluate(condition: ConditionData, status: string): boolean {
   }
 }
 
-/** "succeeded", "failed or skipped", "not (succeeded)" — for edge titles. */
 export function describeCondition(
   condition: ConditionData | undefined,
 ): string {
@@ -307,10 +281,9 @@ function jobOf(job: JobRunLike, run: RunLike): RunGraphJob {
 }
 
 /**
- * Builds the graph for a run. Nodes are the run's jobs in run order (the
- * run is the record of what happened); edges come from the definition and
- * are kept only between jobs the run has, since the definition may have
- * changed since the run started.
+ * nodes are the run's jobs in run order; edges come from the definition and
+ * only between jobs the run has, since the definition may have changed since
+ * the run started
  */
 export function buildRunGraph(
   run: RunLike,
@@ -348,7 +321,6 @@ export function buildRunGraph(
   };
 }
 
-/** Step progress across the run: finished steps over all steps. */
 export function stepProgress(run: RunLike): { done: number; total: number } {
   let done = 0;
   let total = 0;
@@ -361,7 +333,6 @@ export function stepProgress(run: RunLike): { done: number; total: number } {
   return { done, total };
 }
 
-/** The job and step that failed the run, for the failure summary. */
 export function firstFailure(
   run: RunLike,
 ): { job: string; step: string; error?: string } | null {
@@ -379,7 +350,6 @@ export function firstFailure(
   return null;
 }
 
-/** "3/5 steps", or the reason a job is not moving. */
 export function jobSummary(job: RunGraphJob): string {
   if (job.status === "skipped") return "Skipped";
   if (job.status === "cancelled") return "Did not finish";
@@ -402,10 +372,6 @@ export function jobSummary(job: RunGraphJob): string {
   }`;
 }
 
-/**
- * The failed step a failure link opens: the named step when the run has
- * it, else the first step that failed the run. Null when nothing failed.
- */
 export function failureTarget(
   run: RunLike,
   stepName?: string | null,

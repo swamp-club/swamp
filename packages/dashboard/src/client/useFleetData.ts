@@ -37,7 +37,6 @@ import type { FleetLease, FleetWorker } from "../lib/host_map_model.ts";
 export interface FleetData {
   workers: FleetWorker[];
   leases: FleetLease[];
-  /** True until the first fetch settles. */
   loading: boolean;
   error: string | null;
   refetch: () => void;
@@ -55,13 +54,6 @@ function tabVisible(): boolean {
   return doc?.visibilityState !== "hidden";
 }
 
-/**
- * Workers (including those disconnected within the TTL) and the step leases
- * on their slots. Keeps the last data while refreshing, so the map never
- * flashes back to a skeleton; refreshes on health-stream worker changes and
- * on a slow fallback while the tab is visible, and once on coming back into
- * view.
- */
 export function useFleetData(
   healthWorkers: readonly WorkerSnapshotLike[] | undefined,
   ttlMinutes: number,

@@ -27,10 +27,6 @@ import {
   useState,
 } from "react";
 
-// The dashboard-wide time window that run-based views (stats, pips,
-// executions, calendars) look at. One window for every page, remembered
-// per browser, so moving between pages keeps the same lens.
-
 export type TimePreset = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
 
 export type TimeRange =
@@ -58,7 +54,6 @@ const PRESET_MS: Record<Exclude<TimePreset, "all">, number> = {
 
 export const DEFAULT_TIME_RANGE: TimeRange = { kind: "preset", preset: "7d" };
 
-/** The ISO bounds a range covers at `now`; `until` absent means "now". */
 export function resolveTimeRange(
   range: TimeRange,
   now: number = Date.now(),
@@ -90,7 +85,6 @@ export function isRelativeBound(since: string | undefined): boolean {
   return since !== undefined && /^\d+(mo|y|h|m|d|w)$/.test(since);
 }
 
-/** Short label for the picker button: "Last 7 days", "Oct 3 – Oct 9". */
 export function describeTimeRange(range: TimeRange, locale?: string): string {
   if (range.kind === "preset") {
     switch (range.preset) {
@@ -110,7 +104,6 @@ export function describeTimeRange(range: TimeRange, locale?: string): string {
   }
   const from = new Date(range.from);
   const to = new Date(range.to);
-  // A range of whole local days (00:00 to 23:59) reads as just its days.
   const wholeDays = from.getHours() === 0 && from.getMinutes() === 0 &&
     to.getHours() === 23 && to.getMinutes() === 59;
   const fmt = (d: Date) =>
@@ -130,7 +123,6 @@ export function describeTimeRange(range: TimeRange, locale?: string): string {
 
 const STORAGE_KEY = "swamp.dashboard.timeRange";
 
-/** Parses a stored range, rejecting anything malformed. */
 export function parseTimeRange(raw: string | null): TimeRange | null {
   if (!raw) return null;
   try {
@@ -204,10 +196,6 @@ export function useTimeBounds(): { since?: string; until?: string } {
   return useMemo(() => resolveTimeRange(range, minute), [range, minute]);
 }
 
-/**
- * The current range's bounds to send serve's run summary and run search.
- * Changes only when the range does.
- */
 export function useRequestTimeBounds(): { since?: string; until?: string } {
   const { range } = useTimeRange();
   return useMemo(() => requestTimeBounds(range), [range]);

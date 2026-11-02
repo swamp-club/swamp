@@ -259,7 +259,6 @@ const RECENT_ROWS = 10;
 const EXECUTION_LIMIT = 200;
 const PIP_SLOTS = 40;
 
-/** The model's recent method runs within the dashboard time range. */
 export function ModelExecutions(
   { modelName, modelId }: { modelName: string; modelId?: string },
 ) {

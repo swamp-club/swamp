@@ -47,7 +47,6 @@ Deno.test("AuditDisabledState: explains the log, shows the config to copy and li
     assertStringIncludes(html, `href="${link.href}"`);
   }
   assertStringIncludes(html, 'rel="noopener noreferrer"');
-  // Never pretends a feed is coming.
   assertEquals(html.includes("Connecting"), false);
   assertEquals(html.includes("Live"), false);
 });

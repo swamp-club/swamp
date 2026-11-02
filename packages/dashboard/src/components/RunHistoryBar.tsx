@@ -29,26 +29,17 @@ export interface RunHistoryEntry {
   status: string;
   startedAt?: string;
   duration?: number;
-  /** Needed to link the pip; falls back to the bar's `workflowName`. */
   workflowName?: string;
-  /** Unique key when several entries share a run (a model's executions). */
   id?: string;
-  /** Second tooltip line in place of "run <id>" (e.g. a method name). */
   label?: string;
 }
 
 interface RunHistoryBarProps {
-  /** Runs newest first, as the run search and summary return them. */
   runs: readonly RunHistoryEntry[];
-  /** Workflow the runs belong to, for links. */
   workflowName?: string;
-  /** Number of pips; slots without a run render as empty placeholders. */
   slots?: number;
-  /** Pip height in px. */
   height?: number;
-  /** What the runs are, for the accessible label ("schedule runs"). */
   noun?: string;
-  /** The run being looked at (the run page's run, a table row's run). */
   currentRunId?: string;
 }
 
@@ -124,7 +115,6 @@ export function RunHistoryBar(
             />
           );
         }
-        // A failed pip opens straight on the failure's log.
         if (run.status === "failed") {
           return (
             <a
@@ -165,11 +155,6 @@ export function RunHistoryBar(
   );
 }
 
-/**
- * The established "in progress" marker. One run: a pulsing dot and
- * "Running". Several: stacked dots and "Running ×N", so a busy workflow
- * reads differently from a single run at a glance.
- */
 export function RunningBadge({ count }: { count: number }) {
   if (count <= 0) return null;
   const multi = count > 1;

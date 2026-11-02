@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// What an approval gate holds back: the job the gated step belongs to and
-// every job downstream of it, as nodes and edges for a MiniDag.
-
 import type { MiniDagEdge, MiniDagNode } from "./mini_dag_layout.ts";
 
-/** A job as `workflow.get` returns it. */
 export interface WorkflowJobDef {
   name: string;
   dependsOn?: ReadonlyArray<{ job?: string } | string>;
@@ -30,15 +26,11 @@ export interface WorkflowJobDef {
 }
 
 export interface GateContext {
-  /** The job holding the gated step; null when no job lists the step. */
   gateJob: string | null;
-  /** Jobs that start as soon as the gate's job finishes. */
   next: string[];
-  /** Every job that transitively waits on the gate's job. */
   downstream: string[];
   nodes: MiniDagNode[];
   edges: MiniDagEdge[];
-  /** The gate's job and everything downstream of it. */
   highlight: string[];
 }
 
@@ -46,7 +38,6 @@ function dependencyName(dep: { job?: string } | string): string | undefined {
   return typeof dep === "string" ? dep : dep.job;
 }
 
-/** Builds the job graph of a workflow around the gate at `stepName`. */
 export function gateContext(
   jobs: readonly WorkflowJobDef[],
   stepName: string,

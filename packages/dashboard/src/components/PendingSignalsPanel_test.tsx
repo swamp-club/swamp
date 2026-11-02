@@ -72,7 +72,6 @@ Deno.test("PendingSignalsPanel: judges the rows by the page's clock when given o
     renderToStaticMarkup(
       <PendingSignalsPanel rows={[held]} now={Date.parse(iso)} />,
     );
-  // Held until the instant itself, as serve judges it; gone after it.
   assertStringIncludes(at("2026-10-08T13:00:00.000Z"), "sig-held");
   assertEquals(at("2026-10-08T13:00:00.001Z"), "");
 });

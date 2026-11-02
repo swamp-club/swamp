@@ -25,7 +25,6 @@ import type {
   VaultPutOptions,
 } from "./vault_types.ts";
 
-/** A recorded vault operation for inspection. */
 export interface VaultOperation {
   method:
     | "get"
@@ -42,27 +41,19 @@ export interface VaultOperation {
   timestamp: number;
 }
 
-/** Options for creating a vault test context. */
 export interface VaultTestContextOptions {
-  /** Name of the vault provider (default: "test-vault"). */
   name?: string;
-  /** Pre-seed secrets so get() returns them. Keys are secret names. */
   secrets?: Record<string, string>;
   /**
    * If true, get() throws for missing keys (default: true).
    * If false, get() returns "" for missing keys.
    */
   throwOnMissing?: boolean;
-  /** If true, the vault also implements VaultAnnotationProvider (default: false). */
   withAnnotations?: boolean;
   /**
-   * If true, the vault also implements VaultExistenceProvider (default: false).
-   * has() answers presence without touching the value and is recorded as a
-   * "has" operation, so getOperationsByMethod("get") and
-   * getOperationsByMethod("has") count value reads and existence checks
-   * separately. Requires throwOnMissing (the default): has() must agree with
-   * get(), and a get() that returns the empty string for a missing key
-   * always succeeds.
+   * has() answers presence without touching the value and records a "has"
+   * operation, so value reads and existence checks count separately. Requires
+   * throwOnMissing, since has() must agree with get().
    */
   withExistence?: boolean;
   /**
@@ -73,49 +64,22 @@ export interface VaultTestContextOptions {
   unauthorizedKeys?: string[];
 }
 
-/** The return value from createVaultTestContext. */
 export interface VaultTestContextResult {
-  /** The VaultProvider to pass to code under test. */
   vault: VaultProvider;
-  /** The VaultAnnotationProvider if withAnnotations was true, otherwise undefined. */
   annotationProvider: VaultAnnotationProvider | undefined;
-  /** Returns all secrets currently stored in the vault. */
   getStoredSecrets(): Record<string, string>;
-  /** Returns tags stored for a given secret key, or undefined if none. */
   getStoredTags(secretKey: string): Record<string, string> | undefined;
-  /** Returns all vault operations recorded during the test. */
   getOperations(): VaultOperation[];
-  /** Returns operations filtered by method name. */
   getOperationsByMethod(
     method: VaultOperation["method"],
   ): VaultOperation[];
 }
 
-/** The return value from createVaultTestContext when withExistence is set. */
 export interface VaultExistenceTestContextResult
   extends VaultTestContextResult {
-  /** The provider, which also implements VaultExistenceProvider. */
   vault: VaultProvider & VaultExistenceProvider;
 }
 
-/**
- * Creates an in-memory VaultProvider for unit testing extension code
- * that interacts with vaults.
- *
- * ```typescript
- * import { createVaultTestContext } from "@swamp-club/swamp-testing";
- *
- * Deno.test("reads API key from vault", async () => {
- *   const { vault, getOperations } = createVaultTestContext({
- *     secrets: { "api-key": "sk-test-123" },
- *   });
- *
- *   const key = await vault.get("api-key");
- *   assertEquals(key, "sk-test-123");
- *   assertEquals(getOperations().length, 1);
- * });
- * ```
- */
 export function createVaultTestContext(
   options: VaultTestContextOptions & { withExistence: true },
 ): VaultExistenceTestContextResult;

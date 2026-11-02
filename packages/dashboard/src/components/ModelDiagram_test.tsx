@@ -57,12 +57,10 @@ Deno.test("ModelDiagram: renders an old server's model from its methods and data
   const html = renderToStaticMarkup(
     <ModelDiagram spec={buildDiagramSpec(model, rows)} />,
   );
-  // Both orientations render; CSS shows one.
   assertStringIncludes(html, 'data-orientation="horizontal"');
   assertStringIncludes(html, 'data-orientation="vertical"');
   assertStringIncludes(html, "echo-shell");
   assertStringIncludes(html, "execute()");
-  // Outputs and reports link to their pages.
   assertStringIncludes(
     html,
     'href="/dashboard/behaviors/echo-shell/data/log"',
@@ -70,9 +68,7 @@ Deno.test("ModelDiagram: renders an old server's model from its methods and data
   assertStringIncludes(html, "/dashboard/behaviors/echo-shell/reports/");
   assertStringIncludes(html, 'aria-label="Diagram of behavior echo-shell"');
   assertStringIncludes(html, 'aria-label="Output log, file · text/plain"');
-  // A built-in type has no extension frame.
   assertEquals(html.includes("md-frame"), false);
-  // The text alternative names everything.
   assertStringIncludes(html, "Writes 1 output: log.");
   assertStringIncludes(html, "aria-describedby");
 });
@@ -105,7 +101,6 @@ Deno.test("ModelDiagram: renders serve's declared outputs, reports and extension
   assertStringIncludes(html, "@acme/aws · v1.4.0");
   assertStringIncludes(html, 'href="/dashboard/extensions"');
   assertStringIncludes(html, "upgrade available");
-  // An output that was never written has nothing to link to.
   assertEquals(html.includes("/data/instance"), false);
 });
 
@@ -133,7 +128,6 @@ Deno.test("ModelDiagram: many outputs collapse behind an accessible toggle", () 
   assertStringIncludes(html, 'role="button"');
   assertStringIncludes(html, 'aria-expanded="false"');
   assertStringIncludes(html, 'aria-label="Show 9 more outputs"');
-  // Five visible per orientation, the rest folded away.
   assertEquals(count(html, "/data/item-"), 10);
   assert(!html.includes("item-13</text>"));
 });

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * What the scorer reads from an extension archive and how it runs
- * `deno doc` over it. Pure: the caller lists directories, reads files and
- * runs the subprocess; these decide which names count and in which order.
- *
- * @module
- */
-
-/** README names the scorer accepts, in lookup order. */
 export const README_FILENAMES: readonly string[] = [
   "README.md",
   "README.MD",
@@ -33,7 +24,6 @@ export const README_FILENAMES: readonly string[] = [
   "Readme.md",
 ];
 
-/** LICENSE names the scorer accepts, in lookup order. */
 export const LICENSE_FILENAMES: readonly string[] = [
   "LICENSE",
   "LICENSE.md",
@@ -58,9 +48,8 @@ export const LICENSE_FILENAMES: readonly string[] = [
 export const DOC_FILE_DIRS: readonly string[] = ["", "files"];
 
 /**
- * The accepted names present in one directory, in lookup order. Matching is
- * exact against the directory listing, so a case-insensitive filesystem
- * finds the same file the registry's Linux scorer does.
+ * matching is exact against the directory listing, so a case-insensitive
+ * filesystem finds the same file the registry's Linux scorer does
  */
 export function presentInOrder(
   accepted: readonly string[],
@@ -70,7 +59,6 @@ export function presentInOrder(
   return accepted.filter((name) => names.has(name));
 }
 
-/** Config files removed from the manifest root before `deno doc` runs. */
 export const STRIPPED_CONFIG_FILES: readonly string[] = [
   "deno.json",
   "deno.jsonc",
@@ -80,7 +68,6 @@ export const STRIPPED_CONFIG_FILES: readonly string[] = [
   ".npmrc",
 ];
 
-/** Directories removed from the manifest root before `deno doc` runs. */
 export const STRIPPED_CONFIG_DIRS: readonly string[] = ["node_modules"];
 
 /** The deno.json written at the manifest root so `deno doc` resolves npm and jsr imports alike everywhere. */
@@ -90,7 +77,6 @@ export const CONTROLLED_DENO_JSON: string = JSON.stringify(
   2,
 ) + "\n";
 
-/** Hosts `deno doc` may fetch imports from. */
 export const DENO_DOC_IMPORT_HOSTS: readonly string[] = [
   "deno.land:443",
   "jsr.io:443",
@@ -102,7 +88,6 @@ export const DENO_DOC_IMPORT_HOSTS: readonly string[] = [
   "registry.npmjs.org:443",
 ];
 
-/** Arguments for `deno doc --json` over the entrypoints. */
 export function denoDocJsonArgs(entrypoints: readonly string[]): string[] {
   return [
     "doc",
@@ -112,7 +97,6 @@ export function denoDocJsonArgs(entrypoints: readonly string[]): string[] {
   ];
 }
 
-/** Arguments for `deno doc --lint` over the entrypoints. */
 export function denoDocLintArgs(entrypoints: readonly string[]): string[] {
   return [
     "doc",
@@ -122,7 +106,6 @@ export function denoDocLintArgs(entrypoints: readonly string[]): string[] {
   ];
 }
 
-/** Manifest fields whose entries `deno doc` analyses. */
 export const ENTRYPOINT_FIELDS = [
   "models",
   "drivers",
@@ -132,9 +115,7 @@ export const ENTRYPOINT_FIELDS = [
   "webhooks",
 ] as const;
 
-/** A manifest entrypoint that resolves outside the manifest root. */
 export class EntrypointEscapesRootError extends Error {
-  /** The manifest entry as written. */
   readonly entry: string;
   constructor(entry: string) {
     super(`Entrypoint escapes extraction root: ${entry}`);
@@ -144,11 +125,9 @@ export class EntrypointEscapesRootError extends Error {
 }
 
 /**
- * The manifest's entrypoints as paths relative to the manifest root, with
- * forward slashes: each entry prefixed with its field's directory, as push
- * archives it (`models: [models/foo.ts]` is at `models/models/foo.ts`).
- *
- * @throws EntrypointEscapesRootError when an entry climbs out of the root
+ * each entry is prefixed with its field's directory, as push archives it
+ * (`models: [models/foo.ts]` is at `models/models/foo.ts`); throws
+ * EntrypointEscapesRootError when an entry climbs out of the root
  */
 export function entrypointPaths(
   manifest: Readonly<Record<string, unknown>>,
@@ -169,7 +148,6 @@ export function entrypointPaths(
   return paths;
 }
 
-/** Resolves `.` and `..` segments; null when the path climbs above its start or is absolute. */
 function normalizePosix(path: string): string | null {
   if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) return null;
   const out: string[] = [];
@@ -185,30 +163,20 @@ function normalizePosix(path: string): string | null {
   return out.join("/");
 }
 
-/** Directory names never searched for the manifest. */
 export const MANIFEST_SEARCH_SKIP: ReadonlySet<string> = new Set([
   "node_modules",
   ".git",
   "_fresh",
 ]);
 
-/** How deep below the extraction root the manifest may sit. */
 export const MAX_MANIFEST_DEPTH = 2;
 
-/** The directory reads {@link findManifestRoot} needs. */
 export interface ManifestSearchFs {
-  /** Whether `<dir>/manifest.yaml` exists; `dir` is relative to the extraction root ("" for the root). */
   hasManifest(dir: string): Promise<boolean>;
-  /** The names of the subdirectories of `dir`. */
   subdirectories(dir: string): Promise<string[]>;
 }
 
-/**
- * The directory holding `manifest.yaml`, relative to the extraction root
- * ("" for the root itself), or null when there is none within
- * {@link MAX_MANIFEST_DEPTH} levels. Shallower wins; at one depth, the
- * first in name order.
- */
+/** shallower wins; at one depth, the first in name order */
 export async function findManifestRoot(
   fs: ManifestSearchFs,
 ): Promise<string | null> {

@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * How the agent sessions page asks for sessions, and how it reads the
- * answers (swamp-club#4155). Pure: no React, so tests and the integration
- * test drive the same payloads the page sends.
- *
- * Every list query is bounded and reads tags only (`AGENT_SESSION_LIST_SELECT`),
- * so no record body is loaded until a session is opened. `data.query` drops
- * what the viewer may not read before it applies the limit.
- *
- * The list asks `data.query` for the newest `SESSION_LIST_LIMIT` sessions,
- * sorted by the `startedAt` tag in SQL (swamp-club#4177), and for each older
- * window with the `nextCursor` the previous one returned. The page sorts,
- * filters, totals and pages the sessions it has loaded.
+ * pure builders for the sessions page's data.query payloads and readers for the
+ * answers. List queries are bounded and read tags only, so no record body loads
+ * until a session is opened
  */
 
 import {
@@ -44,23 +35,17 @@ import {
 } from "../lib/agent_sessions/record.ts";
 import { swampShare } from "../lib/agent_session_view.ts";
 
-/** The most top-level sessions one list query (one window) asks for. */
 export const SESSION_LIST_LIMIT = 1000;
-/** Rows the sessions table shows at a time. */
 export const SESSION_PAGE_SIZE = 50;
-/** The most children one session's query asks for. */
 export const CHILDREN_LIMIT = 500;
 
-/** One session as the list knows it: its tags, never its body. */
 export interface SessionRow {
-  /** The data name, `agent-session-<harness>_<id>`. */
   readonly name: string;
-  /** The behavior that owns the data; `data.get` needs it. */
   readonly modelName: string;
   readonly startedAt: string;
   readonly parentSessionId?: string;
   readonly headless: boolean;
-  /** The `repo` tag; absent on sessions written before it (swamp-club#4211). */
+  /** the `repo` tag; absent on sessions written without it */
   readonly repo?: string;
   /** Absent when the summary tag does not read; the row still opens. */
   readonly summary?: AgentSessionSummary;
@@ -68,13 +53,10 @@ export interface SessionRow {
 
 export interface SessionList {
   readonly rows: readonly SessionRow[];
-  /** The query stopped at its limit, so more sessions exist. */
   readonly limited: boolean;
-  /** Asks for the sessions after these, for a sorted list that was limited. */
   readonly nextCursor?: string;
 }
 
-/** Newest first, by the tag every session carries. */
 export const SESSION_LIST_SORT = {
   field: "tags.startedAt",
   direction: "desc",
@@ -82,7 +64,6 @@ export const SESSION_LIST_SORT = {
 
 export type HeadlessFilter = "all" | "interactive" | "headless";
 
-/** The visibility check: is there one top-level session this viewer can read? */
 export function probePayload(): Record<string, unknown> {
   return {
     predicate: AGENT_SESSION_TOP_LEVEL_PREDICATE,
@@ -92,10 +73,9 @@ export function probePayload(): Record<string, unknown> {
 }
 
 /**
- * The list predicate: top-level sessions, and with a repo, those whose
- * `repo` tag is it. Sessions written before the tag existed pass too, and
- * `filterRows` keeps those whose summary names the repo. A repo the record
- * schema would refuse lists everything rather than throwing.
+ * sessions written without a `repo` tag pass too, and `filterRows` keeps those
+ * whose summary names the repo; a repo the record schema would refuse lists
+ * everything rather than throwing
  */
 export function listPredicate(repo?: string): string {
   if (repo === undefined) return AGENT_SESSION_TOP_LEVEL_PREDICATE;
@@ -108,10 +88,6 @@ export function listPredicate(repo?: string): string {
   return `${AGENT_SESSION_TOP_LEVEL_PREDICATE} && (${condition} || !has(tags.repo))`;
 }
 
-/**
- * A window of sessions, newest first: the first, or the one after `cursor`,
- * of one repo's sessions or of all.
- */
 export function listPayload(
   cursor?: string,
   repo?: string,
@@ -221,7 +197,6 @@ export function appendWindow(
   };
 }
 
-/** A row's repo: its tag, or for a session written before the tag, its summary's. */
 export function rowRepo(row: SessionRow): string | undefined {
   return row.repo ?? row.summary?.repo;
 }
@@ -237,7 +212,6 @@ export function filterRows(
   );
 }
 
-/** The distinct repos of the rows, A to Z. */
 export function reposOf(rows: readonly SessionRow[]): string[] {
   const repos = new Set<string>();
   for (const row of rows) {
@@ -247,11 +221,6 @@ export function reposOf(rows: readonly SessionRow[]): string[] {
   return [...repos].sort((a, b) => a.localeCompare(b));
 }
 
-/**
- * A repo identity as the table shows it: `owner/name` for a remote URL such
- * as `git.example.test/acme/platform`, the last folder for a path. The full
- * identity goes in the cell's title.
- */
 export function repoLabel(repo: string): string {
   const parts = repo.split("/").filter((p) => p !== "");
   if (parts.length === 0) return repo;
@@ -261,7 +230,6 @@ export function repoLabel(repo: string): string {
   return parts[parts.length - 1];
 }
 
-/** The list's sortable columns. */
 export const SESSION_SORT_KEYS = [
   "type",
   "repo",
@@ -283,18 +251,15 @@ export interface SessionSort {
   readonly dir: "asc" | "desc";
 }
 
-/** Newest first: the order the list loads in. */
 export const DEFAULT_SESSION_SORT: SessionSort = {
   key: "started",
   dir: "desc",
 };
 
-/** Text sorts A to Z first; dates and figures, largest first. */
 export function firstSortDir(key: SessionSortKey): SessionSort["dir"] {
   return key === "type" || key === "repo" || key === "harness" ? "asc" : "desc";
 }
 
-/** Reads `key.dir` from the address; anything else is the default. */
 export function parseSessionSort(raw: string | null): SessionSort {
   const [key, dir] = (raw ?? "").split(".");
   if (
@@ -370,7 +335,6 @@ export function sortRows(
   });
 }
 
-/** The rows of one page, counted from 0, and how many pages there are. */
 export function pageOf(
   rows: readonly SessionRow[],
   page: number,
@@ -412,7 +376,6 @@ export function parseDetailReply(data: unknown): AgentSessionReading {
   return readAgentSessionRecord(parsed);
 }
 
-/** The `data` a serve reply wraps, or the value itself when it has none. */
 export function replyData(payload: unknown): unknown {
   return isRecord(payload) && "data" in payload ? payload.data : payload;
 }

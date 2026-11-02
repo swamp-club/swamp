@@ -17,17 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Calendar arithmetic for the time range picker. Days are "YYYY-MM-DD"
-// keys in the viewer's calendar; arithmetic on keys runs in UTC so a DST
-// change never shifts a day. Only converting between a key and an instant
-// involves a time zone.
+// day keys are "YYYY-MM-DD" in the viewer's calendar; key arithmetic runs in
+// UTC so a DST change never shifts a day, and only converting key to instant
+// involves a time zone
 
 import type { TimeRange } from "../client/time_range.ts";
 
-/** A calendar day, "YYYY-MM-DD". Keys sort chronologically as strings. */
 export type DayKey = string;
 
-/** A calendar month; `month` is 0-11. */
 export interface MonthRef {
   year: number;
   month: number;
@@ -35,7 +32,6 @@ export interface MonthRef {
 
 const pad = (n: number, width = 2) => String(n).padStart(width, "0");
 
-/** The key of a year/month(0-11)/day, normalizing overflow (Jan 32 → Feb 1). */
 export function makeDayKey(year: number, month: number, day: number): DayKey {
   const d = new Date(Date.UTC(year, month, day));
   return `${pad(d.getUTCFullYear(), 4)}-${pad(d.getUTCMonth() + 1)}-${
@@ -50,16 +46,11 @@ export function parseDayKey(
   return { year: y, month: m - 1, day: d };
 }
 
-/** The local calendar day of an instant. */
 export function localDayKey(date: Date): DayKey {
   return makeDayKey(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-/**
- * Maps instants to day keys in `timeZone` (the viewer's zone when omitted).
- * One formatter is built per call so bucketing thousands of hours stays
- * cheap.
- */
+/** one formatter is built per call so bucketing thousands of hours stays cheap */
 export function dayKeyFormatter(timeZone?: string): (iso: string) => DayKey {
   if (!timeZone) return (iso) => localDayKey(new Date(iso));
   const fmt = new Intl.DateTimeFormat("en-US", {
@@ -81,7 +72,6 @@ export function addDays(key: DayKey, n: number): DayKey {
   return makeDayKey(year, month, day + n);
 }
 
-/** Day of week, 0 = Sunday. */
 export function dayOfWeek(key: DayKey): number {
   const { year, month, day } = parseDayKey(key);
   return new Date(Date.UTC(year, month, day)).getUTCDay();
@@ -105,10 +95,6 @@ export function compareMonths(a: MonthRef, b: MonthRef): number {
   return (a.year * 12 + a.month) - (b.year * 12 + b.month);
 }
 
-/**
- * The weeks of a month, each seven slots long; slots outside the month
- * are null.
- */
 export function monthGrid(
   ref: MonthRef,
   weekStartsOn = 0,
@@ -131,10 +117,6 @@ export function monthGrid(
   return weeks;
 }
 
-/**
- * The instants bounding `count` months from `first`, at local midnight,
- * for fetching a calendar's own data window.
- */
 export function monthsWindow(
   first: MonthRef,
   count: number,
@@ -144,8 +126,6 @@ export function monthsWindow(
     until: new Date(first.year, first.month + count, 1).toISOString(),
   };
 }
-
-// ── Per-day run stats ──
 
 export interface DayStats {
   runs: number;
@@ -163,9 +143,8 @@ interface HourBucket {
 }
 
 /**
- * Folds hourly UTC buckets into calendar days. A bucket counts toward the
- * day its hour starts in, so in a zone offset by a half hour the runs of a
- * bucket straddling midnight land on the earlier day.
+ * a bucket counts toward the day its hour starts in, so in a half-hour-offset
+ * zone a bucket straddling midnight lands on the earlier day
  */
 export function bucketByDay(
   buckets: ReadonlyArray<HourBucket>,
@@ -186,7 +165,6 @@ export function bucketByDay(
   return days;
 }
 
-/** The busiest day's run count among a month's days (0 when idle). */
 export function monthMaxRuns(
   days: ReadonlyMap<DayKey, DayStats>,
   ref: MonthRef,
@@ -200,9 +178,8 @@ export function monthMaxRuns(
 }
 
 /**
- * Heights (0-1 of the day's bar area) of the stacked segments, scaled to
- * the busiest day so a quiet day reads as a short bar. Any failure gets a
- * visible sliver so an incident on a busy day is never rounded away.
+ * scaled to the busiest day so a quiet day reads as a short bar; any failure
+ * gets a visible sliver so an incident on a busy day is never rounded away
  */
 export function dayBar(
   stats: DayStats | undefined,
@@ -239,13 +216,11 @@ function monthDayFormat(locale?: string): Intl.DateTimeFormat {
   return MONTH_DAY[k];
 }
 
-/** "Oct 3". */
 export function formatDayKey(key: DayKey, locale?: string): string {
   const { year, month, day } = parseDayKey(key);
   return monthDayFormat(locale).format(new Date(Date.UTC(year, month, day)));
 }
 
-/** "October 2026". */
 export function formatMonth(ref: MonthRef, locale?: string): string {
   return new Date(Date.UTC(ref.year, ref.month, 1)).toLocaleDateString(
     locale,
@@ -253,7 +228,6 @@ export function formatMonth(ref: MonthRef, locale?: string): string {
   );
 }
 
-/** "Oct 3: 120 runs, 4 failed" — the accessible name of a day cell. */
 export function describeDay(
   key: DayKey,
   stats: DayStats | undefined,
@@ -273,18 +247,11 @@ export function describeDay(
   return `${day}: ${parts.join(", ")}`;
 }
 
-// ── Range selection ──
-
-/** A selection in progress: a start day, and an end once one is picked. */
 export interface DaySelection {
   start: DayKey | null;
   end: DayKey | null;
 }
 
-/**
- * Clicking a day: the first click sets the start, the second sets the end
- * (swapping if it is earlier), and a third starts over.
- */
 export function selectDay(sel: DaySelection, key: DayKey): DaySelection {
   if (sel.start === null || sel.end !== null) return { start: key, end: null };
   return key < sel.start
@@ -292,10 +259,6 @@ export function selectDay(sel: DaySelection, key: DayKey): DaySelection {
     : { start: sel.start, end: key };
 }
 
-/**
- * The span to highlight: the chosen range, or, while only a start is
- * picked, the span from it to the hovered day.
- */
 export function previewSpan(
   sel: DaySelection,
   hover: DayKey | null,
@@ -330,11 +293,6 @@ export function isDayNavKey(key: string): key is DayNavKey {
   ].includes(key);
 }
 
-/**
- * The day keyboard focus moves to: arrows by a day or a week, Home/End to
- * the week's edges, PageUp/PageDown by a month (keeping the day where the
- * month allows). Never past `latest` (today).
- */
 export function moveDay(
   key: DayKey,
   nav: DayNavKey,
@@ -376,10 +334,6 @@ export function moveDay(
   return next > latest ? latest : next;
 }
 
-/**
- * Keeps `focus` inside the `count` months shown from `first`, paging the
- * calendar when it moves out.
- */
 export function monthsToShow(
   first: MonthRef,
   count: number,
@@ -392,11 +346,8 @@ export function monthsToShow(
   return first;
 }
 
-// ── Converting between selections and time ranges ──
-
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-/** A local day at "HH:MM". */
 export function localInstant(key: DayKey, time: string): Date {
   const { year, month, day } = parseDayKey(key);
   const m = TIME_RE.exec(time);
@@ -409,9 +360,8 @@ export const DEFAULT_START_TIME = "00:00";
 export const DEFAULT_END_TIME = "23:59";
 
 /**
- * The custom range a selection describes. The end time includes its whole
- * minute, so the default 00:00–23:59 covers whole days. A single picked
- * day is a one-day range.
+ * the end time includes its whole minute, so the default 00:00-23:59 covers
+ * whole days; a single picked day is a one-day range
  */
 export function selectionToRange(
   sel: DaySelection,
@@ -439,10 +389,6 @@ function hhmm(date: Date): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/**
- * The calendar state that shows `range`: the custom range's days and
- * times, or the days a preset currently covers.
- */
 export function rangeToSelection(
   range: TimeRange,
   bounds: { since?: string; until?: string },
@@ -474,7 +420,6 @@ export function rangeToSelection(
   };
 }
 
-/** "Oct 3 – Oct 9", "Oct 3", or a prompt while nothing is picked. */
 export function describeSelection(
   sel: DaySelection,
   locale?: string,
