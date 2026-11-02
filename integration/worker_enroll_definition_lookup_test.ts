@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { collect } from "../src/libswamp/testing.ts";
@@ -40,6 +40,11 @@ import {
 import { handleWorkerTokenCreate } from "../src/serve/handlers/admin_handlers.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { WorkerGateway } from "../src/serve/worker_gateway.ts";
+import {
+  WORKER_MODEL_TYPE,
+  WORKER_STATE_DATA_NAME,
+  workerDefinitionName,
+} from "../src/domain/models/worker/worker_model.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -162,6 +167,28 @@ Deno.test("worker enroll ignores a user definition of another type that shares t
       }
       return false;
     }, "worker definition created in auto-definitions");
+
+    await gateway.settled();
+    const definition = await repoContext.definitionRepo.findByName(
+      WORKER_MODEL_TYPE,
+      workerDefinitionName(name),
+    );
+    assert(definition !== null, "the worker definition exists");
+    const content = await repoContext.unifiedDataRepo.getContent(
+      WORKER_MODEL_TYPE,
+      definition.id,
+      WORKER_STATE_DATA_NAME,
+    );
+    assert(content !== null, "the worker has a state record");
+    assertEquals(
+      JSON.parse(new TextDecoder().decode(content)).status,
+      "disconnected",
+    );
+    const outputs = await repoContext.outputRepo.findByDefinition(
+      WORKER_MODEL_TYPE,
+      definition.id,
+    );
+    assertEquals(outputs.map((output) => output.methodName), ["enroll"]);
   } finally {
     workerChannel?.close("test done");
     gateway.dispose();
