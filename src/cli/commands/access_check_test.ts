@@ -390,3 +390,51 @@ Deno.test({
     );
   },
 });
+
+Deno.test("accessCheckCommand: has --method option", async () => {
+  const { accessCheckCommand } = await import("./access_check.ts");
+  const options = accessCheckCommand.getOptions();
+  assertEquals(options.some((o) => o.name === "method"), true);
+});
+
+Deno.test({
+  name:
+    "accessCheckCommand: --method decides a methods-scoped grant by the method checked",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo(
+      [[
+        "--subject",
+        "user:alice",
+        "--allow",
+        "run",
+        "--on",
+        "model:team-x-probe",
+        "--methods",
+        "execute",
+      ]],
+      async (dir) => {
+        const check = (method?: string) =>
+          runAccess("check", [
+            "--subject",
+            "user:alice",
+            "--action",
+            "run",
+            "--on",
+            "model:team-x-probe",
+            ...(method ? ["--method", method] : []),
+            "--repo-dir",
+            dir,
+          ]);
+        const named = await check("execute");
+        assertEquals(checkEffect(named.output), "allow");
+        assertEquals(JSON.parse(named.output).method, "execute");
+        assertEquals(checkEffect((await check("other")).output), "deny");
+        const unnamed = await check();
+        assertEquals(checkEffect(unnamed.output), "deny");
+        assertEquals(unnamed.exitCode, 1);
+      },
+    );
+  },
+});

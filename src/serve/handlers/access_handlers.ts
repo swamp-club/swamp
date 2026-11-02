@@ -513,7 +513,7 @@ export async function handleAccessCheck(
       ctx,
       resource.kind,
       resource.pattern,
-      {},
+      payload.method ? { methodName: payload.method } : {},
     );
     const targetAccessPrincipal = {
       principal: targetPrincipal,
@@ -544,6 +544,7 @@ export async function handleAccessCheck(
         collectives: [...collectives],
         groups: [...groups],
         decisions: decisions as unknown as Record<string, unknown>[],
+        ...(payload.method ? { method: payload.method } : {}),
         approveRequiresExplicitGrant: !service.runImpliesApprove,
         signalRequiresExplicitGrant: !service.runImpliesSignal,
         tagRequiresExplicitGrant: !service.writeImpliesTag,

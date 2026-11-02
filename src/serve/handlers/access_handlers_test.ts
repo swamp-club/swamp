@@ -1177,6 +1177,44 @@ Deno.test("handleAccessCheck: reports the vault grants that decide vault:<name>"
   );
 });
 
+Deno.test("handleAccessCheck: --method checks a method-scoped vault grant against that verb, request and run time alike", async () => {
+  const putOnly = makeGrant({
+    subject: { kind: "user", name: "resumer" },
+    actions: ["read", "write"],
+    resource: { kind: "vault", pattern: "prod-db" },
+    methods: ["put"],
+  });
+  const policyCtx = createPolicyCtx([putOnly], true);
+  const ctx = withVaultRepo({
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "none" },
+  });
+  const check = async (action: string, method?: string) => {
+    const socket = createMockSocket();
+    await handleAccessCheck(socket, ctx, "req", {
+      subject: "user:resumer",
+      action,
+      resource: "vault:prod-db",
+      ...(method ? { method } : {}),
+    }, RESUMER);
+    return JSON.parse(socket.sent[0]).payload;
+  };
+  const put = await check("write", "put");
+  assertEquals(put.method, "put");
+  assertEquals(put.decisions.map((d: { grantId: string }) => d.grantId), [
+    putOnly.id,
+  ]);
+  assertEquals(put.runVaultAccess.allowed, true);
+
+  const get = await check("read", "get");
+  assertEquals(get.decisions, []);
+  assertEquals(get.runVaultAccess.allowed, false);
+
+  const noMethod = await check("read");
+  assertEquals(noMethod.method, undefined);
+  assertEquals(noMethod.decisions, []);
+});
+
 Deno.test("handleAccessCanI: a concrete vault also reports the run-time decision for the caller", async () => {
   const allow = makeGrant({
     subject: { kind: "user", name: "resumer" },

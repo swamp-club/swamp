@@ -42,6 +42,7 @@ export interface AccessCheckResult {
   resource: string;
   collectives: string[];
   decisions: AccessDecision[];
+  method?: string;
   /**
    * The server's approval policy. Undefined for a local check, or a server
    * that predates the setting.
@@ -222,6 +223,12 @@ function formatSubject(subject: AccessDecision["subject"]): string {
   return `${subject.kind}:${subject.name}`;
 }
 
+function checkedTarget(result: AccessCheckResult): string {
+  return result.method
+    ? `${result.resource} method ${result.method}`
+    : result.resource;
+}
+
 class LogAccessCheckRenderer implements AccessCheckRenderer {
   render(result: AccessCheckResult): void {
     const note = approvalPolicyNote(
@@ -240,7 +247,9 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
 
     if (result.decisions.length === 0) {
       writeOutput(
-        `DENY (implicit) — no matching grants for ${result.subject} ${result.action} ${result.resource}`,
+        `DENY (implicit) — no matching grants for ${result.subject} ${result.action} ${
+          checkedTarget(result)
+        }`,
       );
       if (note) writeOutput(note);
       const runLines = runVaultAccessLines(result.runVaultAccess);
@@ -256,9 +265,9 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
     const via = `grant ${firstDecision.grantId.slice(0, 8)}…`;
     const subject = formatSubject(firstDecision.subject);
     writeOutput(
-      `${effect} via ${via} (${subject} → ${result.action} → ${result.resource})${
-        impliedMarker(firstDecision)
-      }`,
+      `${effect} via ${via} (${subject} → ${result.action} → ${
+        checkedTarget(result)
+      })${impliedMarker(firstDecision)}`,
     );
 
     if (result.decisions.length > 1) {
@@ -296,6 +305,7 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
           subject: result.subject,
           action: result.action,
           resource: result.resource,
+          ...(result.method ? { method: result.method } : {}),
           collectives: result.collectives,
           effect: finalEffect,
           matchingGrants: result.decisions,

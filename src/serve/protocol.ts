@@ -91,6 +91,7 @@ export interface AccessCheckPayload {
   resource: string;
   collectives?: string[];
   groups?: string[];
+  method?: string;
 }
 
 export interface AccessCanIPayload {
@@ -1225,6 +1226,8 @@ export interface AccessCheckResponse {
   collectives: string[];
   groups: string[];
   decisions: Record<string, unknown>[];
+  /** The method checked; absent when none was, or from a server that predates it. */
+  method?: string;
   /** The server's approval policy; absent from servers that predate it. */
   approveRequiresExplicitGrant?: boolean;
   signalRequiresExplicitGrant?: boolean;
