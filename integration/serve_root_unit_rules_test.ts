@@ -282,8 +282,7 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // worker status changes are written directly rather than as method runs:
   // staged into a dispatching run's root, and otherwise sent to the hook
   "src/serve/worker_status_ledger.ts: WorkerStatusLedger",
-  // pending-dispatch transitions are written directly rather than as method
-  // runs: staged into a dispatching run's root, and otherwise sent to the hook
+  // pending-dispatch transitions are written directly, as worker status changes are
   "src/serve/pending_dispatch_ledger.ts: PendingDispatchLedger",
   // model.validate: model checks receive the hooked repositories.
   "src/serve/handlers/model_handlers.ts: handleModelValidate",

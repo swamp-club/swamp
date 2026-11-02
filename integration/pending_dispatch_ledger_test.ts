@@ -221,7 +221,6 @@ async function assertLedgerMatchesMethodRun(
     await ledger.enqueue(enqueueArgs(byLedger));
     await viaMethod.end(byMethod, end);
     await ledger.end(byLedger, end);
-    // a terminal entry is not rewritten by a later end
     await viaMethod.end(byMethod, { state: "cancelled", endedAt: ENDED_AT });
     await ledger.end(byLedger, { state: "cancelled", endedAt: ENDED_AT });
     methodRuns += 3;
@@ -293,6 +292,55 @@ Deno.test("PendingDispatchLedger: falls back to the method run until the pending
         "dispatched",
       );
       assertEquals(await pendingOutputs(ctx), 1);
+    } finally {
+      ctx.catalogStore.close();
+    }
+  });
+});
+
+Deno.test("PendingDispatchLedger: a fresh repo's first concurrent burst shares one fallback, and a failed fallback hands the bootstrap to the next transition", async () => {
+  await withTempDir(async (dir) => {
+    const ctx = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+    });
+    try {
+      const viaMethod = methodRunnerPendingDispatchStore(
+        methodRunner(dir, ctx),
+      );
+      let failNext = true;
+      const fallback = counting({
+        enqueue: (args) => {
+          if (failNext) {
+            failNext = false;
+            return Promise.reject(new Error("bootstrap failed"));
+          }
+          return viaMethod.enqueue(args);
+        },
+        end: (queueId, end) => viaMethod.end(queueId, end),
+      });
+      const ledger = new PendingDispatchLedger(ctx, fallback);
+
+      const settled = await Promise.allSettled(
+        Array.from(
+          { length: QUEUED },
+          (_, i) => ledger.enqueue(enqueueArgs(`q-${i}`)),
+        ),
+      );
+      const rejected = settled.filter((s) => s.status === "rejected");
+      assertEquals(rejected.length, 1);
+      assertEquals(fallback.calls, 2);
+      assertEquals(await pendingOutputs(ctx), 1);
+      const written = settled.flatMap((s, i) =>
+        s.status === "fulfilled" ? [`q-${i}`] : []
+      );
+      assertEquals(written.length, QUEUED - 1);
+      for (const queueId of written) {
+        assertEquals(
+          (await storedPending(ctx, queueId)).record.state,
+          "waiting",
+        );
+      }
     } finally {
       ctx.catalogStore.close();
     }

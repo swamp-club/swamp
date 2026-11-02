@@ -40,10 +40,9 @@ import { withSpan } from "../infrastructure/tracing/mod.ts";
 import type { ModelMethodRunner } from "./worker_gateway.ts";
 
 // serve never orphans through the store: boot reconciliation writes orphaned records itself
-export type ServePendingDispatchEnd = Exclude<
-  PendingDispatchEnd,
-  { state: "orphaned" }
->;
+export type ServePendingDispatchEnd =
+  | Extract<PendingDispatchEnd, { state: "dispatched" }>
+  | { state: "timed_out" | "cancelled"; endedAt: string };
 
 export interface PendingDispatchStore {
   enqueue(args: EnqueuePendingArgs): Promise<void>;
@@ -76,6 +75,8 @@ export class PendingDispatchLedger implements PendingDispatchStore {
     "definitionRepo" | "unifiedDataRepo" | "markDirty" | "commitLog"
   >;
   readonly #fallback: PendingDispatchStore;
+  // the fallback creating the definition; concurrent transitions in a fresh repo wait for it rather than each running the method
+  #bootstrap: Promise<void> | null = null;
 
   constructor(
     repoContext: Pick<
@@ -118,13 +119,26 @@ export class PendingDispatchLedger implements PendingDispatchStore {
       "swamp.serve.pending_dispatch.write",
       { "swamp.pending_dispatch.method": methodName },
       async () => {
-        const definition = await this.#repoContext.definitionRepo.findByName(
-          PENDING_DISPATCH_MODEL_TYPE,
-          PENDING_DISPATCH_INSTANCE_NAME,
-        );
+        const find = () =>
+          this.#repoContext.definitionRepo.findByName(
+            PENDING_DISPATCH_MODEL_TYPE,
+            PENDING_DISPATCH_INSTANCE_NAME,
+          );
+        let definition = await find();
+        // a failed bootstrap leaves the definition missing, so the next waiter takes over
+        while (definition === null && this.#bootstrap !== null) {
+          await this.#bootstrap.catch(() => {});
+          definition = await find();
+        }
         // the method run resolves a definition that does not exist yet
         if (definition === null) {
-          await fallback();
+          const bootstrap = fallback();
+          this.#bootstrap = bootstrap;
+          try {
+            await bootstrap;
+          } finally {
+            if (this.#bootstrap === bootstrap) this.#bootstrap = null;
+          }
           return;
         }
         const repo = this.#repoContext.unifiedDataRepo;
