@@ -100,7 +100,7 @@ const RPC_PATH_PATTERN =
   /(?:^|[\s"'`(])\/(?:opt|home|var|tmp|etc|usr|root|Users|private)\//;
 const RPC_SWAMP_PATH_PATTERN = /\/.swamp\//;
 
-function sanitizeRpcError(error: unknown): string {
+export function sanitizeRpcError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   if (RPC_PATH_PATTERN.test(raw) || RPC_SWAMP_PATH_PATTERN.test(raw)) {
     return "Capability verb failed — internal error";

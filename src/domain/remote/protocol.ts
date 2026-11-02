@@ -35,7 +35,7 @@ import {
  * dispatch; changing the verbs or SENTINEL_EXACT needs a bump, an optional
  * parameter on an existing verb does not
  */
-export const REMOTE_PROTOCOL_VERSION = 6;
+export const REMOTE_PROTOCOL_VERSION = 7;
 
 /**
  * this version's dispatch frame still carries plaintext arguments, secretValues
@@ -43,8 +43,12 @@ export const REMOTE_PROTOCOL_VERSION = 6;
  */
 export const LEGACY_PLAINTEXT_PROTOCOL_VERSION = 5;
 
+/** 6 still sends queryData and readOutput lists over the control socket */
+export const CONTROL_SOCKET_READS_PROTOCOL_VERSION = 6;
+
 export const SUPPORTED_REMOTE_PROTOCOL_VERSIONS: readonly number[] = [
   LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+  CONTROL_SOCKET_READS_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
 ];
 
@@ -518,6 +522,15 @@ export type ResolveSecretParams = z.infer<typeof ResolveSecretParamsSchema>;
  * through; a data-plane route, not a capability verb
  */
 export const DISPATCH_SECRETS_PATH = "/data/secrets";
+
+/**
+ * data-plane routes for the reads whose replies can outgrow a control frame;
+ * a reply streams one `{"item": ...}` line per record, then `{"count": n}`
+ */
+export const WORKER_QUERY_PATH = "/data/query";
+export const WORKER_OUTPUTS_PATH = "/data/outputs";
+
+export const MAX_WORKER_READ_BODY_BYTES = 64 * 1024;
 
 export const MAX_DISPATCH_SECRET_LOADS = 256;
 export const MAX_DISPATCH_SECRET_RESOURCE_NAME_LENGTH = 512;

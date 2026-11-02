@@ -398,11 +398,12 @@ function createRemoteOutputRepository(
         methodName,
         outputId,
       })).result as Awaited<ReturnType<OutputRepository["findById"]>>,
+    // list reads can outgrow a control frame, so they come over the data plane
     findByDefinition: async (type: ModelType, definitionId: string) =>
-      (await readOutput({
+      await options.client.readOutputList({
         modelType: type.normalized,
         definitionId,
-      })).result as Awaited<ReturnType<OutputRepository["findByDefinition"]>>,
+      }, signal) as Awaited<ReturnType<OutputRepository["findByDefinition"]>>,
     findLatestByDefinition: async (type: ModelType, definitionId: string) =>
       (await readOutput({
         modelType: type.normalized,
@@ -412,9 +413,10 @@ function createRemoteOutputRepository(
         ReturnType<OutputRepository["findLatestByDefinition"]>
       >,
     findAll: async (type: ModelType) =>
-      (await readOutput({ modelType: type.normalized })).result as Awaited<
-        ReturnType<OutputRepository["findAll"]>
-      >,
+      await options.client.readOutputList(
+        { modelType: type.normalized },
+        signal,
+      ) as Awaited<ReturnType<OutputRepository["findAll"]>>,
     findByIds: () => unsupported("outputRepository.findByIds"),
     findAllGlobal: () => unsupported("outputRepository.findAllGlobal"),
     findAllGlobalSummaries: () =>
@@ -592,7 +594,7 @@ export function dispatchMethodArgs(
 export function createRemoteMethodContext(
   options: RemoteContextOptions,
 ): RemoteMethodContextResult {
-  const { dispatch, channel, signal } = options;
+  const { dispatch, signal } = options;
   const execution = dispatch.execution;
   const modelType = ModelType.create(execution.modelType);
   // Every secret value the worker receives for this dispatch: the values it
@@ -606,21 +608,18 @@ export function createRemoteMethodContext(
   const outputRepository = createRemoteOutputRepository(options);
   const writers = createRemoteWriters(options);
 
+  // query replies can outgrow a control frame, so they come over the data plane
   const queryData = (predicate: string, select?: string) =>
-    channel.call<unknown[]>(RemoteMethod.queryData, {
+    options.client.queryData({
       predicate,
       options: select !== undefined ? { select } : undefined,
-    }, { signal });
+    }, signal);
 
   const dataQueryService = {
     query: (
       predicate: string,
       queryOptions?: { limit?: number; select?: string },
-    ) =>
-      channel.call<unknown[]>(RemoteMethod.queryData, {
-        predicate,
-        options: queryOptions,
-      }, { signal }),
+    ) => options.client.queryData({ predicate, options: queryOptions }, signal),
   } as unknown as DataQueryService;
 
   const redact = (text: string) =>
@@ -669,10 +668,10 @@ export function createRemoteMethodContext(
       : `modelName == ${JSON.stringify(modelName)} && specName == ${
         JSON.stringify(specName)
       }`;
-    const byName = await channel.call<DataRecord[]>(RemoteMethod.queryData, {
+    const byName = await options.client.queryData({
       predicate,
       options: { loadAttributes: true },
-    }, { signal });
+    }, signal) as DataRecord[];
     if (parseNamespacedModelName(modelName).namespace !== undefined) {
       return byName;
     }
@@ -701,14 +700,10 @@ export function createRemoteMethodContext(
     if (!identity) {
       return byName;
     }
-    const byIdentity = await channel.call<DataRecord[]>(
-      RemoteMethod.queryData,
-      {
-        predicate: modelIdentityPredicate(identity, specName),
-        options: { loadAttributes: true },
-      },
-      { signal },
-    );
+    const byIdentity = await options.client.queryData({
+      predicate: modelIdentityPredicate(identity, specName),
+      options: { loadAttributes: true },
+    }, signal) as DataRecord[];
     return mergeModelData(byName, byIdentity);
   };
 

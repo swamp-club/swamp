@@ -35,6 +35,10 @@ import {
   DispatchSecretLoadResponseSchema,
   MAX_DISPATCH_SECRET_CLAIMS,
   MAX_DISPATCH_SECRET_LOADS,
+  type QueryDataParams,
+  type ReadOutputParams,
+  WORKER_OUTPUTS_PATH,
+  WORKER_QUERY_PATH,
 } from "../domain/remote/protocol.ts";
 import { secretReadKey } from "../domain/vaults/secret_loader.ts";
 
@@ -478,6 +482,33 @@ export class DataPlaneClient {
     return new Uint8Array(await response.arrayBuffer());
   }
 
+  queryData(
+    params: QueryDataParams,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    return this.#readList(WORKER_QUERY_PATH, params, signal);
+  }
+
+  readOutputList(
+    params: ReadOutputParams,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    return this.#readList(WORKER_OUTPUTS_PATH, params, signal);
+  }
+
+  async #readList(
+    path: string,
+    params: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    const response = await this.#request("POST", path, {
+      body: JSON.stringify(params),
+      headers: { "content-type": "application/json" },
+      signal,
+    });
+    return await readStreamedList(response, path);
+  }
+
   async listAssets(
     fingerprint: string,
     signal?: AbortSignal,
@@ -490,6 +521,60 @@ export class DataPlaneClient {
     const body = await response.json() as { files: string[] };
     return body.files;
   }
+}
+
+async function readStreamedList(
+  response: Response,
+  route: string,
+): Promise<unknown[]> {
+  const fail = (why: string) => new Error(`Data plane POST ${route} ${why}`);
+  const items: unknown[] = [];
+  let count: number | undefined;
+  const take = (line: string) => {
+    if (line.length === 0) return;
+    if (count !== undefined) throw fail("sent a line after its trailer");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      throw fail("sent a malformed line; the reply was cut off or corrupted");
+    }
+    const entry = parsed as Record<string, unknown> | null;
+    if (entry !== null && typeof entry === "object" && "item" in entry) {
+      items.push(entry.item);
+    } else if (
+      entry !== null && typeof entry === "object" &&
+      typeof entry.count === "number"
+    ) {
+      count = entry.count;
+    } else {
+      throw fail("sent a line that is neither a record nor its trailer");
+    }
+  };
+  let buffered = "";
+  if (response.body) {
+    for await (
+      const chunk of response.body.pipeThrough(new TextDecoderStream())
+    ) {
+      buffered += chunk;
+      let start = 0;
+      let newline = buffered.indexOf("\n", start);
+      while (newline !== -1) {
+        take(buffered.slice(start, newline));
+        start = newline + 1;
+        newline = buffered.indexOf("\n", start);
+      }
+      buffered = buffered.slice(start);
+    }
+  }
+  take(buffered);
+  if (count === undefined) {
+    throw fail("ended before its trailer; the reply was cut off");
+  }
+  if (count !== items.length) {
+    throw fail(`announced ${count} records but sent ${items.length}`);
+  }
+  return items;
 }
 
 export function createDataPlaneFetch(

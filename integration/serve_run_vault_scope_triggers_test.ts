@@ -420,6 +420,10 @@ Deno.test({
           },
           dispatches: botDispatch(f, modelDef),
           bundles: new BundleRegistry(),
+          workerReads: new CapabilityService({
+            repoDir: f.repo.repoDir,
+            repoContext: f.repo.repoContext,
+          }),
           createVaultService: () =>
             VaultService.fromRepository(f.repo.repoDir, { defaultVaultName }),
         });

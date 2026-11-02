@@ -233,7 +233,7 @@ Deno.test("WorkerGateway: enrollment runs in a gateway-tail span (swamp-club#375
 });
 
 Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", async () => {
-  for (const protocolVersion of [4, 7, 99]) {
+  for (const protocolVersion of [4, 8, 99]) {
     const h = createHarness();
     const { workerChannel } = connectWorkerSocket(h.gateway);
     const error = await assertRejects(
@@ -246,8 +246,8 @@ Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", 
   }
 });
 
-Deno.test("WorkerGateway: enrolls protocol versions 5 and 6, keeps each worker's version, and warns about version 5 only (typed-secrets 5.2)", async () => {
-  for (const protocolVersion of [5, 6]) {
+Deno.test("WorkerGateway: enrolls protocol versions 5, 6 and 7, keeps each worker's version, and warns about version 5 only (typed-secrets 5.2)", async () => {
+  for (const protocolVersion of [5, 6, 7]) {
     const h = createHarness();
     const { workerChannel } = connectWorkerSocket(h.gateway);
     const logs = await capturingGatewayLogs(async () => {

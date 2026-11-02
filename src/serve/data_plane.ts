@@ -68,6 +68,17 @@ import {
   type DispatchSecretLoadsAudit,
   isDispatchSecretsRoute,
 } from "./dispatch_secret_loads.ts";
+import {
+  MAX_WORKER_READ_BODY_BYTES,
+  type QueryDataParams,
+  QueryDataParamsSchema,
+  type ReadOutputParams,
+  ReadOutputParamsSchema,
+  WORKER_OUTPUTS_PATH,
+  WORKER_QUERY_PATH,
+} from "../domain/remote/protocol.ts";
+import { readBodyWithLimit } from "./webhook.ts";
+import { sanitizeRpcError } from "./capability_service.ts";
 
 const logger = getSwampLogger(["serve", "data-plane"]);
 
@@ -83,6 +94,22 @@ export interface DataPlaneOptions {
   bundles: BundleRegistry;
   onFirstWrite?: (dispatch: ActiveDispatch) => Promise<void>;
   createVaultService?: () => Promise<VaultService>;
+  /**
+   * the capability verbs whose replies are too large for a control frame;
+   * the routes call these so both transports apply one visibility rule
+   */
+  workerReads: WorkerReads;
+}
+
+export interface WorkerReads {
+  queryData(
+    workerName: string,
+    params: QueryDataParams & { dispatchId?: string },
+  ): Promise<unknown[]>;
+  readOutput(
+    workerName: string,
+    params: ReadOutputParams & { dispatchId?: string },
+  ): Promise<unknown>;
 }
 
 const UNKNOWN_SOURCE_IP = "unknown";
@@ -102,6 +129,34 @@ function json(body: unknown, status = 200): Response {
 
 function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
+}
+
+function ndjsonResponse(items: readonly unknown[]): Response {
+  const encoder = new TextEncoder();
+  let index = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index < items.length) {
+        controller.enqueue(
+          encoder.encode(JSON.stringify({ item: items[index++] }) + "\n"),
+        );
+        return;
+      }
+      controller.enqueue(
+        encoder.encode(JSON.stringify({ count: items.length }) + "\n"),
+      );
+      controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "application/x-ndjson" },
+  });
+}
+
+function isOutputListRead(params: ReadOutputParams): boolean {
+  return params.outputId === undefined && params.methodName === undefined &&
+    params.latestOnly !== true;
 }
 
 function parseOverrides<T>(
@@ -520,6 +575,13 @@ export class DataPlane {
     if (req.method === "GET" && segments.length === 5) {
       return await this.#readArtifact(req, segments, workerName, dispatchId);
     }
+    const path = `/${segments.join("/")}`;
+    if (req.method === "POST" && path === WORKER_QUERY_PATH) {
+      return await this.#queryData(req, workerName, dispatchId);
+    }
+    if (req.method === "POST" && path === WORKER_OUTPUTS_PATH) {
+      return await this.#readOutputList(req, workerName, dispatchId);
+    }
     if (req.method === "POST" && segments[1] === "resource") {
       return await this.#writeResource(req, workerName, dispatchId);
     }
@@ -540,6 +602,97 @@ export class DataPlane {
       }
     }
     return errorResponse(404, "Unknown data-plane route");
+  }
+
+  async #workerReadBody<S extends z.ZodType>(
+    req: Request,
+    schema: S,
+  ): Promise<z.infer<S>> {
+    const bytes = await readBodyWithLimit(req, MAX_WORKER_READ_BODY_BYTES);
+    if (bytes === null) {
+      throw new DataPlaneError(
+        413,
+        `Request body exceeds ${MAX_WORKER_READ_BODY_BYTES} bytes`,
+      );
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      throw new DataPlaneError(400, "Invalid JSON body");
+    }
+    const parsed = parseUntrusted(schema, raw);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new DataPlaneError(
+        400,
+        `Invalid ${
+          issue.path.map(String).join(".") || "body"
+        }: ${issue.message}`,
+      );
+    }
+    return parsed.data;
+  }
+
+  async #workerRead<T>(
+    verb: string,
+    workerName: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      logger.warn("Worker read {verb} for worker {worker} failed: {error}", {
+        verb,
+        worker: workerName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new DataPlaneError(400, sanitizeRpcError(error));
+    }
+  }
+
+  async #queryData(
+    req: Request,
+    workerName: string,
+    dispatchId?: string,
+  ): Promise<Response> {
+    const dispatch = this.#activeDispatch(workerName, dispatchId);
+    const params = await this.#workerReadBody(req, QueryDataParamsSchema);
+    const records = await this.#workerRead(
+      "queryData",
+      workerName,
+      () =>
+        this.#options.workerReads.queryData(workerName, {
+          ...params,
+          dispatchId: dispatch.dispatchId,
+        }),
+    );
+    return ndjsonResponse(records);
+  }
+
+  async #readOutputList(
+    req: Request,
+    workerName: string,
+    dispatchId?: string,
+  ): Promise<Response> {
+    const dispatch = this.#activeDispatch(workerName, dispatchId);
+    const params = await this.#workerReadBody(req, ReadOutputParamsSchema);
+    if (!isOutputListRead(params)) {
+      throw new DataPlaneError(
+        400,
+        "Only list reads (modelType, optionally with definitionId) go through this route",
+      );
+    }
+    const reply = await this.#workerRead(
+      "readOutput",
+      workerName,
+      () =>
+        this.#options.workerReads.readOutput(workerName, {
+          ...params,
+          dispatchId: dispatch.dispatchId,
+        }),
+    ) as { result: unknown };
+    return ndjsonResponse(Array.isArray(reply.result) ? reply.result : []);
   }
 
   async #readArtifact(
@@ -992,6 +1145,10 @@ export function dataPlaneOperation(
   const [root, kind] = segments;
   if (root === "bundle") return "fetch_bundle";
   if (kind === "secrets" && segments.length === 2) return "load_secrets";
+  if (method === "POST" && segments.length === 2) {
+    if (kind === "query") return "query_data";
+    if (kind === "outputs") return "read_output_list";
+  }
   if (method === "GET" && segments.length === 5) return "read";
   if (kind === "resource") {
     if (method === "POST") return "write_resource";

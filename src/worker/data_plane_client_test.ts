@@ -575,3 +575,108 @@ Deno.test("DataPlaneClient.loadSecrets: a refusal names its code and reference, 
   );
   assertEquals(malformed.code, "malformed_reply");
 });
+
+function chunkedResponse(chunks: string[], status = 200): Response {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (index < chunks.length) {
+          controller.enqueue(encoder.encode(chunks[index++]));
+        } else {
+          controller.close();
+        }
+      },
+    }),
+    { status, headers: { "content-type": "application/x-ndjson" } },
+  );
+}
+
+Deno.test("DataPlaneClient.queryData: posts the query and reassembles records split across chunks", async () => {
+  const { client, requests } = clientWith(() =>
+    chunkedResponse([
+      '{"item":{"id":"a","te',
+      'xt":"x\\ny"}}\n{"item":',
+      '{"id":"b"}}\n{"count"',
+      ":2}\n",
+    ])
+  );
+  const records = await client.queryData({
+    predicate: 'modelName == "m"',
+    options: { loadAttributes: true },
+  });
+  assertEquals(records, [{ id: "a", text: "x\ny" }, { id: "b" }]);
+  assertEquals(requests.length, 1);
+  assertEquals(requests[0].method, "POST");
+  assertEquals(requests[0].url, "http://orchestrator.test/data/query");
+  assertEquals(JSON.parse(requests[0].body!), {
+    predicate: 'modelName == "m"',
+    options: { loadAttributes: true },
+  });
+});
+
+Deno.test("DataPlaneClient.readOutputList: reads an empty list and accepts a trailer without a final newline", async () => {
+  const { client, requests } = clientWith(() =>
+    chunkedResponse(['{"count":0}'])
+  );
+  assertEquals(await client.readOutputList({ modelType: "t" }), []);
+  assertEquals(requests[0].url, "http://orchestrator.test/data/outputs");
+});
+
+Deno.test("DataPlaneClient.queryData: a body cut off before its trailer is an error, not a short result", async () => {
+  const cutAfterRecord = clientWith(() =>
+    chunkedResponse(['{"item":1}\n{"item":2}\n'])
+  );
+  await assertRejects(
+    () => cutAfterRecord.client.queryData({ predicate: "true" }),
+    Error,
+    "ended before its trailer",
+  );
+  const cutMidLine = clientWith(() =>
+    chunkedResponse(['{"item":1}\n{"item":{"id"'])
+  );
+  await assertRejects(
+    () => cutMidLine.client.queryData({ predicate: "true" }),
+    Error,
+    "cut off",
+  );
+});
+
+Deno.test("DataPlaneClient.queryData: a trailer count that disagrees with the records is an error", async () => {
+  const { client } = clientWith(() =>
+    chunkedResponse(['{"item":1}\n{"count":2}\n'])
+  );
+  await assertRejects(
+    () => client.queryData({ predicate: "true" }),
+    Error,
+    "announced 2 records but sent 1",
+  );
+});
+
+Deno.test("DataPlaneClient.queryData: a line that is neither a record nor a trailer is an error", async () => {
+  const { client } = clientWith(() =>
+    chunkedResponse(['{"other":true}\n{"count":0}\n'])
+  );
+  await assertRejects(
+    () => client.queryData({ predicate: "true" }),
+    Error,
+    "neither a record nor its trailer",
+  );
+});
+
+Deno.test("DataPlaneClient.queryData: a refusal names the route and status", async () => {
+  const { client } = clientWith(() =>
+    new Response(
+      JSON.stringify({ error: "Query predicate exceeds maximum length" }),
+      {
+        status: 400,
+      },
+    )
+  );
+  await assertRejects(
+    () => client.queryData({ predicate: "true" }),
+    Error,
+    "Data plane POST /data/query failed (400)",
+  );
+});

@@ -518,7 +518,7 @@ Deno.test("runDispatchRunner: a version 6 dispatch loads its references once thr
   }
 });
 
-Deno.test("runDispatchRunner: a version 6 dispatch that carries a plaintext field is refused before anything loads", async () => {
+Deno.test("runDispatchRunner: a references-only dispatch that carries a plaintext field is refused before anything loads", async () => {
   const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
   try {
     const bootstrap = bootstrapFor(cacheDirPath, "test/no-such-model", "s3c");
@@ -530,7 +530,7 @@ Deno.test("runDispatchRunner: a version 6 dispatch that carries a plaintext fiel
     assertEquals(run.result?.status, "error");
     assertStringIncludes(
       run.result?.error ?? "",
-      "Refusing a protocol version 6 dispatch that carries secretValues",
+      `Refusing a protocol version ${REMOTE_PROTOCOL_VERSION} dispatch that carries secretValues`,
     );
     assertEquals(calls, []);
   } finally {

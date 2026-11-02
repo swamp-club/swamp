@@ -142,6 +142,7 @@ async function withFixtures(fn: (f: Fixtures) => Promise<void>) {
       sessions: { verify: (credential) => ({ workerId: credential }) },
       dispatches,
       bundles: new BundleRegistry(),
+      workerReads: capabilities,
       createVaultService: noVault,
     });
     await fn({ repo, grantDef, probeDef, capabilities, plane });

@@ -44,6 +44,7 @@ import {
   LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  SUPPORTED_REMOTE_PROTOCOL_VERSIONS,
   WorkerMethod,
 } from "../src/domain/remote/protocol.ts";
 import { RpcChannel } from "../src/domain/remote/rpc_channel.ts";
@@ -353,12 +354,13 @@ Deno.test({
   },
 });
 
-Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 6, and serve enrolls 5 and 6", () => {
-  assertEquals(REMOTE_PROTOCOL_VERSION, 6);
+Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 7, and serve enrolls 5, 6 and 7", () => {
+  assertEquals(REMOTE_PROTOCOL_VERSION, 7);
   assertEquals(LEGACY_PLAINTEXT_PROTOCOL_VERSION, 5);
+  assertEquals(SUPPORTED_REMOTE_PROTOCOL_VERSIONS, [5, 6, 7]);
 });
 
-for (const refusedVersion of [4, 7]) {
+for (const refusedVersion of [4, 8]) {
   Deno.test({
     name:
       `remote secrets baseline: dispatch payload: enrollment at protocol version ${refusedVersion} is refused with protocol_mismatch and registers no worker`,
