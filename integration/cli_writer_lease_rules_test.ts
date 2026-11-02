@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pins every CLI command that opens the repository through
- * `requireInitializedRepoUnlocked` (swamp-club#3801). That entry point takes
- * the v3 writer lease, and on a bucket datastore the lease restores the
- * checkout as a writer and starts a replication lineage: a command that only
- * reads must not take it. `workflow approvals`, `run history`, `vault
- * audit-trail` and `vault read-secret` took it while only reading, so a
- * read-only `workflow approvals` on a fresh clone began its own lineage.
- *
- * Pinned by file and top-level declaration, so a read-only subcommand added
- * beside a writing one in the same file is caught too.
+ * a command that only reads must not take the v3 writer lease, which restores a
+ * bucket checkout as a writer and starts a replication lineage; pinned by file
+ * and top-level declaration
  */
 
 import { join } from "@std/path";
@@ -42,8 +35,8 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 /**
- * `<file> :: <top-level owner>`, counted. Every one writes to the datastore
- * on some path; the comments name the ones that look read-only.
+ * each one writes to the datastore on some path; the comments name the ones
+ * that look read-only
  */
 const PINNED = [
   "src/cli/commands/access_grant.ts :: accessGrantCreateCommand",
@@ -57,8 +50,8 @@ const PINNED = [
   "src/cli/commands/data_delete.ts :: dataDeleteCommand",
   "src/cli/commands/data_rename.ts :: dataRenameCommand",
   "src/cli/commands/datastore_config_migrate.ts :: datastoreConfigMigrateCommand",
-  // doctor datastores --repair -y on v2: rolls unreadable data versions back
-  // (swamp-club#3955); opened only when there are findings to repair.
+  // doctor datastores --repair -y on v2 rolls unreadable data versions back;
+  // opened only when there are findings to repair
   "src/cli/commands/doctor_datastores.ts :: createUnreadableVersionsRepairDeps",
   "src/cli/commands/model_cancel.ts :: createModelCancelCommand",
   "src/cli/commands/model_create.ts :: createModelCreateCommand",

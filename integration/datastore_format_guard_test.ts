@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The datastore format guard (swamp-club#3189): a datastore marked with a
-// format this binary cannot read is refused by every entry point before
-// anything is written, on a remote (the in-memory remote's control plane)
-// and on a shared filesystem directory. A datastore without a marker
-// behaves exactly as before.
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertInstanceOf } from "@std/assert";
 import { join, relative } from "@std/path";
@@ -73,13 +67,10 @@ await initializeLogging({});
 const encode = (value: unknown) =>
   new TextEncoder().encode(JSON.stringify(value));
 const FORMAT_3 = { format: 3, minReaderFormat: 3, writtenBy: "2027.01.01.1" };
-// A filesystem datastore reads format 3 (swamp-club#3279), so its newer
-// format is 4. Remote datastores still read format 2 only.
 const FORMAT_4 = { format: 4, minReaderFormat: 4, writtenBy: "2028.01.01.1" };
 
 type Snapshot = Map<string, string>;
 
-/** Every file under `dir`, by relative path, with its bytes as hex. */
 async function snapshotDir(dir: string): Promise<Snapshot> {
   const files: Snapshot = new Map();
   try {
@@ -107,7 +98,6 @@ function assertRefused(error: unknown, code: string, label: string): void {
   );
 }
 
-/** Appends a line inside the repo's `datastore:` block, which is last. */
 async function appendToDatastoreBlock(
   repoDir: string,
   line: string,
@@ -117,13 +107,8 @@ async function appendToDatastoreBlock(
   await Deno.writeTextFile(path, marker.trimEnd() + "\n" + line + "\n");
 }
 
-// ---------------------------------------------------------------------------
-// Remote datastores
-// ---------------------------------------------------------------------------
-
 const json = (repos: RowRepos) => ["--repo-dir", repos.repoA, "--json"];
 
-/** CLI entry points that open the repo's datastore, each refused. */
 const REMOTE_COMMANDS: Array<(repos: RowRepos) => CliInvocation> = [
   (r) => ({ args: ["datastore", "sync", ...json(r)] }),
   (r) => ({ args: ["datastore", "sync", "--pull", ...json(r)] }),
@@ -192,8 +177,6 @@ for (
       { format: 2, minReaderFormat: 4 },
       DATASTORE_FORMAT_UNSUPPORTED_CODE,
     ],
-    // A v2 repo's .swamp.yaml (no format) on a format-3 datastore: never
-    // opened as v3 (swamp-club#3534).
     [
       "format 3 under a v2 repo's config",
       FORMAT_3,
@@ -242,7 +225,6 @@ for (
                 outputMode: "json",
               }),
           ],
-          // A config that never went through resolveDatastoreForRepo.
           ["acquireModelLocks", () =>
             acquireModelLocks(
               { ...repos.a.datastoreConfig },
@@ -422,7 +404,6 @@ Deno.test("datastore format guard: a control-plane read failure proceeds", async
       encode(FORMAT_3),
     );
     repos.remote.failNext("controlPlane", new Error("connection reset"));
-    // The marker read failed, so the command ran as it would without one.
     await runCli({ args: ["datastore", "sync", "--pull", ...json(repos)] });
   });
 });
@@ -452,11 +433,6 @@ Deno.test("datastore format guard: one resolved config is checked once; a newly 
   });
 });
 
-/**
- * Remote rows run with no marker, a format 2 marker, and no control plane at
- * all observe the same sync operations and remote content: the check
- * changes nothing for a format 2 datastore.
- */
 const UNCHANGED_ROWS: string[][] = [
   ["datastore", "sync"],
   ["data", "gc", "--force"],
@@ -495,10 +471,6 @@ for (const args of UNCHANGED_ROWS) {
     assertEquals(observed[2], observed[0], "format 2 differs");
   });
 }
-
-// ---------------------------------------------------------------------------
-// Filesystem datastores
-// ---------------------------------------------------------------------------
 
 async function withFilesystemRepo(
   options: { namespace?: string },
@@ -647,11 +619,6 @@ Deno.test("datastore format guard: a filesystem datastore with no marker or a fo
   });
 });
 
-// ---------------------------------------------------------------------------
-// swamp-club#3617: a v3 datastore whose format marker a crash lost
-// ---------------------------------------------------------------------------
-
-/** The datastore of `repoDir` made a v3 datastore whose marker is lost. */
 async function loseV3Marker(datastore: string, marker?: string) {
   await initializeV3Datastore(datastore, "test");
   const path = join(datastore, DATASTORE_FORMAT_MARKER_FILE);
@@ -737,8 +704,6 @@ Deno.test("datastore format guard: doctor --repair previews a v3 repo's lost mar
         writtenBy: VERSION,
       });
 
-      // A healthy v3 datastore: the refusal swamp-uat pins, byte for byte,
-      // and nothing in the datastore changes.
       const healthy = await snapshotDir(datastore);
       const error = await runCliRejecting({
         args: [

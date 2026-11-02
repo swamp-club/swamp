@@ -17,27 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A model-based property test of the commit outbox (swamp-club#3490): over
- * random interleavings of staging, flushing, refusals and their
- * acknowledgement, seq gaps, writers killed at any point of a commit,
- * recoveries, takeovers by another copy, compaction with pruning, the clock
- * passing the retry bound, chunk sweeps landing inside a commit, power
- * cuts (swamp-club#3506) that undo the outbox removals not yet fsynced, and
- * a unit's discard failing after a failed append, with or without its
- * abandoned mark (swamp-club#3586), the real unit, sink, outbox, commit
- * store and collector keep:
- *
- * - a commit whose failure or drop was reported never lands later; one
- *   reported as one that may land is not held to it;
- * - a commit never lands after another copy took the lease since it was
- *   prepared, unless it landed before;
- * - a commit lands only on the head it was prepared on;
- * - a workflow run record never lands after a data commit of its unit that
- *   was refused or dropped, unless the unit acknowledged it in between;
- * - no stored commit names a missing chunk.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import fc from "fast-check";
@@ -82,7 +61,6 @@ import { createOutboxCommitSink } from "../src/infrastructure/datastore_v3/outbo
 import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_commit_outbox.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 
-/** Where a commit is faulted while a flush runs. */
 type Fault =
   | "none"
   | "fail-append"
@@ -99,7 +77,6 @@ type Fault =
   | "fail-append-and-discard"
   | "fail-append-discard-and-mark";
 
-/** What each fault does: actions that fire once, at the first group reaching them. */
 const ACTIONS: Record<Fault, readonly string[]> = {
   "none": [],
   "fail-append": ["fail-append"],
@@ -110,7 +87,6 @@ const ACTIONS: Record<Fault, readonly string[]> = {
   "sweep-after-prepare": ["sweep-after-prepare"],
   "race-append": ["race-append"],
   "stray-commit-then-kill": ["stray-commit-then-kill"],
-  // Gap 2: a sweep inside the commit, and the writer dead before its check.
   "sweep-before-prepare-then-kill": [
     "sweep-before-prepare",
     "kill-after-append",
@@ -119,8 +95,8 @@ const ACTIONS: Record<Fault, readonly string[]> = {
   // After the writer's second look at the sweep state: only the sweep's own
   // reference check can see the prepared entry.
   "sweep-before-append-then-kill": ["sweep-before-append", "kill-after-append"],
-  // The unit's discard fails too: its abandoned mark keeps the failure from
-  // landing (swamp-club#3586).
+  // the unit's discard fails too: its abandoned mark keeps the failure from
+  // landing
   "fail-append-and-discard": ["fail-append", "fail-discard"],
   // Neither can be written: the unit says the commit may land.
   "fail-append-discard-and-mark": [
@@ -138,14 +114,6 @@ type Command =
   | { readonly kind: "commit"; readonly fault: Fault }
   | { readonly kind: "abandon" }
   | { readonly kind: "acknowledge" }
-  /**
-   * A new writer takes the lease and recovers. With `cutAfter`, power is cut
-   * when the recovery reaches that many removals (after landing an entry it
-   * has not settled, at 0), or before it raises the floor when it removed
-   * fewer but some; the
-   * cut keeps the first `cutKeep` removals since the last fsync, and a
-   * further writer recovers.
-   */
   | {
     readonly kind: "restart";
     readonly takeover: boolean;
@@ -155,10 +123,6 @@ type Command =
   | { readonly kind: "compact" }
   | { readonly kind: "age" }
   | { readonly kind: "sweep" }
-  /**
-   * Power is cut: the outbox removals since its last fsync after the first
-   * `keep` are undone, and a new writer recovers.
-   */
   | { readonly kind: "power-cut"; readonly keep: number };
 
 const FAULTS: readonly Fault[] = [
@@ -234,7 +198,6 @@ const IDS = [
 
 class Killed extends Error {}
 
-/** What the runs exercised, across every run of the property. */
 const coverage = {
   runs: 0,
   kills: 0,
@@ -243,30 +206,23 @@ const coverage = {
   refusals: 0,
   seqGaps: 0,
   sweepDeletes: 0,
-  /** Removals a power cut undid, by kind. */
   undone: { settle: 0, discard: 0 },
-  /** Recoveries a power cut stopped part way. */
   recoveryCuts: 0,
-  /** Units that reported their commits may land (swamp-club#3586). */
   mayLand: 0,
-  /** Settles of an entry whose commit was folded (swamp-club#3916). */
   settledFolded: 0,
   drops: {} as Record<string, number>,
 };
 
-/** SQLite's `PRAGMA synchronous` value for FULL. */
 const SYNCHRONOUS_FULL = 2;
 
 type Row = Record<string, SQLInputValue>;
 
-/** An outbox entry's rows as they were before a removal. */
 interface RemovedEntry {
   readonly kind: "settle" | "discard";
   readonly entry: Row;
   readonly chunks: readonly Row[];
 }
 
-/** Puts `rows` back into `table` as they were. */
 function restoreRows(db: DatabaseSync, table: string, rows: readonly Row[]) {
   for (const row of rows) {
     const columns = Object.keys(row);
@@ -282,13 +238,10 @@ interface GroupRecord {
   readonly txnId: string;
   readonly unit: number;
   readonly run: boolean;
-  /** Each prepare: its step and base. The last one is the one that counts. */
   prepares: { step: number; base: HeadIdentity }[];
-  /** The step its unit reported it failed, when it was not landed then. */
   failedAt?: number;
 }
 
-/** Runs one interleaving against fresh stores; throws when an invariant breaks. */
 async function runModel(commands: readonly Command[]): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-outbox-model-" });
   const store = SqliteCommitStore.open(join(dir, "commits.db"));
@@ -303,7 +256,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
       if (synchronous === SYNCHRONOUS_FULL) unsynced = [];
     },
   });
-  /** A second connection, as a power cut's view of the outbox file. */
   let disk: DatabaseSync | undefined;
   const diskDb = () => disk ??= new DatabaseSync(outboxPath);
   const storage = new MemoryStorage({ maxChunkBytes: 16 * 1024 });
@@ -312,15 +264,11 @@ async function runModel(commands: readonly Command[]): Promise<void> {
   const signal = new AbortController().signal;
 
   let fence = 0;
-  /** Steps at which another copy took the lease. */
   const takeovers: number[] = [];
   const groups = new Map<string, GroupRecord>();
-  /** Per unit: steps at which it acknowledged refusals. */
   const acknowledged = new Map<number, number[]>();
-  /** Per unit: steps at which one of its data commits was refused or dropped. */
   const refusedAt = new Map<number, number[]>();
   let step = 0;
-  /** The fault's actions not yet fired in this flush; each fires once. */
   const actions = new Set<string>();
   const take = (action: string): boolean => actions.delete(action);
   let processId = 0;
@@ -333,10 +281,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
 
   const landedSeq = (txnId: string, run: boolean) =>
     store.landedSeq("", run ? runPartition() : partitionFor(txnId), txnId);
-  /**
-   * Where a txnId is stored, read from commits.db itself rather than through
-   * the store's own lookups (swamp-club#3916).
-   */
   const storedAs = (txnId: string): "commit" | "folded" | undefined => {
     const db = new DatabaseSync(join(dir, "commits.db"), { readOnly: true });
     try {
@@ -392,11 +336,8 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     writer = { host: "h", pid: processId, instance: `p${processId}` };
   };
 
-  /** Set while a recovery runs: its discards are reported drops. */
   let recovering = false;
-  /** Removals a recovery makes before the power is cut; unset for none. */
   let cutAfterRemovals: number | undefined;
-  /** Whether the recovery being cut has removed an entry yet. */
   let removedBeforeCut = false;
   const wrapRemoval = (kind: "settle" | "discard") => {
     const remove = outbox[kind].bind(outbox);
@@ -452,10 +393,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     return raiseFloor(fence);
   };
 
-  /**
-   * Cuts the power: the process dies, and the WAL keeps a prefix of the
-   * removals since the last fsync, the first `keep`.
-   */
   const cutPower = (keep: number) => {
     for (const lost of unsynced.slice(keep)) {
       restoreRows(diskDb(), "outbox_entries", [lost.entry]);
@@ -478,7 +415,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
         throw new Error("transient");
       }
       if (take("race-append")) {
-        // Another commit lands on the partition first: a seq gap.
         await store.append(Commit.create({
           seq: commit.seq,
           partition: commit.partition,
@@ -563,7 +499,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     return unit;
   };
 
-  /** Marks the unit's groups that did not land as reported failed. */
   const reportFailed = async (unitIndex: number) => {
     for (const record of groups.values()) {
       if (record.unit !== unitIndex || record.failedAt !== undefined) continue;
@@ -586,7 +521,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
       // A kill met after a refusal in the same flush is that refusal's cause.
       if (error instanceof Killed || (error as Error).cause instanceof Killed) {
         coverage.kills++;
-        // The process dies here: its unit never ends.
         unit = undefined;
         writer = undefined;
         return;
@@ -607,11 +541,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     }
   };
 
-  /**
-   * Abandons the open unit and marks its unlanded groups failed, unless the
-   * unit says they may land: a drop or discard it could not record
-   * (swamp-club#3645), as a flush's end does.
-   */
   const endAbandoned = async (ending: CommitLogUnitOfWork) => {
     try {
       await ending.abandon();
@@ -642,9 +571,8 @@ async function runModel(commands: readonly Command[]): Promise<void> {
       coverage.settledFolded++;
     }
     for (const drop of report.drops) {
-      // A landed entry settles, never drops, its commit folded or not
-      // (swamp-club#3586, swamp-club#3916). An expired one's txnId may
-      // have been pruned, so it is not judged.
+      // a landed entry settles, never drops, its commit folded or not; an
+      // expired one's txnId may have been pruned, so it is not judged
       if (drop.reason !== "expired") {
         assertEquals(
           before.get(drop.entry.commit.txnId),
@@ -675,7 +603,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
         `${record.txnId} landed at seq ${seq}, on no head it was prepared on`,
       );
     }
-    // No stored commit names a missing chunk.
     for (
       const change of await store.changesSince(
         (await store.history()).compactedThrough,
@@ -694,7 +621,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     }
   };
 
-  /** Whether each group's landing respects failures, takeovers and runs. */
   const landedAt = new Map<string, number>();
   const checkLandings = async () => {
     for (const record of groups.values()) {
@@ -802,7 +728,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
               if (!(error instanceof Killed)) throw error;
               coverage.recoveryCuts++;
               cutPower(command.cutKeep ?? 0);
-              // A new writer, under a new fence.
               await takeLease(false);
             } finally {
               cutAfterRemovals = undefined;
@@ -849,10 +774,6 @@ async function runModel(commands: readonly Command[]): Promise<void> {
 
 const arbInterleaving = fc.array(arbCommand, { minLength: 1, maxLength: 40 });
 
-/**
- * Each a discard after a reported failure or drop, then a power cut before
- * anything else fsyncs the outbox (swamp-club#3506): rare in random runs.
- */
 const STAGE: Command = { kind: "stage", target: 0, big: false };
 const CUT: Command = { kind: "power-cut", keep: 0 };
 const DISCARD_THEN_CUT: Command[][] = [
@@ -869,11 +790,9 @@ const DISCARD_THEN_CUT: Command[][] = [
     { kind: "abandon" },
     CUT,
   ],
-  // A killed writer leaves a run entry and its unit's data entry; the next
-  // recovery drops the data entry (head moved) and the run entry with it,
-  // and power is cut before the floor, keeping only the first drop. The run
-  // partition's head is unchanged: only the run entry's fsynced drop keeps
-  // the run record from landing at the recovery after.
+  // a killed writer leaves a run entry and its unit's data entry; recovery
+  // drops both and the power cut keeps only the first drop; only the run
+  // entry's fsynced drop stops the run record landing later
   [
     { kind: "stage-run" },
     { kind: "checkpoint", fault: "fail-append" },
@@ -883,10 +802,6 @@ const DISCARD_THEN_CUT: Command[][] = [
   ],
 ];
 
-/**
- * An aged entry dropped by a retry whose discard and mark both fail: the
- * abandon at the restart says the commit may land (swamp-club#3645).
- */
 const ABANDON_MAY_LAND: Command[] = [
   STAGE,
   { kind: "checkpoint", fault: "fail-append-and-discard" },

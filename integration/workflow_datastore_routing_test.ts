@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// swamp-club#2381: workflow runs must write outputs, evaluated definitions
-// and evaluated workflows where the readers (built by the repository factory
-// and libswamp) look for them — the datastore — and find auto-definitions
-// there. Every test uses a filesystem datastore outside the repo's `.swamp/`,
-// so a repo-local write is visible as a miss on the reader side.
-
 import { assertEquals, assertExists } from "@std/assert";
 import { join, relative } from "@std/path";
 import { walk } from "@std/fs/walk";
@@ -108,7 +102,6 @@ async function withExternalDatastore(
   }
 }
 
-/** Files under `root`, relative and sorted; empty when `root` is missing. */
 async function listFiles(root: string): Promise<string[]> {
   const files: string[] = [];
   try {
@@ -165,8 +158,6 @@ Deno.test("workflow datastore routing: a run's outputs and evaluated caches land
     assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
     assertEquals(executions.length, 1);
 
-    // Readers built by the repository factory — what `model output search`
-    // and `model method run --last-evaluated` use — see the workflow's writes.
     assertEquals((await repo.outputRepo.findAll(type)).length, 1);
     assertExists(
       await repo.evaluatedDefinitionRepo.findByName(type, "consumer"),
@@ -240,8 +231,6 @@ Deno.test("workflow datastore routing: workflow evaluate then a --last-evaluated
       StepTask.model("consumer", "run", { value: "${{ inputs.value }}" }),
     );
     await repo.workflowRepo.save(workflow);
-    // A replay needs the model's evaluated definition too; a fresh run
-    // writes it.
     const fresh = await runWorkflow(fixture, workflow.name, {
       inputs: { value: "from-run" },
     });
@@ -320,8 +309,6 @@ Deno.test("workflow datastore routing: serve approvals read the evaluated prompt
     });
     assertEquals(run.status, "suspended", JSON.stringify(run.toData()));
 
-    // A run suspended before its step recorded the prompt: approvals fall
-    // back to the evaluated workflow, which the run wrote to the datastore.
     const data = run.toData();
     for (const job of data.jobs) {
       for (const step of job.steps) delete step.approvalPrompt;

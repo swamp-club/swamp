@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration tests for latest-version tracking when several workflow steps
- * write the same data name (swamp-club#2520).
- *
- * Wires a real FileSystemUnifiedDataRepository, CatalogStore and
- * DataQueryService on a temp directory and checks that:
- * 1. A default (latest-only) query returns one version per data name.
- * 2. A latestPerStep query still returns each step's latest (swamp-club#1761).
- * 3. Deferred writes promoted in reverse version order converge.
- * 4. A v4 catalog holding per-step duplicate latests rebuilds cleanly.
+ * latest-version tracking when several workflow steps write one data name: the
+ * default query returns one version per name, latestPerStep returns each step's
+ * latest, reverse-order promotion converges
  */
 
 import { assertEquals } from "@std/assert";
@@ -79,7 +73,6 @@ async function openRepo(dir: string) {
   return { catalog, dataRepo, query };
 }
 
-/** A version of item-b written by the c1.write method from `stepName`. */
 async function itemB(stepName: string, jobName = "main"): Promise<Data> {
   return Data.create({
     name: "item-b",
@@ -141,7 +134,6 @@ Deno.test("step latest: two steps writing one name leave a single latest version
       }) as DataRecord[];
       assertEquals(versionsAndLatest(perStep), [[1, false], [2, true]]);
 
-      // A later model-method write supersedes every step's output.
       await dataRepo.save(
         MODEL_TYPE,
         MODEL_ID,
@@ -236,7 +228,6 @@ Deno.test("step latest: saves finishing out of version order keep disk and catal
     const { catalog, dataRepo, query } = await openRepo(dir);
     try {
       catalog.markPopulated();
-      // Two parallel steps allocate v1 and v2; the v2 writer finishes first.
       const v1 = await itemB("s1");
       const v2 = await itemB("s2");
       const allocated1 = await dataRepo.allocateVersion(
@@ -308,7 +299,6 @@ Deno.test("step latest: a save replaces a marker that names a version gone from 
 
 Deno.test("step latest: a v4 catalog with per-step duplicate latests rebuilds from disk", async () => {
   await withTempDir(async (dir) => {
-    // Write the data to disk through the current repository.
     const first = await openRepo(dir);
     first.catalog.markPopulated();
     await first.dataRepo.save(

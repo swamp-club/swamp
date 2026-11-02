@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Serve records a dispatch's lease transitions through StepLeaseLedger,
-// which reads and writes the one lease record directly instead of running a
-// `swamp/step-lease` method (swamp-club#4038). These tests run the ledger
-// against a real repository on disk, v2 and v3, and check that what it
-// writes is what the method run writes, that leases written at once lose
-// nothing, and that the boot sweep and the bookkeeping reaper still handle
-// them.
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import "../src/domain/models/models.ts";
@@ -86,10 +78,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Runs a `swamp/step-lease` method the way serve's dispatch runner does,
- * inside a root with no push as the dispatching run provides in serve.
- */
 function methodRunner(dir: string, ctx: RepositoryContext): ModelMethodRunner {
   return (input) =>
     runInRootUnitOfWork(ctx, { flush: undefined }, async () => {
@@ -114,7 +102,6 @@ function methodRunner(dir: string, ctx: RepositoryContext): ModelMethodRunner {
     });
 }
 
-/** A store that counts the transitions it is handed. */
 function counting(store: StepLeaseStore): StepLeaseStore & { calls: number } {
   const counted = {
     calls: 0,
@@ -181,7 +168,6 @@ async function storedLease(
   };
 }
 
-/** What a reader of the record sees besides its body. */
 function metadata(data: Data) {
   return {
     contentType: data.contentType,
@@ -193,7 +179,6 @@ function metadata(data: Data) {
   };
 }
 
-/** Builds a lease through each path and checks they store the same record. */
 async function assertLedgerMatchesMethodRun(
   dir: string,
   ctx: RepositoryContext,
@@ -227,7 +212,6 @@ async function assertLedgerMatchesMethodRun(
   assertEquals(ledgerLease.lease.hasWrites, true);
 }
 
-/** Runs BURST leases through the ledger at once, a transition at a time. */
 async function assertBurstLosesNothing(
   ctx: RepositoryContext,
   ledger: StepLeaseStore,

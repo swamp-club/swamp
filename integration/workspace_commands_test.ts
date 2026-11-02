@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp workspace` and `swamp start` share one registry and one folder
-// layout: a workspace made by either is seen by the other, and a removed
-// one stays removed. Real repos, real registry file, real create lock.
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -80,7 +76,6 @@ Deno.test("workspace commands and swamp start share workspaces", async () => {
   await withHome(async (dir) => {
     const deps = createWorkspaceDeps({ version: "0.0.0-test" });
 
-    // A workspace made by `workspace create` opens in `swamp start`.
     const created = await last(workspaceCreate(ctx, deps, { name: "prod" }));
     assertEquals(created.kind, "completed");
     const path = join(dir, "swamp", "workspaces", "prod");
@@ -92,7 +87,6 @@ Deno.test("workspace commands and swamp start share workspaces", async () => {
     ) opened.push(event);
     assertEquals(opened[0], { kind: "workspace_ready", path, created: false });
 
-    // A repo imported on the start page is listed by `workspace list`.
     const repo = join(dir, "code", "infra");
     await Deno.mkdir(repo, { recursive: true });
     await new RepoService("0.0.0-test", {
@@ -108,8 +102,6 @@ Deno.test("workspace commands and swamp start share workspaces", async () => {
       [["infra", true, "ok"], ["prod", false, "ok"]],
     );
 
-    // A workspace removed by `workspace remove` is gone from the start page,
-    // and its folder is kept.
     await last(workspaceRemove(ctx, deps, { name: "prod" }));
     const { workspaces } = await startListWorkspaces(ctx, startDeps());
     assertEquals(workspaces.map((w) => w.name), ["infra"]);

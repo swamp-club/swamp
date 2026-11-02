@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The contract between swamp's evaluated-workflow snapshots and the
- * attestation's provenance check (swamp-club#2815): a committed verification
- * workflow, persisted the way a run persists it, must still match the
- * committed file. A new key the repository starts writing at the root of the
- * snapshot fails here rather than refusing every attestation after release.
+ * a committed verification workflow, persisted the way a run persists it, must
+ * still match the committed file; a new root key in the snapshot fails here
+ * rather than every attestation after release
  */
 
 import { assertEquals } from "@std/assert";
@@ -44,8 +42,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native handles yet.
-      // Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on windows before V8 frees native handles; the temp dir
+      // is ephemeral
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });

@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Use-case sync characterization, data rows (swamp-club#2860). See
- * `usecase_sync_fixtures.ts` for how each row runs and what is observed.
- */
-
 import "../src/domain/models/models.ts";
 import { Data } from "../src/domain/data/data.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -40,7 +35,6 @@ await initializeLogging({});
 
 const json = (repos: RowRepos) => ["--repo-dir", repos.repoA, "--json"];
 
-/** Saves `versions` versions of `name` keeping only the newest. */
 async function saveVersions(
   repos: RowRepos,
   model: Definition,
@@ -71,9 +65,6 @@ async function saveVersions(
 const ROWS: AnyRow[] = [
   row({
     name: "data delete",
-    // The CLI and serve each run in a root unit of work
-    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
-    // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
     syncOrder: {
       cli: ["pull", "prepare", "commit", "release"],
@@ -93,9 +84,6 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "data rename",
-    // The CLI and serve each run in a root unit of work
-    // (swamp-club#3033, swamp-club#3034); each syncOrder was recorded
-    // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
     syncOrder: {
       cli: ["pull", "prepare", "commit", "release"],
@@ -116,7 +104,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "data delete (use case fails)",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     refuses: true,
     seed: async (repos) => {
@@ -125,16 +112,10 @@ const ROWS: AnyRow[] = [
     cli: (repos) => ({
       args: ["data", "delete", "m1", "missing", "--force", ...json(repos)],
     }),
-    // The failure path of the CLI's root unit (swamp-club#3033); serve's
-    // belongs to swamp-club#3034.
     serve: null,
   }),
   row({
     name: "data gc",
-    // Serve runs the handler in a root unit of work (swamp-club#3034),
-    // pinned to push before the gate exit, as it did before.
-    // The CLI runs in a coordinator root (swamp-club#3055); its syncOrder
-    // was recorded while it pushed only at the teardown flush.
     rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     // collectGarbage removes versions in parallel batches, so it marks them
@@ -149,14 +130,9 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "data prune",
-    // Serve runs the handler in a root unit of work (swamp-club#3034),
-    // pinned to push before the gate exit, as it did before.
-    // The CLI runs in a coordinator root (swamp-club#3055); its syncOrder
-    // was recorded while it pushed only at the teardown flush.
     rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     seed: async (repos) => {
-      // Data whose model definition was never saved is orphaned.
       const orphan = Definition.create({ name: "gone", globalArguments: {} });
       await saveData(repos.serveRepo, orphan, "state");
     },
@@ -165,9 +141,6 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "datastore compact",
-    // Takes the global lock and writes nothing to the datastore. Runs in a
-    // coordinator root (swamp-club#3055); syncOrder was recorded while it
-    // pushed only at the teardown flush.
     rootUnit: { cli: true },
     syncOrder: { cli: ["pull", "push", "release"] },
     cli: (repos) => ({ args: ["datastore", "compact", ...json(repos)] }),
@@ -176,15 +149,11 @@ const ROWS: AnyRow[] = [
 ];
 
 /**
- * Today's behaviour, one entry per row. Every divergence and gap noted
- * below was deliberately left unfixed: datastore refactor phase 2 moves
- * unit-of-work ownership into the use cases and is expected to change these
- * rows, and should update this table as it does.
+ * pins current behaviour per row, divergences and gaps included; update the
+ * table when unit-of-work ownership moves into the use cases
  */
 const EXPECTED: Record<string, PinnedRow> = {
   "data delete (use case fails)": {
-    // The use case fails under the model lock, and the lock still pushes once
-    // (with nothing changed) before it releases, as on success.
     cli: {
       "ops": ["pull[0]", "prepare[0]", "commit[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -193,9 +162,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "data delete": {
-    // The model-lock acquisition pulls and its flush pushes two-phase
-    // (prepare/commit); serve neither pulls nor goes two-phase, pushing once
-    // from the handler. Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -236,8 +202,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "data rename": {
-    // Same shape as data delete: lock pull, then a two-phase flush. Datastore
-    // refactor phase 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -282,10 +246,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "data gc": {
-    // Opened with requireInitializedRepo: the coordinator pulls when the repo
-    // registers and pushes single-phase at the teardown flush, unlike data
-    // delete's two-phase lock flush. Datastore refactor phase 2 is expected to
-    // change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -327,8 +287,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "data prune": {
-    // As data gc: the coordinator's pull on open and single-phase flush.
-    // Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -368,8 +326,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "datastore compact": {
-    // The coordinator's pull on open and an empty single-phase push at the
-    // teardown flush: compaction touches only the local catalog.
     cli: {
       "ops": ["pull[0]", "push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },

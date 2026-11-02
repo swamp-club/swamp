@@ -26,14 +26,8 @@ import {
   type WorkspaceHub,
 } from "../src/serve/local/workspace_hub.ts";
 
-/**
- * A stand-in for `swamp dashboard --child`: it requires its token, echoes
- * HTTP requests as JSON and WebSocket messages back, and closes a socket
- * with 4001 when told to.
- */
 type FakeChild = HubChild & {
   stopped: () => boolean;
-  /** What `/local/busy` answers; counts how often the hub asked. */
   busy: boolean;
   busyAsks: number;
 };
@@ -121,14 +115,12 @@ function startFakeChild(): FakeChild {
 
 const TOKEN = "local-token-for-tests";
 
-/** A request to a hub route, with the page's token. */
 function hubFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("x-swamp-local-token", TOKEN);
   return fetch(url, { ...init, headers });
 }
 
-/** A read request frame the hub forwards. */
 function read(id: string, type = "workflow.search"): string {
   return JSON.stringify({ type, id, payload: {} });
 }
@@ -141,7 +133,6 @@ interface Env {
   tracked: WebSocket[];
 }
 
-/** A hub in front of fake children, for the workspaces `alpha` and `beta`. */
 async function withHub(
   fn: (env: Env) => Promise<void>,
   options: {
@@ -447,7 +438,6 @@ Deno.test("workspaceHub: a child stopped for idling starts again on next use", a
 
 const RUN = "321991e2-f182-4bb2-9937-f94c18ed1bfd";
 
-/** A runner that records commands and answers as told. */
 function fakeActions(answers: {
   run?: { code: number; stdout: string; stderr: string };
   startExit?: Promise<number>;
@@ -478,7 +468,6 @@ function fakeActions(answers: {
   return { runner, calls };
 }
 
-/** Collects every frame the hub sends on a socket, parsed. */
 function frames(ws: WebSocket): Array<Record<string, unknown>> {
   const seen: Array<Record<string, unknown>> = [];
   ws.onmessage = (e) => {
@@ -718,7 +707,6 @@ Deno.test("workspaceHub: writes and reads the dashboard never makes are refused 
         "not_available_locally",
       );
     }
-    // Only the read reached the child.
     assertEquals(seen[7], {
       type: "echo",
       id: "after",
@@ -755,7 +743,6 @@ Deno.test("workspaceHub: shutdown ends a forwarded stream a tab still holds open
     const reader = res.body!.getReader();
     await reader.read();
     await hub.shutdown();
-    // The stream ends (or errors) instead of running on.
     let ended = false;
     try {
       while (!(await reader.read()).done) { /* drain what was in flight */ }

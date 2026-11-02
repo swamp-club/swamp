@@ -17,19 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: the two invariants behind swamp's colour policy.
-//
-// 1. swamp and Cliffy must share one `@std/fmt` instance. Colour is module
-//    state, so the whole reason `applyColorPolicy` can clean up `--version` and
-//    `--help` is that flipping swamp's flag flips the one Cliffy reads. Two
-//    resolved copies would restore swamp-club#2414 silently — no unit test can
-//    see it, because the bug only exists in a process Cliffy has parsed.
-// 2. Colour is disabled from a known, small set of places, and never enabled.
-//    `@std/fmt` applies `NO_COLOR` itself at load; code that calls
-//    `setColorEnabled(true)` overrides a disable it did not make.
-//
-// Both lists are pinned deliberately: a new entry should be a deliberate
-// decision, not a silent one.
+// swamp and Cliffy must share one @std/fmt instance since colour is module
+// state; colour is only disabled, from a small pinned set, as
+// setColorEnabled(true) would override a disable
 
 import { assertEquals } from "@std/assert";
 import { join, relative } from "@std/path";
@@ -43,7 +33,6 @@ import {
 
 const LOCKFILE = join(ROOT, "deno.lock");
 
-/** Files allowed to reach for the colour switch, and why each one is there. */
 const PINNED_COLOUR_CALLERS = [
   // The policy itself: one decision, applied before Cliffy parses.
   "src/cli/context.ts",
@@ -83,19 +72,17 @@ Deno.test("colour policy: only the pinned files disable colour, and nothing enab
     const source = await Deno.readTextFile(path);
     const rel = toPosixPath(relative(ROOT, path));
 
-    // Go by the import, not by any mention of the name. Two reasons: context.ts
-    // hands `setColorEnabled` to `applyColorPolicy` as its default effect
-    // rather than calling it inline, so a call-site scan misses it; and prose
-    // naming the symbol — mod.ts explains Cliffy's help generator in a comment
-    // — is not a second decision point, so a plain text scan over-reports.
+    // go by the import: context.ts passes setColorEnabled to applyColorPolicy
+    // as a default, so call-site scans miss it, and prose naming the symbol is
+    // not a decision point
     const importsSwitch = [
       ...source.matchAll(/import\s*\{([^}]*)\}\s*from\s*"@std\/fmt\/colors"/g),
     ].some((m) => /\bsetColorEnabled\b/.test(m[1]));
     if (!importsSwitch) continue;
     disablers.push(rel);
-    // A call with anything but `false`. Read the argument out rather than
-    // asking a lookahead: `(?!false)` after `\s*` lets the whitespace
-    // backtrack, and `setColorEnabled( false )` slips through as an enabler.
+    // read the argument out rather than use a lookahead: (?!false) lets
+    // whitespace backtrack, so setColorEnabled( false ) would slip through as
+    // an enabler
     for (const call of source.matchAll(/setColorEnabled\(([^)]*)\)/g)) {
       if (call[1].trim() !== "false") {
         enablers.push(rel);

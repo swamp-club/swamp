@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Runner entry point for integration tests — registers the test model
- * (swamp/remote-it) before starting the dispatch runner.
- */
-
 import "../../src/domain/models/models.ts";
 import "../remote_execution_test_model.ts";
 import { initializeLogging } from "../../src/infrastructure/logging/logger.ts";

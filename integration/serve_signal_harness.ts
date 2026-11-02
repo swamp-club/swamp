@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Grants and token-mode contexts for the serve signal tests
- * (swamp-club#3094, #3214), over the serve request harness.
- */
-
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { AuditEmitter } from "../src/domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
@@ -36,7 +31,6 @@ import {
   type ServeRepo,
 } from "./serve_request_harness.ts";
 
-/** A grant to the caller on the workflows `pattern` matches. */
 export function workflowGrant(
   actions: Grant["actions"],
   pattern = "*",
@@ -45,7 +39,6 @@ export function workflowGrant(
   return grant({ actions, effect, resource: { kind: "workflow", pattern } });
 }
 
-/** A token-mode context enforcing `grants`, optionally recording audit events. */
 export function ctxWith(
   repo: ServeRepo,
   grants: Grant[],

@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Two repositories, or two `swamp serve` nodes, sharing one filesystem
-// datastore (swamp-club#2858). Each keeps its own SQLite catalog at
-// `{repoDir}/.swamp/data/_catalog.db`, and a filesystem datastore has no sync
-// service, so nothing used to tell one catalog about the other's writes: once
-// populated, B never saw A's new items, kept returning old versions of items
-// it knew, and still found items A had deleted.
-//
-// The fix: each catalog rewrites a token in `.catalog-writers/` at the
-// datastore tier root after every data write (SharedDatastoreWriteTracker,
-// attached by createCatalogStore). CatalogStore.isPopulated invalidates when
-// another writer's token changed, DataQueryService.getLatestRecord prefers the
-// on-disk latest marker over an unpopulated row, and a backfill that started
-// before an invalidate does not mark the catalog populated.
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -63,7 +49,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Initialises a repo, optionally on a shared filesystem datastore, and wires it as serve does. */
 async function openRepo(
   repoDir: string,
   sharedDatastore?: string,
@@ -108,7 +93,6 @@ async function names(repo: RepositoryContext): Promise<string[]> {
   return rows.map((r) => r.name).sort();
 }
 
-/** Two repos A and B on one shared filesystem datastore; B's catalog is populated. */
 async function withSharedPair(
   fn: (
     a: RepositoryContext,
@@ -195,8 +179,6 @@ Deno.test("shared filesystem datastore: B sees A's deletion marker as the item's
     );
     assertEquals(await names(b), ["server"]);
 
-    // A's delete-kind method writes a deletion marker, as
-    // method_execution_service does.
     const latest = await a.unifiedDataRepo.findByName(type, modelId, "server");
     await a.unifiedDataRepo.save(
       type,
@@ -205,7 +187,6 @@ Deno.test("shared filesystem datastore: B sees A's deletion marker as the item's
       enc(JSON.stringify({ deletedAt: "now" })),
     );
 
-    // Not B's stale active v1, and not nothing: the final state.
     assertEquals(
       (await b.dataQueryService.getLatestRecord("shared", "server"))?.version,
       2,

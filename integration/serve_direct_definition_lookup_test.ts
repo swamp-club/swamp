@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's direct-type steps resolved through the real wiring: a repository
- * with the definition index serve keeps attached, the direct-type lookup
- * answering names from it (swamp-club#4037), serve's save deps, and
- * resolveOrCreateDefinition's creation lock. Concurrent new names create
- * one definition each without reading a stored definition again, and the
- * global lookup's semantics hold: a definition shadows an auto-definition,
- * a name taken by another type is refused, and other writers are seen.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -77,7 +67,6 @@ const runnerModel = {
   },
 } as unknown as ModelDefinition;
 
-/** Writes a definition as another writer would: a new file renamed in. */
 async function writeDefinition(
   path: string,
   name: string,
@@ -93,7 +82,6 @@ async function writeDefinition(
   return id;
 }
 
-/** Dates every file and directory under `dir` long ago. */
 async function settle(dir: string): Promise<void> {
   for await (const entry of Deno.readDir(dir)) {
     const path = join(dir, entry.name);
@@ -104,13 +92,9 @@ async function settle(dir: string): Promise<void> {
 }
 
 /**
- * Serve's wiring of a direct-type step over `ctx` (src/serve/deps.ts), with
- * the definition index serve attaches as it starts, reading files through a
- * source that records each path read. The index runs on the real clock, but
- * reports each path in `settled` with the ctime `OLD`: a file the test dated
- * long ago still has the ctime of when the test wrote it, while on a server
- * stored definitions have long settled. Directories and every file written
- * after keep their real stats, so the racy window still applies to them.
+ * paths in settled report ctime OLD, as stored definitions on a server have
+ * long settled; directories and files written after keep real stats, so the
+ * racy window still applies to them
  */
 function serveWiring(repoDir: string, ctx: RepositoryContext) {
   const reads: string[] = [];
@@ -170,7 +154,6 @@ function serveWiring(repoDir: string, ctx: RepositoryContext) {
   return { resolve, reads, settled };
 }
 
-/** Runs `fn` over a fresh repository wired as serve wires it. */
 async function withServeRepo(
   fn: (
     ctx: RepositoryContext,
@@ -215,7 +198,6 @@ Deno.test("integration: concurrent direct-type steps with new names each create 
     await settle(join(repoDir, "models"));
     for (const path of stored) settled.add(path);
 
-    // The first lookup in a serve process builds the index: one read each.
     const cold = await resolve("first-new");
     assertEquals(cold.ok && cold.created, true);
     assertEquals(reads.filter((path) => stored.has(path)).length, stored.size);
@@ -228,11 +210,8 @@ Deno.test("integration: concurrent direct-type steps with new names each create 
     }
     const files = [...Deno.readDirSync(runnerDir)].map((e) => e.name);
     for (const name of names) assert(files.includes(`${name}.yaml`), name);
-    // Initial lookups and locked rechecks read only definitions created
-    // since: the stored ones, settled, are never read again.
     assertEquals(reads.filter((path) => stored.has(path)), []);
 
-    // Each name now resolves to the definition it created.
     for (const [i, name] of names.entries()) {
       const again = await resolve(name);
       assertEquals(again.ok && !again.created, true);
@@ -303,7 +282,6 @@ Deno.test("integration: through the definition index a direct-type step sees def
     assertEquals(added.ok && !added.created, true);
     assertEquals(added.ok && (added.definition.id as string), addedId);
 
-    // Renamed to declare another name, through a rename as editors write.
     await writeDefinition(
       join(runnerDir, "by-hand.yaml"),
       "renamed",
@@ -377,7 +355,6 @@ Deno.test("integration: a direct-type step run through serve's workflow deps loo
   try {
     const index = new DefinitionIdIndex(ctx.definitionRepo);
     const looked: string[] = [];
-    // Attached as serve.ts attaches it as serve starts.
     ctx.definitionRepo.useNameIndex({
       findByName: (name) => {
         looked.push(name);
@@ -410,7 +387,6 @@ Deno.test("integration: a direct-type step run through serve's workflow deps loo
     const run = await service.execute("direct", {});
     assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
     assertEquals(executions, [{ value: "x" }]);
-    // The lookup before the creation lock, and the re-check under it.
     assertEquals(looked, ["direct-new", "direct-new"]);
 
     looked.length = 0;

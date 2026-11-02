@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Typed data secrets end to end (design/enablers/typed-secrets.md Sections
- * 3.4 and 6.1, typed-secrets 3.3), through real components in process: the
- * resource writer stores sensitive fields in a counting vault on a temp
- * repository; a real resolver context reads them on the typed path as
- * data-origin references with no vault read; the run's vault access
- * authorizes each reference after evaluation; and the loader delivers the
- * exact value once at delivery. The option-off path, `readResource` and raw
- * content are pinned unchanged beside it.
- */
-
 import {
   assert,
   assertEquals,
@@ -130,7 +119,6 @@ interface Fixture {
   orphanId: string;
   dataRepo: FileSystemUnifiedDataRepository;
   catalog: CatalogStore;
-  /** The raw query service, as the command and the extension API use it. */
   dqs: DataQueryService;
   vaultService: VaultService;
   counting: CountingVault;
@@ -155,27 +143,18 @@ interface Fixture {
     name: string,
     data: Record<string, unknown>,
   ) => Promise<void>;
-  /**
-   * Writes `db`'s `creds` record `name` as the writer does, through a
-   * repository of the solo namespace over the same files and catalog: a row
-   * written before the repository set a namespace.
-   */
   writeLegacy: (name: string, data: Record<string, unknown>) => Promise<void>;
-  /** Writes a record below the writer, as stored, with the given tags. */
   store: (
     name: string,
     tags: Record<string, string>,
     content: string,
     contentType?: string,
   ) => Promise<void>;
-  /** Repopulates the catalog after direct stores. */
   sync: () => Promise<void>;
 }
 
 interface FixtureOptions {
-  /** The repository's namespace; the solo namespace when absent. */
   namespace?: Namespace;
-  /** Marks the foreign content fetcher as reading the solo namespace (v3). */
   readsSoloNamespace?: boolean;
 }
 
@@ -422,7 +401,6 @@ function foreignRow(modelId: string): CatalogRow {
   };
 }
 
-/** The vault key the writer stored `field` of `spec`/`instance` under. */
 function keyOf(
   modelId: string,
   spec: string,
@@ -484,9 +462,6 @@ Deno.test("typed data secrets: own-namespace reads on every accessor return data
         f,
         await f.evaluate("data.latest('orphan', 'main').attributes.password"),
       ),
-      // data.query in both forms (typed-secrets 4.3): records answered
-      // whole, an empty select, and projections of a field, a container
-      // and JSON content.
       query: sentinelOf(
         f,
         await f.evaluate(
@@ -524,7 +499,6 @@ Deno.test("typed data secrets: own-namespace reads on every accessor return data
       ),
       ["u"],
     );
-    // Non-secret structure is unchanged, and a whole record leaves plain.
     assertEquals(
       await f.evaluate("data.latest('db', 'main').attributes.user"),
       "u",
@@ -632,14 +606,13 @@ Deno.test("typed data secrets: denied and revoked access fail before the result 
       );
       assertInstanceOf(error.cause, VaultAccessDeniedError);
       assertStringIncludes(error.message, "Reading vault 'prod' is refused");
-      // A set read fails on any returned record's reference.
       await assertRejects(
         () => f.evaluate("size(data.findBySpec('db', 'creds'))"),
         InvalidExpressionError,
       );
-      // A query fails on a record it answers or a projection reads, and not
-      // on a row its predicate read but did not match: that row's references
-      // stay with the row (typed-secrets 4.3).
+      // a query fails on a record it answers or a projection reads, not on a
+      // row its predicate read but did not match: that row's references stay
+      // with the row
       await assertRejects(
         () =>
           f.evaluate(
@@ -868,12 +841,10 @@ Deno.test("typed data secrets: data.query predicates and projections refuse on a
       ),
       0,
     );
-    // The one vault read is the load above; evaluation made none.
     assertEquals(f.counting.reads.map((read) => read.key), [passwordKey]);
     assertEquals(f.bag.rawValues, []);
     assertEquals(f.redacted, [f.secrets.password]);
 
-    // The raw query service answers the stored reference text everywhere.
     const [raw] = await f.dqs.query(
       'modelName == "db" && name == "main"',
     ) as DataRecord[];
@@ -925,7 +896,6 @@ Deno.test("typed data secrets: a record the writer could not have stored refuses
           `data.latest('db', '${name}').attributes`,
           `dyn(data.latest('db', '${name}')) == null || true`,
           `model.db.resource.creds['${name}'].attributes`,
-          // A record the query answers, and a row its predicate reads.
           `data.query('modelName == "db" && name == "${name}"')`,
           `data.query('modelName == "db" && name == "${name}" && attributes.x != null')`,
           `data.query('modelName == "db" && name == "${name}" && (attributes.x != null || true)')`,
@@ -985,7 +955,6 @@ Deno.test("typed data secrets: readResource keeps resolving plaintext with its s
       plain: "p",
     });
     assertEquals((await readResource("legacy"))?.password, f.secrets.password);
-    // Each trusted read loads the value: three reads so far.
     assertEquals(f.counting.readsOf(passwordKey), 3);
   });
 });
@@ -1010,8 +979,8 @@ Deno.test("typed data secrets: a row written before the repository set a namespa
       await f.evaluate("data.latest('*:db', 'legacy').attributes.user"),
       "l",
     );
-    // data.query reads it as the same reference (typed-secrets 4.3), as a
-    // record and as a projection.
+    // data.query reads it as the same reference, as a record and as a
+    // projection
     const queried = sentinelOf(
       f,
       await f.evaluate(
@@ -1039,7 +1008,6 @@ Deno.test("typed data secrets: a row written before the repository set a namespa
     );
     assertEquals(f.redacted, [password]);
 
-    // Another namespace's record is still returned as stored.
     assertEquals(
       await f.evaluate(
         "data.latest('security:db', 'theirs').attributes.password",

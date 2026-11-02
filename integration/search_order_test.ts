@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Model, workflow and vault search list a repository in the same order on
- * every filesystem (swamp-club#3067). The search generators do not sort, so
- * the order they emit is the order the filesystem repositories walk their
- * directories in; readdir order is hash order on ext4 and creation order on
- * tmpfs. Each test saves out of name order through the real repositories and
- * asserts the generator's result order without sorting it first.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -156,8 +147,6 @@ Deno.test("workflow search: lists repository workflows then extension workflows,
 Deno.test("vault search: lists vaults in type then id order", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlVaultConfigRepository(dir);
-    // Vault files are named by id, so ids that sort like the names make the
-    // expected order readable.
     for (const name of UNORDERED) {
       await repo.save(VaultConfig.create(`id-${name}`, name, "mock", {}));
     }

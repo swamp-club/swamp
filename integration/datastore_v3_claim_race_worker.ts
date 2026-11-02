@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Worker for datastore_v3_claim_test.ts (swamp-club#4063). It stands in for
-// another swamp process writing a v3 datastore directly: it takes the
-// writer hold the CLI takes (lease, catch-up, claim check), tells the test
-// whether it holds it, waits for the test to say commit, commits one
-// auto-definition under its fence, and lets go of the lease.
+// stands in for another process writing a v3 datastore directly: takes the
+// writer hold the CLI takes, reports it, waits for the test's commit signal,
+// commits one auto-definition under its fence, then releases the lease
 
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";
@@ -49,7 +47,6 @@ import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 export interface ClaimRaceRequest {
   readonly repoDir: string;
   readonly datastorePath: string;
-  /** The auto-definition the writer commits. */
   readonly id: string;
 }
 
@@ -79,9 +76,9 @@ self.onmessage = (event: MessageEvent<ClaimRaceRequest | "commit">) => {
 };
 
 /**
- * Tells the test once the writer polls the lease's records a second time:
- * it found the lease held and waits for it, past every check that comes
- * before the lease. Patched in this worker's realm only.
+ * reports once the writer polls the lease's records a second time, meaning it
+ * found the lease held and waits, past every check before the lease; patched in
+ * this worker's realm only
  */
 function reportLeaseWait(datastorePath: string): void {
   const leaseDir = join(datastorePath, "_control", "writer");

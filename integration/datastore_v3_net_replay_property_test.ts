@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 read model's net replay (swamp-club#3803): a catch-up from an
- * empty checkout writes only the content still on disk at the end of the
- * feed. Over random histories it must end exactly where a full replay of the
- * same feed ends: the same files, live records, catalog rows, file ownership
- * and unreadable records. The histories mix keys that are each other's path
- * prefix, a key two partitions write, deletes and overwrites, readable and
- * unreadable chunked content (the final version's chunk missing, or a
- * replaced version's), a checkout that already holds a file under a key's
- * directory, and a net catch-up that crashes at a page's barrier and is
- * resumed by the next one.
- *
- * With a compacted history (swamp-club#3916) the catch-up loads the base
- * first, and a net one leaves off disk each base file the tail after it
- * replaces or removes. A crash then lands at the base load's barrier, after
- * its files and before the state moves, or at a page of the tail after it.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -72,10 +54,6 @@ import {
   withV3Env,
 } from "./datastore_v3_read_model_helpers.ts";
 
-/**
- * Config keys: the second lies under the first, and the last is the third in
- * another case; the rest stand alone.
- */
 const KEYS = [
   "config/models/p/a.yaml",
   "config/models/p/a.yaml/b.yaml",
@@ -88,7 +66,6 @@ const KEYS = [
 const NAMES = ["alpha", "beta"] as const;
 type Name = typeof NAMES[number];
 
-/** Over the inline limit, so it is stored as chunks. */
 const BLOB_BYTES = 9_000;
 
 type Content =
@@ -211,7 +188,6 @@ async function buildConfigOp(
   });
 }
 
-/** Appends `history` to the store; a commit the store refuses is dropped. */
 async function append(
   env: V3Env,
   history: readonly CommitSpec[],
@@ -250,7 +226,6 @@ async function append(
   return landed;
 }
 
-/** A batch that fails its barrier on page `page` (from 1), before syncing. */
 class CrashAtPage extends DurableWriteBatch {
   constructor(readonly control: { pages: number; at: number | undefined }) {
     super({ sync: false });
@@ -265,7 +240,6 @@ class CrashAtPage extends DurableWriteBatch {
   }
 }
 
-/** Rows of a read model state table, for comparison. */
 function stateRows(env: V3Env, sql: string): unknown[] {
   const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE), {
     readOnly: true,
@@ -308,25 +282,16 @@ async function observe(
 interface Scenario {
   readonly history: CommitSpec[];
   readonly pageSize: number;
-  /**
-   * A file already under `config/` before the first catch-up, as a rebuild
-   * over a checkout's files finds: at one of the keys, or beside them.
-   */
   readonly stray: "none" | "key" | "beside";
-  /** The first catch-up's page whose barrier crashes, if any. */
   readonly crashAt: number | undefined;
-  /** The feed position history is compacted through, if any. */
   readonly compactAt: number | undefined;
 }
 
-/** What the net replays skipped, summed over a run's catch-ups. */
 interface Skipped {
   writes: number;
   chunked: number;
   removals: number;
-  /** Base files a load left off disk (swamp-club#3916). */
   base: number;
-  /** Catch-ups that loaded a compacted base. */
   loads: number;
 }
 
@@ -351,7 +316,6 @@ function skippedIn(spans: readonly ReadableSpan[]): Skipped {
   };
 }
 
-/** Runs `scenario` with the given replay; resolves with what it left. */
 async function run(
   scenario: Scenario,
   net: boolean,
@@ -392,7 +356,6 @@ async function runNow(scenario: Scenario, net: boolean): Promise<unknown> {
     } finally {
       await first.close();
     }
-    // The next command's catch-up, as another process.
     const next = env.openReadModel({
       pageSize: scenario.pageSize,
       netReplay: net,
@@ -407,11 +370,6 @@ async function runNow(scenario: Scenario, net: boolean): Promise<unknown> {
   return result;
 }
 
-/**
- * Whether a put of unreadable content on a key that skips writes is replaced
- * later in the history by the same partition: a skipped version whose chunk
- * is missing.
- */
 function replacesMissing(scenario: Scenario): boolean {
   if (scenario.stray !== "none") return false;
   const pending = new Set<string>();

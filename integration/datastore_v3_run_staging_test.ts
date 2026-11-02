@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 gate for the workflow run repository (swamp-club#3257).
- *
- * - The real repository runs on v3 inside a commit-log root, solo and
- *   namespaced; the unit commits to a real `commits.db` and filesystem
- *   `storage/1`, and a read model catches up into a second directory, whose
- *   run records (bytes) must equal what the repository wrote.
- * - Run outcomes (decision 5): the real `workflowRun` use case runs on a v3
- *   context, and its unit commits on a succeeded, failed, suspended or
- *   cancelled run and discards on an early stop.
- * - A run record never names data whose partition was refused (decision 7):
- *   a `version-live` and an `expect-failed` refusal, followed by the run's
- *   record. Two checkouts no longer collide on a version: the second
- *   allocates above the first's (swamp-club#3532).
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -94,7 +78,6 @@ import {
 
 await initializeLogging({});
 
-/** Files beside run records that are never datastore records. */
 function isLocalOnly(rel: string): boolean {
   return rel.endsWith(".runs-index.json") || rel.endsWith(".log");
 }
@@ -108,7 +91,6 @@ async function catchUp(env: V3Env): Promise<void> {
   }
 }
 
-/** The run records under `root`'s `workflow-runs`, by relative path. */
 async function runRecords(root: string): Promise<Map<string, string>> {
   return new Map(
     [...await readTree(join(root, "workflow-runs"))].filter(([rel]) =>
@@ -117,7 +99,6 @@ async function runRecords(root: string): Promise<Map<string, string>> {
   );
 }
 
-/** One v3 repository context's workflow run repository. */
 class RunWriter {
   readonly dir: string;
   readonly root: string;
@@ -152,7 +133,6 @@ class RunWriter {
     );
   }
 
-  /** Catches the read model up; its run records must equal the writer's. */
   async assertMatches(): Promise<void> {
     await catchUp(this.env);
     assertEquals(
@@ -190,7 +170,6 @@ for (const namespace of ["", "infra"]) {
       const workflow = plainWorkflow();
       const wfId = workflow.id;
 
-      // Many saves of one run in one unit commit once, its last record.
       const run = WorkflowRun.create(workflow);
       await writer.run(async () => {
         await writer.repo.save(wfId, run);
@@ -207,23 +186,18 @@ for (const namespace of ["", "infra"]) {
       );
       await writer.assertMatches();
 
-      // A later unit's save of the same run updates it.
       await writer.run(() => writer.repo.save(wfId, run));
       assertEquals((await writer.commitsOf(wfId, run.id)).length, 2);
       await writer.assertMatches();
 
-      // Run GC: a finished run, an unparseable record and a stray file
-      // whose name holds no UUID; a dry run removes and stages nothing.
       const cancelled = WorkflowRun.create(workflow);
       cancelled.start();
       cancelled.endAsCancelled("test");
       await writer.run(() => writer.repo.save(wfId, cancelled));
       const runsDir = join(writer.root, "workflow-runs", wfId);
-      // A committed record a hook-less write later truncated.
       const truncated = WorkflowRun.create(workflow);
       await writer.run(() => writer.repo.save(wfId, truncated));
       await Deno.writeTextFile(writer.repo.getPath(wfId, truncated.id), "");
-      // A record no repository ever put.
       const unparseable = crypto.randomUUID();
       await Deno.writeTextFile(
         join(runsDir, `workflow-run-${unparseable}.yaml`),
@@ -241,7 +215,6 @@ for (const namespace of ["", "infra"]) {
       await writer.assertMatches();
       assertEquals(await runRecords(writer.root), new Map());
 
-      // deleteAllByWorkflowId: one tombstone per run.
       const runs = [WorkflowRun.create(workflow), WorkflowRun.create(workflow)];
       await writer.run(async () => {
         for (const each of runs) await writer.repo.save(wfId, each);
@@ -255,11 +228,8 @@ for (const namespace of ["", "infra"]) {
   });
 }
 
-// ── Run outcomes and refusals through the workflow run use case ─────────
-
 const WriteArgs = z.object({ text: z.string() });
 
-/** A repository context over a v3 hook, with a model that writes data. */
 interface RunContext {
   readonly dir: string;
   readonly hook: ReturnType<typeof contextHook>;
@@ -267,7 +237,6 @@ interface RunContext {
   readonly workflowId: WorkflowId;
 }
 
-/** A model type, registered once per test with a unique name. */
 function registerWriter(): ModelType {
   const type = ModelType.create(`test/v3-runs-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -303,11 +272,6 @@ function registerWriter(): ModelType {
   return type;
 }
 
-/**
- * A repository context in `name` over a fresh v3 hook, with the writer
- * model saved under `definition` and a workflow of `steps`. Setup writes
- * run before the hook requires a unit.
- */
 async function runContext(
   env: V3Env,
   name: string,
@@ -335,11 +299,6 @@ function writeStep(name: string): Step {
   });
 }
 
-/**
- * Runs the workflow through the `workflowRun` use case inside a commit-log
- * root over `context`'s hook, the use case's unit a child of it, consuming
- * the stream with `consume`. Returns the run id.
- */
 async function runWorkflow(
   env: V3Env,
   context: RunContext,
@@ -348,7 +307,6 @@ async function runWorkflow(
     sink?: CommitSink;
     onRefused?: CommitLogRootOptions<unknown>["onRefused"];
     abort?: AbortController;
-    /** Checkpoint after every save of the run (swamp-club#3587). */
     checkpoints?: boolean;
   } = {},
 ): Promise<string> {
@@ -416,7 +374,6 @@ async function drain(stream: AsyncIterable<{ kind: string }>): Promise<void> {
   }
 }
 
-/** The run's record in the read model, or undefined when never committed. */
 async function committedRecord(
   env: V3Env,
   context: RunContext,
@@ -489,7 +446,6 @@ Deno.test("v3 run staging: a run's unit commits when it ends succeeded, failed, 
       assertEquals((await storedRun(env, context, runId))?.status, status);
     }
 
-    // Cancelled: the abort lands while the run is underway.
     const abort = new AbortController();
     const cancelled = await runContext(env, "cancelled", type, definition(), [
       writeStep("a"),
@@ -535,10 +491,9 @@ Deno.test("v3 run staging: a run whose consumer stops before an outcome commits 
         await result(stream as never);
       },
     );
-    // result() stops at completed, before the executor's last save of the
-    // run, so the record, local and committed alike, is the one saved while
-    // it ran (v2 leaves the same local file). The CLI and serve drain the
-    // stream, so their runs end with their final record.
+    // result() stops at completed, before the executor's last save, so local
+    // and committed records are the one saved while it ran; the CLI and serve
+    // drain the stream and end with their final record
     assertEquals(
       await committedRecord(env, viaResult, resultRun),
       await localRecord(viaResult, resultRun),
@@ -569,7 +524,6 @@ Deno.test("v3 run staging: with checkpoints, a run whose consumer stops before a
   });
 });
 
-/** A sink that refuses each model-partition commit as `reason`. */
 function refusingModels(
   env: V3Env,
   reason: "version-live" | "expect-failed",
@@ -613,16 +567,12 @@ for (const reason of ["version-live", "expect-failed"] as const) {
       );
       assertEquals(error.reason, reason);
       assertEquals(seen.length, 1);
-      // The step's result and the run's report data, all in the model's
-      // refused partition.
       assert(error.refusals[0].versions.length > 0);
-      // runInCommitLogRoot threw, so read the run id from the local records.
       const ids = await context.repo.workflowRunRepo.listRunIdsForWorkflow(
         context.workflowId,
       );
       runId ??= ids[0];
 
-      // The committed record is the re-saved one: the step and run failed.
       const stored = await storedRun(env, context, runId);
       assertEquals(stored?.status, "failed");
       const step = stored!.getJob("main")!.getStep("a")!;
@@ -633,8 +583,6 @@ for (const reason of ["version-live", "expect-failed"] as const) {
         await localRecord(context, runId),
       );
 
-      // A later unit's save of the run (as a resume makes) commits the
-      // same failed record.
       const later = await context.repo.workflowRunRepo.findById(
         context.workflowId,
         createWorkflowRunId(runId),

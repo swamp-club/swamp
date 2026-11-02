@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for data ownership enforcement.
- *
- * Tests the full flow:
- * 1. Create data with owner definition
- * 2. Attempt unauthorized data write
- * 3. Verify ownership validation rejects unauthorized updates
- */
-
 import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -71,10 +62,6 @@ function createOwner(
   };
 }
 
-// ============================================================================
-// Basic Ownership
-// ============================================================================
-
 Deno.test("Data Ownership: create data with model-method owner", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -105,7 +92,6 @@ Deno.test("Data Ownership: create data with model-method owner", async () => {
 
     assertEquals(result.version, 1);
 
-    // Verify owner is stored
     const loaded = await repo.findByName(type, modelId, "owned-data");
     assertExists(loaded);
     assertExists(loaded.ownerDefinition);
@@ -196,10 +182,6 @@ Deno.test("Data Ownership: create data with manual owner", async () => {
   });
 });
 
-// ============================================================================
-// Ownership Validation
-// ============================================================================
-
 Deno.test("Data Ownership: same owner can write new versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -221,7 +203,6 @@ Deno.test("Data Ownership: same owner can write new versions", async () => {
       ownerDefinition: owner,
     });
 
-    // First write
     const result1 = await repo.save(
       type,
       modelId,
@@ -230,7 +211,6 @@ Deno.test("Data Ownership: same owner can write new versions", async () => {
     );
     assertEquals(result1.version, 1);
 
-    // Second write with same owner
     const result2 = await repo.save(
       type,
       modelId,
@@ -239,7 +219,6 @@ Deno.test("Data Ownership: same owner can write new versions", async () => {
     );
     assertEquals(result2.version, 2);
 
-    // Third write with same owner
     const result3 = await repo.save(
       type,
       modelId,
@@ -270,7 +249,6 @@ Deno.test("Data Ownership: different owner is rejected", async () => {
       "test/model:different-owner",
     );
 
-    // Create data with owner1
     const data1 = Data.create({
       name: "protected-data",
       contentType: "application/json",
@@ -287,7 +265,6 @@ Deno.test("Data Ownership: different owner is rejected", async () => {
       new TextEncoder().encode(JSON.stringify({ owner: "original" })),
     );
 
-    // Try to write with owner2 - should fail
     const data2 = Data.create({
       name: "protected-data",
       contentType: "application/json",
@@ -309,7 +286,6 @@ Deno.test("Data Ownership: different owner is rejected", async () => {
       "Ownership validation failed",
     );
 
-    // Verify original data is unchanged
     const loaded = await repo.findByName(type, modelId, "protected-data");
     assertExists(loaded);
     assertEquals(loaded.version, 1);
@@ -327,11 +303,9 @@ Deno.test("Data Ownership: different owner type is rejected", async () => {
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
-    // Same ref, different type
     const modelOwner = createOwner("model-method", "shared-ref");
     const workflowOwner = createOwner("workflow-step", "shared-ref");
 
-    // Create with model-method owner
     const data1 = Data.create({
       name: "type-protected",
       contentType: "text/plain",
@@ -348,7 +322,6 @@ Deno.test("Data Ownership: different owner type is rejected", async () => {
       new TextEncoder().encode("original"),
     );
 
-    // Try to write with workflow-step owner - should fail
     const data2 = Data.create({
       name: "type-protected",
       contentType: "text/plain",
@@ -400,7 +373,6 @@ Deno.test("Data Ownership: modified ownerRef is rejected", async () => {
       new TextEncoder().encode("original"),
     );
 
-    // Try with modified owner ref but keeping same type
     const modifiedOwner = createOwner(
       "model-method",
       "test/model:modified",
@@ -428,10 +400,6 @@ Deno.test("Data Ownership: modified ownerRef is rejected", async () => {
   });
 });
 
-// ============================================================================
-// Multiple Data Items with Different Owners
-// ============================================================================
-
 Deno.test("Data Ownership: multiple data items can have different owners", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -447,7 +415,6 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
     const owner2 = createOwner("model-method", "test/model:method2");
     const owner3 = createOwner("workflow-step", "workflow:step1");
 
-    // Create data with owner1
     const data1 = Data.create({
       name: "method1-data",
       contentType: "text/plain",
@@ -457,7 +424,6 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
       ownerDefinition: owner1,
     });
 
-    // Create data with owner2
     const data2 = Data.create({
       name: "method2-data",
       contentType: "text/plain",
@@ -467,7 +433,6 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
       ownerDefinition: owner2,
     });
 
-    // Create data with owner3
     const data3 = Data.create({
       name: "workflow-data",
       contentType: "text/plain",
@@ -496,7 +461,6 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
       new TextEncoder().encode("from workflow"),
     );
 
-    // Each owner can update their own data
     await repo.save(
       type,
       modelId,
@@ -516,14 +480,13 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
       new TextEncoder().encode("workflow v2"),
     );
 
-    // Cross-owner updates should fail
     const crossData = Data.create({
-      name: "method1-data", // Trying to update owner1's data
+      name: "method1-data",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
       tags: { type: "output" },
-      ownerDefinition: owner2, // But using owner2
+      ownerDefinition: owner2,
     });
 
     await assertRejects(
@@ -533,10 +496,6 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
     );
   });
 });
-
-// ============================================================================
-// Edge Cases
-// ============================================================================
 
 Deno.test("Data Ownership: new data with non-existing name succeeds", async () => {
   await withTempDir(async (repoDir) => {
@@ -549,7 +508,6 @@ Deno.test("Data Ownership: new data with non-existing name succeeds", async () =
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
-    // Different owners for different data items - all should succeed
     const owners = await Promise.all([
       createOwner("model-method", "ref1"),
       createOwner("model-method", "ref2"),
@@ -575,7 +533,6 @@ Deno.test("Data Ownership: new data with non-existing name succeeds", async () =
       assertEquals(result.version, 1);
     }
 
-    // All data exists
     const allData = await repo.findAllForModel(type, modelId);
     assertEquals(allData.length, 3);
   });
@@ -592,7 +549,6 @@ Deno.test("Data Ownership: same ownerType+ownerRef matches regardless of other f
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
-    // Create data with one owner
     const owner1 = createOwner("model-method", "test/model:method");
 
     const data1 = Data.create({
@@ -624,7 +580,6 @@ Deno.test("Data Ownership: same ownerType+ownerRef matches regardless of other f
       ownerDefinition: owner2,
     });
 
-    // Should succeed because ownerType + ownerRef match
     const result = await repo.save(
       type,
       modelId,
@@ -649,7 +604,6 @@ Deno.test("Data Ownership: rejected write doesn't corrupt existing data", async 
     const originalOwner = createOwner("model-method", "original");
     const attackerOwner = createOwner("model-method", "attacker");
 
-    // Create original data
     const originalData = Data.create({
       name: "valuable-data",
       contentType: "application/json",
@@ -671,7 +625,6 @@ Deno.test("Data Ownership: rejected write doesn't corrupt existing data", async 
       new TextEncoder().encode(originalContent),
     );
 
-    // Attempt unauthorized write
     const maliciousData = Data.create({
       name: "valuable-data",
       contentType: "application/json",
@@ -694,7 +647,6 @@ Deno.test("Data Ownership: rejected write doesn't corrupt existing data", async 
       // Expected to fail
     }
 
-    // Verify original data is intact
     const loaded = await repo.findByName(type, modelId, "valuable-data");
     assertExists(loaded);
     assertEquals(loaded.version, 1);
@@ -726,12 +678,10 @@ Deno.test("Data Ownership: owner persists across multiple versions", async () =>
       ownerDefinition: owner,
     });
 
-    // Write 5 versions
     for (let i = 1; i <= 5; i++) {
       await repo.save(type, modelId, data, new TextEncoder().encode(`v${i}`));
     }
 
-    // Check owner on each version
     for (let v = 1; v <= 5; v++) {
       const loaded = await repo.findByName(type, modelId, "multi-version", v);
       assertExists(loaded);
@@ -740,10 +690,6 @@ Deno.test("Data Ownership: owner persists across multiple versions", async () =>
     }
   });
 });
-
-// ============================================================================
-// Ownership in Model Context
-// ============================================================================
 
 Deno.test("Data Ownership: different models can own data with same name", async () => {
   await withTempDir(async (repoDir) => {
@@ -755,14 +701,12 @@ Deno.test("Data Ownership: different models can own data with same name", async 
     );
     const type = ModelType.create("test/model");
 
-    // Two different model instances
     const modelId1 = crypto.randomUUID();
     const modelId2 = crypto.randomUUID();
 
     const owner1 = createOwner("model-method", "model1:method");
     const owner2 = createOwner("model-method", "model2:method");
 
-    // Same data name, different model instances, different owners
     const data1 = Data.create({
       name: "shared-name",
       contentType: "text/plain",
@@ -781,7 +725,6 @@ Deno.test("Data Ownership: different models can own data with same name", async 
       ownerDefinition: owner2,
     });
 
-    // Both should succeed since they're different model instances
     await repo.save(
       type,
       modelId1,
@@ -795,7 +738,6 @@ Deno.test("Data Ownership: different models can own data with same name", async 
       new TextEncoder().encode("model2 data"),
     );
 
-    // Verify each model has its own data
     const loaded1 = await repo.findByName(type, modelId1, "shared-name");
     assertExists(loaded1);
     assertEquals(loaded1.ownerDefinition.ownerRef, "model1:method");

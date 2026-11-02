@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Report search and get choose their candidates from the data catalog by tag
- * and read only report metadata (swamp-club#4075). These tests wire the
- * catalog adapter and the full-walk dependency it replaced to the same real
- * repository, and require the same results for every filter.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
@@ -115,11 +108,6 @@ async function openFixture(): Promise<Fixture> {
   };
 }
 
-/**
- * Method-, model- and workflow-scoped reports of three types, with variants,
- * a renamed report, a report whose latest version is a deletion marker, the
- * paired JSON artifacts, and non-report data beside each.
- */
 async function writeFixture(repo: FileSystemUnifiedDataRepository) {
   const save = (type: ModelType, modelId: string, data: Data) =>
     repo.save(type, modelId, data, encoder.encode("# report\n"));
@@ -205,7 +193,6 @@ function lookups(): Omit<ReportSearchDeps, "findReportData"> {
   };
 }
 
-/** The dependency the catalog adapter replaced: every data item, walked. */
 function fullWalk(
   repo: FileSystemUnifiedDataRepository,
 ): ReportSearchDeps["findReportData"] {
@@ -243,10 +230,9 @@ async function search(
 }
 
 /**
- * `reports` in owner, data name and version order. The search orders by
- * createdAt alone, so reports stored in the same millisecond tie, and a tie
- * keeps the candidates' order, which differs between the walk (owners by
- * id) and the catalog (insertion). The comparison is of the set found.
+ * search orders by createdAt alone, so same-millisecond reports tie and keep
+ * candidate order, which differs between walk and catalog; compare the set
+ * found
  */
 function sorted<
   T extends { modelId: string; dataName: string; version: number },
@@ -285,8 +271,6 @@ Deno.test("report search: the catalog-backed candidates give the full walk's res
       `filter ${JSON.stringify(input)}`,
     );
   }
-  // The fixture exercises every case: both owners' kinds, the rename, and a
-  // report whose latest version is a deletion marker left out.
   const all = await search(catalogBacked(f), {});
   assertEquals(
     all.map((r) => r.dataName).sort(),
@@ -309,10 +293,6 @@ Deno.test("report search: a catalog rebuilt from the walk gives the same results
   assertEquals(sorted(await search(catalogBacked(f), {})), sorted(expected));
 });
 
-// Each input matches one report, or one owner's variants, which both sources
-// list in the same order: search and get order by createdAt alone, which the
-// repository stamps at save, so two reports can tie and a tie keeps each
-// source's own candidate order.
 Deno.test("report get: the catalog-backed candidates find the same report as the full walk", async () => {
   await using f = await openFixture();
   await writeFixture(f.dataRepo);

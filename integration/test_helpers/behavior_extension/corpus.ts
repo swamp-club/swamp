@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The golden corpus for the behavior-spelling extension compatibility test
- * (swamp-club#3338): writes each fixture to a temp repo, model-spelled or
- * behavior-spelled, and turns it into what the registry receives from a push
- * (content metadata, archive listing and re-emitted manifest) plus the
- * catalog-gap verdict of each source file.
+ * writes each fixture to a temp repo, model- or behavior-spelled, and produces
+ * what the registry receives from a push plus the catalog-gap verdict of each
+ * source file
  */
 
 import { dirname, fromFileUrl, join, relative, SEPARATOR } from "@std/path";
@@ -46,16 +44,10 @@ import { emptyArchiveIndex } from "../../../src/libswamp/extensions/extension_tr
 
 const HERE = dirname(fromFileUrl(import.meta.url));
 
-/** The golden of every model-spelled fixture. */
 export const EXTENSION_GOLDEN_PATH = join(HERE, "goldens", "extensions.json");
 
-/** How a fixture is spelled when written out. */
 export type Spelling = "model" | "behavior";
 
-/**
- * A source file respelled: `export const model` becomes
- * `export const behavior`. Nothing else changes.
- */
 export function respellSource(content: string): string {
   return content.replaceAll(
     /export(\s+)const(\s+)model(\s*[=:])/g,
@@ -63,12 +55,6 @@ export function respellSource(content: string): string {
   );
 }
 
-/**
- * Writes `fixture` into `root` as a repo: the sources under
- * `extensions/models/` (model spelling) or `extensions/behaviors/` with the
- * behavior export (behavior spelling), and `extensions/manifest.yaml`
- * listing them under `models:` or `behaviors:`. Returns the manifest path.
- */
 export async function writeFixture(
   fixture: ExtensionFixture,
   root: string,
@@ -101,7 +87,6 @@ export async function writeFixture(
   return manifestPath;
 }
 
-/** The catalog-gap verdict of each `.ts` file, keyed by its fixture path. */
 export function catalogGaps(
   fixture: ExtensionFixture,
   spelling: Spelling,
@@ -116,7 +101,6 @@ export function catalogGaps(
   return out;
 }
 
-/** Content metadata of the fixture's entry points, read in place. */
 export async function extractorMetadata(
   fixture: ExtensionFixture,
   root: string,
@@ -147,10 +131,9 @@ function prepareDeps(): ExtensionPushPrepareDeps {
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
-    // A bundle that keeps the entry point's text, so the export name the
-    // author wrote travels into the archive as it would through deno bundle.
-    // Like deno bundle it erases the types, so push can parse it as
-    // JavaScript: the fixtures' type-only imports and export annotations.
+    // keeps the entry point's text so the author's export name travels into the
+    // archive as through deno bundle; types are erased as deno bundle does, so
+    // push can parse it as JavaScript
     indexArchive: emptyArchiveIndex,
     bundleEntryPoint: async (entryPoint) =>
       `// bundle\n${eraseFixtureTypes(await Deno.readTextFile(entryPoint))}`,
@@ -161,10 +144,6 @@ function prepareDeps(): ExtensionPushPrepareDeps {
   };
 }
 
-/**
- * Resolves the manifest at `manifestPath` and runs the push prepare phase
- * in-process, packaging only: no registry calls, local gates collected.
- */
 export async function preparePush(
   repoDir: string,
   manifestPath: string,
@@ -187,16 +166,13 @@ export async function preparePush(
   });
 }
 
-/** What a pushed archive holds: its file listing, manifest and file hashes. */
 export interface ArchiveSnapshot {
   files: string[];
   manifest: string;
   sha256: Record<string, string>;
-  /** The dependency audit record, each bundle hash replaced by its path. */
   auditRecord: unknown;
 }
 
-/** Extracts `archive` in-process and snapshots it. */
 export async function snapshotArchive(
   archive: Uint8Array,
 ): Promise<ArchiveSnapshot> {
@@ -238,7 +214,6 @@ export async function snapshotArchive(
   }
 }
 
-/** The review findings a push reports, with paths relative to `root`. */
 export function reviewWarnings(
   prepared: ExtensionPushPrepared,
   root: string,
@@ -252,7 +227,6 @@ export function reviewWarnings(
   }));
 }
 
-/** Everything the golden pins for one fixture in one spelling. */
 export interface FixtureSnapshot {
   extractor: unknown;
   catalogGaps: Record<string, unknown>;
@@ -261,7 +235,6 @@ export interface FixtureSnapshot {
   reviewWarnings: Array<{ ruleId: string; file: string; message: string }>;
 }
 
-/** Writes `fixture` to a fresh temp repo and snapshots it. */
 export async function snapshotFixture(
   fixture: ExtensionFixture,
   spelling: Spelling,

@@ -17,22 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Fitness tests for parsing untrusted input (swamp-club#3862):
- *
- *   1. In serve's ingress files, every zod parse of request input goes
- *      through `parseUntrusted` / `parseUntrustedOrThrow`, which stop each
- *      container at its first failure.
- *   2. Every record a client or worker can send whose values can fail is a
- *      `boundedRecord`: zod records ignore `abortEarly`, so an unbounded one
- *      builds one issue per entry.
- *   3. Run-argument schemas take `argumentParseContext()`, so serve's
- *      untrusted policy reaches them; the literal `reportInput` option
- *      appears only where it is pinned.
- *
- * Static and in-process — no subprocesses.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -69,8 +53,6 @@ import {
 } from "../src/domain/models/model.ts";
 import { DataMetadataSchema } from "../src/domain/data/data_metadata.ts";
 
-// ── 1. Ingress parses go through the helper ────────────────────────────
-
 const INGRESS_FILES = [
   "src/serve/connection.ts",
   "src/serve/worker_gateway.ts",
@@ -78,16 +60,10 @@ const INGRESS_FILES = [
   "src/serve/data_plane.ts",
 ];
 
-/** A `<receiver>.parse(` or `<receiver>.safeParse(` call. */
 const ZOD_PARSE_CALL = /\b(\w+)\.(safeParse|parse)\(/g;
 
-/** Receivers whose `parse` is not zod's. */
 const NOT_ZOD = new Set(["JSON", "Date"]);
 
-/**
- * Raw parses in the ingress files that read swamp's own stored records, not
- * request input. Format: `<file>: <receiver>.<method>`.
- */
 const PINNED_RAW_INGRESS_PARSES = [
   // An enrollment token record read back from the datastore.
   "src/serve/worker_gateway.ts: EnrollmentTokenSchema.safeParse",
@@ -118,8 +94,6 @@ Deno.test("serve ingress files parse request input only through parseUntrusted",
   );
 });
 
-// ── 2. Typed-value records are bounded ─────────────────────────────────
-
 interface ZodDef {
   type: string;
   [key: string]: unknown;
@@ -129,13 +103,8 @@ function defOf(schema: unknown): ZodDef {
   return (schema as { _zod: { def: ZodDef } })._zod.def;
 }
 
-/** Value types that accept every entry, so a record of them cannot amplify. */
 const ACCEPTS_ANY = new Set(["unknown", "any"]);
 
-/**
- * The paths of records under `schema` whose values can fail and that no
- * `boundedRecord` guard wraps.
- */
 function unboundedRecords(
   schema: unknown,
   path: string,
@@ -256,21 +225,14 @@ Deno.test("the record walker flags a bare typed-value record and passes a bounde
   );
 });
 
-// ── 3. reportInput only where pinned ───────────────────────────────────
-
 const REPORT_INPUT_OPTION = /\breportInput\s*:/;
 
-/**
- * Where the literal `reportInput` option may appear. Format:
- * `<file>: <top-level declaration>`.
- */
 const PINNED_REPORT_INPUT = [
-  // The two argument parse contexts themselves.
   "src/domain/untrusted_parse.ts: TRUSTED_ARGUMENTS",
   "src/domain/untrusted_parse.ts: UNTRUSTED_ARGUMENTS",
-  // Drops issues at absent keys after the parse, so abortEarly could hide a
-  // failing present key; it runs only once every field has passed its own
-  // parse, so its full parse cannot grow with the input.
+  // drops issues at absent keys after the parse, so abortEarly could hide a
+  // failing present key; it runs only after every field passed its own parse,
+  // so it cannot grow with input
   "src/domain/models/zod_type_coercion.ts: objectRefinementIssues",
 ];
 

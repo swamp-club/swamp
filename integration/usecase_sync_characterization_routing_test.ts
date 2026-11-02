@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Characterization of how signalChange routes a hooked repository write
-// (swamp-club#3240), recorded before the unit-of-work binding registry
-// replaced legacyUnitOfWorkTarget. Each row runs a real repository on a temp
-// directory and records where its change went: staged into which unit, which
-// hook it marked, and whether it took route 2 (the hook fallback, reported).
-// These expectations must not change when the registry lands.
-
 import "../src/domain/models/models.ts";
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -61,8 +54,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(tempDir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(tempDir, { recursive: true });
@@ -70,7 +61,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A mark hook that records the absolute path of each call. */
 function recordingHook(): {
   hook: MarkDirtyHook;
   marks: (string | undefined)[];
@@ -85,9 +75,7 @@ function recordingHook(): {
 
 interface Harness {
   dir: string;
-  /** A repository context over `hook`, on the temp directory's cache. */
   context(hook: MarkDirtyHook): RepositoryContext;
-  /** Every route-2 write reported so far, as its change. */
   reported(): readonly StagedChange[];
 }
 
@@ -132,7 +120,6 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   });
 }
 
-/** Saves a new vault config: a hooked write through a real repository. */
 async function saveVault(ctx: RepositoryContext): Promise<void> {
   await ctx.vaultConfigRepo.save(
     VaultConfig.create(
@@ -144,7 +131,6 @@ async function saveVault(ctx: RepositoryContext): Promise<void> {
   );
 }
 
-/** The paths a list of staged changes names, `undefined` for bulk. */
 function targets(changes: readonly StagedChange[]): (string | undefined)[] {
   return changes.map((change) =>
     change.kind === "bulk" ? undefined : change.path
@@ -261,11 +247,6 @@ Deno.test("routing characterization: a unit of work not built by the legacy adap
   });
 });
 
-/**
- * A sync service for the CLI lockfile transaction: it records marks and
- * pushes, pulls nothing, and reports one file pushed so the publish
- * succeeds.
- */
 function lockfileSyncService(): {
   service: DatastoreSyncService;
   marks: (string | undefined)[];
@@ -329,10 +310,8 @@ Deno.test("routing characterization: inside the CLI lockfile root (swamp-club#31
       const lockfile = await LockfileRepository.create(lockfilePath);
       await lockfile.writeEntry("@me/x", "1", []);
     });
-    // The command's write is route 2: reported, and marked on its own hook.
     assertNotEquals(h.reported().length, 0);
     assertEquals(command.marks, targets(h.reported()));
-    // The lockfile went through the transaction's root and its checkpoint.
     assertEquals(sync.marks, ["ns1/config/upstream_extensions.json"]);
     assertEquals(sync.pushes, 1);
   });

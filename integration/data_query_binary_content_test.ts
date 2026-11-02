@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration test for reading content of every type through the data query
- * service (swamp-club#2959): items written through the data repository are
- * read back byte for byte by a projection, and a predicate that reads
- * `content` on a binary item fails, unless the caller may not read the item.
+ * items written through the data repository read back byte for byte by a
+ * projection, and a predicate that reads content on a binary item fails
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
@@ -72,7 +70,6 @@ const ITEMS: Array<{ name: string; contentType: string; bytes: Uint8Array }> = [
   },
 ];
 
-/** Writes ITEMS through the repository, then queries a freshly opened catalog. */
 async function withQueryService(
   repoDir: string,
   fn: (service: DataQueryService) => Promise<void>,
@@ -117,7 +114,6 @@ async function withQueryService(
   }
 }
 
-/** Decodes a projected content value back into the stored bytes. */
 function bytesOf(projected: unknown): Uint8Array {
   const { content, contentEncoding } = projected as {
     content: string;

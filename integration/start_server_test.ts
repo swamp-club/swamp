@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration test: the `swamp start` loopback server on port 0, wired to
-// fake start dependencies and a temp dashboard dist folder. Covers the
-// DNS-rebinding Host check, the Origin and token checks on the WebSocket
-// upgrade, choosing and leaving workspaces (and their claims), the full
-// message sequence, launch de-duplication, the sign-in projection, asset
-// serving, the liveness ping, shutdown and the end conditions.
-
 import {
   assert,
   assertEquals,
@@ -68,21 +61,15 @@ const LONG: StartServerTimeouts = {
 interface Fakes {
   deps: StartDeps;
   opened: HarnessLaunchSpec[];
-  /** Resolved to let a pending `open` finish. */
   releaseOpen: () => void;
   openGate: Promise<void> | null;
   signInEvents: AuthLoginEvent[];
-  /** When set, sign-in waits on it after its first event. */
   signInGate: Promise<void> | null;
-  /** Whether the fake terminal reports the window as opened. */
   launchOpened: boolean;
   signedIn: SignedInState;
-  /** The folder the fake chooser answers with; null is a cancel. */
   picked: string | null;
-  /** When set, the fake chooser waits on it before answering. */
   pickGate: Promise<void> | null;
   picks: number;
-  /** What the fake chooser was asked, in order. */
   prompts: string[];
 }
 
@@ -170,12 +157,10 @@ function makeFakes(dataDir: string): Fakes {
   return f;
 }
 
-/** A claims fake that records each claim and release. */
 interface Claims {
   readonly claims: StartWorkspaceClaims;
   readonly claimed: string[];
   readonly released: string[];
-  /** When set, every release throws after recording itself. */
   failRelease: boolean;
 }
 
@@ -206,9 +191,7 @@ interface Env {
   claims: Claims;
   dataDir: string;
   dist: string;
-  /** Workspaces the server reported opening, with whether it created them. */
   opened: Array<{ path: string; created: boolean }>;
-  /** Shuts the server down; the cleanup's own shutdown then does nothing. */
   shutdown: () => Promise<void>;
 }
 
@@ -261,7 +244,6 @@ async function withStartServer(
   }
 }
 
-/** Sends one raw HTTP/1.1 request and returns the status code. */
 async function rawStatus(port: number, headers: string[]): Promise<number> {
   const conn = await Deno.connect({ hostname: "127.0.0.1", port });
   try {
@@ -306,24 +288,19 @@ function upgradeHeaders(
   ];
 }
 
-/** A request's answer: a status, the harness list or the workspace list. */
 type Payload = Partial<StartStatus> & {
   readonly harnesses?: readonly StartHarnessInfo[];
   readonly workspaces?: readonly StartWorkspaceSummary[];
   readonly suggestedName?: string;
   readonly defaultLocation?: string;
-  // start.workspace.location.check
   readonly field?: string;
   readonly message?: string;
-  // start.folder.pick
   readonly path?: string | null;
-  // start.folder.check
   readonly ok?: boolean;
   readonly code?: string;
   readonly registeredAs?: string;
 };
 
-/** One frame the server sends. */
 interface Frame {
   readonly type: string;
   readonly id?: string;
@@ -332,7 +309,6 @@ interface Frame {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-/** A test client: buffers frames and answers requests by id. */
 class Client {
   readonly frames: Frame[] = [];
   private waiters: Array<() => void> = [];
@@ -358,7 +334,6 @@ class Client {
     return new Promise((resolve) => this.waiters.push(resolve));
   }
 
-  /** Waits for the frame matching `pred`. */
   async frame(pred: (f: Frame) => boolean): Promise<Frame> {
     while (true) {
       const found = this.frames.find(pred);
@@ -373,7 +348,6 @@ class Client {
     return id;
   }
 
-  /** Sends a request and returns its payload frame, failing on an error. */
   async request(type: string, payload?: unknown): Promise<Payload> {
     const id = this.send(type, payload);
     const frame = await this.frame((f) =>
@@ -386,7 +360,6 @@ class Client {
     return frame.payload;
   }
 
-  /** Sends a request that must fail and returns its error. */
   async requestError(
     type: string,
     payload?: unknown,
@@ -401,10 +374,9 @@ class Client {
   }
 
   /**
-   * Resolves once the server has dispatched every request this client sent
-   * before it. The server answers an unrecognised request as soon as it reads
-   * it and reads a socket's messages in order. A queued request such as
-   * `start.status` can't serve here: it waits behind a held launch.
+   * resolves once the server has dispatched every earlier request; an
+   * unrecognised request is answered at once, in order, while one like
+   * start.status queues behind a held launch
    */
   async dispatched(): Promise<void> {
     assertEquals(
@@ -591,13 +563,11 @@ Deno.test("startStartServer: answers an invalid request and a refused transition
       await client.request("start.workspace.choose", {
         name: "first-workspace",
       });
-      // No task written yet: nothing to launch.
       const none = client.send("start.launch", { trustConfirmed: true });
       const noTask = await client.frame((f) =>
         f.id === none && f.type === "error"
       );
       assertEquals(noTask.error?.code, "no_task");
-      // A task not yet past the agent step can't launch.
       await client.request("start.task.save", { text: "list my pods" });
       const id = client.send("start.launch", { trustConfirmed: true });
       const refused = await client.frame((f) =>
@@ -651,7 +621,6 @@ Deno.test("startStartServer: a launch or resume refuses to run on a task another
           .taskId!;
       await a.request("start.task.open", { id: first });
 
-      // Hold the queue with a launch of the first task.
       fakes.openGate = new Promise((resolve) => {
         fakes.releaseOpen = resolve;
       });
@@ -843,10 +812,6 @@ Deno.test("startStartServer: ends launched once the page closes after a launch",
   }, { ...LONG, afterLaunchIdleMs: 20 });
 });
 
-/**
- * A hub whose one route, `/w/x/`, upgrades and holds the socket open: it
- * stands in for a workspace dashboard tab.
- */
 function dashboardTabHub(): WorkspaceHub & { shutdowns: number } {
   const hub = {
     shutdowns: 0,
@@ -874,7 +839,6 @@ Deno.test("startStartServer: a dashboard tab keeps the server up after a launch,
       await walkToTrust(client);
       await client.request("start.launch", { trustConfirmed: true });
       await client.close();
-      // The start page is gone; the dashboard tab still holds the server.
       assertEquals(await settlesWithin(handle.ended, 100), false);
       tab.close();
       assertEquals(await handle.ended, {
@@ -916,7 +880,6 @@ Deno.test("startStartServer: session messages before a workspace is chosen fail 
       }
       assertEquals(fakes.opened, []);
       assertEquals(claims.claimed, []);
-      // The harness list needs no workspace.
       assertEquals(
         (await client.request("start.harness.list")).harnesses?.length,
         9,
@@ -969,7 +932,6 @@ Deno.test("startStartServer: claims once per open and releases on leave, on swit
     const client = await Client.open(handle.port);
     try {
       await client.request("start.workspace.choose", { name: "alpha" });
-      // Choosing the workspace already served does not claim it again.
       await client.request("start.workspace.choose", { name: "alpha" });
       assertEquals(claims.claimed.length, 1);
       assertPathEquals(claims.claimed[0], alpha);
@@ -1118,7 +1080,6 @@ Deno.test("startStartServer: a task launched by an earlier run shows on the home
       await a.close();
     }
 
-    // A later `swamp start` over the same workspaces.
     const later = startStartServer({
       ctx: createLibSwampContext(),
       deps: fakes.deps,
@@ -1187,7 +1148,6 @@ Deno.test("startStartServer: a new task is nothing on disk until saved, and Canc
       assertEquals(saved.task?.text, "watch my VPCs");
       assertEquals(saved.task?.briefFile, "tasks/2026-10-03-watch-my-vpcs.md");
       assertEquals((await records()).length, 2);
-      // The first task is untouched.
       assertEquals(saved.tasks?.find((t) => t.id === first)?.step, "launched");
     } finally {
       await c.close();
@@ -1215,7 +1175,6 @@ Deno.test("startStartServer: a workspace with tasks opens on its home, every tas
         name: "first-workspace",
       });
       assertEquals(reopened.screen, "home");
-      // The newest task is open; every task is listed, newest first.
       assertEquals(reopened.taskId, second.taskId);
       assertEquals(reopened.tasks?.map((t) => t.title), [
         "watch my VPCs",
@@ -1235,7 +1194,6 @@ Deno.test("startStartServer: a workspace with tasks opens on its home, every tas
       ]);
       const pods = tasks[1];
 
-      // A launched task opens on the home; one not launched at its step.
       const opened = await c.request("start.task.open", { id: pods.id });
       assertEquals(opened.screen, "home");
       assertEquals(opened.taskId, pods.id);
@@ -1256,7 +1214,6 @@ Deno.test("startStartServer: a workspace with tasks opens on its home, every tas
   });
 });
 
-/** Resolves true if `promise` settles within `ms`, else false. */
 async function settlesWithin(
   promise: Promise<unknown>,
   ms: number,
@@ -1739,7 +1696,6 @@ Deno.test("startStartServer: start.workspace.location.check previews the folder 
         "name",
         "name_taken",
       ]);
-      // Only the choose claimed (and created) a workspace.
       assertEquals(claims.claimed.length, 1);
     } finally {
       await c.close();

@@ -50,7 +50,6 @@ function isTracingImport(filePath: string, importPath: string): boolean {
   return importsLayer(filePath, importPath, "infrastructure/tracing");
 }
 
-/** A real (non-cross-cutting) import of the infrastructure layer. */
 function importsInfrastructure(filePath: string, importPath: string): boolean {
   if (!importsLayer(filePath, importPath, "infrastructure")) return false;
   if (isLoggingImport(filePath, importPath)) return false;
@@ -58,34 +57,9 @@ function importsInfrastructure(filePath: string, importPath: string): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Domain → Infrastructure
-// ---------------------------------------------------------------------------
-
-// Pinned ratchet: the exact set of domain→infrastructure import edges that
-// exist today. Not a count, and not per-file — per *edge*.
-//
-// The previous `KNOWN_DOMAIN_INFRA_VIOLATIONS = 26` guard counted offending
-// files and `break`ed after the first bad import in each, so any file already
-// on the list could grow unlimited additional infrastructure imports for free,
-// and a fixed violation could be traded for a brand-new one without the count
-// moving. Pinning every edge closes both holes.
-//
-// Policy: this list is legacy debt and must only ever shrink. The domain layer
-// should depend on abstractions it owns (dependency inversion); concrete
-// repositories, stores and evaluators belong behind a domain-owned port.
-//
-// Notable clusters:
-//   - src/domain/extensions/* → canonicalize_path / extension_catalog_store
-//     (#223, W1b): a pure cross-platform string transform the value objects
-//     need at construction time, plus the ExtensionKind/ExtensionTypeRow
-//     type-level discriminators the catalog defines. Accepted as transitional
-//     ports; the canonicalizer should move to a shared path utility and
-//     ExtensionKind should hoist into the domain when the catalog is replaced.
-//   - src/domain/workflows/execution_service.ts and
-//     src/domain/{data,expressions}/* → concrete YAML repositories, the CEL
-//     evaluator and the catalog store: the pre-libswamp orchestration code
-//     that never got its ports extracted.
+// pinned ratchet over the exact domain-to-infrastructure import edges, not a
+// count or per-file, so a fixed violation cannot be traded for a new one;
+// legacy debt that only shrinks
 const PINNED_DOMAIN_INFRA_EDGES: readonly string[] = [
   "src/domain/access/policy_snapshot_loader.ts -> src/infrastructure/cel/cel_evaluator.ts",
   "src/domain/data/composite_data_query_service.ts -> src/infrastructure/persistence/catalog_store.ts",
@@ -173,10 +147,6 @@ Deno.test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Presentation → Infrastructure
-// ---------------------------------------------------------------------------
-
 Deno.test(
   "collectImportEdges: presentation layer must not import infrastructure (excluding logging)",
   async () => {
@@ -196,16 +166,9 @@ Deno.test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Serve → CLI
-// ---------------------------------------------------------------------------
-
-// Pinned ratchet: src/serve/ is a delivery mechanism that sits beside the CLI,
-// not on top of it. Today it borrows a handful of CLI wiring helpers
-// (repo_context, resolve_models_dir, dependency factories). Those edges are
-// pinned as debt so no NEW ones can appear; the fix for each is to hoist the
-// shared helper out of src/cli/ into a layer both delivery mechanisms can
-// depend on.
+// pinned ratchet: serve sits beside the CLI, not on top of it; these borrowed
+// CLI helpers are debt to hoist into a layer both can use, so no new edges
+// appear
 const PINNED_SERVE_CLI_EDGES: readonly string[] = [
   "src/serve/connection.ts -> src/cli/commands/version.ts",
   "src/serve/deps.ts -> src/cli/repo_context.ts",
@@ -239,14 +202,8 @@ Deno.test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Presentation → CLI
-// ---------------------------------------------------------------------------
-
-// Pinned ratchet: renderers are pure output formatters. They must not reach
-// back into the CLI/application layer — the CLI calls the renderer, never the
-// other way round. Two of these are type-only `Verbosity` imports (the type
-// belongs in the presentation layer); the third pulls a dispatcher.
+// pinned ratchet: renderers are pure output formatters and must not import the
+// CLI layer; two are type-only Verbosity imports, one pulls a dispatcher
 const PINNED_PRESENTATION_CLI_EDGES: readonly string[] = [
   "src/presentation/renderers/datastore_namespace_list.ts -> src/cli/context.ts",
   "src/presentation/renderers/issue_create.ts -> src/cli/commands/extension_report_dispatcher.ts",
@@ -273,15 +230,9 @@ Deno.test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// CLI composition root
-// ---------------------------------------------------------------------------
-
-// `src/cli/mod.ts` assembles the command tree, so it imports every command.
-// Only `main.ts` enters it. A file under src/ that imports it takes the whole
-// CLI into its module closure, and into the closure of every command that
-// reaches that file — `affectedCommands` in the verification attestation then
-// names those commands for almost any change (swamp-club#3195).
+// only main.ts may import the CLI composition root: any other importer pulls
+// the whole CLI into its module closure, so affectedCommands would name nearly
+// every command
 const CLI_COMPOSITION_ROOT = "src/cli/mod.ts";
 
 Deno.test(
@@ -304,28 +255,12 @@ Deno.test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// libswamp public surface
-// ---------------------------------------------------------------------------
-
-// `src/libswamp/mod.ts` declares libswamp's public surface: the names
-// delivery code may use, and the file each one comes from. It is a list, not
-// an import path. Importing through it would make every importer depend on
-// all of libswamp, so `deno info` could no longer tell which commands a
-// change reaches — which is what test selection is built on.
-//
-// Two rules keep both properties:
-//
-//   1. Surface: src/cli/, src/presentation/ and src/serve/ may take a name
-//      from a libswamp file only if mod.ts exports that name from that file.
-//   2. Honest graph: nothing imports mod.ts.
-//
-// Both cover test files too: a test that reaches past the surface pins that
-// internal just as hard as production code does.
+// libswamp mod.ts lists the public surface, not an import path: delivery code
+// takes a name only if mod.ts exports it from that file, and nothing imports
+// mod.ts, so deno info stays honest
 
 const LIBSWAMP_BARREL = "src/libswamp/mod.ts";
 
-/** `<name> from <repo-relative file>` for every name the barrel exports. */
 async function libswampSurface(): Promise<Set<string>> {
   const barrelPath = join(ROOT, LIBSWAMP_BARREL);
   const barrel = parseBarrel(barrelPath, await Deno.readTextFile(barrelPath));
@@ -337,12 +272,6 @@ async function libswampSurface(): Promise<Set<string>> {
   return surface;
 }
 
-/**
- * The ways `source` reaches into libswamp past the declared surface: a name
- * the barrel does not export from that file, or a reference that takes a
- * whole libswamp module (namespace, default, side-effect, dynamic) and so
- * cannot be checked name by name.
- */
 function surfaceViolations(
   filePath: string,
   source: string,
@@ -427,9 +356,8 @@ Deno.test("libswamp surface: surfaceViolations flags what the barrel does not ex
   );
 });
 
-// The one importer of the barrel. Nothing else imports mod.ts, so without
-// this test no type check or test run would notice a re-export that no
-// longer resolves. A test file is in no command's import graph.
+// the one importer of the barrel; without it nothing would notice a re-export
+// that stops resolving
 const PINNED_BARREL_IMPORTERS: readonly string[] = [
   "src/libswamp/mod_test.ts",
 ];
@@ -463,10 +391,6 @@ Deno.test(
     );
   },
 );
-
-// ---------------------------------------------------------------------------
-// legacyStore escape hatch
-// ---------------------------------------------------------------------------
 
 Deno.test(
   "legacyStore escape hatch must not be reintroduced (W4 CI guard)",

@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 gate for the definition, workflow and evaluated repositories
- * (swamp-club#3256). The real repositories run on v3, inside a commit-log
- * root over a v3 context hook, with managed config registered at the
- * namespace root's `config` directory. Every write stages typed changes, the
- * unit commits them to a real `commits.db` and filesystem `storage/1`, and a
- * read model catches up into a second directory: its files (bytes) must
- * equal what the repositories wrote, and its catalog stays empty, as these
- * records are not data.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -92,7 +81,6 @@ await initializeLogging({});
 const TYPE = ModelType.create("test/example");
 const RUN_ID = "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e";
 
-/** One v3 repository context's definition-side repositories. */
 class ConfigWriter {
   readonly dir: string;
   readonly root: string;
@@ -114,7 +102,6 @@ class ConfigWriter {
     registerManagedConfig(this.dir, true, join(this.root, "config"));
   }
 
-  /** The managed-config definitions, with auto-definitions as secondary. */
   definitions(): YamlDefinitionRepository {
     return new YamlDefinitionRepository(
       this.dir,
@@ -125,7 +112,6 @@ class ConfigWriter {
     );
   }
 
-  /** The repository direct execution builds over the auto-definitions. */
   autoDefinitions(): YamlDefinitionRepository {
     return new YamlDefinitionRepository(
       this.dir,
@@ -136,7 +122,6 @@ class ConfigWriter {
     );
   }
 
-  /** Git-tracked definitions outside the datastore, on the same hook. */
   gitDefinitions(): YamlDefinitionRepository {
     return new YamlDefinitionRepository(
       this.dir,
@@ -172,7 +157,6 @@ class ConfigWriter {
     );
   }
 
-  /** Runs `fn` in a commit-log root over this context, committing after. */
   run<T>(fn: () => Promise<T>, sink: CommitSink = this.env.store): Promise<T> {
     return runInCommitLogRoot(
       { markDirty: this.hook },
@@ -185,7 +169,6 @@ class ConfigWriter {
   }
 }
 
-/** Catches the read model up and checks it holds what the writer wrote. */
 async function assertMatches(writer: ConfigWriter): Promise<void> {
   await catchUp(writer.env);
   assertEquals(
@@ -204,7 +187,6 @@ async function catchUp(env: V3Env): Promise<void> {
   }
 }
 
-/** The commits of a partition, oldest first. */
 async function commitsOf(
   writer: ConfigWriter,
   partition: PartitionKey,
@@ -217,7 +199,6 @@ async function commitsOf(
   )).map((change) => change.commit);
 }
 
-/** Every commit in feed order, as partition strings. */
 async function feedPartitions(env: V3Env): Promise<string[]> {
   return (await env.store.changesSince(0, 10_000)).map((change) =>
     change.commit.partition.toString()
@@ -228,7 +209,6 @@ function definition(name: string, value = "value"): Definition {
   return Definition.create({ name, globalArguments: { key: value } });
 }
 
-/** The same definition (same id) under another name or arguments. */
 function changed(
   from: Definition,
   changes: Partial<DefinitionData>,
@@ -270,7 +250,6 @@ for (const namespace of ["", "infra"]) {
       const writer = new ConfigWriter(env, namespace);
       const repo = writer.definitions();
 
-      // Create, edit, and an unchanged save, which writes and stages nothing.
       const vpc = definition("vpc");
       await writer.run(() => repo.save(TYPE, vpc));
       await writer.run(() =>
@@ -296,7 +275,6 @@ for (const namespace of ["", "infra"]) {
       );
       await assertMatches(writer);
 
-      // A rename between two filename-safe names: two keys, two partitions.
       await writer.run(() => repo.save(TYPE, changed(vpc, { name: "net" })));
       await assertMatches(writer);
       // A cold repository renames back: its id cache is empty, so the old
@@ -314,7 +292,6 @@ for (const namespace of ["", "infra"]) {
         repo.save(TYPE, changed(scoped, { name: "@team/net" }))
       );
       await assertMatches(writer);
-      // ...and the same rename from a cold repository.
       await writer.run(() =>
         writer.definitions().save(
           TYPE,
@@ -323,13 +300,11 @@ for (const namespace of ["", "infra"]) {
       );
       await assertMatches(writer);
 
-      // A scoped name renamed to a filename-safe one moves the file.
       await writer.run(() =>
         repo.save(TYPE, changed(scoped, { name: "team-vpc" }))
       );
       await assertMatches(writer);
 
-      // Deletes.
       await writer.run(() => repo.delete(TYPE, scoped.id));
       await writer.run(() => writer.definitions().delete(TYPE, vpc.id));
       await assertMatches(writer);
@@ -339,7 +314,6 @@ for (const namespace of ["", "infra"]) {
   Deno.test(`v3 config staging: a legacy file moved to its name path, and a save across tiers, match the read model for ${label} datastore`, async () => {
     await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, namespace);
-      // A definition committed earlier at its legacy uuid path.
       const legacy = definition("legacy");
       const modelsDir = join(
         writer.root,
@@ -375,8 +349,6 @@ for (const namespace of ["", "infra"]) {
         ])
       );
       await assertMatches(writer);
-      // Saving it moves it to its name path: an edit of the new key and a
-      // tombstone of the legacy one, in the same partition.
       await writer.run(() =>
         writer.definitions().save(
           TYPE,
@@ -399,7 +371,6 @@ for (const namespace of ["", "infra"]) {
       const both = definition("both");
       await writer.run(() => writer.autoDefinitions().save(TYPE, both));
       const repo = writer.definitions();
-      // Cache the auto-definition path as the definition's previous path.
       assert(await repo.findById(TYPE, both.id));
       const bothYaml = stringifyYaml(
         JSON.parse(JSON.stringify({ ...both.toData(), type: TYPE.normalized })),
@@ -438,19 +409,14 @@ for (const namespace of ["", "infra"]) {
   Deno.test(`v3 config staging: auto-definitions and git-tracked definitions for ${label} datastore`, async () => {
     await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, namespace);
-      // Direct execution's repository over the auto-definitions directory.
       const auto = writer.autoDefinitions();
       const echo = definition("echo");
       await writer.run(() => auto.save(TYPE, echo));
       await writer.run(() =>
         auto.save(TYPE, changed(echo, { globalArguments: { key: "again" } }))
       );
-      // A rename inside the auto-definitions directory moves its key in the
-      // same partition.
       await writer.run(() => auto.save(TYPE, changed(echo, { name: "echo2" })));
       await assertMatches(writer);
-      // A delete through the definitions repository, which finds it in its
-      // secondary directory.
       await writer.run(() => writer.definitions().delete(TYPE, echo.id));
       await assertMatches(writer);
       const partition = partitionOf({ kind: "definition", id: echo.id });
@@ -461,8 +427,6 @@ for (const namespace of ["", "infra"]) {
         }
       }
 
-      // A git-tracked definition on the same v3 hook: not refused, and it
-      // stages nothing.
       const feed = (await env.store.changesSince(0, 10_000)).length;
       await writer.run(() =>
         writer.gitDefinitions().save(TYPE, definition("git"))
@@ -523,8 +487,6 @@ for (const namespace of ["", "infra"]) {
       await writer.run(() => defs.clearAll());
       await assertMatches(writer);
 
-      // Evaluated workflows, each step from a fresh repository, as CLI
-      // commands build one.
       const deploy = workflow("deploy");
       const scopedWf = workflow("@team/deploy");
       await writer.run(() =>
@@ -546,8 +508,6 @@ for (const namespace of ["", "infra"]) {
       });
       await assertMatches(writer);
 
-      // Run snapshots: a save and a delete, a non-UUID directory and a
-      // missing snapshot, neither of which aborts nor stages anything.
       await writer.run(() =>
         writer.evaluatedWorkflows().saveForRun(RUN_ID, deploy)
       );
@@ -580,7 +540,6 @@ for (const namespace of ["", "infra"]) {
   });
 }
 
-/** A sink that refuses every commit of one partition. */
 function refusing(env: V3Env, partition: PartitionKey): CommitSink {
   return {
     append: (commit) =>
@@ -626,7 +585,6 @@ Deno.test("v3 config staging: a crash between a rename's two commits keeps both 
       "config/models/test/example/net.yaml",
       "config/models/test/example/vpc.yaml",
     ]);
-    // A repository over the read model's files resolves it by id.
     const reader = new YamlDefinitionRepository(
       env.repoDir,
       undefined,
@@ -651,7 +609,6 @@ Deno.test("v3 config staging: a crash in a same-key rename leaves one file with 
     );
     await catchUp(env);
     const key = `config/models/test/example/${scoped.id}.yaml`;
-    // Two live records of one key; the file is the new name's.
     assertEquals([...(await readTree(env.cacheRoot(""))).keys()], [key]);
     const reader = new YamlDefinitionRepository(
       env.repoDir,
@@ -660,8 +617,6 @@ Deno.test("v3 config staging: a crash in a same-key rename leaves one file with 
       false,
     );
     assertEquals((await reader.findById(TYPE, scoped.id))?.name, "@team/net");
-    // Deleting the new name removes the file; the old name's orphaned
-    // record does not keep it.
     await writer.run(() => writer.definitions().delete(TYPE, scoped.id));
     await catchUp(env);
     assertEquals([...(await readTree(env.cacheRoot(""))).keys()], []);
@@ -674,7 +629,6 @@ Deno.test("v3 config staging: a stale edit or a concurrent create is refused, an
     const second = new ConfigWriter(env, "", "second");
     const vpc = definition("vpc");
     await first.run(() => first.definitions().save(TYPE, vpc));
-    // The second checkout holds the same bytes (as a catch-up would leave).
     const rel = join("config", "models", "test", "example", "vpc.yaml");
     await ensureDir(join(second.root, "config", "models", "test", "example"));
     await Deno.copyFile(join(first.root, rel), join(second.root, rel));
@@ -700,7 +654,6 @@ Deno.test("v3 config staging: a stale edit or a concurrent create is refused, an
       CommitRejectedError,
     );
     assertEquals(error.reason, "expect-failed");
-    // The message names the record key and the partition.
     assert(error.message.includes("config/models/test/example/vpc.yaml"));
     assert(error.message.includes("config--model--vpc"));
     await catchUp(env);
@@ -709,7 +662,6 @@ Deno.test("v3 config staging: a stale edit or a concurrent create is refused, an
       await Deno.readTextFile(join(first.root, rel)),
     );
 
-    // A create of a name another checkout already created.
     await first.run(() => first.definitions().save(TYPE, definition("db")));
     const created = await assertRejects(
       () => second.run(() => second.definitions().save(TYPE, definition("db"))),
@@ -724,7 +676,6 @@ Deno.test("v3 config staging: a local file out of step with the store refuses th
     const writer = new ConfigWriter(env, "");
     const vpc = definition("vpc");
     await writer.run(() => writer.definitions().save(TYPE, vpc));
-    // An out-of-band edit of the local file.
     const path = join(
       writer.root,
       "config",
@@ -848,7 +799,6 @@ Deno.test({
           .save(edited, undefined);
       };
 
-      // v2: no hook, and a legacy unit over a hook.
       await saves(undefined)();
       const { markDirty, uow } = recordingUnitOfWork();
       await runInUnitOfWork(uow, saves(markDirty));
@@ -864,7 +814,6 @@ Deno.test({
             .deleteForRun(RUN_ID),
       );
 
-      // v3 reads them first, so the same saves fail on the unreadable file.
       await assertRejects(
         () => writer.run(saves(writer.hook)),
         Deno.errors.PermissionDenied,
@@ -873,7 +822,6 @@ Deno.test({
   },
 });
 
-/** Writes a definition file at `rel` under the writer's root and commits it. */
 async function seed(
   writer: ConfigWriter,
   rel: readonly string[],
@@ -916,7 +864,6 @@ Deno.test("v3 config staging: a delete keeps a same-id file of another definitio
       "example",
       `${mine.id}.yaml`,
     ], copy);
-    // A definition filed outside its type directory, found by a lookup.
     const odd = definition("odd");
     await seed(writer, ["config", "models", "elsewhere", "odd.yaml"], odd);
     await assertMatches(writer);

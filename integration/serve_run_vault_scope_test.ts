@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve runs are held to the triggering principal's vault grants
- * (swamp-club#2676), end to end: requests go through serve's real handlers
- * against a real repository with local_encryption vaults, and the tests
- * assert on step status, the error message and the denied audit event (the
- * in-process executor stringifies errors, so never on the error class).
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -174,7 +166,6 @@ Deno.test({
           op,
         );
       }
-      // Nothing reached the refused vaults.
       const vaults = await f.vaults();
       assertEquals(await vaults.get("erp", "password"), SECRETS.erp);
       assertEquals(
@@ -182,7 +173,6 @@ Deno.test({
         SECRETS.roomcontrol,
       );
       assertEquals((await vaults.list("erp")).includes("written"), false);
-      // One audit per distinct vault, key and action.
       const erpDenials = vaultDenials(f.audits).filter((d) =>
         d.resourceName === "erp"
       );
@@ -193,7 +183,6 @@ Deno.test({
     }),
 });
 
-/** bot reads and writes its outputs vault and reads roomcontrol. */
 function outputsGrants() {
   return [
     ...roomcontrolOnly(),
@@ -218,7 +207,6 @@ Deno.test({
         JSON.stringify(first.run.toData()).slice(0, 2000),
       );
       assertEquals(f.seen, ["minted-1"]);
-      // The stored value lives in the outputs vault, not in the record.
       const vaults = await f.vaults();
       assertEquals((await vaults.list("outputs")).length, 2);
 
@@ -290,7 +278,6 @@ Deno.test({
       const message = methodError(frames) ?? "";
       assertStringIncludes(message, "Writing vault 'outputs' is refused");
       assertEquals(f.sideEffects.count, 1);
-      // Neither of the two sensitive fields was stored.
       assertEquals(await (await f.vaults()).list("outputs"), []);
       assertEquals(
         vaultDenials(f.audits).map((d) => [d.resourceName, d.action]),
@@ -305,7 +292,6 @@ Deno.test({
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
-      // After the first read, roomcontrol is revoked; bot stays scoped.
       f.hooks.afterRead = () => {
         f.hooks.afterRead = undefined;
         f.setPolicy([
@@ -335,7 +321,6 @@ Deno.test({
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
-      // Minted by an unscoped run (auth off) into outputs.
       const { run: minted } = await runWorkflowAs(
         f,
         workflowOf("admin-mint", [
@@ -360,7 +345,6 @@ Deno.test({
         );
       }
       assertEquals(f.seen, []);
-      // Both steps read the same key in one run: audited once.
       assertEquals(
         vaultDenials(f.audits).map((d) => [d.resourceName, d.action]),
         [["outputs", "vault.read"]],
@@ -440,7 +424,6 @@ Deno.test({
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
-      // An unscoped run caches the evaluated definitions.
       const none = {
         ...f.ctx,
         authConfig: { ...f.ctx.authConfig, mode: "none" as const },
@@ -502,7 +485,6 @@ Deno.test({
         "vault 'erp' is refused",
       );
       assertEquals(stepOf(run, "main", "rc").status, "succeeded");
-      // Unscoped for every other vault: the outputs vault takes the write.
       assertEquals(stepOf(run, "main", "mint").status, "succeeded");
       assertEquals(f.seen, [SECRETS.roomcontrol]);
       assertEquals(
@@ -548,7 +530,6 @@ Deno.test({
     }, { grants: outputsGrants() }),
 });
 
-/** A reader whose vault and key are the caller's method inputs. */
 async function saveDynamicReader(f: VaultScopeFixture): Promise<void> {
   await saveDefinition(f, "dyn-reader", {
     inputs: {
@@ -563,7 +544,6 @@ async function saveDynamicReader(f: VaultScopeFixture): Promise<void> {
   });
 }
 
-/** Runs `fn` with the reserved token-secrets vault registered, as serve boot does. */
 async function withReservedVault(fn: () => Promise<void>): Promise<void> {
   VaultService.registerGlobalProvider(
     TOKEN_SECRETS_VAULT_NAME,
@@ -609,7 +589,6 @@ for (
             methodError(refused) ?? "",
             "'_token-secrets' is a reserved vault",
           );
-          // The same caller still reads an ordinary vault as today.
           const ordinary = await runMethodAs(f, "dyn-reader", "read", RUNNER, {
             vault: "erp",
             key: "password",
@@ -672,7 +651,6 @@ Deno.test({
       };
       const scoped = await observe(BOT, f.ctx);
       const unscoped = await observe(null, none);
-      // The minted values differ only by run count.
       assertEquals(scoped.seen.slice(0, 2), [SECRETS.erp, SECRETS.roomcontrol]);
       assertEquals(
         { ...scoped, seen: scoped.seen.slice(0, 2) },
@@ -681,7 +659,6 @@ Deno.test({
       assertEquals(scoped.status, "succeeded");
       assertEquals(vaultDenials(f.audits), []);
     }, {
-      // Grants of every other kind, but none on vaults.
       grants: [
         ...runnerGrants("user:bot"),
         grant("user:bot", "data", "erp", ["read"], "deny"),
@@ -701,7 +678,6 @@ function listedWorkflow(
   });
 }
 
-/** Runs `workflow` as a local CLI run would: no serve, no principal. */
 async function runLocally(
   f: VaultScopeFixture,
   workflow: Workflow,
@@ -766,8 +742,6 @@ Deno.test({
       );
       assertEquals(stepOf(local, "main", "rc").status, "succeeded");
 
-      // child allows roomcontrol and outputs; parent allows roomcontrol
-      // and erp: only roomcontrol survives inside the child.
       const child = listedWorkflow("listed-child", ["roomcontrol", "outputs"], [
         ...READ_BOTH(),
         step("mint", StepTask.model("minter", "mint"), "rc"),

@@ -17,17 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: `swamp datastore compact` swaps the catalog
-// file through the repository context's own CatalogStore.
-//
-// CatalogStore.vacuum rebuilds `_catalog.db` into a temp file, closes its
-// connection and renames the rebuilt file into place. On Windows the rename
-// fails while any other connection in the process still has the file open, so
-// a compact command that opens a second store next to
-// `repoContext.catalogStore` failed on every run (swamp-club#3167). On POSIX
-// the same split leaves the repository context's connection on the replaced
-// file. Windows CI only runs after merge, so this rule keeps the single
-// connection on every platform.
+// compact must use the repository context's CatalogStore: vacuum renames the
+// rebuilt file in place, which fails on Windows with a second connection open
+// and strands the context's on POSIX
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -40,7 +32,6 @@ const COMPACT_COMMAND = join(
   "datastore_compact.ts",
 );
 
-/** The command's source with comment lines dropped. */
 async function compactCode(): Promise<string> {
   const source = await Deno.readTextFile(COMPACT_COMMAND);
   return source.split("\n").filter((line) => !isCommentLine(line)).join("\n");

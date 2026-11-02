@@ -41,10 +41,6 @@ export const vault = {
 };
 `;
 
-/**
- * Runs `fn` with a prober and a way to write bundles for it. The prober is
- * always released, so no host outlives the test.
- */
 async function withProber(
   options: { timeoutMs?: number; startupTimeoutMs?: number },
   fn: (args: {
@@ -255,7 +251,6 @@ Deno.test("ProcessBundleProber: console output at import is logged at debug, not
       assertEquals(result.tag, "primary");
     });
     assertEquals(printed, []);
-    // The host's own stderr (a deno warning, from source) is logged too.
     const atImport = records.filter((record) =>
       record.message.join("").includes("Output at import")
     );
@@ -378,7 +373,6 @@ Deno.test("ProcessBundleProber: a bundle that prints more than a pipe holds stil
   });
 });
 
-/** Starts a host from source with `env` added, for tests that drive it. */
 function spawnHost(env: Record<string, string> = {}) {
   const frame = `@@test-${crypto.randomUUID()}@@`;
   const { command, args } = sourceProbeHostCommand();
@@ -460,7 +454,6 @@ Deno.test("ProcessBundleProber: a host from another build than this swamp refuse
         "swamp 1.0.0 is running, but its binary is now 2.0.0",
       );
     }
-    // The binary does not change back, so the second probe starts no host.
     assertEquals(started, 1);
   } finally {
     await prober.release();
@@ -521,7 +514,6 @@ Deno.test({
   },
 });
 
-/** A bundle that starts `sleep`, which inherits the host's pipes. */
 const SPAWNS_SLEEP = (pidFile: string) =>
   `const sleeper = new Deno.Command("sleep", { args: ["60"] }).spawn();\n` +
   `Deno.writeTextFileSync(${JSON.stringify(pidFile)}, String(sleeper.pid));\n`;
@@ -553,7 +545,6 @@ Deno.test({
         // withProber releases the reused host, which must not wait on the
         // pipes the sleeper holds.
       });
-      // The sleeper ends with its host, as it ended with a worker.
       const sleeper = Number(await Deno.readTextFile(pidFile));
       await waitFor(() => !isProcessAlive(sleeper), "the sleeper to end");
     } finally {

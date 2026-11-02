@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Declared acceptances, end to end on a real temp filesystem: the
- * quality.yaml sidecar beside the manifest is packaged at the archive root
- * beside manifest.yaml, byte for byte; the content hash moves when the
- * sidecar changes; and a sidecar that names a file outside the manifest's
- * directory is refused before any gate runs.
- */
-
 import {
   assert,
   assertEquals,
@@ -179,7 +171,6 @@ Deno.test("declared acceptances: quality.yaml beside the manifest is packaged at
       join(extracted, "extension", "quality.yaml"),
     );
     assertEquals(packaged, SIDECAR);
-    // Beside the manifest, not under files/.
     await Deno.stat(join(extracted, "extension", "manifest.yaml"));
   });
 });
@@ -230,9 +221,6 @@ Deno.test("declared acceptances: a sidecar with a traversal path is refused befo
   });
 });
 
-// ── Structured acceptances, applied as an agent would (swamp-club#3107) ──
-
-/** Applies every acceptance in the report to the files, as an agent would: no prose parsed. */
 async function applyAcceptances(report: FindingsReport): Promise<void> {
   const comments = new Map<
     string,
@@ -263,7 +251,6 @@ async function applyAcceptances(report: FindingsReport): Promise<void> {
     await Deno.writeTextFile(file, lines.join("\n"));
   }
   for (const [file, entries] of sidecars) {
-    // Add to the existing accept list; start the file only when it is absent.
     const existing = await Deno.readTextFile(file)
       .then((text) => parseYaml(text) as Record<string, unknown>)
       .catch((): Record<string, unknown> => ({ version: 1 }));
@@ -288,7 +275,6 @@ async function withFindingsExtension(
         // Literal type and version, so the registry catalog lists the model
         // and the only findings are the ones this fixture plants.
         `export const model = { type: "@test/thing", version: "2026.01.01.1" };`,
-        // Two findings on one indented line: deno-command and base64-run.
         "export function run() {",
         `  return new Deno.Command("vendor", { args: ["${BLOB}"] }); // don't inline`,
         "}",
@@ -304,10 +290,9 @@ async function withFindingsExtension(
     const readme = join(root, "README.md");
     await Deno.writeTextFile(
       readme,
-      // The fenced address cannot take an HTML comment: inside the fence it
-      // is code, not a directive. It takes a quality.yaml entry naming the
-      // line instead, and so do the README's other findings, so no comment
-      // moves that line (swamp-club#3757).
+      // the fenced address cannot take an HTML comment since inside the fence
+      // it is code; it takes a quality.yaml entry naming the line, as do the
+      // README's other findings, so no comment moves that line
       "# Thing\n\nGateway: 10.0.0.1\nRouter: 10.0.0.2\n\n```sh\ncurl http://10.0.0.9\n```\n",
     );
     const hosts = join(root, "docs", "hosts.txt");
@@ -379,7 +364,6 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
       "ipv4-address-literals:7:sidecar",
       "testing-completeness:undefined:file-header",
     ]);
-    // Every comment acceptance names its file, line and position.
     for (const w of report.unresolvedWarnings ?? []) {
       if (w.acceptance?.form !== "comment") continue;
       assert(w.acceptance.file.startsWith(root));
@@ -405,7 +389,6 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
       deps,
       input,
     );
-    // The five sidecar entries merged into one valid quality.yaml.
     assertEquals(
       second.sidecar?.value.accept.toSorted((a, b) =>
         (a.file ?? "").localeCompare(b.file ?? "")
@@ -418,8 +401,6 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
         { rule: "ipv4-address-literals", file: "README.md", line: 7 },
       ],
     );
-    // Only the finding offered no acceptance remains; the template literal
-    // and the fence are unchanged.
     assertEquals(
       second.safetyWarnings.map((w) => w.ruleId),
       ["base64-run"],
@@ -447,7 +428,6 @@ Deno.test("declared acceptances: a reason with an apostrophe, and a directive af
       [
         `export const model = { type: "@test/thing", version: "2026.01.01.1" };`,
         "export function run() {",
-        // Long only with the directive's own text, which is discounted.
         `  new Deno.Command("butler", { args: ["${
           "x-".repeat(175)
         }"] }); // swamp-quality-ignore deno-command: ${reason}`,

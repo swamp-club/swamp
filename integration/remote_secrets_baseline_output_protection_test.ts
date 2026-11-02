@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote-secrets baseline, path 6: output protection (swamp-club#3512).
- *
- * Pins where a secret the step was dispatched with, or one the worker
- * learns during the dispatch, ends up redacted and where it travels
- * verbatim: serve's per-dispatch redactor and the data-plane write routes.
- * The worker's result error and the step lease it is stored on are redacted
- * on both hops since swamp-club#3525, and the runner's stderr and the
- * supervisor's re-log of it are masked since swamp-club#3526; the cases for
- * them guard that. Typed-secrets Phase 5 changes several of the remaining
- * ones on purpose (design/enablers/typed-secrets.md §7.1 and §9); a failure
- * here means one of them changed.
- *
- * All in-process except the supervisor test, which spawns the baseline
- * runner entry (a runner, not the CLI): the supervisor reads runner stderr
- * only from a child process.
- */
-
 import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { trace } from "@opentelemetry/api";
@@ -109,10 +91,6 @@ const RUNNER_COMMAND = {
 
 const decoder = new TextDecoder();
 
-/**
- * A version 5 dispatch of the fixture's `fail` method carrying `secret` in
- * plaintext, the frame of the deprecation window.
- */
 function failDispatch(secret: string): DispatchParams {
   return {
     dispatchId: crypto.randomUUID(),
@@ -123,7 +101,6 @@ function failDispatch(secret: string): DispatchParams {
       modelId: crypto.randomUUID(),
       methodName: "fail",
       globalArgs: {},
-      // Resolved plaintext, as #executeRemotely sends it.
       methodArgs: { secret },
       definitionMeta: {
         id: crypto.randomUUID(),
@@ -141,11 +118,9 @@ function failDispatch(secret: string): DispatchParams {
 
 interface RunnerRun {
   result: DispatchResult;
-  /** Every frame the runner wrote to stdout, the result frame included. */
   frames: string[];
 }
 
-/** Runs one dispatch through the runner in this process. */
 async function runInProcess(
   bootstrap: RunnerBootstrapParams,
   options?: Parameters<typeof runDispatchRunner>[2],
@@ -177,12 +152,6 @@ async function runInProcess(
   return { result: resultFrame.result as DispatchResult, frames };
 }
 
-/**
- * A step request whose `secret` argument holds `secret`, as serve builds it
- * for a worker on `version`: a version 5 worker receives the value in the
- * frame, and a version 6 worker a reference to a vault entry holding it,
- * which its runner loads through the protected route.
- */
 async function secretStepRequest(
   o: BaselineOrchestrator,
   secret: string,
@@ -214,7 +183,6 @@ async function secretStepRequest(
   });
 }
 
-/** Both frames of the deprecation window, run by the tests below. */
 const VERSIONS = [
   LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
@@ -264,13 +232,9 @@ Deno.test({
       });
 
       assertEquals(result.status, "error");
-      // The thrown message goes through the runner's dispatch redactor on
-      // its way into result.error, as result.logs always did
-      // (swamp-club#3525).
       assertEquals(result.error, "method failed holding ***");
       assertEquals(result.logs.filter((line) => line.includes(secret)), []);
       assert(result.logs.includes("console line ***"));
-      // Output events streamed to serve before the result are scrubbed.
       const events = frames.filter((f) => f.includes("runner.event"));
       assert(events.length > 0, "the method log line was streamed");
       assertEquals(events.filter((f) => f.includes(secret)), []);
@@ -296,7 +260,6 @@ Deno.test({
             version,
           );
           let leaseId: string | undefined;
-          // The worker runs the dispatch through the real runner, in-process.
           worker.channel.register(WorkerMethod.dispatch, async (raw) => {
             const params = raw as DispatchParams & {
               dispatchCredential?: string;
@@ -337,10 +300,6 @@ Deno.test({
           assertExists(content);
           const lease = JSON.parse(decoder.decode(content));
           assertEquals(lease.state, "failed");
-          // The worker's result.error reaches the lease through serve's own
-          // dispatch redactor as well, so a worker that predates the
-          // runner-side scrub cannot put the value in the record
-          // (swamp-club#3525).
           assertEquals(lease.error, "method failed holding ***");
           assertEquals(JSON.stringify(lease).includes(secret), false);
         } finally {
@@ -358,8 +317,6 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withTempDir(async (cacheDirPath) => {
-      // A combined quote/backslash/newline value exercises inspection's
-      // escaping as well as the raw and JSON-encoded representations.
       const secret = `quo"ted\\\n${canary("runner-log")}`;
       const lines = await captureRunnerStderr(async () => {
         await runInProcess({
@@ -370,11 +327,9 @@ Deno.test({
         });
       });
 
-      // The method logger still writes through to the runner's own sink
-      // before the scrubbed copy is streamed, and the failure is still
-      // logged with the raw message, but the runner registers its dispatch
-      // redactor as an active process redactor, so the stderr sink and the
-      // console guard mask all three lines before a supervisor can read them.
+      // the runner registers its dispatch redactor as an active process
+      // redactor, so the stderr sink and console guard mask these lines before
+      // a supervisor can read them
       const dump = `runner stderr:\n${lines.join("\n")}`;
       assertEquals(lines.filter((line) => line.includes(secret)), []);
       assertEquals(lines.some((line) => line.includes("quo")), false, dump);
@@ -427,8 +382,6 @@ Deno.test({
 
           const secret = canary("supervisor-log");
           const request = await secretStepRequest(o, secret, version);
-          // The real supervisor relays a version 6 runner's report that the
-          // arguments passed; a version 5 frame's builder makes that call itself.
           let validated = 0;
           request.onArgumentsValidated = () => {
             validated++;
@@ -450,11 +403,9 @@ Deno.test({
           ).find((id) => id !== undefined);
           assertExists(dispatchId, "the supervisor logged runner stderr");
 
-          // Every runner stderr line is re-logged on the worker at debug. The
-          // runner masks its own stderr, with the values shipped (version 5) or
-          // loaded (version 6), and for version 5 the supervisor scrubs the
-          // shipped values once more, so none of them holds the secret
-          // (swamp-club#3526).
+          // the runner masks its own stderr, and for version 5 the supervisor
+          // scrubs the shipped values once more, so no re-logged line holds the
+          // secret
           const relogged = logs.filter((log) =>
             log.category === "worker.dispatch" && log.level === "debug" &&
             log.text.startsWith(`Runner [${dispatchId}]: `)
@@ -493,7 +444,6 @@ Deno.test({
     await withTempDir(async (dir) => {
       const o = await startBaselineOrchestrator(dir);
       try {
-        // resolveSecret delivers values to a version 5 dispatch only.
         const worker = await connectInMemoryWorker(
           o,
           "redactor-worker",
@@ -516,8 +466,6 @@ Deno.test({
           const params = raw as DispatchParams & {
             dispatchCredential?: string;
           };
-          // The secret the worker learns mid-dispatch, over the capability
-          // verb. The step's args name it, so the allowlist admits it.
           const { value } = await o.capabilityService.resolveSecret(
             "redactor-worker",
             {
@@ -582,8 +530,6 @@ Deno.test({
         await o.dispatchService.executeRemote(request);
 
         assertEquals(observed.resolved, learned);
-        // The value serve handed the worker through resolveSecret joined the
-        // dispatch's redactor before the reply left (swamp-club#3527).
         assertEquals(observed.redactorView, "shipped=*** learned=***");
 
         const read = async (stored?: { name: string; version: number }) => {
@@ -597,13 +543,10 @@ Deno.test({
           assertExists(bytes, `${stored.name} was stored`);
           return decoder.decode(bytes);
         };
-        // POST /data/resource scrubs with the dispatch redactor, so the
-        // shipped value and the learned one are both masked.
         assertEquals(JSON.parse(await read(observed.resource)), {
           note: "shipped=*** learned=***",
         });
-        // The file-writer routes have no redactor: a documented known limit
-        // (design/enablers/remote-execution.md), not a new finding.
+        // the file-writer routes have no redactor, a documented known limit
         assertEquals(await read(observed.lines), `line ${shipped}\n`);
         assertEquals(await read(observed.content), `content ${shipped}\n`);
       } finally {

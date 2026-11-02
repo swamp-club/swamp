@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Model-based property test of the SQLite commit store (swamp-club#3236):
- * random command sequences applied through the store must give the same
- * results and the same partition state as the partition reference model,
- * also after the store is closed and reopened, which rebuilds the partition
- * from its snapshot and the commits after it.
- *
- * Also (swamp-club#3249): the referenced-chunk index is exactly the chunks
- * the stored commits name, whether built append by append or backfilled by
- * the schema migration.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -57,16 +45,13 @@ import {
 } from "../src/domain/datastore_v3/v3_test_helpers.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 
-/** A store result in the reference model's shape. */
 type Outcome =
   | { kind: "appended"; seq: number }
   | { kind: "duplicate" }
   | { kind: "rejected"; reason: string };
 
-/** Drives a store and the reference model with the same commands. */
 class Harness {
   model: Model = emptyModel();
-  /** The seq each landed txnId landed at. */
   readonly landed = new Map<string, number>();
   #fresh = 0;
 
@@ -102,10 +87,6 @@ class Harness {
     if (actual.kind === "appended") this.landed.set(txnId, actual.seq);
   }
 
-  /**
-   * The store's stored commits and head agree with the model, and its
-   * snapshot, if it wrote one, is the state those commits give at its seq.
-   */
   async check(store: SqliteCommitStore, path: string): Promise<void> {
     const replayed = Partition.empty(modelPartition());
     const commits = (await store.readPartition("", modelPartition(), 1, 1000))
@@ -159,12 +140,9 @@ Deno.test("SqliteCommitStore: agrees with the partition reference model, before 
           const options = { snapshotInterval, cachedPartitions: 1 };
           const harness = new Harness();
 
-          // The first phase lands as much as it can (the next seq, one
-          // fence), so the snapshot the reopen rebuilds from holds real
-          // state: deleted top versions, tombstoned records, a raised fence.
-          // In the second phase about half the commands do the same, so they
-          // test the rebuilt state; the rest are unbiased and mostly refused
-          // for their seq or fence.
+          // the first phase lands as much as it can so the reopened snapshot
+          // holds real state; in the second about half do too, the rest are
+          // unbiased and mostly refused for their seq or fence
           const store = SqliteCommitStore.open(path, options);
           try {
             for (const command of before) {
@@ -179,7 +157,6 @@ Deno.test("SqliteCommitStore: agrees with the partition reference model, before 
             await store.close();
           }
 
-          // Reopened, the store rebuilds the partition from the file.
           const reopened = SqliteCommitStore.open(path, options);
           try {
             for (const [command, lands] of after) {
@@ -207,7 +184,6 @@ Deno.test("SqliteCommitStore: agrees with the partition reference model, before 
   }
 });
 
-/** A small pool of chunk hashes, so content shares chunks across puts. */
 const POOL = [..."0123456789ab"].map((c) => c.repeat(64));
 
 const arbContent = fc.oneof(
@@ -226,7 +202,6 @@ const arbContent = fc.oneof(
   }),
 );
 
-/** One append: a put of each content, maybe at a refused (gapped) seq. */
 const arbChunkAppend = fc.record({
   namespace: fc.constantFrom("", "acme", "beta"),
   gap: fc.boolean(),
@@ -287,7 +262,6 @@ Deno.test("SqliteCommitStore: the chunk index equals the chunks every stored com
               }
             }
 
-            // The oracle: every stored commit's chunks, by namespace.
             const named = new Map<string, Set<string>>();
             for (const change of await store.changesSince(0, 10_000)) {
               const set = named.get(change.commit.namespace) ?? new Set();
@@ -325,7 +299,6 @@ Deno.test("SqliteCommitStore: the chunk index equals the chunks every stored com
   }
 });
 
-/** The `chunk_refs` rows, read behind the store's back. */
 function chunkRefRows(path: string): unknown[] {
   const db = new DatabaseSync(path);
   try {
@@ -337,7 +310,6 @@ function chunkRefRows(path: string): unknown[] {
   }
 }
 
-/** The ops of one generated append, as the index test builds them. */
 async function chunkAppendOps(
   append: typeof arbChunkAppend extends fc.Arbitrary<infer T> ? T : never,
 ): Promise<Op[]> {
@@ -416,8 +388,6 @@ Deno.test("SqliteCommitStore: after compactions the chunk counts equal the store
               }
             }
 
-            // The oracle: each surviving commit, and each base record, that
-            // names a chunk counts once.
             const counts = new Map<string, number>();
             const add = (namespace: string, hashes: Iterable<string>) => {
               for (const sha256 of new Set(hashes)) {

@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A clean `swamp serve` stop whose push of the interrupted runs misses its
- * deadline must not leave the datastore holding those runs `running`
- * (swamp-club#3958). Wires the real shutdown interrupt, run repository, run
- * tracker, instance heartbeat, reconciliation and boot reaper on a temp
- * filesystem. The datastore is a directory: a push copies the cache's run
- * records to it, as a sync service's first push after a start walks the
- * whole cache, and a refresh copies one record back.
- */
-
 import { assertEquals } from "@std/assert";
 import { dirname, join, relative } from "@std/path";
 import { copy, ensureDir } from "@std/fs";
@@ -134,7 +124,6 @@ function workflow(): Workflow {
   });
 }
 
-/** One checkout: a repository dir, its run records and its run tracker. */
 function checkout(dir: string) {
   return {
     dir,
@@ -146,17 +135,14 @@ function checkout(dir: string) {
 
 type Checkout = ReturnType<typeof checkout>;
 
-/** The datastore: a directory holding pushed run records. */
 function datastore(dir: string) {
   const runsDir = join(dir, SWAMP_SUBDIRS.workflowRuns);
   return {
     runs: new YamlWorkflowRunRepository(dir, undefined, runsDir),
-    /** Copies every run record in `from` here, as a full-walk push. */
     pushFrom: async (from: Checkout) => {
       await ensureDir(runsDir);
       await copy(from.runsDir, runsDir, { overwrite: true });
     },
-    /** Copies one run record of `into` back from here. */
     refreshInto: async (
       into: Checkout,
       workflowId: WorkflowId,
@@ -170,10 +156,6 @@ function datastore(dir: string) {
   };
 }
 
-/**
- * The owner's state when SIGTERM arrives: a run mid-step, pushed while
- * running, with its tracker row, active-run record and heartbeat.
- */
 async function startRun(
   owner: Checkout,
   remote: ReturnType<typeof datastore>,
@@ -217,7 +199,6 @@ async function startRun(
   return { wf, run, heartbeat };
 }
 
-/** The owner's shutdown against a datastore too slow for the push. */
 async function stopWithSlowDatastore(
   owner: Checkout,
   run: WorkflowRun,
@@ -238,7 +219,6 @@ async function stopWithSlowDatastore(
         markDirty: () => Promise.resolve(),
         workflowRunRepo: owner.runs,
       },
-      // A push that settles only when its deadline aborts it.
       syncService: {
         pushChanged: (options) =>
           new Promise((_, reject) =>
@@ -321,7 +301,6 @@ Deno.test("shutdown with an unpushed interrupt: a failed stopped-heartbeat write
     const control = inMemoryControlPlane();
     try {
       const { wf, run, heartbeat } = await startRun(owner, remote, control);
-      // The last periodic heartbeat, written two minutes ago.
       const longAgo = new Date(Date.now() - 120_000).toISOString();
       await control.put(
         `heartbeats/${OWNER}`,
@@ -369,11 +348,6 @@ Deno.test("shutdown with an unpushed interrupt: a failed stopped-heartbeat write
   });
 });
 
-/**
- * A restarted serve's boot reap in `owner`'s checkout, as serve runs it: the
- * runs the status index lists as running and the ones the marker names, the
- * reaper judged against this checkout's tracker, and the settle push.
- */
 async function bootReap(
   owner: Checkout,
   remote: ReturnType<typeof datastore>,
@@ -433,7 +407,6 @@ Deno.test("shutdown with an unpushed interrupt: a restart does not interrupt a r
     try {
       const { wf, run, heartbeat } = await startRun(owner, remote, control);
       await stopWithSlowDatastore(owner, run, heartbeat, control);
-      // A peer resumes the run under the same id and pushes it running.
       const resumed = WorkflowRun.fromData({
         ...run.toData(),
         status: "running",
@@ -446,7 +419,6 @@ Deno.test("shutdown with an unpushed interrupt: a restart does not interrupt a r
       } finally {
         peer.tracker.close();
       }
-      // The original checkout restarts, and its boot pull brings that in.
       await remote.refreshInto(owner, wf.id, run.id as WorkflowRunId);
 
       const reaped = await bootReap(owner, remote, (id) => id === PEER);
@@ -486,7 +458,6 @@ for (
           await remote.refreshInto(owner, wf.id, run.id as WorkflowRunId);
         }
 
-        // The next serve's boot reap, as serve runs it.
         const markerPath = swampPath(owner.dir, UNPUSHED_INTERRUPTS_FILE);
         assertEquals(await readUnpushedInterrupts(markerPath), {
           present: true,
@@ -581,10 +552,6 @@ Deno.test("shutdown with an unpushed interrupt: a peer settles a run whose own e
   });
 });
 
-/**
- * A step that answers only once `release` resolves: a remote dispatch that
- * returns after serve's shutdown has interrupted the run.
- */
 class LateStepExecutor implements StepExecutor {
   readonly started = Promise.withResolvers<string>();
   readonly release = Promise.withResolvers<void>();
@@ -649,8 +616,6 @@ Deno.test(
         })();
 
         const runId = await executor.started.promise;
-        // The drain aborts the run, its grace passes, and shutdown takes it
-        // over while the step is still out.
         controller.abort(new Error("server shutdown"));
         const pushed: string[] = [];
         const result = await interruptShutdownRuns(
@@ -676,7 +641,6 @@ Deno.test(
         assertEquals(result.interrupted, [runId]);
         assertEquals(pushed, ["interrupted"]);
 
-        // The step answers; the executor goes on and saves what it holds.
         executor.release.resolve();
         await drained;
 

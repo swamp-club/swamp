@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Position and value provenance (swamp-club#3205), as a property: text that
-// enters a run as data — through any data source — reaches the method
-// byte-identical and never resolves anything, whatever it contains, while
-// the expression the author wrote beside it keeps resolving. The generator
-// labels each value with its true origin, so the oracle never consults the
-// implementation's own provenance maps.
+// data text from any source reaches the method byte-identical and never
+// resolves, while the author's expression beside it does; the generator labels
+// true origin, so the oracle ignores the implementation's maps
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -46,7 +43,6 @@ import {
 
 await initializeLogging({});
 
-/** Expression text the workflows and definitions below author. */
 const AUTHORED_RAWS = [
   "${{ env.SECRET }}",
   "${{ inputs.text }}",
@@ -55,7 +51,6 @@ const AUTHORED_RAWS = [
   "${{ self.item }}",
 ];
 
-/** Text built from fragments that matter at a splice boundary. */
 const dataText = fc.array(
   fc.oneof(
     fc.constantFrom(
@@ -87,7 +82,6 @@ const dataText = fc.array(
 
 type Path = (h: Harness, text: string) => Promise<void>;
 
-/** Every path runs `value` from data and `authored` from authored source. */
 const PATHS: Record<string, Path> = {
   "workflow input": async (h, text) => {
     await h.repo.definitionRepo.save(
@@ -248,11 +242,6 @@ for (const [name, path] of Object.entries(PATHS)) {
   });
 }
 
-/**
- * Expressions that read another system's root, in shapes that fail on the
- * unbound root, shapes that evaluate without reading it, and shapes that also
- * read swamp's own namespaces.
- */
 const foreignRootExpression = fc.tuple(
   fc.constantFrom(
     "github.sha",
@@ -316,8 +305,6 @@ Deno.test("provenance property: data in a direct step global argument is refused
             assertEquals(stored.includes(cel), false);
             return;
           }
-          // The stored definition, loaded again as authored source, hands
-          // the method the same bytes.
           await runWorkflow(
             h,
             oneStepWorkflow(

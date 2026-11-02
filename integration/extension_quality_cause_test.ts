@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * `swamp extension quality` names the real cause (swamp-club#3718): a
- * bundle failure prints its compilation errors, an unaudited dependency's
- * row and header follow the finding's fix, and a deno doc failure is named
- * on the documentation rows instead of asking for JSDoc. Each scenario runs
- * the quality generator in-process over a real extension on disk and
- * renders its events through the real renderer in log and JSON. Only the
- * registry lookups and the rubric's deno invocations are stubbed.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join, toFileUrl } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -108,10 +98,6 @@ function prepareDeps(
   };
 }
 
-/**
- * The real archive extraction; `deno doc --json` answers with `docStderr`
- * when given, failing as deno does, and with an empty doc otherwise.
- */
 function scoreDeps(
   docStderr?: (entrypointUrl: string) => string,
 ): RubricScoreDeps {
@@ -178,10 +164,6 @@ async function runQuality(
   }));
 }
 
-/**
- * Feeds the events to the real renderer, as the CLI does, and returns what
- * it printed and whether it failed the run.
- */
 function render(
   mode: "log" | "json",
   events: ExtensionQualityEvent[],
@@ -219,7 +201,6 @@ function render(
   return { output: lines.join("\n"), failed };
 }
 
-/** The JSON documents the JSON renderer printed, in order. */
 function jsonDocs(output: string): Record<string, unknown>[] {
   const docs: Record<string, unknown>[] = [];
   let depth = 0;
@@ -275,7 +256,6 @@ const MANIFEST = {
   models: ["model.ts"],
 };
 
-/** An extension laid out as CI publishes it, its inputs built directly. */
 async function writeExtension(
   root: string,
   model: string,
@@ -356,7 +336,6 @@ Deno.test("extension quality: a missing local module prints its compilation erro
   });
 });
 
-/** npm knows ms, but not at 99.0.0; OSV and downloads answer. */
 const unpublishedVersionFetcher: Fetcher = (url: string | URL) => {
   const href = url.toString();
   const body = href.includes("api.osv.dev")
@@ -371,10 +350,6 @@ const unpublishedVersionFetcher: Fetcher = (url: string | URL) => {
   return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
 };
 
-/**
- * deno 2.9's stderr when one npm import names a version npm does not
- * publish beside another that resolves: it names the wrong import.
- */
 function unpublishedVersionDocStderr(url: string): string {
   return [
     "Warning Failed resolving types. Could not find constraint 'zod@4' in the list of packages.",
@@ -509,7 +484,6 @@ Deno.test("extension quality: a file: package.json dependency loses the dependen
       join(repo, "package.json"),
       JSON.stringify({ dependencies: { shared: "file:./shared" } }) + "\n",
     );
-    // node_modules as npm install leaves a file: dependency, copied in
     const installed = join(repo, "node_modules", "shared");
     await write(
       join(installed, "package.json"),

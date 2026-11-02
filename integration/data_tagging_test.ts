@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for data tagging and tag-based queries.
- *
- * Tests the full flow:
- * 1. Create data with various tags
- * 2. Verify logical views organize by tags
- * 3. Query data by tag filters
- */
-
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
@@ -66,10 +57,6 @@ function createOwner(ref: string): OwnerDefinition {
     ownerRef: ref,
   };
 }
-
-// ============================================================================
-// Basic Tagging
-// ============================================================================
 
 Deno.test("Data Tagging: create data with required type tag", async () => {
   await withTempDir(async (repoDir) => {
@@ -174,7 +161,6 @@ Deno.test("Data Tagging: tags persist across versions", async () => {
       ownerDefinition: owner,
     });
 
-    // Write multiple versions
     for (let i = 1; i <= 3; i++) {
       await repo.save(
         type,
@@ -184,7 +170,6 @@ Deno.test("Data Tagging: tags persist across versions", async () => {
       );
     }
 
-    // Check tags on each version
     for (let v = 1; v <= 3; v++) {
       const loaded = await repo.findByName(type, modelId, "persistent-tags", v);
       assertExists(loaded);
@@ -194,10 +179,6 @@ Deno.test("Data Tagging: tags persist across versions", async () => {
     }
   });
 });
-
-// ============================================================================
-// Query Data by Tags
-// ============================================================================
 
 Deno.test("Data Tagging: findByTag returns matching records", async () => {
   await withTempDir(async (repoDir) => {
@@ -211,7 +192,6 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:find-tag");
 
-    // Create multiple models with different data types
     const models = [
       { name: "vpc-model", dataName: "vpc-state", type: "resource" },
       { name: "subnet-model", dataName: "subnet-state", type: "resource" },
@@ -244,7 +224,6 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
       );
     }
 
-    // Build context and query by tags
     const catalog = new CatalogStore(
       join(repoDir, ".swamp", "data", "_catalog.db"),
     );
@@ -262,22 +241,18 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
 
       assertExists(context.data);
 
-      // Find all resources
       const resources = await context.data.findByTag("type", "resource");
       assertEquals(resources.length, 2);
       assertEquals(resources.every((r) => r.tags.type === "resource"), true);
 
-      // Find all logs
       const logs = await context.data.findByTag("type", "log");
       assertEquals(logs.length, 1);
       assertEquals(logs[0].tags.type, "log");
 
-      // Find all configs
       const configs = await context.data.findByTag("type", "config");
       assertEquals(configs.length, 1);
       assertEquals(configs[0].tags.type, "config");
 
-      // Non-matching tag returns empty
       const nonexistent = await context.data.findByTag("type", "nonexistent");
       assertEquals(nonexistent.length, 0);
     } finally {
@@ -298,7 +273,6 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:custom-tags");
 
-    // Create models with different environments
     const environments = ["production", "staging", "development"];
 
     for (const env of environments) {
@@ -343,7 +317,6 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
 
       assertExists(context.data);
 
-      // Find by environment
       const prodData = await context.data.findByTag(
         "environment",
         "production",
@@ -358,7 +331,6 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
       assertEquals(stagingData.length, 1);
       assertEquals(stagingData[0].tags.environment, "staging");
 
-      // Find all state types (all 3)
       const allStates = await context.data.findByTag("type", "state");
       assertEquals(allStates.length, 3);
     } finally {
@@ -395,7 +367,6 @@ Deno.test("Data Tagging: findByTag returns only latest version with matching tag
       ownerDefinition: owner,
     });
 
-    // Write 5 versions
     for (let i = 1; i <= 5; i++) {
       await dataRepo.save(
         type,
@@ -422,21 +393,15 @@ Deno.test("Data Tagging: findByTag returns only latest version with matching tag
 
       assertExists(context.data);
 
-      // findByTag returns only the latest version, not all versions
       const results = await context.data.findByTag("type", "versioned");
       assertEquals(results.length, 1);
 
-      // Verify it's the latest version
       assertEquals(results[0].version, 5);
     } finally {
       catalog.close();
     }
   });
 });
-
-// ============================================================================
-// Tag Categories
-// ============================================================================
 
 Deno.test("Data Tagging: different type categories", async () => {
   await withTempDir(async (repoDir) => {
@@ -450,7 +415,6 @@ Deno.test("Data Tagging: different type categories", async () => {
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:categories");
 
-    // Create data with different type categories
     const categories = [
       { name: "resource", description: "Cloud resources" },
       { name: "log", description: "Execution logs" },
@@ -501,7 +465,6 @@ Deno.test("Data Tagging: different type categories", async () => {
 
       assertExists(context.data);
 
-      // Verify each category can be found
       for (const category of categories) {
         const results = await context.data.findByTag("type", category.name);
         assertEquals(results.length, 1);
@@ -525,7 +488,6 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:workflow-tags");
 
-    // Simulate workflow step outputs with workflow/step tags
     const workflows = [
       { workflow: "deploy", steps: ["build", "test", "deploy"] },
       { workflow: "ci", steps: ["lint", "test"] },
@@ -582,21 +544,18 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
 
       assertExists(context.data);
 
-      // Find all step outputs
       const allStepOutputs = await context.data.findByTag(
         "source",
         "step-output",
       );
       assertEquals(allStepOutputs.length, 5);
 
-      // Find by workflow
       const deploySteps = await context.data.findByTag("workflow", "deploy");
       assertEquals(deploySteps.length, 3);
 
       const ciSteps = await context.data.findByTag("workflow", "ci");
       assertEquals(ciSteps.length, 2);
 
-      // Find by step
       const testSteps = await context.data.findByTag("step", "test");
       assertEquals(testSteps.length, 2);
     } finally {
@@ -604,10 +563,6 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
     }
   });
 });
-
-// ============================================================================
-// Tag Access in CEL Expressions
-// ============================================================================
 
 Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async () => {
   await withTempDir(async (repoDir) => {
@@ -654,7 +609,6 @@ Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async 
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Access tags directly via resource namespace (specName → instanceName → record)
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
     assertExists(modelData.resource);
@@ -668,10 +622,6 @@ Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async 
     assertEquals(dataRecord.tags.region, "us-west-2");
   });
 });
-
-// ============================================================================
-// Multiple Data Items Per Model
-// ============================================================================
 
 Deno.test("Data Tagging: multiple resource items with different tags", async () => {
   await withTempDir(async (repoDir) => {
@@ -692,7 +642,6 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
     });
     await definitionRepo.save(type, definition);
 
-    // Create multiple resource data items with different custom tags
     const dataItems: Array<{
       name: string;
       tags: Record<string, string>;
@@ -753,7 +702,6 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
         new RunSensitiveValues(),
       );
 
-      // Access all resource data from model (resource is a map of specName -> instanceName -> DataRecord)
       const modelData = context.model["multi-output-model"];
       assertExists(modelData);
       assertExists(modelData.resource);
@@ -766,7 +714,6 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
       assertExists(resourceMap["exit-code"]);
       assertExists(resourceMap["timing"]);
 
-      // Verify custom tags (access via specName -> instanceName)
       assertEquals(resourceMap["stdout"]["stdout"].tags.stream, "stdout");
       assertEquals(resourceMap["stderr"]["stderr"].tags.stream, "stderr");
       assertEquals(
@@ -774,7 +721,6 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
         "performance",
       );
 
-      // Query by tags
       assertExists(context.data);
 
       const resources = await context.data.findByTag("type", "resource");
@@ -790,10 +736,6 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
     }
   });
 });
-
-// ============================================================================
-// Edge Cases
-// ============================================================================
 
 Deno.test("Data Tagging: empty findByTag results", async () => {
   await withTempDir(async (repoDir) => {
@@ -813,7 +755,6 @@ Deno.test("Data Tagging: empty findByTag results", async () => {
 
     assertExists(context.data);
 
-    // Query in empty repo
     const results = await context.data.findByTag("type", "anything");
     assertEquals(results, []);
   });
@@ -883,7 +824,6 @@ Deno.test("Data Tagging: tag-based organization in findAllForModel", async () =>
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:find-all");
 
-    // Create data with different types
     const dataItems = [
       { name: "data-1", type: "resource" },
       { name: "data-2", type: "resource" },
@@ -912,7 +852,6 @@ Deno.test("Data Tagging: tag-based organization in findAllForModel", async () =>
     const allData = await repo.findAllForModel(type, modelId);
     assertEquals(allData.length, 4);
 
-    // Organize by type tag
     const byType: Record<string, typeof allData> = {};
     for (const d of allData) {
       const t = d.tags.type;

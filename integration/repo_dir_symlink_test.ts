@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A repo dir given by --repo-dir or SWAMP_REPO_DIR through a symlink must
-// reach the .swamp SQLite stores as its symlink-resolved path: node:sqlite
-// refuses to open a database whose path runs through a symlink
-// (swamp-club#3552).
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { resolveRepoDir } from "../src/cli/context.ts";

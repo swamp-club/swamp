@@ -17,28 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Fitness test for the records of workflow signal waits (swamp-club#3093):
- *
- *   1. Only `signal_wait_records.ts` names the two control-plane key
- *      families, `waits/` and `wait-outcomes/`, and only
- *      `wait_key_claim.ts` names the third, `wait-keys/` (swamp-club#3209).
- *   2. `workflow signal` never saves a run and never takes a run claim,
- *      locally or delivered through `swamp serve` (swamp-club#3094).
- *   3. A run repository's `beforeSave` hook, which closes the waits of a
- *      run saved as ended, is assigned in one place.
- *   4. Every file that builds a WorkflowExecutionService gives it its wait
- *      support.
- *
- * A signal is delivered by creating a write-once outcome record, and the
- * run record changes only inside a resume. A second writer of either key
- * family, a signal path that writes the run, or a context that builds its
- * repository without the hook would each bring back a race this design
- * removes. Pinning them makes each a change someone reviews.
- *
- * Static — no subprocesses, nothing is executed.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -56,7 +34,6 @@ import {
 import { WAIT_KEY_RECORD_PREFIX } from "../src/domain/workflows/wait_key_claim.ts";
 import { PENDING_SIGNAL_PREFIX } from "../src/domain/workflows/pending_signal.ts";
 
-/** True when a line of `source` outside a comment matches `pattern`. */
 function mentions(source: string, pattern: RegExp): boolean {
   return source.split("\n").some((line) =>
     !isCommentLine(line) && pattern.test(line)
@@ -73,16 +50,12 @@ async function filesMentioning(pattern: RegExp): Promise<string[]> {
   return files.sort();
 }
 
-/** A string literal that starts with one of the two key families. */
 const WAIT_KEY_LITERAL = /["'`](?:waits|wait-outcomes)\//;
 
-/** A string literal that starts with the family of key records. */
 const KEY_RECORD_LITERAL = /["'`]wait-keys\//;
 
-/** A string literal that starts with the family of pending signals. */
 const PENDING_SIGNAL_LITERAL = /["'`]wait-pending\//;
 
-/** An assignment of a run repository's save hook. */
 const BEFORE_SAVE_ASSIGNMENT = /\.beforeSave\s*=[^=]/;
 
 const EXECUTION_SERVICE_CONSTRUCTION = /new WorkflowExecutionService\(/;
@@ -181,21 +154,6 @@ Deno.test("only signal_wait_records.ts names the wait key families", async () =>
   );
 });
 
-/**
- * The files a signal passes through on its way to the outcome record: the
- * acceptance use case, and serve's delivery function and HTTP route. The
- * WebSocket handler shares a file with handlers that do save runs, so it is
- * held to calling the delivery function instead (the next test).
- *
- * The key claims are on the list for a signal addressed by key
- * (swamp-club#3210), which finds its wait through them. That holds every
- * function of the file to the rule, the ones a step claims and releases a
- * key with included: none of them has a reason to write a run.
- *
- * So are the files a signal that arrives before its wait opens is held by
- * (swamp-club#3212): it writes a pending record and, when it finds a wait,
- * that wait's outcome.
- */
 const SIGNAL_PATH_FILES = [
   ["src", "libswamp", "workflows", "signal.ts"],
   ["src", "domain", "workflows", "wait_key_claim.ts"],
@@ -287,9 +245,9 @@ Deno.test("both serve transports deliver a signal through deliverSignalForCaller
 });
 
 Deno.test("signal_delivery.ts is the only file of serve that runs the acceptance use case", async () => {
-  // A signal by wait ID and one by workflow and key (swamp-club#3211) are
-  // authorized in one place. A second caller of workflowSignal in serve
-  // would be a second place to get that right.
+  // a signal by wait ID and one by workflow and key are authorized in one
+  // place; a second serve caller of workflowSignal would be a second place to
+  // get that right
   const callers = (await filesMentioning(/\bworkflowSignal\s*\(/)).filter((
     file,
   ) => file.startsWith("src/serve/"));

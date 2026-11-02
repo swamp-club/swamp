@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness rule: every command that takes `--server` also takes `--ca-cert`.
- *
- * The TLS UnknownIssuer guidance in `src/cli/remote_run.ts` tells users of any
- * `--server` command to pass `--ca-cert`. Commands that hand-rolled their
- * remote options instead of using `withRemoteOptions` left it out, so
- * following the advice failed with "Unknown option" (swamp-club#2360).
- *
- * The rule walks every Cliffy command exported from `src/cli/commands/` and
- * all of its subcommands, hidden ones included.
+ * every command that takes --server also takes --ca-cert, because the TLS
+ * guidance tells users to pass it; walks every exported command and subcommand,
+ * hidden ones included
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -44,9 +38,8 @@ import { SRC_DIR } from "./arch_fitness_helpers.ts";
 await initializeLogging({});
 
 /**
- * Commands whose `--server` never opens a TLS connection to a `swamp serve`
- * instance, so `--ca-cert` would have nothing to apply to. Pinned by object
- * identity so a rename cannot silently widen the exemption.
+ * commands whose --server never opens a TLS connection to a serve instance;
+ * pinned by object identity so a rename cannot silently widen the exemption
  */
 const EXEMPT = new Map<AnyCommand, string>([
   [authLoginCommand, "--server is the swamp-club URL, not a serve instance"],
@@ -59,10 +52,7 @@ function isCliffyCommand(value: unknown): value is AnyCommand {
     typeof (value as AnyCommand).getBaseOption === "function";
 }
 
-/**
- * Modules that execute on import (subprocess entry points) must not be
- * imported here — doing so would run them.
- */
+/** modules that execute on import must not be imported here, or they would run */
 function isEntryScript(source: string): boolean {
   return /^await /m.test(source) || /^if \(import\.meta\.main\)/m.test(source);
 }
@@ -88,7 +78,6 @@ async function loadExportedCommands(): Promise<AnyCommand[]> {
   return commands;
 }
 
-/** Paths of commands that declare `--server` but not `--ca-cert`. */
 function commandsMissingCaCert(roots: AnyCommand[]): string[] {
   const seen = new Set<AnyCommand>();
   const missing = new Set<string>();

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for cancelling a suspended run through serve
- * (swamp-club#2514). A run suspended at a manual_approval gate, with no
- * process driving it, is cancelled through the HTTP cancel fallback and the
- * WebSocket workflow.cancel handler. Uses a real repository on disk and
- * grants loaded from a grants file. Also covers how the cancel serializes
- * with a resume, approve or reject of the same run in one serve process.
- */
-
 import { join } from "@std/path";
 import { assert, assertEquals } from "@std/assert";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
@@ -74,7 +65,6 @@ import { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loade
 import { validateGrantCondition } from "../src/infrastructure/cel/grant_condition_environment.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -82,7 +72,6 @@ await initializeLogging({});
 
 const GATE = "approve-deploy";
 
-/** An operator who may run the gated workflows, and one limited to others. */
 const GRANTS_FILE = `grants:
   - subject: user:operator
     effect: allow
@@ -141,11 +130,6 @@ interface Harness {
   audit: AuditEvent[];
 }
 
-/**
- * Loads the grants file the way serve does, runs a gated workflow until it
- * suspends with a serve instance id, and builds a token-mode connection
- * context. `other` is a second workflow the outsider may run.
- */
 async function suspendAtGate(repoDir: string): Promise<Harness> {
   const workflow = gatedWorkflow(`cancel-gated-${crypto.randomUUID()}`);
   const other = gatedWorkflow(`cancel-other-${crypto.randomUUID()}`);
@@ -276,7 +260,6 @@ async function loadRun(h: Harness): Promise<WorkflowRun | null> {
   );
 }
 
-/** Counts the reservations taken on the harness's registry. */
 function countReservations(h: Harness): () => number {
   const reserve = h.registry.reserve.bind(h.registry);
   let count = 0;
@@ -287,10 +270,6 @@ function countReservations(h: Harness): () => number {
   return () => count;
 }
 
-/**
- * Gives the harness a real sync gate and counts its exclusive acquisitions.
- * Returns the gate and the count.
- */
 function withGate(h: Harness): { gate: SyncGate; acquisitions: () => number } {
   const gate = createSyncGate();
   const acquire = gate.acquire.bind(gate);
@@ -303,12 +282,6 @@ function withGate(h: Harness): { gate: SyncGate; acquisitions: () => number } {
   return { gate, acquisitions: () => count };
 }
 
-/**
- * A resume registered under the run's id. Once aborted it finishes; with
- * `leaves` it also leaves the registry, as a resume does after saving the run
- * suspended at its next gate. Otherwise it is still pushing when the cancel
- * stops waiting.
- */
 function registeredResume(h: Harness, leaves = false): ActiveRun {
   let finish!: () => void;
   const resume: ActiveRun = {
@@ -373,7 +346,6 @@ Deno.test({
       const denied = await cancelOverWs(h, OUTSIDER);
       assertEquals(denied.map((r) => r.error), [notFound(h.runId)]);
 
-      // The outsider may run `other`, but the run belongs to `workflow`.
       const mismatched = await cancelOverWs(h, OUTSIDER, {
         workflowIdOrName: h.other.name,
       });
@@ -423,7 +395,6 @@ Deno.test({
       });
       assertEquals(unknown.map((r) => r.error), [notFound(unknownId)]);
 
-      // The operator may cancel the run, but not under another workflow.
       const misnamed = await cancelOverWs(h, OPERATOR, {
         workflowIdOrName: h.other.name,
       });
@@ -689,7 +660,6 @@ Deno.test({
         });
         assertEquals(mismatched.map((r) => r.error), notFound);
 
-        // An allowed caller still learns the run is busy.
         const allowed = await cancelOverWs(h, OPERATOR);
         assertEquals(allowed.map((r) => r.error?.message), [
           SUSPENDED_RUN_BUSY_MESSAGE,

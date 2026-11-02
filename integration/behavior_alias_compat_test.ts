@@ -17,10 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Goldens for the behavior spelling of stored formats (swamp-club#3334).
-// Captured on the code before the spelling was accepted: every model-spelled
-// workflow must normalise byte-identically, and `swamp workflow schema` may
-// only grow by the behavior step-task variants.
+// goldens for the behavior spelling of stored formats: every model-spelled
+// workflow must normalise byte-identically
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
@@ -132,7 +130,6 @@ Deno.test("behavior alias: workflow edit writes a behavior-spelled file back in 
     );
     assertEquals(events.at(-1)?.kind, "completed");
     const written = await Deno.readTextFile(repo.getPath(stored.id));
-    // Older binaries read what swamp writes: the model form, byte for byte.
     assertEquals(written, modelFile);
     assert(!written.includes("behavior"), written);
   });
@@ -164,7 +161,6 @@ Deno.test("behavior alias: audit rules match in the model spelling without touch
     const config = await readServeConfigFile(repoDir, configPath);
     const audit = parseAuditConfig(config);
     assert(audit);
-    // Built as serve builds them.
     const policy = new AuditPolicy(
       audit.policyRules.map((r) => ({
         category: undefined,

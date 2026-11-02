@@ -17,13 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Typed-secrets refusals carry no value (design/enablers/typed-secrets.md
-// Section 4, typed-secrets 3.1). A Secret holds no value, so the canaries go
-// where a value can still be: a data-origin bag entry that holds its value
-// until Phase 4, a non-secret operand of the refused operation, and the text
-// parts of a composition. Each is bound into the expression, never written
-// into it, because a refusal names the expression. The CelEvaluator, the
-// run's bag registry and the canary classes are wired together in-process.
+// canaries go where a value can still be: a data-origin bag entry, a non-secret
+// operand of the refused operation, the text parts of a composition; each is
+// bound into the expression since a refusal names it
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { SecretRefusedError } from "../src/domain/expressions/errors.ts";
@@ -32,7 +28,6 @@ import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
 import { type Canary, generateCanaries } from "./canary_values.ts";
 
-/** Every form a value could take in error text: raw, escaped, encoded. */
 function forms(value: string): string[] {
   return [
     value,
@@ -42,7 +37,6 @@ function forms(value: string): string[] {
   ];
 }
 
-/** Everything an error shows: its fields, its cause chain and its inspection. */
 function errorText(error: SecretRefusedError): string {
   const parts: string[] = [
     error.message,

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A v3 command prints its result only once its root has committed
- * (swamp-club#3759). Each case runs the CLI in-process against a v3
- * filesystem datastore whose commit fails after the command has done its
- * work: the chunk storage stops answering, as an unreachable bucket does,
- * or the commit's append fails. The command must fail without a success
- * document or line on stdout, and keep nothing.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -80,11 +71,6 @@ import {
 
 await initializeLogging({});
 
-/**
- * The run failed with the unreachable-storage error, naming that its steps
- * ran, and nothing on stdout says it succeeded. In log mode its progress
- * still streamed: only its result was held.
- */
 function assertUnreachableRun(
   result: CapturedCli,
   mode: "json" | "log",
@@ -102,12 +88,6 @@ function assertUnreachableRun(
   }
 }
 
-/**
- * The workflow run failed with the run-partly-committed error (swamp-club#3802):
- * its start checkpoint had committed its record, so it names the run, the
- * recover command, and that its steps ran, and exits 1, not 75. Nothing on
- * stdout says it succeeded.
- */
 function assertPartlyCommittedRun(
   result: CapturedCli,
   mode: "json" | "log",
@@ -136,7 +116,6 @@ function assertPartlyCommittedRun(
   }
 }
 
-/** The command failed, and nothing on stdout says it succeeded. */
 function assertFailedWithoutSuccess(result: CapturedCli): void {
   const text = result.stdout.join("\n");
   assert(
@@ -239,8 +218,8 @@ for (const mode of ["json", "log"] as const) {
             ],
           });
           assertPartlyCommittedRun(result, mode, workflow.id);
-          // Only the run's start was committed, before its step started:
-          // recover needs no acknowledgement (swamp-club#3882).
+          // only the run's start was committed, before its step started, so
+          // recover needs no acknowledgement
           const [run] = (result.error as RunPartlyCommittedError).runs;
           assertEquals(run.unknownSteps, []);
           assert(
@@ -256,11 +235,6 @@ for (const mode of ["json", "log"] as const) {
   });
 }
 
-/**
- * What `workflow recover` decides for run `runId` as it was committed:
- * another checkout catches up from the commit log and reads the run, then
- * interrupts it as recover does for a run whose owner is gone.
- */
 async function recoveryOfCommittedRun(
   repos: RowRepos,
   workflow: Workflow,
@@ -327,7 +301,6 @@ Deno.test({
           workflow,
           run.runId,
         );
-        // Without the flag recover refuses; the printed command has it.
         assertEquals(assessment.canAutoRecover, false);
         assertEquals(assessment.unguardedSteps, ["write"]);
       } finally {
@@ -353,7 +326,6 @@ Deno.test({
         });
         assert(run.error instanceof RunPartlyCommittedError, String(run.error));
         const runId = run.error.runs[0].runId;
-        // The CLI's teardown after a failed command, still cut off.
         await closeV3DatastoresAfterFailure(run.error);
         faults.storageDown = false;
         const search = await runCliCapturing({
@@ -416,7 +388,6 @@ Deno.test({
           ],
         });
         assertEquals(written.error, undefined, String(written.error));
-        // B has not applied A's commit, whose content is in chunks.
         faults.storageDown = true;
         const cutOff = await runCliCapturing({
           args: [
@@ -565,10 +536,6 @@ Deno.test({
   },
 });
 
-/**
- * Leaves orphaned data in A: a big-writer model whose `write` committed its
- * payload, then its definition deleted.
- */
 async function seedOrphanedData(repos: RowRepos): Promise<string> {
   const type = registerBigWriter(false);
   const definition = Definition.create({

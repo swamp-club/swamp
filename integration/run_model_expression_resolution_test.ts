@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// context.runModel evaluates its target definition's expressions as a
-// standalone run does, at both places an invocation service is built: the
-// workflow step executor and the CLI / serve model method run
-// (swamp-club#3227).
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { walk } from "@std/fs";
@@ -57,9 +52,7 @@ interface Fixture {
   repo: RepositoryContext;
   dir: string;
   secret: string;
-  /** Global arguments the target's method received, one entry per run. */
   received: Record<string, unknown>[];
-  /** What each runModel call returned to the caller. */
   results: RunModelResult[];
 }
 
@@ -181,11 +174,6 @@ async function runWorkflow(fx: Fixture, workflow: Workflow) {
   return await service.execute(workflow.name);
 }
 
-/**
- * Asserts the nested run wrote its echo artifact with the secret redacted,
- * and that no file under .swamp — run logs, run records, data, the evaluated
- * cache — holds the secret in plaintext (the vault stores it encrypted).
- */
 async function assertSecretRedactedOnDisk(fx: Fixture): Promise<void> {
   let redactedEchoes = 0;
   for await (

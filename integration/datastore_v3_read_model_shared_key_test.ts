@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 read model with record keys that two partitions write
- * (swamp-club#3256): a same-key definition rename puts the new name's record
- * at the key the old name's partition then tombstones. A partition catch-up
- * applies one partition's commits ahead of the change feed, so the file must
- * follow feed positions, not the order commits are applied in.
- *
- * The property runs random histories through random mixes of store and
- * partition catch-ups, and checks the result against an in-order replay and
- * against an independent spec of the in-order result.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -63,7 +51,6 @@ function partitionFor(name: Name): PartitionKey {
   return partitionOf({ kind: "config", definitionKind: "model", name });
 }
 
-/** One op of a history: a put of `text` at a key, or a tombstone of it. */
 interface OpSpec {
   readonly key: number;
   readonly text?: string;
@@ -86,11 +73,6 @@ async function buildOp(name: Name, spec: OpSpec): Promise<Op> {
     });
 }
 
-/**
- * Appends a history to the store, in order. Returns the commits that landed,
- * in feed order (the store refuses nothing here, but a refusal would drop the
- * commit, as the store drops it).
- */
 async function appendHistory(
   env: V3Env,
   history: readonly CommitSpec[],
@@ -164,7 +146,6 @@ async function expectedFiles(
   );
 }
 
-/** The read model's ownership rows, in key order. */
 function ownership(env: V3Env): unknown[] {
   const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE), {
     readOnly: true,
@@ -186,10 +167,6 @@ const signal = () => AbortSignal.timeout(30_000);
 
 type CatchUp = "none" | "store" | Name;
 
-/**
- * Appends a history, catching the read model up after each commit as
- * `plan` says, then catches up fully. Returns what landed.
- */
 async function runInterleaved(
   env: V3Env,
   history: readonly CommitSpec[],
@@ -212,7 +189,6 @@ async function runInterleaved(
   }
 }
 
-/** Replays every commit in feed order with a fresh state. */
 async function replayInOrder(env: V3Env): Promise<void> {
   await Deno.remove(join(env.stateDir, READ_MODEL_STATE_FILE));
   const readModel = env.openReadModel();
@@ -226,7 +202,6 @@ async function replayInOrder(env: V3Env): Promise<void> {
 const put = (key: number, text: string): OpSpec => ({ key, text });
 const tomb = (key: number): OpSpec => ({ key });
 
-/** A same-key rename alpha → beta: beta puts the key, then alpha tombstones it. */
 const SAME_KEY_RENAME: CommitSpec[] = [
   { name: "alpha", ops: [put(0, "alpha's definition")] },
   { name: "beta", ops: [put(0, "beta's definition")] },
@@ -250,9 +225,8 @@ for (
 }
 
 Deno.test("read model, shared key: an older put applied after a newer one leaves the newer file (swamp-club#3256)", async () => {
-  // The order a review found broke a digest-only rule: the new name's
-  // partition is caught up before the store catch-up applies the old name's
-  // earlier put and its tombstone.
+  // the new name's partition is caught up before the store catch-up applies the
+  // old name's earlier put and its tombstone
   await withV3Env(async (env) => {
     await appendHistory(env, SAME_KEY_RENAME);
     const readModel = env.openReadModel();

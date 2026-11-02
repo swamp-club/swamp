@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#3074: an HA replica that has an enrollment token's record but
- * not yet its definition (the definition reaches it on the next runtime
- * data poll) must refuse enrollment without creating a definition of its
- * own. A second definition under the same name, with a new id, would hide
- * the token's record by name once pushed. Wires two real repos standing in
- * for two replicas, the real enrollment-token model, and a real
- * WorkerGateway on the replica that did not mint the token.
- */
-
 import { assertEquals, assertRejects } from "@std/assert";
 import { copy, exists } from "@std/fs";
 import { join } from "@std/path";
@@ -100,15 +90,10 @@ async function removeReplica(replica: Replica): Promise<void> {
   }
 }
 
-/** `_catalog.db` and its `-wal`/`-shm` sidecars. */
 function isCatalogFile(name: string): boolean {
   return name === "_catalog.db" || name.startsWith("_catalog.db-");
 }
 
-/**
- * Copies one cache subdirectory from the minting replica, as a pull of that
- * subdirectory from the shared datastore would.
- */
 async function pullSubdir(
   from: Replica,
   to: Replica,
@@ -149,7 +134,6 @@ async function mintToken(minter: Replica, name: string): Promise<string> {
   return response.payload.data.token as string;
 }
 
-/** The id in a token's definition file, or null when the file is absent. */
 async function tokenDefinitionId(
   replica: Replica,
   name: string,
@@ -165,7 +149,6 @@ async function tokenDefinitionId(
   return parsed.id;
 }
 
-/** An in-process worker attached to the gateway's control plane. */
 function connectWorker(gateway: WorkerGateway): RpcChannel {
   const workerChannel: RpcChannel = new RpcChannel({
     send: (data) => void Promise.resolve().then(() => attached.feed(data)),
@@ -231,8 +214,6 @@ Deno.test("worker enroll on a replica without the token's definition creates non
     const mintedId = await tokenDefinitionId(minter, name);
     assertEquals(typeof mintedId, "string");
 
-    // The peer before its next poll: the record arrived, the definition
-    // did not.
     await pullSubdir(minter, peer, "data");
     const error = await assertRejects(
       () => enroll(connectWorker(gateway), token),
@@ -241,7 +222,6 @@ Deno.test("worker enroll on a replica without the token's definition creates non
     assertEquals(error.code, "token_not_synced");
     assertEquals(await tokenDefinitionId(peer, name), null);
 
-    // The poll brings the minted definition; enrollment redeems it.
     await pullSubdir(minter, peer, "auto-definitions");
     const result = await enroll(connectWorker(gateway), token);
     assertEquals(result.workerId, name);

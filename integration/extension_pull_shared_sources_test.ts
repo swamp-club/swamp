@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pull installs the shared sources push places at the archive root
- * (swamp-club#3384), so a pulled extension's source resolves and rebundles
- * as it did in the author's repository. Wires the real push resolver,
- * module graph reader, planner and archive assembly to the real install,
- * bundler and removal; only the registry download is mocked.
+ * pull installs the shared sources push places at the archive root, so a pulled
+ * extension's source resolves and rebundles as in the author's repository; only
+ * the registry download is mocked
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -127,7 +125,6 @@ async function withRepos(
   }
 }
 
-/** Packages the author's extension as push does and returns the archive. */
 async function pushArchive(author: string): Promise<Uint8Array> {
   const manifestPath = join(author, "manifest.yaml");
   const { repoContext } = await requireInitializedRepoReadOnly({
@@ -182,7 +179,6 @@ async function pushArchive(author: string): Promise<Uint8Array> {
   return prepared.archiveBytes;
 }
 
-/** Installs `archive` into `consumer` as pull does, with the download mocked. */
 async function pull(
   consumer: string,
   lockfile: LockfileRepository,
@@ -255,11 +251,9 @@ Deno.test("extension pull: installs archive-root shared sources so the pulled so
       const lockPath = canonicalLockfilePath(relative(consumer, path));
       assertEquals(await exists(path), true, path);
       assertEquals(files.includes(lockPath), true, path);
-      // The report lists the same paths in the same form.
       assertEquals(result?.extractedFiles.includes(lockPath), true, path);
     }
 
-    // The installed source resolves and rebundles on its own.
     const entry = join(root, "models", "rel.ts");
     const bundle = await bundleExtension(entry, Deno.execPath());
     assertStringIncludes(bundle, "41");
@@ -274,11 +268,9 @@ Deno.test("extension pull: installs archive-root shared sources so the pulled so
       new TextDecoder().decode(check.stderr),
     );
 
-    // Pulling the same version again replaces it cleanly.
     await pull(consumer, lockfile, archive, true);
     assertEquals(lockfile.getEntry(NAME)!.files!.sort(), [...files].sort());
 
-    // rm removes the shared sources with everything else.
     const catalog = new ExtensionCatalogStore(
       join(consumer, ".swamp", "_extension_catalog_rm.db"),
     );

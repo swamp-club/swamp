@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pins what the single-resource serve handlers send back for a missing
- * resource and for an allowed request, by name and by id. Written against the
- * handlers before swamp-club#2674 moved them to resolve-then-authorize, so
- * that change must leave every frame here untouched.
+ * pins the frames single-resource serve handlers send for a missing resource
+ * and an allowed request, by name and id, so moving them to
+ * resolve-then-authorize must leave every frame untouched
  */
 
 import { assertEquals } from "@std/assert";
@@ -50,7 +49,6 @@ function request(type: string, payload: Record<string, unknown>) {
   return { type, id: crypto.randomUUID(), payload };
 }
 
-/** Each frame as `[type, event kind or error code]`, for run streams. */
 function shape(frames: Frame[]): [string, string][] {
   return frames.map((frame) => {
     const event = frame.event as { kind?: string } | undefined;
@@ -145,8 +143,7 @@ for (const missing of [MISSING_NAME, MISSING_ID]) {
         assertEquals(errorFrame(frames)?.error, expected, type);
       }
 
-      // model.delete's message is not pinned: it renders as
-      // "[object Object]" today (swamp-club#2716).
+      // model.delete's message is not pinned: it renders as [object Object]
       const deleted = await sendRequest(
         ctx,
         request("model.delete", { modelIdOrName: missing }),
@@ -384,10 +381,8 @@ Deno.test("serve characterization: running an allowed workflow by id completes",
   });
 });
 
-// Output and run reads (swamp-club#2673), pinned against the handlers before
-// they moved to resolve-then-authorize. Each output or run id below starts
-// with a hex prefix shared by two of them, so a short prefix is ambiguous and
-// a longer one names exactly one.
+// each output or run id below starts with a hex prefix shared by two of them,
+// so a short prefix is ambiguous and a longer one names exactly one
 
 const OUTPUT_A = "abc00000-0000-4000-8000-000000000001";
 const OUTPUT_B = "abc11111-0000-4000-8000-000000000001";
@@ -405,7 +400,6 @@ async function historyFixtures(repo: ServeRepo) {
   return { model, workflow };
 }
 
-/** The request types that read an output or run, and the field naming it. */
 const HISTORY_READS = [
   ["model.output.get", "outputIdOrModelName"],
   ["model.method.history.get", "outputIdOrModelName"],
@@ -429,7 +423,6 @@ const runOrWorkflowNotFound = (value: string) =>
   `No workflow run or workflow found: ${value}`;
 const workflowHistoryNotFound = { reason: "not_found" };
 
-/** Today's error for a string that names no output, run, model or workflow. */
 function missingError(type: string, value: string): Record<string, unknown> {
   const hex = /^[0-9a-f-]{3,}$/i.test(value);
   switch (type) {
@@ -587,7 +580,6 @@ Deno.test("serve characterization: output and run reads by prefix, full id and n
         (d) => d.id,
         OUTPUT_A,
       ],
-      // By name or model id: the model's latest output.
       [
         "model.output.get",
         "outputIdOrModelName",

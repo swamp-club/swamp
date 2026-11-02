@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 gate for the data and output repositories (swamp-club#3250). The
- * real repositories run on v3: inside a commit-log root over a v3 context
- * hook, so every write stages typed changes, and the unit commits them to a
- * real `commits.db` and filesystem `storage/1`. A read model then catches
- * up into a second directory, and its files (bytes) and `_catalog_v3.db`
- * rows must equal what the repositories wrote in the first. A missed key,
- * a wrong intent or a missing version fails here.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -92,7 +82,6 @@ const PROVENANCE = {
 /** A pid no process holds, so a pending row naming it is an orphan. */
 const DEAD_PID = 2147483647;
 
-/** The repositories of one v3 repository context, in their own directory. */
 class V3Writer {
   readonly dir: string;
   readonly root: string;
@@ -133,10 +122,6 @@ class V3Writer {
     );
   }
 
-  /**
-   * Runs `fn` in a commit-log root over this context, which commits after,
-   * to the commit store or to `sink` in front of it.
-   */
   run<T>(
     fn: (root: CommitLogRoot) => Promise<T>,
     sink: CommitSink = this.env.store,
@@ -151,7 +136,6 @@ class V3Writer {
     );
   }
 
-  /** The commits that landed on the model's partition, oldest first. */
   async commitSizes(): Promise<number[]> {
     const commits = await this.env.store.readPartition(
       this.namespaceName,
@@ -163,7 +147,6 @@ class V3Writer {
   }
 }
 
-/** Catches a read model up and checks it holds what the writer wrote. */
 async function assertMatches(writer: V3Writer): Promise<void> {
   const readModel = writer.env.openReadModel();
   try {
@@ -200,7 +183,6 @@ function text(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
-/** Content above the inline limit, so it is stored as several chunks. */
 function large(seed: string): Uint8Array {
   const bytes = new Uint8Array(20 * 1024);
   for (let i = 0; i < bytes.length; i++) {
@@ -238,8 +220,6 @@ for (const namespace of ["", "infra"]) {
           content,
         );
 
-      // Saves, one large enough to be stored as chunks from its file; a
-      // name capped at one version, so each save prunes the one before.
       await writer.run(() => save("a", text("a1")));
       await writer.run(() => save("a", text("a2")));
       await writer.run(() => save("a", large("a3")));
@@ -257,22 +237,17 @@ for (const namespace of ["", "infra"]) {
       });
       await assertMatches(writer);
 
-      // A versioned delete below the top, then of the top, and a save that
-      // reuses the deleted top's number, as v2 allocates it.
       await writer.run(() => repo.delete(type, MODEL_ID, "a", 1));
       await writer.run(() => repo.delete(type, MODEL_ID, "a", 3));
       await assertMatches(writer);
       await writer.run(() => save("a", text("a3 again")));
       await assertMatches(writer);
 
-      // A rename, a save to the renamed-away name, and deletes that expose
-      // the rename marker and then the version below it.
       await writer.run(() => repo.rename(type, MODEL_ID, "b", "e"));
       await assertMatches(writer);
       await writer.run(() => save("b", text("b3")));
       await writer.run(() => repo.delete(type, MODEL_ID, "b", 3));
       await assertMatches(writer);
-      // A rename whose marker reuses the number just deleted.
       await writer.run(() => repo.rename(type, MODEL_ID, "a", "f"));
       await assertMatches(writer);
 
@@ -285,7 +260,6 @@ for (const namespace of ["", "infra"]) {
       await writer.run(() => repo.append(type, MODEL_ID, "s", text(" more")));
       await assertMatches(writer);
 
-      // Content streamed in by a writer outside the repository.
       await writer.run(async () => {
         const allocated = await repo.allocateVersion(
           type,
@@ -303,8 +277,6 @@ for (const namespace of ["", "infra"]) {
       });
       await assertMatches(writer);
 
-      // Garbage collection, a whole-name delete and a save that starts the
-      // name again at version 1, and expiry.
       await writer.run(async () => {
         for (const n of [1, 2, 3]) await save("g", text(`g${n}`), 3);
       });
@@ -318,7 +290,6 @@ for (const namespace of ["", "infra"]) {
       await writer.run(() => repo.removeLatestMarker(type, MODEL_ID, "e"));
       await assertMatches(writer);
 
-      // A save inside a use case's child unit rolls up into the root.
       await writer.run(() =>
         runInCommitLogRoot(
           { markDirty: writer.hook },
@@ -336,7 +307,6 @@ for (const namespace of ["", "infra"]) {
       const repo = writer.data;
       const type = MODEL_TYPE;
 
-      // Promoted, and rolled back.
       await writer.run(async () => {
         const first = await repo.saveDeferred(
           type,
@@ -374,7 +344,6 @@ for (const namespace of ["", "infra"]) {
       await writer.run(() => repo.advanceLatestMarkers([late]));
       await assertMatches(writer);
 
-      // Two writers of one name finishing out of order in one unit.
       await writer.run(async () => {
         const one = await repo.allocateVersion(type, MODEL_ID, data("r"));
         const two = await repo.allocateVersion(type, MODEL_ID, data("r"));
@@ -385,8 +354,6 @@ for (const namespace of ["", "infra"]) {
       });
       await assertMatches(writer);
 
-      // An orphaned deferred write GC reclaims, and one a dead process had
-      // promoted (its marker moved, its row still pending).
       late = await writer.run(() =>
         repo.saveDeferred(type, MODEL_ID, data("t"), text("t1"))
       );
@@ -511,10 +478,9 @@ for (const namespace of ["", "infra"]) {
 }
 
 /**
- * Writes `count` promoted versions of `name` straight to the writer's files,
- * so a large removal has something to remove without saving thousands of
- * versions one by one. They are not committed to v3: a tombstone of a key
- * v3 never held is accepted, and the split is what these tests check.
+ * seeds promoted versions straight into the writer's files so a large removal
+ * needs no thousands of saves; they are not committed to v3, and a tombstone of
+ * a key v3 never held is accepted
  */
 async function seedVersions(
   writer: V3Writer,
@@ -539,7 +505,6 @@ async function seedVersions(
   await Deno.writeFile(join(nameDir, "latest"), text(String(count)));
 }
 
-/** The commits of the model's partition after the first `skip`. */
 async function commitsAfter(writer: V3Writer, skip: number) {
   const commits = await writer.env.store.readPartition(
     writer.namespaceName,
@@ -550,7 +515,6 @@ async function commitsAfter(writer: V3Writer, skip: number) {
   return commits.slice(skip).map((change) => change.commit);
 }
 
-/** Each version's two tombstones are in the commits, with their version. */
 function assertVersionsTombstoned(
   commits: readonly { ops: readonly unknown[] }[],
   kind: "data.gc" | "data.delete",
@@ -583,8 +547,8 @@ function assertVersionsTombstoned(
 }
 
 /**
- * The commit store, with `before` run ahead of each append: where a chunk
- * sweep deletes chunks after the unit stored them (swamp-club#3249).
+ * the commit store with `before` run ahead of each append: where a chunk sweep
+ * deletes chunks after the unit stored them
  */
 function sinkWith(
   env: V3Env,
@@ -599,7 +563,6 @@ function sinkWith(
   };
 }
 
-/** Deletes every chunk a commit's puts name, as a racing sweep would. */
 async function deleteChunksOf(env: V3Env, commit: Commit): Promise<number> {
   let deleted = 0;
   for (const op of commit.ops) {
@@ -637,9 +600,9 @@ Deno.test("v3 staging: a changed file cannot restore a deleted chunk; the landed
       "raw",
     );
     let landed = 0;
-    // The repair reads the file again, which no longer holds what was staged
-    // (swamp-club#3564); the commit has landed, so failing the unit would
-    // report a committed change as failed.
+    // the repair reads the file again, which does not hold what was staged; the
+    // commit has landed, so failing the unit would report a committed change as
+    // failed
     await writer.run(
       () => writer.data.save(MODEL_TYPE, MODEL_ID, data("big"), large("b1")),
       sinkWith(env, async (commit) => {
@@ -686,7 +649,6 @@ for (
   });
 }
 
-/** A catalog whose pending-row writes fail, so a deferred save fails. */
 class FailingPendingCatalog extends CatalogStore {
   override upsert(row: Parameters<CatalogStore["upsert"]>[0]): void {
     if (row.is_pending === 1) throw new Error("pending row failed");
@@ -694,7 +656,6 @@ class FailingPendingCatalog extends CatalogStore {
   }
 }
 
-/** A repository whose rollback fails too. */
 class FailingRollbackRepository extends FileSystemUnifiedDataRepository {
   override rollbackVersions(): Promise<void> {
     return Promise.reject(new Error("rollback failed"));
@@ -711,7 +672,6 @@ Deno.test("v3 staging: a failed write's rollback error reaches the caller on v2,
         new FailingPendingCatalog(join(writer.dir, "_failing.db")),
         hook,
       );
-    // v2: no hook that requires a unit, so the rollback runs as before.
     await assertRejects(
       () =>
         build(undefined).saveDeferred(
@@ -723,7 +683,6 @@ Deno.test("v3 staging: a failed write's rollback error reaches the caller on v2,
       Error,
       "rollback failed",
     );
-    // v3: the rollback's error is logged, the write's is thrown.
     await assertRejects(
       () =>
         writer.run(() =>
@@ -756,7 +715,6 @@ for (const where of ["root", "child"] as const) {
           )
         );
 
-      // GC keeps one version: count - 1 versions removed, then the marker.
       await seedVersions(writer, "big", count);
       await inUnit(() => writer.data.collectGarbage(MODEL_TYPE, MODEL_ID));
       const gc = await commitsAfter(writer, 0);
@@ -764,7 +722,6 @@ for (const where of ["root", "child"] as const) {
       assertVersionsTombstoned(gc, "data.gc", "big", versions.slice(0, -1));
       assertEquals(gc[1].ops.at(-1)?.kind, "put");
 
-      // A whole-name delete: every version, then the marker.
       await seedVersions(writer, "wide", count);
       await inUnit(() => writer.data.delete(MODEL_TYPE, MODEL_ID, "wide"));
       const deleted = await commitsAfter(writer, gc.length);
@@ -775,8 +732,8 @@ for (const where of ["root", "child"] as const) {
   });
 }
 
-// swamp-club#3532: a version number never names two contents, so a name
-// emptied of every version continues above its old high-water mark.
+// a version number never names two contents, so a name emptied of every version
+// continues above its old high-water mark
 
 Deno.test("v3 staging: a name emptied by data delete continues above its old high-water mark", async () => {
   await withAuditedV3Env(async (env) => {

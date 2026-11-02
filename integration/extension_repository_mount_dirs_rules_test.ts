@@ -17,16 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: every production ExtensionRepository is
-// built with the directories `.swamp-sources.yaml` mounts.
-//
-// ExtensionRepository.saveAll prunes catalog rows whose source is outside
-// the repo root. It keeps the rows of sources mounted from outside the repo
-// only when it is told where the mounts are (`mountedSourceDirs`). A
-// repository built without them deletes those rows on every partial save:
-// pull, rm, upgrade and the loader's failure records (swamp-club#2563).
-// The constructor argument is optional so tests need not pass it, so this
-// rule is what keeps a new production construction from omitting it.
+// every production ExtensionRepository must be built with mountedSourceDirs, or
+// saveAll prunes the catalog rows of sources mounted from outside the repo root
 
 import { assert, assertEquals } from "@std/assert";
 import {
@@ -37,7 +29,6 @@ import {
 
 const CONSTRUCTION = "new ExtensionRepository(";
 
-/** The argument text of the constructor call opening at `start`. */
 function constructorArguments(source: string, start: number): string {
   let depth = 0;
   for (let i = start + CONSTRUCTION.length - 1; i < source.length; i++) {

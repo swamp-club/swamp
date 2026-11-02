@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Cold-start indexing of an extension whose export wraps its definition
-// (swamp-club#2562). The startup reconcile indexes it by importing the
-// bundle; the cold buildIndex walk that follows must keep that row instead
-// of warning that the type cannot be extracted, or overwriting it with a
-// type the static regex found elsewhere in the file.
+// the cold buildIndex walk must keep the row the startup reconcile indexed for
+// a wrapped export, not warn the type cannot be extracted or overwrite it with
+// a type the static regex found elsewhere
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -46,9 +44,9 @@ const testDenoRuntime: DenoRuntime = {
 };
 
 /**
- * An extension whose export is a wrapper call. With `decoy`, an unrelated
- * object literal with a `type` field follows it, which the static regex
- * picks up instead of failing.
+ * an extension whose export is a wrapper call; with decoy, an unrelated object
+ * literal with a type field follows, which the static regex picks up instead of
+ * failing
  */
 const WRAPPED_EXTENSION = (targetType: string, decoy: boolean) => `
 import { z } from "npm:zod@4";
@@ -243,15 +241,12 @@ Deno.test("cold buildIndex still warns for a wrapped export nothing has indexed"
   });
 });
 
-// A repo reached under a second spelling of its root — `/tmp/r` and
-// `/private/tmp/r` on macOS — changes the source-dirs fingerprint and forces
-// a cold rebuild. That rebuild must find the rows written under the other
-// spelling instead of warning, and move them to the current one
-// (swamp-club#2570).
+// a repo reached under a second spelling of its root (/tmp/r and /private/tmp/r
+// on macOS) forces a cold rebuild, which must find rows written under the other
+// spelling without warning and move them
 
 type Repo = Parameters<Parameters<typeof withRepo>[1]>[0];
 
-/** Runs `fn` with the repo's real path and a directory symlink to it. */
 async function withSpellings(
   repo: Repo,
   fn: (spellings: { real: string; alias: string }) => Promise<void>,

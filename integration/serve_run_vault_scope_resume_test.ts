@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Resumes of a serve run stay held to the principal that triggered it
- * (swamp-club#2676), never the approver or resumer: approve-then-resume,
- * parent auto-resume after a nested gate, explicit resumes on the attached
- * and detached paths, OAuth (IdP group) and server-token (local group)
- * principals, and runs that recorded no principal. Requests go through
- * serve's real handlers against a real repository with local_encryption
- * vaults; the approver and resumer hold no vault grant, so a step that may
- * read erp would show the scope was lost.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { Principal } from "../src/domain/access/principal.ts";
@@ -77,7 +66,6 @@ function after(
   });
 }
 
-/** A gate, then a step reading erp and one reading roomcontrol. */
 function gatedReads(name: string, autoResume = true): Workflow {
   return Workflow.create({
     name,
@@ -102,10 +90,6 @@ function gatedReads(name: string, autoResume = true): Workflow {
   });
 }
 
-/**
- * Two reads; the first fails once on purpose, so the run fails before the
- * erp read and can be resumed.
- */
 function failingReads(name: string): Workflow {
   return Workflow.create({
     name,
@@ -169,7 +153,6 @@ async function settled(
   return run!;
 }
 
-/** The bot's scope survived: erp refused, roomcontrol read. */
 function assertBotScoped(f: VaultScopeFixture, run: WorkflowRun): void {
   const erp = stepOf(run, "main", "erp");
   assertEquals(erp.status, "failed");
@@ -369,7 +352,6 @@ Deno.test({
       const childRun = await f.repo.repoContext.workflowRunRepo
         .findLatestByWorkflowId(createWorkflowId(child.id));
       assertEquals(childRun?.status, "suspended");
-      // The parent's auto-resume is decided for the approver's token.
       const rootToken = await saveTokenRecord(f.repo, ROOT);
       await sendAs(
         f.ctx,
@@ -412,7 +394,6 @@ for (const withVaultGrants of [true, false]) {
         }, ROOT);
         const resumed = await settled(f, workflow, failed.id);
         if (withVaultGrants) {
-          // Even roomcontrol, which the bot may read, is refused.
           const rc = stepOf(resumed, "main", "rc");
           assertEquals(rc.status, "failed");
           assertStringIncludes(

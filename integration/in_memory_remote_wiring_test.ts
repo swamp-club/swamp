@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Wires two repos to one in-memory remote through requireInitializedRepo,
-// so the real repository factory, markDirty hook and flush paths run
-// against the shared fake. Pins that a data save on one machine reaches
-// the other through acquireModelLocks' flush and step-start pull, on both
-// the two-phase and the single-phase push path.
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -91,7 +85,6 @@ for (const twoPhaseSync of [true, false]) {
           await initRepo(repoA, typeName);
           await initRepo(repoB, typeName);
 
-          // Machine A: lock (step-start pull), write, flush (push).
           const a = await requireInitializedRepo({
             repoDir: repoA,
             outputMode: "json",
@@ -133,7 +126,6 @@ for (const twoPhaseSync of [true, false]) {
             `expected the content file among ${pushed.join(", ")}`,
           );
 
-          // Machine B: the step-start pull brings A's files down.
           const b = await requireInitializedRepo({
             repoDir: repoB,
             outputMode: "json",

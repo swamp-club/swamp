@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: every deno pin in the repository derives from
-// `.tool-versions`. Deno has no native per-project version pinning, so nothing
-// but this test stops the Dockerfile and the CI workflows drifting apart again
-// (they did: the Dockerfile sat on 2.8.3 while CI ran 2.9.x).
-//
-// The count assertions are load-bearing. A renamed file or a pattern that
-// quietly stops matching would otherwise turn every check below into a vacuous
-// pass — the same trap arch_fitness_helpers.ts documents for path arithmetic.
-
 import { assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml";
 import { join } from "@std/path";
@@ -37,12 +28,6 @@ const TOOL_VERSIONS = join(ROOT, ".tool-versions");
 const DOCKERFILE = join(ROOT, "Dockerfile");
 const WORKFLOWS_DIR = join(ROOT, ".github", "workflows");
 
-/**
- * Workflow files expected to set up deno, and how many setup-deno steps each
- * one carries. Pinned deliberately: a new workflow that installs deno has to
- * be added here consciously, which is the moment to ask whether it should read
- * the pin like everything else.
- */
 const EXPECTED_SETUP_STEPS: Record<string, number> = {
   "release.yml": 1,
   "publish-testing.yml": 1,
@@ -56,7 +41,6 @@ const EXPECTED_SETUP_STEPS: Record<string, number> = {
 const EXPECTED_SETUP_TOTAL = Object.values(EXPECTED_SETUP_STEPS)
   .reduce((sum, count) => sum + count, 0);
 
-/** The deno version `.tool-versions` pins, parsed as setup-deno parses it. */
 async function readPinnedVersion(): Promise<string> {
   const contents = await Deno.readTextFile(TOOL_VERSIONS);
   const match = contents.match(/^deno\s+v?(\S+)\s*$/m);
@@ -75,7 +59,6 @@ type WorkflowStep = { uses?: unknown; with?: Record<string, unknown> };
 type WorkflowJob = { steps?: WorkflowStep[] };
 type Workflow = { jobs?: Record<string, WorkflowJob> };
 
-/** Every setup-deno step in a parsed workflow, in file order. */
 function setupDenoSteps(workflow: Workflow): WorkflowStep[] {
   const steps: WorkflowStep[] = [];
   for (const job of Object.values(workflow.jobs ?? {})) {
@@ -91,7 +74,6 @@ function setupDenoSteps(workflow: Workflow): WorkflowStep[] {
   return steps;
 }
 
-/** Parses every `.yml`/`.yaml` file under `.github/workflows/`. */
 async function readWorkflows(): Promise<Map<string, Workflow>> {
   const workflows = new Map<string, Workflow>();
   for await (const entry of Deno.readDir(WORKFLOWS_DIR)) {

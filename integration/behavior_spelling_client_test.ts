@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The CLI sends grant selectors and audit filters in the model spelling, so a
-// server that predates the behavior spelling (swamp-club#3334) still reads
-// them, and sends model-spelled values byte-identically.
+// the CLI sends grant selectors and audit filters in the model spelling so an
+// older server still reads them, and sends model-spelled values
+// byte-identically
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
@@ -34,7 +34,6 @@ interface Recorded {
   payload?: Record<string, unknown>;
 }
 
-/** A serve endpoint that records each request and answers with `payload`. */
 function recordingServer(payload: Record<string, unknown>): {
   url: string;
   requests: Recorded[];
@@ -74,7 +73,6 @@ const ANSWER = {
   count: 0,
 };
 
-/** A root command that parses the args it is given. */
 interface Root {
   parse(args: string[]): Promise<unknown>;
 }
@@ -275,12 +273,9 @@ Deno.test({
   },
 });
 
-// ── --behavior flags and enum synonyms (swamp-club#3410) ───────────────────
-
 /**
- * The payload a command sends, recorded before its response is rendered: the
- * recording server's generic answer may not render for every command, and
- * only the request matters here.
+ * recorded before the response is rendered: the generic answer may not render
+ * for every command, and only the request matters
  */
 async function sentPayloadOf(
   root: Root,
@@ -310,7 +305,6 @@ async function sentPayloadOf(
   }
 }
 
-/** A root carrying the completion types and --json, mounting `command`. */
 async function rootWith(name: string, command: AnyCommand): Promise<Root> {
   const { registerCompletionTypes } = await import(
     "../src/cli/completion_types.ts"

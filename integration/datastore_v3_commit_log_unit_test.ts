@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The v3 commit-log unit of work against the real SQLite commit store and
-// the filesystem `storage/1` on a temp directory (swamp-club#3240).
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir, walk } from "@std/fs";
@@ -77,8 +74,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(tempDir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(tempDir, { recursive: true });
@@ -91,10 +86,8 @@ interface V3 {
   store: SqliteCommitStore;
   storage: FileSystemStorage;
   chunkStore: ChunkStore;
-  /** A hook standing for one v3 repository context. */
   hook: MarkDirtyHook;
   options(sink?: CommitSink): CommitLogRootOptions<unknown>;
-  /** Every commit in a partition, in seq order. */
   commits(partition: typeof MODEL): Promise<readonly Commit[]>;
 }
 
@@ -129,7 +122,6 @@ async function withV3(fn: (v3: V3) => Promise<void>): Promise<void> {
   });
 }
 
-/** A sink over the store whose next append lands, then reports a failure. */
 function lossySink(store: SqliteCommitStore): CommitSink & { calls: number } {
   let fail = true;
   const sink = {
@@ -317,7 +309,6 @@ Deno.test("commit-log unit: abandon discards, and stores no chunk", async () => 
       )
     );
     assertEquals(await v3.store.changesSince(0, 10), []);
-    // Nothing was written under the storage root (it may not even exist).
     await ensureDir(join(v3.dir, "datastore"));
     const chunks = [];
     for await (
@@ -408,7 +399,6 @@ Deno.test("commit-log unit: a run commits on each terminal status of decision 5,
   });
 });
 
-/** A repository context on the temp directory over `hook`. */
 async function repositoryContext(
   dir: string,
   hook: MarkDirtyHook,
@@ -469,8 +459,8 @@ Deno.test("commit-log unit: a path-only write inside a commit-log root is refuse
   await withV3(async (v3) => {
     const ctx = await repositoryContext(v3.dir, v3.hook);
     try {
-      // Every repository declares its writes typed (swamp-club#3257), so a
-      // write that does not is signalled directly.
+      // every repository declares its writes typed, so a write that does not is
+      // signalled directly
       await assertRejects(
         () =>
           runInCommitLogRoot(

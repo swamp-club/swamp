@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * `restricted-model-types` restricts a type whatever spelling the list and
- * the request use: model create, method run of a stored definition, direct
- * type execution and adding a workflow step all need admin for an @-scoped
- * extension type listed as `@x/y`, `x/y` or `@X::Y` (swamp-club#3129). So do
- * editing or deleting a model of the type, deleting or renaming its data, and
- * changing a stored workflow step that runs it (swamp-club#3131). Runs
- * through `handleMessage` against a real repository.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { buildServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
@@ -59,25 +49,21 @@ function request(type: string, payload: Record<string, unknown>) {
   return { type, id: crypto.randomUUID(), payload };
 }
 
-/** The spellings serve.yaml might list the repo's `@test/serve-…` type as. */
 function listedSpellings(repo: ServeRepo): string[] {
   const bare = repo.modelType.normalized.replace(/^@/, "");
   return [`@${bare}`, bare, `@${bare.toUpperCase().replace("/", "::")}`];
 }
 
-/** The spellings a client might request the type by. */
 function requestedSpellings(repo: ServeRepo): string[] {
   const scoped = repo.modelType.normalized;
   return [scoped, ` ${scoped}`, `@${scoped}`, scoped.toUpperCase()];
 }
 
-/** Restricted lists as serve builds them from serve.yaml. */
 function restrictedList(entry: string): string[] {
   return buildServeAuthConfig({ restrictedModelTypes: entry })
     .restrictedModelTypes;
 }
 
-/** Whether the request was refused for want of admin on access:*. */
 function refusedForAdmin(frames: Frame[]): boolean {
   const error = errorFrame(frames);
   if (error?.error?.code === "unauthorized") {
@@ -234,7 +220,6 @@ Deno.test("restricted-model-types: an unlisted type stays open to non-admins", a
   }, { scopedType: true });
 });
 
-/** Runs `fn` for an @-scoped extension type and for a bare type. */
 async function forEachTypeForm(
   fn: (repo: ServeRepo) => Promise<void>,
 ): Promise<void> {
@@ -242,7 +227,6 @@ async function forEachTypeForm(
   await withServeRepo(fn);
 }
 
-/** The edit content that retags `model`. */
 function retagged(model: Definition): string {
   return stringifyYaml({
     ...JSON.parse(JSON.stringify(model.toData())),
@@ -352,7 +336,6 @@ Deno.test("restricted-model-types: deleting or renaming a restricted model's dat
   });
 });
 
-/** Saves a workflow running `model`'s noop, by name and as a direct step. */
 async function saveStepWorkflow(
   repo: ServeRepo,
   model: Definition,

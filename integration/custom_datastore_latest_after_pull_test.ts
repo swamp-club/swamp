@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// An extension datastore (S3, GCS) pulls a peer's new version into the local
-// cache and then only clears the catalog's populated flag. getLatestRecord
-// used to return the row it already had while that row's content still
-// existed, so `data.latest()` and serve's pollers kept seeing the old version
-// until something ran a full query (found while working on swamp-club#2858).
-// It now prefers the version the on-disk latest marker names.
+// a pull clears only the catalog populated flag, so getLatestRecord must prefer
+// the version the on-disk latest marker names, or data.latest() and serve
+// pollers keep seeing the old version
 
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
@@ -73,7 +70,6 @@ async function initRepo(repoDir: string, typeName: string): Promise<void> {
 
 type Unlocked = Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
 
-/** Takes the model lock (pulling), invalidates as the CLI does, runs fn, then flushes. */
 async function withModelLock<T>(
   repoDir: string,
   modelId: string,

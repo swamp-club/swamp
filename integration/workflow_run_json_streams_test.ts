@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * In --json mode, `withConsoleGuard` owns the global console while any model
- * method runs. These tests hold a guard open on a promise gate — so it is known
- * to be active, with no sleeps or step scheduling — and fire the JSON
- * workflow-run renderer's handlers inside it. They pin that swamp's own output
- * never passes through the guard: side-lines reach stderr exactly once, stdout
- * receives only the run document, and nothing lands in the method's logs
- * (swamp-club#2547).
- */
-
 import { assertEquals } from "@std/assert";
 import {
   setConsoleGuardStderrWriter,
@@ -104,7 +94,6 @@ Deno.test("JSON workflow run: renderer output inside an active console guard is 
       methodName: "execute",
       event: { type: "vault_single_quote_warning", message: "use quotes" },
     });
-    // A cancel that lands while a method which ignored the abort still runs.
     const run = cancelledRun();
     handlers.cancelled({ kind: "cancelled", run });
 

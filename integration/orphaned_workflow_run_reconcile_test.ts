@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A `workflow run` or `resume` force-exited by a second Ctrl-C leaves its
-// run record `running` under a dead pid, with its tracker row `running`
-// too (swamp-club#2896). These tests wire the real YAML run repository and
-// SQLite run tracker together and check that `run doctor --fix` settles such
-// a run so `workflow recover` accepts it, without touching runs it cannot
-// vouch for.
+// a workflow run or resume force-exited by a second Ctrl-C leaves its record
+// and tracker row running under a dead pid; run doctor --fix must settle it
+// without touching runs it cannot vouch for
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
@@ -85,7 +82,6 @@ function oneStepWorkflow(name: string): Workflow {
   });
 }
 
-/** The record a force exit leaves: gate done, step `s` in flight. */
 function strandedRun(workflow: Workflow, pid: number): WorkflowRun {
   const startedAt = new Date().toISOString();
   return WorkflowRun.fromData({
@@ -166,7 +162,6 @@ Deno.test("run doctor --fix: settles a force-exited parent run and its nested ch
       tracker.close();
     }
 
-    // Read back through a fresh context, as the next command would.
     const { repoContext: fresh } = await requireInitializedRepoUnlocked({
       repoDir,
       outputMode: "json",

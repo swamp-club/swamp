@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * One serve node for the team-mode tests (swamp-club#4096): a worker with its
- * own module state, so its writer lease, handles and leadership are its own,
- * and its own host name as its writer lease sees it, so another node's lease
- * expires by its TTL as a remote holder's does. Its checkout is its own; the
- * filesystem datastore, its commits.db and its control plane are shared.
- * `pause` blocks the worker's thread as a stalled process would: its lease
- * renewals and leadership ticks stop.
+ * a worker with its own module state and host name, so another node's lease
+ * expires by TTL as a remote holder's does; pause blocks the thread like a
+ * stalled process
  */
 
 import { LOCK_TIMEOUT_ENV_VAR } from "../src/domain/datastore/datastore_config.ts";
@@ -55,7 +51,6 @@ import {
 import { ControlPlaneLeaseStore } from "../src/infrastructure/datastore_v3/control_plane_lease_store.ts";
 import { commitIn } from "./datastore_v3_litestream_helpers.ts";
 
-/** What the test asks a node to do. */
 export type TeamNodeRequest =
   | {
     readonly kind: "init";
@@ -63,31 +58,16 @@ export type TeamNodeRequest =
     readonly datastorePath: string;
     readonly repoDir: string;
     readonly instanceId: string;
-    /** Serve's `--address`, the owner a claim names. */
     readonly ownerAddress?: string;
   }
-  /**
-   * Serve's start: with `ttlMs`, the lease is first taken with that TTL, as
-   * a short lease the test can let expire; then serve's hold, following
-   * when another node holds the lease, and its leadership.
-   */
   | { readonly kind: "start"; readonly ttlMs?: number; readonly tickMs: number }
-  /** `swamp datastore claim --address` with serve stopped, then teardown. */
   | { readonly kind: "claim"; readonly address: string }
-  /** The owner the node's copy shows. */
   | { readonly kind: "owner" }
-  /** Serve's hold alone, before its leadership names the leader. */
   | { readonly kind: "hold" }
   | { readonly kind: "state" }
-  /** One commit; resolves with the refusal's code, if any. */
   | { readonly kind: "commit" }
   | { readonly kind: "tick" }
   | { readonly kind: "pause"; readonly ms: number }
-  /**
-   * The leases serve holds for callers (swamp-club#4195): an explicit lease
-   * taken, renewed or looked up at this node, its shutdown, and the lease
-   * records in the shared control plane.
-   */
   | {
     readonly kind: "lease-acquire";
     readonly principal: string;
@@ -104,19 +84,16 @@ export type TeamNodeRequest =
   | { readonly kind: "lease-dispose" }
   | { readonly kind: "lease-records" }
   /**
-   * Burns the worker's thread for up to `ms`, as a node stuck in a busy
-   * loop would: the test's request deadline must cut it off
-   * (swamp-club#4152).
+   * burns the worker's thread for up to `ms` as a busy-looped node would; the
+   * test's request deadline must cut it off
    */
   | { readonly kind: "spin"; readonly ms: number }
   | { readonly kind: "close" };
 
-/** A node's answer. */
 export type TeamNodeResponse =
   | { readonly ok: true; readonly value?: unknown }
   | { readonly ok: false; readonly error: string; readonly code?: string };
 
-/** What `state` answers. */
 export interface TeamNodeState {
   readonly role: "leader" | "follower";
   readonly leader?: string;
@@ -130,7 +107,6 @@ let init: Extract<TeamNodeRequest, { kind: "init" }> | undefined;
 let leadership: ServeLeadership | undefined;
 let shortLease: (() => Promise<void>) | undefined;
 let locks: DatastoreLockLeases | undefined;
-/** Serve's own locks on this node, in memory: a node's locks are its own. */
 const nodeLocks = new Set<string>();
 
 function nodeLock(target: LockTarget) {
@@ -167,11 +143,9 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         value: (key: string) =>
           key === LOCK_TIMEOUT_ENV_VAR ? "1000" : realGet(key),
       });
-      // Only the writer lease (v3_writer_lock.ts, writer_lease.ts) sees this
-      // node's name, so another node's lease expires by its TTL as a remote
-      // holder's does: the Workers share the test's pid. Realm-local, as is
-      // the lock timeout above, which the lease renewals read after any one
-      // request returns, so withMockedEnv cannot scope it.
+      // only the writer lease sees this node's name; Workers share the pid.
+      // Realm-local since lease renewals read it after a request returns, so
+      // withMockedEnv cannot scope it
       const hostname = request.hostname;
       const realHostname = Deno.hostname.bind(Deno);
       Object.defineProperty(Deno, "hostname", {

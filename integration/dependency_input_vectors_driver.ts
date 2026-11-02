@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Runs one dependency input vector (see dependency_input_vectors_test.ts)
- * in its own process, whose working directory is the vector's repository:
- * Deno discovers a config from the working directory, as it does when an
- * author runs `swamp extension push` in the repository, so the vector never
- * reads the swamp checkout's own deno.json. Wires push's pieces in-process
- * and writes what push, quality, fmt and the loader make of the vector, as
- * JSON, to the output path.
- *
- * Usage: deno run -A dependency_input_vectors_driver.ts <tree root>
- *   <repository> <manifest> <registry origin> <output path>
+ * runs one vector in its own process with the vector's repository as working
+ * directory, so Deno discovers its config as in `swamp extension push` and
+ * never reads the checkout's deno.json
  */
 
 import { dirname, join, relative, SEPARATOR, toFileUrl } from "@std/path";
@@ -67,14 +60,12 @@ const DENO = Deno.execPath();
 
 const logger = getLogger(["test"]);
 
-/** What the driver knows of the registries: its environment and fetcher. */
 interface DriverRegistry {
   env: Record<string, string>;
   fetcher: ReturnType<typeof vectorFetcher>;
   generalize(text: string): string;
 }
 
-/** Everything a vector pins, with paths relative to the tree root. */
 export type Outcome = Record<string, unknown>;
 
 /**
@@ -95,7 +86,6 @@ function rel(root: string, path: string | undefined): string | null {
   return relative(root, path).replaceAll(SEPARATOR, "/") || ".";
 }
 
-/** The archive's files under `extension/`, by forward-slash path. */
 async function archiveFiles(archive: Uint8Array): Promise<Map<string, string>> {
   const out = await Deno.makeTempDir({ prefix: "swamp-input-vector-out-" });
   try {
@@ -117,7 +107,6 @@ async function archiveFiles(archive: Uint8Array): Promise<Map<string, string>> {
   }
 }
 
-/** An error's message; a libswamp error is a plain object with one. */
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (
@@ -131,7 +120,6 @@ function errorText(error: unknown): string {
   return String(error);
 }
 
-/** push's prepare dependencies, real but for the registries and metadata. */
 function prepareDeps(
   registry: DriverRegistry,
   env: Record<string, string>,
@@ -182,7 +170,6 @@ function prepareDeps(
   };
 }
 
-/** Runs push, quality, fmt and the loader over the vector at `root`. */
 export async function runVector(
   root: string,
   repoDir: string,
@@ -213,8 +200,6 @@ export async function runVector(
     return outcome;
   }
 
-  // The project config and lock, as the push, quality and fmt commands
-  // read them.
   const { denoConfigPath } = resolved;
   const project = {
     denoConfigPath,
@@ -355,9 +340,6 @@ export async function runVector(
     );
   }
 
-  // The loader's view of each model entry point: the config it bundles
-  // under, whether a failed bundle is expected, the zod it externalizes
-  // and whether the bundle builds.
   const loader: Record<string, unknown> = {};
   for (const entry of resolved.modelEntryPoints) {
     const config = modelKindAdapter.resolveDenoConfig?.(entry, repoDir);

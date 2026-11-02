@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The telemetry spool is shared by every run, so a flush must only send the
- * entries recorded for the endpoint it flushes to. Without that, events a
- * repo routes to its own collector reach the public default the next time a
- * command runs outside the repo (swamp-club#2831).
- */
-
 import { assertEquals } from "@std/assert";
 import { JsonTelemetryRepository } from "../src/infrastructure/persistence/json_telemetry_repository.ts";
 import { HttpTelemetrySender } from "../src/infrastructure/telemetry/http_telemetry_sender.ts";
@@ -88,11 +81,9 @@ Deno.test("telemetry flush only sends entries recorded for the flushing endpoint
   const repoCollector = startCollector();
   const publicCollector = startCollector();
   try {
-    // A run inside a repo that routes to its own collector.
     const repoRun = serviceFor(spoolDir, repoCollector.url);
     await repoRun.recordSuccess(INVOCATION, new Date());
 
-    // An entry spooled before endpoint stamping existed.
     const legacy = TelemetryEntry.create({
       id: crypto.randomUUID(),
       invocation: INVOCATION,
@@ -105,14 +96,12 @@ Deno.test("telemetry flush only sends entries recorded for the flushing endpoint
     });
     await new JsonTelemetryRepository(spoolDir, spoolDir).save(legacy);
 
-    // A later run outside the repo flushes to the public endpoint.
     const outsideRun = serviceFor(spoolDir, publicCollector.url);
     const outcome = await flush(outsideRun, publicCollector.url);
     assertEquals(outcome.result.ok, true);
     assertEquals(publicCollector.receivedIds, [legacy.id]);
     assertEquals(repoCollector.receivedIds, []);
 
-    // The repo's entry is still spooled and goes to its own collector.
     const repoFlush = await flush(
       serviceFor(spoolDir, repoCollector.url),
       repoCollector.url,

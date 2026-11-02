@@ -77,8 +77,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Subprocess env that the CLI needs to function but with no harness signals
- * unless the test sets them explicitly. */
 function baseChildEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of ["HOME", "PATH", "USER", "TMPDIR", "TMP", "TEMP"]) {
@@ -108,8 +106,6 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
       ...extra,
     });
 
-    // Initialise a repo enrolled with both claude and cursor. Use --json so
-    // we can parse the result if needed.
     const init = await runCliWithEnv(
       ["--json", "repo", "init", "--tool", "claude", "--tool", "cursor"],
       dir,
@@ -128,11 +124,9 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
         "\ntelemetryEndpoint: http://127.0.0.1:1\ntelemetryKeepFlushed: true\n",
     );
 
-    // Run a real command that flows through the full action pipeline
-    // (Cliffy's --version handler exits before recordSuccess runs). repo
-    // upgrade on an already-initialised repo is a cheap no-op and goes
-    // through the full path. Set the claude harness signal in the child
-    // env so detection has something to identify.
+    // a real command through the full action pipeline (--version exits before
+    // recordSuccess); repo upgrade on an initialised repo is a cheap no-op,
+    // with the claude harness signal set for detection
     const run = await runCliWithEnv(
       ["--json", "repo", "upgrade"],
       dir,
@@ -140,11 +134,9 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
     );
     assertEquals(run.code, 0, `repo upgrade failed: ${run.stderr}`);
 
-    // Read what was persisted under the user-global telemetry spool.
     const persisted = await readPersistedEntries(configDir);
     assert(persisted.length > 0, "no telemetry entries were written");
 
-    // Find the entry corresponding to the upgrade run.
     const target = persisted.find((entry) => {
       const inv = entry.invocation as Record<string, unknown> | undefined;
       return inv?.command === "repo" && inv?.subcommand === "upgrade";

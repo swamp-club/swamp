@@ -39,15 +39,9 @@ const SKIP_DIRS = new Set([
 const WALK_DIRS = ["src", "integration", "scripts", "extensions", "packages"];
 
 /**
- * True when any path segment of `repoRelativePath` is a skipped directory.
- *
- * This is matched against the *repository-relative* path, split on the native
- * `SEPARATOR`, rather than regex-matching the absolute path with a hard-coded
- * "/". The old form was wrong twice over: it never matched on Windows (where
- * the separator is "\"), and when the checkout itself lived under a skipped
- * name — e.g. a git worktree beneath `.claude/worktrees/` — the pattern
- * matched every absolute path and silently skipped the entire tree, turning
- * the whole check into a vacuous pass.
+ * match the repo-relative path split on the native separator: an absolute-path
+ * regex missed on Windows and skipped the whole tree when the checkout sat
+ * under a skipped name
  */
 function isSkipped(repoRelativePath: string): boolean {
   return repoRelativePath.split(SEPARATOR).some((seg) => SKIP_DIRS.has(seg));
@@ -55,7 +49,6 @@ function isSkipped(repoRelativePath: string): boolean {
 
 function hasHeader(content: string): boolean {
   const lines = content.split("\n");
-  // Allow shebang on first line
   const firstContentLine = lines[0].startsWith("#!") ? lines[2] : lines[0];
   return firstContentLine === HEADER_MARKER;
 }
@@ -87,7 +80,6 @@ Deno.test("hasHeader: all TypeScript files have the AGPLv3 copyright header", as
     }
   }
 
-  // Root-level .ts/.tsx files
   for await (const entry of Deno.readDir(root)) {
     if (
       entry.isFile &&

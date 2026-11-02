@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Repositories wired to a sync service through the real markDirty hook, with
-// the datastore cache outside the repo and definitions kept repo-local (no
-// managedConfig). Pins that repo-local config sends no dirty signal, so it
-// cannot turn a push into a walk of the whole cache, and that a model delete
-// sends only per-path signals, so its remote deletes happen (swamp-club#2415).
+// repo-local config sends no dirty signal, so it cannot turn a push into a walk
+// of the whole cache; a model delete sends only per-path signals so its remote
+// deletes happen
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
@@ -95,9 +93,9 @@ Deno.test("markDirty hook: repo-local definitions send no mark and model delete 
         globalArguments: {},
       });
 
-      // The definition lands in <repo>/models, which the datastore never
-      // syncs. Before swamp-club#2415 this sent "../models/...", which the
-      // S3 and GCS extensions treat as bulk invalidation.
+      // the definition lands in <repo>/models, which the datastore never syncs;
+      // a mark for it would read as bulk invalidation to the S3 and GCS
+      // extensions
       await repoContext.definitionRepo.save(type, definition);
       assertEquals(marks, [], "a repo-local definition must send no mark");
 
@@ -115,8 +113,6 @@ Deno.test("markDirty hook: repo-local definitions send no mark and model delete 
         data,
         new TextEncoder().encode("payload"),
       );
-      // Marked before the write and again once it has landed
-      // (swamp-club#2421).
       assertEquals(marks.length, 2);
       assertEquals(marks[1], marks[0]);
       assertCacheRelative(marks);

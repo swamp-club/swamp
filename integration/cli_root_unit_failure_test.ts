@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Failure path of a CLI command's root unit (swamp-club#3033) that the
-// characterization rows cannot reach: `access grant create` without a model
-// lock marks the whole cache and pushes it. Before the root unit a failed
-// mark only warned and skipped the push; it still does.
+// failure path the characterization rows cannot reach: access grant create
+// without a model lock marks the whole cache and pushes it; a failed mark only
+// warns and the push still runs
 
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";

@@ -60,7 +60,6 @@ class Socket {
   }
 }
 
-/** Real connection lifecycle and request owner with an in-process transport. */
 function dashboard() {
   const sockets: Socket[] = [];
   const timers = new Map<number, () => void>();

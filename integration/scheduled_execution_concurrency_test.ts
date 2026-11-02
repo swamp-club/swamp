@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Wires ScheduledExecutionService into the health collector the way serve
- * does, against a real repository: the scheduled-run limit lets different
- * workflows run together, a workflow never overlaps itself, and each
- * schedule's queue state reaches the snapshot and the per-token view
- * (swamp-club#3046).
- */
-
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { collect } from "../src/libswamp/testing.ts";
@@ -203,7 +195,6 @@ Deno.test("scheduled execution concurrency: at the limit, different workflows ru
     assertEquals(alpha?.queued, 0);
     assertEquals(alpha?.lastQueueDelayMs, 3_000);
 
-    // A reader who may read only beta sees no queue data for alpha.
     const view = await healthSnapshotFor(after, {
       isAdmin: () => false,
       canRead: (resource) =>
@@ -222,7 +213,6 @@ Deno.test("scheduled execution concurrency: by default runs go one at a time in 
     for (const expected of [1, 2, 3]) {
       await waitFor(() => ctx.runs.length === expected, "next run");
       const snapshot = await ctx.collector.collect();
-      // Everything not yet started is still queued behind the one run.
       assertEquals(
         snapshot.scheduling.schedules.reduce((n, s) => n + s.queued, 0),
         3 - expected,

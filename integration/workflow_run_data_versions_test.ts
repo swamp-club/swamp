@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for run-scoped data resolution (swamp-club#2601).
- *
- * Wires WorkflowDataService to a real FileSystemUnifiedDataRepository and
- * checks that each workflow run resolves the exact data version it recorded,
- * not the latest version and not a same-named item from another model.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -42,7 +34,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native sqlite handles.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -125,7 +116,6 @@ Deno.test("WorkflowDataService: each run resolves the data version it recorded o
       const savedA = await repo.save(type, modelId, dataA, encode('"A"'));
       const dataB = makeData(modelId, runB);
       const savedB = await repo.save(type, modelId, dataB, encode('"B"'));
-      // A different model owns data with the same name and version number.
       await repo.save(
         type,
         otherModelId,

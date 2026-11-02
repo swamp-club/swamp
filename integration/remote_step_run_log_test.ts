@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Wires the method execution service, the run logger and the run file sink
-// together around a stub dispatcher. Pins that the output a remote worker
-// streams back lands in the run log of the run that dispatched the step, and
-// in no other run's log (swamp-club#3080).
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";

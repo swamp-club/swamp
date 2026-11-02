@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Wires the auth gate's real dependencies — AuthRepository and
-// AuthVerificationRepository on a temp config dir, SwampClubClient against a
-// port-0 mock of /api/whoami — across the scenarios of the design
-// (design/surfaces/auth-gate.md).
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -66,7 +61,6 @@ interface World {
   readonly configDir: string;
   readonly key: TestSigningKey;
   readonly serverUrl: string;
-  /** Requests the mock whoami received. */
   readonly calls: number;
   answer(handler: Handler): void;
   login(): Promise<void>;
@@ -75,7 +69,6 @@ interface World {
     MintedProof
   >;
   gate(env?: Record<string, string | undefined>): Promise<AuthGateOutcome>;
-  /** The gate with its ancestry check answered by `check`. */
   gateNested(
     env: Record<string, string | undefined>,
     check: (pid: number) => AncestorCheck,
@@ -248,7 +241,6 @@ Deno.test("auth gate integration: a valid proof survives every failure but a rej
       const outcome = await w.gate();
       assert(outcome.kind === "pass", `status ${status}`);
     }
-    // A file proof is never checked live, so none of those were calls.
     assertEquals(w.calls, 0);
   });
 });
@@ -261,7 +253,6 @@ Deno.test("auth gate integration: without a proof a 5xx fails open for a day", a
     assert(first.kind === "pass");
     assertEquals(first.authMode, "offline");
 
-    // Age the window past 24 hours.
     await new AuthVerificationRepository({ configDir: w.configDir })
       .markFailOpenSince(now() - DAY - 10);
     assertEquals(await w.gate(), {
@@ -269,7 +260,6 @@ Deno.test("auth gate integration: without a proof a 5xx fails open for a day", a
       reason: { kind: "unverified_for_a_day" },
     });
 
-    // A future stamp is discarded and the window restarts.
     await new AuthVerificationRepository({ configDir: w.configDir })
       .markFailOpenSince(now() + 365 * DAY);
     assertEquals((await w.gate()).kind, "pass");
@@ -290,7 +280,6 @@ Deno.test("auth gate integration: without a proof a 429, a proxy 403 or no serve
     );
   });
 
-  // Nothing listening at all.
   const configDir = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(
@@ -327,8 +316,6 @@ Deno.test("auth gate integration: without a proof a 429, a proxy 403 or no serve
 
 Deno.test("auth gate integration: a signin token is checked once an hour and runs offline", async () => {
   await withWorld(async (w) => {
-    // A CI runner: SWAMP_API_KEY and SWAMP_SIGNIN_TOKEN, plus the key cache
-    // an earlier whoami left (here, from an unrelated proof).
     await w.saveProof(
       await w.mint({ iat: now(), apiKey: "swamp_someone_else" }),
     );
@@ -344,7 +331,6 @@ Deno.test("auth gate integration: a signin token is checked once an hour and run
     assertEquals((await w.gate(env)).kind, "pass");
     assertEquals(w.calls, 1, "the second command reuses the hour's check");
 
-    // swamp-club down: the token carries the run.
     await new AuthVerificationRepository({ configDir: w.configDir })
       .clearTokenCheck();
     w.answer(() => new Response("down", { status: 503 }));
@@ -352,7 +338,6 @@ Deno.test("auth gate integration: a signin token is checked once an hour and run
     assert(offline.kind === "pass");
     assertEquals(offline.authMode, "offline");
 
-    // Revoked: blocks, even with a valid token.
     w.answer(() => Response.json({ authenticated: false }, { status: 401 }));
     assertEquals(await w.gate(env), {
       kind: "block",
@@ -397,7 +382,6 @@ Deno.test("auth gate integration: the weekly refresh saves a fresh proof and dro
     assertEquals(cached.proof, fresh.proof);
 
     await w.saveProof(old);
-    // An hour later: the last attempt no longer holds the next one back.
     await Deno.remove(join(w.configDir, "auth_refresh_attempt.json"));
     w.answer(() => Response.json({ authenticated: false }, { status: 401 }));
     const again = await w.gate();
@@ -457,7 +441,6 @@ Deno.test("auth gate integration: a blocked run records one telemetry event and 
     assertEquals(ctx.authMode, "none");
     const invocation = entries[0].invocation as Record<string, unknown>;
     assertEquals(invocation.command, "model");
-    // The run stopped before any startup work touched the repo dir.
     assertEquals(
       [...Deno.readDirSync(repoDir)].map((e) => e.name),
       [".swamp.yaml"],
@@ -488,7 +471,6 @@ Deno.test("auth gate integration: an unreadable auth.json is reported as itself,
   });
 });
 
-/** A nested pass for `minted`, as a parent swamp would publish it. */
 function nestedPassEnv(
   minted: MintedProof,
   parentPid: number,
@@ -502,7 +484,6 @@ function nestedPassEnv(
   };
 }
 
-/** A live ancestor that started a minute ago. */
 const anAncestor = (): AncestorCheck => ({
   kind: "ok",
   startedAt: now() - 60,
@@ -513,7 +494,6 @@ Deno.test("auth gate integration: a nested run with no credential passes on its 
     // The cached keys are the only ones trusted; the parent's own key is
     // not this run's business.
     await w.saveProof(await w.mint({ iat: now(), apiKey: "another_key" }));
-    // A daemon admitted 20 days ago on a proof that has since expired.
     const parentProof = await w.mint({
       iat: now() - 21 * DAY,
       exp: now() - 7 * DAY,
@@ -584,12 +564,10 @@ Deno.test("auth gate integration: a logged-in run ignores an inherited pass and 
   });
 });
 
-// ── Remote workers (design/surfaces/auth-gate.md, "Remote workers") ──────
-
 /**
- * A worker control socket wired straight to a WorkerGateway. Each frame is
- * delivered on a later microtask, as a real socket delivers asynchronously;
- * the receiving handlers are synchronous, so nothing is left unawaited.
+ * frames are delivered on a later microtask, as a real socket delivers
+ * asynchronously; the receiving handlers are synchronous, so nothing is left
+ * unawaited
  */
 class GatewaySocket {
   onopen: (() => void) | null = null;
@@ -621,7 +599,6 @@ class GatewaySocket {
 
 interface Fleet {
   readonly gateway: WorkerGateway;
-  /** Model methods the gateway ran: `redeem`, `enroll`, ... */
   readonly transitions: string[];
 }
 
@@ -654,7 +631,6 @@ function fleetGateway(gatePass: () => string | undefined): Fleet {
   return { gateway, transitions };
 }
 
-/** The serve's gate outcome and a keeper over it, from a logged-in world. */
 async function serveKeeper(w: World): Promise<GatePassKeeper> {
   await w.login();
   const proof = await w.mint({ iat: now() - DAY, exp: now() + 13 * DAY });
@@ -670,10 +646,8 @@ async function serveKeeper(w: World): Promise<GatePassKeeper> {
 }
 
 /**
- * Run a worker with no credential against `fleet`, the way `worker connect`
- * does: its gate is deferred, and the orchestrator's pass is checked at
- * enrollment. The worker's config dir caches `trusted`'s public key, as an
- * earlier whoami would; the binary does not embed test keys.
+ * the worker config dir caches trusted's public key as an earlier whoami would,
+ * since the binary does not embed test keys
  */
 async function keylessWorker(
   fleet: Fleet,
@@ -748,9 +722,7 @@ Deno.test("auth gate integration: a worker with no credential enrolls on its ser
     });
     const { published, enrolled } = await keylessWorker(fleet, w.key);
     assertEquals(enrolled, true);
-    // Then `set_status` as the stopped worker disconnects.
     assertEquals(fleet.transitions.slice(0, 2), ["redeem", "enroll"]);
-    // The worker hands the serve's proof down under its own pid.
     assertEquals(published, [keeper.current()]);
     assertEquals(published[0].issuerPid, undefined);
     assertEquals(w.calls, 0);
@@ -783,7 +755,6 @@ Deno.test("auth gate integration: a keyless worker does not trust a serve's pass
       AuthGateBlockedError,
     );
     assertEquals(error.reason, { kind: "no_credential" });
-    // The serve enrolled it; the worker closed its socket before any work.
     assertEquals(fleet.gateway.workers().some((wk) => wk.connected), false);
   });
 });

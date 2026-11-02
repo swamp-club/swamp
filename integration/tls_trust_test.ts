@@ -21,26 +21,6 @@ import { assert, assertStringIncludes } from "@std/assert";
 import { join, toFileUrl } from "@std/path";
 import { generateCertChain, hasOpenssl } from "./private_ca_helpers.ts";
 
-/**
- * Integration coverage for the TLS trust-store shim (issues #503 and #477).
- *
- * These tests drive the REAL trust-configuration code path in fresh subprocesses
- * (Deno caches its rustls root store on the first TLS handshake in a process, so
- * each scenario must run in its own process). Using the actual modules — rather
- * than a hand-rolled fetch client — guards the wiring: if `configureTlsTrust`
- * stopped mapping SSL_CERT_FILE, or the bootstrap stopped running first, these
- * would fail.
- *
- * The `ordering` tests below encode the regression the first #503 fix missed:
- * trust configured AFTER an import-time handshake is too late, so the bootstrap
- * must run as the first import side effect.
- *
- * Coverage boundary: the `system` trust-store branch cannot be exercised without
- * mutating the operating-system trust store, so these tests use the
- * SSL_CERT_FILE -> DENO_CERT mapping as the testable proxy. The public-TLS
- * assertion is offline-tolerant.
- */
-
 const RUNTIME_DIR = join(
   import.meta.dirname!,
   "..",
@@ -53,12 +33,6 @@ const TLS_TRUST_BOOTSTRAP_MODULE =
   toFileUrl(join(RUNTIME_DIR, "tls_trust_bootstrap.ts")).href;
 const MAIN_MODULE = join(import.meta.dirname!, "..", "main.ts");
 
-/**
- * Runs a small client in a subprocess. The client optionally calls the real
- * `configureTlsTrust`, then fetches `url`. Returns the captured RESULT line.
- * The subprocess env is fully controlled (clearEnv) so the test is
- * deterministic regardless of the developer's shell.
- */
 async function runClient(opts: {
   url: string;
   callShim: boolean;
@@ -90,7 +64,6 @@ try {
   return line;
 }
 
-/** Spawns `deno run -` feeding the script via stdin. */
 async function spawnWithStdin(
   script: string,
   env: Record<string, string>,
@@ -131,12 +104,10 @@ Deno.test("tls_trust integration: shim resolves a private-CA chain via SSL_CERT_
     const url = `https://localhost:${port}/`;
 
     try {
-      // (a) Default behavior with no extra trust: the private CA is unknown.
       const noTrust = await runClient({ url, callShim: false, env: {} });
       assertStringIncludes(noTrust, "RESULT:ERR:");
       assertStringIncludes(noTrust, "UnknownIssuer");
 
-      // (b) The real shim maps SSL_CERT_FILE -> DENO_CERT and the call succeeds.
       const withShim = await runClient({
         url,
         callShim: true,
@@ -174,7 +145,6 @@ Deno.test("tls_trust integration: public TLS still works under the merged store"
   console.warn(`skipping public-TLS assertion (offline?): ${result}`);
 });
 
-/** Runs an arbitrary entry script in a subprocess and returns its RESULT line. */
 async function runScript(
   script: string,
   env: Record<string, string>,
@@ -189,11 +159,6 @@ async function runScript(
   return out.split("\n").find((l) => l.startsWith("RESULT:")) ?? out.trim();
 }
 
-// These two tests encode the regression that the first tls_trust fix missed:
-// Deno caches its TLS root store on the FIRST handshake in the process, so
-// trust configured *after* an import-time handshake (e.g. by a heavy dependency
-// evaluated before main()'s body) has no effect. The bootstrap module must run
-// as the first import side effect to win that race.
 Deno.test("tls_trust ordering: trust configured AFTER an import-time handshake is too late", async () => {
   if (!(await hasOpenssl())) {
     console.warn("skipping: openssl not available");

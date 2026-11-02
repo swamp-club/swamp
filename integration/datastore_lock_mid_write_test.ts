@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp datastore lock release` and `status` against a real FileLock whose
-// lock file is caught mid-write: it exists but is empty. Wires FileLock
-// through the deps factories the CLI uses (swamp-club#3152).
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";

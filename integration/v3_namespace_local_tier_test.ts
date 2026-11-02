@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Two checkouts of one v3 filesystem datastore (swamp-club#3691): the read
- * model never writes another checkout's commit onto this checkout's local
- * tier, never materialises a reserved namespace, and a checkout whose
- * directories changed since it was first projected is refused at open
- * rather than re-projected.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join, relative, SEPARATOR } from "@std/path";
@@ -72,12 +64,10 @@ import { readCatalog, sha256Hex } from "./datastore_v3_read_model_helpers.ts";
 
 await initializeLogging({});
 
-/** A pid no process has. */
 const GONE_PID = 99_999_999;
 
 type Ctx = Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
 
-/** The `datastore:` lines of a v3 filesystem checkout's `.swamp.yaml`. */
 function datastoreLines(datastorePath: string, extra: string[]): string {
   return [
     "datastore:",
@@ -88,7 +78,6 @@ function datastoreLines(datastorePath: string, extra: string[]): string {
   ].join("\n") + "\n";
 }
 
-/** `namespace:` and `directories:` config lines. */
 function layout(
   namespace: string | undefined,
   directories?: readonly string[],
@@ -120,7 +109,6 @@ async function initRepo(
   );
 }
 
-/** Replaces the checkout's `datastore:` block. */
 async function reconfigure(
   repoDir: string,
   datastorePath: string,
@@ -139,7 +127,6 @@ async function open(repoDir: string): Promise<Ctx> {
   return await requireInitializedRepoUnlocked({ repoDir, outputMode: "json" });
 }
 
-/** Saves `model`'s `state` holding `who`, and a workflow run with `withRun`. */
 async function writeState(
   ctx: Ctx,
   modelType: ModelType,
@@ -195,7 +182,6 @@ async function deleteState(
   );
 }
 
-/** Who the checkout's latest `state` of `model` names, if any. */
 async function latestWho(
   ctx: Ctx,
   modelType: ModelType,
@@ -211,11 +197,6 @@ async function latestWho(
     : JSON.parse(new TextDecoder().decode(bytes)).who;
 }
 
-/**
- * Every file under `dir` by forward-slash path, with its digest; the read
- * model's own state directory left out, since opening it may touch its
- * SQLite sidecars.
- */
 async function snapshot(dir: string): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   try {
@@ -248,10 +229,6 @@ interface Pair {
   readonly model: Definition;
 }
 
-/**
- * Runs `fn` against a fresh v3 filesystem datastore and two checkouts of it
- * whose `datastore:` blocks add `aExtra` and `bExtra`.
- */
 async function withPair(
   aExtra: string[],
   bExtra: string[],
@@ -296,12 +273,6 @@ async function withPair(
   }
 }
 
-/**
- * B writes local-only data; A, whose commits B's cache root shares with
- * B's local tier, commits the same model's data and a run (and with
- * `compact`, compacts history so B loads the compacted base). B's local
- * files stay byte for byte, it reads its own data, and sees no run of A's.
- */
 async function assertLocalTierKept(
   pair: Pair,
   options: { readonly compact?: boolean } = {},
@@ -399,7 +370,6 @@ Deno.test("v3 local tier: a solo checkout with fewer directories keeps its local
   });
 });
 
-/** Reserved names whose commits a checkout must never materialise. */
 const RESERVED_UNDER_TEST = ["data", "vault", "datastore-bundles"];
 
 Deno.test("v3 reserved namespaces: a reserved namespace's commits never reach a checkout's .swamp/<name>, and a solo recovery removes nothing (swamp-club#3691)", async () => {
@@ -411,7 +381,6 @@ Deno.test("v3 reserved namespaces: a reserved namespace's commits never reach a 
     const before = new Map<string, Map<string, string>>();
     for (const name of RESERVED_UNDER_TEST) {
       before.set(name, await snapshot(join(swampPath(repoA), name)));
-      // An older swamp, or another checkout, committed under the name.
       const fence = handle.commitStore.writerFence();
       await handle.commitStore.append(Commit.create({
         seq: 1,
@@ -440,7 +409,6 @@ Deno.test("v3 reserved namespaces: a reserved namespace's commits never reach a 
       [],
       "no catalog row of a reserved namespace",
     );
-    // The records stay indexed: chunks and history stay whole.
     assertEquals(
       (await handle.readModel.liveRecords("data", modelPartition())).map((
         record,
@@ -475,7 +443,6 @@ Deno.test("v3 changed directories: a checkout whose directories changed since it
     assertEquals(await latestWho(b, modelType, model), "A-1");
     await closeV3Datastores();
 
-    // A commits again; B's config now leaves data out.
     const a2 = await open(repoA);
     await writeState(a2, modelType, model, "A-2");
     await closeV3Datastores();
@@ -494,11 +461,9 @@ Deno.test("v3 changed directories: a checkout whose directories changed since it
         assertEquals(readCatalog(v3CatalogPath(repoB)), catalog, label);
       })();
 
-    // Any command.
     await assertRejects(() => open(repoB), UserError, "directories");
     await assertUntouched("a refused command touches nothing");
 
-    // A writer marker present: the recovery would run before catch-up.
     await Deno.writeTextFile(
       writerMarkerPath(repoB),
       JSON.stringify({
@@ -515,12 +480,10 @@ Deno.test("v3 changed directories: a checkout whose directories changed since it
     await assertUntouched("a refused recovery touches nothing");
     await closeV3Datastores();
 
-    // A direct caller (gc, status, serve's maintenance, admin, retention).
     assertThrows(() => v3DatastoreFor(repoB, narrowed), UserError);
     await assertUntouched("a refused direct open touches nothing");
     await Deno.remove(writerMarkerPath(repoB));
 
-    // The previous directories restored, the checkout opens and catches up.
     await reconfigure(repoB, datastorePath, layout(undefined, projected));
     const restored = await open(repoB);
     assertEquals(await latestWho(restored, modelType, model), "A-2");

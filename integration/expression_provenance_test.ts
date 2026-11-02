@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Position and value provenance (swamp-club#3205). Characterization tests pin
-// re-evaluation paths that work today and must keep working; attack tests pin
-// that expression text arriving as data never evaluates, even when it matches
-// an expression the author wrote.
+// characterization tests pin re-evaluation paths that must keep working; attack
+// tests pin that expression text arriving as data never evaluates, even when it
+// matches an expression the author wrote
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
@@ -49,8 +48,6 @@ import {
 } from "./expression_provenance_harness.ts";
 
 await initializeLogging({});
-
-// --- Characterization: authored expressions carried as values keep resolving
 
 Deno.test("provenance: model-run input carrying an env reference resolves through inputs", async () => {
   await withRepo(async (h) => {
@@ -199,8 +196,6 @@ Deno.test("provenance: direct execution with a step-input env reference resolves
   });
 });
 
-// --- Attacks: expression text in data never evaluates, even when authored
-
 Deno.test("provenance: a workflow input quoting its own reference stays literal", async () => {
   await withRepo(async (h) => {
     await h.repo.definitionRepo.save(
@@ -314,7 +309,6 @@ Deno.test("provenance: direct execution never persists data matching an authored
       "failed",
     );
     assertEquals(h.executions, []);
-    // No stored definition holds the data as a global argument.
     const stored = await readTree(join(h.dir, ".swamp", "auto-definitions"))
       .catch(() => "") + await readTree(join(h.dir, "models")).catch(() => "");
     assertEquals(stored.includes("${{ env.SECRET }}"), false);
@@ -384,7 +378,6 @@ for (
       assertEquals(h.executions, [{ value: received }]);
       assertEquals(h.globals, [{ label: received }]);
 
-      // The stored text survives a later load as authored source.
       await runWorkflow(
         h,
         oneStepWorkflow(StepTask.modelMethod("unlisted-model", "run", {
@@ -439,7 +432,6 @@ for (
         Array(3).fill({ label: "${{ parameters.x }}" }),
       );
 
-      // Another step on the stored definition, by name, with the same text.
       await runWorkflow(
         h,
         oneStepWorkflow(StepTask.modelMethod("repeat-model", "run", {
@@ -750,8 +742,6 @@ Deno.test("provenance: a child workflow keeps parent data matching an authored r
   });
 });
 
-// --- --literal-inputs: the caller's inputs are data
-
 Deno.test("provenance: --literal-inputs keeps input expressions literal", async () => {
   await withRepo(async (h) => {
     await h.repo.definitionRepo.save(
@@ -858,8 +848,6 @@ Deno.test("provenance: --literal-inputs refuses to persist a global argument hol
   });
 });
 
-// --- Evaluated caches carry provenance, so replay refuses the same text
-
 Deno.test("provenance: --last-evaluated replay keeps data matching an authored reference literal", async () => {
   await withRepo(async (h) => {
     await saveData(h, { value: "leak ${{ env.SECRET }}" });
@@ -951,7 +939,6 @@ Deno.test("provenance: a resumed run keeps its recorded input matching an author
       }),
       TEXT_INPUT,
     );
-    // The model does not exist yet, so the run fails at its only step.
     await runWorkflow(
       h,
       workflow,
@@ -1100,7 +1087,6 @@ for (const item of ["name", "id", "version", "tags", "globalArguments"]) {
 
 Deno.test("provenance: --literal-inputs keeps a routed global argument data in direct execution", async () => {
   await withRepo(async (h) => {
-    // An existing definition reads the global argument the caller routes.
     await h.repo.definitionRepo.save(
       h.type,
       Definition.create({

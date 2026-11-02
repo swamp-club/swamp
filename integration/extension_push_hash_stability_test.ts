@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Extensions whose source copy was already complete keep their content
- * hash when push moves to the module graph (swamp-club#3376). Each pin was
- * computed with the regex resolver push used before; the fixtures import
- * only modules inside their kind's directory, so the graph finds the same
- * files.
+ * extensions whose source copy was already complete keep their content hash
+ * when push moves to the module graph; fixtures import only modules inside
+ * their kind's directory, so the graph finds the same files
  */
 
 import { assertEquals } from "@std/assert";
@@ -158,7 +156,6 @@ const HASH_FIXTURES: Array<{
 
 type Resolved = Awaited<ReturnType<typeof resolveExtensionFiles>>;
 
-/** The cache hash as the push and quality commands compute it. */
 async function cliHash(r: Resolved, manifestPath: string): Promise<string> {
   return await computePackageCacheHash({
     manifest: r.manifest,
@@ -182,7 +179,7 @@ async function cliHash(r: Resolved, manifestPath: string): Promise<string> {
     includeFilePaths: r.includeFilePaths,
     denoConfigPath: r.denoConfigPath,
     packageJsonPath: undefined,
-    // The lock the bundle runs --frozen against (swamp-club#3662).
+    // the lock the bundle runs --frozen against
     ...(await readOnlyLockFor({
       denoConfigPath: r.denoConfigPath,
       packageJsonDir: r.packageJsonDir,

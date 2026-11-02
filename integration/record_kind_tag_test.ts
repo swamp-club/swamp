@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The writers stamp every record with `_swamp.kind`, and readResource's
- * schema fallback serves only records without it (swamp-club#3684). These
- * tests write through the real writers into a file-system repository and
- * read back through createResourceReader, so the stamp must survive
- * persistence and the catalog.
- */
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -58,7 +51,6 @@ const modelType = ModelType.create("test/record-kind");
 const modelId = crypto.randomUUID();
 const REFERENCE = "${{ vault.get('test-vault', 'db-password') }}";
 
-/** A sensitiveOutput resource spec and a plain one. */
 const RESOURCES: Record<string, ResourceOutputSpec> = {
   creds: {
     schema: z.object({ value: z.string() }),
@@ -73,7 +65,6 @@ const RESOURCES: Record<string, ResourceOutputSpec> = {
   },
 };
 
-/** A file spec that shares the sensitive resource spec's name. */
 const FILES = {
   creds: {
     contentType: "application/json",

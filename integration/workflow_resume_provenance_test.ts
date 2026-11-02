@@ -17,21 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for authored-expression provenance across the workflow
- * seams that are NOT the plain fresh run (swamp-club#2172): resume,
- * --last-evaluated, and nested workflows.
- *
- * Each is an independent path with its own evaluator or its own re-parse of
- * step inputs. A fix applied only to the fresh path would leave these fully
- * exploitable while every fresh-path test stayed green, so each seam is
- * exercised here directly.
- *
- * Both tests drive a real run to failure and then resume it with `--from`,
- * which is the cheapest way to reach the resume seam: the alternative
- * (suspend-on-approval) needs an approval gate and a second actor.
- */
-
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { collect } from "../src/libswamp/testing.ts";
@@ -56,7 +41,6 @@ import {
 } from "../src/serve/deps.ts";
 import { createEphemeralStore } from "../src/infrastructure/persistence/ephemeral_store.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -70,12 +54,8 @@ const inputSchema = {
 };
 
 /**
- * One shell step that echoes `run` and then fails, so the run reaches a
- * `failed` status that `resume --from` will accept. The command is echoed
- * before the failure, so if a runtime expression is wrongly resolved the
- * plaintext is in the event stream either way. The separator is `;` because
- * `powershell.exe` 5.1 cannot parse `&&`, and a command that does not parse
- * never prints.
+ * echoes the command before failing so wrongly resolved plaintext shows in the
+ * events; the separator is ; because powershell 5.1 cannot parse &&
  */
 function failingWorkflow(name: string, run: string): Workflow {
   return Workflow.create({
@@ -119,7 +99,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Runs the workflow in-process and returns its run id and event stream. */
 async function runWorkflow(
   repoDir: string,
   workflowName: string,
@@ -151,7 +130,6 @@ async function runWorkflow(
   return { runId, events };
 }
 
-/** Runs the workflow to failure and returns the failed run's id. */
 async function runToFailure(
   repoDir: string,
   workflowName: string,
@@ -160,7 +138,6 @@ async function runToFailure(
   return (await runWorkflow(repoDir, workflowName, inputs)).runId;
 }
 
-/** Resumes the failed run from its only step and returns the event stream. */
 async function resumeFromStep(
   repoDir: string,
   workflowName: string,
@@ -286,11 +263,8 @@ Deno.test({
 });
 
 /**
- * --last-evaluated seam. The first run substitutes the injected text into the
- * cached evaluated workflow; the second run loads that cache and re-parses
- * the step inputs (execution_service.ts, lastEvaluated branch) to resolve
- * deferred expressions. The bracket-index env form is used because it is not
- * caught by the runtime gate at all — only the gate on that re-parse stops it.
+ * the bracket-index env form is not caught by the runtime gate, only by the
+ * gate on the cached-input re-parse, so it isolates that seam
  */
 Deno.test({
   name:
@@ -351,10 +325,8 @@ Deno.test({
 });
 
 /**
- * Nested-workflow seam. The parent's evaluator substitutes the run input into
- * the workflow step's inputs, and runWorkflowStep then re-parses those inputs
- * (execution_service.ts, nested-workflow branch) before handing them to the
- * child. The gate there uses the PARENT's authored set.
+ * the nested-workflow re-parse of step inputs is gated by the parent's authored
+ * set
  */
 Deno.test({
   name:
@@ -429,12 +401,8 @@ Deno.test({
 });
 
 /**
- * --last-evaluated after a source edit. The first run writes the workflow
- * cache together with the source's authored set. A standalone `model
- * evaluate` then rewrites the step's definition cache with only the
- * definition's own provenance, and the workflow source is edited so it no
- * longer contains the env expression. Only the set persisted with the
- * workflow cache can now vouch for the cached step input.
+ * after a source edit only the authored set persisted with the workflow cache
+ * can vouch for the cached step input
  */
 Deno.test({
   name:

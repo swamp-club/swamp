@@ -18,19 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Shared harness for the remote-secrets baseline (swamp-club#3512).
- *
- * These tests characterize, with no behavior change, how a worker is
- * authorized to read secrets today and where secret plaintext travels
- * between serve, the worker supervisor and the runner. Typed-secrets Phase 5
- * replaces this path (design/enablers/typed-secrets.md §7.1, §9); a test here
- * failing means that behavior changed, which Phase 5 expects to do on purpose.
- *
- * The orchestrator here differs from the one in remote_execution_test.ts in
- * one way that matters: the CapabilityService gets the DispatchRegistry, as
- * `swamp serve` wires it (src/cli/commands/serve.ts), so the per-dispatch
- * secret allowlist is enforced. Workers connect in-process through
- * `WorkerGateway.attachTransport`; nothing here spawns a process.
+ * characterizes how a worker is authorized to read secrets and where plaintext
+ * travels; a failing test means that behavior changed
  */
 
 import { configure, type LogRecord } from "@logtape/logtape";
@@ -71,7 +60,6 @@ import {
   RemoteMethod,
 } from "../src/domain/remote/protocol.ts";
 
-/** The vault every baseline repo is created with. */
 export const BASELINE_VAULT = "local";
 
 /** A secret value unique to one test run, so a match can only be a leak. */
@@ -94,7 +82,6 @@ export async function withTempDir(
   }
 }
 
-/** One captured log record, rendered with its interpolated values. */
 export interface CapturedLog {
   category: string;
   level: string;
@@ -112,9 +99,8 @@ function renderRecord(record: LogRecord): CapturedLog {
 }
 
 /**
- * Runs `fn` with every LogTape category captured at debug and above, then
- * restores the normal logging setup. LogTape's configuration is
- * process-global, so callers must not run two captures at once.
+ * LogTape configuration is process-global, so callers must not run two captures
+ * at once
  */
 export async function captureLogs(
   fn: () => Promise<void>,
@@ -137,13 +123,9 @@ export async function captureLogs(
 }
 
 /**
- * Runs `fn` with what a runner writes to stderr collected instead: the real
- * stderr sink (`createStderrSink`) for every LogTape category at debug and
- * above, and the console guard's stderr writer, both into the returned
- * lines. That is exactly the stream a worker supervisor reads from a runner.
- * Restores the normal logging setup and the default console-guard writer
- * afterwards; both are process-global, so callers must not run two captures
- * at once.
+ * captures exactly the stream a worker supervisor reads from a runner; the
+ * logging setup and console-guard writer are process-global, so callers must
+ * not run two captures at once
  */
 export async function captureRunnerStderr(
   fn: () => Promise<void>,
@@ -170,7 +152,6 @@ export async function captureRunnerStderr(
   return lines;
 }
 
-/** The records whose rendered text contains `value`. */
 export function logsHolding(
   logs: CapturedLog[],
   value: string,
@@ -187,11 +168,8 @@ export interface BaselineOrchestrator {
   dispatchService: DispatchService;
   gateway: WorkerGateway;
   dataPlane: DataPlane;
-  /** `http://127.0.0.1:<port>` for the data plane. */
   dataPlaneUrl: string;
-  /** Stores a secret in the repo's vault. */
   putSecret: (key: string, value: string) => Promise<void>;
-  /** Mints an enrollment token and returns its redeemable form. */
   mintToken: (name: string) => Promise<string>;
   shutdown: () => Promise<void>;
 }
@@ -229,17 +207,10 @@ async function initRepo(repoDir: string): Promise<void> {
 }
 
 export interface BaselineOrchestratorOptions {
-  /** The gateway's credential service, for an injected clock and timers. */
   sessionCredentials?: SessionCredentialService;
-  /** Wraps the vault the data plane reads, so a test can hold its reads. */
   wrapDataPlaneVault?: (vault: VaultService) => VaultService;
 }
 
-/**
- * A real orchestrator assembly over a temp repo with a local_encryption
- * vault: gateway, capability service (allowlist enforced), dispatch service
- * and the HTTP data plane on a port-0 localhost listener.
- */
 export async function startBaselineOrchestrator(
   repoDir: string,
   options: BaselineOrchestratorOptions = {},
@@ -351,26 +322,19 @@ export async function startBaselineOrchestrator(
     shutdown: async () => {
       gateway.dispose();
       await server.shutdown();
-      // Bookkeeping a dispatch records without waiting (a pending dispatch's
-      // end) lands before the test removes the repo (swamp-club#4038).
+      // bookkeeping a dispatch records without waiting lands before the test
+      // removes the repo
       await dispatchService.settled();
     },
   };
 }
 
 export interface InMemoryWorker {
-  /** The worker's side of the control channel; register dispatch here. */
   channel: RpcChannel;
   enrollResult: EnrollResult;
   dropSocket: () => void;
 }
 
-/**
- * Connects and enrolls a worker over an in-memory control socket, at
- * `protocolVersion` (the current one unless a test pins the version 5 frame
- * of the deprecation window). Register `WorkerMethod.dispatch` on the
- * returned channel to act as the worker.
- */
 export async function connectInMemoryWorker(
   orchestrator: BaselineOrchestrator,
   name: string,

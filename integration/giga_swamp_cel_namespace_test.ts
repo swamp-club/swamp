@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for giga-swamp Phase 4: CEL cross-namespace queries.
- *
- * Verifies namespace routing in point-lookup helpers, wildcard ambiguity
- * checks, data.query() namespace predicates, and the solo-mode byte-identical
- * invariant.
- */
-
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
@@ -180,8 +172,6 @@ async function buildDataContext(
   >;
 }
 
-// --- Test 1: Solo mode byte-identical gate ---
-
 Deno.test("giga-swamp CEL Phase 4: solo mode produces byte-identical results", async () => {
   await withTempDir(async (root) => {
     const repoDir = join(root, "solo-repo");
@@ -219,11 +209,6 @@ Deno.test("giga-swamp CEL Phase 4: solo mode produces byte-identical results", a
   });
 });
 
-// --- Test 2: Cross-namespace point lookup ---
-// Uses a single repo/catalog with rows from multiple namespaces inserted
-// directly. In production, multi-namespace catalogs are built via datastore
-// sync; here we simulate by upserting rows for the "security" namespace.
-
 Deno.test("giga-swamp CEL Phase 4: cross-namespace point lookup with ns:model syntax", async () => {
   await withTempDir(async (root) => {
     const dsDir = join(root, "shared-ds");
@@ -254,12 +239,10 @@ Deno.test("giga-swamp CEL Phase 4: cross-namespace point lookup with ns:model sy
         n: string,
       ) => Promise<DataRecord | null>;
 
-      // Default: own namespace only
       const ownResult = await latestFn("scanner", "output");
       assertEquals(ownResult !== null, true);
       assertEquals(ownResult!.namespace, "infra");
 
-      // Explicit cross-namespace
       const crossResult = await latestFn("security:scanner", "output");
       assertEquals(crossResult !== null, true);
       assertEquals(crossResult!.namespace, "security");
@@ -268,10 +251,6 @@ Deno.test("giga-swamp CEL Phase 4: cross-namespace point lookup with ns:model sy
     }
   });
 });
-
-// --- Test 2a: every reader returns the foreign record's attributes ---
-// A catalog pull brings another namespace's rows without their content; the
-// repository's fetcher reads it from the remote on demand (swamp-club#3306).
 
 Deno.test("giga-swamp CEL Phase 4: data.* readers return a foreign record's attributes through the repository's fetcher (swamp-club#3306)", async () => {
   await withTempDir(async (root) => {
@@ -303,7 +282,6 @@ Deno.test("giga-swamp CEL Phase 4: data.* readers return a foreign record's attr
       const attributesOf = async (read: unknown) =>
         ((await read) as DataRecord | null)?.attributes;
 
-      // The caller's record of the same name is still its own.
       assertEquals(
         await attributesOf(data.latest("scanner", "output")),
         { content: "infra" },
@@ -322,7 +300,6 @@ Deno.test("giga-swamp CEL Phase 4: data.* readers return a foreign record's attr
         await attributesOf(data.version("security:scanner", "output", 1)),
         { content: "security" },
       );
-      // Only security holds "auditor", so the wildcard is unambiguous.
       assertEquals(
         await attributesOf(data.latest("*:auditor", "report")),
         { content: "security" },
@@ -338,10 +315,6 @@ Deno.test("giga-swamp CEL Phase 4: data.* readers return a foreign record's attr
     }
   });
 });
-
-// --- Test 2b: a prefixed name that collides with a local model ---
-// The caller owns a definition named "scanner", so the full context has
-// coordinates for that name. A namespaced lookup must not read through them.
 
 Deno.test("giga-swamp CEL Phase 4: ns:model never returns the caller's own record of that name (swamp-club#3295)", async () => {
   await withTempDir(async (root) => {
@@ -370,7 +343,6 @@ Deno.test("giga-swamp CEL Phase 4: ns:model never returns the caller's own recor
         n: string,
       ) => Promise<DataRecord | null>;
 
-      // Nothing in "security" yet, and "nosuchns" does not exist.
       assertEquals(await latestFn("security:scanner", "output"), null);
       assertEquals(await latestFn("nosuchns:scanner", "output"), null);
       assertEquals(
@@ -379,7 +351,6 @@ Deno.test("giga-swamp CEL Phase 4: ns:model never returns the caller's own recor
       );
       assertEquals((await latestFn("scanner", "output"))?.namespace, "infra");
 
-      // Once "security" holds the record, its row is the one returned.
       const foreign = makeCrossNamespaceRow("security", "scanner", "output");
       setup.catalog.upsert(foreign);
       const crossResult = await latestFn("security:scanner", "output");
@@ -391,8 +362,6 @@ Deno.test("giga-swamp CEL Phase 4: ns:model never returns the caller's own recor
     }
   });
 });
-
-// --- Test 3: Wildcard ambiguity check ---
 
 Deno.test("giga-swamp CEL Phase 4: wildcard ambiguity errors when model exists in multiple namespaces", async () => {
   await withTempDir(async (root) => {
@@ -422,14 +391,12 @@ Deno.test("giga-swamp CEL Phase 4: wildcard ambiguity errors when model exists i
         n: string,
       ) => Promise<DataRecord | null>;
 
-      // Wildcard with ambiguity should throw
       await assertRejects(
         async () => await latestFn("*:scanner", "output"),
         Error,
         "Ambiguous",
       );
 
-      // Specific namespace should NOT throw
       const specific = await latestFn("infra:scanner", "output");
       assertEquals(specific !== null, true);
       assertEquals(specific!.namespace, "infra");
@@ -438,8 +405,6 @@ Deno.test("giga-swamp CEL Phase 4: wildcard ambiguity errors when model exists i
     }
   });
 });
-
-// --- Test 4: data.query() namespace predicate filtering ---
 
 Deno.test("giga-swamp CEL Phase 4: data.query() with ns predicate filters by namespace", async () => {
   await withTempDir(async (root) => {
@@ -479,8 +444,6 @@ Deno.test("giga-swamp CEL Phase 4: data.query() with ns predicate filters by nam
   });
 });
 
-// --- Test 5: data.query() without namespace predicate spans all namespaces ---
-
 Deno.test("giga-swamp CEL Phase 4: data.query() without ns predicate spans all namespaces", async () => {
   await withTempDir(async (root) => {
     const dsDir = join(root, "shared-ds");
@@ -506,7 +469,6 @@ Deno.test("giga-swamp CEL Phase 4: data.query() without ns predicate spans all n
       const data = await buildDataContext(setup);
       const queryFn = data.query as (p: string) => Promise<DataRecord[]>;
 
-      // No namespace predicate — should return data from ALL namespaces
       const allResults = await queryFn('dataType == "resource"');
       assertEquals(allResults.length, 2);
       const namespaces = allResults.map((r) => r.namespace).sort();
@@ -516,8 +478,6 @@ Deno.test("giga-swamp CEL Phase 4: data.query() without ns predicate spans all n
     }
   });
 });
-
-// --- Test 6: Solo mode namespace predicate ---
 
 Deno.test("giga-swamp CEL Phase 4: data.query('ns == \"\"') in solo mode returns all data", async () => {
   await withTempDir(async (root) => {
@@ -542,7 +502,6 @@ Deno.test("giga-swamp CEL Phase 4: data.query('ns == \"\"') in solo mode returns
       const data = await buildDataContext(setup);
       const queryFn = data.query as (p: string) => Promise<DataRecord[]>;
 
-      // Explicit empty-namespace predicate should match all solo-mode data
       const soloResults = await queryFn('ns == ""');
       assertEquals(soloResults.length, 2);
       for (const r of soloResults) {
@@ -553,8 +512,6 @@ Deno.test("giga-swamp CEL Phase 4: data.query('ns == \"\"') in solo mode returns
     }
   });
 });
-
-// --- Test 7: Wildcard with unambiguous result succeeds ---
 
 Deno.test("giga-swamp CEL Phase 4: wildcard returns result when model exists in one namespace only", async () => {
   await withTempDir(async (root) => {
@@ -576,7 +533,6 @@ Deno.test("giga-swamp CEL Phase 4: wildcard returns result when model exists in 
         n: string,
       ) => Promise<DataRecord | null>;
 
-      // Wildcard with only one namespace should succeed
       const result = await latestFn("*:unique-scanner", "output");
       assertEquals(result !== null, true);
       assertEquals(result!.namespace, "infra");
@@ -586,8 +542,6 @@ Deno.test("giga-swamp CEL Phase 4: wildcard returns result when model exists in 
     }
   });
 });
-
-// --- Test 8: listVersions wildcard ambiguity ---
 
 Deno.test("giga-swamp CEL Phase 4: listVersions wildcard errors when ambiguous", async () => {
   await withTempDir(async (root) => {
@@ -617,7 +571,6 @@ Deno.test("giga-swamp CEL Phase 4: listVersions wildcard errors when ambiguous",
         n: string,
       ) => number[];
 
-      // Wildcard with ambiguity should throw synchronously
       let threw = false;
       try {
         listVersionsFn("*:scanner", "output");
@@ -627,7 +580,6 @@ Deno.test("giga-swamp CEL Phase 4: listVersions wildcard errors when ambiguous",
       }
       assertEquals(threw, true);
 
-      // Specific namespace should work fine
       const versions = listVersionsFn("infra:scanner", "output");
       assertEquals(versions.length, 1);
       assertEquals(versions[0], 1);

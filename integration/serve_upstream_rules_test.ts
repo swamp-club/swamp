@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Every command a user can type has an explicit answer to "does this
- * command use serve as its v3 datastore upstream?" in
- * `SERVE_UPSTREAM_COMMANDS` (src/cli/serve_upstream.ts). The rule walks the
- * real command tree built by `registerCommands`, so a new top-level
- * command, a new alias, or a new subcommand of a family whose answer is
- * split by subcommand (`datastore`, `doctor`) fails here until it is given
- * a row and a reason. A row for a command that no longer exists fails too.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
@@ -40,7 +30,6 @@ function buildRoot(): AnyCommand {
   return root;
 }
 
-/** Every word that reaches `command`: its name and its aliases. */
 function spellings(command: AnyCommand): string[] {
   return [command.getName(), ...command.getAliases()];
 }
@@ -67,7 +56,7 @@ Deno.test("serve upstream: every subcommand of a split family has a row", () => 
   for (const [family, rule] of Object.entries(SERVE_UPSTREAM_COMMANDS)) {
     if (rule.subcommands === undefined) continue;
     const command = root.getCommand(family, true);
-    if (command === undefined) continue; // the top-level test reports it
+    if (command === undefined) continue;
     assertEquals(
       Object.keys(rule.subcommands).sort(),
       childSpellings(command),

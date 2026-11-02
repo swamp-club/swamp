@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for user-defined models and expression-aware validation.
- *
- * Tests verify:
- * 1. User models work with the writeResource/createFileWriter API
- * 2. Expression-aware validation skips schema validation for expression fields
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -56,9 +48,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Creates a user model file in the extensions/models directory.
- */
 async function createUserModel(
   repoDir: string,
   filename: string,
@@ -71,11 +60,6 @@ async function createUserModel(
   return modelsDir;
 }
 
-// ============================================================================
-// User Model with DataWriter API Tests
-// ============================================================================
-
-// User model that uses the writeResource API
 const DATAWRITER_MODEL_CODE = `
 import { z } from "npm:zod@4";
 
@@ -137,18 +121,15 @@ export const model = {
 Deno.test("Integration: user model with dataWriter API works", async () => {
   try {
     await withTempDir(async (repoDir) => {
-      // 1. Create a user model that uses dataWriter API
       const modelsDir = await createUserModel(
         repoDir,
         "datawriter_model.ts",
         DATAWRITER_MODEL_CODE,
       );
 
-      // 2. Load the user model
       const loader = new ExtensionLoader(testDenoRuntime, modelKindAdapter);
       const loadResult = await loader.load(modelsDir);
 
-      // Debug: show any load failures
       if (loadResult.failed.length > 0) {
         console.error("Model load failures:", loadResult.failed);
       }
@@ -159,12 +140,10 @@ Deno.test("Integration: user model with dataWriter API works", async () => {
       );
       assertEquals(loadResult.failed.length, 0, "Should have no failures");
 
-      // 3. Verify model is registered
       const modelType = ModelType.create("@user/datawriter-model");
       const modelDef = modelRegistry.get(modelType);
       assertEquals(modelDef !== undefined, true, "Model should be registered");
 
-      // 4. Verify resources are registered
       assertEquals(
         Object.keys(modelDef!.resources ?? {}).length,
         1,
@@ -180,10 +159,6 @@ Deno.test("Integration: user model with dataWriter API works", async () => {
     modelRegistry.invalidateType("@user/datawriter-model");
   }
 });
-
-// ============================================================================
-// Expression-Aware Validation Tests
-// ============================================================================
 
 const EXPRESSION_MODEL_CODE = `
 import { z } from "npm:zod@4";
@@ -211,46 +186,38 @@ export const model = {
 Deno.test("Integration: expression-aware validation allows expressions in required fields", async () => {
   try {
     await withTempDir(async (repoDir) => {
-      // 1. Create a user model
       const modelsDir = await createUserModel(
         repoDir,
         "expression_model.ts",
         EXPRESSION_MODEL_CODE,
       );
 
-      // 2. Load the model
       const loader = new ExtensionLoader(testDenoRuntime, modelKindAdapter);
       const loadResult = await loader.load(modelsDir);
 
-      // Debug: show any load failures
       if (loadResult.failed.length > 0) {
         console.error("Model load failures:", loadResult.failed);
       }
 
-      // 3. Verify model is registered
       const modelType = ModelType.create("@user/expression-model");
       const modelDef = modelRegistry.get(modelType);
       assertEquals(modelDef !== undefined, true, "Model should be registered");
 
-      // 4. Create a definition with an expression in a required field
-      // Expressions should be allowed even when the underlying type is different
       const definitionRepo = new YamlDefinitionRepository(repoDir);
       const definition = Definition.create({
         name: "test-expression",
         methods: {
           process: {
             arguments: {
-              value: "${{ inputs.someValue }}", // Expression instead of literal
-              count: "${{ inputs.count }}", // Expression for number field
+              value: "${{ inputs.someValue }}",
+              count: "${{ inputs.count }}",
             },
           },
         },
       });
 
-      // This should succeed - expressions bypass strict type validation
       await definitionRepo.save(modelType, definition);
 
-      // 5. Verify the definition was saved with expressions intact
       const loaded = await definitionRepo.findById(modelType, definition.id);
       assertEquals(loaded !== null, true, "Definition should be loaded");
       assertEquals(

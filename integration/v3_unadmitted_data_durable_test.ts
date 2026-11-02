@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Durable v3 writes of data the checkout keeps local (swamp-club#4019): a
- * real v3 filesystem checkout whose datastore filter leaves data out hands
- * its units that filter, and the data repository the factory builds syncs
- * the versions those units drop, since no commit replays them. Data the
- * datastore commits stays unsynced.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -85,12 +77,6 @@ function stateData(modelId: string): Data {
   });
 }
 
-/**
- * Writes `state` of `modelId` in a checkout whose `datastore:` block adds
- * `extra`, through a streamed version, and returns whether the repository
- * made it durable. A second checkout with the default layout then reports
- * whether the datastore committed it.
- */
 async function writeThroughCheckout(
   extra: readonly string[],
 ): Promise<{ durable: boolean; committed: boolean }> {

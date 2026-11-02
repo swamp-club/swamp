@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for `workflow cancel` against a run in its cleanup phase
- * (swamp-club#2897). A run aborted mid-step runs its `always` job under the
- * cleanup grace; while it does, the record on disk must show the cleanup step
- * running, so a cancel that has to kill the owner then settles that record as
- * cut off rather than leaving the step pending.
- */
-
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -48,7 +40,6 @@ import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yam
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { cancelLocalRun } from "../src/cli/commands/workflow_cancel.ts";
 
-// Import models barrel to trigger built-in registration.
 import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
 import type { MethodRunOutputs } from "../src/domain/workflows/orphaned_run_reaper.ts";
 import "../src/domain/models/models.ts";
@@ -57,7 +48,6 @@ import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
 
 await initializeLogging({});
 
-/** Cancel deps for runs with no tracker rows or method-run records. */
 const untracked = {
   runTracker: {
     findAllRunning: () => [],
@@ -86,10 +76,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * `main/work` runs until the run's signal aborts; `teardown/t` runs until
- * released.
- */
 class CleanupStepExecutor implements StepExecutor {
   readonly started = new Set<string>();
   private releaseTeardown: () => void = () => {};
@@ -190,7 +176,6 @@ Deno.test("workflow cancel: the record shows a cleanup step running while it run
         "cleanup to start",
       );
 
-      // What an owner SIGKILLed now leaves behind, read as cancel reads it.
       const reader = new YamlWorkflowRunRepository(repoDir);
       const id = createWorkflowRunId(runId!);
       await waitFor(

@@ -37,11 +37,9 @@ import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { withExtensionMutation } from "../src/serve/extension_reload.ts";
 import { refreshLocalModelsForRun } from "../src/serve/local_model_refresh.ts";
 
-// swamp-club#3911: in swamp serve, requests that need the same uninstalled
-// type at once share one auto-install, and a run's refresh of local models
-// waits for that install instead of rebundling the half-installed extension
-// beside it. Wired as serve wires it: the resolver's install scheduler is
-// serve's extension-mutation turn.
+// requests needing the same uninstalled type share one auto-install, and a
+// run's local model refresh waits for it instead of rebundling the
+// half-installed extension
 
 await initializeLogging({});
 
@@ -135,7 +133,6 @@ Deno.test("integration: serve requests for one uninstalled type share an install
         lockfilePath,
         repoDir,
         denoRuntime: testDenoRuntime,
-        // As serve's resolver is configured (src/cli/mod.ts).
         repository: new ExtensionRepository({
           catalog,
           lockfileRepository: new LockfileRepository(lockfilePath, {}),
@@ -154,7 +151,6 @@ Deno.test("integration: serve requests for one uninstalled type share an install
     await download.promise;
     const second = resolver.resolve(type);
     const bare = resolver.resolve(type.slice(1));
-    // A run that needs no new extension checks local models meanwhile.
     const run = refreshLocalModelsForRun();
     for (let i = 0; i < 20; i++) await Promise.resolve();
     assertEquals(events, []);

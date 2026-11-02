@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Sensitive values read through CEL expressions (swamp-club#2171).
- *
- * A model writes a schema-marked sensitive field, which is stored as a vault
- * reference; later steps read it with `data.latest()`. Runs the real
- * workflow execution path in-process against a temp repo with a local
- * encryption vault, and spawns real `sh` for the command/shell steps.
- *
- * For every case: the value reaches the command (checked inside the shell),
- * swamp's spawned `sh -c` argv holds an environment reference instead of the
- * value, and no file swamp writes under `.swamp` holds the value.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { walk } from "@std/fs";
@@ -86,7 +73,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Registers a per-run model type whose `write` method stores a sensitive token. */
 function registerWriter(value: string = SECRET): string {
   const type = ModelType.create(`test/secret-writer-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -145,19 +131,14 @@ function shellStep(name: string, run: string, after = "write"): Step {
 
 const TOKEN = "data.latest('writer', 'main').attributes.token";
 
-/**
- * A shell snippet that prints `<label>_OK` when `word` expands to the secret,
- * checked by length and prefix so the secret itself is never authored text.
- */
 function checkValue(word: string, label: string): string {
   return `v=${word}; [ \${#v} -eq ${SECRET.length} ] && ` +
     `case "$v" in ${SECRET.slice(0, 5)}*) echo ${label}_OK;; esac`;
 }
 
 /**
- * Prints the step shell's own command line. The trailing `&& true` keeps `ps`
- * from being the last command of the `-c` string, which bash would exec in
- * place of the shell, so `$$` still names the shell on every `/bin/sh`.
+ * the trailing `&& true` keeps ps from being the last command of the -c string,
+ * which bash would exec in place of the shell, so $$ still names the shell
  */
 const SHOW_ARGV = "ps -o args= -p $$ && true";
 
@@ -205,7 +186,6 @@ async function runWorkflow(
   return { status, runId, errors, events };
 }
 
-/** The persisted stdout of the named shell step's latest result. */
 async function shellStdout(
   repoDir: string,
   modelName: string,
@@ -229,7 +209,6 @@ async function shellStdout(
   return byName.join("\n");
 }
 
-/** Paths of files under .swamp (other than vault storage) holding the value. */
 async function filesHolding(repoDir: string, value: string): Promise<string[]> {
   const found: string[] = [];
   for await (
@@ -253,7 +232,6 @@ async function filesHolding(repoDir: string, value: string): Promise<string[]> {
 
 const posix = { ignore: Deno.build.os === "windows" };
 
-/** The run record file's text. */
 async function findRunRecord(repoDir: string, runId: string): Promise<string> {
   for await (
     const entry of walk(join(repoDir, ".swamp", "workflow-runs"), {
@@ -267,10 +245,6 @@ async function findRunRecord(repoDir: string, runId: string): Promise<string> {
   throw new Error(`run record ${runId} not found`);
 }
 
-/**
- * Writes the sensitive data in a run of its own, for workflows that read it
- * at workflow or job start (tags, forEach.in), before any step runs.
- */
 async function seed(repoDir: string, type: string): Promise<void> {
   const seeded = await runWorkflow(
     repoDir,
@@ -282,7 +256,6 @@ async function seed(repoDir: string, type: string): Promise<void> {
   assertEquals(seeded.status, "succeeded", seeded.errors.join("\n"));
 }
 
-/** A workflow whose writer runs first and whose other steps depend on it. */
 function flow(name: string, type: string, steps: Step[]): Workflow {
   return Workflow.create({
     name,
@@ -290,7 +263,6 @@ function flow(name: string, type: string, steps: Step[]): Workflow {
   });
 }
 
-/** A workflow of one shell step that reads data written by an earlier run. */
 function reader(
   name: string,
   run: string,
@@ -340,8 +312,6 @@ Deno.test(
       const stdout = await shellStdout(repoDir, "consume");
       assertStringIncludes(stdout, "DOUBLE_OK");
       assertStringIncludes(stdout, "SINGLE_OK");
-      // The spawned command line carries references, never the value (which
-      // the redactor would have shown as ***).
       const argv = stdout.split("\n").find((line) => line.includes("sh -c"));
       assert(argv, stdout);
       assertStringIncludes(argv, "__SWAMP_VAULT_");
@@ -611,8 +581,8 @@ Deno.test(
       const workflow = reader("prefix", `echo STEP=prefix \${{ ${TOKEN} }}`);
       const fresh = await runWorkflow(repoDir, workflow);
       assertEquals(fresh.status, "succeeded", fresh.errors.join("\n"));
-      // Rewrite the cached workflow as an older swamp wrote it: no format
-      // marker, and plaintext where the reference now sits.
+      // rewrite the cached workflow as an older swamp wrote it: no format
+      // marker, and plaintext where the reference now sits
       for await (
         const entry of walk(join(repoDir, ".swamp", "workflows-evaluated"), {
           includeDirs: false,
@@ -690,9 +660,6 @@ Deno.test(
         createWorkflowRunId(started.runId!),
       );
       assert(run);
-      // As `swamp workflow approve` does, in a process with no record: the
-
-      // stored references are written back unchanged.
 
       const gate = run.getJob("main")!.getStep("gate")!;
 
@@ -731,7 +698,6 @@ Deno.test(
   },
 );
 
-/** Whether a run raised the warning for a single-quoted vault expression. */
 function warnedSingleQuote(events: WorkflowRunEvent[]): boolean {
   return events.some((event) =>
     event.kind === "method_event" &&
@@ -749,7 +715,6 @@ Deno.test(
       await vault.put("secrets", "MIXED", value);
       const expr = "${{ vault.get('secrets', 'MIXED') }}";
 
-      // Single-quoted first: the double-quoted use is still one quoted word.
       const singleFirst = await runWorkflow(
         repoDir,
         reader(
@@ -766,11 +731,9 @@ Deno.test(
       const stdout = await shellStdout(repoDir, "single-first");
       assertStringIncludes(stdout, "ARGC=1");
       assertStringIncludes(stdout, "ARG=[***]");
-      // Word-splitting would print fragments the redactor cannot match.
       assertEquals(stdout.includes("words"), false, stdout);
       assertEquals(warnedSingleQuote(singleFirst.events), true);
 
-      // Double-quoted first: the later single-quoted use is still warned of.
       const doubleFirst = await runWorkflow(
         repoDir,
         reader(
@@ -785,8 +748,6 @@ Deno.test(
       );
       assertEquals(warnedSingleQuote(doubleFirst.events), true);
 
-      // An apostrophe in a comment between two double-quoted uses changes
-      // neither placement and raises no warning.
       const commented = await runWorkflow(
         repoDir,
         reader(
@@ -802,10 +763,6 @@ Deno.test(
   },
 );
 
-/**
- * Registers a per-run model type whose global argument `ticket` reads the
- * writer's sensitive token; `read` uses it, `skip` does not.
- */
 function registerTicketReader(): string {
   const type = ModelType.create(`test/ticket-reader-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -831,7 +788,6 @@ function registerTicketReader(): string {
   return type.normalized;
 }
 
-/** Deletes every secret the repo's local encryption vault holds. */
 async function deleteStoredSecrets(repoDir: string): Promise<void> {
   for await (
     const entry of walk(join(repoDir, ".swamp", "secrets"), {
@@ -843,7 +799,6 @@ async function deleteStoredSecrets(repoDir: string): Promise<void> {
   }
 }
 
-/** The warnings swamp's expression layer logs while `fn` runs. */
 async function expressionWarnings(fn: () => Promise<void>): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({

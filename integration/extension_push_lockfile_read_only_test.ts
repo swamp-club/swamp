@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Push and quality treat the extension's lockfile as read-only
- * (swamp-club#3613): the module graph read and the bundle run with
- * `--frozen` when the project has a lock and `--no-lock` when it has none,
- * so a stale lock is refused rather than rewritten and no lock is created.
- * Wires the real Deno, module graph reader and bundler as push does, offline:
- * the shared cache supplies esbuild and the npm registry is unreachable.
- *
- * `extension fmt` reads the module graph the same way (swamp-club#3717), but
- * leniently: a stale lock is reported, and the entry points it refused are
- * formatted alone, rather than failing the run.
- *
- * The extension loader, which every command runs at startup, reads the lock
- * read-only too (swamp-club#3869), so an extension in the repository's
- * loaded extensions dir keeps its lock: a stale one warns and loads without
- * it, and the lock is part of the bundle's fingerprint.
- */
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { TarStream } from "@std/tar/tar-stream";
@@ -81,8 +63,6 @@ const ENV = {
   NPM_CONFIG_REGISTRY: "http://127.0.0.1:1/",
 };
 
-// The issue's repro: the lock records npm:ms@^2.0.0 at 2.0.0, and deno.json
-// has since moved the specifier past it.
 const MS_LOCK = JSON.stringify(
   {
     version: "5",
@@ -119,7 +99,6 @@ async function withProject(
   }
 }
 
-/** Reads the module graph and bundles `mod.ts` the way push and quality do. */
 async function readAndBundle(
   dir: string,
   project: ExtensionProject,
@@ -212,13 +191,6 @@ Deno.test("push lockfile: a package.json project without a lock gets none", asyn
   });
 });
 
-/**
- * A one-package npm registry on a free localhost port, so the module graph
- * read resolves a real npm import, and writes a lock unless told not to,
- * without the network. `fn` gets the environment that points deno at it,
- * with a fresh DENO_DIR so nothing it caches outlives the test, and the
- * deno.lock a project mapping `lockpkg` to `^1.0.0` resolves to.
- */
 async function withLockRegistry(
   fn: (env: Record<string, string>, currentLock: string) => Promise<void>,
 ): Promise<void> {
@@ -295,7 +267,6 @@ async function withLockRegistry(
   }
 }
 
-/** Runs `deno <args>` in `env` and returns its output. */
 async function runDeno(
   args: string[],
   env: Record<string, string>,
@@ -311,7 +282,6 @@ async function runDeno(
     .trim();
 }
 
-/** fmt's dependencies, as createExtensionFmtDeps wires them, in `env`. */
 function fmtDeps(env: Record<string, string>): ExtensionFmtDeps {
   return {
     checkQuality: (files, denoConfigPath) =>
@@ -326,10 +296,6 @@ function fmtDeps(env: Record<string, string>): ExtensionFmtDeps {
   };
 }
 
-/**
- * A one-model extension at the repository root, which holds the project
- * deno.json mapping `lockpkg`; the model imports it. Returns the manifest.
- */
 async function writeLockExtension(
   dir: string,
   range: string,
@@ -360,17 +326,11 @@ async function writeLockExtension(
   return manifestPath;
 }
 
-/** Writes `lock`, the lock the project resolves to, and returns it. */
 async function writeCurrentLock(dir: string, lock: string): Promise<string> {
   await Deno.writeTextFile(join(dir, "deno.lock"), lock);
   return lock;
 }
 
-/**
- * Runs `extension fmt` (or `fmt --check`) as the command does: resolves the
- * extension's files leniently with the read-only graph reader, then formats
- * and lints them under the project config.
- */
 async function fmtExtension(
   dir: string,
   manifestPath: string,
@@ -435,7 +395,6 @@ for (const check of [true, false]) {
       await withProject({}, async (dir) => {
         const manifestPath = await writeLockExtension(dir, "^1.0.0");
         const lock = await writeCurrentLock(dir, currentLock);
-        // deno.json moves the specifier on; the lock still records ^1.0.0.
         await writeLockExtension(dir, "~1.0.0");
         const data = await fmtExtension(dir, manifestPath, env, check);
         assertEquals(data.passed, true);
@@ -451,12 +410,6 @@ for (const check of [true, false]) {
   });
 }
 
-/**
- * A one-model extension in the repository's loaded extensions/models
- * directory, the tutorial layout, with its own deno.json mapping `ms` and
- * its manifest beside it. The model imports nothing the lock records, so
- * the bundle runs offline; the lock is checked against the config alone.
- */
 async function writeLoadedLockExtension(
   dir: string,
   range: string,
@@ -507,19 +460,13 @@ export const model = {
   return { entry, manifestPath, modelsDir };
 }
 
-/**
- * Indexes `modelsDir` with the real loader and its module graph reader, as
- * every command does at startup, and returns the warnings it logged.
- */
 async function loadModels(
   dir: string,
   modelsDir: string,
   catalog: ExtensionCatalogStore,
   env: Record<string, string>,
   options?: {
-    /** Run the startup reconcile first, as the first command in a repo does. */
     reconcileFirst?: boolean;
-    /** Runs between the reconcile and the index. */
     afterReconcile?: () => Promise<void>;
   },
 ): Promise<string[]> {
@@ -572,7 +519,6 @@ async function loadModels(
   );
 }
 
-/** Runs `fn` with a catalog for `dir`, closed afterwards. */
 async function withCatalog(
   dir: string,
   fn: (catalog: ExtensionCatalogStore) => Promise<void>,
@@ -603,7 +549,6 @@ Deno.test("loader lockfile: loading and fmt in the loaded dir create no deno.loc
       assertEquals(warnings, []);
       assertEquals(catalog.findBySourcePath(entry)?.type_normalized, type);
       assertEquals(await exists(lockPath), false);
-      // The lock it would read is recorded, so one appearing rebundles.
       assertEquals(
         catalog.findSourceModules(entry)?.includes(lockPath),
         true,
@@ -636,7 +581,6 @@ Deno.test("loader lockfile: a current deno.lock in the loaded dir is unchanged b
 Deno.test("loader lockfile: a stale deno.lock in the loaded dir loads, warns once and is unchanged, and fmt still reports it (swamp-club#3869)", async () => {
   await withProject({}, async (dir) => {
     const type = loadedType();
-    // deno.json has moved past the ^2.0.0 the lock records.
     const { entry, manifestPath, modelsDir } = await writeLoadedLockExtension(
       dir,
       "^2.1.0",
@@ -650,7 +594,6 @@ Deno.test("loader lockfile: a stale deno.lock in the loaded dir loads, warns onc
       assertStringIncludes(warnings[0], "is out of date with");
       assertStringIncludes(warnings[0], "deno install --entrypoint");
       assertEquals(catalog.findBySourcePath(entry)?.type_normalized, type);
-      // Nothing changed, so the next load neither rebundles nor warns.
       assertEquals(await loadModels(dir, modelsDir, catalog, ENV), []);
     });
     assertEquals(await Deno.readTextFile(lockPath), MS_LOCK);
@@ -676,8 +619,6 @@ Deno.test("loader lockfile: the first command's startup reconcile and model load
       const warnings = await loadModels(dir, modelsDir, catalog, ENV, {
         reconcileFirst: true,
         afterReconcile: async () => {
-          // The model load reuses the bundle reconcile indexed rather than
-          // building it again.
           bundlePath = catalog.findBySourcePath(entry)?.bundle_path ?? "";
           await Deno.utime(bundlePath, epoch, epoch);
         },

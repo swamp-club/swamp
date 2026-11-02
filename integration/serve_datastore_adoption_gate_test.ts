@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A new leader adopting the explicit leases its predecessor kept
- * (swamp-club#4195) holds back only the writes to a key whose kept lease
- * it has not adopted yet (swamp-club#4258): every other write lands, and
- * every write waits while the kept leases cannot be read.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type {
@@ -47,11 +40,6 @@ import {
 
 const LEADER_FENCE = 2;
 
-/**
- * The kept leases in memory, as the control plane keeps them: a record
- * written while the lease is granted is pending until it is, and adoption
- * returns every record that is not.
- */
 function keptLeases(options: { unreadable?: () => boolean } = {}) {
   const records = new Map<string, PersistedLease>();
   const store: PersistedLeaseStore = {
@@ -73,7 +61,6 @@ function keptLeases(options: { unreadable?: () => boolean } = {}) {
   return { records, store };
 }
 
-/** The lease the leader before kept for `principal` on `lockKey`. */
 function kept(lockKey: string, principal = "user:caller"): PersistedLease {
   return {
     leaseId: crypto.randomUUID(),
@@ -87,10 +74,6 @@ function kept(lockKey: string, principal = "user:caller"): PersistedLease {
   };
 }
 
-/**
- * Serve's own locks, with the keys in `blocked` held by a run of the
- * leader before: their kept leases cannot be adopted until they free.
- */
 function leasesOver(
   persistence: PersistedLeaseStore,
   blocked: Set<string>,
@@ -116,7 +99,6 @@ function leasesOver(
     });
 }
 
-/** Takes a fenced explicit lease on `lockKey`, as a checkout does. */
 async function takeLease(
   server: Server,
   lockKey = modelKey(server),
@@ -151,18 +133,13 @@ Deno.test({
         await server.locks.adopt();
         assert(server.locks.adopting, "the blocked lease is not adopted yet");
 
-        // A commit to the behavior no pending lease covers lands.
         const saved = await save(server, "alice-token", 1, 0);
         assertEquals(saved.status, 200, JSON.stringify(saved.json));
-        // So does an explicit lease on it.
         const taken = await takeLease(server);
         assertEquals(taken.status, 201, JSON.stringify(taken.json));
         const leaseId = taken.json.leaseId as string;
-        // The lease listing waits: it would leave out the pending lease.
         assert(notLeader(await call(server, "GET", "locks", "alice-token")));
 
-        // The run of the leader before ends; the retried adoption keeps the
-        // lease taken meanwhile, recorded among the kept ones.
         blocked.clear();
         await waitFor(
           () => !server.locks.adopting,
@@ -210,7 +187,6 @@ Deno.test({
             }),
           ),
         );
-        // Its holder's renewal and release are not answered as a lost lease.
         assert(
           notLeader(
             await call(
@@ -246,7 +222,6 @@ Deno.test({
           { ttlMs: 3_600_000 },
         );
         assertEquals(renewed.status, 200, JSON.stringify(renewed.json));
-        // The adopted lease decides commits as before the takeover.
         const leased = await save(server, "alice-token", 1, 0, {
           lease: lease.leaseId,
         });

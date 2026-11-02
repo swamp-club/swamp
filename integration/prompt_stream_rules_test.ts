@@ -18,37 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness test for the stream contract:
- *
- *   stdout is the command's output — prose, JSON, or for a few commands a
- *   bare value a caller pipes, captures or redirects. stderr is interaction
- *   and diagnostics.
- *
- * The contract existed before it had a name, and it broke twice for the same
- * reason: something that was interaction got written to stdout, where a
- * caller was capturing a value. swamp-club#2254 put a log record ahead of the
- * URL in `swamp invite link | pbcopy`; swamp-club#2260 put a confirmation
- * prompt ahead of the secret in `swamp vault read-secret v k > key.pem`,
- * defeating the byte-exact output swamp-club#1768 established.
- *
- * This test pins every raw stdout write in `src/` so the set cannot grow
- * quietly. It is a ratchet, not a fix: seven of the pinned files still write
- * interaction to stdout, and swamp-club#2259 (stderr by default) is where
- * they convert. Pinning them makes that backlog enumerable — and makes a NEW
- * offender fail here instead of in a user's redirect target.
- *
- * Scope: **raw stream writes only** — `Deno.stdout.write(...)` and
- * `writeSync(...)`. Not in scope, deliberately:
- *
- *   - `console.log`, by far the larger route to stdout, governed instead by
- *     the renderer / `writeOutput` convention and `domain/models/console_guard.ts`.
- *   - `Deno.stdout.writable` (worker dispatch RPC frames) and
- *     `Deno.stdout.isTerminal()` (TTY probes), which the pattern excludes by
- *     requiring the open paren.
- *   - a file that aliases the handle first (`const out = Deno.stdout`), which
- *     a source grep cannot see.
- *
- * Static — no subprocesses, nothing is executed.
+ * stdout is the command's output and stderr is interaction; every raw stdout
+ * write in src/ is pinned so the set cannot grow quietly and a new offender
+ * fails here, not in a user's redirect target
  */
 
 import { walk } from "@std/fs/walk";
@@ -59,28 +31,16 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 /**
- * A raw write to the stdout handle. The open paren is load-bearing: without
- * it this also matches `Deno.stdout.writable`, the RPC channel the worker
- * dispatch runner hands to `runDispatchRunner`, which is a value on stdout by
- * design and not a stream-contract violation.
+ * the open paren is load-bearing: without it this also matches
+ * Deno.stdout.writable, the worker dispatch RPC channel, which is a value on
+ * stdout by design
  */
 const RAW_STDOUT_WRITE = /Deno\.stdout\.write(?:Sync)?\(/;
 
 /**
- * Files that write directly to stdout, pinned in two groups.
- *
- * Group 1 — the value on stdout. These writes ARE the command's output, and
- * the byte-exactness is the point: a renderer that added a newline would
- * break `> key.pem`, and the TUI files write terminal control sequences that
- * belong on the screen the user is looking at.
- *
- * Group 2 — interaction still on stdout. Each of these is a prompt, a wizard
- * narration, or a progress line that belongs on stderr by the same argument
- * that moved the shared prompt helpers (swamp-club#2260). None of them
- * belongs to a value-on-stdout command, so nothing is corrupted today — they
- * are pinned, not exempted, and swamp-club#2259 is where they move. Delete an
- * entry from this list when its file converts; `assertPinnedSet` fails on a
- * stale pin as loudly as on a new one.
+ * group 1 writes are the command's output and must be byte-exact; group 2 is
+ * interaction still on stdout, pinned not exempted; delete an entry when its
+ * file converts
  */
 const PINNED_STDOUT_WRITERS: readonly string[] = [
   // Group 1 — the value on stdout.
@@ -92,7 +52,7 @@ const PINNED_STDOUT_WRITERS: readonly string[] = [
   "src/presentation/renderers/inbox_tui.tsx",
   "src/presentation/renderers/vault_read_secret.ts",
 
-  // Group 2 — interaction still on stdout (swamp-club#2259).
+  // group 2: interaction still on stdout, pending a move to stderr
   "src/cli/commands/agent_setup.ts",
   "src/cli/commands/datastore_setup.ts",
   "src/cli/commands/issue_submit.ts",

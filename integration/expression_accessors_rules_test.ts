@@ -17,30 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: DATA_NAMESPACE_ACCESSORS is the single list of
-// accessors the CEL `data.*` namespace exposes, and it must not drift from the
-// two places that actually define that namespace.
-//
-// This exists because drift already happened and went unnoticed for a long
-// time. `query` and `findBySpec` joined the namespace, but the workflow-path
-// validator kept its own hand-written alternation and silently rejected both
-// in model global arguments. Nothing failed; the expressions were simply
-// refused. A test is the only thing that catches that class of change, because
-// neither surface below exists at runtime in a form a type could check.
-//
-// Two surfaces, deliberately, because each catches drift the other cannot:
-//
-//   - The cel-js registrations decide what an expression can actually CALL.
-//     A function absent here is uncallable no matter what is declared.
-//   - The `DataNamespace` interface declares the contract implementations
-//     satisfy. A function absent here is untyped no matter what is registered.
-//
-// Both assertions are set equality, never subset containment. That is the
-// whole defence against a vacuous pass: the empty set is contained in
-// anything, so a containment assertion would survive an extraction that
-// silently matched nothing after a reformat. Equality fails loudly instead,
-// which is also why no raw match count is pinned here — counts would couple
-// this test to arities, and arities are deliberately not pinned. Names are.
+// DATA_NAMESPACE_ACCESSORS must equal both the cel-js registrations (callable)
+// and the DataNamespace interface (typed); set equality, never containment, so
+// an extraction matching nothing fails loudly
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -58,13 +37,9 @@ const MODEL_RESOLVER = join(ROOT, "src/domain/expressions/model_resolver.ts");
 const expected = [...DATA_NAMESPACE_ACCESSORS].sort();
 
 /**
- * Names registered with cel-js for the data namespace receiver.
- *
- * Matched only inside a `registerFunction(` argument, so a comment or a doc
- * string written in the shape of a qualified call cannot inject a name. The
- * same signature may be registered at several arities; this collapses them,
- * because the guard pins which accessors exist, not how many ways each is
- * callable.
+ * matched only inside a registerFunction( argument so a comment cannot inject a
+ * name; arities collapse because the guard pins which accessors exist, not how
+ * many ways each is callable
  */
 function registeredAccessors(source: string): string[] {
   const names = new Set<string>();
@@ -76,13 +51,9 @@ function registeredAccessors(source: string): string[] {
 }
 
 /**
- * Method names declared on the `DataNamespace` interface.
- *
- * Optional members are excluded, and optionality is the rule rather than a
- * hardcoded skip: a member declared optional is by definition not part of the
- * contract every implementation satisfies. `invalidateLatest` is the current
- * one — a void-returning no-op that `buildDataNamespace` does not supply and
- * cel-js never registers, so no expression can call it.
+ * optional members are excluded: a member declared optional is not part of the
+ * contract every implementation satisfies, like invalidateLatest, which cel-js
+ * never registers
  */
 function declaredAccessors(source: string): string[] {
   const start = source.indexOf("export interface DataNamespace {");
@@ -139,10 +110,9 @@ Deno.test("registeredAccessors ignores names that appear outside a registration"
   assertEquals(registeredAccessors(stub), ["latest"]);
 });
 
-// Serve authorizes expression text by what it reads (swamp-club#2755). The
-// reference analyzer must classify every accessor, as naming its model or as
-// reading across models; one it does not know is judged as reading any data,
-// so a new accessor stays safe but should be classified here on purpose.
+// the reference analyzer must classify every accessor as naming its model or
+// reading across models; an unknown one is judged as reading any data, safe but
+// should be classified on purpose
 Deno.test("the expression reference analyzer classifies every data accessor exactly once", () => {
   assertEquals([...CLASSIFIED_DATA_ACCESSORS].sort(), expected);
   for (const name of MODEL_SCOPED_DATA_ACCESSORS) {

@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve commits through root units of work with no behaviour change
- * (swamp-club#3034, swamp-club#3035). The use-case sync characterization
- * rows cover each converted handler's success path; these cover what they
- * do not: failed, refused and cancelled requests, replies sent before a
- * success-only push, model method runs with and without model locks,
- * suspended and cancelled workflow runs, resumes and the auto-resumes they
- * launch, and concurrent requests.
- * Each test pins today's marks, pushes and replies, and checks the work ran
- * in exactly one root unit that staged every mark.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { configure, type LogRecord } from "@logtape/logtape";
@@ -78,7 +66,6 @@ import {
 
 await initializeLogging({});
 
-/** The error a request answered with, without its per-request id. */
 function errorOf(frames: Frame[]): unknown {
   assertEquals(frames.length, 1, "expected exactly one reply frame");
   return frames[0].type === "error" ? frames[0].error : frames[0];
@@ -156,11 +143,6 @@ Deno.test("serve root units: a workflow.approve whose use case fails still pushe
   });
 });
 
-/**
- * Runs `workflowName` through executeWorkflowWithLocks under an observed
- * gate, and returns how it stopped as `<kind>:<status>` when it suspended
- * or was cancelled, or undefined otherwise.
- */
 async function runWorkflow(
   repos: Parameters<Parameters<typeof withRowRepos>[1]>[0],
   workflowName: string,
@@ -201,8 +183,7 @@ Deno.test("serve root units: a workflow run that suspends pushes once, after the
     const observation = observe(repos, base);
 
     assertEquals(last, "suspended:suspended");
-    // Each repository write is marked before it and after it
-    // (swamp-club#2421).
+    // each repository write is marked before it and after it
     assertEquals(observation.ops, [
       "markDirty workflows-evaluated/workflow-gated.yaml",
       "markDirty workflows-evaluated/workflow-gated.yaml",
@@ -245,8 +226,7 @@ Deno.test("serve root units: a workflow run cancelled before it starts a step pu
     const observation = observe(repos, base);
 
     assertEquals(last, "cancelled:cancelled");
-    // Each repository write is marked before it and after it
-    // (swamp-club#2421).
+    // each repository write is marked before it and after it
     assertEquals(observation.ops, [
       "markDirty workflows-evaluated/workflow-plain.yaml",
       "markDirty workflows-evaluated/workflow-plain.yaml",
@@ -329,7 +309,6 @@ Deno.test("serve root units: concurrent requests get separate roots, each pushin
     const ops = repos.remote.ops().slice(base.opCount)
       .filter((op) => op.instance === "A");
     assertEquals(ops.filter((op) => op.op === "push").length, 2);
-    // Op-log length at the first gate exit, relative to the baseline.
     const firstExit = repos.releases[base.releaseCount] - base.opCount;
     const firstPush = ops.findIndex((op) => op.op === "push");
     assertEquals(
@@ -350,10 +329,6 @@ Deno.test("serve root units: concurrent requests get separate roots, each pushin
   });
 });
 
-/**
- * A parent workflow (auto-resume on) whose first step runs `child`, a
- * workflow suspended at its `gate` approval.
- */
 async function saveParentAwaitingGatedChild(
   repos: Parameters<Parameters<typeof withRowRepos>[1]>[0],
 ): Promise<{ parent: Workflow; child: Workflow }> {
@@ -429,7 +404,6 @@ Deno.test("serve root units: a workflow.reject whose reply fails after the save 
     const pushes = () =>
       repos.remote.ops().filter((op) => op.instance === "A" && op.op === "push")
         .length;
-    // Each root's flush, with the pushes it made.
     const rootFlushes: number[] = [];
     const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
       const flush = options.flush;
@@ -493,23 +467,14 @@ Deno.test("serve root units: a workflow.reject whose reply fails after the save 
     } finally {
       dispose();
     }
-    // The reject's root pushed exactly once, then the parent's resume, in a
-    // root of its own (swamp-club#3035).
+    // the reject's root pushed exactly once, then the parent's resume, in a
+    // root of its own
     assertEquals(rootFlushes, [1, 1]);
   });
 });
 
-// ---------------------------------------------------------------------------
-// Success-only handlers, model method runs and resumes (swamp-club#3035)
-// ---------------------------------------------------------------------------
-
 type Repos = Parameters<Parameters<typeof withRowRepos>[1]>[0];
 
-/**
- * Runs `fn` with every root's flush counting the pushes it made, and
- * returns those counts in the order the roots ended. A root with no flush
- * is not counted.
- */
 async function countRootFlushes(
   repos: Repos,
   fn: () => Promise<void>,
@@ -540,10 +505,6 @@ async function countRootFlushes(
   return rootFlushes;
 }
 
-/**
- * Sends one request on a socket that records, with each frame, how many
- * pushes instance A had made since the request when it was sent.
- */
 async function sendCountingPushes(
   repos: Repos,
   ctx: ReturnType<typeof serveCtx>,
@@ -810,12 +771,9 @@ Deno.test("serve root units: a model.method.run that takes model locks pushes on
     const observation = observe(repos, base);
 
     assertEquals(errorFrame(frames), undefined);
-    // The lock flush commits the run's changes when the locks are released;
-    // the root's flush, which owns only the no-lock push, pushes nothing.
-    // Each repository write is marked before it and after it
-    // (swamp-club#2421). The run's report versions are staged again before
-    // the push and read back after it, as its data versions are
-    // (swamp-club#3146, swamp-club#3934).
+    // the lock flush commits the run's changes when locks are released; the
+    // root's flush owns only the no-lock push and pushes nothing. Report
+    // versions are staged again before the push and read back after it
     assertEquals(observation.ops, [
       "pull[0]",
       "markDirty definitions-evaluated/<type>/m1.yaml",
@@ -842,14 +800,9 @@ Deno.test("serve root units: a model.method.run that takes model locks pushes on
 });
 
 /**
- * Sends one model.method.run and returns what happened, in order: each
- * reply frame's type (a run of event frames as one `event`), instance A's
- * pull, push, prepare and commit ops, `release` where a lock release or gate
- * exit came between them, and `deregister` where the run left the cancel
- * registry (inline) or the active run registry (detached). Pins where the
- * model lock's push sits relative to the reply and the run's cleanup
- * (swamp-club#3055). With `failFirstEvent`, the socket throws on the first
- * event frame, so the run throws out of the root as a lost connection does.
+ * pins where the model lock's push sits relative to the reply and the run's
+ * cleanup; with failFirstEvent the socket throws on the first event frame, so
+ * the run throws out of the root as a lost connection does
  */
 async function methodRunTimeline(
   repos: Repos,
@@ -1004,7 +957,6 @@ Deno.test("serve root units: an inline model.method.run with a model lock that t
   });
 });
 
-/** Every warning logged under any category while `fn` runs, rendered. */
 async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
   const captured: LogRecord[] = [];
   await configure({
@@ -1075,9 +1027,8 @@ Deno.test("serve root units: an inline model.method.run whose lock pull fails re
     });
     assertEquals(failed.includes("error"), true);
     assertEquals(failed.includes("done"), false);
-    // Serve has no process teardown between requests, so the lock taken
-    // before the pull must be released by the failed request itself
-    // (swamp-club#2901).
+    // serve has no process teardown between requests, so the failed request
+    // itself must release the lock taken before the pull
     assertEquals(getRegisteredLockKeys(), [], "the model lock was released");
 
     assertEquals(
@@ -1261,7 +1212,6 @@ Deno.test("serve root units: resuming an approved nested child still auto-resume
       (await runRepo.findById(child.id, childRun.id))?.status,
       "succeeded",
     );
-    // The child's resume and the parent's each push once, in their own root.
     assertEquals(rootFlushes, [1, 1]);
   });
 });
@@ -1332,7 +1282,6 @@ Deno.test("serve root units: an approve that auto-resumes its run pushes once fo
       (frames[0].payload?.data as { autoResumed?: boolean }).autoResumed,
       true,
     );
-    // The approval's root pushes, then the resume's.
     assertEquals(rootFlushes, [1, 1]);
   });
 });

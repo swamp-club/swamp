@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for auto-resume on approval (swamp-club#2377): a run
- * suspended at a manual_approval gate, approved through the serve handler,
- * against a real repository on disk. With auto-resume in effect, serve
- * continues the run itself and the post-gate step executes; without it, the
- * run stays suspended until someone resumes it.
- */
-
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -46,7 +38,6 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -66,7 +57,6 @@ const modeNone: ServeAuthConfig = {
   tagRequiresExplicitGrant: false,
 };
 
-/** A gate, then a shell step that only runs once the gate is approved. */
 function gatedWorkflow(name: string, autoResume?: boolean): Workflow {
   return Workflow.create({
     name,
@@ -121,10 +111,6 @@ interface MockSocket {
   send(data: string): void;
 }
 
-/**
- * Runs the workflow until it suspends at the gate, approves the gate through
- * the serve handler, and returns what the handler answered.
- */
 async function suspendAndApprove(
   repoDir: string,
   workflow: Workflow,

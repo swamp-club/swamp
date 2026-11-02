@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pins every `Deno.hostname()` call in v3 datastore code (swamp-club#3801).
- * A hostname changes under a running process (a DHCP renewal on macOS), so
- * v3 judges "this machine" and "this process's own record" by process
- * identity: boot id, pid namespace, pid and start time. The hostname is
- * written into records for display, and judges only records from a swamp
- * before identities. A new call is either one of those, or a comparison
- * that would block writes after a rename.
+ * a hostname changes under a running process, so v3 judges this machine by
+ * process identity; a Deno.hostname() call must only write a record for display
+ * or judge a pre-identity record
  */
 
 import { join } from "@std/path";
@@ -38,9 +34,7 @@ import {
   topLevelOwners,
 } from "./arch_fitness_helpers.ts";
 
-/** `<file> :: <top-level owner>`, counted, for each call. */
 const PINNED = [
-  // Written into records and display strings.
   "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts :: writeWriterMarker",
   "src/infrastructure/datastore_v3/litestream/replication_supervisor.ts :: superviseHeld",
   "src/infrastructure/datastore_v3/litestream/v3_copy.ts :: holderName",

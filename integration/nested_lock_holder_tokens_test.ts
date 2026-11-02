@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Two runs in one process hold per-model locks at the same time, as parallel
-// workflow steps or concurrent `swamp serve` runs do. A nested swamp started
-// by run A must skip A's lock and still wait on B's (swamp-club#2955). Wires
-// the real lock files written by acquireModelLocks, the process marker's
-// held-lock scopes, and the env a child swamp would inherit, with no
-// subprocess: the child is a LockHolderMarker over that env.
+// two runs in one process hold per-model locks at once; a nested swamp started
+// by run A must skip A's lock and still wait on B's
 
 import { assertEquals } from "@std/assert";
 import { walk } from "@std/fs";
@@ -75,7 +71,6 @@ async function initRepo(repoDir: string): Promise<void> {
   }).init(RepoPath.create(repoDir), { tools: [] });
 }
 
-/** The per-model lock files under `datastorePath`, by the model id they lock. */
 async function lockFilesByModel(
   datastorePath: string,
   modelIds: readonly string[],
@@ -95,7 +90,6 @@ async function lockFilesByModel(
   return locks;
 }
 
-/** How a child swamp started with `childEnv` sees each locked model. */
 function childRelations(
   childEnv: Record<string, string>,
   locks: Map<string, { owner: LockOwner }>,
@@ -136,7 +130,6 @@ Deno.test("nested lock holder tokens: a child of run A skips A's lock and waits 
         { modelType: "test/nested-lock", modelId: modelB },
       ], repoDir);
       try {
-        // Each run spawns its child while both runs hold their locks.
         const spawnFrom = (lock: ModelLockResult) =>
           runUnderModelLocks(lock, () =>
             Promise.resolve({
@@ -185,11 +178,6 @@ Deno.test("nested lock holder tokens: a child of run A skips A's lock and waits 
   });
 });
 
-/**
- * The env of a swamp started by a shell step in a dispatch runner, for a
- * worker (`workerPid`) that is not a descendant of this process. `lockHolder`
- * crosses the wire as a dispatch would carry it.
- */
 function nestedEnvOnWorker(
   lockHolder: unknown,
   workerPid: number,
@@ -219,7 +207,6 @@ function nestedEnvOnWorker(
     dispatch.lockHolder,
     workerHost,
   )));
-  // The runner publishes its chain, then its shell step spawns the swamp.
   const runner = new LockHolderMarker({
     get: (key) => runnerEnv.get(key),
     set: (key, value) => {
@@ -254,7 +241,6 @@ Deno.test("nested lock holder tokens: a swamp under a same-host worker skips its
       let lockA = await lockFor(modelA);
       const lockB = await lockFor(modelB);
       try {
-        // The orchestrator dispatches step A while both steps hold locks.
         const lockHolder = await runUnderModelLocks(
           lockA,
           () => Promise.resolve(processLockHolderMarker.remoteLockHolder()),
@@ -266,15 +252,14 @@ Deno.test("nested lock holder tokens: a swamp under a same-host worker skips its
           { [modelA]: "ancestor", [modelB]: "ancestor-other-run" },
         );
 
-        // Without the hand-off it waits on both.
         assertEquals(
           childRelations(nestedEnvOnWorker(undefined, workerPid), locks),
           { [modelA]: "other", [modelB]: "other" },
         );
 
-        // A worker on another host sharing the datastore skips the step's
-        // lock on its nonce alone; the orchestrator is no ancestor there, so
-        // its other lock is any other process's (swamp-club#3096).
+        // a worker on another host sharing the datastore skips the step's lock
+        // on its nonce alone; the orchestrator is no ancestor there, so its
+        // other lock is any other process's
         const onAnotherHost = nestedEnvOnWorker(
           lockHolder,
           workerPid,
@@ -306,10 +291,8 @@ Deno.test("nested lock holder tokens: a swamp under a same-host worker skips its
   });
 });
 
-// A swamp whose own shell step started it holds no lock for the step it
-// dispatches, or holds one alongside: the locks handed down to it travel
-// with the dispatch, so a nested swamp on the worker skips those as well
-// (swamp-club#3096).
+// locks handed down to a swamp travel with its dispatch, so a nested swamp on
+// the worker skips those as well
 Deno.test("nested lock holder tokens: a dispatch hands on the locks handed down to the orchestrator", async () => {
   await withTempDir(async (repoDir) => {
     await initRepo(repoDir);
@@ -332,7 +315,6 @@ Deno.test("nested lock holder tokens: a dispatch hands on the locks handed down 
     const otherLock = await lockFor(otherModel);
     try {
       const locks = await lockFilesByModel(datastoreConfig.path, models);
-      // The swamp above the orchestrator named its step's lock for it.
       const inherited = `${Deno.pid + 2}:${
         locks.get(upstreamModel)!.owner.nonce
       }`;
@@ -356,7 +338,6 @@ Deno.test("nested lock holder tokens: a dispatch hands on the locks handed down 
             ),
             expected,
           );
-          // Dispatched from outside any lock scope, it still hands them on.
           assertEquals(
             childRelations(
               nestedEnvOnWorker(
@@ -381,12 +362,9 @@ Deno.test("nested lock holder tokens: a dispatch hands on the locks handed down 
   });
 });
 
-// A step of a run hosted by `swamp serve` runs `swamp model method run
-// --server` back into the same serve. The requested run starts in a request
-// handler, outside the step's scope, so the client forwards the lock list it
-// inherited and serve adopts it (swamp-club#2982). The client is a
-// LockHolderMarker over the step's child env, and the request handler is
-// plain code outside the step's scope.
+// a step run by serve runs model method run --server back into serve; the
+// request handler is outside the step's scope, so the client forwards its
+// inherited lock list and serve adopts it
 Deno.test("nested lock holder tokens: a child of a run requested through --server skips the calling step's lock", async () => {
   await withTempDir(async (repoDir) => {
     await initRepo(repoDir);
@@ -412,8 +390,6 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
         [SWAMP_LOCK_ANCESTOR_PIDS]: String(Deno.pid),
         ...processLockHolderMarker.childLockEnv(),
       });
-      // The step and an unrelated run stay in their scopes, waiting, while
-      // the request is handled.
       let finish = () => {};
       const waiting = new Promise<void>((resolve) => finish = resolve);
       let clientEnv: Record<string, string> = {};
@@ -422,7 +398,6 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
         return waiting;
       });
       const otherRun = runUnderModelLocks(otherLock, () => waiting);
-      /** How a child of the requested run sees each lock. */
       const requestedRunChild = async (forwarded: string | undefined) =>
         childRelations(
           await runAdoptingForwardedLocks(
@@ -456,7 +431,6 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
         const otherNonce = locks.get(otherModel)!.owner.nonce!;
         assertEquals(forwarded, `${Deno.pid}:${stepNonce}`);
 
-        // Without the forwarded list the child waits on the calling step.
         assertEquals(await requestedRunChild(undefined), waitsOnStep);
 
         assertEquals(await requestedRunChild(forwarded), {
@@ -465,11 +439,9 @@ Deno.test("nested lock holder tokens: a child of a run requested through --serve
           [otherModel]: "ancestor-other-run",
         });
 
-        // A nonce no lock file carries changes nothing. The step's nonce
-        // is adopted whichever pid the list names it for: the caller may be
-        // another swamp between the step and the client, or one on another
-        // host (swamp-club#3096). A lock serve holds for another run is
-        // adopted only when named.
+        // A nonce no lock file carries changes nothing; the step's nonce is
+        // adopted whatever its pid; a lock serve holds for another run needs
+        // naming.
         assertEquals(
           await requestedRunChild(`${Deno.pid}:${crypto.randomUUID()}`),
           waitsOnStep,

@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * vault.get() values load at delivery (swamp-club#3562, typed-secrets 2.3,
- * design/enablers/typed-secrets.md Sections 3.3 and 3.4), through real
- * workflow runs against an in-memory vault.
- *
- * The run's vault service audits every value read with its purpose, so a
- * load (`expression:vault-resolve`, a read for delivery) and a probe
- * (`expression:vault-check`, the existence check of a provider without
- * has()) are counted apart. The principal-scoped cases (a grant refusing a
- * key, the workflow's `vaults:` list, the reserved vault) run through serve
- * in serve_run_vault_scope_test.ts and serve_run_vault_scope_keys_test.ts;
- * the remote pre-load in remote_secrets_baseline_dispatch_payload_test.ts.
- */
-
 import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -89,7 +75,6 @@ await initializeLogging({});
 
 const VAULT = "deliver";
 
-/** The authored reference to `key` in {@link VAULT}. */
 function ref(key: string): string {
   return `\${{ vault.get('${VAULT}', '${key}') }}`;
 }
@@ -99,10 +84,6 @@ interface Fixture {
   vault: VaultTestContextResult;
 }
 
-/**
- * Runs `fn` against a fresh repo whose vault {@link VAULT} is the testing
- * package's in-memory vault, registered under a per-run type and audited.
- */
 async function withFixture(
   options: VaultTestContextOptions,
   fn: (f: Fixture) => Promise<void>,
@@ -133,7 +114,6 @@ async function withFixture(
   }
 }
 
-/** The keys the run's vault service read for each purpose, sorted. */
 async function auditedReads(
   repoDir: string,
 ): Promise<{ loads: string[]; probes: string[] }> {
@@ -151,25 +131,18 @@ async function auditedReads(
   return { loads: keysFor(LOAD_PURPOSE), probes: keysFor(PROBE_PURPOSE) };
 }
 
-/** Provider operations that touched `key`. */
 function touched(vault: VaultTestContextResult, key: string): string[] {
   return vault.getOperations()
     .filter((op) => op.key === key)
     .map((op) => op.method);
 }
 
-/** What one execution of the recorder received. */
 interface Delivery {
   args: Record<string, unknown>;
   globalArgs: Record<string, unknown>;
-  /** Whether any vault.get entry of the run's registry held a value. */
   registryHeldVaultValue: boolean;
 }
 
-/**
- * Registers a per-run model whose `run` method records what it receives,
- * and fails its first `failures` executions.
- */
 function registerRecorder(deliveries: Delivery[], failures = 0): string {
   const type = ModelType.create(`test/delivery-${crypto.randomUUID()}`);
   const schema = z.object({
@@ -207,7 +180,6 @@ function registerRecorder(deliveries: Delivery[], failures = 0): string {
   return type.normalized;
 }
 
-/** A step running the recorder with `key` in a global and a method argument. */
 function recorderStep(
   type: string,
   name: string,
@@ -275,7 +247,6 @@ async function runWorkflow(
   return outcome;
 }
 
-/** Retries the failed run `runId` of `workflow`, as `workflow resume` does. */
 async function retryRun(
   repoDir: string,
   workflow: Workflow,
@@ -739,8 +710,8 @@ Deno.test("load at delivery: swamp behavior evaluate and swamp workflow evaluate
       const deliveries: Delivery[] = [];
       const type = registerRecorder(deliveries);
       try {
-        // Both name a key the vault does not hold: evaluating a vault.get
-        // would fail. Evaluate defers it, as before.
+        // both name a key the vault does not hold, so evaluating a vault.get
+        // would fail; evaluate defers it
         const { repoContext } = await requireInitializedRepoUnlocked({
           repoDir,
           outputMode: "log",

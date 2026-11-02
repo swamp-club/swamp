@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration tests for the vault selection resolution chain (field → spec → definition → defaultVault → first-available).
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -118,8 +116,6 @@ function createSensitiveSpec(
   };
 }
 
-// --- Scenario 1: Single vault, no overrides — backwards compatible ---
-
 Deno.test("vault selection: single vault with no overrides uses that vault", async () => {
   const spec = createSensitiveSpec();
   const data: Record<string, unknown> = { secret: "my-secret", name: "test" };
@@ -144,8 +140,6 @@ Deno.test("vault selection: single vault with no overrides uses that vault", asy
   assertStringIncludes(data.secret as string, "'only-vault'");
   assertEquals(data.name, "test");
 });
-
-// --- Scenario 2: Two vaults, no overrides — falls back to vaultNames[0] ---
 
 Deno.test("vault selection: two vaults with no overrides uses first registered", async () => {
   const spec = createSensitiveSpec();
@@ -176,8 +170,6 @@ Deno.test("vault selection: two vaults with no overrides uses first registered",
   assertStringIncludes(data.secret as string, "'alpha-vault'");
 });
 
-// --- Scenario 3: defaultVault overrides first-registered fallback ---
-
 Deno.test("vault selection: defaultVault overrides first-registered fallback", async () => {
   const spec = createSensitiveSpec();
   const data: Record<string, unknown> = { secret: "my-secret", name: "test" };
@@ -207,8 +199,6 @@ Deno.test("vault selection: defaultVault overrides first-registered fallback", a
   assertStringIncludes(data.secret as string, "'beta-vault'");
 });
 
-// --- Scenario 4: spec-level vaultName overrides defaultVault ---
-
 Deno.test("vault selection: spec-level vaultName overrides defaultVault", async () => {
   const spec = createSensitiveSpec({ vaultName: "spec-vault" });
   const data: Record<string, unknown> = { secret: "my-secret", name: "test" };
@@ -237,8 +227,6 @@ Deno.test("vault selection: spec-level vaultName overrides defaultVault", async 
 
   assertStringIncludes(data.secret as string, "'spec-vault'");
 });
-
-// --- Scenario 5: field-level vaultName overrides everything ---
 
 Deno.test("vault selection: field-level vaultName overrides spec and default", async () => {
   const spec: ResourceOutputSpec = {
@@ -282,8 +270,6 @@ Deno.test("vault selection: field-level vaultName overrides spec and default", a
   assertStringIncludes(data.secret as string, "'field-vault'");
 });
 
-// --- Scenario 6: Definition-level vaultName override via createResourceWriter ---
-
 Deno.test("vault selection: definition-level vaultName override via createResourceWriter", async () => {
   const repo = createMockRepo();
   const resources: Record<string, ResourceOutputSpec> = {
@@ -323,8 +309,6 @@ Deno.test("vault selection: definition-level vaultName override via createResour
   assertEquals(data.name, "test");
 });
 
-// --- Scenario 7: Definition vaultName beats defaultVault but loses to field ---
-
 Deno.test("vault selection: definition override beats defaultVault", async () => {
   const repo = createMockRepo();
   const resources: Record<string, ResourceOutputSpec> = {
@@ -362,8 +346,6 @@ Deno.test("vault selection: definition override beats defaultVault", async () =>
 
   assertStringIncludes(data.secret as string, "'definition-vault'");
 });
-
-// --- Scenario 8: No overrides, no default — backwards-compat fallback ---
 
 Deno.test("vault selection: no overrides and no default preserves backwards-compat", async () => {
   const repo = createMockRepo();
@@ -403,8 +385,6 @@ Deno.test("vault selection: no overrides and no default preserves backwards-comp
   assertStringIncludes(data.secret as string, "'vault-a'");
 });
 
-// --- Scenario 9: VaultService.getDefaultVaultName for serve path ---
-
 Deno.test("vault selection: VaultService.getDefaultVaultName for serve path", () => {
   const service = new VaultService(undefined, "oauth-vault");
   service.registerVault({ name: "first-vault", type: "mock", config: {} });
@@ -436,8 +416,6 @@ Deno.test("vault selection: VaultService.getDefaultVaultName ignores unregistere
 
   assertEquals(vaultName, "first-vault");
 });
-
-// --- Scenario 12-14: VaultService.fromRepository with real vault configs on disk ---
 
 async function withTwoVaultRepo(
   fn: (repoDir: string) => Promise<void>,

@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A worker for the compaction crash test (swamp-club#3258): it opens the
- * store, compacts, and inside the batch's transaction, just before it would
- * commit, reports in and spins until the test terminates it. The batch never
- * commits and its connection never closes cleanly.
+ * compacts and, inside the batch's transaction just before commit, reports in
+ * and spins until terminated, so the batch never commits
  */
 
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";

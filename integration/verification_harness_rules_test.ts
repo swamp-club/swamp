@@ -17,30 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: the pre-PR review harness may not lie about what
-// it reviewed, or about whether it reviewed anything at all.
-//
-// Two defects behind swamp-club#2265 motivate the rules below, and both landed
-// in four places at once because the review steps were four copies of the same
-// shell:
-//
-//   1. Every review prompt opened by telling the reviewer to run a diff command
-//      to find the changed files. No review step grants Bash, so the very first
-//      instruction was impossible — and it contradicted the diff file the step
-//      hands over at runtime. Reviews were observed discussing commits that
-//      were not in the diff at all.
-//   2. A review that emitted no VERDICT marker was scored by inferring one, and
-//      the inference defaulted to pass. A review reporting two blocking
-//      findings in prose was recorded as an approval, and the workflow reported
-//      success.
-//
-// Nothing else guards these: CI does not re-run the agent reviews, it only
-// checksums the prompts and workflows, so a wrong review that records itself as
-// a pass is the whole signal.
-//
-// The count assertions are load-bearing. A renamed file or a pattern that
-// quietly stops matching would otherwise turn every check below into a vacuous
-// pass — exactly the failure mode this test exists to prevent.
+// the review harness may not misreport what it reviewed or score a missing
+// verdict as a pass; count assertions are load-bearing so a stale pattern
+// cannot pass vacuously
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml";
@@ -75,10 +54,6 @@ const REVIEWS_WORKFLOW = join(
 );
 const VERDICT_SCRIPT = "scripts/check_review_verdict.ts";
 
-/**
- * The review prompts, pinned. A new prompt has to be added here consciously,
- * which is the moment to check it against the rules below.
- */
 const EXPECTED_PROMPTS = [
   "adversarial-review.md",
   "ci-security-review.md",
@@ -87,12 +62,6 @@ const EXPECTED_PROMPTS = [
   "ux-review.md",
 ];
 
-/**
- * The review steps, pinned, each with the label it passes to the verdict
- * script. A fifth review added without a line here fails the step-count
- * assertion rather than slipping through unchecked — which is how both of this
- * issue's defects reached four copies in the first place.
- */
 const EXPECTED_REVIEW_STEPS: Record<string, string> = {
   "code-review": "Code review",
   "adversarial-review": "Adversarial review",
@@ -102,13 +71,9 @@ const EXPECTED_REVIEW_STEPS: Record<string, string> = {
 };
 
 /**
- * Instructions telling the reviewer to run something. The reviewer is invoked
- * with `--allowedTools "Read,Glob,Grep"`, so it has no shell: any imperative to
- * run, execute or invoke a command is an instruction it cannot follow.
- *
- * Deliberately keyed on the imperative and not on any command name. The prompts
- * must still talk about the diff they are handed — a rule matching "diff" would
- * fail the very text that fixes this.
+ * the reviewer has no shell (Read,Glob,Grep), so an imperative to run a command
+ * cannot be followed; keyed on the imperative, not command names, since prompts
+ * must still mention the diff
  */
 const RUN_INSTRUCTION_PATTERNS = [
   /\brun\s+`/i,
@@ -347,10 +312,8 @@ Deno.test("verify-reviews: Codex scopes file reads and only its final response r
 
 Deno.test("verify-reviews: no step infers a verdict when the marker is absent", async () => {
   const source = await Deno.readTextFile(REVIEWS_WORKFLOW);
-  // A reviewer that does not answer in the required format is precisely when a
-  // human should look, so the absence of a marker must fail the step. Neither
-  // direction may be inferred — an inferred fail is a guess too, and the same
-  // branch that produces it is what produced the inferred pass.
+  // a reviewer that omits the required format needs a human, so a missing
+  // marker must fail the step; neither pass nor fail may be inferred
   const forbidden = [
     /inferred\s+pass/i,
     /inferred\s+fail/i,
@@ -368,28 +331,12 @@ Deno.test("verify-reviews: no step infers a verdict when the marker is absent", 
   );
 });
 
-// ---------------------------------------------------------------------------
-// Attestation generator ↔ CI config integrity
-// ---------------------------------------------------------------------------
-//
-// The attestation pins a hash per file that shaped the verification, and CI
-// re-hashes the same files at the same commit and compares. Two lists, in two
-// languages, that have to name the same files: `CONFIG_FILES` in
-// scripts/build_attestation.ts and the `check_hash` calls in
-// .github/workflows/ci.yml.
-//
-// Drift is silent in the direction that matters. A file the generator stops
-// hashing makes CI warn "not in attestation" and carry on, so the pin quietly
-// stops covering it — which is how a review prompt could be edited after the
-// run without anything failing.
-//
-// The generator's side is imported rather than parsed: half its entries are
-// computed from the workflow table, so a regex over the source would read
-// `jsonPath: ["workflows", w.name]` literally and compare a placeholder.
+// the attestation pins a hash per file and CI re-hashes the same files;
+// CONFIG_FILES and the check_hash calls must name the same files, since drift
+// silently stops covering a file
 
 const CI_WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml");
 
-/** The configIntegrity path each `check_hash` call in CI reads. */
 function ciJsonPaths(source: string): string[] {
   return [
     ...source.matchAll(
@@ -400,11 +347,6 @@ function ciJsonPaths(source: string): string[] {
     .sort();
 }
 
-/**
- * The hashed files that no directory-wide trust-root pattern covers: the
- * scripts and promptfoo eval inputs, each of which the review lists have to
- * name one by one.
- */
 function hashedScriptPaths(): string[] {
   return CONFIG_FILES
     .map((f) => f.path)
@@ -459,9 +401,8 @@ Deno.test("attestation: every hashed script is also agent-reviewed", async () =>
     !trustRoot[1].includes(`'${path}'`)
   );
 
-  // A checksummed file that matches no trust-root pattern is hash-pinned
-  // without ever being agent-reviewed — the hole that left
-  // scripts/review_skills.ts outside the gate.
+  // a checksummed file matching no trust-root pattern is hash-pinned but never
+  // agent-reviewed
   assertEquals(
     unreviewed,
     [],
@@ -474,11 +415,9 @@ Deno.test("attestation: every hashed script is also agent-reviewed", async () =>
 Deno.test("attestation: every hashed script re-triggers review integrity", async () => {
   const ci = await Deno.readTextFile(CI_WORKFLOW);
 
-  // The review-integrity job skips itself when a push after its last approval
-  // touched no trust file, and it decides that with its own pattern rather
-  // than the trust_root filter above. A hashed script missing from it could
-  // be edited after the approval without the check running again — which is
-  // how scripts/build_attestation.ts sat outside it.
+  // review-integrity skips itself using its own pattern, not the trust_root
+  // filter, so a hashed script missing from it could be edited after approval
+  // without a re-check
   const skipPattern = ci.match(
     /trust_changes=\$\([\s\S]*?select\(test\("([^"]+)"\)\)/,
   );
@@ -509,10 +448,8 @@ Deno.test("attestation: every hashed script re-triggers review integrity", async
 Deno.test("attestation: the integrity auditor is told to read every hashed script", async () => {
   const ci = await Deno.readTextFile(CI_WORKFLOW);
 
-  // The trust_root filter only decides that the review-integrity job runs;
-  // the auditor reads the files its prompt lists. A hashed script missing
-  // from that list starts the review without ever being read — which is how
-  // the eval lockfile and every scripts/ entry sat outside it.
+  // the trust_root filter only decides that the job runs; the auditor reads the
+  // files its prompt lists, so a hashed script missing there is never read
   const audit = ci.match(
     /## Files to audit\n([\s\S]*?)\n\n\s*For each changed file/,
   );

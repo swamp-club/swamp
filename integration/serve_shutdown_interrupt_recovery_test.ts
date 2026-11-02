@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for recovering a run serve's shutdown aborted while a
- * step was in flight (swamp-club#3369). Uses a real repository on disk, the
- * detached `workflow.run` handler, the shutdown drain and interrupt stages,
- * the recovery reset and the `workflow.resume` handler.
- */
-
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
@@ -56,7 +49,6 @@ import {
 import { interruptShutdownRuns } from "../src/serve/shutdown_interrupt.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -94,12 +86,6 @@ function statuses(run: WorkflowRun): Record<string, string> {
 
 type Scenario = "plain" | "nested" | "nested-reached-after-abort";
 
-/**
- * Runs the workflow through serve, shuts serve down while the step under
- * test is in flight, and checks the interrupted run recovers and resumes.
- * The run's first job holds the in-flight step and a step that depends on
- * it; a second job depends on the first.
- */
 async function interruptRecoverResume(scenario: Scenario): Promise<void> {
   await withRepo(async (repoDir) => {
     const modelType = ModelType.create(

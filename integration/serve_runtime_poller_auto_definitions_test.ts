@@ -78,16 +78,10 @@ async function removeRepo(
   }
 }
 
-/** `_catalog.db` and its `-wal`/`-shm` sidecars. */
 function isCatalogFile(name: string): boolean {
   return name === "_catalog.db" || name.startsWith("_catalog.db-");
 }
 
-/**
- * Stands in for a remote datastore a peer replica has pushed to: a pull
- * copies the peer's files into this replica's cache, but only for the
- * subdirectories the caller asked for, as a scoped pull does.
- */
 function createPeerSyncService(
   peerRepoDir: string,
   localRepoDir: string,
@@ -159,8 +153,6 @@ Deno.test("RuntimeDataPoller: a server token minted on a peer replica becomes re
 
     const sync = createPeerSyncService(peerDir, localDir);
 
-    // The scope the poller had before swamp-club#2481: the token's record
-    // arrives, its definition does not, and the token cannot be resolved.
     await sync.pullChanged({ subdirs: ["data"] });
     await assertRejects(
       () => readServerTokenRecord(localContext, name),

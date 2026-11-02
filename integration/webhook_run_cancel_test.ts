@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for cancelling a webhook-triggered workflow run through
- * serve's cancel paths (swamp-club#3740). A real WebhookService runs a real
- * workflow on a temp repository; its one step waits on its abort signal, as a
- * long-running method that honours cancellation does. The run is cancelled
- * through `cancelExecution` and `cancelAllExecutions`, wired to the service
- * the way serve wires them.
- */
-
 import { join } from "@std/path";
 import { assert, assertEquals } from "@std/assert";
 import { z } from "zod";
@@ -56,7 +47,6 @@ import {
 } from "../src/serve/webhook.ts";
 import { hmacSha256Hex } from "../src/serve/webhook_verifiers.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -77,10 +67,6 @@ interface Started {
   methodAborted: () => boolean;
 }
 
-/**
- * Starts a webhook run of a workflow whose step waits until it is aborted,
- * and hands `fn` the service once the run has started.
- */
 async function withStartedWebhookRun(
   fn: (started: Started) => Promise<void>,
 ): Promise<void> {

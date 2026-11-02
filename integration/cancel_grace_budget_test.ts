@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pins how the cancellation graces of the process executor, the workflow
- * engine, the cancel commands and serve relate (swamp-club#2918). Each is a
- * constant owned by a different layer; a change to one must not silently
- * outgrow another that budgets on it.
+ * pins how the cancellation graces of each layer relate; a change to one must
+ * not silently outgrow another that budgets on it
  */
 
 import { assert } from "@std/assert";

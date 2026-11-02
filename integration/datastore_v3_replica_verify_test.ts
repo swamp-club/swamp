@@ -16,16 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-/**
- * The writer's check of its own replica, and the new lineage it leads to
- * (swamp-club#3935), against a real Litestream and a file replica.
- *
- * A broken lineage is built the way the reported one looked to a reader: a
- * lineage Litestream restores without complaint into a database that fails
- * SQLite's integrity check, while the writer's own copy is intact. These
- * tests spawn the supervisor (from its entry file) and Litestream, like the
- * other sidecar tests, and kill every one they start.
- */
 
 import {
   assert,
@@ -150,7 +140,6 @@ async function breakLineage(
   } finally {
     conn.close();
   }
-  // An index b-tree page retyped as a table leaf (0x0d).
   const file = await Deno.open(db, { read: true, write: true });
   try {
     await file.seek((rootpage - 1) * pageSize, Deno.SeekMode.Start);
@@ -190,7 +179,6 @@ async function breakLineage(
   return txids.sort().at(-1)!;
 }
 
-/** The paths of Litestream's local L0 files beside `commitsDb`. */
 async function localL0Files(commitsDb: string): Promise<string[]> {
   const dir = join(dirname(commitsDb), ".commits.db-litestream", "ltx", "0");
   const found: string[] = [];
@@ -200,7 +188,6 @@ async function localL0Files(commitsDb: string): Promise<string[]> {
   return found;
 }
 
-/** Whether process `pid` still runs (`kill -0`). */
 async function processAlive(pid: number): Promise<boolean> {
   const result = await new Deno.Command("kill", {
     args: ["-0", String(pid)],
@@ -210,7 +197,6 @@ async function processAlive(pid: number): Promise<boolean> {
   return result.success;
 }
 
-/** The LTX file names under `dir`, recursively. */
 async function ltxFiles(dir: string): Promise<string[]> {
   const found: string[] = [];
   try {
@@ -244,7 +230,6 @@ Deno.test({
       await writeCommand(env, 3);
       const paths = await env.paths();
       const first = (await readLineage(paths))!.lineageFence;
-      // The real supervisor checks what its writer acknowledged.
       await waitFor(
         async () => {
           const verdict = await readReplicaVerification(paths);
@@ -284,11 +269,9 @@ Deno.test({
       assertEquals(verdict?.snapshotTxid, snapshot);
       assertEquals(await verifyLeftovers(paths), []);
 
-      // The next writer restarts from its intact copy, at its own fence.
       await writeCommand(env, 2);
       const next = (await readLineage(paths))!;
       assert(next.lineageFence > first);
-      // Once the new lineage is confirmed, collection removes the broken one.
       await assertRejects(
         () => Deno.stat(replicaPathFor(env.replicaRoot, first)),
         Deno.errors.NotFound,
@@ -387,7 +370,6 @@ Deno.test({
           { timeoutMs: 20_000 },
         );
         assert(v3WriterFence(env.datastorePath)! > fenceBefore);
-        // Serve keeps writing on the new fence.
         await commitIn(env, 1);
       } finally {
         await upkeep.stop();
@@ -411,7 +393,6 @@ Deno.test({
   ignore,
   async fn() {
     await withReplicationEnv(async (env) => {
-      // Each command syncs: local L0 files at several TXIDs.
       for (let i = 0; i < 3; i++) await writeCommand(env, 1);
       const paths = await env.paths();
       const first = (await readLineage(paths))!.lineageFence;
@@ -461,7 +442,6 @@ Deno.test({
         lineageFence: 2,
         txid: "0000000000000005",
       });
-      // A Litestream whose restore never finishes, recording its pid.
       const pidFile = join(dir, "restore.pid");
       const stall = join(dir, "litestream");
       await Deno.writeTextFile(
@@ -485,10 +465,9 @@ Deno.test({
         DOMException,
       );
       assertEquals(rejection.name, "TimeoutError");
-      // Only the deadline ends it: the stalled restore was killed. A deadline
-      // that fires first kills the stub before it records its pid, and the
-      // check has waited for its exit, so there is no process left to find.
-      // Never read an empty file as pid 0: kill -0 0 is our own process group.
+      // only the deadline ends it: one firing first kills the stub before it
+      // records its pid; never read an empty pid file as 0, since kill -0 0
+      // targets our own process group
       const recorded = await Deno.readTextFile(pidFile)
         .then((text) => text.trim())
         .catch((error) => {

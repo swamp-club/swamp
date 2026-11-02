@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp model get` with a datastore configured: auto-definitions live in the
-// datastore, and the command must find them there, as `model method run`
-// does (swamp-club#3154).
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
@@ -53,7 +49,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A repo whose marker points at a filesystem datastore outside it. */
 async function initDatastoreRepo(
   dir: string,
 ): Promise<{ repoDir: string; autoDefinitionsDir: string }> {

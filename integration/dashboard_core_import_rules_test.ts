@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The dashboard is a separate package, bundled by vite for the browser. It
-// reaches core in exactly one place: the agent sessions page reads the
-// agent session record core owns (swamp-club#4155), through
-// packages/dashboard/src/lib/agent_sessions/record.ts. Everything else the
-// dashboard needs from core it copies and pins with a test
-// (views/report_name.ts), so no other core module is pulled into the bundle.
+// the dashboard reaches core only through agent_sessions/record.ts; everything
+// else is copied and pinned with a test, so no other core module is pulled into
+// the bundle
 
 import { join } from "@std/path";
 import {

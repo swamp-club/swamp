@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: Secret stays inside the CEL adapter and every
-// internal evaluator uses it. Separate extension/query/grant environments retain
-// their own contracts (design/enablers/typed-secrets.md Sections 3.2 and 10.3).
-
 import { assert } from "@std/assert";
 import {
   assertPinnedSet,
@@ -36,7 +32,6 @@ import {
 
 const CEL_ADAPTER = "src/infrastructure/cel";
 
-/** The modules that make, register, record or convert a `Secret`. */
 const SECRET_MODULES: ReadonlySet<string> = new Set([
   "src/infrastructure/cel/cel_vault_namespace.ts",
   "src/infrastructure/cel/secret_value.ts",

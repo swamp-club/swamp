@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Loud reads (swamp-club#3617): a record the v3 read model could not
- * materialise, because a chunk its content names is missing, fails a read
- * of its content with `UnreadableRecordError` instead of reading as absent.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -93,21 +87,14 @@ import { captureUnreadableWarnings } from "../src/infrastructure/persistence/unr
 
 await initializeLogging({});
 
-/** Content past the inline limit, so its commit names chunks. */
 const CONTENT = new Uint8Array(40 * 1024).map((_, i) => i % 251);
 
-/** A JSON resource's content past the inline limit, read as attributes. */
 const JSON_CONTENT = new TextEncoder().encode(
   JSON.stringify({ x: "y".repeat(40 * 1024) }),
 );
 
 type Repos = Parameters<Parameters<typeof withV3RowRepos>[1]>[0];
 
-/**
- * A commits a model with a binary data item, `big`, and a JSON resource,
- * `main` of spec `state`, whose contents are chunked, then every chunk is
- * removed from the datastore: a fresh checkout cannot materialise either.
- */
 async function commitThenLoseChunks(
   repos: Repos,
   datastorePath: string,
@@ -165,7 +152,6 @@ async function commitThenLoseChunks(
   return model;
 }
 
-/** `dataGet` of the big item in `repoDir`, with its content. */
 async function dataGetBig(repoDir: string, repos: Repos, modelId: string) {
   const reader = await requireInitializedRepoReadOnly({
     repoDir,
@@ -195,7 +181,6 @@ Deno.test("v3 loud reads: data get of a record a fresh checkout could not materi
     const model = await commitThenLoseChunks(repos, datastorePath);
     const { reader, events } = await dataGetBig(repos.repoB, repos, model.id);
 
-    // On v3 there is nothing to hydrate from; the lookup is what is wired.
     assertEquals(reader.repoContext.hydrateFile, undefined);
     assert(reader.repoContext.unreadableContent !== undefined);
 
@@ -203,10 +188,8 @@ Deno.test("v3 loud reads: data get of a record a fresh checkout could not materi
     assertInstanceOf(error, UnreadableRecordError);
     assertEquals(error.code, UNREADABLE_RECORD_CODE);
     assertEquals(error.record.reason, "missing");
-    // --json renders the code beside the message.
     assertEquals(buildErrorJson(error).code, UNREADABLE_RECORD_CODE);
 
-    // Model output data reads the same content through its own repository.
     const outputDeps = createModelOutputDataDeps(
       reader.repoDir,
       reader.datastoreResolver,
@@ -227,10 +210,9 @@ Deno.test("v3 loud reads: a repository spelling the checkout differently from it
     const link = `${repos.repoB}-link`;
     await Deno.symlink(repos.repoB, link, { type: "dir" });
     try {
-      // The context, and so its lookup, spells the checkout through the
-      // link; the repository spells it by its real path, so the content path
-      // it misses is not under the lookup's checkout as written and only the
-      // canonical-path fallback finds the record (ADV-64).
+      // the context spells the checkout through the link but the repository
+      // uses the real path, so only the canonical-path fallback finds the
+      // record
       const reader = await requireInitializedRepoReadOnly({
         repoDir: link,
         outputMode: "json",
@@ -276,7 +258,6 @@ Deno.test("v3 loud reads: the checkout that wrote the record still reads it", as
   });
 });
 
-/** B's read-only context, after A committed the data and lost its chunks. */
 async function readerAfterLoss(repos: Repos, datastorePath: string) {
   const model = await commitThenLoseChunks(repos, datastorePath);
   const reader = await requireInitializedRepoReadOnly({
@@ -286,13 +267,11 @@ async function readerAfterLoss(repos: Repos, datastorePath: string) {
   return { model, reader };
 }
 
-/** Asserts `error` is the unreadable-record error, with its code. */
 function assertUnreadable(error: unknown): void {
   assertInstanceOf(error, UnreadableRecordError);
   assertEquals(error.code, UNREADABLE_RECORD_CODE);
 }
 
-/** A workflow whose one step runs `modelName`'s noop with `inputs`. */
 function workflowWithInputs(
   modelName: string,
   inputs: Record<string, unknown>,
@@ -313,11 +292,6 @@ function workflowWithInputs(
   });
 }
 
-/**
- * Asserts an expression's evaluation failed on the unreadable record: the
- * expression error names it, and carries the record's error, with its code,
- * as its cause.
- */
 function assertExpressionUnreadable(error: unknown): void {
   assertInstanceOf(error, Error);
   assertStringIncludes(error.message, "cannot be read");
@@ -332,7 +306,6 @@ Deno.test("v3 loud reads: a workflow step input reading the model map's resource
     });
     await new YamlWorkflowRepository(repos.repoB).save(workflow);
     await closeV3Datastores();
-    // The step fails, so the command exits non-zero.
     await assertRejects(
       () =>
         withMockedEnv(UNSET_ENV, () =>
@@ -366,7 +339,6 @@ Deno.test("v3 loud reads: a workflow step input reading the model map's resource
 Deno.test("v3 loud reads: data query of an unreadable record fails with its code, whether the predicate reads attributes or not", async () => {
   await withV3RowRepos({}, async (repos, datastorePath) => {
     const { model, reader } = await readerAfterLoss(repos, datastorePath);
-    // As `swamp data query` and the data.query expression ask it.
     const queryService = reader.repoContext.dataQueryService;
     for (
       const predicate of [
@@ -378,7 +350,6 @@ Deno.test("v3 loud reads: data query of an unreadable record fails with its code
         await assertRejects(() => queryService.query(predicate)),
       );
     }
-    // A predicate matching no unreadable record still answers.
     assertEquals(
       await queryService.query(`modelName == "no-such-model"`),
       [],
@@ -415,8 +386,6 @@ Deno.test("v3 loud reads: model evaluate of a data.latest expression reading an 
       undefined,
       reader.repoContext.unreadableContent,
     );
-    // Saved in B and read back, as `model evaluate` reads it: only an
-    // expression the definition's source authored evaluates.
     await new YamlDefinitionRepository(repos.repoB).save(
       repos.modelType,
       Definition.create({
@@ -433,9 +402,6 @@ Deno.test("v3 loud reads: model evaluate of a data.latest expression reading an 
       found.type,
       new RunSensitiveValues(),
     );
-    // The expression fails, as any failed expression does, with the
-    // record's error as its cause; without the lookup it read empty
-    // attributes.
     const failed = [...(result.failedExpressions?.values() ?? [])];
     assertEquals(failed.length, 1);
     assertExpressionUnreadable(failed[0]);
@@ -564,12 +530,6 @@ Deno.test("v3 loud reads: serve's data get of an unreadable record answers with 
   });
 });
 
-/**
- * A commits, under one workflow, a run record small enough to stay inline
- * and one past the inline limit; an auto-definition and an evaluated
- * definition past it too, then every chunk is removed from the datastore: a
- * fresh checkout materialises only the small run.
- */
 async function commitRecordsThenLoseChunks(
   repos: Repos,
   datastorePath: string,
@@ -606,7 +566,6 @@ async function commitRecordsThenLoseChunks(
       })),
     })),
   });
-  // A definition's two outputs: the earlier small, the later past the limit.
   const outputDefinitionId = createDefinitionId(crypto.randomUUID());
   const outputOf = (startedAt: string, message: string) => {
     const output = ModelOutput.create({
@@ -625,7 +584,6 @@ async function commitRecordsThenLoseChunks(
   };
   const smallOutput = outputOf("2026-01-01T00:00:00Z", "small");
   const bigOutput = outputOf("2026-01-02T00:00:00Z", "o".repeat(40 * 1024));
-  // An evaluated workflow past the limit, as `workflow evaluate` saves it.
   const evaluatedWorkflowName = `evaluated-${crypto.randomUUID().slice(0, 8)}`;
   const evaluatedWorkflow = Workflow.fromData({
     ...workflowWithInputs("absent", { pad: "w".repeat(40 * 1024) }).toData(),
@@ -645,7 +603,6 @@ async function commitRecordsThenLoseChunks(
       repos.a.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
       context.markDirty,
     ).save(evaluatedWorkflow, undefined);
-    // As `model method run` saves the definition it creates for a type.
     await new YamlDefinitionRepository(
       repos.repoA,
       context.eventBus,
@@ -701,7 +658,6 @@ Deno.test("v3 loud reads: a run record a fresh checkout could not materialise fa
     const { workflow, smallRun, bigRun, reader } =
       await commitRecordsThenLoseChunks(repos, datastorePath);
     const runRepo = reader.repoContext.workflowRunRepo;
-    // The inline run is there, so only the chunked one is unreadable.
     assertEquals(
       (await runRepo.findById(workflow.id, smallRun.id))?.id,
       smallRun.id,
@@ -709,16 +665,13 @@ Deno.test("v3 loud reads: a run record a fresh checkout could not materialise fa
     assertUnreadable(
       await assertRejects(() => runRepo.findById(workflow.id, bigRun.id)),
     );
-    // `workflow history get <run id>` finds a run without its workflow.
     assertUnreadable(
       await assertRejects(() => runRepo.findGlobalById(bigRun.id)),
     );
-    // A run that was never recorded is still simply not found.
     const unknown = crypto.randomUUID() as typeof bigRun.id;
     assertEquals(await runRepo.findById(workflow.id, unknown), null);
     assertEquals(await runRepo.findGlobalById(unknown), null);
 
-    // History get's own run repository reads through the context's lookup.
     const historyDeps = createWorkflowHistoryGetDeps(
       reader.repoDir,
       reader.datastoreResolver,
@@ -730,8 +683,6 @@ Deno.test("v3 loud reads: a run record a fresh checkout could not materialise fa
     assertUnreadable(
       await assertRejects(() => historyDeps.matchRunByPartialId(bigRun.id)),
     );
-    // So does data get's, built from the context's data repository as the
-    // CLI builds it.
     const dataGetDeps = createDataGetDeps(
       reader.repoDir,
       reader.datastoreResolver,
@@ -753,7 +704,6 @@ Deno.test("v3 loud reads: an auto-definition a fresh checkout could not material
       datastorePath,
     );
     const definitionRepo = reader.repoContext.definitionRepo;
-    // As `model get <name>` looks it up.
     assertUnreadable(
       await assertRejects(() =>
         findDefinitionByIdOrName(definitionRepo, autoName)
@@ -764,7 +714,6 @@ Deno.test("v3 loud reads: an auto-definition a fresh checkout could not material
         definitionRepo.findByName(repos.modelType, autoName)
       ),
     );
-    // A name no definition has is still simply not found.
     assertEquals(
       await findDefinitionByIdOrName(definitionRepo, "no-such-definition"),
       null,
@@ -792,9 +741,6 @@ Deno.test("v3 loud reads: CLI data versions and data rename of an auto-definitio
         ],
       }));
     assertUnreadable(versions);
-    // Rename's lookup before it takes the model's lock already reads through
-    // the context's definition repository; the rename's own lookup now does
-    // too, so the record's error is what it fails with either way.
     const rename = await withMockedEnv(UNSET_ENV, () =>
       runCliRejecting({
         args: [
@@ -819,7 +765,6 @@ Deno.test("v3 loud reads: an evaluated definition a fresh checkout could not mat
       repos,
       datastorePath,
     );
-    // As `model method run --last-evaluated` loads it.
     assertUnreadable(
       await assertRejects(() =>
         reader.repoContext.evaluatedDefinitionRepo.findByNameWithProvenance(
@@ -846,7 +791,6 @@ Deno.test("v3 loud reads: a run whose workflow has no other run fails its lookup
     assertUnreadable(
       await assertRejects(() => runRepo.findGlobalById(lonelyRun.id)),
     );
-    // `workflow history logs <run id>` builds its own run repository.
     const logsDeps = createWorkflowHistoryLogsDeps(
       reader.repoDir,
       reader.datastoreResolver,
@@ -880,7 +824,6 @@ Deno.test("v3 loud reads: an output record a fresh checkout could not materialis
     const { outputDefinitionId, smallOutput, bigOutput, reader } =
       await commitRecordsThenLoseChunks(repos, datastorePath);
     const outputRepo = reader.repoContext.outputRepo;
-    // The later output is the unreadable one: the earlier is not the latest.
     assertUnreadable(
       await assertRejects(() =>
         outputRepo.findLatestByDefinition(repos.modelType, outputDefinitionId)
@@ -904,8 +847,6 @@ Deno.test("v3 loud reads: an output record a fresh checkout could not materialis
       (await outputRepo.findById(repos.modelType, "noop", smallOutput.id))?.id,
       smallOutput.id,
     );
-    // `model output get <model>` and `model method history logs <model>`
-    // build their own output repositories.
     const getDeps = await createModelOutputGetDeps(
       reader.repoDir,
       reader.datastoreResolver,

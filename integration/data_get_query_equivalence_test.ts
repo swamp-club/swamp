@@ -18,12 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration test: `swamp data get` is deprecated in favor of
- * `swamp data query`, and every read names the query that replaces it
- * (swamp-club#2948). Reads through the real data get and data query paths on
- * a temp repo, and checks that each replacement query selects exactly the
- * item data get returned, including when two steps of one run wrote data
- * with the same name.
+ * each replacement query must select exactly the item data get returned,
+ * including when two steps of one run wrote data with the same name
  */
 
 import {
@@ -72,7 +68,6 @@ await initializeLogging({});
 
 const encode = (value: string) => new TextEncoder().encode(value);
 
-/** Saves `model`'s `result` as written by `jobName`/`stepName` of `run`. */
 async function saveStepResult(
   repo: ServeRepo,
   model: Definition,
@@ -114,10 +109,6 @@ async function saveStepResult(
   return { id: data.id, name: data.name, version: saved.version, data };
 }
 
-/**
- * Saves a two-job workflow whose `build/compile` and `verify/check` steps
- * both wrote `result`, and a newer `result` from `build-model` outside it.
- */
 async function sharedNameRun(repo: ServeRepo) {
   const buildModel = await saveModel(repo, "build-model");
   const verifyModel = await saveModel(repo, "verify-model");
@@ -233,14 +224,12 @@ async function read(
   return last.data;
 }
 
-/** The predicate a POSIX shell passes for the printed query command. */
 function predicateOf(command: string): string {
   const match = command.match(/^swamp data query '(.*)'( --select content)?$/);
   assert(match, command);
   return match[1].replaceAll(`'"'"'`, "'");
 }
 
-/** Runs the replacement query and returns the records it selects. */
 async function queryReplacement(
   repo: ServeRepo,
   data: DataGetData,
@@ -423,13 +412,12 @@ Deno.test("data query: a run-scoped query by spec name gets a hint scoped to the
   });
 });
 
-// A read without --run follows the workflow's latest run; data query
-// follows it with latestRun("<workflow>") (swamp-club#2957).
+// a read without --run follows the workflow's latest run; data query follows it
+// with latestRun(<workflow>)
 
 /**
- * Saves two runs of `two-runs`, each with one step that wrote `result`. The
- * newer run's step wrote first, so the older run holds the higher version
- * and, by version, the latest `result`.
+ * the newer run's step wrote first, so the older run holds the higher version
+ * and, by version, the latest result
  */
 async function twoRuns(repo: ServeRepo) {
   const model = await saveModel(repo, "deploy-model");
@@ -482,7 +470,6 @@ async function twoRuns(repo: ServeRepo) {
   return { newer, older };
 }
 
-/** Runs `predicate` the way swamp data query does on the command line. */
 async function queryAsCli(
   repo: ServeRepo,
   predicate: string,
@@ -522,7 +509,6 @@ Deno.test("data query: latestRun selects what data get reads without --run, wher
     assertSameItem(latest, data);
     assertEquals(latest[0].workflowRunId, newer.run.id);
 
-    // The query data get's notice names follows the same run.
     const notice = data.warnings![0].match(
       /latest run instead, run: (swamp data query .*)\)$/,
     );
@@ -531,12 +517,9 @@ Deno.test("data query: latestRun selects what data get reads without --run, wher
   });
 });
 
-// ── The documented model-scoped equivalent (swamp-club#2960, #2968) ─────────
-//
-// `model("<m>") && name == "<n>"` must select what `data get <m> <n>` returns,
-// whatever the model argument is and whatever the data's modelName tag says.
+// model(<m>) && name == <n> must select what data get <m> <n> returns, whatever
+// the model argument is and whatever the data's modelName tag says
 
-/** Runs the documented model-scoped query for `data get <model> <name>`. */
 async function queryDocumented(
   repo: ServeRepo,
   model: string,
@@ -552,7 +535,6 @@ async function queryDocumented(
   ) as DataRecord[];
 }
 
-/** Saves `dataName` under `model` with exactly `tags`. */
 async function saveTagged(
   repo: ServeRepo,
   model: Definition,

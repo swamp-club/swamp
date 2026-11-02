@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// @swamp-club/extension-scoring is the scoring logic swamp and the Swamp
-// Club registry share (swamp-club#3781). It is published to JSR for the
-// registry and for consumers on other runtimes, so it stays pure: it imports
-// only its own files, @std/semver, @std/path and @babel/parser (the one
-// parser of extension source, swamp-club#3983), calls no runtime API, and
-// swamp keeps no second copy of what it moved there.
+// the scoring package is shared with the registry and other runtimes, so it
+// stays pure: imports only its own files, @std/semver, @std/path and
+// @babel/parser, calls no runtime API; swamp keeps no copy
 
 import { assertEquals } from "@std/assert";
 import { walk } from "@std/fs/walk";
@@ -55,7 +52,6 @@ async function packageSourceFiles(): Promise<string[]> {
   return files.sort();
 }
 
-// The packages the scorer may import, besides its own files.
 const PACKAGE_DEPENDENCIES = new Set([
   "@std/semver",
   "@std/path",
@@ -118,7 +114,6 @@ Deno.test("extension-scoring package: the swamp copies it replaced stay gone", a
   assertEquals(present, []);
 });
 
-/** Every name the package's entry modules export. */
 async function packageExports(): Promise<Set<string>> {
   const names = new Set<string>();
   for await (
@@ -140,11 +135,8 @@ async function packageExports(): Promise<Set<string>> {
   return names;
 }
 
-// Pinned ratchet: swamp declarations sharing a name with a package export,
-// none of them a copy. RubricFactor and RubricScore are the CLI's own report
-// shape, built from the package's score; findManifestRoot is the filesystem
-// side of the package's search; the rest are unrelated. Nothing new may
-// join them.
+// pinned ratchet: swamp declarations sharing a name with a package export, none
+// of them a copy; nothing new may join them
 const PINNED_REDECLARATIONS: readonly string[] = [
   "src/domain/expressions/persisted_evaluation.ts: ArgumentSchemas",
   "src/domain/extensions/extension_rubric_scorer.ts: RubricFactor",

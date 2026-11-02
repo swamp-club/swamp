@@ -17,17 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Shared test helpers for integration tests.
- */
-
 import { dirname, fromFileUrl, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getSwampDataDir } from "../src/infrastructure/persistence/paths.ts";
 import { withGateCredentialEnv } from "./auth_gate_fixture.ts";
 
-/** Absolute path to the project root (parent of integration/). */
 const PROJECT_ROOT = join(dirname(fromFileUrl(import.meta.url)), "..");
 
 /**
@@ -57,18 +52,9 @@ function resolveDenoCacheDir(): string {
 }
 
 /**
- * Environment entries that root a spawned CLI's user-home writes in `homeDir`.
- *
- * `repo init`/`repo upgrade` install bundled skills into `~/.claude/skills`,
- * `~/.agents/skills` and `~/.kiro/skills`, resolved from the child's HOME at
- * spawn time. Inheriting the parent's HOME overwrites the developer's real
- * skills on every `deno run test`, and — because the suite runs every test
- * file in one process with one shared `Deno.env` — it can also capture a temp
- * directory another test file has momentarily assigned to HOME, whose cleanup
- * then fails with `Directory not empty`.
- *
- * DENO_DIR is pinned alongside it: moving HOME would otherwise move the module
- * cache with it and force the child to re-resolve every dependency.
+ * roots a spawned CLI's home writes in homeDir: inheriting HOME overwrites the
+ * developer's real skills and can capture a temp dir another test assigned to
+ * HOME
  */
 export function isolatedHomeEnv(homeDir: string): Record<string, string> {
   return {
@@ -85,19 +71,9 @@ export function isolatedHomeEnv(homeDir: string): Record<string, string> {
 export const SHARED_SWAMP_DENO_CACHE = join(getSwampDataDir(), "deno-cache");
 
 /**
- * Points `swampHome`'s Deno cache at {@link SHARED_SWAMP_DENO_CACHE}.
- *
- * `EmbeddedDenoRuntime.getDenoEnv` sets the bundler's DENO_DIR to
- * `<SWAMP_HOME>/deno-cache`, so a test that mocks SWAMP_HOME to a fresh
- * directory hands `deno bundle` an empty cache, and `deno bundle` then
- * downloads esbuild from npm on every run. `withMockedFetch` cannot stub that:
- * the download happens in the child process. Linking the shared cache keeps
- * the bundler off the network (swamp-club#3461).
- *
- * Call it after creating `swampHome` and before any bundling. Removing
- * `swampHome` recursively removes the link, not the shared cache. On Windows,
- * where creating a symlink needs a privilege, a failed link leaves the
- * bundler on a fresh cache, as before.
+ * with SWAMP_HOME mocked to a fresh dir, `deno bundle` downloads esbuild from
+ * npm on every run, and withMockedFetch cannot stub the child process; call
+ * after creating swampHome and before bundling
  */
 export async function linkSharedSwampDenoCache(
   swampHome: string,
@@ -114,7 +90,6 @@ export async function linkSharedSwampDenoCache(
   }
 }
 
-/** CLI launch args that bypass `deno task` config resolution. */
 export const CLI_ARGS = [
   "run",
   "--config",
@@ -128,18 +103,12 @@ export const CLI_ARGS = [
   join(PROJECT_ROOT, "main.ts"),
 ];
 
-/**
- * Initializes a test repository with the required marker file and directory structure.
- * Call this before running any CLI commands that require an initialized repo.
- */
 export async function initializeTestRepo(repoDir: string): Promise<void> {
-  // Create top-level directories for source-of-truth files
   const topLevelDirs = ["models", "workflows", "vaults"];
   for (const dir of topLevelDirs) {
     await ensureDir(join(repoDir, dir));
   }
 
-  // Create runtime data directories under .swamp/
   const runtimeSubdirs = [
     ".swamp/outputs",
     ".swamp/data",
@@ -150,7 +119,6 @@ export async function initializeTestRepo(repoDir: string): Promise<void> {
     await ensureDir(join(repoDir, subdir));
   }
 
-  // Create the .swamp.yaml marker file
   const markerData = {
     swampVersion: "0.0.0",
     initializedAt: new Date().toISOString(),
@@ -162,12 +130,8 @@ export async function initializeTestRepo(repoDir: string): Promise<void> {
 }
 
 /**
- * Runs a CLI command via `deno task dev`.
- *
- * When `stdin` is provided, it is piped to the child process and the writer is
- * closed before awaiting output — required to drive commands that read from
- * stdin (e.g. `model edit`). When omitted, stdin is left at its default so
- * existing call sites are unaffected.
+ * when `stdin` is given it is piped and the writer closed before awaiting
+ * output, for commands that read stdin
  */
 export async function runCliCommand(
   args: string[],

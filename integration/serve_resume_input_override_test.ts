@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve resume cannot change a value the run has (swamp-club#3583).
- * Through serve's real handlers against a real repository: the run has
- * `target`, which its gate checked and its approval showed, so a resume that
- * changes `target` is refused before the guarded step runs, and the run stays
- * suspended with the value its approval saw.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -117,7 +109,6 @@ Deno.test({
         error?.message ?? "",
         'input "target" already has a value, and a value a run has cannot change',
       );
-      // A run serve started is cancelled through serve.
       assertStringIncludes(
         error?.message ?? "",
         `'swamp workflow cancel --run ${suspended!.id} --server <url>'`,

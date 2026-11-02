@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The dashboard's placement selector (packages/dashboard host map) must pick
- * exactly the workers the scheduler would (src/domain/remote/scheduler.ts).
- * Workers reach the dashboard through the real libswamp worker list; the
- * scheduler sees the gateway's view of the same workers.
+ * the dashboard placement selector must pick exactly the workers the scheduler
+ * would; workers reach the dashboard through the libswamp worker list, the
+ * scheduler sees the gateway's view
  */
 
 import { assertEquals } from "@std/assert";
@@ -152,7 +151,6 @@ function record(entry: PoolEntry): DataRecord {
   } as unknown as DataRecord;
 }
 
-/** The gateway's view: a disconnected worker has no channel. */
 function gatewayView(entry: PoolEntry): SchedulableWorker {
   return {
     name: entry.name,

@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Server token writers against a real repository on disk: the name lock that
-// serialises them and the secret fingerprint that catches a record left
-// beside another mint's secret (swamp-club#2482).
-
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -83,7 +79,6 @@ interface Fixture {
   vault: VaultService;
 }
 
-/** An initialized repo with serve's control-plane vault registered. */
 async function withServeRepo(fn: (f: Fixture) => Promise<void>): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-token-lock-" });
   const repoContext = createRepositoryContext({ repoDir });
@@ -132,7 +127,6 @@ async function withServeRepo(fn: (f: Fixture) => Promise<void>): Promise<void> {
   }
 }
 
-/** The mint handler alone, for a caller that already holds the name lock. */
 async function mintUnlocked(
   ctx: ConnectionContext,
   name: string,
@@ -156,7 +150,6 @@ async function mintUnlocked(
   return JSON.parse(socket.sent[0]);
 }
 
-/** A mint as serve's dispatch runs it: under the token's name lock. */
 async function mintOverServe(
   ctx: ConnectionContext,
   name: string,

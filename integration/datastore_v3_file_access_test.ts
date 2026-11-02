@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A materialised file keeps its access (swamp-club#3693). The real data
- * repository writes and chmods content files in a writer checkout and
- * commits them to a real `commits.db` and filesystem `storage/1`; another
- * checkout's read model then catches up, and so does the writer's own on
- * its next command. An executable output stays executable and a private
- * one stays private everywhere, inline-sized or chunked, and through the
- * compacted base. POSIX only: Windows keeps no modes.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
@@ -63,7 +53,6 @@ await initializeLogging({});
 
 const IS_WINDOWS = Deno.build.os === "windows";
 
-/** The modes a test writes, by data name. */
 const MODES = { exec: 0o755, secret: 0o600, plain: 0o644 } as const;
 
 function data(name: string): Data {
@@ -77,12 +66,10 @@ function data(name: string): Data {
   });
 }
 
-/** Content of `size` bytes: inline-sized or chunked. */
 function content(size: number, seed: number): Uint8Array {
   return new Uint8Array(size).map((_, i) => (i * 7 + seed) % 251);
 }
 
-/** A writer checkout: the real data repository in its own directory. */
 function writerOf(env: V3Env) {
   const dir = join(env.dir, "writer");
   const root = swampPath(dir);
@@ -96,7 +83,6 @@ function writerOf(env: V3Env) {
     SOLO_NAMESPACE,
     true,
   );
-  /** Writes each name's content, chmods it, and commits it. */
   const write = (size: number) =>
     runInCommitLogRoot(
       { markDirty: hook },
@@ -127,10 +113,6 @@ function writerOf(env: V3Env) {
   return { dir, root, repo, write };
 }
 
-/**
- * Catches up the read model of the checkout at `dir` (its next command),
- * in `boot` when given, so its writes are listed for the reboot check.
- */
 async function catchUp(
   env: V3Env,
   dir: string,
@@ -153,7 +135,6 @@ async function catchUp(
   }
 }
 
-/** Each data name's content-file mode in the checkout whose cache is `root`. */
 async function modesIn(
   root: string,
   dataDir: (name: string) => string,
@@ -166,7 +147,6 @@ async function modesIn(
   return modes;
 }
 
-/** The modes each checkout must show: the writer's, under this umask. */
 async function expectedModes(env: V3Env): Promise<Record<string, string>> {
   const probe = join(env.dir, "umask-probe");
   await Deno.writeFile(probe, new Uint8Array());
@@ -179,10 +159,6 @@ async function expectedModes(env: V3Env): Promise<Record<string, string>> {
   };
 }
 
-/**
- * The test storage with the filesystem's size reader, so the checkout-copy
- * guard reads a chunked file and keeps one holding the committed bytes.
- */
 class StatStorage extends SmallChunkStorage implements ChunkStatReader {
   statChunks(
     namespace: string,
@@ -216,7 +192,6 @@ for (
         const writer = writerOf(env);
         await writer.write(size);
         const writerModes = await modesIn(writer.root, dataDirOf);
-        // The writer's own files are as it wrote them.
         assertEquals(writerModes, { exec: "755", secret: "600", plain: "644" });
 
         const expected = await expectedModes(env);
@@ -280,7 +255,6 @@ Deno.test({
       await Deno.chmod(exec, 0o644);
       const storage = new StatStorage(env.storage.inner);
       await catchUp(env, writer.dir, { chunkStore: new ChunkStore(storage) });
-      // Rewritten through a temp file, never chmodded in place.
       assert((await Deno.stat(exec)).ino !== before);
       assertEquals(
         await modesIn(writer.root, dataDirOf),
@@ -298,8 +272,8 @@ Deno.test({
     await withV3Env(async (env) => {
       const writer = writerOf(env);
       await writer.write(MAX_INLINE_BYTES * 3);
-      // The plain output was made executable after its commit, as a file
-      // committed before swamp-club#3693 recorded no access at all.
+      // the plain output was made executable after its commit, as a file
+      // committed before access was recorded would be
       const plain = join(writer.root, dataDirOf("plain"), "1", "raw");
       const before = (await Deno.stat(plain)).ino;
       await Deno.chmod(plain, 0o755);
@@ -322,7 +296,6 @@ Deno.test({
       await writer.write(MAX_INLINE_BYTES * 3);
       const other = join(env.dir, "other");
       await catchUp(env, other, { boot: "boot-id:1" });
-      // A power loss empties every file the unsynced catch-up wrote.
       for (const name of Object.keys(MODES)) {
         for (const version of ["1", "2"]) {
           const path = join(swampPath(other), dataDirOf(name), version, "raw");
@@ -352,7 +325,6 @@ Deno.test({
     await withV3Env(async (env) => {
       const writer = writerOf(env);
       await writer.write(MAX_INLINE_BYTES * 3);
-      // The chunks are gone while another checkout catches up, then back.
       const blobs = join(env.dir, "datastore", "_blobs");
       const aside = join(env.dir, "blobs-aside");
       await Deno.rename(blobs, aside);

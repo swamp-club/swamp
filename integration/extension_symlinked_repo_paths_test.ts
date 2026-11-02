@@ -17,15 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// swamp-club#3536: a repository reached through a symlink (macOS `/var` is
-// `/private/var`) reports its extension files under the spelling the user
-// gave. This wires manifest re-spelling, the file resolver (with the real
-// module graph reader) and the push prepare step over a real temp tree whose
-// parent is a symlink, and checks every path stays in the link spelling,
-// and that a symlinked workflow found by dependency resolution, whose path
-// the repo context reports in the real spelling, is still refused. Below a
-// node_modules, where deno info reports imports by real path, the planned
-// files keep the link spelling too (swamp-club#3794).
+// a repo reached through a symlink keeps the link spelling in every reported
+// extension file path, while a symlinked workflow found by dependency
+// resolution is still refused
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -83,10 +77,6 @@ const prepareDeps: ExtensionPushPrepareDeps = {
   getLatestVersionDetail: () => Promise.resolve(null),
 };
 
-/**
- * A repo at `<tmp>/real/repo`, also reachable as `<tmp>/link/repo`, with a
- * model that imports a local helper and a listed workflow.
- */
 async function withLinkedRepo(
   fn: (paths: { real: string; link: string; tmp: string }) => Promise<void>,
 ): Promise<void> {
@@ -209,7 +199,6 @@ for (
         input,
       );
 
-      // Push reports these with the platform's separators.
       assertEquals(
         prepared.resolvedData.models.map((m) => m.fileName),
         [join("extensions", "models", "ext", "fields.ts")],
@@ -221,11 +210,6 @@ for (
   });
 }
 
-/**
- * A repo context whose `deploy` workflow runs the `shared` workflow, which
- * the context reports at `sharedPath`, as the workflow repository of a repo
- * opened on its resolved path does.
- */
 function repoContextWithSharedWorkflow(sharedPath: string): RepositoryContext {
   const workflowStep = {
     task: {
@@ -358,7 +342,6 @@ Deno.test({
         join(linkedModels, "my_model.ts"),
         join(repoDir, "lib", "two.ts"),
       ]);
-      // The archive is the one the repo's real path plans.
       const archived = (r: typeof result) =>
         r.sourcePlan.entries.map((e) => e.archivePath).sort();
       assertEquals(archived(result), archived(await resolveAt(real)));

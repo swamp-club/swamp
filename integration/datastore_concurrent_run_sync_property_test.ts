@@ -17,13 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Model-based check of swamp-club#3146: two steps on two models of one
-// repo, interleaved with another run's prepare and commit, a peer's commit
-// and a pull, in any order, including inside a step's push (between its
-// staging and its prepare). Whatever the schedule, every version a step
-// wrote and still holds is on the remote once its lock's push returned,
-// with a latest marker at least that version. A push fails, loudly, only
-// when every one of its attempts was interfered with inside the push.
+// under any interleaving with other runs, a peer commit and a pull, every
+// version a step still holds is on the remote with a latest marker at least
+// that version once its push returns
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
@@ -51,7 +47,6 @@ import {
 
 await initializeLogging({});
 
-/** Something another run or machine does, at a point in the schedule. */
 type Interference =
   | "other-prepare" // another run of this process walks the dirty set
   | "other-commit" // ... and commits it, clearing every mark
@@ -60,7 +55,6 @@ type Interference =
   // short after the latest markers (the extensions walk the live set).
   | "cut-walk";
 
-/** One schedule entry: advance a step, or interfere now or in a push. */
 type Op =
   | { kind: "advance"; step: 0 | 1 }
   | { kind: "now"; what: Interference }
@@ -89,7 +83,6 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
   }),
 );
 
-/** A step: take its model's lock, write versions, push. */
 interface StepState {
   modelId: string;
   phase: "idle" | "locked" | "written" | "done";
@@ -97,7 +90,6 @@ interface StepState {
   written: WrittenVersion[];
 }
 
-/** Per-run coverage of the interleavings, logged when the property ends. */
 const coverage = new Map<string, number>();
 const covered = (label: string) =>
   coverage.set(label, (coverage.get(label) ?? 0) + 1);
@@ -109,7 +101,6 @@ async function runSchedule(h: Harness, ops: readonly Op[]): Promise<void> {
   ];
   let otherManifest: InMemoryPushManifest | undefined;
   const pendingInPush: Interference[] = [];
-  // Prepares that ran an interference first, and prepares overall.
   let interferedPrepares = 0;
   let prepares = 0;
   let peerWrites = 0;
@@ -145,8 +136,6 @@ async function runSchedule(h: Harness, ops: readonly Op[]): Promise<void> {
     }
   };
 
-  // Runs the interference scheduled for a push right before its prepare:
-  // after the push staged its versions, before it walks the dirty set.
   const racing: DatastoreSyncService = {
     capabilities: () => service.capabilities!(),
     markDirty: (o) => service.markDirty(o),
@@ -234,13 +223,11 @@ async function runSchedule(h: Harness, ops: readonly Op[]): Promise<void> {
       pendingInPush.push(op.what);
     }
   }
-  // Quiescence: finish every step.
   for (const step of steps) {
     while (step.phase !== "done") await advance(step);
   }
 }
 
-/** The step's last version is on the remote, and so is a marker naming it. */
 function assertPublished(h: Harness, step: StepState): void {
   const last = step.written.at(-1)!;
   const dir = `data/${h.modelType.normalized}/${step.modelId}/${DATA_NAME}`;
@@ -265,7 +252,6 @@ Deno.test("acquireModelLocks: any interleaving of runs, pulls and commits leaves
     }),
     { numRuns: 150 },
   );
-  // Every interleaving the property is about must have been generated.
   for (
     const label of [
       "now:other-prepare",

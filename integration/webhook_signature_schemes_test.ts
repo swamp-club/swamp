@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for pluggable webhook signature verification (#716).
- *
- * These drive WebhookService.handleRequest with real signed HTTP requests for
- * non-github schemes, asserting that a correctly-signed request is accepted
- * (queued) and a forged one is rejected (401). Timestamps for the timestamped
- * schemes are generated at request time so they fall inside the tolerance
- * window. The actual workflow execution is exercised by #717's tests; here we
- * focus on the verification gate, so the queued workflow can be a trivial echo.
- */
-
 import { assertEquals } from "@std/assert";
 import { consumeStream, withDefaults } from "../src/libswamp/stream.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";

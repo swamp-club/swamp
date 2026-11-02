@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fixture model for the output-protection baseline (swamp-club#3512). Its
- * `fail` method puts its `secret` argument in a method log line, a console
- * line and the thrown error, so a test can see which of those reach serve
- * redacted and which do not.
+ * `fail` puts its `secret` argument in a method log line, a console line and
+ * the thrown error, so a test can see which reach serve redacted
  */
 
 import { z } from "zod";

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A model: deny matches the type it names whatever its spelling — case,
- * `::` or `.` separators, with or without a leading `@` — on model create,
- * method run, model edit and adding a workflow step; an allow matches only
- * as written, so a misspelled allow grants nothing (swamp-club#3130). Runs
- * through `handleMessage` against a real repository, as a non-admin.
- */
-
 import { assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
@@ -44,7 +36,6 @@ function request(type: string, payload: Record<string, unknown>) {
   return { type, id: crypto.randomUUID(), payload };
 }
 
-/** Spellings of the repo's `@test/serve-…` type, none of them canonical. */
 function selectorSpellings(repo: ServeRepo): string[] {
   const scoped = repo.modelType.normalized;
   const bare = scoped.slice(1);
@@ -77,7 +68,6 @@ function assertRefused(frames: Frame[], label: string) {
   );
 }
 
-/** Sends each serve path that acts on a model of the repo's type. */
 async function sendEachPath(
   repo: ServeRepo,
   grants: Grant[],

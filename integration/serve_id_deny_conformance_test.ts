@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Every serve request that names a model, workflow or model's data must be
- * authorized on the resource it resolves to, not the raw string sent
- * (swamp-club#2674). A grant matches a resource name, so authorizing the raw
- * string lets a client reach a resource under a name-scoped deny by sending
- * its UUID instead.
- *
- * The request types are read from the serve request schema. A type whose
- * payload carries a resource identifier needs a case here, or an entry in
- * EXEMPT naming the issue that owns it — so a new request cannot ship
- * without this coverage. Requests go through `handleMessage`, the real
- * dispatch path, against a real repository.
- *
- * A vault named by name or id (vaultNameOrId) is authorized on the name it
- * resolves to, as `data:<name>` and `vault:<name>` (swamp-club#2676). A
- * `vaultName` field is only ever a name, so it is no alias for anything.
- */
-
 import {
   assert,
   assertEquals,
@@ -85,21 +67,16 @@ import {
 
 await initializeLogging({});
 
-/** Payload fields that name a model, workflow, output or run. */
 const IDENTIFIER_FIELD =
   /(IdOrName|IdOrModelName|IdOrWorkflow)$|^(outputIdArg|workflowName|definitionName|vaultNameOrId)$/;
 
 /**
- * Request types this test does not cover, each with the issue that owns how
- * it authorizes. Remove an entry when its issue lands; never add one without
- * an owning issue.
+ * request types not covered here, each with the issue that owns how it
+ * authorizes; remove an entry when its issue lands, never add one without an
+ * owner
  */
 const EXEMPT: Record<string, string> = {};
 
-/**
- * Request types whose identifier field names nothing the handler reads, each
- * with why. They are checked on the kind, not on a resource.
- */
 const IGNORES_IDENTIFIER: Record<string, string> = {
   "workflow.schema":
     "returns the workflow schema; workflowIdOrName is accepted but unused",
@@ -107,7 +84,6 @@ const IGNORES_IDENTIFIER: Record<string, string> = {
 
 const ACTIONS: Grant["actions"] = ["read", "write", "run", "approve"];
 
-/** Allow everything on models, data and workflows, deny anything prod-*. */
 const GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
   kind,
 ) => [
@@ -121,9 +97,7 @@ const GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
 
 interface Fixtures {
   repo: ServeRepo;
-  /** Token mode, enforcing GRANTS. */
   ctx: ConnectionContext;
-  /** No enforcement, for setting up state such as suspended runs. */
   admin: ConnectionContext;
   prodModel: Definition;
   devModel: Definition;
@@ -133,11 +107,6 @@ interface Fixtures {
   devGated: Workflow;
 }
 
-/**
- * The same policy as GRANTS, but denying on tags rather than names: every
- * prod fixture carries env: prod, so a request that authorizes a resource
- * without its full fields is caught (swamp-club#2675).
- */
 const TAG_GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
   kind,
 ) => [
@@ -181,7 +150,6 @@ function request(type: string, payload: Record<string, unknown>) {
   return { type, id: crypto.randomUUID(), payload };
 }
 
-/** Runs `workflow` until it suspends at its gate; returns the run id. */
 async function suspend(f: Fixtures, workflow: Workflow): Promise<string> {
   const frames = await sendRequest(
     f.admin,
@@ -221,7 +189,6 @@ function streamError(frames: Frame[]): unknown {
   ).find((event) => event?.kind === "error")?.error;
 }
 
-/** Asserts the request was refused on `resource`'s canonical name. */
 function assertDenied(frames: Frame[], resource: string) {
   const error = errorFrame(frames);
   assertEquals(error?.error?.code, "unauthorized", JSON.stringify(frames));
@@ -233,7 +200,6 @@ function assertDenied(frames: Frame[], resource: string) {
   );
 }
 
-/** Asserts the request succeeded: its reply type, or a completed stream. */
 function assertAllowed(frames: Frame[], type: string) {
   assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
   assertEquals(streamError(frames), undefined, JSON.stringify(frames));
@@ -243,16 +209,9 @@ function assertAllowed(frames: Frame[], type: string) {
 }
 
 interface Case {
-  /**
-   * Sends the request for `target` — the prod resource (denied) or the dev
-   * one (allowed) — by its UUID, and returns the frames.
-   */
   send: (f: Fixtures, target: "prod" | "dev") => Promise<Frame[]>;
-  /** The resource named in a denial, e.g. model:prod-db. */
   deniedAs: string;
-  /** Checks that a denied request left the prod resource untouched. */
   unchanged?: (f: Fixtures) => Promise<void>;
-  /** Replaces the default check that the reply is a denial. */
   refused?: (frames: Frame[]) => void;
 }
 
@@ -263,7 +222,6 @@ const workflow = (f: Fixtures, t: "prod" | "dev") =>
 const gated = (f: Fixtures, t: "prod" | "dev") =>
   t === "prod" ? f.prodGated : f.devGated;
 
-/** The test context with the control-plane store serve keeps pauses in. */
 function withPauseStore(f: Fixtures): ConnectionContext {
   return {
     ...f.ctx,
@@ -287,19 +245,17 @@ function simple(
 }
 
 /**
- * An id prefix of a new output of `model` — output reads resolve a 3+ hex
- * character prefix across every model's outputs (swamp-club#2673).
+ * output reads resolve a 3+ hex character id prefix across every model's
+ * outputs
  */
 async function outputPrefix(f: Fixtures, model: Definition): Promise<string> {
   return (await saveOutput(f.repo, model)).id.slice(0, 8);
 }
 
-/** An id prefix of a new run of `workflow`, as {@link outputPrefix}. */
 async function runPrefix(f: Fixtures, workflow: Workflow): Promise<string> {
   return (await saveRun(f.repo, workflow)).id.slice(0, 8);
 }
 
-/** A read of an output or run that `payload` names from `f` and `t`. */
 function historyRead(
   type: string,
   payload: (f: Fixtures, t: "prod" | "dev") => Promise<Record<string, unknown>>,
@@ -333,7 +289,6 @@ const prodWorkflowKept = async (f: Fixtures) => {
   );
 };
 
-/** The prod and dev vaults, saved on first use. */
 async function vaults(
   f: Fixtures,
 ): Promise<{ prod: VaultConfig; dev: VaultConfig }> {
@@ -354,9 +309,8 @@ async function vaults(
 }
 
 /**
- * Allow everything on data, and deny prod-* on the vault kind or on data.
- * Vaults carry no tags, so the tags deny of TAG_GRANTS has no vault to
- * catch; vault cases send under these instead.
+ * vaults carry no tags, so the tags deny has no vault to catch; vault cases
+ * send under a deny on vault:prod-* or on data:prod-* instead
  */
 const vaultGrants = (denied: "vault" | "data"): Grant[] => [
   grant({ actions: ACTIONS, resource: { kind: "data", pattern: "*" } }),
@@ -367,11 +321,6 @@ const vaultGrants = (denied: "vault" | "data"): Grant[] => [
   }),
 ];
 
-/**
- * A vault request by the UUID of the prod or dev vault, sent under a deny on
- * `vault:prod-*` and then on `data:prod-*`: both must refuse the prod vault
- * by its name and leave the dev vault alone (swamp-club#2676).
- */
 function vaultById(
   type: string,
   payload: (vault: VaultConfig) => Record<string, unknown>,
@@ -888,7 +837,6 @@ Deno.test("serve id-deny conformance: a tag-conditioned deny applies to a model 
   });
 });
 
-/** Registers a run that never finishes, as a run another request started. */
 function registerRun(
   ctx: ConnectionContext,
   run: {
@@ -921,7 +869,6 @@ Deno.test("serve id-deny conformance: cancelling a run recorded under a raw UUID
     (ctx as { auditEmitter?: unknown }).auditEmitter = {
       emit: (event: AuditEvent) => audit.push(event),
     };
-    // An older instance recorded the id the client sent, not the name.
     const { runId, controller } = registerRun(ctx, {
       kind: "method-run",
       resourceName: f.prodModel.id,
@@ -934,9 +881,9 @@ Deno.test("serve id-deny conformance: cancelling a run recorded under a raw UUID
       { awaitRuns: false },
     );
 
-    // A refused bare cancel is silent, like one for an unknown id
-    // (swamp-club#2649), so the resource it was checked on is read from the
-    // audited denial rather than a reply.
+    // a refused bare cancel is silent, like one for an unknown id, so the
+    // resource it was checked on is read from the audited denial rather than a
+    // reply
     await waitFor(
       () => audit.some((event) => event.outcome === "denied"),
       "the cancel's denial to be audited",
@@ -1051,10 +998,9 @@ Deno.test("serve id-deny conformance: a run's cancel fails, rather than proceedi
 
 Deno.test("serve id-deny conformance: an empty name runs the every-resource form, over only what the caller may read", async () => {
   await withFixtures(async (f) => {
-    // libswamp treats an empty name as absent — validate or evaluate
-    // everything — so it is never authorized as a resource named "". It
-    // runs over every resource the caller may read, and only those
-    // (swamp-club#2675): dev-* grants see dev-db and dev-flow, never prod.
+    // libswamp treats an empty name as absent, so it is never authorized as a
+    // resource named empty; it runs over only what the caller may read: dev-*
+    // grants see dev-db and dev-flow, never prod
     const ctx = createServeCtx(f.repo, [
       grant({
         actions: ACTIONS,
@@ -1168,7 +1114,6 @@ Deno.test("serve id-deny conformance: cancelling a run whose workflow was delete
   });
 });
 
-/** Writes a hand-copied definition file: `source`'s content, renamed. */
 async function copyDefinitionAs(
   f: Fixtures,
   source: Definition,
@@ -1192,8 +1137,6 @@ Deno.test("serve id-deny conformance: a model sharing a denied model's id is act
     // safe-model is a copied file that kept prod-db's id. A scan of the
     // definitions leaves the id cache pointing at whichever file came last.
     await copyDefinitionAs(f, f.prodModel, "safe-model");
-    // Earlier requests read both by name; the later one, for prod-db, leaves
-    // the shared id cache pointing at prod-db's file.
     await f.repo.repoContext.definitionRepo.findByNameGlobal("safe-model");
     await f.repo.repoContext.definitionRepo.findByNameGlobal("prod-db");
 
@@ -1253,10 +1196,6 @@ Deno.test("serve id-deny conformance: a workflow sharing a denied workflow's id 
   });
 });
 
-// Output and run reads (swamp-club#2673): the owner of what is read is
-// authorized, whichever way the request named it.
-
-/** A copy of prod-flow's file under another name, sharing its id. */
 async function copyWorkflowAs(f: Fixtures, name: string): Promise<void> {
   const workflowRepo = f.repo.repoContext.workflowRepo;
   const path = workflowRepo.getPath(f.prodWorkflow.id);
@@ -1407,7 +1346,6 @@ const DEV_OUTPUT = "abc11111-0000-4000-8000-000000000001";
 const PROD_RUN = "abd00000-0000-4000-8000-000000000001";
 const DEV_RUN = "abd11111-0000-4000-8000-000000000001";
 
-/** Every output or run read, with the payload field its prefix goes in. */
 const AMBIGUOUS_READS = [
   ["model.output.get", "outputIdOrModelName", "abc"],
   ["model.output.data", "outputIdArg", "abc"],
@@ -1418,7 +1356,6 @@ const AMBIGUOUS_READS = [
   ["workflow.history.logs", "runIdOrWorkflow", "abd"],
 ] as const;
 
-/** The ids an ambiguity error lists, or fails if the reply is not one. */
 function ambiguousIds(frames: Frame[], prefix: string): string[] {
   const message = errorFrame(frames)?.error?.message ?? "";
   const [head, ...ids] = message.split("\n");
@@ -1526,7 +1463,6 @@ Deno.test("serve id-deny conformance: output data and logs need a data read on t
         type,
       );
     }
-    // data.get refuses the same content by name.
     assertDenied(
       await sendRequest(
         ctx,
@@ -1567,10 +1503,9 @@ Deno.test("serve id-deny conformance: an output whose model's type is not regist
       },
     });
     await f.repo.repoContext.outputRepo.save(uninstalled, "noop", output);
-    // Outputs are only listed for registered types, so the prefix matches
-    // nothing: the read reports not-found and returns none of prod-acme's
-    // output. Were it listed, prod-acme would be among its owners, since the
-    // owner lookup walks unregistered types too.
+    // outputs are only listed for registered types, so the prefix matches
+    // nothing and prod-acme's output is not returned; were it listed, prod-acme
+    // would own it, as the owner lookup walks unregistered types too
     const prefix = output.id.slice(0, 8);
     const frames = await sendRequest(
       f.ctx,
@@ -1583,9 +1518,6 @@ Deno.test("serve id-deny conformance: an output whose model's type is not regist
   });
 });
 
-// --- Workflow-scoped data reads (swamp-club#2603) ---
-
-/** A workflow whose run recorded both models' data, and that run. */
 async function mixedRun(f: Fixtures) {
   const prodState = await saveData(f.repo, f.prodModel, "prod-state");
   const devState = await saveData(f.repo, f.devModel, "dev-state");
@@ -1949,9 +1881,8 @@ Deno.test("serve id-deny conformance: model.create with a type that does not par
   });
 });
 
-// data.query's latestRun("<workflow>") resolves a workflow by name or id and
-// reads its latest run, so it is authorized as a history read of that run
-// (swamp-club#2957).
+// data.query's latestRun(workflow) resolves a workflow by name or id and reads
+// its latest run, so it is authorized as a history read of that run
 
 function latestRunQuery(workflow: string) {
   return request("data.query", {
@@ -1971,7 +1902,6 @@ Deno.test("serve id-deny conformance: latestRun by a denied workflow's UUID is r
       `Workflow not found: ${f.prodWorkflow.id}`,
     );
     assert(!JSON.stringify(frames).includes(run.id));
-    // The dev workflow, by UUID, is allowed.
     const devRun = await saveRun(f.repo, f.devWorkflow);
     await saveRunStepData(f.repo, f.devModel, devRun, "out");
     const allowed = await sendRequest(
@@ -2008,8 +1938,8 @@ Deno.test("serve id-deny conformance: latestRun by a copy's name is refused when
   });
 });
 
-// data.query's model("<model>") resolves a model by name or id, so it is
-// authorized as a model-scoped data.get of that model is (swamp-club#2960).
+// data.query's model(name) resolves a model by name or id, so it is authorized
+// as a model-scoped data.get of that model is
 
 function modelQuery(model: string, fn = "model") {
   return request("data.query", {
@@ -2051,9 +1981,9 @@ Deno.test("serve id-deny conformance: model() by a denied or missing model fails
   });
 });
 
-// behavior("<behavior>") is the behavior spelling of model() (swamp-club#3410):
-// it is collected with model() and resolved by the same authorizing
-// resolver, so it can never read what model() may not.
+// behavior(x) is the behavior spelling of model(): collected with it and
+// resolved by the same authorizing resolver, so it never reads what model() may
+// not
 Deno.test("serve id-deny conformance: behavior() is authorized exactly as model() is", async () => {
   await withFixtures(async (f) => {
     const allowed = await sendRequest(f.ctx, modelQuery("dev-db", "behavior"));
@@ -2135,7 +2065,6 @@ Deno.test("serve id-deny conformance: a direct run is authorized on the definiti
           JSON.stringify([d.version, d.tags, d.globalArguments]);
         const before = stored(f.prodModel);
         for (const definitionName of ["prod-db", f.prodModel.id]) {
-          // Authorized as dev-db, acting on prod-db.
           assertDenied(
             await sendRequest(
               ctx,
@@ -2154,7 +2083,6 @@ Deno.test("serve id-deny conformance: a direct run is authorized on the definiti
         );
         assertEquals(kept && stored(kept.definition), before);
 
-        // The honest form, both names the same, still runs.
         assertAllowed(
           await sendRequest(
             ctx,

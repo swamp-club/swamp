@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A limited output search stops reading once it holds its results
-// (swamp-club#4143, swamp-club#4174). That is safe only if it returns exactly what the full
-// scan returns once authorized and cut to the limit: the same outputs in the
-// same order, whatever ties, names not in the output form, windows and
-// permissions the repository holds.
+// a limited output search stops reading once it holds its results; that is safe
+// only if it returns exactly what the full scan returns once authorized and cut
+// to the limit, in the same order
 
 import { assert, assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -57,9 +55,7 @@ interface File {
   type: number;
   definition: number;
   method: number;
-  /** Few distinct values, so that many files share a millisecond. */
   offset: number;
-  /** Written under a name not in the output form. */
   unnamed: boolean;
 }
 
@@ -116,7 +112,6 @@ async function writeFiles(
   }
 }
 
-/** Search deps over `repo` for a caller who may read only `readable`. */
 function depsFor(
   repo: YamlOutputRepository,
   readable: readonly string[],
@@ -272,10 +267,6 @@ Deno.test("modelOutputSearch: without ties or names not in the output form, a li
   });
 });
 
-/**
- * Deps over `repo` that resolve `model` to `definitions`, for a caller who may
- * read only `readable`.
- */
 function modelDepsFor(
   repo: YamlOutputRepository,
   readable: readonly string[],
@@ -377,7 +368,6 @@ Deno.test("modelOutputSearch: without ties or names not in the output form, a li
         }).map((offsets) =>
           offsets.map((offset, i) => ({
             type: 0,
-            // Half of them the model's, so a file of another is passed over.
             definition: i % 2,
             method: i % METHODS.length,
             offset,

@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architecture fitness rules for the affected-commands list the verification
-// attestation carries (scripts/affected_commands.ts, scripts/command_index.ts).
-//
-// The unit tests pin the computation against hand-built graphs. These pin the
-// two places it meets the real repository: the command tree it names commands
-// from, and the directory layout its rule table was written against.
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ROOT } from "./arch_fitness_helpers.ts";
@@ -38,19 +31,16 @@ import {
 } from "../scripts/command_index.ts";
 
 /**
- * Command-directory files that are entry points of their own rather than part
- * of the CLI's module graph. The generator never hands these to the index —
- * it passes only files `deno info main.ts` reports — and this test must not
- * import them either: the dispatch runner reads stdin as soon as it loads.
+ * entry points of their own, not part of the CLI module graph; the index never
+ * gets them and this test must not import them, since the dispatch runner reads
+ * stdin on load
  */
 const SEPARATE_ENTRY_POINTS: ReadonlySet<string> = new Set([
   "worker_exec_dispatch_entry.ts",
 ]);
 
-// This lists the directory, where the generator lists the command files
-// `deno info main.ts` reports. The two agree while every file here that
-// exports a command is one the CLI imports; a file outside the graph that
-// re-exported a command object would be indexed here and not there.
+// lists the directory where the generator lists files from the module graph;
+// they agree only while every file exporting a command is one the CLI imports
 async function commandFiles(): Promise<string[]> {
   const files: string[] = [];
   for await (const entry of Deno.readDir(join(ROOT, COMMAND_DIR))) {
@@ -82,9 +72,6 @@ Deno.test("affected commands: every root command maps to a file that exists", as
 });
 
 Deno.test("affected commands: each declared unexported root names a real command file", async () => {
-  // The index throws on a root no file exports unless UNEXPORTED_ROOTS names
-  // it, so the test above already proves the declaration is complete. This
-  // proves it is not pointing at a file that has since moved.
   const files = await commandFiles();
   const index = await loadCommandIndex(ROOT, files);
   for (const [name, file] of Object.entries(UNEXPORTED_ROOTS)) {
@@ -94,11 +81,8 @@ Deno.test("affected commands: each declared unexported root names a real command
 });
 
 /**
- * The top-level entries git tracks, each as a path a rule can be asked about.
- *
- * Asked of git rather than read from the directory: a checkout swamp is also
- * used in grows `vaults/`, `grants/` and other local state at its root, and a
- * rule about the repository's layout must not pass or fail on that.
+ * asked of git, not the directory: a checkout grows local state like vaults/ at
+ * its root, and a layout rule must not pass or fail on that
  */
 async function trackedTopLevelSamples(): Promise<string[]> {
   const { code, stdout } = await new Deno.Command("git", {
@@ -118,11 +102,8 @@ async function trackedTopLevelSamples(): Promise<string[]> {
 }
 
 Deno.test("affected commands: every top-level path has an explicit rule", async () => {
-  // A changed file no rule recognises selects every command. That is the safe
-  // reading of a file nobody has classified, and a poor one for a whole new
-  // directory: this fails when one appears, so the rule table in
-  // scripts/affected_commands.ts is extended on purpose rather than every
-  // change under it quietly reporting all commands.
+  // an unrecognised file selects every command, a poor outcome for a new
+  // directory; this fails so the rule table is extended on purpose
   const samples = (await trackedTopLevelSamples())
     // The module graph itself: files here are looked up in it, not in the
     // rule table.

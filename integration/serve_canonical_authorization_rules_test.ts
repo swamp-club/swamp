@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve handlers authorize the resource a request resolves to, never the raw
- * id-or-name the client sent: a grant matches a resource name, so a raw UUID
- * sidesteps name-scoped denies (swamp-club#2674). Handlers build that
- * resource with resource_resolution.ts.
- *
- * This is a cheap textual guard alongside the behavioral one in
- * serve_id_deny_conformance_test.ts: it flags any `name: payload.<field>`
- * where <field> is a raw resource identifier. The pinned entries are the
- * handlers other issues own, plus the edit handlers' deliberate fallback
- * for a request that resolved to nothing. It can only shrink.
+ * handlers authorize the resource a request resolves to, never the raw
+ * id-or-name the client sent; flags `name: payload.<field>` of a raw
+ * identifier, and the pinned entries can only shrink
  */
 
 import { join, relative, SEPARATOR } from "@std/path";
@@ -48,7 +41,7 @@ const RAW_NAME =
 const FUNCTION = /^(?:export )?(?:async )?function\*? (\w+)/;
 
 const PINNED = [
-  // Direct type execution may create its definition — swamp-club#2672.
+  // direct type execution may create its definition
   "src/serve/handlers/model_handlers.ts::resolveMethodRunTarget::modelIdOrName",
   // Edit resolves first and replies not_found when nothing matched; the raw
   // name is only authorized for that reply.
@@ -84,12 +77,9 @@ Deno.test("serve handlers authorize resolved resources, not raw payload identifi
 });
 
 /**
- * A `*` resource name never matches a name-scoped deny, and a condition on
- * resource fields fails closed against one, so no handler authorizes a
- * model, data or workflow resource named `*` (swamp-club#2675). A request
- * over many resources checks each one (filterByResources, an include
- * filter), a check on a kind itself uses kindResource, and an operation over
- * every resource uses authorizeAllOrReject.
+ * a * resource name never matches a name-scoped deny and a condition on its
+ * fields fails closed, so no handler authorizes a model, data or workflow
+ * resource named *
  */
 Deno.test("serve handlers never authorize a model, data or workflow resource named *", async () => {
   const handlers = join(SERVE_DIR, "handlers");

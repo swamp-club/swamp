@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The persistence seams of typed secrets, end to end (design/enablers/
- * typed-secrets.md Sections 8.1, 8.2 and the Persistence row of 12.1,
- * typed-secrets 4.4): a run that suspends and resumes, and a replay of its
- * cache. Every seam round-trips through
- * writtenReferences, the run index holds reference text, the output
- * records and the catalog hold neither a value nor a sentinel, a record
- * written with the json, number and boolean encodings of an untyped run
- * reads back and delivers each as Section 8.1 says, and sentinel-shaped
- * text from another prefix persists as data. The v3 copies are the same
- * bytes the repositories write, asserted at the staging boundary in the
- * repository tests.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -70,7 +56,6 @@ const CHILD = "persist-child";
 const PARENT = "persist-parent";
 const FOREIGN = `__SWAMP_VSEC_${"f".repeat(32)}_0__`;
 
-/** A child whose inputs carry the parent's secrets and whose gate echoes one. */
 const child = () =>
   Workflow.create({
     name: CHILD,
@@ -114,7 +99,6 @@ const parent = () =>
     })],
   });
 
-/** The stored record and the workflow of a run, as the repositories read them. */
 async function stored(f: Fixture, workflowName: string, runId: string) {
   const workflow = await new YamlWorkflowRepository(f.repoDir).findByName(
     workflowName,
@@ -129,7 +113,6 @@ async function stored(f: Fixture, workflowName: string, runId: string) {
   return { workflow, run, data: run.toData(), runsDir };
 }
 
-/** The nested child run a parent's suspension names. */
 function nestedRunId(run: Run): string {
   const suspended = run.events.find((e) => e.kind === "suspended");
   assert(suspended && suspended.kind === "suspended", "no suspension");
@@ -137,7 +120,6 @@ function nestedRunId(run: Run): string {
   return suspended.nested.runId;
 }
 
-/** Fails when a file holds any sentinel-shaped text other than the foreign input. */
 async function assertOnlyForeignSentinels(f: Fixture): Promise<void> {
   for (const path of await f.filesHolding(SENTINEL_MARK)) {
     const text = (await Deno.readTextFile(join(f.repoDir, path)))
@@ -150,7 +132,6 @@ async function assertOnlyForeignSentinels(f: Fixture): Promise<void> {
   }
 }
 
-/** Fails when the catalog file holds a forbidden value or a sentinel. */
 async function assertCatalogClean(f: Fixture): Promise<void> {
   const bytes = await Deno.readFile(join(f.repoDir, "_catalog.db"));
   const text = new TextDecoder("latin1").decode(bytes);
@@ -167,7 +148,6 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
       const run = await f.run(parent(), [child()]);
       assertEquals(run.status, "suspended", [...run.errors].join("\n"));
       const childRunId = nestedRunId(run);
-      // Nothing delivered yet: a typed run loaded nothing to get here.
       assertEquals(f.loads, []);
 
       const storedKey = await f.storedKey("c-quotes");
@@ -176,9 +156,6 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
         key: storedKey,
       });
       const { data, runsDir } = await stored(f, CHILD, childRunId);
-      // The record: a reference where the run held the data-read secret,
-      // the parent's vault.get deferred to the child's own delivery, the
-      // foreign sentinel-shaped input as data, and both maps.
       assertEquals(data.inputs?.secret, secretRef);
       assertStringIncludes(String(data.inputs?.token), "__swamp_deferred_");
       assertEquals(data.inputs?.tag, FOREIGN);
@@ -201,10 +178,8 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
       );
       assert(data.persistedInputsProvenance, "no persisted inputs map");
       assert(data.inputsProvenance, "no inputs map");
-      // The run index holds the same reference text, never a sentinel.
       const index = await readRunIndex(runsDir);
       assertEquals(index?.entries[childRunId]?.inputs, data.inputs);
-      // The child's evaluated cache and run snapshot hold references too.
       const cacheRepo = new YamlEvaluatedWorkflowRepository(f.repoDir);
       const cache = await cacheRepo.findByNameWithProvenance(CHILD);
       assert(cache, "no evaluated cache");
@@ -220,14 +195,12 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
       assert(parentCache);
       assertEquals(parentCache.writtenReferences, []);
       assert(parentCache.persistedProvenance instanceof ProvenanceMap);
-      // Only the foreign sentinel-shaped input sits in any file, as data.
       await assertOnlyForeignSentinels(f);
       for (const value of f.forbidden) {
         assertEquals(await f.filesHolding(value), [], `files hold ${value}`);
       }
       await assertCatalogClean(f);
 
-      // The vault rotates while the run waits.
       const rotatedSecret = `rotated-${crypto.randomUUID()}`;
       const rotatedToken = `token-${crypto.randomUUID()}`;
       f.rotate(storedKey, rotatedSecret);
@@ -237,8 +210,6 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
       const before = f.loads.length;
       const resumed = await f.resume(CHILD, childRunId);
       assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
-      // The remaining step delivered the current values, once each; the
-      // approved gate did not run again.
       assertEquals(f.received, [{
         password: rotatedSecret,
         note: rotatedToken,
@@ -249,7 +220,6 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
           [storedKey, TOKEN_KEY].sort(),
         );
       }
-      // The record is written back as it was read, references in place.
       const again = await stored(f, CHILD, childRunId);
       assertEquals(again.data.inputs, data.inputs);
       assertEquals(
@@ -264,13 +234,9 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
 });
 
 Deno.test("typed persistence: a typed replay of the evaluated cache reads nothing to restore and the child it calls delivers the rotated values once each", async () => {
-  // The data read the parent hands the child is deferred to the call step,
-  // and a child cache whose inputs held a secret withholds its inputs and is
-  // never replayed, so the replay that reaches a delivery end to end is the
-  // parent's: its cache holds the deferred expressions and its persisted map,
-  // the replay reads nothing to restore, and the child's delivery loads the
-  // current values. A cache that holds references restores them through
-  // rehydrateEvaluatedWorkflow, covered in persisted_workflow_test.ts.
+  // a child cache with secret inputs is never replayed; the parent's replay
+  // holds deferred expressions, reads nothing to restore, and the child's
+  // delivery loads the current values
   const CALLEE = "persist-replay-child";
   const CALLER = "persist-replay";
   const callee = () =>
@@ -440,7 +406,6 @@ Deno.test("typed persistence: a record an untyped run wrote with json, number an
       await f.approve(NAME, run.runId);
       const resumed = await f.resume(NAME, run.runId);
       assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
-      // The number and boolean deliver their text, the json entry the escaped form.
       assertEquals(f.received, [{
         note: `${port}-true`,
         password: '{"k":"p\\"w"}',

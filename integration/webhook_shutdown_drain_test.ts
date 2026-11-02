@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for draining webhook runs on serve shutdown
- * (swamp-club#2484).
- *
- * `swamp serve` used to abort every in-flight webhook run the moment SIGTERM
- * arrived. These tests drive a real WebhookService on a temp repo with a
- * model method that blocks until the test releases it, and pin both halves
- * of the new behaviour: a drain long enough lets the run succeed, and a drain
- * that times out leaves the run for stop() to abort.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { z } from "zod";
 import { consumeStream, withDefaults } from "../src/libswamp/stream.ts";
@@ -61,19 +50,12 @@ const ROUTE = "/hooks/slow";
 interface Harness {
   readonly service: WebhookService;
   readonly events: WebhookEvent[];
-  /** Resolves the blocked model method so the run can finish. */
   release(): void;
-  /** True once the model method is running. */
   started(): boolean;
-  /** True if the model method saw its abort signal fire. */
   aborted(): boolean;
   deliver(): Promise<Response>;
 }
 
-/**
- * Boots a real repo whose only workflow runs a model method that blocks until
- * released or aborted, and wires a WebhookService to it.
- */
 async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-webhook-drain-" });
   try {
@@ -204,7 +186,6 @@ Deno.test({
 
       const drain = h.service.drain(60_000);
 
-      // New deliveries are turned away while the drain runs.
       const rejected = await h.deliver();
       assertEquals(rejected.status, 503);
       assertEquals(rejected.headers.get("retry-after"), "5");

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Serve records every remote dispatch's lease transitions as method runs on
-// one `leases` instance that holds a data name per lease. An update
-// transition (mark_writes, complete) must read a fixed amount of that data
-// however many leases are kept, or each transition slows as leases pile up
-// and the data-plane write waiting on mark_writes stalls (swamp-club#3755).
-// Runs the real step-lease model through the same method runner serve uses,
-// against a real repository on disk, v2 and v3.
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import "../src/domain/models/models.ts";
@@ -102,7 +94,6 @@ function acquireInputs(leaseId: string): Record<string, unknown> {
   };
 }
 
-/** Counts the model data the method runs read through the repository. */
 function countModelReads(ctx: RepositoryContext) {
   const reads = { pulled: 0, findAllForModel: 0 };
   const repo = ctx.unifiedDataRepo;
@@ -124,10 +115,6 @@ function countModelReads(ctx: RepositoryContext) {
   return reads;
 }
 
-/**
- * Seeds the leases, then runs one lease's acquire, mark_writes and complete,
- * asserting each update read at most one item of the instance's data.
- */
 async function assertUpdatesReadFixedData(
   dir: string,
   ctx: RepositoryContext,

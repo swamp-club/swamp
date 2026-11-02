@@ -17,21 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Typed-secrets 5.1: the protected data-plane route a runner loads its
- * dispatch's references through (design/enablers/typed-secrets.md
- * Section 9), against a real orchestrator on a port-0 listener.
- *
- * A reference of the dispatch's own bag loads under a live lease. An
- * out-of-bag or reserved reference, one outside the run's vault access, and
- * forged, control, completed, revoked, reassigned and expired credentials
- * read no value; a read in flight when the dispatch ends gets none either.
- * A resource claim loads a sensitive field of the dispatch's own resource,
- * tagged and verified (swamp-club#3529); a legacy untagged record admits
- * nothing until typed-secrets 5.2 adds the schema fallback. Audit events
- * at every detail level and serve's logs hold no canary.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals, assertFalse } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -122,11 +107,6 @@ const SUCCESS: DispatchResult = {
   durationMs: 1,
 };
 
-/**
- * The bag references a step's arguments carry, through a real bag: one
- * vault.get() reference and one a typed data read brought in (data
- * origin), as the method execution service derives `secretReferences`.
- */
 function bagReferences(vaultKey: string, dataKey: string): SecretReference[] {
   const bag = new VaultSecretBag(new SecretBagRegistry());
   const fromVault = bag.addSecret(
@@ -173,7 +153,6 @@ interface HeldDispatch {
   settle: (result: DispatchResult) => void;
 }
 
-/** Holds each dispatch the worker receives open until the test settles it. */
 function holdDispatches(worker: InMemoryWorker): HeldDispatch[] {
   const held: HeldDispatch[] = [];
   worker.channel.register(WorkerMethod.dispatch, (raw) => {
@@ -189,7 +168,6 @@ function holdDispatches(worker: InMemoryWorker): HeldDispatch[] {
   return held;
 }
 
-/** A reference a load request names. */
 interface Requested {
   vaultName: string;
   key: string;
@@ -229,14 +207,12 @@ async function load(
   };
 }
 
-/** Counts and can hold the data plane's vault reads. */
 function controllableVault() {
   const reads: string[] = [];
   let hold: PromiseWithResolvers<void> | null = null;
   let started = Promise.withResolvers<void>();
   return {
     reads,
-    /** Holds the next read until `release`; `started` resolves when it begins. */
     holdNext() {
       hold = Promise.withResolvers<void>();
       started = Promise.withResolvers<void>();
@@ -261,9 +237,8 @@ function controllableVault() {
 }
 
 /**
- * Waits out the control-plane bookkeeping serve writes after a step has
- * settled, so it lands before the temp repo is removed (as the dispatch
- * credential baseline does).
+ * wait out the control-plane bookkeeping serve writes after a step settles, so
+ * it lands before the temp repo is removed
  */
 async function drainBookkeeping(o: BaselineOrchestrator): Promise<void> {
   await o.gateway.revokeToken(`drain-${crypto.randomUUID()}`, "revoked");
@@ -327,7 +302,6 @@ async function withFixture(
   });
 }
 
-/** Starts a dispatch of the fixture's bag and waits for the worker to hold it. */
 async function startDispatch(
   f: Fixture,
   workerName: string,
@@ -369,7 +343,6 @@ Deno.test({
         { vaultName: BASELINE_VAULT, key: f.vaultKey, value: f.vaultSecret },
         { vaultName: BASELINE_VAULT, key: f.dataKey, value: f.dataSecret },
       ]);
-      // The repeated reference was read once.
       assertEquals(f.vault.reads, [f.vaultKey, f.dataKey]);
       const redactor = f.o.dispatches.forDispatch(
         "load-live",
@@ -425,7 +398,6 @@ Deno.test({
     });
 
     await withFixture(async (f) => {
-      // The dispatching run may read only another vault.
       const { held, step } = await startDispatch(
         f,
         "load-scoped",
@@ -485,8 +457,6 @@ Deno.test({
       assertEquals(revoked.status, 401);
       assertEquals(f.vault.reads, []);
 
-      // The attempt wrote nothing, so the step is re-queued for the next
-      // worker to enroll.
       const next = await connectInMemoryWorker(f.o, "load-revoked-next");
       const nextHeld = holdDispatches(next);
       await waitFor(() => nextHeld.length === 1, "the step was re-queued");
@@ -658,7 +628,6 @@ Deno.test({
         );
         assertFalse(reply.text.includes(f.vaultSecret));
         assertFalse(reply.text.includes(f.dataSecret));
-        // Nothing was delivered, so the dispatch's redactor learned nothing.
         assertEquals(registration?.redactor, undefined);
         await ending.finish(f, step, dispatch);
       });
@@ -700,14 +669,11 @@ Deno.test({
       } finally {
         repo.save = save;
       }
-      // The lease's end was written, and the credential no longer verified
-      // when it was.
       assertEquals(atLeaseEnd, [true]);
     });
   },
 });
 
-/** Seeds a resource record of `modelId` with `tags`, version 1. */
 async function seedResource(
   o: BaselineOrchestrator,
   modelId: string,
@@ -764,20 +730,17 @@ Deno.test({
         password: vaultRef(keys.tagged),
         note: "n",
       }, TAGGED);
-      // Written before the writers stamped _swamp.kind: no tag at all. The
-      // spec marks the password sensitive, but the record predates the writer
-      // guards, so its text may never have been vaulted (typed-secrets 5.2
-      // decides the schema fallback).
+      // written before writers stamped _swamp.kind, so no tag at all; the spec
+      // marks the password sensitive, but the record predates the writer
+      // guards, so its text may never have been vaulted
       await seedResource(f.o, LOAD_DEFINITION_ID, "legacy", {
         password: vaultRef(keys.legacy),
         note: vaultRef(keys.note),
       }, {});
-      // Another behavior's record of the same name.
       await seedResource(f.o, crypto.randomUUID(), "foreign", {
         password: vaultRef(keys.foreign),
         note: "n",
       }, TAGGED);
-      // A current writer's record with no sensitive-fields tag.
       await seedResource(f.o, LOAD_DEFINITION_ID, "forged", {
         password: vaultRef(keys.forged),
         note: "n",
@@ -875,7 +838,6 @@ Deno.test({
           }]);
           assertEquals(outside.status, 403);
           assertEquals((await load(f.o, "forged", f.inBag)).status, 401);
-          // A read in flight when the dispatch ends logs its refusal.
           const gate = f.vault.holdNext();
           const pending = load(f.o, dispatch.credential, f.inBag);
           await gate.started;

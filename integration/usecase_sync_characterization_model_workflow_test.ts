@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Use-case sync characterization, model and workflow rows (swamp-club#2860).
- * See `usecase_sync_fixtures.ts` for how each row runs and what is observed.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { parse, stringify } from "@std/yaml";
@@ -62,7 +57,6 @@ await initializeLogging({});
 
 const json = (repos: RowRepos) => ["--repo-dir", repos.repoA, "--json"];
 
-/** The model's on-disk YAML with a tag added, as an editor would save it. */
 async function editedModelYaml(repos: RowRepos, name: string) {
   const model = await saveModel(repos.serveRepo, name);
   const path = repos.a.repoContext.definitionRepo.getPath(
@@ -74,7 +68,6 @@ async function editedModelYaml(repos: RowRepos, name: string) {
   return stringify(doc);
 }
 
-/** The workflow's on-disk YAML with a new description. */
 async function editedWorkflowYaml(repos: RowRepos, name: string) {
   const model = await saveModel(repos.serveRepo, "m1");
   const workflow = await saveWorkflow(repos.serveRepo, name, model);
@@ -87,7 +80,6 @@ async function editedWorkflowYaml(repos: RowRepos, name: string) {
 /** A pid no process has, so a run it owns has a dead owner. */
 const DEAD_PID = 2147483647;
 
-/** Registers a run in A's run tracker, as the process that started it did. */
 function track(repos: RowRepos, run: ActiveRun): void {
   const tracker = RunTrackerStore.fromSwampDir(swampPath(repos.repoA));
   try {
@@ -97,13 +89,11 @@ function track(repos: RowRepos, run: ActiveRun): void {
   }
 }
 
-/** A stranded workflow run: what a force exit leaves, step in flight. */
 interface StrandedRun {
   workflowName: string;
   runId: string;
 }
 
-/** Saves a workflow run left running by a dead process, and its tracker row. */
 async function strandedWorkflowRun(repos: RowRepos): Promise<StrandedRun> {
   const model = await saveModel(repos.serveRepo, "m1");
   const workflow = await saveWorkflow(repos.serveRepo, "stranded", model);
@@ -136,7 +126,6 @@ async function strandedWorkflowRun(repos: RowRepos): Promise<StrandedRun> {
   return { workflowName: workflow.name, runId: run.id };
 }
 
-/** Saves a model and a method run of it left running by a dead process. */
 async function strandedMethodRun(repos: RowRepos): Promise<string> {
   const model = await saveModel(repos.serveRepo, "m1");
   const output = ModelOutput.create({
@@ -164,7 +153,6 @@ async function strandedMethodRun(repos: RowRepos): Promise<string> {
   return model.name;
 }
 
-/** A run suspended at a manual approval gate named `gate`. */
 interface SuspendedRun {
   workflowName: string;
   runId: string;
@@ -210,15 +198,10 @@ function modelCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model create${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: managedConfig ? ["push"] : [],
       serve: ["push", "release"],
     },
-    // With managedConfig the CLI stages a bulk mark through the command's
-    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
-    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({
@@ -250,15 +233,10 @@ function modelEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model edit${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: managedConfig ? ["push"] : [],
       serve: ["push", "release"],
     },
-    // With managedConfig the CLI stages a bulk mark through the command's
-    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
-    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: (repos) => editedModelYaml(repos, "m1"),
@@ -284,15 +262,10 @@ function workflowCreateRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow create${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: managedConfig ? ["push"] : [],
       serve: ["push", "release"],
     },
-    // With managedConfig the CLI stages a bulk mark through the command's
-    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
-    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     cli: (repos) => ({ args: ["workflow", "create", "wf2", ...json(repos)] }),
@@ -308,15 +281,10 @@ function workflowEditRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow edit${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: managedConfig ? ["push"] : [],
       serve: ["push", "release"],
     },
-    // With managedConfig the CLI stages a bulk mark through the command's
-    // root unit after the use case (runManagedConfigMutation, swamp-club#3033),
-    // and the root pushes it.
     outsideUseCase: managedConfig ? { cli: ["markDirty(bulk)"] } : undefined,
     options: { managedConfig },
     seed: (repos) => editedWorkflowYaml(repos, "wf1"),
@@ -367,8 +335,6 @@ function modelDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `model delete${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
     syncOrder: {
       cli: ["pull", "prepare", "commit", "release"],
       serve: ["push", "release"],
@@ -398,9 +364,6 @@ function workflowDeleteRow(managedConfig: boolean): AnyRow {
   return row({
     name: `workflow delete${managedConfig ? " (managedConfig)" : ""}`,
     rootUnit: { cli: true, serve: true },
-    // Recorded before serve adopted a root unit (swamp-club#3035), and before
-    // the CLI's coordinator root, while it pushed only at the teardown flush
-    // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"], serve: ["push", "release"] },
     options: { managedConfig },
     seed: seedModelAndWorkflow,
@@ -424,7 +387,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "model create (managedConfig, use case fails)",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: [] },
     refuses: true,
     options: { managedConfig: true },
@@ -440,8 +402,6 @@ const ROWS: AnyRow[] = [
         ...json(repos),
       ],
     }),
-    // The failure path of the CLI's root unit (swamp-club#3033); serve's
-    // belongs to swamp-club#3034.
     serve: null,
   }),
   modelEditRow(false),
@@ -451,7 +411,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "model evaluate",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
@@ -465,8 +424,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "model evaluate (all)",
     rootUnit: { cli: true },
-    // Recorded while the CLI pushed only at the coordinator's teardown flush
-    // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
@@ -483,7 +440,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "workflow evaluate",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
     syncOrder: { cli: ["pull", "prepare", "commit", "release"] },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({
@@ -497,8 +453,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "workflow evaluate (all)",
     rootUnit: { cli: true },
-    // Recorded while the CLI pushed only at the coordinator's teardown flush
-    // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({
@@ -508,9 +462,6 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow evaluate (dynamic model references)",
-    // The CLI's root unit takes the coordinator's push for the global lock
-    // (swamp-club#3055); syncOrder was recorded while the root had no push
-    // and the lock pushed only at the teardown flush.
     rootUnit: { cli: true },
     syncOrder: { cli: ["pull", "push", "release"] },
     seed: seedModelAndDynamicWorkflow,
@@ -522,8 +473,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "workflow delete (use case fails)",
     rootUnit: { cli: true },
-    // Recorded while the CLI pushed only at the coordinator's flush, which
-    // mod.ts runs best-effort after a failed command (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
     refuses: true,
     cli: (repos) => ({
@@ -534,9 +483,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "model validate (with check options)",
     rootUnit: { cli: true },
-    // Check options open with requireInitializedRepo; nothing is written.
-    // Recorded while the CLI pushed only at the coordinator's teardown flush
-    // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
     seed: async (repos) => {
       await saveModel(repos.serveRepo, "m1");
@@ -549,8 +495,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "run gc",
     rootUnit: { cli: true },
-    // Recorded while the CLI pushed only at the coordinator's teardown flush
-    // (swamp-club#3055).
     syncOrder: { cli: ["pull", "push", "release"] },
     cli: (repos) => ({ args: ["run", "gc", "--force", ...json(repos)] }),
     serve: null,
@@ -558,19 +502,11 @@ const ROWS: AnyRow[] = [
   row({
     name: "model method run",
     rootUnit: { cli: true, serve: true },
-    // `noop` is a read method. Since swamp-club#3934 it pulls unlocked, and
-    // its publish lock stages the run's report versions again in a root of
-    // its own, after the run's root has ended, as a lock's push does.
     rootUnits: { cli: 2, serve: 2 },
     outsideUseCase: {
       cli: READ_RUN_PUBLISH_MARKS,
       serve: READ_RUN_PUBLISH_MARKS,
     },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit, when a read run neither pulled nor pushed. Since
-    // swamp-club#3934 it pulls before it runs, and its publish lock pulls
-    // again, so a version another clone wrote replaces its own, pushes, and
-    // reads each version's metadata and latest marker back.
     syncOrder: {
       cli: [
         "pull",
@@ -615,10 +551,6 @@ const ROWS: AnyRow[] = [
   row({
     name: "workflow run",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033). Since
-    // swamp-club#3146 the step's lock reads each written version's metadata
-    // and latest marker back from the remote after its commit, while it still
-    // holds the model lock: two report versions, four fetches.
     syncOrder: {
       cli: [
         "pull",
@@ -635,16 +567,11 @@ const ROWS: AnyRow[] = [
     },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({ args: ["workflow", "run", "wf1", ...json(repos)] }),
-    // The serve side of this use case belongs to swamp-club#3034.
     serve: null,
   }),
   row({
     name: "workflow resume",
     rootUnit: { cli: true, serve: true },
-    // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit. The first release in each is the run's claim,
-    // let go once the resume has taken the run over; serve takes that claim
-    // too since swamp-club#3108, and still pushes before its gate exit.
     syncOrder: {
       cli: ["release", "push"],
       serve: ["release", "push", "release"],
@@ -664,7 +591,6 @@ const ROWS: AnyRow[] = [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
-      // Serve's resume (startDetachedResume) drives the same service.
       serve: [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -720,8 +646,6 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow approve",
-    // Serve runs the handler in a root unit of work (swamp-club#3034),
-    // pinned to push before the gate exit, as it did before.
     rootUnit: { serve: true },
     syncOrder: { serve: ["push", "release"] },
     seed: suspendAtGate,
@@ -748,8 +672,6 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow reject",
-    // Serve runs the handler in a root unit of work (swamp-club#3034),
-    // pinned to push before the gate exit, as it did before.
     rootUnit: { serve: true },
     syncOrder: { serve: ["push", "release"] },
     seed: suspendAtGate,
@@ -776,16 +698,11 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "workflow cancel",
-    // Serve runs the handler in a root unit of work (swamp-club#3034),
-    // pinned to push before the gate exit, as it did before. The CLI runs
-    // its cancel in a root with no push (swamp-club#3056): the run claim is
-    // released and nothing pushes, pinned before it adopted the root.
     rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["release"], serve: ["push", "release"] },
-    // CLI workflow cancel saves the run through repoContext.workflowRunRepo
-    // itself, not through a use case, so its mark is staged by the root
-    // rather than a use case's unit. Serve goes through
-    // workflowCancelSuspended.
+    // CLI workflow cancel saves the run through workflowRunRepo itself, not a
+    // use case, so the root stages its mark; serve goes through
+    // workflowCancelSuspended
     outsideUseCase: {
       cli: [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -809,16 +726,10 @@ const ROWS: AnyRow[] = [
       payload: { runId: run.runId, workflowIdOrName: run.workflowName },
     }),
   }),
-  // CLI-only commands that save run records and push nothing
-  // (swamp-club#3056). Serve has no equivalent request.
   row({
     name: "workflow recover",
-    // In a root with no push (swamp-club#3056); nothing pushes, pinned
-    // before the command adopted the root.
     rootUnit: { cli: true },
     syncOrder: { cli: [] },
-    // The dead owner's run is settled, then reset for resume: two saves made
-    // by the command itself, not a use case.
     outsideUseCase: {
       cli: [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -843,12 +754,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "run doctor --fix",
-    // In a root with no push (swamp-club#3056); nothing pushes, pinned
-    // before the command adopted the root.
     rootUnit: { cli: true },
     syncOrder: { cli: [] },
-    // The dead owner's method run and workflow run are settled by the
-    // command itself, not a use case.
     outsideUseCase: {
       cli: [
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
@@ -866,12 +773,8 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "model cancel",
-    // In a root with no push (swamp-club#3056); nothing pushes, pinned
-    // before the command adopted the root.
     rootUnit: { cli: true },
     syncOrder: { cli: [] },
-    // The dead owner's method run is cancelled by the command itself, not a
-    // use case.
     outsideUseCase: {
       cli: [
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
@@ -887,15 +790,11 @@ const ROWS: AnyRow[] = [
 ];
 
 /**
- * Today's behaviour, one entry per row. Every divergence and gap noted
- * below was deliberately left unfixed: datastore refactor phase 2 moves
- * unit-of-work ownership into the use cases and is expected to change these
- * rows, and should update this table as it does.
+ * pins current behaviour per row, divergences and gaps included; update the
+ * table when unit-of-work ownership moves into the use cases
  */
 const EXPECTED: Record<string, PinnedRow> = {
   "model create (managedConfig, use case fails)": {
-    // The use case fails before anything is written, so nothing is marked or
-    // pushed.
     cli: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -1112,21 +1011,15 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "model create": {
-    // Without managedConfig, definitions are repo-local: nothing is marked or
-    // pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // Serve pushes after every write; with nothing marked the push is empty.
-    // Datastore refactor phase 2 is expected to change this.
     serve: {
       "ops": ["push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "model create (managedConfig)": {
-    // DIVERGENCE: the CLI publishes managed config with a bare markDirty
-    // (runManagedConfigMutation), a whole-cache walk that can never delete;
-    // serve marks the one path it wrote. Datastore refactor phase 2 is
-    // expected to change this.
+    // divergence: the CLI publishes managed config with a bare whole-cache
+    // markDirty that can never delete; serve marks the one path it wrote
     cli: {
       "ops": ["markDirty(bulk)", "push[1]"],
       "remote": {
@@ -1149,18 +1042,13 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "model edit": {
-    // Repo-local without managedConfig: nothing is marked or pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // An empty push, as for model create. Datastore refactor phase 2 is
-    // expected to change this.
     serve: {
       "ops": ["push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "model edit (managedConfig)": {
-    // DIVERGENCE: a bare markDirty from the CLI, a path mark from serve, as
-    // for model create. Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": ["markDirty(bulk)", "push[1]"],
       "remote": {
@@ -1183,10 +1071,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "model delete": {
-    // Only the evaluated-definition path is marked (no evaluated file exists,
-    // so nothing is deleted); the repo-local definition never reaches the
-    // datastore. The CLI's lock flush is two-phase; serve pushes once.
-    // Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -1207,9 +1091,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "model delete (managedConfig)": {
-    // Both compositions delete the remote config file; the CLI through its
-    // lock flush (two-phase), serve from the handler. Datastore refactor phase
-    // 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -1242,51 +1123,36 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "model evaluate": {
-    // GAP: evaluated definitions are written through an unhooked repository,
-    // so nothing is marked and the evaluation never reaches the remote. The
-    // CLI still pulls and pushes empty through the model-lock flush. Datastore
-    // refactor phase 2 is expected to change this.
+    // gap: evaluated definitions are written through an unhooked repository, so
+    // nothing is marked and the evaluation never reaches the remote; the CLI
+    // still pulls and pushes empty via the lock flush
     cli: {
       "ops": ["pull[0]", "prepare[0]", "commit[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
-    // GAP: serve's model.evaluate neither pushes nor takes the sync gate
-    // (connection.ts dispatches it ungated), and its writes are unmarked.
-    // Datastore refactor phase 2 is expected to change this.
     serve: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "model evaluate (all)": {
-    // GAP: unmarked evaluated writes, as above. --all opens with
-    // requireInitializedRepo, so the pull and the empty single-phase push are
-    // the coordinator's. Datastore refactor phase 2 is expected to change
-    // this.
     cli: {
       "ops": ["pull[0]", "push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
-    // GAP: ungated, no push, unmarked writes, as above. Datastore refactor
-    // phase 2 is expected to change this.
     serve: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "workflow create": {
-    // Repo-local without managedConfig: nothing is marked or pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // An empty push after the write. Datastore refactor phase 2 is expected to
-    // change this.
     serve: {
       "ops": ["push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "workflow create (managedConfig)": {
-    // DIVERGENCE: a bare markDirty from the CLI, a path mark from serve.
-    // Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": ["markDirty(bulk)", "push[1]"],
       "remote": {
@@ -1309,20 +1175,13 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "workflow edit": {
-    // Repo-local without managedConfig: nothing is marked or pushed.
     cli: { "ops": [], "remote": { "added": [], "removed": [], "changed": [] } },
-    // An empty push after the write. Datastore refactor phase 2 is expected to
-    // change this.
     serve: {
       "ops": ["push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "workflow edit (managedConfig)": {
-    // DIVERGENCE: the repository hook marks the path, then
-    // runManagedConfigMutation adds a bare markDirty, so the push walks the
-    // whole cache; serve marks the path only. Datastore refactor phase 2 is
-    // expected to change this.
     cli: {
       "ops": [
         "markDirty config/workflows/workflow-wf1.yaml",
@@ -1350,10 +1209,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "workflow delete": {
-    // Only the evaluated-workflow path is marked; the repo-local workflow
-    // never reaches the datastore. Opened with requireInitializedRepo, so the
-    // pull and push are the coordinator's. Datastore refactor phase 2 is
-    // expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -1373,8 +1228,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "workflow delete (managedConfig)": {
-    // Both compositions delete the remote config file. Datastore refactor
-    // phase 2 is expected to change this.
     cli: {
       "ops": [
         "pull[0]",
@@ -1406,39 +1259,26 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "workflow evaluate": {
-    // GAP: unmarked evaluated writes; the CLI pulls and pushes empty through
-    // the lock flush. Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": ["pull[0]", "prepare[0]", "commit[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
-    // GAP: serve's workflow.evaluate neither pushes nor takes the sync gate,
-    // and its writes are unmarked. Datastore refactor phase 2 is expected to
-    // change this.
     serve: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "workflow evaluate (all)": {
-    // GAP: unmarked evaluated writes. The global path opens with
-    // requireInitializedRepo: the coordinator's pull and empty flush.
-    // Datastore refactor phase 2 is expected to change this.
     cli: {
       "ops": ["pull[0]", "push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
-    // GAP: ungated, no push, unmarked writes. Datastore refactor phase 2 is
-    // expected to change this.
     serve: {
       "ops": [],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
   "workflow evaluate (dynamic model references)": {
-    // GAP: unmarked evaluated writes, as above. The global lock's
-    // coordinator pulls on open and pushes empty at the teardown flush; the
-    // command's own root has no push.
     cli: {
       "ops": ["pull[0]", "push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -1446,8 +1286,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "workflow delete (use case fails)": {
-    // The lookup fails under the global lock; the coordinator's pull, then
-    // its best-effort push after the failure.
     cli: {
       "ops": ["pull[0]", "push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -1456,7 +1294,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "model validate (with check options)": {
-    // Writes nothing: the coordinator's pull and empty teardown push.
     cli: {
       "ops": ["pull[0]", "push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -1464,7 +1301,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "run gc": {
-    // Nothing past retention: the coordinator's pull and empty teardown push.
     cli: {
       "ops": ["pull[0]", "push[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -1472,11 +1308,9 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "workflow approve": {
-    // GAP: the CLI marks the run file but never pushes it. It opens with
-    // requireInitializedRepoUnlocked, which registers no flush, and pushes
-    // nothing itself, so the remote keeps the suspended run until some later
-    // push from this cache. Serve pushes it. Datastore refactor phase 2 is
-    // expected to change this.
+    // gap: the CLI marks the run file but never pushes it (no flush is
+    // registered), so the remote keeps the suspended run until a later push
+    // from this cache; serve pushes it
     cli: {
       "ops": [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -1498,8 +1332,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "workflow reject": {
-    // GAP: marked, never pushed, as for workflow approve. Datastore refactor
-    // phase 2 is expected to change this.
     cli: {
       "ops": [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -1521,8 +1353,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "workflow cancel": {
-    // GAP: marked, never pushed, as for workflow approve. Datastore refactor
-    // phase 2 is expected to change this.
     cli: {
       "ops": [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -1544,7 +1374,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "workflow recover": {
-    // GAP: marked, never pushed, as for workflow cancel.
     cli: {
       "ops": [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -1557,7 +1386,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "run doctor --fix": {
-    // GAP: marked, never pushed, as for workflow cancel.
     cli: {
       "ops": [
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
@@ -1570,7 +1398,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: null,
   },
   "model cancel": {
-    // GAP: marked, never pushed, as for workflow cancel.
     cli: {
       "ops": [
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",

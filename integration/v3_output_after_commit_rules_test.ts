@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Architecture fitness rules for printing a v3 command's result only after
- * its root has committed (swamp-club#3759).
- *
- * The CLI holds stdout in its root helpers (`runCommandInRootUnit`,
- * `runInCoordinatorRoot`), so every way a CLI command reaches a commit must
- * go through one of them; serve holds its replies in `confirmRequest`
- * instead, and must never patch the process's console.
- */
-
 import { join } from "@std/path";
 import {
   assertPinnedSet,
@@ -35,7 +25,6 @@ import {
   ROOT,
 } from "./arch_fitness_helpers.ts";
 
-/** Every CLI root helper, which must hold the command's stdout. */
 const CLI_ROOT_HELPERS: readonly string[] = [
   "src/cli/command_root_unit.ts",
   "src/cli/coordinator_root.ts",
@@ -44,7 +33,6 @@ const CLI_ROOT_HELPERS: readonly string[] = [
 // `src/cli` files that open a root with runInRootUnitOfWork themselves,
 // not through a CLI root helper, so the hold is not theirs to open.
 const PINNED_DIRECT_CLI_ROOTS: readonly string[] = [
-  // The helpers themselves.
   "src/cli/command_root_unit.ts",
   "src/cli/coordinator_root.ts",
   // The managed lockfile transaction, which runs inside the command's own
@@ -53,21 +41,17 @@ const PINNED_DIRECT_CLI_ROOTS: readonly string[] = [
   // Publish and discard helpers called inside a command's root, or after
   // it, writing nothing a command reports.
   "src/cli/repo_context.ts",
-  // Serve answers over its socket; confirmRequest holds those replies.
   "src/cli/commands/serve.ts",
 ];
 
-// CLI command files that call a transactional use case without a CLI root
-// helper.
 const PINNED_USE_CASES_WITHOUT_CLI_ROOT: readonly string[] = [
   // Serve's own use of model delete, method run and worker prune answers
   // over its socket, under serve's request roots and confirmRequest.
   "src/cli/commands/serve.ts",
 ];
 
-// Commands whose progress streams in log mode and whose result alone waits
-// for the commit ("live-until-outcome"). `data prune` streams its status
-// lines, which ran 6-10 s on populated buckets (swamp-club#3893).
+// commands whose progress streams in log mode while only the result waits for
+// the commit (live-until-outcome); data prune streams long status lines
 const PINNED_LIVE_UNTIL_OUTCOME: readonly string[] = [
   "src/cli/commands/data_prune.ts",
   "src/cli/commands/model_method_run.ts",
@@ -86,7 +70,6 @@ async function sources(dir: string): Promise<Map<string, string>> {
   return files;
 }
 
-/** The transactional use cases, as the write-seams rule pins them. */
 async function transactionalUseCases(): Promise<string[]> {
   const rules = await Deno.readTextFile(
     join(ROOT, "integration/datastore_write_seams_rules_test.ts"),

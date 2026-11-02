@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A data version written under a model lock must reach the remote even when
-// another sync in the same process undoes the lock's push (swamp-club#3146):
-// a concurrent commit clears the dirty marks the write made before the
-// lock's push walked them, or a pull replaces the unpushed latest marker
-// with the remote's older one. The in-memory remote reproduces both
-// extension behaviours.
-
 import "../src/domain/models/models.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { assertEquals, assertGreater, assertRejects } from "@std/assert";
@@ -51,7 +44,6 @@ import {
 
 await initializeLogging({});
 
-/** Publishes a first version, so the remote and the local cache hold it. */
 async function publishFirstVersion(h: Harness): Promise<void> {
   const locks = await h.lock();
   const version = await h.write("one");
@@ -62,8 +54,6 @@ async function publishFirstVersion(h: Harness): Promise<void> {
 Deno.test("acquireModelLocks: a version whose marks a concurrent commit cleared is still published (swamp-club#3146)", async () => {
   await withHarness(async (h) => {
     const locks = await h.lock();
-    // Another run's push walks the dirty set before this run writes, and
-    // commits after: its commit clears the marks this run's write made.
     const manifest = await h.other.preparePush();
     const version = await h.write("one");
     await h.other.commitPush(manifest);
@@ -107,7 +97,6 @@ Deno.test("acquireModelLocks: a latest marker a pull reverted before the push is
 Deno.test("acquireModelLocks: a push that lost its marks between staging and prepare is retried (swamp-club#3146)", async () => {
   await withHarness(async (h) => {
     const service = h.context.syncService!;
-    // Another run's prepare, walked before this run writes.
     const otherManifest = await h.other.preparePush();
     let interfered = 0;
     // Clears the dirty set right before the lock's first prepare, as a
@@ -160,7 +149,6 @@ Deno.test("acquireModelLocks: a version the remote never takes fails the push lo
   await withHarness(async (h) => {
     const service = h.context.syncService!;
     let prepares = 0;
-    // Every push sends nothing, as one whose marks are always cleared would.
     const losing: DatastoreSyncService = {
       capabilities: () => service.capabilities!(),
       markDirty: (o) => service.markDirty(o),
@@ -241,11 +229,8 @@ Deno.test("acquireModelLocks: the last publish attempt asks to run alone (swamp-
   });
 });
 
-/** A sibling step of the run, and the park its first commit waits in. */
 interface Sibling {
-  /** Settles once the sibling prepared and its commit waits. */
   readonly parked: Promise<void>;
-  /** Lets the parked commit go on. */
   readonly release: () => void;
   readonly done: Promise<void>;
 }
@@ -255,16 +240,13 @@ Deno.test("workflowStepLockHook: the steps of one CLI run cannot undo a step's l
     const service = h.context.syncService!;
     const gate = createSyncGate();
     const lanes = runSyncLanesOf(gate);
-    // A sync call waiting on the run's gate: step A's last attempt waits for
-    // a parked sibling to finish its commit before it stages.
     const queued = () => gate.waiters > 0 || lanes.waiters > 0;
     const siblingOf = new AsyncLocalStorage<{ park?: Sibling }>();
     let prepares = 0;
     let current: Sibling | undefined;
 
-    // A sibling's commit clears every dirty mark, step A's staged ones too,
-    // and step A's prepare then walks a set holding only other paths. That
-    // is what the 16-step ministack run showed on every attempt.
+    // a sibling's commit clears every dirty mark, step A's staged ones too, so
+    // step A's prepare walks a set holding only other paths
     const racing: DatastoreSyncService = {
       capabilities: () => service.capabilities!(),
       markDirty: (o) => service.markDirty(o),
@@ -339,7 +321,6 @@ Deno.test("workflowStepLockHook: the steps of one CLI run cannot undo a step's l
     };
 
     const locks = await hook(h.modelType.normalized, h.modelId);
-    // The first sibling prepares before step A writes, and commits after.
     current = startSibling();
     await current.parked;
     const version = await h.write("step A");
@@ -348,7 +329,6 @@ Deno.test("workflowStepLockHook: the steps of one CLI run cannot undo a step's l
     current.release();
     await current.done;
 
-    // A sibling undid at least the first attempt, and the version landed.
     assertGreater(prepares, 1);
     assertEquals(h.remoteText("latest"), String(version));
     assertEquals(h.remoteText(`${version}/raw`), "step A");

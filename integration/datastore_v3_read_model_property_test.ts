@@ -17,27 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Model-based property test of the v3 read model (swamp-club#3239): random
- * command sequences from the partition reference model are appended to a
- * real `commits.db`, and after each catch-up (store-wide or of the
- * partition) the read model's files, live-record index and catalog must
- * match the reference model's present records and live versions. A second
- * read model replaying from cursor 0 must reach the same state.
- *
- * Pages hold one to three commits, and a catch-up can crash at its first
- * page's barrier (swamp-club#3337), losing a file that page wrote, as a power
- * loss would; the catch-up after it must repair the checkout. A step can
- * also reboot: one file written since the last reboot is lost or torn, and
- * the first catch-up in the new boot must repair it.
- *
- * The checkout-copy guard (swamp-club#3617) has a property of its own: over
- * random writes, torn and lost chunks, catch-ups, recoveries and reboots,
- * with the storage refusing puts at times, a chunk a commit names that had
- * a good copy anywhere (stored, in a checkout file or moved aside) before a
- * read model operation still has one after it.
- */
-
 import {
   assert,
   assertEquals,
@@ -92,7 +71,6 @@ import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 
 const PARTITION = modelPartition();
 
-/** How a step catches the read model up after its append. */
 const arbCatchUp = fc.constantFrom(
   "none" as const,
   "store" as const,
@@ -103,10 +81,6 @@ const arbCatchUp = fc.constantFrom(
   "reboot-delete" as const,
 );
 
-/**
- * A batch that records what it writes and, while `control.armed`, fails its
- * barrier once before syncing anything.
- */
 class CrashingBatch extends DurableWriteBatch {
   constructor(
     readonly control: {
@@ -138,7 +112,6 @@ class CrashingBatch extends DurableWriteBatch {
   }
 }
 
-/** Loses one file the crashed page wrote: emptied or gone. */
 async function loseWrite(
   written: readonly string[],
   how: "truncate" | "delete",
@@ -165,9 +138,7 @@ async function assertMatchesModel(
   const records = Object.fromEntries(
     Object.entries(model.records).sort(([a], [b]) => (a < b ? -1 : 1)),
   );
-  // Every present record is a file holding its bytes, and nothing else is.
   assertEquals(Object.fromEntries(await readTree(env.cacheRoot(""))), records);
-  // Until a catch-up has drained the feed, the index refuses to be read.
   if (!complete) {
     await assertRejects(
       () => readModel.liveRecords("", PARTITION),
@@ -180,7 +151,6 @@ async function assertMatchesModel(
       records,
     );
   }
-  // One row per live version, the greatest of each name latest.
   const expectedRows = NAMES.flatMap((name) => {
     const live = [...(model.live[name] ?? [])].sort((a, b) => a - b);
     return live.map((version) => [
@@ -286,7 +256,6 @@ Deno.test("read model: matches the partition reference model after every catch-u
             await readModel.close();
           }
 
-          // A second read model with no state replays from cursor 0.
           await Deno.remove(join(env.stateDir, READ_MODEL_STATE_FILE));
           const replay = env.openReadModel();
           try {
@@ -302,7 +271,6 @@ Deno.test("read model: matches the partition reference model after every catch-u
   );
 });
 
-/** Contents over the inline limit, in several chunks each, none shared. */
 const CONTENTS = [0, 1, 2, 3].map((n) =>
   new Uint8Array(9 * TEST_CHUNK_BYTES + 100 * n + 1).map((_, i) =>
     (i * (n + 3) + n * 17 + (i >> 10) * 31) % 256
@@ -310,7 +278,6 @@ const CONTENTS = [0, 1, 2, 3].map((n) =>
 );
 const GUARD_KEYS = [dataKey("k", 1), dataKey("l", 1)];
 
-/** The filesystem storage, reading sizes, refusing puts on demand. */
 class RefusingStatStorage extends SmallChunkStorage
   implements ChunkStatReader, ChunkDirectorySync {
   refuse = false;
@@ -400,10 +367,6 @@ function guardChunkFile(env: V3Env, sha256: string): string {
   );
 }
 
-/**
- * The chunks of `chunks` that have a good copy: stored whole, or a part of
- * any file in the checkout's `.swamp`, the at-risk copies included.
- */
 async function goodCopies(
   env: V3Env,
   chunks: ReadonlyMap<string, number>,
@@ -451,7 +414,6 @@ Deno.test("read model guard: a referenced chunk with a good copy keeps one throu
                 .then((parts) => parts.ref),
             );
           }
-          /** Every chunk a landed commit names, with its size. */
           const named = new Map<string, number>();
           const storage = new RefusingStatStorage(env.storage.inner);
           let boot = 1;
@@ -572,8 +534,6 @@ Deno.test("read model guard: a referenced chunk with a good copy keeps one throu
     ),
     { numRuns: 60 },
   );
-  // Not vacuous: chunks whose only copy was a file were met, and stored
-  // again from it or moved aside.
   console.log(`guard property coverage: ${JSON.stringify(coverage)}`);
   assert(
     coverage.atRisk > 0 && coverage.restored + coverage.movedAside > 0,

@@ -44,12 +44,9 @@ import {
 } from "../src/libswamp/extensions/pull.ts";
 import { recoverPulledExtensionStaging } from "../src/libswamp/extensions/recover_staging.ts";
 
-// swamp-club#2723: an extension install stages the new version and swaps
-// it in, with a journal that makes a crash at any point recoverable.
-// These tests wire the real install, transaction, lockfile and recovery
-// together on a temp filesystem: a crash mid-upgrade is put right by the
-// next install or by the recovery entry point, and an entry nested under
-// the upgraded one survives unchanged.
+// an install stages and swaps with a journal that makes a crash at any point
+// recoverable: the next install or the recovery entry point puts it right, and
+// a nested entry survives unchanged
 
 const V1 = "2026.01.01.1";
 const V2 = "2026.01.02.1";
@@ -135,7 +132,6 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   }
 }
 
-/** Every file under the repo (lockfile excluded) → content. */
 async function tree(repoDir: string): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for await (const entry of walk(repoDir, { includeDirs: false })) {
@@ -146,7 +142,6 @@ async function tree(repoDir: string): Promise<Record<string, string>> {
   return out;
 }
 
-/** Size and mtime of every file under `dir`. */
 async function times(dir: string): Promise<Record<string, number | null>> {
   const out: Record<string, number | null> = {};
   for await (const entry of walk(dir, { includeDirs: false })) {
@@ -162,11 +157,6 @@ async function assertNoStaging(repoDir: string): Promise<void> {
   }
 }
 
-/**
- * Starts an upgrade of `name` the way applyInstall does and kills it:
- * at the `crashAt`-th rename, or (when omitted) after the swap and the
- * lockfile write, before commit.
- */
 async function crashedUpgrade(
   f: Fixture,
   opts: { crashAt?: number; newChecksum?: string },
@@ -242,7 +232,6 @@ Deno.test("swap recovery: the next install rolls back a crashed upgrade, then up
       await assertNoStaging(f.repoDir);
     }
 
-    // A crash the next install finds and puts right before its own swap.
     await crashedUpgrade(f, { crashAt: 2 });
     await f.install(f.parent, V2, true);
     await assertNoStaging(f.repoDir);
@@ -258,7 +247,6 @@ Deno.test("swap recovery: the next install rolls back a crashed upgrade, then up
     assertEquals(after[rel("models/b.ts")], undefined);
     assertEquals(after[rel("models/half.ts")], undefined);
 
-    // The nested entry is untouched, mtimes included.
     assertEquals(await times(childRoot), childTimes);
     assertEquals(after[rel("child/models/x.ts")], "// x\n");
     assertEquals(
@@ -307,7 +295,7 @@ Deno.test("swap recovery: a parent digest stored before nested roots were exclud
     await f.install(f.child, V1);
     const parentRoot = extensionInstallRoots(f.repoDir, f.parent)
       .extensionRoot;
-    // What an older swamp stored: the digest over the whole tree.
+    // what an older swamp stored: the digest over the whole tree
     const legacy = await readInstalledExtensionDigest(parentRoot);
     const entry = f.lockfile.getEntry(f.parent)!;
     await f.lockfile.writeEntry(f.parent, entry.version, entry.files ?? [], {

@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Use-case sync characterization, extension rows (swamp-club#2860). See
- * `usecase_sync_fixtures.ts` for how each row runs and what is observed.
- * No row reaches the registry: the lockfile names files that are already
- * on disk in the current layout, so nothing needs pulling.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -56,11 +49,6 @@ const ENTRY = {
   files: [EXTENSION_FILE],
 };
 
-/**
- * Records `@test/ext` in A's managed lockfile and puts its one file on
- * disk. With `pending`, also records the entry as not yet published, as an
- * interrupted pull leaves it for `extension install` to publish.
- */
 async function installedExtension(
   repos: RowRepos,
   pending: boolean,
@@ -88,7 +76,6 @@ async function installedExtension(
   }
 }
 
-/** The publish succeeded, so no lockfile change is left pending. */
 async function assertNothingPending(repos: RowRepos): Promise<void> {
   assertEquals((await readLockfilePublishPending(repos.repoA)).kind, "none");
 }
@@ -96,18 +83,12 @@ async function assertNothingPending(repos: RowRepos): Promise<void> {
 const ROWS: AnyRow[] = [
   row({
     name: "extension install (publish pending)",
-    // The lockfile publish stages the lockfile outside any use case, into
-    // the root the managed lockfile transaction runs in, and pushes at its
-    // checkpoint (createRootLockfileSync, swamp-club#3192).
     outsideUseCase: {
       cli: ["markDirty config/upstream_extensions.json"],
       serve: ["markDirty config/upstream_extensions.json"],
     },
     options: { managedConfig: true },
     rootUnit: { cli: true, serve: true },
-    // Recorded before the lockfile publish moved to a root's checkpoint
-    // (swamp-club#3192): the fetch, then the publish, then the lock release
-    // (and, in serve, the gate exit).
     syncOrder: {
       cli: ["pull", "push", "release"],
       serve: ["pull", "push", "release"],
@@ -128,9 +109,6 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "extension rm",
-    // The lockfile publish stages the lockfile outside any use case, into
-    // the root the managed lockfile transaction runs in, and pushes at its
-    // checkpoint (createRootLockfileSync, swamp-club#3192).
     outsideUseCase: {
       cli: ["markDirty config/upstream_extensions.json"],
       serve: ["markDirty config/upstream_extensions.json"],
@@ -140,10 +118,6 @@ const ROWS: AnyRow[] = [
     // One root per lockfile transaction run: the CLI's preview refresh and
     // its removal are two.
     rootUnits: { cli: 2 },
-    // Recorded before the lockfile publish moved to a root's checkpoint
-    // (swamp-club#3192). The CLI's rm preview refreshes in its own
-    // transaction (fetch, release), then the removal fetches, publishes and
-    // releases.
     syncOrder: {
       cli: ["pull", "release", "pull", "push", "release"],
       serve: ["pull", "push", "release"],
@@ -160,15 +134,8 @@ const ROWS: AnyRow[] = [
   }),
 ];
 
-/**
- * Today's behaviour, one entry per row. Every divergence and gap noted
- * below was deliberately left unfixed: datastore refactor phase 2 moves
- * unit-of-work ownership into the use cases and is expected to change these
- * rows, and should update this table as it does.
- */
 const EXPECTED: Record<string, PinnedRow> = {
   "extension install (publish pending)": {
-    // Both compositions publish the pending lockfile change by path.
     cli: {
       "ops": [
         "pull[0]",
@@ -195,7 +162,6 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "extension install (nothing pending)": {
-    // Nothing pending: only the managed-config pull.
     cli: {
       "ops": ["pull[0]"],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -206,9 +172,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "extension rm": {
-    // The CLI pulls twice before writing (managed config base resolution and
-    // the lockfile transaction); serve pulls once. Datastore refactor phase 2
-    // is expected to change this.
+    // the CLI pulls twice before writing (managed config base resolution, then
+    // the lockfile transaction); serve pulls once
     cli: {
       "ops": [
         "pull[0]",

@@ -17,13 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A run lends its per-model locks to a hop (a shell command, a dispatch
-// attempt). When the hop ends, whatever it left running must stop skipping
-// those locks while the run writes (swamp-club#3111). Wires the real lock
-// files written by acquireModelLocks, the process marker's hand-offs, the
-// real global lock a structural command holds, and its real drain, with no
-// subprocess: the nested swamp is a drain over a LockHolderMarker built on
-// the env the hop was lent.
+// a run lends its per-model locks to a hop; when the hop ends, whatever it left
+// running must stop skipping those locks while the run writes
 
 import {
   assert,
@@ -90,14 +85,11 @@ type FilesystemDatastore = Exclude<
 
 interface Fixture {
   datastore: { path: string; namespace?: string };
-  /** The locks one run took on one model, and what its reclaim printed. */
   locks: ModelLockResult;
   reclaimLines: string[];
-  /** The global lock a structural command on this datastore takes. */
   globalLock: () => FileLock;
 }
 
-/** A repo with one run holding one model's lock, torn down afterwards. */
 async function withHeldLock(
   env: Record<string, string | undefined>,
   fn: (fixture: Fixture) => Promise<void>,
@@ -143,15 +135,10 @@ async function withHeldLock(
   });
 }
 
-/**
- * The env of a swamp a shell hop of this process started with `lent`: the
- * hop's lock list, under this process as its ancestor.
- */
 function shellChild(lent: Record<string, string>): Record<string, string> {
   return { ...lent, [SWAMP_LOCK_ANCESTOR_PIDS]: String(Deno.pid) };
 }
 
-/** The marker of a nested swamp started with `env`. */
 function nestedSwamp(env: Record<string, string>): LockHolderMarker {
   const values = new Map(Object.entries(env));
   const store: LockHolderEnvStore = {
@@ -165,7 +152,6 @@ function nestedSwamp(env: Record<string, string>): LockHolderMarker {
   return marker;
 }
 
-/** One drain of a nested swamp with `env`, as a structural command runs it. */
 function drain(
   fixture: Fixture,
   env: Record<string, string>,
@@ -196,14 +182,12 @@ Deno.test("lock hand-off: once the hop ends, a swamp it left running waits on th
       const hop = await processLockHolderMarker.beginChildHandOff();
       lent = shellChild(hop.lent);
       const lentNonce = heldNonce(fixture);
-      // While the hop runs, its nested structural command skips the lock.
       assertEquals(await drain(fixture, lent), [lentNonce]);
 
       await hop.end();
       assertNotEquals(heldNonce(fixture), lentNonce);
     });
 
-    // The hop is over; the same swamp, still running, now has to wait.
     const lines: string[] = [];
     let drained = false;
     const draining = drain(fixture, lent, { lines }).then((skipped) => {
@@ -227,8 +211,6 @@ Deno.test("lock hand-off: the run waits for a structural command still working u
       const hop = await processLockHolderMarker.beginChildHandOff();
       const lentNonce = heldNonce(fixture);
 
-      // The nested structural command takes the global lock, skips the
-      // run's lock and starts work.
       const global = fixture.globalLock();
       await global.acquire();
       const skipped = await drain(fixture, shellChild(hop.lent), {
@@ -237,7 +219,6 @@ Deno.test("lock hand-off: the run waits for a structural command still working u
       assertEquals(skipped, [lentNonce]);
       assertEquals((await global.inspect())?.skipping, [lentNonce]);
 
-      // The hop returns with that command still working.
       let ended = false;
       const ending = hop.end().then(() => {
         ended = true;
@@ -267,8 +248,8 @@ Deno.test("lock hand-off: the run fails instead of writing when the structural c
         await drain(fixture, shellChild(hop.lent), {
           publishSkipping: (lockIds) => global.publishSkipping(lockIds),
         });
-        // Only the hop's end gets the short timeout: the fixture's own
-        // lock acquisition under load must not hit it (swamp-club#3668).
+        // only the hop's end gets the short timeout: the fixture's own lock
+        // acquisition under load must not hit it
         await assertRejects(
           () => withMockedEnv({ SWAMP_LOCK_TIMEOUT_MS: "20" }, () => hop.end()),
           LockTimeoutError,
@@ -280,7 +261,6 @@ Deno.test("lock hand-off: the run fails instead of writing when the structural c
   });
 });
 
-/** A shell step's context that counts what the step writes. */
 function shellStepContext(signal: AbortSignal): {
   context: MethodContext;
   writes: () => number;
@@ -317,7 +297,6 @@ Deno.test({
   // `sleep` and a POSIX shell.
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    // The default lock timeout: the step must not wait it out.
     await withHeldLock({}, async (fixture) => {
       const lentNonce = heldNonce(fixture);
       // A structural command, in a process the step's kill does not reach,
@@ -409,7 +388,6 @@ Deno.test("lock hand-off: a lock is re-keyed only when the last of its concurren
       const lentNonce = heldNonce(fixture);
 
       await one.end();
-      // The second hop's nested command still skips the lock.
       assertEquals(heldNonce(fixture), lentNonce);
       assertEquals(await drain(fixture, shellChild(two.lent)), [lentNonce]);
 
@@ -427,7 +405,6 @@ Deno.test("lock hand-off: a re-dispatch is lent a new nonce, so the first attemp
       const first = await dispatch.begin();
       const firstIds = first.lent?.lockIds ?? [];
       assertEquals(firstIds, [heldNonce(fixture)]);
-      // The worker is lost; the attempt's hand-off ends before the retry.
       await first.end();
 
       const retry = await dispatch.begin();
@@ -450,7 +427,6 @@ Deno.test("lock hand-off: a re-dispatch is lent a new nonce, so the first attemp
           `the lost runner's drain on ${workerHost} to wait`,
         );
       }
-      // The retry's own nested swamp skips the lock.
       assertEquals(
         await drain(fixture, withRemoteLockHolder({}, retry.lent, hostname())),
         retryIds,

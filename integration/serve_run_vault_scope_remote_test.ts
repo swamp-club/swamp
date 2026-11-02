@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote placement under a run's vault scope (swamp-club#2676), with a real
- * orchestrator assembly (worker gateway, capability service, dispatch
- * service, data plane on one localhost listener) and a real worker over a
- * WebSocket, as in `remote_execution_test.ts`:
- *
- * - a remote step's `context.vaultService` writes and reads (putSecret /
- *   resolveSecret) are held to the dispatching run's principal, and a grant
- *   added mid-flight applies to the next dispatch;
- * - the control-plane work around it — enrollment redeem (which reads the
- *   token secret from a vault), step-lease transitions and worker prune —
- *   succeeds while a restrictive scope is ambient.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -103,16 +89,11 @@ interface Orchestrator {
   dispatchService: DispatchService;
   serverUrl: string;
   audits: AuditEvent[];
-  /** The bot's run scope, decided against the current grants. */
   botScope(): RunVaultAccess;
   setGrants(grants: Grant[]): void;
   shutdown(): Promise<void>;
 }
 
-/**
- * bot runs anything and reads only roomcontrol: it may neither read nor
- * write `local`, the vault the test model and the enrollment token use.
- */
 const RESTRICTED: Grant[] = [
   ...runnerGrants("user:bot"),
   grant("user:bot", "vault", "roomcontrol"),
@@ -247,16 +228,15 @@ async function startOrchestrator(repoDir: string): Promise<Orchestrator> {
     },
     shutdown: async () => {
       await server.shutdown();
-      // The disconnects the closed sockets recorded, and the bookkeeping a
+      // the disconnects the closed sockets recorded, and the bookkeeping a
       // dispatch records without waiting, are written before the test removes
-      // the repo (swamp-club#3854, swamp-club#4038).
+      // the repo
       await gateway.settled();
       await dispatchService.settled();
     },
   };
 }
 
-/** Mints an enrollment token whose secret is stored in the `local` vault. */
 async function mintEnrollmentToken(
   o: Orchestrator,
   name: string,
@@ -344,7 +324,6 @@ Deno.test({
         "worker enrollment",
       );
 
-      // The remote method writes `local` through putSecret: refused.
       let refusal = "";
       try {
         await runWithVaultAccess(
@@ -365,7 +344,6 @@ Deno.test({
         "the refused putSecret is audited",
       );
 
-      // Granted read and write on `local`, the next dispatch succeeds.
       o.setGrants([
         ...RESTRICTED,
         grant("user:bot", "vault", "local", ["read", "write"]),
@@ -387,7 +365,6 @@ Deno.test({
       assertEquals(states.length, 2);
       assertEquals(states.includes("completed"), true, JSON.stringify(states));
 
-      // Worker prune, entered under the restrictive scope, completes.
       o.setGrants(RESTRICTED);
       const sent: string[] = [];
       const socket = {

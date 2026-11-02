@@ -52,10 +52,9 @@ function createMockSocket(): WebSocket & { sent: string[] } {
   } as unknown as WebSocket & { sent: string[] };
 }
 
-// swamp-club#2466 / #2473: serve always registers the reserved
-// _token-secrets vault, so a repo with one user vault has two. The mint
-// handler must target the control-plane vault rather than ask the remote
-// caller for a --vault flag it cannot send.
+// serve always registers the reserved _token-secrets vault, so a repo with one
+// user vault has two; the mint handler must target the control-plane vault, not
+// ask a remote caller for a --vault flag
 Deno.test("handleAccessTokenMint: mints into the control-plane vault when a user vault is also configured, usable without restart", async () => {
   const repoDir = await Deno.makeTempDir({
     prefix: "swamp-serve-token-mint-",
@@ -84,7 +83,6 @@ Deno.test("handleAccessTokenMint: mints into the control-plane vault when a user
     );
     assertEquals(vaultEvents.some((event) => event.kind === "error"), false);
 
-    // Mirror serve's boot: register the control-plane vault globally.
     const provider = new ControlPlaneVaultProvider(
       new FileSystemControlPlaneStore(swampPath(repoDir)),
     );

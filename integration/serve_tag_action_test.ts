@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A tag condition on a `data:` grant scopes reads only while the reader
- * cannot retag what owns the data (swamp-club#3085). These tests drive
- * `model.edit`, `workflow.edit` and the data reads through serve's real
- * dispatch over a real repository: with `tag-requires-explicit-grant` a
- * `write` grant no longer carries a retag, so a member cannot pull another
- * team's model or workflow into their tag and read its data.
- */
-
 import { assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import type { Definition } from "../src/domain/definitions/definition.ts";
@@ -46,10 +37,6 @@ import {
   withServeRepo,
 } from "./serve_request_harness.ts";
 
-/**
- * The issue's setup: read, write and run on every model and workflow, and
- * read on data only where its owner is tagged team-a.
- */
 function teamAReaderGrants(): Grant[] {
   return [
     grant({ actions: ["read", "write", "run"] }),
@@ -190,7 +177,6 @@ Deno.test("serve tag action: without the setting, a deny on tag closes the retag
     assertEquals(await storedModelTags(repo, "other-model"), {
       team: "team-b",
     });
-    // Edits that leave the tags alone still pass on write.
     const untouched = await retagModel(ctx, model, { team: "team-b" });
     assertEquals(errorFrame(untouched), undefined);
   });
@@ -263,7 +249,6 @@ Deno.test("serve tag action: with tag-requires-explicit-grant, a workflow retag 
     const workflow = await saveWorkflow(repo, "other-wf", model, {
       team: "team-b",
     });
-    // Workflow-scope data is read through the run that recorded it.
     const summary = await saveWorkflowData(repo, workflow, "summary");
     await saveRunWithData(repo, workflow, [], [summary]);
     const strict = createServeCtx(repo, teamAReaderGrants(), {
@@ -286,7 +271,6 @@ Deno.test("serve tag action: with tag-requires-explicit-grant, a workflow retag 
       true,
     );
 
-    // The same retag passes on write by default, and the data then reads.
     const lenient = createServeCtx(repo, teamAReaderGrants());
     assertEquals(
       errorFrame(await retagWorkflow(lenient, workflow, { team: "team-a" })),

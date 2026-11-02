@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Output search names history from one scan of every definition, with the
-// real definition repository: primary definitions over auto-definitions, by
-// type and id, however many deleted definitions the history holds
-// (swamp-club#3959). A search that may not read everything is judged on
-// those same names before it reads (swamp-club#4142).
+// output search names history from one scan of every definition: primary over
+// auto-definitions, by type and id, however many deleted definitions the
+// history holds
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
@@ -65,7 +63,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Search deps over `definitionIds`' outputs, counting definition scans. */
 function searchDeps(
   repo: YamlDefinitionRepository,
   definitionIds: string[],
@@ -91,7 +88,6 @@ function searchDeps(
   return { deps, scans: () => scans };
 }
 
-/** Each output's definition id and the name the search gave it. */
 async function namesOf(
   deps: ModelOutputSearchDeps,
 ): Promise<Map<string, string | undefined>> {
@@ -121,7 +117,6 @@ Deno.test("model output search: names history from one definition scan, primary 
     );
     const primary = Definition.create({ name: "primary" });
     await repo.save(TYPE, primary);
-    // An auto-definition sharing the primary one's id, and one of its own.
     await autoRepo.save(
       TYPE,
       Definition.create({ id: primary.id, name: "auto-copy" }),
@@ -194,7 +189,6 @@ Deno.test("model output search: with canRead, the real repositories leave unread
     const outputRepo = new YamlOutputRepository(dir);
     const primary = Definition.create({ name: "primary" });
     await definitionRepo.save(TYPE, primary);
-    // Shadowed by the primary definition: its outputs carry "primary".
     await autoRepo.save(
       TYPE,
       Definition.create({ id: primary.id, name: "auto-copy" }),

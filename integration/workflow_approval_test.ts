@@ -225,15 +225,10 @@ Deno.test("Workflow: suspended run persists and round-trips", async () => {
   });
 });
 
-/** No step of these workflows reaches an executor: every one is a gate. */
 const NEVER_EXECUTES: StepExecutor = {
   execute: () => Promise.reject(new Error("no step should execute")),
 };
 
-/**
- * Runs `workflow` on a real repository directory and returns what
- * `workflow run` is sent: the execution events as libswamp publishes them.
- */
 async function publishedRunEvents(
   repoDir: string,
   workflow: Workflow,
@@ -263,7 +258,6 @@ async function publishedRunEvents(
   }
 }
 
-/** Renders `events` as `workflow run` prints them in the given mode. */
 async function renderRun(
   mode: "log" | "json",
   workflowName: string,
@@ -344,8 +338,6 @@ Deno.test("Workflow: a forEach-expanded approval gate is reported as a gate by w
   });
 });
 
-// --- timeout of a forEach-expanded gate (swamp-club#3218) ---
-
 for (const recorded of [true, false]) {
   const which = recorded
     ? "past its timeout"
@@ -376,7 +368,6 @@ for (const recorded of [true, false]) {
       assert(suspended?.kind === "suspended");
       const runId = suspended.run.id;
 
-      // workflow run reports the deadline the gate was requested with.
       const json = await renderRun("json", workflow.name, events);
       assertEquals(JSON.parse(json[json.length - 1]).approvalRequired, {
         workflowName: "foreach-timed-gate",
@@ -448,7 +439,6 @@ for (const recorded of [true, false]) {
         'Approval timed out: step "approve-prod"',
       );
 
-      // Neither refusal decided the gate.
       const after = await runRepo.findById(
         workflow.id,
         createWorkflowRunId(runId),

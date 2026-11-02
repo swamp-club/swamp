@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The fenced writer lease of a filesystem v3 datastore, wired through the
- * repository contexts the CLI and serve open (swamp-club#3359): a writer
- * that lost its lease commits nothing more, a Phase 3 datastore upgrades in
- * place, and the renewal timer keeps the lease and notices losing it.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -68,7 +61,6 @@ import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpe
 
 await initializeLogging({});
 
-/** Every commit `commits.db` holds, as its fence. */
 async function commitFences(
   datastorePath: string,
 ): Promise<(number | undefined)[]> {
@@ -82,7 +74,6 @@ async function commitFences(
   }
 }
 
-/** Saves a model and one data version through checkout A, in one root. */
 function saveThroughA(repos: RowRepos, name: string) {
   return runInRootUnitOfWork(
     repos.a.repoContext,
@@ -94,7 +85,6 @@ function saveThroughA(repos: RowRepos, name: string) {
   );
 }
 
-/** The fenced refusal `error` is, or carries as its cause. */
 function fencedRefusal(error: unknown): WriterFencedError | undefined {
   for (let e = error; e instanceof Error; e = e.cause) {
     if (e instanceof WriterFencedError) return e;
@@ -118,8 +108,6 @@ Deno.test("v3 writer lease: a writer whose lease another process took over commi
     await saveThroughA(repos, "before");
     const before = await commitFences(datastorePath);
 
-    // A was paused past its expiry: another process took the next fence
-    // and recorded it in commits.db, as taking the lease does.
     const taker = await plantV3WriterLease(datastorePath, { pid: Deno.pid });
     const store = SqliteCommitStore.open(join(datastorePath, "commits.db"));
     try {
@@ -128,7 +116,6 @@ Deno.test("v3 writer lease: a writer whose lease another process took over commi
       await store.close();
     }
 
-    // A wakes without knowing, and writes again: nothing lands.
     const error = await assertRejects(() => saveThroughA(repos, "after"));
     const refusal = fencedRefusal(error);
     assert(refusal !== undefined, `not a fenced refusal: ${error}`);
@@ -146,7 +133,6 @@ Deno.test("v3 writer lease: a holder whose lease was force-released stops commit
     const info = await handle.inspect();
     assert(await handle.forceRelease(info!.nonce!));
 
-    // The holder's next renewal finds its fence released.
     await assertRejects(
       () => checkV3WriterLease(datastorePath),
       WriterFencedError,
@@ -187,7 +173,6 @@ Deno.test("v3 writer lease: a Phase 3 datastore keeps its unfenced history and s
     assert(fences.includes(undefined), "the unfenced history is kept");
     assertEquals(fences.at(-1), 1);
 
-    // Phase 3's unfenced writes are now refused.
     await assertRejects(
       () => commitUnfenced(datastorePath, join(repos.repoA, "..", "late")),
       WriterFencedError,
@@ -195,7 +180,6 @@ Deno.test("v3 writer lease: a Phase 3 datastore keeps its unfenced history and s
   });
 });
 
-/** Commits one auto-definition as a Phase 3 writer did: with no fence. */
 async function commitUnfenced(
   datastorePath: string,
   repoDir: string,
@@ -262,9 +246,8 @@ Deno.test("v3 writer lease: the renewal timer keeps the lease, and notices anoth
 });
 
 /**
- * Every file and directory under `root`, with each file's digest, size and
- * modification time, as swamp-uat's storage snapshot takes them: a rewrite
- * with the same bytes still shows.
+ * snapshots files and directories with digest, size and mtime, so a rewrite
+ * with the same bytes still shows
  */
 async function snapshotTree(root: string): Promise<Map<string, string>> {
   const entries = new Map<string, string>();
@@ -289,7 +272,6 @@ async function snapshotTree(root: string): Promise<Map<string, string>> {
 Deno.test("v3 writer lease: every command v3 refuses leaves the datastore byte-identical", async () => {
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await saveThroughA(repos, "seeded");
-    // As a fresh process meets it: no writer in this one.
     await closeV3Datastores();
     const elsewhere = join(repos.repoA, "..", "elsewhere");
     await Deno.mkdir(elsewhere);
@@ -321,7 +303,6 @@ Deno.test("v3 writer lease: every command v3 refuses leaves the datastore byte-i
       for (const args of refused) {
         const before = await snapshotTree(datastorePath);
         const error = await runCliRejecting({ args: [...args, ...json] });
-        // What the process's teardown does after a failed command.
         await closeV3Datastores();
         assertInstanceOf(error, Error, args.join(" "));
         if (!equal(await snapshotTree(datastorePath), before)) {
@@ -337,14 +318,12 @@ Deno.test("v3 writer lease: a long-lived process that lost the lease writes agai
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-lease-retake-" });
   const datastorePath = join(dir, "datastore");
   await initializeV3Datastore(datastorePath, "test");
-  // A handle wired to the process's hold as v3DatastoreFor wires it.
   const handle = openV3Datastore({
     repoDir: join(dir, "serve"),
     datastorePath,
     writerFence: () => v3WriterFence(datastorePath),
     assertWriterCurrent: () => assertV3WriterCurrent(datastorePath),
   });
-  // serve's lifetime hold, with a TTL short enough to renew within the test.
   const lifetime = await acquireV3WriterLock(datastorePath, {
     ttlMs: 60,
     fenceStore: handle.commitStore,
@@ -354,7 +333,6 @@ Deno.test("v3 writer lease: a long-lived process that lost the lease writes agai
     await commitThrough(handle);
     assertEquals((await commitFences(datastorePath)).at(-1), 1);
 
-    // serve slept past its expiry; a CLI writer took the lease over.
     const cli = await plantV3WriterLease(datastorePath, { pid: Deno.pid });
     const store = SqliteCommitStore.open(join(datastorePath, "commits.db"));
     try {
@@ -373,7 +351,6 @@ Deno.test("v3 writer lease: a long-lived process that lost the lease writes agai
     const refused = await assertRejects(() => commitThrough(handle));
     assert(fencedRefusal(refused) !== undefined, `not fenced: ${refused}`);
 
-    // The CLI writer finishes; serve's renewal takes a fresh lease.
     await cli.release();
     await waitFor(
       () => (v3WriterFence(datastorePath) ?? 0) > cli.fence,
@@ -395,7 +372,6 @@ Deno.test("v3 writer lease: a long-lived process that lost the lease writes agai
   }
 });
 
-/** Commits one auto-definition through `handle`'s engine, in one root. */
 async function commitThrough(
   handle: ReturnType<typeof openV3Datastore>,
 ): Promise<void> {
@@ -428,7 +404,6 @@ Deno.test("v3 writer lease: engines on one handle still queue their appends to a
     fenceStore: handle.commitStore,
   });
   try {
-    // One partition, written by several contexts' engines at once.
     const definition = crypto.randomUUID();
     const commits = Array.from({ length: 8 }, async (_, i) => {
       const engine = handle.engineFor(() => Promise.resolve(), () => {

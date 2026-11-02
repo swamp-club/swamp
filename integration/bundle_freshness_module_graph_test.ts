@@ -16,14 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-// Bundle freshness over the real module graph (swamp-club#3385). A model in
-// extensions/models that imports ../lib/msg.ts, and side-effect imports
-// ./side.ts, is bundled by the real loader with the real `deno bundle` and
-// `deno info`. Editing either module must make the warm scan find the model
-// stale, which the relative-import walk bounded at extensions/models never
-// did; editing an unrelated file must not, and a scan with no edits must
-// read no module graph. A graph that cannot be read is retried once
-// (swamp-club#3487).
 
 import { assertEquals } from "@std/assert";
 import { basename, join } from "@std/path";
@@ -171,10 +163,6 @@ Deno.test("bundle freshness: editing a module outside the kind directory or a si
   }
 });
 
-/**
- * Builds the swamp-club#3385 layout and a loader whose module-graph reader
- * fails while `failing(readNumber)` is true, then hands both to `body`.
- */
 async function withFlakyGraphReader(
   failing: (readNumber: number) => boolean,
   body: (ctx: {

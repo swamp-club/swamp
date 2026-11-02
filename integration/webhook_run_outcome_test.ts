@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for how WebhookService classifies a workflow run's
- * outcome (swamp-club#2303).
- *
- * WebhookService used to capture only the `started` and `completed` events
- * from the run stream, so a run that ended any other way fell into the
- * success branch and was logged as completed with an empty run id — and
- * counted in the "completed" bucket of the health endpoint's throughput
- * metrics. These tests pin the two outcomes that produce no `completed`
- * event: a run that errors before it starts, and a run that suspends on an
- * approval gate.
- */
-
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { consumeStream, withDefaults } from "../src/libswamp/stream.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -57,7 +44,6 @@ await initializeLogging({});
 const SECRET = "shhh";
 const BODY = '{"event":"push"}';
 
-/** A workflow whose only step is a manual approval gate, so the run suspends. */
 function gatedWorkflow(name: string): Workflow {
   return Workflow.create({
     name,
@@ -79,11 +65,6 @@ type WebhookRepoContext = ConstructorParameters<
   typeof WebhookService
 >[0]["repoContext"];
 
-/**
- * Boots a real repo on a temp filesystem, optionally saving a workflow, and
- * drives one signed request through WebhookService. Returns every lifecycle
- * event the service emitted.
- */
 async function runWebhook(
   flag: string | ((workflow: Workflow | undefined) => string),
   route: string,
@@ -183,9 +164,8 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // parseWebhookFlag does not check that the workflow exists, so the run
-    // stream yields an `error` event and never a `completed` one — the exact
-    // shape that used to be misreported as a completion.
+    // parseWebhookFlag does not check the workflow exists, so the run stream
+    // yields an error event and never a completed one
     const events = await runWebhook(
       "/hooks/missing:no-such-workflow:shhh",
       "/hooks/missing",
@@ -218,12 +198,9 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // A gated run has not finished, so neither terminal event would be true.
-    // Reporting it as failed would record a spurious failure against the
-    // health endpoint for a run that is merely waiting on an approver.
-    // Settled once the run record is suspended: a service stopped before the
-    // run reaches its gate cancels it instead, which is a terminal event. The
-    // queue drains in order, so no terminal event follows the suspension.
+    // a gated run has not finished, so reporting it failed would record a
+    // spurious failure; settle on the suspended record, since a service stopped
+    // earlier cancels it instead
     const events = await runWebhook(
       "/hooks/gated:gated-wf:shhh",
       "/hooks/gated",
@@ -271,8 +248,6 @@ Deno.test({
       workflow,
       () => records.length > 0,
       (repoContext) => {
-        // The real trigger authorizer, so the run records the id of the
-        // workflow it decided on.
         const authorize = createTriggerAuthorizer({
           authMode: "none",
           workflowRepo: repoContext.workflowRepo,

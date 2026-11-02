@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The archive's source copy holds every local module the bundle was built
- * from (swamp-club#3376): push resolves files from each entry point's
- * module graph, places modules outside the kind directory where their
- * relative imports still resolve, and rewrites the imports of the archived
- * copies only when no mirrored path can hold a module. Wires the real
- * resolver, graph reader, planner and archive assembly; registry and
- * quality gates are stubbed.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -112,7 +102,6 @@ async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Resolves the extension as push does and runs the prepare phase. */
 async function prepare(
   repo: string,
   manifestPath: string,
@@ -172,7 +161,6 @@ async function prepare(
   );
 }
 
-/** Resolves and packages the extension as push does; returns the archive's files by path. */
 async function pushDryRun(
   repo: string,
   manifestPath: string,
@@ -258,7 +246,6 @@ Deno.test("extension push: the source copy holds modules imported from outside t
       "models/rel.ts",
       "vaults/v.ts",
     ]);
-    // Only the import no mirrored path can hold is rewritten.
     assertEquals(
       files.get("models/rel.ts"),
       'import "../lib/side.ts";\n' +
@@ -490,14 +477,8 @@ Deno.test("extension push: a shared module two kinds reach is listed with one of
   });
 });
 
-// --- Symlinks in the module graph (swamp-club#3420) ---
-
 const SECRET = "SECRET-3420";
 
-/**
- * Pushes with the real safety analyzer and returns the refusal, after
- * checking that nothing in it — message or details — quotes the target.
- */
 async function symlinkRefusal(
   repo: string,
   manifestPath: string,
@@ -766,8 +747,6 @@ Deno.test({
     });
   },
 });
-
-// --- Symlinks anywhere on an extension file's path (swamp-club#3421) ---
 
 Deno.test({
   name:

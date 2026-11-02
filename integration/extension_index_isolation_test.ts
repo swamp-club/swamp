@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Indexing an extension source must not run its import in the command's
-// isolate (swamp-club#3374). A source that exits, hangs, prints or throws
-// at import is probed in a probe host process: the pass returns, healthy siblings are
-// indexed, and a source that never finishes is recorded once instead of
-// being retried by every command.
+// importing an extension source to index it must not run in the command's
+// isolate: a source that exits, hangs, prints or throws is probed in a host
+// process, siblings still index, a hang is recorded once
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -60,8 +58,8 @@ const AT_IMPORT: Record<Behaviour, string> = {
 };
 
 /**
- * A vault source that records, on the global of whichever isolate imports
- * it, that it ran — so a test can tell the main isolate never did.
+ * a vault source that records on the global of whichever isolate imports it
+ * that it ran, so a test can tell the main isolate never did
  */
 function vaultSource(type: string, marker: string, behaviour: Behaviour) {
   return `
@@ -308,8 +306,6 @@ Deno.test("a new add-on to an already registered base type is indexed without be
       ).buildIndex(modelsDir, { indexOnly: true });
     await modelLoader();
 
-    // Added once the catalog is populated: the warm path used to attach it
-    // to the built-in base type by importing it straight away.
     const marker = `__swamp_3374_${repo.id}_addon`;
     const addon = join(modelsDir, "addon.ts");
     await Deno.writeTextFile(

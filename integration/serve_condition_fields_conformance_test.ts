@@ -17,16 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 /**
- * Conditional grants decide on complete resources (swamp-club#2675). A grant
- * condition reads a resource's fields; a deny that needs a field the
- * resource does not carry fails closed, so every request must authorize
- * resources with all of their fields — and requests over many resources
- * must check each one, never a `*` that no name-scoped deny can match.
- *
- * Every protocol request type is classified below, and the classification is
- * enforced: a new request type fails this test until it is placed. Request
- * types that name one resource are exercised by serve_id_deny_conformance,
- * which runs each of them under a tags deny as well as a name deny.
+ * a deny needing a field the resource lacks fails closed, so every request must
+ * authorize resources with all their fields; each request type is classified
+ * and a new one fails until placed
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -61,27 +54,14 @@ import {
 await initializeLogging({});
 
 type Category =
-  /** Names one resource; covered by serve_id_deny_conformance. */
   | "resource"
-  /** Returns many resources, each filtered on its complete owners. */
   | "collection"
-  /** Runs over every readable resource, narrowed before it acts. */
   | "narrowed"
-  /** Reaches every resource of a kind; any applicable deny refuses it. */
   | "every"
-  /** A check on a kind as a whole — types, extensions, datastores. */
   | "kind"
-  /** Access-kind administration, whose only condition field is the name. */
   | "access"
-  /** Explains a decision for a named resource, judged as a request would be. */
   | "explain"
-  /**
-   * A vault, authorized as `vault:<name>` under the vault kind's fields —
-   * its name, and the key the request names (swamp-club#2676) — beside its
-   * data names, which carry complete fields.
-   */
   | "vault"
-  /** Creates a resource, authorized on its name and type with no tags. */
   | "create";
 
 const CATEGORIES: Record<string, Category> = {
@@ -114,10 +94,9 @@ const CATEGORIES: Record<string, Category> = {
   "workflow.reject": "resource",
   "workflow.resume": "resource",
   "workflow.cancel": "resource",
-  // By ID it names a wait, not a workflow, so serve_id_deny_conformance has
-  // no field to drive. By key it names the workflow and replies not_found,
-  // not unauthorized. The tags deny, and the deny by name for a workflow
-  // named by its ID, are exercised for both forms in serve_signal_test.
+  // by ID it names a wait, not a workflow, so serve_id_deny_conformance has no
+  // field to drive; by key it replies not_found, not unauthorized;
+  // serve_signal_test covers the tags deny for both forms
   "workflow.signal": "resource",
   "run.attach": "resource",
   "cancel": "resource",
@@ -132,7 +111,6 @@ const CATEGORIES: Record<string, Category> = {
   "workflow.search": "collection",
   "workflow.schedule.list": "collection",
   "workflow.approvals": "collection",
-  // Exercised under a tags deny in serve_signal_test.
   "workflow.waits": "collection",
   "workflow.history.search": "collection",
   "workflow.run.search": "collection",
@@ -187,8 +165,6 @@ const CATEGORIES: Record<string, Category> = {
   "audit.report": "access",
   "audit.rotate-key": "access",
   "audit.subscribe": "access",
-  // The commit feed filters each commit as GET changes does
-  // (swamp-club#4120); its head names no resource.
   "commits.subscribe": "collection",
   "commits.head": "kind",
   "audit.unsubscribe": "access",
@@ -247,7 +223,6 @@ Deno.test("serve condition-fields conformance: every request type is classified"
 
 const ACTIONS: Grant["actions"] = ["read", "write", "run", "approve"];
 
-/** Allow everything on models, data and workflows; deny what is env: prod. */
 const TAG_GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
   kind,
 ) => [
@@ -260,7 +235,6 @@ const TAG_GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
   }),
 ]);
 
-/** Allow everything on models, data and workflows, with no deny. */
 const ALLOW_GRANTS: Grant[] = (["model", "data", "workflow"] as const).map((
   kind,
 ) => grant({ actions: ACTIONS, resource: { kind, pattern: "*" } }));
@@ -338,7 +312,6 @@ Deno.test("serve condition-fields conformance: collections leave out tag-denied 
       );
       assert(body.includes(visible), `${label}: ${body}`);
       assert(!body.includes("prod-"), `${label}: ${body}`);
-      // Without the deny the prod items are there, so the filter did it.
       const open = reply(
         await sendRequest(openCtx(f), request(type, payload)),
         type,
@@ -479,7 +452,6 @@ Deno.test("serve condition-fields conformance: a methods-scoped deny applies to 
   });
 });
 
-/** Saves a markdown report named `reportName` owned by `model`. */
 async function saveReport(
   repo: ServeRepo,
   model: Definition,
@@ -509,7 +481,6 @@ Deno.test("serve condition-fields conformance: reports are read as their owner's
     await saveReport(f.repo, f.prodModel, "health");
     await saveReport(f.repo, f.devModel, "health");
 
-    // Unfiltered, the report exists on both models and is ambiguous.
     const open = errorFrame(
       await sendRequest(
         openCtx(f),
@@ -520,8 +491,6 @@ Deno.test("serve condition-fields conformance: reports are read as their owner's
     );
     assert(open?.error?.message?.includes("prod-db"), JSON.stringify(open));
 
-    // Under the tags deny only dev-db's is readable: no ambiguity, and the
-    // prod owner is never named.
     const got = reply(
       await sendRequest(f.ctx, request("report.get", { reportName: "health" })),
       "report.get",
@@ -595,7 +564,6 @@ Deno.test("serve condition-fields conformance: a failing evaluate-everything nam
 
 Deno.test("serve condition-fields conformance: access checks explain a tags deny as requests enforce it", async () => {
   await withFixtures(async (f) => {
-    // access.check reads another subject's policy, which needs admin.
     const admin = createServeCtx(f.repo, [
       ...TAG_GRANTS,
       grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
@@ -641,7 +609,6 @@ Deno.test("serve condition-fields conformance: data.query's page size says nothi
   });
 });
 
-/** Saves a run of `workflow` started after every fixture run. */
 async function saveLatestRun(
   f: Fixtures,
   workflow: Workflow,
@@ -677,7 +644,6 @@ Deno.test("serve condition-fields conformance: data.query's latestRun needs read
     const query = (payload: Record<string, unknown>, on = ctx) =>
       sendRequest(on, request("data.query", payload));
 
-    // A denied workflow fails exactly as one that does not exist.
     const denied = queryError(
       await query({ predicate: 'workflowRunId == latestRun("prod-flow")' }),
     );
@@ -694,7 +660,6 @@ Deno.test("serve condition-fields conformance: data.query's latestRun needs read
       JSON.stringify(audit),
     );
 
-    // Selecting latestRun over readable data does not reveal the run id.
     const selected = await query({
       predicate: 'modelName == "dev-db"',
       select: 'latestRun("prod-flow")',
@@ -702,7 +667,6 @@ Deno.test("serve condition-fields conformance: data.query's latestRun needs read
     queryError(selected);
     assert(!JSON.stringify(selected).includes(prodRun.id));
 
-    // A readable workflow's latest run is selected.
     const dev = reply(
       await query({
         predicate: 'workflowRunId == latestRun("dev-flow")',
@@ -712,7 +676,6 @@ Deno.test("serve condition-fields conformance: data.query's latestRun needs read
     assert(dev.includes(devRun.id), dev);
     assert(!dev.includes(prodRun.id), dev);
 
-    // Without the deny the prod run is selected, so the gate refused it.
     const open = reply(
       await query(
         { predicate: 'workflowRunId == latestRun("prod-flow")' },
@@ -724,7 +687,6 @@ Deno.test("serve condition-fields conformance: data.query's latestRun needs read
   });
 });
 
-/** Saves the prod and dev vaults into `repo`. */
 async function saveVaults(repo: ServeRepo): Promise<void> {
   for (const name of ["prod-vault", "dev-vault"]) {
     await repo.repoContext.vaultConfigRepo.save(

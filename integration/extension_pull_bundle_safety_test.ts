@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pull scans the bundles an extension runs, not only its source copy
- * (swamp-club#3383). Push builds each bundle from the sources it ships, so
- * an archive whose bundle holds code its source copy lacks can only be
- * hand-built; that is the case this covers. Wires the CLI's pull path
- * (`pullExtension` over `createExtensionPullDeps` and the real registry
- * client) to a registry on a port-0 server, and renders the outcome as the
- * CLI does in log and JSON modes.
+ * pull scans the bundles an extension runs, not only source; push builds
+ * bundles from shipped sources, so a bundle with code its source lacks is
+ * hand-built, the case covered here
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -68,7 +64,6 @@ const denoRuntime: DenoRuntime = {
   getDenoEnv: () => Deno.env.toObject(),
 };
 
-/** A registry serving each archive in `versions`, the last one as latest. */
 async function serveRegistry(
   name: string,
   versions: Record<string, Uint8Array<ArrayBuffer>>,
@@ -114,7 +109,6 @@ async function serveRegistry(
   };
 }
 
-/** A model whose behavior answers `label`; imports `imports` first. */
 function modelSource(name: string, label: string, imports = ""): string {
   return [
     imports,
@@ -136,7 +130,6 @@ function modelSource(name: string, label: string, imports = ""): string {
   ].join("\n");
 }
 
-/** `modelSource` as push bundles it: zod comes from the host. */
 function publishedBundle(name: string, label: string): string {
   return `// extensions/models/thing.ts\n${
     modelSource(name, label).replace(
@@ -155,10 +148,6 @@ async function sha256(text: string): Promise<string> {
   }`;
 }
 
-/**
- * `files` plus the v2 dependency audit record push writes for them, at
- * `bundleFormat`, hashing every bundle unless `hashes` overrides it.
- */
 async function withRecord(
   files: Record<string, string>,
   bundleFormat: number,
@@ -180,7 +169,6 @@ async function withRecord(
   };
 }
 
-/** A model extension archive at `version` holding `files` under `extension/`. */
 async function modelArchive(
   name: string,
   version: string,
@@ -214,7 +202,6 @@ async function modelArchive(
   ]);
 }
 
-/** Each call `run` makes to `console[stream]`, its arguments joined. */
 async function captureCalls(
   stream: "error" | "log",
   run: () => void | Promise<void>,
@@ -237,7 +224,6 @@ async function capture(
   return (await captureCalls(stream, run)).join("\n");
 }
 
-/** Every path under `dir`. */
 async function treeOf(dir: string): Promise<string[]> {
   const paths: string[] = [];
   for await (const entry of walk(dir, { followSymlinks: false })) {
@@ -246,7 +232,6 @@ async function treeOf(dir: string): Promise<string[]> {
   return paths.sort();
 }
 
-/** A fresh repo dir under a temp root, removed when disposed. */
 async function tempRepo() {
   const root = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-pull-bundle-safety-" }),
@@ -264,11 +249,6 @@ async function tempRepo() {
   };
 }
 
-/**
- * Pulls the latest version of `name` from `registryUrl` into `repoDir`.
- * With `phase8`, routes through the install service, as the CLI does, so
- * the bundles are rebuilt and indexed.
- */
 async function pull(
   name: string,
   registryUrl: string,
@@ -319,7 +299,6 @@ async function pull(
   }
 }
 
-/** The message a refused pull prints, in `outputMode`. */
 async function refusalMessage(
   thrown: unknown,
   outputMode: "log" | "json",
@@ -360,7 +339,6 @@ for (const outputMode of ["log", "json"] as const) {
       "bundles/thing.js line 2: Module extensions/models/_lib/helper.ts " +
         "contains eval()",
     );
-    // Nothing landed: no install root, no lockfile.
     assertEquals(
       (await treeOf(repo.root)).filter((p) => !before.includes(p)),
       [],
@@ -468,11 +446,9 @@ Deno.test("extension pull: eval in a dependency's code pulls, with one warning n
 });
 
 /**
- * An archive at `version` whose bundle is clean but whose model imports a
- * module under `files/`, which pull's source scan does not cover, holding
- * eval. Only a bundle rebuilt from the source holds it. Its record names
- * `bundleFormat`: by default one this swamp does not run, so pull rebuilds
- * (swamp-club#3972).
+ * bundle is clean but the model imports a module under files/ holding eval,
+ * which pull's source scan misses; the record names a bundleFormat this swamp
+ * does not run, so pull rebuilds
  */
 async function rebuildOnlyArchive(
   name: string,
@@ -568,7 +544,6 @@ Deno.test("extension pull: an upgrade refused in phase 8 leaves the previous ver
   assertEquals(JSON.stringify(lockfile).includes(V2), false);
 });
 
-/** The bundle file `repoDir` holds for its one pulled model. */
 async function installedBundle(repoDir: string): Promise<string> {
   const bundles = (await treeOf(swampPath(repoDir))).filter((p) =>
     p.endsWith("thing.js")
@@ -712,7 +687,6 @@ Deno.test("extension pull: after a pull that kept the archive's bundle, the bund
   );
   assertEquals(await installedBundle(repo.repoDir), archiveBundle);
 
-  // Load the pulled type as a command does, then build the worker bundle.
   const catalog = new ExtensionCatalogStore(
     swampPath(repo.repoDir, "_extension_catalog.db"),
   );

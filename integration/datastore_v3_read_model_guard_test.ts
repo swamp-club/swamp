@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 read model's checkout-copy guard and unreadable records
- * (swamp-club#3617) on real temp directories: a torn or missing chunk whose
- * only good copy is a checkout file is stored again from the file, or the
- * file is moved aside, before the file is overwritten or removed; a record
- * whose chunks cannot be read is recorded instead of wedging every later
- * commit; and the check after a reboot rewrites mismatched files instead of
- * replaying every commit.
- */
-
 import {
   assert,
   assertEquals,
@@ -86,17 +76,12 @@ import {
 const PARTITION = modelPartition();
 const signal = () => AbortSignal.timeout(30_000);
 
-/** Content over the inline limit, in several chunks. */
 const V1 = new Uint8Array(10 * TEST_CHUNK_BYTES + 13).map((_, i) => i % 251);
 const V2 = new Uint8Array(10 * TEST_CHUNK_BYTES + 29).map((_, i) =>
   (i * 7 + 3) % 253
 );
 const K = dataKey("k", 1);
 
-/**
- * The test storage over the env's filesystem storage, counting requests and
- * refusing puts on demand; without the size reader, as a bucket's.
- */
 class SpyStorage extends SmallChunkStorage {
   has_ = 0;
   gets = 0;
@@ -131,7 +116,6 @@ class SpyStorage extends SmallChunkStorage {
   }
 }
 
-/** {@link SpyStorage} with the filesystem's size reader and directory sync. */
 class StatSpyStorage extends SpyStorage
   implements ChunkStatReader, ChunkDirectorySync {
   stats = 0;
@@ -176,7 +160,6 @@ function chunkFile(env: V3Env, sha256: string): string {
   );
 }
 
-/** Tears a stored chunk, as a power cut before its sync would. */
 async function tear(env: V3Env, sha256: string): Promise<void> {
   await Deno.truncate(chunkFile(env, sha256), 10);
 }
@@ -185,7 +168,6 @@ async function chunkSize(env: V3Env, sha256: string): Promise<number> {
   return (await Deno.stat(chunkFile(env, sha256))).size;
 }
 
-/** Appends one commit putting K with `blob`, at `seq`. */
 async function putK(env: V3Env, seq: number, blob: BlobRef): Promise<void> {
   await env.store.append(commitOf({
     seq,
@@ -235,7 +217,6 @@ function stateRows(env: V3Env, sql: string): Record<string, unknown>[] {
   }
 }
 
-/** The writer's checkout: K v1 then v2 applied, the v2 file in place. */
 async function writerAtV2(
   env: V3Env,
 ): Promise<{ v1: BlobRef; v2: BlobRef }> {
@@ -321,7 +302,6 @@ Deno.test("read model guard: a file that already holds the content is not rewrit
     await using(reader(), (model) => model.catchUp(signal()));
     const old = new Date("2020-01-01T00:00:00Z");
     await Deno.utime(fileOf(env, K), old, old);
-    // A deleted state replays every commit over the files.
     await Deno.remove(join(env.stateDir, READ_MODEL_STATE_FILE));
     await using(reader(), async (model) => {
       assertEquals(await model.catchUp(signal()), { applied: 1, cursor: 1 });
@@ -366,7 +346,6 @@ Deno.test("read model guard: a catch-up hashes no file it wrote itself and no in
       env.openReadModel({ chunkStore: new CountingChunkStore(storage) }),
       (model) => model.catchUp(signal()),
     );
-    // An inline-sized file another commit overwrites is not hashed either.
     await env.store.append(commitOf({
       seq: 4,
       partition: PARTITION,
@@ -382,7 +361,6 @@ Deno.test("read model guard: a catch-up hashes no file it wrote itself and no in
   });
 });
 
-/** Removes K, at `seq`. */
 async function removeK(env: V3Env, seq: number): Promise<void> {
   await env.store.append(commitOf({
     seq,
@@ -395,7 +373,6 @@ async function removeK(env: V3Env, seq: number): Promise<void> {
   }));
 }
 
-/** Changes K's file as another process would: new bytes, a new mtime. */
 async function rewriteByHand(env: V3Env, content: Uint8Array): Promise<void> {
   await Deno.writeFile(fileOf(env, K), content);
   const old = new Date("2001-01-01T00:00:00Z");
@@ -429,14 +406,12 @@ Deno.test({
         );
       await putK(env, 1, v1);
       await catchUp();
-      // An overwrite, then a removal, of files it wrote.
       await putK(env, 2, v2);
       await catchUp();
       assertEquals(await Deno.readFile(fileOf(env, K)), V2);
       await removeK(env, 3);
       await catchUp();
       assertEquals(cuts, 0);
-      // A file changed since it was written is read before it is replaced.
       await putK(env, 4, v1);
       await catchUp();
       await rewriteByHand(env, V2);
@@ -527,8 +502,8 @@ Deno.test("read model guard: on Windows no written file is recorded or looked up
       );
     await catchUp();
     assertEquals(stateRows(env, "SELECT * FROM written_files"), []);
-    // A release before swamp-club#3788 recorded the file with its NTFS id,
-    // which SQLite cannot read back as a number.
+    // an older release recorded the file with its NTFS id, which SQLite cannot
+    // read back as a number
     const info = await Deno.lstat(fileOf(env, K));
     const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
     try {
@@ -547,7 +522,6 @@ Deno.test("read model guard: on Windows no written file is recorded or looked up
     } finally {
       db.close();
     }
-    // An overwrite, then a removal, each guard the file the row names.
     const v2 = await env.chunkStore.write(SOLO_NAMESPACE, V2, signal());
     await putK(env, 2, v2);
     await catchUp();
@@ -571,7 +545,6 @@ Deno.test("read model guard: a replay finds a right-size damaged chunk and store
       chunkFile(env, damaged),
       new Uint8Array(TEST_CHUNK_BYTES),
     );
-    // An ordinary catch-up overwriting K with a third put reads no part.
     const storage = new StatSpyStorage(env.storage.inner);
     const v3 = await env.chunkStore.write(
       SOLO_NAMESPACE,
@@ -581,7 +554,6 @@ Deno.test("read model guard: a replay finds a right-size damaged chunk and store
     await putK(env, 3, v3);
     await using(open(env, storage), (model) => model.catchUp(signal()));
     assertEquals(storage.gets, v3.parts!.length, "only v3's own chunks read");
-    // Put v2 back as the file, as a writer would, and replay.
     await Deno.writeFile(fileOf(env, K), V2);
     await putK(env, 4, v2);
     storage.gets = 0;
@@ -602,11 +574,9 @@ Deno.test("read model guard: a lagging checkout loading the compacted base store
   await withV3Env(async (env) => {
     const v1 = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
     await putK(env, 1, v1);
-    // The lagging checkout applied v1.
     await using(env.openReadModel(), (model) => model.catchUp(signal()));
     const v2 = await env.chunkStore.write(SOLO_NAMESPACE, V2, signal());
     await putK(env, 2, v2);
-    // Compaction folds v1 away and releases its chunks; a sweep deletes them.
     const report = await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
     assert(report.released > 0);
     for (const part of v1.parts!) {
@@ -653,11 +623,9 @@ Deno.test("read model guard: a put the storage refuses moves the file aside, and
       stateRows(env, "SELECT namespace, record_key, size FROM at_risk_copies"),
       [{ namespace: "", record_key: K.toString(), size: V2.length }],
     );
-    // Commands keep working while the copy waits.
     await using(reader(), (model) => model.catchUp(signal()));
     assertEquals(await Deno.readFile(copy), V2);
 
-    // Write access is back, and the retry interval has passed.
     storage.refusePuts = undefined;
     now = new Date(now.getTime() + 2 * 60 * 60 * 1000);
     await using(reader(), async (model) => {
@@ -686,11 +654,9 @@ Deno.test("read model guard: a copy moved aside for a right-size damaged chunk i
     storage.refusePuts = new Error("AccessDenied: read-only member");
     const reader = () => open(env, storage, { clock: () => now });
     const copy = atRiskCopyPath(env.stateDir, "", await sha256Hex(V2));
-    // The replay finds the damage, cannot store it, and moves the file aside.
     await using(reader(), (model) => model.recover("", recoverOptions()));
     assertEquals(await Deno.readFile(copy), V2);
 
-    // Write access is back, and the retry interval has passed.
     storage.refusePuts = undefined;
     now = new Date(now.getTime() + 2 * 60 * 60 * 1000);
     await using(reader(), (model) => model.catchUp(signal()));
@@ -771,11 +737,9 @@ Deno.test("read model guard: on a storage that cannot read sizes, an ordinary ca
     const v2 = await env.chunkStore.write(SOLO_NAMESPACE, V2, signal());
     await putK(env, 2, v2);
     storage.has_ = 0;
-    // After a reboot the matching listed file is not guarded either.
     boot = "boot-id:2";
     await using(reader(), (model) => model.catchUp(signal()));
     assertEquals(storage.has_, 0);
-    // A chunk lost from the bucket, whose only copy is this file.
     await Deno.remove(chunkFile(env, v2.parts![4].sha256));
     storage.refusePuts = new Error("AccessDenied");
     await using(reader(), async (model) => {
@@ -818,7 +782,6 @@ Deno.test("read model: a missing chunk makes its record unreadable instead of fa
         1,
         1,
       ]);
-      // Later commits applied and the index is complete.
       assertEquals((await model.chunksInUse("")).size, blob.parts!.length);
       assertEquals(
         await Deno.readTextFile(fileOf(env, dataKey("b", 1))),
@@ -829,7 +792,6 @@ Deno.test("read model: a missing chunk makes its record unreadable instead of fa
         Deno.errors.NotFound,
       );
     });
-    // Nothing changed: the next catch-up does not try again.
     const gets = storage.gets;
     await using(reader(), (model) => model.catchUp(signal()));
     assertEquals(storage.gets, gets);
@@ -958,7 +920,6 @@ Deno.test("read model: a commit at or below the compaction point whose chunk is 
     const blob = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
     await env.storage.delete("_default", blob.parts![0].sha256, signal());
     await putK(env, 1, blob);
-    // The store compacted past the commit while the page was read.
     const store: CommitStore = new Proxy(env.store, {
       get(target, property) {
         if (property === "compactionPoint") return () => Promise.resolve(1);
@@ -1067,15 +1028,12 @@ Deno.test("read model: a listed key the check after a reboot cannot target, or w
       await using(reader(), (model) => model.catchUp(signal()));
       const versionDir = dirname(fileOf(env, K));
       if (fault === "path-conflict") {
-        // A file now claims the directory the listed key's file is in.
         await Deno.remove(versionDir, { recursive: true });
         await Deno.writeTextFile(versionDir, "in the way");
       } else if (fault === "chunk-lost") {
-        // The file is gone and so is a chunk it would be rewritten from.
         await Deno.remove(fileOf(env, K));
         await Deno.remove(chunkFile(env, v1.parts![2].sha256));
       } else {
-        // The directory is now a symlink into the state directory.
         await Deno.mkdir(join(env.stateDir, "elsewhere"));
         await Deno.remove(versionDir, { recursive: true });
         await Deno.symlink(join(env.stateDir, "elsewhere"), versionDir, {
@@ -1090,7 +1048,6 @@ Deno.test("read model: a listed key the check after a reboot cannot target, or w
         }
       });
       if (fault === "state-symlink") {
-        // Nothing was written through the symlink.
         assertEquals(
           await Array.fromAsync(Deno.readDir(join(env.stateDir, "elsewhere"))),
           [],
@@ -1152,7 +1109,6 @@ Deno.test("read model guard: recover's sweep of unowned files stores a torn comm
   });
 });
 
-/** K and K2 both hold V2, applied; a V2 chunk then torn. */
 async function twoKeysAtV2(env: V3Env): Promise<RecordKey> {
   const v2 = await env.chunkStore.write(SOLO_NAMESPACE, V2, signal());
   await env.store.append(commitOf({
@@ -1221,7 +1177,6 @@ Deno.test("read model guard: across devices a copy that fails for another reason
       );
     });
     assertEquals(await Deno.readFile(fileOf(env, K)), V2);
-    // No temp copy is left behind.
     assertEquals(
       (await Array.fromAsync(Deno.readDir(dirname(copy)))).map((e) => e.name),
       [await sha256Hex(V2)],
@@ -1237,8 +1192,6 @@ Deno.test("read model guard: a move aside makes the copy's directories durable, 
       const storage = new StatSpyStorage(env.storage.inner);
       storage.refusePuts = new Error("AccessDenied");
       const source = fileOf(env, K);
-      // Each directory synced, and whether the checkout file was still
-      // there at the time.
       const synced: [string, boolean][] = [];
       const exists = async (path: string) => {
         try {
@@ -1287,8 +1240,6 @@ Deno.test("read model: unreadable records that no longer own their key never kee
       await model.catchUp(signal());
       assertExists(await model.unreadableRecord("", K.toString()));
     });
-    // A full retry batch of rows whose keys no file shows, least recently
-    // tried of all.
     const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
     try {
       const insert = db.prepare(
@@ -1315,7 +1266,6 @@ Deno.test("read model: unreadable records that no longer own their key never kee
   });
 });
 
-/** Stores one chunk of `content` again, as it was. */
 async function restoreChunk(
   env: V3Env,
   blob: BlobRef,
@@ -1333,7 +1283,6 @@ async function restoreChunk(
   );
 }
 
-/** A small put, so a state exists and the next catch-up is no replay. */
 async function smallPut(env: V3Env, seq: number): Promise<void> {
   await env.store.append(commitOf({
     seq,
@@ -1350,8 +1299,6 @@ Deno.test("read model guard: on a storage that cannot read sizes, an ordinary ca
     const reader = () =>
       open(env, storage, { bootIdentity: () => Promise.resolve("boot-id:1") });
     await using(reader(), (model) => model.catchUp(signal()));
-    // A writer in this checkout wrote K and landed its commit; the bucket
-    // then lost one of its chunks.
     const v1 = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
     await Deno.mkdir(dirname(fileOf(env, K)), { recursive: true });
     await Deno.writeFile(fileOf(env, K), V1);
@@ -1381,8 +1328,6 @@ Deno.test("read model guard: after a reboot a listed file holding its content st
         clock: () => now,
       });
     await using(reader(), (model) => model.catchUp(signal()));
-    // The power went before the chunk reached the disk, and the datastore
-    // refuses puts (it is full, or this member reads only).
     const torn = v1.parts![2].sha256;
     await tear(env, torn);
     storage.refusePuts = new Error("No space left on device (os error 28)");
@@ -1399,7 +1344,6 @@ Deno.test("read model guard: after a reboot a listed file holding its content st
       [{ record_key: K.toString(), size: V1.length }],
     );
 
-    // The datastore takes puts again, and the retry interval has passed.
     storage.refusePuts = undefined;
     now = new Date(now.getTime() + 2 * 60 * 60 * 1000);
     await using(reader(), (model) => model.catchUp(signal()));
@@ -1491,7 +1435,6 @@ Deno.test({
       await putK(env, 1, blob);
       const storage = new StatSpyStorage(env.storage.inner);
       await using(open(env, storage), (model) => model.catchUp(signal()));
-      // The key's directory is now a symlink out of the cache.
       const outside = join(env.dir, "outside");
       await Deno.mkdir(outside);
       const dir = dirname(fileOf(env, K));
@@ -1518,7 +1461,6 @@ Deno.test("read model: on a storage that reads sizes, a record with no chunk to 
     const storage = new StatSpyStorage(env.storage.inner);
     const reader = () => open(env, storage, { clock: () => now });
     await using(reader(), (model) => model.catchUp(signal()));
-    // A failure that named no chunk: nothing to watch.
     const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
     try {
       db.prepare(
@@ -1528,13 +1470,11 @@ Deno.test("read model: on a storage that reads sizes, a record with no chunk to 
       db.close();
     }
     await restoreChunk(env, blob, 1, V1);
-    // Looked at by a catch-up within the hour: not tried.
     now = new Date(start + 40 * 60 * 1000);
     await using(reader(), async (model) => {
       await model.catchUp(signal());
       assertExists(await model.unreadableRecord("", K.toString()));
     });
-    // An hour after the last try: tried, and healed.
     now = new Date(start + 61 * 60 * 1000);
     await using(reader(), async (model) => {
       await model.catchUp(signal());
@@ -1565,7 +1505,6 @@ Deno.test("read model guard: where the boot cannot be named, a file the guard ke
           }),
       });
     await using(reader(), (model) => model.catchUp(signal()));
-    // A writer wrote K unsynced and landed its commit.
     const v1 = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
     await Deno.mkdir(dirname(fileOf(env, K)), { recursive: true });
     await Deno.writeFile(fileOf(env, K), V1);
@@ -1574,7 +1513,6 @@ Deno.test("read model guard: where the boot cannot be named, a file the guard ke
     await putK(env, 2, v1);
     syncedDirs.length = 0;
     await using(reader(), (model) => model.catchUp(signal()));
-    // Not rewritten, but synced.
     assertEquals(
       (await Deno.stat(fileOf(env, K))).mtime?.getTime(),
       old.getTime(),
@@ -1608,7 +1546,6 @@ Deno.test("read model guard: only a structured 401 or 403, or a message naming t
       }));
       const storage = new StatSpyStorage(env.storage.inner);
       await using(open(env, storage), (model) => model.catchUp(signal()));
-      // Two copies aside, each holding a chunk the datastore lost.
       for (const [blob, content] of [[v1, V1], [v2, V2]] as const) {
         await Deno.remove(chunkFile(env, blob.parts![0].sha256));
         const copy = atRiskCopyPath(env.stateDir, "", blob.sha256);
@@ -1625,7 +1562,6 @@ Deno.test("read model guard: only a structured 401 or 403, or a message naming t
 Deno.test("read model guard: a file whose cut fails before it is read is closed (swamp-club#3617)", async () => {
   await withV3Env(async (env) => {
     const { v1 } = await writerAtV2(env);
-    // Written again by another process, so the guard reads it.
     await rewriteByHand(env, V2);
     await putK(env, 3, v1);
     const cut: ReadableStream<Uint8Array>[] = [];
@@ -1646,7 +1582,6 @@ Deno.test("read model guard: a file whose cut fails before it is read is closed 
       },
     );
     assertEquals(cut.length, 1);
-    // Closed: its stream can no longer be read.
     await assertRejects(
       () => cut[0].getReader().read(),
       Deno.errors.BadResource,
@@ -1673,8 +1608,6 @@ Deno.test("read model guard: a hard-linked at-risk copy whose checkout file was 
         clock: () => now,
       });
     await using(reader(), (model) => model.catchUp(signal()));
-    // After a power cut a chunk is torn and the datastore refuses puts:
-    // both files hold their content, so a copy is linked aside.
     await tear(env, v1.parts![2].sha256);
     storage.refusePuts = new Error("No space left on device (os error 28)");
     boot = "boot-id:2";
@@ -1726,8 +1659,6 @@ Deno.test("read model guard: a retry drops an at-risk copy whose bytes no longer
     const copy = atRiskCopyPath(env.stateDir, "", await sha256Hex(V1));
     assertEquals(await Deno.readFile(copy), V1);
 
-    // The checkout file, and with it the hard-linked copy, is edited in
-    // place, chunk 2 included.
     const edited = V1.slice();
     edited[2 * TEST_CHUNK_BYTES] ^= 0xff;
     await Deno.writeFile(fileOf(env, K), edited);

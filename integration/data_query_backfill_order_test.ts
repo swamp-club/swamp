@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A catalog backfill inserts rows in the repository's walk order, and
- * queries iterate by rowid. The walk is in name order at every level, so
- * the first query on an unpopulated catalog leaves rows in data-name order
- * on every filesystem, not in the order readdir happened to return
- * (swamp-club#3066). The repository, catalog and query service are opened
- * as repo_context opens them for the CLI.
+ * backfill inserts rows in the repository's walk order and queries iterate by
+ * rowid; the walk is in name order at every level, so rows end up in data-name
+ * order on every filesystem
  */
 
 import "../src/domain/models/models.ts";

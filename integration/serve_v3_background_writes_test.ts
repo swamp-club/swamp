@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve's background writers on a v3 datastore (swamp-club#3279).
- *
- * On v3 a repository context's hook refuses every write outside a unit of
- * work bound to it (`UnscopedWriteRefusedError`), and most of these paths
- * log and swallow their errors. So each test checks the outcome, not only
- * that nothing threw: the write is in the writer's checkout, and a second
- * checkout that catches up from the commit log holds the same records.
+ * on v3 the hook refuses writes outside a unit of work and most of these paths
+ * swallow errors, so each test checks the outcome, not only that nothing threw
  */
 
 import "../src/domain/models/models.ts";
@@ -121,12 +116,10 @@ await initializeLogging({});
 
 const ONE_HOUR = 60 * 60 * 1000;
 
-/** Runs `fn` in a commit-log root over A's context, as a seed must on v3. */
 function inRoot<T>(repos: RowRepos, fn: () => Promise<T>): Promise<T> {
   return runInRootUnitOfWork(repos.a.repoContext, { flush: undefined }, fn);
 }
 
-/** A workflow run left `running` by serve instance `instanceId`. */
 function runningRun(instanceId?: string): {
   workflowId: string;
   run: WorkflowRun;
@@ -167,7 +160,6 @@ async function statusOf(
   return run?.status;
 }
 
-/** A workflow whose only step is an approval gate, so its run suspends. */
 function gatedWorkflow(name: string, schedule?: string): Workflow {
   return Workflow.create({
     name,
@@ -182,7 +174,6 @@ function gatedWorkflow(name: string, schedule?: string): Workflow {
   });
 }
 
-/** Whether A's commit log holds a commit of a workflow run's partition. */
 async function runCommitted(
   repos: RowRepos,
   datastorePath: string,
@@ -478,7 +469,6 @@ Deno.test("v3 serve background: serve's maintenance timer compacts and collects 
   });
 });
 
-/** Registers the control-plane vault serve keeps token secrets in. */
 async function registerTokenVault(repos: RowRepos): Promise<void> {
   const provider = new ControlPlaneVaultProvider(
     new FileSystemControlPlaneStore(swampPath(repos.repoA)),
@@ -648,7 +638,6 @@ Deno.test("v3 serve background: the device-auth mint hands out its token only on
     ).commitStore;
     const before = store.highWaterMark().cursor;
     const credential = await mint(() => {
-      // Confirmed only after the mint committed.
       confirmations.push(store.highWaterMark().cursor > before);
       return Promise.resolve();
     });
@@ -668,7 +657,6 @@ const GRANT_FILE = `grants:
     resource: "data:*"
 `;
 
-/** A policy loader that reads nothing: the handlers only reload it. */
 const NOOP_POLICY_LOADER = {
   load: () => Promise.resolve(undefined),
   loadWithCounts: () =>
@@ -712,7 +700,6 @@ Deno.test({
       const ctx = repos.a.repoContext;
       const grantsDir = join(repos.repoA, "grants");
       await Deno.mkdir(grantsDir, { recursive: true });
-      // As serve builds them (src/cli/commands/serve.ts).
       const autoDefRepo = new YamlDefinitionRepository(
         repos.repoA,
         undefined,

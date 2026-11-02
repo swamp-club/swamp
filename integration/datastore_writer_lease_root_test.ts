@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The v3 writer lease bound at the datastore root of a non-filesystem
- * datastore (swamp-club#3364): a registered datastore type's provider hands
+ * v3 writer lease at the root of a non-filesystem datastore: the provider hands
  * its writable datastore-wide control plane to the lease, and namespaced
- * checkouts syncing the same datastore neither see nor move its records.
+ * checkouts neither see nor move its records
  */
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
@@ -50,7 +49,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Marks, writes and pushes one file under `namespace`, as core does. */
 async function pushFile(
   service: DatastoreSyncService,
   cacheDir: string,
@@ -80,8 +78,6 @@ Deno.test("v3 writer lease: binds at the datastore root through the provider whi
       );
       const hold = await lease.acquire({ maxWaitMs: 0 });
       try {
-        // Two namespaces sync, write their own control records, and one
-        // pushes twice, so its index exists before its second pull.
         for (const namespace of ["team-a", "team-b"]) {
           for (const round of [1, 2]) {
             const cacheDir = join(dir, `${namespace}-${round}`);
@@ -111,8 +107,6 @@ Deno.test("v3 writer lease: binds at the datastore root through the provider whi
           );
         }
 
-        // A second process on the same datastore meets the same lease,
-        // whichever namespace it would sync.
         const other = await v3WriterLease(
           datastoreWriterLeaseStore(
             datastoreTypeRegistry.get(type.typeName)!.createProvider!({}),
@@ -134,9 +128,6 @@ Deno.test("v3 writer lease: binds at the datastore root through the provider whi
 });
 
 Deno.test("v3 writer lease: a registered provider with a writable datastore-wide store but no datastoreWideLease declaration is refused", () => {
-  // The same remote that holds the lease above, but the extension does not
-  // declare that a namespaced push keeps _control/writer/ at the root
-  // (swamp-club#3414).
   const remote = createInMemoryRemote({ controlPlane: true });
   const type = registerTestDatastoreType(remote);
   try {

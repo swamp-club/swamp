@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The commit outbox's migrations (swamp-club#3564, swamp-club#3586) under openers
- * that race: each worker is its own connection, as two swamp processes
- * opening one checkout's outbox at once are.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -43,12 +37,11 @@ import type {
 const OPENERS = 4;
 
 /**
- * How long the openers get to start and to open the outbox. A loaded runner has
- * stalled the whole suite for longer than the default 10s (swamp-club#4160).
+ * openers get a long wait to start and open the outbox: a loaded runner can
+ * stall the whole suite past the default timeout
  */
 const OPENER_WAIT_MS = 60_000;
 
-/** What each schema's migration added, dropped to make an older file. */
 const DOWNGRADES: Record<number, string> = {
   1: "ALTER TABLE outbox_entries DROP COLUMN writer_process; " +
     "ALTER TABLE outbox_entries DROP COLUMN left_at_fence; ",
@@ -64,7 +57,6 @@ const DOWNGRADES: Record<number, string> = {
     "DROP TABLE outbox_landed_offline; ",
 };
 
-/** The statements that turn a current outbox into one at `schema`. */
 function downgradeTo(schema: number): string {
   let sql = "";
   for (
@@ -103,7 +95,6 @@ async function raceOpeners(schema: number): Promise<void> {
   const workers: Worker[] = [];
   try {
     const path = join(dir, "commits-outbox.db");
-    // As a swamp at `schema` left it, with one entry.
     const outbox = new SqliteCommitOutbox(path);
     await outbox.prepare({
       commit: modelCommit(1, [await savePut("a", 1)]),

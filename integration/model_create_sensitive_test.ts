@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for the secrets-at-rest guard (swamp-club#480).
- *
- * Exercises the real create path end-to-end against a real
- * YamlDefinitionRepository on disk: a literal value for a `{ sensitive: true }`
- * global argument is refused (and nothing is written), while a `vault.get(...)`
- * expression is persisted verbatim. Also drives the persistence chokepoint
- * directly to prove that an out-of-band writer (e.g. a different command or a
- * datastore sync) cannot land a literal secret on disk either.
- */
-
 import {
   assertEquals,
   assertNotEquals,
@@ -84,7 +73,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Wires the real YamlDefinitionRepository into ModelCreateDeps. */
 function realDeps(repo: YamlDefinitionRepository): ModelCreateDeps {
   return {
     resolveModelType: () => Promise.resolve(modelDef),
@@ -144,7 +132,6 @@ Deno.test("Integration: model create refuses a literal sensitive global arg and 
     const last = events[events.length - 1];
     assertEquals(last.kind, "error");
 
-    // Nothing was persisted — the secret never reached disk.
     assertEquals(await repo.findByNameGlobal("leaky"), null);
   });
 });

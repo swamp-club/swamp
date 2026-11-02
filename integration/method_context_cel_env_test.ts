@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration test for ctx.createCelEnvironment(): wires the factory through
-// the production MethodContext construction site (buildMethodContext) into a
-// synthetic extension's execute, and verifies CEL evaluation works
-// end-to-end. A regression in the factory, the field declaration, or the
-// build factory would surface here. See lab issue #376.
-
 import { assertEquals, assertExists } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -99,7 +93,6 @@ Deno.test("createCelEnvironment chain: factory + executor expose a working Envir
       );
       const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-      // Build a minimal execution target: one method that uses ctx.createCelEnvironment.
       const definition = Definition.create({
         name: "cel-env-ctx-model",
         type: TEST_MODEL_TYPE.normalized,
@@ -117,9 +110,6 @@ Deno.test("createCelEnvironment chain: factory + executor expose a working Envir
         methods: { run: method },
       };
 
-      // The synthetic extension's execute exercises the full extension-facing
-      // surface: pull the factory off ctx, parse, register a custom function,
-      // evaluate, and assert the result via captured variables.
       let arithmeticResult: unknown;
       let customResult: unknown;
       let secondInstanceSawCustom = true;
@@ -127,10 +117,8 @@ Deno.test("createCelEnvironment chain: factory + executor expose a working Envir
         execute: async (_def, _m, context) => {
           const env = context.createCelEnvironment();
 
-          // Arithmetic overload baseline (double + int).
           arithmeticResult = env.evaluate("a + 2", { a: 1.5 });
 
-          // Custom function registration.
           env.registerFunction(
             "matchesRegex(string, string): bool",
             (value: string, pattern: string) => new RegExp(pattern).test(value),

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote execution on a v3 datastore (swamp-club#3279): the worker gateway's
- * enrollment and status writes, the capability verbs and the data plane's
- * writes, against an orchestrator built over a v3 repository context as
- * serve builds it, with a real worker over a real socket. Every write must
- * reach the commit log: a second checkout that catches up holds the same
- * records.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
@@ -81,7 +72,6 @@ const TEST_RUNNER_COMMAND = {
   ],
 };
 
-/** Runs a worker-model method, in a root over A's context as v3 needs. */
 async function runModelMethod(
   repos: RowRepos,
   input: {
@@ -144,7 +134,6 @@ Deno.test({
         }),
       );
 
-      // The orchestrator assembly serve builds.
       const capabilityService = new CapabilityService({ repoDir, repoContext });
       const dispatches = new DispatchRegistry();
       const bundles = new BundleRegistry();
@@ -273,8 +262,8 @@ Deno.test({
         workerStop.abort();
         if (workerDone) await workerDone.catch(() => {});
         await server.shutdown();
-        // A pending dispatch's end is recorded without waiting
-        // (swamp-club#4038).
+        // a pending dispatch's end is recorded without waiting, so settle it
+        // before the checkouts are compared
         await dispatchService.settled();
       }
       // The worker's disconnect saves its state in a root that may still be

@@ -44,7 +44,6 @@ Deno.test("vault call analysis: attribution, removal checks and workflow authori
     ]
   ) {
     const text = "${{ " + source + " }}";
-    // This is the unchanged public shape consumed by the dispatch allowlist.
     assertEquals(extractVaultReferences(text), {
       staticRefs: [{ vaultName: "prod", secretKey: key }],
       hasDynamicRefs: false,

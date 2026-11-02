@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for sensitive-argument redaction in `swamp model get`.
- *
- * Exercises the full read path: a literal sensitive global argument is persisted
- * to disk via the real YamlDefinitionRepository, loaded back through the libswamp
- * modelGet application service (which applies the shared redactSensitiveValues
- * primitive), and projected by both the log and JSON renderers. Confirms the
- * secret never reaches output in either mode, while non-sensitive values do.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { consumeStream } from "../src/libswamp/stream.ts";
@@ -59,7 +49,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** A minimal model type whose global args carry one sensitive field. */
 const modelDef = {
   type: ModelType.create("test/sensitive-get"),
   version: "2026.05.28.1",
@@ -97,7 +86,6 @@ Deno.test("Integration: model get redacts a literal sensitive global argument in
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
-    // Persist a definition with a literal sensitive value (not a vault.get expr).
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "leaky-model",
@@ -106,7 +94,6 @@ Deno.test("Integration: model get redacts a literal sensitive global argument in
     });
     await definitionRepo.save(modelDef.type, definition);
 
-    // Real lookup from disk; the model type schema supplies the sensitive flag.
     const deps: ModelGetDeps = {
       lookupDefinition: (idOrName) =>
         findDefinitionByIdOrName(definitionRepo, idOrName),
@@ -132,7 +119,6 @@ Deno.test("Integration: model get redacts a literal sensitive global argument in
       throw new Error("expected a completed event");
     }
 
-    // The read model carries the redacted value, not the secret.
     assertEquals(completed.data.globalArguments, {
       apiKey: "***",
       region: "us-east-1",
@@ -147,7 +133,6 @@ Deno.test("Integration: model get redacts a literal sensitive global argument in
     );
     assertEquals(reloaded?.definition.globalArguments.apiKey, SECRET);
 
-    // Neither renderer emits the secret; both show "***" and the region.
     for (const mode of ["log", "json"] as const) {
       const output = await captureRender(completed.data, mode);
       assertStringIncludes(output, "***");

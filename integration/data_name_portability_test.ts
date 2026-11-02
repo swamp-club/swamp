@@ -21,12 +21,9 @@ import { assert } from "@std/assert";
 import { join } from "@std/path";
 import { dataNamePortability } from "../src/domain/data/data.ts";
 
-// The writer refuses a data name on Windows only when Windows could not
-// store it anyway (swamp-club#3568). This proves that premise against the
-// real filesystem: every printable ASCII and control character the rule
-// refuses also makes Deno.mkdir fail, so the refusal never stops a write
-// that works today. `/` and `\` are path separators that DataMetadataSchema
-// already rejects. Runs in the scheduled Windows Compatibility workflow.
+// the writer refuses a name on Windows only when Windows could not store it
+// anyway: every character it refuses also makes Deno.mkdir fail; / and \ are
+// already rejected by DataMetadataSchema
 Deno.test({
   name:
     "dataNamePortability: every name refused on windows also fails Deno.mkdir there",
@@ -49,7 +46,6 @@ Deno.test({
         }
         assert(failed, `Deno.mkdir accepted ${JSON.stringify(name)}`);
       }
-      // The seven printable characters and the 31 control characters.
       assert(refused === 38, `expected 38 refused names, got ${refused}`);
     } finally {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

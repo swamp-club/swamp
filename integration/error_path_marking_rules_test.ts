@@ -17,20 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: errors that name a filesystem path mark it
-// (swamp-club#2830).
-//
-// Telemetry removes marked paths exactly (`markErrorPaths` in
-// src/domain/errors.ts); an unmarked path falls back to patterns that cannot
-// tell where a path with a space in its last segment ends. This ratchet finds
-// `new UserError(` / `new Error(` / `new SyntaxError(` whose message
-// interpolates a path-named value (`*Path`, `*Dir`, `*File`, `*Root`, `path`,
-// `dir`, `file`, `root`, `location`) and is not wrapped in `markErrorPaths(`.
-// It is a heuristic: it guards against new unmarked sites, it does not prove
-// every path is marked. It does not see messages built by string
-// concatenation (`"... at " + path`), messages built before the constructor
-// call, or custom error subclasses, and a path in a variable with some other
-// name passes.
+// errors naming a filesystem path must use markErrorPaths; a heuristic that
+// misses string concatenation, prebuilt messages, error subclasses and oddly
+// named variables
 
 import { join } from "@std/path";
 import {
@@ -41,7 +30,6 @@ import {
 
 const SRC_DIR = join(import.meta.dirname!, "..", "src");
 
-/** How far before `new` to look for the `markErrorPaths(` wrapper. */
 const LOOKBACK = 64;
 
 const CONSTRUCTOR_RE = /\bnew (?:UserError|Error|SyntaxError)\(/g;
@@ -49,7 +37,6 @@ const INTERPOLATION_RE = /\$\{([^}]*)\}/g;
 const PATH_NAME_RE =
   /^(?:\w+(?:Path|Dir|File|Root)|path|dir|file|root|location)$/;
 
-/** The text between the `(` at `open` and its matching `)`. */
 function argumentsAt(source: string, open: number): string {
   let depth = 0;
   for (let i = open; i < source.length; i++) {
@@ -73,9 +60,8 @@ function namesPath(args: string): boolean {
 }
 
 /**
- * Unmarked path-naming error constructions, keyed by file and the start of
- * their message. A repeated key gets an occurrence suffix, so a new copy of
- * an existing message in the same file is still reported.
+ * keyed by file and message start; a repeated key gets an occurrence suffix so
+ * a new copy of an existing message is still reported
  */
 async function unmarkedPathErrors(): Promise<string[]> {
   const keys: string[] = [];
@@ -101,13 +87,13 @@ async function unmarkedPathErrors(): Promise<string[]> {
 }
 
 /**
- * Path-named values that are not filesystem paths. Do not add a filesystem
- * path here: mark it with `markErrorPaths` instead.
+ * path-named values that are not filesystem paths; mark a real path with
+ * markErrorPaths instead of adding it here
  */
 const PINNED: readonly string[] = [
-  // Not filesystem paths: API and URL paths, a data field path, an
-  // expression's place in a definition, and an extension-relative name.
-  // Marking them would only cost diagnostics.
+  // not filesystem paths: API and URL paths, a data field path, an expression's
+  // place in a definition, an extension-relative name; marking them would only
+  // cost diagnostics
   "src/domain/models/data_writer.ts: `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,",
   "src/domain/vaults/vault_secret_bag.ts: `The secret '${key}' in vault '${vaultName}' (at ${entry.location}) was not loaded before delivery`,",
   'src/infrastructure/http/swamp_club_client.ts: `Request to ${this.serverUrl}${path} timed out after ${seconds}s.`, "timeout",',

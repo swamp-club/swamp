@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Extension authors may use the behavior spelling — export const behavior,
-// extensions/behaviors/ and the behaviors: manifest key — as an exact
-// synonym of the model spelling (swamp-club#3338). The registry keys on what
-// push sends, so a behavior-spelled extension must send exactly what its
-// model-spelled twin sends, and every model-spelled extension must send
-// what it sent before the alias existed (the goldens).
+// a behavior-spelled extension must send exactly what its model-spelled twin
+// sends, and model-spelled ones what they sent before the alias (the goldens)
 
 import { assert, assertEquals } from "@std/assert";
 import { EXTENSION_FIXTURES } from "./test_helpers/behavior_extension/fixtures.ts";
@@ -82,10 +78,9 @@ Deno.test("behavior extension twins: a behavior-spelled extension sends what its
       model.archive.manifest,
       `${fixture.id}: re-emitted manifest`,
     );
-    // Non-source files (manifest, include data) are byte-identical. The
-    // dependency audit record holds each bundle's hash (swamp-club#3970),
-    // and the bundles differ by their export name, so it is compared
-    // without them.
+    // non-source files are byte-identical; the dependency audit record holds
+    // each bundle's hash and bundles differ by export name, so it is compared
+    // without them
     for (const [file, sha] of Object.entries(model.archive.sha256)) {
       if (file.endsWith(".ts") || file.endsWith(".js")) continue;
       if (file.endsWith("dependency-audit.json")) {
@@ -102,7 +97,6 @@ Deno.test("behavior extension twins: a behavior-spelled extension sends what its
         `${fixture.id}: ${file}`,
       );
     }
-    // The same findings, plus the one behavior-spelling warning.
     const spelled = behavior.reviewWarnings.filter((w) =>
       w.ruleId === "behavior-spelling"
     );

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The managed extension lockfile on a v3 datastore (swamp-club#3279): CLI
- * and serve `extension pull` and `extension update`, and `doctor extensions
- * --repair`, against a stubbed registry. Each commits the lockfile through
- * the commit log, so a second checkout that catches up reads the same
- * entries.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -75,7 +67,6 @@ async function buildArchive(version: string): Promise<Uint8Array> {
   }
 }
 
-/** A registry that serves {@link EXTENSION} at `latest.version`. */
 function registry(
   archives: Map<string, Uint8Array>,
   latest: { version: string },
@@ -141,7 +132,6 @@ function registry(
   };
 }
 
-/** Runs `fn` on a managed-config v3 repo, with a stubbed registry. */
 async function withV3Registry(
   latest: { version: string },
   fn: (repos: RowRepos, datastorePath: string) => Promise<void>,
@@ -180,7 +170,6 @@ function cli(repos: RowRepos, ...args: string[]): string[] {
   return [...args, "--repo-dir", repos.repoA, "--json"];
 }
 
-/** The lockfile entries a checkout reads, as `name@version`. */
 async function lockfileEntries(repoDir: string): Promise<string[]> {
   const text = await Deno.readTextFile(
     swampPath(repoDir, "config", "upstream_extensions.json"),
@@ -192,9 +181,8 @@ async function lockfileEntries(repoDir: string): Promise<string[]> {
 }
 
 /**
- * B catches up and holds what A committed. Pulled extension sources
- * (`config/pulled-extensions/`) are each checkout's own (swamp-club#2612),
- * so they are left out of the comparison.
+ * pulled extension sources (config/pulled-extensions/) are each checkout's own,
+ * so they are left out of the comparison
  */
 async function assertLockfileShared(
   repos: RowRepos,

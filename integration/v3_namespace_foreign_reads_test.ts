@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Cross-namespace reads on a v3 datastore (swamp-club#3691): two checkouts,
- * `alpha` and `beta`, share one v3 filesystem datastore. A read in alpha of
- * beta's data returns beta's content, whether the two use the same model id
- * or not, through `data.latest` (getLatestRecord), `data query`, its
- * `--select content` projection, and a workflow run's CEL. A record alpha's
- * read model could not materialise fails the read with its code instead of
- * reading as empty.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
@@ -58,7 +48,6 @@ import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 
 await initializeLogging({});
 
-/** A checkout of the shared datastore; `namespace` undefined is solo. */
 async function initRepo(
   repoDir: string,
   datastorePath: string,
@@ -84,7 +73,6 @@ async function initRepo(
   );
 }
 
-/** Commits `m1`'s `state` resource in `repoDir`, holding `content`. */
 async function writeState(
   repoDir: string,
   modelType: ModelType,
@@ -124,7 +112,6 @@ interface Shared {
   modelType: ModelType;
 }
 
-/** A fresh v3 filesystem datastore and a per-run model type. */
 async function withDatastore(fn: (s: Shared) => Promise<void>): Promise<void> {
   const dir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-3691-foreign-" }),
@@ -150,10 +137,6 @@ async function withDatastore(fn: (s: Shared) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Checkouts alpha and beta, each holding `m1`'s `state` saying who wrote
- * it; beta writes first. Returns alpha's query service.
- */
 async function alphaAndBeta(
   s: Shared,
   alphaId: string,
@@ -179,7 +162,6 @@ async function queryServiceOf(repoDir: string): Promise<DataQueryService> {
   );
 }
 
-/** What alpha reads of beta's `m1` through each read path. */
 async function readsOfBeta(dqs: DataQueryService) {
   const latest = await dqs.getLatestRecord("m1", "state", "beta");
   const queried = await dqs.query('ns == "beta"') as DataRecord[];
@@ -202,7 +184,6 @@ Deno.test("v3 foreign reads: alpha reads beta's m1 under a shared model id and g
     const id = crypto.randomUUID();
     const dqs = await alphaAndBeta(s, id, id);
     assertEquals(await readsOfBeta(dqs), BETA_READS);
-    // Alpha's own reads are unchanged.
     assertEquals(
       (await dqs.getLatestRecord("m1", "state", "alpha"))?.attributes,
       { who: "alpha" },
@@ -320,7 +301,6 @@ Deno.test("v3 foreign reads: a foreign record alpha could not materialise fails 
     const repoBeta = join(s.dir, "beta");
     await initRepo(repoAlpha, s.datastorePath, "alpha");
     await initRepo(repoBeta, s.datastorePath, "beta");
-    // Past the inline limit, so the commit names chunks; then lose them.
     await writeState(
       repoBeta,
       s.modelType,
@@ -337,7 +317,6 @@ Deno.test("v3 foreign reads: a foreign record alpha could not materialise fails 
       removed++;
     }
     assert(removed > 0, "beta's content names chunks");
-    // Alpha opens after: its read model cannot materialise beta's record.
     await writeState(repoAlpha, s.modelType, id, json({ who: "alpha" }));
     const dqs = await queryServiceOf(repoAlpha);
 

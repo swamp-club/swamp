@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Sorted, keyset-paged `data.query` through the serve handler that the local
- * dashboard shares (swamp-club#4177): pages run newest first by a tag across
- * bounded pages without skipping or repeating a row when data is written
- * between them, a tags-only list reads no body, and read access is applied
- * before the limit, so neither a page nor a cursor reaches a row the viewer
- * may not read.
+ * pages run newest first without skipping or repeating a row under concurrent
+ * writes, a tags-only list reads no body, and read access applies before the
+ * limit so no page or cursor reaches an unreadable row
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -47,7 +44,6 @@ await initializeLogging({});
 const PREDICATE = 'tags.type == "paged-session"';
 const NEWEST_FIRST = { field: "tags.startedAt", direction: "desc" } as const;
 
-/** Saves a session-like item and returns its content path. */
 async function saveSession(
   repo: ServeRepo,
   model: Definition,

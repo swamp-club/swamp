@@ -18,13 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Pull installs only regular files and directories from an extension
- * archive (swamp-club#3496). Push never writes anything else, so these
- * archives can only be hand-built and uploaded outside swamp; that is the
- * case this covers. Wires the CLI's pull path (`pullExtension` over
- * `createExtensionPullDeps` and the real registry client) to a registry
- * on a port-0 server, and renders the failure as the CLI does in log and
- * JSON modes.
+ * pull installs only regular files and directories from an archive; push never
+ * writes anything else, so other entry kinds can only be hand-built and
+ * uploaded outside swamp, the case covered here
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -55,7 +51,6 @@ const ABSOLUTE_TARGET = join(
   `${LINK_TARGET_MARK}-${crypto.randomUUID()}`,
 );
 
-/** A registry serving `archive` as the only version of `name`. */
 async function serveRegistry(name: string, archive: Uint8Array<ArrayBuffer>) {
   const checksum = await computeChecksum(archive);
   const encoded = encodeURIComponent(name);
@@ -91,7 +86,6 @@ async function serveRegistry(name: string, archive: Uint8Array<ArrayBuffer>) {
   };
 }
 
-/** A skill-only extension archive whose last entry is `extra`. */
 async function archiveWith(name: string, extra: RawTarEntry) {
   const skill = `skill-${name.split("/").pop()}`;
   return await buildRawTarGz([
@@ -124,7 +118,6 @@ function captureStderr(run: () => void): string {
   return lines.join("\n");
 }
 
-/** Every path under `dir`, symlinks included and never followed. */
 async function treeOf(dir: string): Promise<string[]> {
   const paths: string[] = [];
   for await (const entry of walk(dir, { followSymlinks: false })) {
@@ -136,7 +129,6 @@ async function treeOf(dir: string): Promise<string[]> {
 interface Case {
   what: string;
   entry: () => RawTarEntry;
-  /** What the error prints for the entry, after its archive path. */
   printed: string;
 }
 
@@ -280,8 +272,6 @@ for (const { what, entry, printed } of CASES) {
         // sequence must not reach the terminal.
         assertEquals(stderr.includes(`${ESC}[31mred`), false, stderr);
 
-        // Nothing landed: no install root, no lockfile entry, and the
-        // tree around the repository is as it was.
         const lockfile = await Deno.readTextFile(lockfilePath).catch(() => "");
         assertEquals(lockfile.includes(name), false, lockfile);
         assertEquals(await Deno.lstat(ABSOLUTE_TARGET).catch(() => null), null);

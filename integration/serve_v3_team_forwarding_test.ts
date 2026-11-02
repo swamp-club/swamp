@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve follower forwarding writes to its team's leader (swamp-club#4120),
- * over real sockets on port 0: a commit sent to the follower lands at the
- * leader as the caller, with the leader deciding whether the caller may; the
- * follower never says who the caller is; a leader that cannot be reached is
- * a plain retryable refusal, and one lost after the request reached it is
- * refused as in flight, never retried.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import type { ServeLeader } from "../src/domain/datastore_v3/serve_leader.ts";
 import { handleDatastoreRequest } from "../src/serve/datastore_api.ts";
@@ -49,10 +40,6 @@ import {
   writer,
 } from "./serve_datastore_api_harness.ts";
 
-/**
- * Runs `fn` with a follower in front of `server` (the leader): its own
- * port-0 listener, whose writes go to the leader `leader()` names.
- */
 async function withFollower(
   server: Server,
   leader: () => ServeLeader | undefined,
@@ -234,7 +221,6 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer(writer(), async (server) => {
-      // A leader that takes the request and drops the connection.
       const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
       let accepted = 0;
       const dropping = (async () => {

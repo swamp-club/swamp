@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Shared fixture for the serve run vault scope integration tests
- * (swamp-club#2676): a real repository on disk with three local_encryption
- * vaults (`erp`, `roomcontrol`, `outputs`), a per-run model type whose
- * methods read a vault through an expression, drive `context.vaultService`
- * and write a sensitive output, and a connection context whose policy can be
- * swapped mid-run. Requests go through serve's real handlers.
- */
-
 import { assert } from "@std/assert";
 import { z } from "zod";
 import { GrantBasedAccessDecisionService } from "../src/domain/access/grant_based_access_decision_service.ts";
@@ -76,20 +67,15 @@ import {
   withServeRepo,
 } from "./serve_request_harness.ts";
 
-/** The secret each fixture vault holds under the key `password`. */
 export const SECRETS = {
   erp: "erp-secret-value",
   roomcontrol: "roomcontrol-secret-value",
 } as const;
 
-/** A bot whose runs the tests scope; it runs and reads anything else. */
 export const BOT: Principal = { kind: "user", id: "bot" };
-/** An approver/resumer holding no vault grant. */
 export const ROOT: Principal = { kind: "user", id: "root" };
-/** An access admin (admin on access:*). */
 export const ADMIN: Principal = { kind: "user", id: "admin" };
 
-/** A grant; `subject` is `kind:name`, e.g. `user:bot`. */
 export function grant(
   subject: string,
   kind: Grant["resource"]["kind"],
@@ -114,7 +100,6 @@ export function grant(
   };
 }
 
-/** Run, read and write anything but vaults, and approve workflows. */
 export function runnerGrants(subject: string): Grant[] {
   return [
     grant(subject, "model", "*", ["read", "write", "run"]),
@@ -123,7 +108,6 @@ export function runnerGrants(subject: string): Grant[] {
   ];
 }
 
-/** bot reads only roomcontrol; root runs and approves with no vault grant. */
 export function roomcontrolOnly(): Grant[] {
   return [
     ...runnerGrants("user:bot"),
@@ -132,45 +116,28 @@ export function roomcontrolOnly(): Grant[] {
   ];
 }
 
-/** The outcome of each `context.vaultService` operation the `ops` method tried. */
 export type OpsOutcome = Record<string, string>;
 
-/** Hooks a test sets to act inside a method's execution. */
 export interface MethodHooks {
-  /** Called inside `mint` after its side effect, before it writes output. */
   beforeMintWrite?: () => void | Promise<void>;
-  /** Called inside `read` after it recorded its value. */
   afterRead?: () => void | Promise<void>;
 }
 
 export interface VaultScopeFixture {
   repo: ServeRepo;
   ctx: ConnectionContext;
-  /** Every audit event serve emitted. */
   audits: AuditEvent[];
-  /** The test model type, registered per run. */
   type: ModelType;
-  /** Values the `read` method received, in order. */
   seen: string[];
-  /** Outcomes of each `ops` call. */
   ops: OpsOutcome[];
-  /** How many times `mint` reached its external side effect. */
   sideEffects: { count: number };
-  /** Calls to `read` that fail on purpose before recording. */
   failNext: { count: number };
   hooks: MethodHooks;
-  /** Replaces the policy every later decision reads. */
   setPolicy(grants: Grant[], groups?: Group[]): void;
-  /** A vault service over the repo, used outside any run scope. */
   vaults(): Promise<VaultService>;
-  /**
-   * A connection context over freshly opened repositories, as a restarted
-   * serve process would have, sharing this fixture's policy and audit.
-   */
   restartedCtx(options?: ServeCtxOptions): Promise<ConnectionContext>;
 }
 
-/** The run-time vault denials among `audits`. */
 export function vaultDenials(audits: AuditEvent[]): AuditEvent[] {
   return audits.filter((e) =>
     e.category === "secrets" && e.outcome === "denied" &&
@@ -187,7 +154,6 @@ function decisionService(
   );
 }
 
-/** Saves a local_encryption vault named `name`, optionally with a secret. */
 export async function createVault(
   repoDir: string,
   name: string,
@@ -205,7 +171,6 @@ export async function createVault(
   }
 }
 
-/** Saves a definition of the fixture type. */
 export async function saveDefinition(
   f: Pick<VaultScopeFixture, "repo" | "type">,
   name: string,
@@ -216,7 +181,6 @@ export async function saveDefinition(
   return definition;
 }
 
-/** A `read` definition whose argument is `value`. */
 export function readerOf(
   f: Pick<VaultScopeFixture, "repo" | "type">,
   name: string,
@@ -227,33 +191,18 @@ export function readerOf(
   });
 }
 
-/** `${{ vault.get('<vault>', 'password') }}`. */
 export function vaultRef(vault: string, key = "password"): string {
   return `\${{ vault.get('${vault}', '${key}') }}`;
 }
 
-/**
- * Runs `fn` against a fresh repo with vaults `erp` and `roomcontrol`
- * (holding {@link SECRETS}) and an empty `outputs` vault, readers
- * `erp-reader` and `rc-reader`, an `ops` definition, a `minter` whose
- * sensitive output lands in `outputs`, and a `creds-reader` that reads it
- * back.
- */
 export async function withVaultScopeFixture(
   fn: (f: VaultScopeFixture) => Promise<void>,
   options: {
     grants?: Grant[];
     groups?: Group[];
     ctx?: ServeCtxOptions;
-    /** The vault the minter's spec names; `outputs` by default. */
     mintVault?: string;
-    /** The `vaultKey` the minter's `token` field fixes; generated if unset. */
     mintTokenKey?: string;
-    /**
-     * When set, the minter's spec also holds a `replicas` array whose
-     * sensitive `secret` field declares this `vaultKey`, and `mint` writes
-     * two replicas.
-     */
     mintReplicaKey?: string;
   } = {},
 ): Promise<void> {
@@ -474,7 +423,6 @@ function request(type: string, payload: Record<string, unknown>) {
   return { type, id: crypto.randomUUID(), payload };
 }
 
-/** Sends `workflow.run` as `principal` and returns the run it started. */
 export async function runWorkflowAs(
   f: VaultScopeFixture,
   workflow: Workflow,
@@ -500,7 +448,6 @@ export async function runWorkflowAs(
   return { run: (await loadRun(f, workflow, runId))!, frames };
 }
 
-/** Reads a run of `workflow` back from the repo. */
 export async function loadRun(
   f: Pick<VaultScopeFixture, "repo">,
   workflow: Workflow,
@@ -512,7 +459,6 @@ export async function loadRun(
   );
 }
 
-/** Sends `model.method.run` as `principal`. */
 export async function runMethodAs(
   f: VaultScopeFixture,
   modelIdOrName: string,
@@ -534,7 +480,6 @@ export async function runMethodAs(
   );
 }
 
-/** The error text a method run reported, from its error frame or event. */
 export function methodError(frames: Frame[]): string | undefined {
   for (const frame of frames) {
     if (frame.type === "error") return frame.error?.message;
@@ -550,7 +495,6 @@ export function methodError(frames: Frame[]): string | undefined {
   return undefined;
 }
 
-/** A step's status and error in `run`. */
 export function stepOf(
   run: WorkflowRun,
   job: string,
@@ -560,7 +504,6 @@ export function stepOf(
   return { status: s?.status, error: s?.error };
 }
 
-/** Sends `workflow.resume` of `runId` as `principal`. */
 export async function resumeAs(
   f: VaultScopeFixture,
   workflow: Workflow,
@@ -575,7 +518,6 @@ export async function resumeAs(
   );
 }
 
-/** Sends `workflow.approve` of gate `stepName` in `runId` as `principal`. */
 export async function approveAs(
   f: VaultScopeFixture,
   workflow: Workflow,
@@ -595,19 +537,11 @@ export async function approveAs(
   );
 }
 
-/** How a request's socket is set up before it is sent. */
 export interface SessionSetup {
-  /** IdP groups an OAuth session carries. */
   idpGroups?: string[];
-  /** The server token binding of a token session. */
   token?: TokenSessionBinding;
 }
 
-/**
- * Sends one request through `handleMessage` on a socket set up as `session`
- * describes, and returns every frame sent for it once it and every detached
- * run it started are done.
- */
 export async function sendAs(
   ctx: ConnectionContext,
   type: string,
@@ -651,10 +585,6 @@ export async function sendAs(
   );
 }
 
-/**
- * Saves an active server token record for `principal`, as a mint would,
- * and returns the binding a session opened with it carries.
- */
 export async function saveTokenRecord(
   repo: ServeRepo,
   principal: Principal,
@@ -684,7 +614,6 @@ export async function saveTokenRecord(
   return { name, createdAt, principalId };
 }
 
-/** Marks the server token `binding` names revoked, as `token revoke` does. */
 export async function revokeTokenRecord(
   repo: ServeRepo,
   binding: TokenSessionBinding,

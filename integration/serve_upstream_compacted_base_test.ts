@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve-mode checkout of a datastore serve has compacted
- * (swamp-club#4006): a fresh copy, or one left behind the compaction point,
- * loads serve's compacted base, filtered to what its caller may read, and
- * reads on through the feed. Against a real serve in a Worker, opened the
- * production way.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
@@ -57,14 +49,12 @@ const VPC_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a13";
 const DB_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a14";
 const KEY_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a15";
 
-/** Alice is a member; bob may read behavior web and its data, nothing else. */
 const SCOPED: readonly GrantSpec[] = [
   ...MEMBER,
   { user: "bob", actions: ["read"], kind: "model", pattern: "web" },
   { user: "bob", actions: ["read"], kind: "data", pattern: "web" },
 ];
 
-/** Saves `count` versions of `name` on `modelId`, one command each. */
 async function saveVersions(
   scratch: Scratch,
   client: Client,
@@ -87,7 +77,6 @@ async function saveVersions(
   }
 }
 
-/** The data records a checkout holds, by path, without their save time. */
 async function dataRecords(repoDir: string): Promise<Map<string, string>> {
   const records = new Map<string, string>();
   for (const path of (await datastoreRecords(repoDir)).keys()) {
@@ -98,14 +87,12 @@ async function dataRecords(repoDir: string): Promise<Map<string, string>> {
   return records;
 }
 
-/** The staging files a base load left in `dir`. */
 function stagingFiles(dir: string): string[] {
   return [...Deno.readDirSync(dir)].map((entry) => entry.name).filter((name) =>
     name.startsWith(OBSERVED_BASE_STAGING_PREFIX)
   );
 }
 
-/** Rows of the follower copy's `commits.db` at `root`. */
 function copyRows(root: string, sql: string): Record<string, unknown>[] {
   const db = new DatabaseSync(join(root, "commits.db"), { readOnly: true });
   try {
@@ -204,7 +191,6 @@ Deno.test({
         );
       assertEquals(await latest(c), { version: 1, content: "1" });
 
-      // c falls behind: serve compacts past its cursor, then takes more.
       await saveVersions(scratch, a, env, type, web, "vpc", VPC_ID, 2, 3);
       await serve.compact();
       await saveVersions(scratch, a, env, type, web, "vpc", VPC_ID, 4, 4);
@@ -253,7 +239,6 @@ Deno.test({
         })),
         { vpc: { version: 2, content: "2" }, key: null },
       );
-      // Nothing of the secret behavior is in bob's copy, nor its files.
       const root = serveUpstreamLocalRoot(b.repoDir, serve.origin, "");
       const held = [
         ...copyRows(root, "SELECT partition FROM compacted_partitions"),
@@ -294,7 +279,6 @@ Deno.test({
       );
       await serve.compact();
 
-      // The base comes one entry a page, and its second page fails once.
       let pages = 0;
       let failures = 1;
       const proxy = startProxy(serve.origin, async (request) => {

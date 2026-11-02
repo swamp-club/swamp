@@ -18,16 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A behavior run whose sensitive argument takes its value from the run's
- * inputs, through the real evaluation and execution services on a
- * throwaway repository (swamp-club#3681). An operator-typed value is the
- * run's data: it reaches the method, and neither the evaluated cache, its
- * metadata, the completed event nor a replay keeps it; a method that echoes
- * it in its error lands it in neither the error nor the failure record. An
- * operator-typed expression still resolves and replays. A run whose
- * arguments the schema refuses leaves the last good evaluated cache as it
- * was, and a parse the schema refuses or a transform that throws shows
- * nothing of what the transform made of the value.
+ * an operator-typed sensitive value is the run's data: it reaches the method
+ * but never the evaluated cache, its metadata, the completed event, a replay,
+ * or the error and failure record
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -75,35 +68,12 @@ const secret = z.string().meta({ sensitive: true });
 interface Harness {
   dir: string;
   type: ModelType;
-  /** The arguments each method call received, in order. */
   received: Record<string, unknown>[];
   canary: string;
 }
 
-/** The number a sensitive numeric argument takes in these runs. */
 const PIN = 73816542;
 
-/**
- * A repository with one local vault holding `probe`, and a type whose
- * methods record the arguments they receive. Each takes a sensitive string:
- * `execute` returns, and the others throw something that echoes it, `fail`
- * an Error, `failText` the bare string, `failCoded` a UserError whose code
- * holds it.
- * `failKeys` throws an error that echoes the keys of a sensitive record,
- * `failNumber` a sensitive number, `failTransformed` what the schema's
- * transform made of the string, `failMadeKeys` the keys a transform derived
- * from the string; `failUnrelated` takes a record of sensitive strings and
- * throws a fixed text that holds its keys only as fragments of other words.
- * `storePin` writes its sensitive number into a `pinned` resource as a
- * number node, beside a larger number that holds its digits and a note that
- * spells it. `record` takes a record of sensitive strings, `container` a
- * sensitive record, `argv` a plain name beside a sensitive array of strings
- * and `pipeline` a transform into a sensitive output; all four return.
- * The `refuse*` and `throwMade` methods never run: their schemas refuse
- * what the transform made of the string, through an issue that echoes it
- * (`refuseMade` on the field, `refusePiped` in a pipeline's output) or by
- * throwing (`throwMade`).
- */
 async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-3681-inputs-" });
   const type = ModelType.create(`@test/input-values-${crypto.randomUUID()}`);
@@ -292,7 +262,6 @@ const KEY_INPUT: InputsSchema = {
   required: ["key"],
 };
 
-/** Saves a definition of `method` whose arguments read `inputs.key`. */
 async function define(
   h: Harness,
   name: string,
@@ -339,10 +308,6 @@ async function run(
   }
 }
 
-/**
- * Runs a workflow of one step that forwards the workflow's `key` input to
- * `method` of the definition `name`, and returns the run with its error.
- */
 async function runStep(
   h: Harness,
   name: string,
@@ -402,7 +367,6 @@ function completedOf(events: ModelMethodRunEvent[]) {
   return completed.run;
 }
 
-/** Every file under `root` holding `text`. */
 async function filesHolding(root: string, text: string): Promise<string[]> {
   const hits: string[] = [];
   for await (const entry of walk(root, { includeDirs: false })) {
@@ -413,7 +377,6 @@ async function filesHolding(root: string, text: string): Promise<string[]> {
   return hits;
 }
 
-/** Every file under `.swamp` (the cache, outputs, logs, runs) holding `text`. */
 function swampFilesHolding(dir: string, text: string): Promise<string[]> {
   return filesHolding(join(dir, ".swamp"), text);
 }
@@ -466,8 +429,8 @@ Deno.test("input values: an input value joined to a vault reference in a sensiti
       "token",
     ]]);
 
-    // A declared input is not a method override: the masked argument stays
-    // masked, so the cached evaluation never runs with the old value.
+    // a declared input is not a method override: the masked argument stays
+    // masked, so the cached evaluation never runs with the old value
     const replay = await run(h, "mixed", "execute", { key: "REPLACED" }, {
       lastEvaluated: true,
     });
@@ -674,9 +637,8 @@ Deno.test("input values: a workflow step whose method echoes a sensitive argumen
       const error = run.getJob("main")?.getStep("probe")?.error ?? "";
       assertStringIncludes(error, "intentional failure ***");
       assertEquals(error.includes(h.canary), false);
-      // The run record keeps the inert workflow input it was given, as
-      // documented, and nothing else of it; the method's output record and
-      // log do not hold the value either.
+      // the run record keeps the inert workflow input it was given and nothing
+      // else of it; the method's output record and log do not hold the value
       const { inputs: _recorded, ...record } = run.toData() as Record<
         string,
         unknown
@@ -767,9 +729,8 @@ Deno.test("input values: a workflow step whose method throws a UserError with a 
 
 Deno.test("input values: the keys of a sensitive record an input supplied are not redactor secrets, so a method that echoes them shows them as written and unrelated output that holds a key as a fragment is stored intact, while the cache still masks the record whole (swamp-club#3681)", async () => {
   await withHarness(async (h) => {
-    // Keys are identifiers, often short common words. Registered with the
-    // redactor they would corrupt every stored text that contains them:
-    // `production` would read `***uction`.
+    // keys are short common words; registered with the redactor they would
+    // corrupt stored text containing them, so production would read ***uction
     await define(h, "unrelated", "failUnrelated", {
       tokens: "${{ inputs.key }}",
     });
@@ -913,10 +874,9 @@ Deno.test("input values: a workflow step whose method echoes the keys of a sensi
       assertEquals(h.received, [{ tokens: { [h.canary]: null } }]);
       const error = run.getJob("main")?.getStep("probe")?.error ?? "";
       assertStringIncludes(error, `intentional failure keys ${h.canary}`);
-      // The run record keeps the workflow input it was given, as the replay
-      // pins it, and the step's error as the method wrote it. The evaluated
-      // definition, its metadata and its provenance hold the record only as
-      // the mask.
+      // the run record keeps the workflow input as given and the step's error
+      // as written; the evaluated definition, metadata and provenance hold the
+      // record only as the mask
       assertEquals(
         await filesHolding(
           join(h.dir, ".swamp", "definitions-evaluated"),
@@ -969,11 +929,9 @@ Deno.test("input values: a sensitive record whose keys came from an input beside
     assertEquals(errorsOf(replay)[0].message.includes(h.canary), false);
     assertEquals(h.received.length, 1);
 
-    // Echoed by the method, the keys show as written, with a constant typed
-    // beside them as with a vault reference. The definition's one CEL pass
-    // does not re-scan a spliced object, so the constant reaches the method
-    // as typed; only a vault or env reference in it resolves, at runtime.
-    // The evaluated definition still holds the record only as the mask.
+    // the definition's one CEL pass does not re-scan a spliced object, so a
+    // constant reaches the method as typed; only a vault or env reference in it
+    // resolves, at runtime
     await define(h, "keys-mixed-echo", "failKeys", {
       tokens: "${{ inputs.key }}",
     });
@@ -1107,11 +1065,6 @@ Deno.test("input values: a record of sensitive values whose keys came from an in
   });
 });
 
-/**
- * Runs `argv` with `inputs` as method-argument overrides and checks that the
- * completed event, which --json and the method-summary report show, masks
- * the sensitive array element by element (swamp-club#3826).
- */
 async function assertArrayMaskedPerElement(
   h: Harness,
   inputs: Record<string, unknown>,

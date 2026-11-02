@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Lineage collection on a bucket replica through the provider's replica
- * paths (swamp-club#3531), in-process and dormant: the replica is set with
- * the internal setting, the in-memory remote stands in for the bucket, and
- * the objects Litestream would write are seeded there. Shows a takeover's
- * old lineage path and records removed after the new lineage's first
- * confirmation, and chunk collection no longer deferred; without the
- * capability, both kept and collection still deferred; and a file replica
- * as before.
- */
-
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -52,17 +41,11 @@ import {
   type V3Copy,
 } from "../src/infrastructure/datastore_v3/litestream/v3_copy.ts";
 
-/** Replication needs a Unix user id: unavailable on Windows. */
 const ignore = Deno.build.os === "windows";
 
 const OLD = "_litestream/000000000001/";
 const NEW = "_litestream/000000000002/";
 
-/**
- * A copy whose writer replicated lineage 1, then took over from a restore
- * and confirmed lineage 2: the state at lineage 2's first confirmation,
- * built through the writer's own publish path.
- */
 async function withTakeover(
   setting: (dir: string) => V3ReplicaSetting,
   fn: (copy: V3Copy, dir: string) => Promise<void>,
@@ -118,7 +101,6 @@ const bucket = (): V3ReplicaSetting => ({
   path: "root",
 });
 
-/** The remote's replica paths, bound to the bucket replica's root. */
 function bound(remote: InMemoryRemote): V3ReplicaPaths {
   return { root: replicaRootOf(bucket()).value, store: remote.replicaPaths!() };
 }

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// swamp-club#2919: approve, reject, cancel, supersede and the resume
-// take-over each load a suspended run, change it and save the whole record.
-// Two of them on one run at once used to save over each other, so a cancel
-// could report `cancelled` and then be overwritten. They now serialize on the
-// run's claim. Here two writers share one datastore directory through their
-// own repositories and their own lock-backed claims, as two processes do. The
-// first is held inside its claim, just before its save; the second starts
-// and finds the claim held; the first is then let go.
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
@@ -71,7 +62,6 @@ import "../src/domain/models/models.ts";
 
 await initializeLogging({});
 
-/** Cancel deps for runs with no tracker rows or method-run records. */
 const untracked = {
   runTracker: {
     findAllRunning: () => [],
@@ -84,7 +74,6 @@ const untracked = {
 
 type RepositoryContext = ReturnType<typeof createRepositoryContext>;
 
-/** One writer's view of the shared datastore, as a process has. */
 interface Writer {
   repo: RepositoryContext;
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
@@ -95,7 +84,6 @@ interface Fixture {
   config: DatastoreConfig;
   first: Writer;
   second: Writer;
-  /** Labels of the model-method steps that ran. */
   executions: string[];
 }
 
@@ -157,7 +145,6 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>) {
   }
 }
 
-/** The issue's workflow: a gate, then a step that runs once it is approved. */
 function gatedWorkflow(): Workflow {
   return Workflow.create({
     name: `gated-${crypto.randomUUID()}`,
@@ -192,7 +179,6 @@ function executionService(fixture: Fixture, writer: Writer) {
   );
 }
 
-/** Runs the workflow with the real execution service until it suspends. */
 async function suspend(
   fixture: Fixture,
   workflow: Workflow,
@@ -215,11 +201,6 @@ function statuses(run: WorkflowRun): Record<string, string> {
   return result;
 }
 
-/**
- * The first writer's side of an interleaving: a run repository whose save
- * waits to be let go, so the writer stays inside its claim with its decision
- * made and not yet stored.
- */
 function heldAtSave(runRepo: WorkflowRunRepository, events: string[]) {
   const letGo = Promise.withResolvers<void>();
   const held: WorkflowRunRepository = new Proxy(runRepo, {
@@ -239,11 +220,6 @@ function heldAtSave(runRepo: WorkflowRunRepository, events: string[]) {
   return { runRepo: held, letGo: () => letGo.resolve() };
 }
 
-/**
- * The second writer's claims: the real lock-backed ones, recording that the
- * claim was held by someone else when this writer asked for it, and when its
- * claimed work started.
- */
 function arrivingClaims(
   config: DatastoreConfig,
   events: string[],
@@ -261,11 +237,6 @@ function arrivingClaims(
   };
 }
 
-/**
- * Starts `first`, waits until it is held at its save, starts `second`, waits
- * until it has found the claim held, then lets the first go. Returns both
- * results once both settle.
- */
 async function interleave<A, B>(
   events: string[],
   letGo: () => void,
@@ -295,7 +266,6 @@ async function interleave<A, B>(
   return [firstResult, await secondDone];
 }
 
-/** The second writer's claimed work started only after the first saved. */
 function assertSerialized(events: string[]): void {
   assertEquals(events, [
     "first:at-save",
@@ -530,7 +500,6 @@ Deno.test("run claim: a cancel that arrives during a reject leaves the run faile
 
     assertSerialized(events);
     assertEquals(rejected.kind, "completed");
-    // Cancel reports the status it found, not `cancelled`.
     assertEquals(cancelled.status, "fulfilled");
     if (cancelled.status === "fulfilled") {
       assertEquals(cancelled.value?.status, "failed");
@@ -667,7 +636,6 @@ Deno.test("run claim: a resume that arrives during a cancel is refused and runs 
     const workflow = gatedWorkflow();
     const run = await suspend(fixture, workflow);
     const { first, second, config } = fixture;
-    // With its gate approved, nothing but the cancel stops the resume.
     const approved = await approve(
       first,
       workflow,

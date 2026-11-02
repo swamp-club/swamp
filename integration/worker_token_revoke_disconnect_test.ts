@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#2190: revoking an enrollment token cuts off workers already
- * connected on it. Wires a real repo, the real enrollment-token model (mint
- * through the serve handler, redeem through enrollment), a real
- * WorkerGateway, and the worker token revalidation pass.
- */
-
 import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -158,7 +151,6 @@ async function mintToken(f: Fixture, name: string): Promise<string> {
   return response.payload.data.token as string;
 }
 
-/** An in-process worker attached to the gateway's control plane. */
 function connectWorker(gateway: WorkerGateway): RpcChannel {
   const workerChannel: RpcChannel = new RpcChannel({
     send: (data) => void Promise.resolve().then(() => attached.feed(data)),
@@ -241,7 +233,6 @@ Deno.test("worker token revoke from the local CLI is picked up by revalidation",
     const session = await enroll(connectWorker(f.gateway), token);
 
     await revokeLocally(f, "w-local");
-    // The local revoke never touched the gateway.
     assertEquals(f.gateway.worker("w-local")?.connected, true);
 
     assertEquals(await f.revalidation.runOnce(), ["w-local"]);
@@ -263,7 +254,6 @@ Deno.test("re-minting a revoked token name cuts off workers on the old mint only
     assertEquals(cutOff, ["w-remint"]);
     assertEquals(f.gateway.worker("w-remint"), null);
 
-    // A worker on the fresh mint stays connected across passes.
     await enroll(connectWorker(f.gateway), newToken, "uuid-2");
     assertEquals(await f.revalidation.runOnce(), []);
     assertEquals(f.gateway.worker("w-remint")?.connected, true);

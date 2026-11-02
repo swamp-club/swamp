@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Two serve instances share one datastore and mount the same --grants-dir at
-// different paths. Each auto-reload must see the other's grants as its own,
-// not as grants of a file it no longer has (swamp-club#2848).
-
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";

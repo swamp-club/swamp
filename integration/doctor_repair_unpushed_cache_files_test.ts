@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Before swamp-club#4100 was fixed, `datastore setup extension` could copy
-// .swamp/ into an extension cache that no push would ever send, then delete
-// the source. `doctor datastores --repair` uploads those files with the
-// datastore's repairUnpushedFiles, before namespace contamination repair
-// wipes the cache, and refuses that wipe while the cache holds anything the
-// remote lacks (swamp-club#4112). The in-memory remote stands in for S3.
+// repair uploads unpushed cache files via repairUnpushedFiles before
+// contamination repair wipes the cache, and refuses the wipe while the cache
+// holds anything the remote lacks; the in-memory remote stands in for S3
 
 import "../src/domain/models/models.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -53,26 +50,18 @@ const TEAMMATE = `${NS}/data/teammate/t.json`;
 const STRANDED = `${NS}/data/mine/a.json`;
 
 interface HarnessOptions {
-  /** Whether the extension has repairUnpushedFiles. Default true. */
   repairUnpushed?: boolean;
-  /** Whether the extension reports namespace contamination. Default false. */
   contamination?: boolean;
-  /** Runs when contamination repair first looks, before its wipe check. */
   onContaminationDetect?: (
     cachePath: string,
     remote: ReturnType<typeof createInMemoryRemote>,
     signal: AbortSignal | undefined,
   ) => Promise<void>;
-  /** The repo's namespace; null for none. Default {@link NS}. */
   namespace?: string | null;
   remote?: InMemoryRemoteOptions;
-  /** Leaves the cache with no last-synced index. */
   neverPulled?: boolean;
-  /** Makes the lock's release reject. */
   releaseFails?: boolean;
-  /** The datastore type's name, for behavior specific to one. */
   typeName?: string;
-  /** Replaces what a real, not dry, repair returns. */
   repairResult?: UnpushedFilesSummary;
 }
 
@@ -80,12 +69,9 @@ interface Harness {
   repoDir: string;
   cachePath: string;
   remote: ReturnType<typeof createInMemoryRemote>;
-  /** The teammate's cache and sync service, which pushed {@link TEAMMATE}. */
   teammateCache: string;
   teammate: InMemorySyncService;
-  /** Lock acquires and releases, and contamination calls, in order. */
   events: string[];
-  /** Runs `doctor datastores --json` with `args`, and its stdout. */
   doctor: (...args: string[]) => Promise<{ out: string; error?: unknown }>;
 }
 
@@ -102,17 +88,13 @@ function remoteText(
   return bytes && new TextDecoder().decode(bytes);
 }
 
-/**
- * A repo on a test datastore type whose cache a pull left clean, beside a
- * remote that holds a teammate's file.
- */
 async function withHarness(
   options: HarnessOptions,
   fn: (harness: Harness) => Promise<void>,
 ): Promise<void> {
-  // Resolved because doctor reads the repo at its real path, and the remote
-  // keys a cache's last-synced index by path: on macOS the temp dir sits under
-  // a symlink.
+  // resolved because doctor reads the repo at its real path and the remote keys
+  // a cache's last-synced index by path; on macOS the temp dir sits under a
+  // symlink
   const dir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-repair-unpushed-" }),
   );
@@ -200,7 +182,6 @@ async function withHarness(
     const teammate = remote.connect(teammateCache, { instance: "teammate" });
     await teammate.markDirty({ relPath: teammateKey });
     await teammate.pushChanged(namespace ? { namespace } : undefined);
-    // An earlier pull left the cache clean, as before swamp-club#4100.
     if (!options.neverPulled) {
       await remote.connect(cachePath, { instance: "earlier" }).pullChanged(
         namespace ? { namespace } : undefined,
@@ -297,7 +278,6 @@ Deno.test("doctor datastores --repair -y: wipes for contamination repair only af
       assertEquals(report.unpushed.status, "unpushed_completed");
       assertEquals(report.contamination.status, "completed");
       assertEquals(remoteText(remote, STRANDED), '{"a":1}');
-      // The wipe and re-pull brought it back from the remote.
       assertEquals(
         await Deno.readTextFile(join(cachePath, STRANDED)),
         '{"a":1}',
@@ -460,7 +440,6 @@ Deno.test("doctor datastores: points at --repair when the cache holds files the 
   });
 });
 
-/** A copy this cache kept of a file the teammate then deleted. */
 async function keepPeerDeletedCopy(
   harness: Harness,
 ): Promise<void> {
@@ -614,7 +593,8 @@ Deno.test("doctor datastores --repair: a failed unpushed check is reported, exit
       await writeFile(join(cachePath, STRANDED), '{"a":1}');
 
       const preview = await doctor("--repair");
-      // Deno.exit set this before the test runner turned it into an error.
+      // Deno.exit set the exit code before the test runner turned it into an
+      // error; reset it
       Deno.exitCode = 0;
 
       assertStringIncludes((preview.error as Error).message, "exit code: 1");
@@ -674,7 +654,8 @@ Deno.test("doctor datastores --repair: a cache that never pulled is told to pull
     { neverPulled: true },
     async ({ doctor }) => {
       const preview = await doctor("--repair");
-      // Deno.exit set this before the test runner turned it into an error.
+      // Deno.exit set the exit code before the test runner turned it into an
+      // error; reset it
       Deno.exitCode = 0;
 
       assertStringIncludes((preview.error as Error).message, "exit code: 1");
@@ -687,11 +668,10 @@ Deno.test("doctor datastores --repair: a cache that never pulled is told to pull
 });
 
 Deno.test("doctor datastores --repair --json: a skipped stage says so, unlike one that does not apply (swamp-club#4138)", async () => {
-  // A namespace named after a layout directory cannot run the unmigrated
-  // repair, which skips this stage.
   await withHarness({ namespace: "data" }, async ({ doctor }) => {
     const run = await doctor("--repair");
-    // Deno.exit set this before the test runner turned it into an error.
+    // Deno.exit set the exit code before the test runner turned it into an
+    // error; reset it
     Deno.exitCode = 0;
 
     assertStringIncludes((run.error as Error).message, "exit code: 1");
@@ -718,7 +698,6 @@ Deno.test("doctor datastores --repair -y: following a refusal for a pending edit
       );
       assertEquals(events.includes("contamination-delete"), false);
 
-      // In the order the refusal gives: the push comes first.
       await service.pushChanged({ namespace: NS });
       assertEquals(remoteText(remote, TEAMMATE), '{"t":"edited"}');
 

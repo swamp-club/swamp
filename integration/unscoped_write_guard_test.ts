@@ -59,7 +59,6 @@ interface Fixture {
   marks: Array<string | undefined>;
 }
 
-/** A repository context over a recording hook, with one saved model. */
 async function withFixture(fn: (fx: Fixture) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir();
   const repoDir = join(dir, "repo");
@@ -95,11 +94,6 @@ async function withFixture(fn: (fx: Fixture) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Deletes the probe model through the modelDelete use case, returning the
- * error message its stream yielded, if any. The use case catches a thrown
- * write error and yields it, as production does.
- */
 async function deleteProbe(
   fx: Fixture,
   ctx: LibSwampContext,
@@ -137,8 +131,6 @@ Deno.test("withUnscopedWriteGuard: fails on a route-2 write from production code
   await withFixture(async (fx) => {
     const error = await assertRejects(() =>
       withUnscopedWriteGuard(async () => {
-        // A context without a unit factory: the use case's unit binds to
-        // nothing, so its writes take route 2.
         const yielded = await deleteProbe(fx, createLibSwampContext());
         assertStringIncludes(yielded ?? "", "route 2");
       })
@@ -191,7 +183,6 @@ Deno.test("unscopedWriterKey: keys production callers by file and function only"
   assertEquals(unscopedWriterKey(undefined), undefined);
 });
 
-/** Every warning logged while `fn` runs, rendered. */
 async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
   const captured: LogRecord[] = [];
   await configure({
@@ -218,7 +209,7 @@ Deno.test("signalChange: in production, route 2 warns once per call site and nam
     marks.push(path);
     return Promise.resolve();
   };
-  // Each run starts from no warned call sites (deno test --repeats).
+  // each run starts from no warned call sites, so repeats re-exercise the path
   resetUnscopedWarningsForTesting();
   const warnings = await captureWarnings(async () => {
     for (const path of ["data/a", "data/b"]) {

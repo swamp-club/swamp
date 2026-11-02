@@ -25,37 +25,22 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 /**
- * `typeVersion` records which model type version a definition's global
- * arguments were authored or migrated for. Creation and DefinitionUpgradeService
- * are the only things allowed to set it.
- *
- * The persistence layer used to stamp it on every save. That marked a stale
- * instance as current without migrating its arguments, and because
- * DefinitionUpgradeService short-circuits once typeVersion is at or above the
- * model version, the instance could never be migrated again (swamp-club#900).
- *
- * Removing that stamp means every `Definition.create` call site now owns the
- * field. A site that omits it produces a definition that records nothing about
- * which version its arguments were authored for, and the upgrade service
- * declines to migrate a definition in that state — so an upgrade shipped later
- * would silently pass it by (swamp-club#2412). A behavioural test would not
- * catch a regression here, because no first-party model that uses these paths
- * declares an upgrade chain — so the rule is pinned statically instead.
+ * only creation and DefinitionUpgradeService set typeVersion; a
+ * Definition.create site omitting it is skipped by later upgrades, and no
+ * behavioural test would catch that, so the rule is pinned statically
  */
 
 /**
- * Call sites that deliberately construct a Definition without a typeVersion.
- * Add to this list only with a comment in the source explaining why.
+ * call sites that deliberately construct a Definition without a typeVersion;
+ * add one only with a source comment explaining why
  */
 const PINNED_OMISSIONS: readonly string[] = [];
 
-/** Matches `Definition.create({` and captures the object literal that follows. */
 function findDefinitionCreateCalls(source: string): string[] {
   const calls: string[] = [];
   const marker = "Definition.create({";
   let index = source.indexOf(marker);
   while (index !== -1) {
-    // Walk braces from the opening `{` to find the literal's extent.
     let depth = 0;
     let cursor = index + marker.length - 1;
     for (; cursor < source.length; cursor++) {
@@ -73,10 +58,8 @@ function findDefinitionCreateCalls(source: string): string[] {
 }
 
 /**
- * Whether the object literal actually sets a `typeVersion` property. Comments
- * are stripped first: several of these call sites mention typeVersion in a
- * nearby comment explaining the rule, and a bare substring match would let a
- * regression through.
+ * comments are stripped first: call sites mention typeVersion in nearby
+ * comments, and a bare substring match would let a regression through
  */
 function setsTypeVersion(call: string): boolean {
   const withoutComments = call

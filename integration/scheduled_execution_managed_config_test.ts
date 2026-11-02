@@ -17,15 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins the schedule watcher to the directory the workflow loader reads
-// (swamp-club#2946): under managed config the loader reads the config base's
-// workflows directory, so that is where swamp serve must watch for schedule
-// changes — not the repo-local workflows directory.
-//
-// Deno.watchFs is replaced with a fake for these tests: they check which
-// directory the service watches and that a change event there reloads the
-// schedule. Delivery by the OS is not what they pin, and relying on it made
-// them fail whenever macOS fseventsd fell behind under load.
+// Deno.watchFs is faked: these tests check which directory the service watches
+// and that a change event there reloads the schedule, not OS event delivery,
+// which is unreliable under load
 
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -58,7 +52,6 @@ async function writeFile(path: string, content: string): Promise<void> {
   await Deno.writeTextFile(path, content);
 }
 
-/** A Deno.FsWatcher whose events the test sends. */
 class FakeWatcher implements AsyncIterable<Deno.FsEvent> {
   private readonly queue: Deno.FsEvent[] = [];
   private wake: (() => void) | null = null;
@@ -90,10 +83,6 @@ class FakeWatcher implements AsyncIterable<Deno.FsEvent> {
   }
 }
 
-/**
- * Runs `fn` with Deno.watchFs replaced by a factory that records each
- * FakeWatcher it creates, restoring the real one afterwards.
- */
 async function withFakeWatchFs(
   fn: (watchers: FakeWatcher[]) => Promise<void>,
 ): Promise<void> {
@@ -112,7 +101,6 @@ async function withFakeWatchFs(
   }
 }
 
-/** The one watcher the service started, once it has started it. */
 async function startedWatcher(watchers: FakeWatcher[]): Promise<FakeWatcher> {
   await waitFor(() => watchers.length > 0, "the schedule watcher to start");
   assertEquals(watchers.length, 1);
@@ -172,12 +160,9 @@ Deno.test("scheduled execution: reloads schedules from the managed config workfl
       try {
         assertEquals(scheduleOf(service, existingId), "0 0 1 1 *");
 
-        // The service watches the managed dir the loader reads, not the
-        // repo-local workflows dir.
         const watcher = await startedWatcher(watchers);
         assertEquals(watcher.paths, [managedDir]);
 
-        // Adding a scheduled workflow to the managed dir registers it.
         const added = join(managedDir, "workflow-added.yaml");
         await writeFile(added, workflowYaml(addedId, "added", "30 3 1 1 *"));
         watcher.send("create", added);
@@ -187,7 +172,6 @@ Deno.test("scheduled execution: reloads schedules from the managed config workfl
         );
         assertEquals(scheduleOf(service, existingId), "0 0 1 1 *");
 
-        // Changing a schedule in the managed dir re-registers it.
         const existing = join(managedDir, "workflow-existing.yaml");
         await writeFile(
           existing,

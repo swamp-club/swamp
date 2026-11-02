@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** The typed CEL/check/registry/delivery contract, with real counting providers. */
 import {
   assert,
   assertEquals,

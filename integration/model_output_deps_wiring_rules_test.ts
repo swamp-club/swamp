@@ -17,13 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The output, output-data, method-history-logs, data-versions and
-// data-rename deps factories fall back to a definition repository built from the repo dir alone. It has no
-// unreadable-content lookup, so a v3 auto-definition the read model could
-// not materialise reads as "no such model" instead of failing loudly, and
-// with a datastore configured it misses auto-definitions altogether
-// (swamp-club#3617). CLI and serve callers inject the repository context's
-// definition repository instead.
+// these deps factories fall back to a definition repo built from the repo dir
+// alone, which lacks the unreadable-content lookup and datastore
+// auto-definitions; callers inject the context's definition repo
 
 import { assertGreater } from "@std/assert";
 import { walk } from "@std/fs/walk";
@@ -37,7 +33,6 @@ import {
   topLevelOwners,
 } from "./arch_fitness_helpers.ts";
 
-/** Each factory and the position of its injectedDefinitionRepo parameter. */
 const FACTORIES: Readonly<Record<string, number>> = {
   createModelOutputGetDeps: 3,
   createModelOutputDataDeps: 4,
@@ -112,8 +107,6 @@ Deno.test("output, method-history, data versions and data rename deps callers in
     }
   }
 
-  // Eight CLI callers, including the search pickers (swamp-club#3743), and
-  // six serve handlers: a scan that matches nothing must not pass.
   assertGreater(scanned, 10);
   assertPinnedSet(
     countedKeys(missing),
@@ -125,7 +118,6 @@ Deno.test("output, method-history, data versions and data rename deps callers in
   );
 });
 
-/** Each output deps factory and the position of its datastoreResolver. */
 const RESOLVER_FACTORIES: Readonly<Record<string, number>> = {
   createModelOutputGetDeps: 2,
   createModelOutputDataDeps: 2,
@@ -159,8 +151,6 @@ Deno.test("output and method-history deps callers in cli and serve pass the data
     }
   }
 
-  // Seven CLI callers and five serve handlers build these deps: a scan
-  // that matches nothing must not pass.
   assertGreater(scanned, 10);
   assertPinnedSet(
     countedKeys(missing),

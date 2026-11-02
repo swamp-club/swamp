@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fixtures for the serve-upstream integration tests (swamp-club#3985): a
- * serve over a real v3 repository in a Worker (`serve_upstream_server_worker.ts`),
- * and client checkouts opened the production way, through
- * `requireInitializedRepo*`, whose `.swamp.yaml` names a v3 datastore at a
- * path that does not exist, so any touch of the storage shows.
+ * client checkouts open the production way through `requireInitializedRepo*`,
+ * with a `.swamp.yaml` naming a v3 datastore at a path that does not exist, so
+ * any touch of the storage shows
  */
 
 import { join } from "@std/path";
@@ -72,36 +70,15 @@ export const MEMBER: readonly GrantSpec[] = [
   { actions: ["read", "write"], kind: "data", pattern: "*" },
 ];
 
-/** A serve in a Worker, over a fresh v3 repository holding behavior `web`. */
 export interface Serve {
-  /** Serve's origin: what `SWAMP_SERVE_URL` names. */
   readonly origin: string;
   readonly modelType: ModelType;
-  /** The behaviors serve's repo started with, by name: their ids. */
   readonly models: Readonly<Record<string, string>>;
-  /** Serve's own checkout. */
   readonly serveRepo: string;
-  /** Every commit of serve's log after its compaction point, in order. */
   log(): Promise<readonly ServeLogEntry[]>;
-  /**
-   * Compacts serve's whole log; with `claim`, serve claims its datastore
-   * first. Resolves with the compaction point.
-   */
   compact(options?: { claim?: boolean }): Promise<number>;
-  /**
-   * Replaces the grants serve enforces, as a reload of its access data
-   * does (swamp-club#4089).
-   */
   setGrants(grants: readonly GrantSpec[]): Promise<void>;
-  /**
-   * Replaces serve's restricted behavior types, as a restart with another
-   * `--restricted-model-types` does (swamp-club#4089).
-   */
   restrict(types: readonly string[]): Promise<void>;
-  /**
-   * Serve's own work: `count` saves of `dataName` on `web`, each under
-   * serve's lock on it, as serve's method runs take it.
-   */
   write(
     dataName: string,
     dataId: string,
@@ -110,7 +87,6 @@ export interface Serve {
   stop(): Promise<void>;
 }
 
-/** A client checkout of the datastore serve writes. */
 export interface Client {
   readonly repoDir: string;
   /**
@@ -121,19 +97,16 @@ export interface Client {
 }
 
 /**
- * A bucket datastore type no client may reach. Resolving `.swamp.yaml`
- * constructs its provider to name its paths, as every bucket's does; any
- * use of the provider past that (a lock, its storage, its control plane, a
- * sync service, a verifier) is recorded and throws.
+ * resolving `.swamp.yaml` constructs the provider to name its paths, as every
+ * bucket's does; any use past that (lock, storage, control plane, sync service,
+ * verifier) is recorded and throws
  */
 export interface UnreachableBucket {
   readonly typeName: string;
-  /** The provider members something used past naming its paths. */
   readonly touched: () => readonly string[];
   dispose(): void;
 }
 
-/** Registers an {@link UnreachableBucket}. */
 export function registerUnreachableBucket(): UnreachableBucket {
   const typeName = `@test/unreachable-${crypto.randomUUID()}`;
   const touched: string[] = [];
@@ -170,40 +143,27 @@ export function registerUnreachableBucket(): UnreachableBucket {
   };
 }
 
-/** What {@link Scratch.serve} starts. */
 export interface ServeOptions {
   readonly grants?: readonly GrantSpec[];
-  /** Behaviors serve's repo holds besides `web`, by name. */
   readonly models?: readonly string[];
-  /** Serve's datastore holds the repository's config. */
   readonly managedConfig?: boolean;
 }
 
-/** What {@link Scratch.client} creates. */
 export interface ClientOptions {
-  /** The marker's serverAddress. */
   readonly serverAddress?: string;
-  /** The datastore is this bucket instead of a filesystem path. */
   readonly bucket?: UnreachableBucket;
   readonly managedConfig?: boolean;
-  /**
-   * A solo checkout: its filesystem datastore is created, and it is opened
-   * without a serve address.
-   */
   readonly solo?: boolean;
 }
 
 export interface Scratch {
   readonly dir: string;
-  /** The swamp config dir every client reads servers.json from. */
   readonly configDir: string;
   serve(options?: ServeOptions): Promise<Serve>;
-  /** An {@link UnreachableBucket}, disposed when the scratch ends. */
   bucket(): UnreachableBucket;
   client(name: string, options?: ClientOptions): Promise<Client>;
 }
 
-/** Starts serve in a Worker; see {@link Serve}. */
 async function startServe(options: ServeOptions): Promise<Serve> {
   const worker = new Worker(
     new URL("./serve_upstream_server_worker.ts", import.meta.url).href,
@@ -364,7 +324,6 @@ async function startServe(options: ServeOptions): Promise<Serve> {
   };
 }
 
-/** A fresh checkout at `repoDir` whose datastore is v3 at `storagePath`. */
 async function initClient(
   repoDir: string,
   storagePath: string,
@@ -395,11 +354,6 @@ async function initClient(
   );
 }
 
-/**
- * Ends a command as the CLI's teardown does: flushes, closes every v3
- * handle this thread opened and releases its leases, and forgets the
- * serve-upstream bindings, as a new process starts without them.
- */
 export async function endCommand(): Promise<void> {
   try {
     await flushDatastoreSync();
@@ -414,10 +368,6 @@ export async function endCommand(): Promise<void> {
   }
 }
 
-/**
- * Runs `fn` against a fresh temp dir, removing it, stopping every serve and
- * closing every client when it ends.
- */
 export async function withScratch(
   fn: (scratch: Scratch) => Promise<void>,
 ): Promise<void> {
@@ -469,10 +419,6 @@ export async function withScratch(
   }
 }
 
-/**
- * Runs `fn` as a command at `commandPath` with `env` (see {@link serveEnv})
- * over an environment with every swamp target variable unset.
- */
 export async function withClientEnv<T>(
   scratch: Pick<Scratch, "configDir">,
   env: Record<string, string | undefined>,
@@ -490,7 +436,6 @@ export async function withClientEnv<T>(
   }
 }
 
-/** The environment that points a client at `serve` with `token`. */
 export function serveEnv(
   serve: Pick<Serve, "origin">,
   token: string | undefined,
@@ -502,10 +447,6 @@ export function serveEnv(
   };
 }
 
-/**
- * One writing command in `client`: opened as a write command opens it
- * (`requireInitializedRepo`), `fn` run in its root unit, then torn down.
- */
 export async function writeCommand<T>(
   scratch: Pick<Scratch, "configDir">,
   client: Pick<Client, "repoDir">,
@@ -530,9 +471,8 @@ export async function writeCommand<T>(
 }
 
 /**
- * {@link writeCommand} without its teardown: for another client's command
- * that lands while one command is still open in this thread. The open
- * command's teardown ({@link endCommand}) closes both.
+ * for another client's command landing while one is still open in this thread;
+ * the open command's teardown closes both
  */
 export async function writeInOpenCommand<T>(
   scratch: Pick<Scratch, "configDir">,
@@ -553,10 +493,6 @@ export async function writeInOpenCommand<T>(
   });
 }
 
-/**
- * One reading command in `client`: opened as a read-only command opens it
- * (`requireInitializedRepoReadOnly`), then torn down.
- */
 export async function readCommand<T>(
   scratch: Pick<Scratch, "configDir">,
   client: Pick<Client, "repoDir">,
@@ -579,7 +515,6 @@ export async function readCommand<T>(
 /** A fixed instant, so two runs of one script write the same metadata. */
 const CREATED_AT = new Date("2026-10-27T00:00:00.000Z");
 
-/** A data version's metadata, as a manual save writes it. */
 export function dataOf(name: string, id?: string): Data {
   return Data.create({
     name,
@@ -593,12 +528,10 @@ export function dataOf(name: string, id?: string): Data {
   });
 }
 
-/** JSON bytes of `value`. */
 export function json(value: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
 }
 
-/** The latest version of `name` and its content, or null when there is none. */
 export async function latestOf(
   repos: RepositoryContext,
   type: ModelType,
@@ -619,14 +552,12 @@ export async function latestOf(
   };
 }
 
-/** A request a {@link Proxy} received. */
 export interface ProxiedRequest {
   readonly method: string;
   readonly path: string;
   readonly authorization: string | null;
 }
 
-/** A port-0 server in front of serve that records and may rewrite. */
 export interface Proxy {
   readonly origin: string;
   readonly requests: ProxiedRequest[];
@@ -634,10 +565,9 @@ export interface Proxy {
 }
 
 /**
- * Starts a {@link Proxy} that forwards every request to `target` (when
- * given) unless `answer` answers it first; without a target, unanswered
- * requests get a 401, as a serve that demands a token answers. A function
- * target is asked on every request: the address can move to another serve.
+ * forwards to `target` unless `answer` answers first; with no target,
+ * unanswered requests get a 401 as a serve demanding a token does; a function
+ * target is asked every request, so the address can move
  */
 export function startProxy(
   target: string | undefined | (() => string | undefined),

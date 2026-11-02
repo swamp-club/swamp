@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Wires the health collector and resolver caches serve uses against a real
- * repository: many admin and non-admin readers within one window cost one
- * collection and one repository lookup per resource (swamp-club#2641).
- */
-
 import { assertEquals } from "@std/assert";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";

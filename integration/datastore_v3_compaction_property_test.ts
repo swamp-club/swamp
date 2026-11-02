@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Property test of history compaction (swamp-club#3258): for random
- * histories over several partitions and namespaces (saves inline and as
- * chunks, deletes, gc, expiry, renames, file and directory conflicts, and a
- * key two partitions write), compacted at random points between random
- * catch-ups, a checkout that catches up through compactions and a fresh
- * checkout end with the same files, catalog, index, chunks in use and live
- * versions as a reference that replayed every commit before it was
- * compacted.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -70,7 +59,6 @@ import {
 
 const OTHER_MODEL_ID = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
 
-/** The partitions a history writes, with their namespaces. */
 const PARTITIONS = {
   a: {
     namespace: "",
@@ -139,7 +127,6 @@ const arbDefinitionOp = fc.record({
 type DefinitionOpSpec = typeof arbDefinitionOp extends fc.Arbitrary<infer T> ? T
   : never;
 
-/** Compacts through a point between the current one and the last commit. */
 const arbCompact = fc.record({
   kind: fc.constant("compact" as const),
   fraction: fc.double({ min: 0, max: 1, noNaN: true }),
@@ -257,7 +244,6 @@ async function buildModelOp(
         ),
       });
     case "conflict": {
-      // `c` as a file, or `c/x` under it: the two claim one path.
       const base = `data/${MODEL_TYPE.normalized}/${model}/c`;
       const fields = {
         intent: intent({ kind: "data.save", name: "c", version: 1 }),
@@ -394,7 +380,6 @@ Deno.test("compaction: catching up through compactions ends where a full replay 
           const live = openView(env, "live");
           const reference = openView(env, "reference");
           try {
-            // A final compaction, so nearly every history ends compacted.
             for (const step of [...steps, last]) {
               if (step.kind === "commit") {
                 const p = PARTITIONS[step.partition];
@@ -434,7 +419,6 @@ Deno.test("compaction: catching up through compactions ends where a full replay 
                   signal(),
                 );
               } else {
-                // The reference replays every commit before it is compacted.
                 const last = (await reference.readModel.catchUp(signal()))
                   .cursor;
                 const point = (await env.store.readCompactedBase(undefined, 1))

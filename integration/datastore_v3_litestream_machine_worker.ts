@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * One "machine" for the v3 restore tests (swamp-club#3482): a worker with
- * its own module state, so its writer lease, sidecar and handles are its
- * own, and its own host name as its writer lease sees it, so another
- * machine's lease expires by its TTL as a remote holder's does. Its checkout is its own; the datastore and
- * the replica are shared. `pause` blocks the worker's thread as a stalled
- * process would: its lease renewals stop, its Litestream sidecar does not.
+ * a worker with its own module state and host name, so another machine's lease
+ * expires by TTL as a remote holder's does; `pause` blocks the thread like a
+ * stalled process: lease renewals stop, the Litestream sidecar does not
  */
 
 import { DatabaseSync } from "node:sqlite";
@@ -58,7 +55,6 @@ import { createNamespaceListDeps } from "../src/libswamp/datastores/namespace_li
 import { commitIn, TEST_TIMINGS } from "./datastore_v3_litestream_helpers.ts";
 import { DatastoreOwner } from "../src/domain/datastore_v3/datastore_owner.ts";
 
-/** What the test asks a machine to do. */
 export type MachineRequest =
   | {
     readonly kind: "init";
@@ -68,79 +64,46 @@ export type MachineRequest =
     readonly datastorePath: string;
     readonly repoDir: string;
     readonly lockTimeoutMs: number;
-    /** The namespace the machine's datastore config names, if any. */
     readonly namespace?: string;
     /**
-     * Stalls the Litestream binary's lookup while a gate file beside the
-     * datastore exists: `<hostname>-gate-restore` for a restore,
-     * `<hostname>-gate-sidecar` for a sidecar start. Each writes
-     * `<gate>.entered` once it waits.
+     * stalls the Litestream binary lookup while a gate file
+     * `<hostname>-gate-restore` or `<hostname>-gate-sidecar` exists; each
+     * writes `<gate>.entered` once it waits
      */
     readonly gated?: boolean;
-    /** Keeps the datastore's warnings for `warnings`. */
     readonly captureWarnings?: boolean;
-    /** Its Litestream binary cannot be found, as on a host without one. */
     readonly binaryMissing?: boolean;
   }
-  /** Takes the lease with a short TTL, so a pause lets it expire. */
   | {
     readonly kind: "lease";
     readonly ttlMs: number;
     readonly retake?: boolean;
   }
-  /** One write command's hold and commits; `close` tears it down. */
   | {
     readonly kind: "write";
     readonly commits: number;
     readonly close: boolean;
   }
   | { readonly kind: "close" }
-  /**
-   * `swamp datastore claim --address` with serve stopped, then the
-   * command's teardown (swamp-club#4063).
-   */
   | { readonly kind: "claim"; readonly address: string }
-  /** `swamp datastore release` with serve stopped, then its teardown. */
   | { readonly kind: "release" }
-  /**
-   * Leaves one pending entry in this checkout's own outbox, as a command
-   * that died before its commit landed does; resolves with the outbox's
-   * path (swamp-club#4063).
-   */
   | { readonly kind: "plantOutboxEntry" }
-  /**
-   * Serve confirming a write request's commits before it answers
-   * (swamp-club#3489).
-   */
   | { readonly kind: "confirm" }
-  /** A read-only command: makes the copy current, counts its commits. */
   | { readonly kind: "read" }
   | { readonly kind: "pause"; readonly ms: number }
-  /** Serve's upkeep of its sidecar, with a short probe. */
   | { readonly kind: "upkeep"; readonly probeMs: number }
   | { readonly kind: "stopUpkeep" }
-  /** The supervisors this machine launched, for the test's cleanup. */
   | { readonly kind: "pids" }
-  /** The record files the checkout's read model materialised. */
   | { readonly kind: "files" }
-  /** Catches the open handle's read model up, as a context opening does. */
   | { readonly kind: "catchUp" }
-  /** One commit on the held writer; resolves with the refusal, if any. */
   | { readonly kind: "tryCommit" }
-  /** Chunk collection on the open handle; resolves with the refusal, if any. */
   | { readonly kind: "gc" }
-  /** The checkout copy's restore lock. */
   | { readonly kind: "restoreLock" }
-  /** `swamp datastore namespace list`'s namespaces. */
   | { readonly kind: "namespaces" }
-  /** The fence this machine's writer lease holds, if any. */
   | { readonly kind: "fence" }
-  /** The commits in this checkout's commits.db. */
   | { readonly kind: "count" }
-  /** The warnings logged since the last call, with `captureWarnings`. */
   | { readonly kind: "warnings" };
 
-/** A machine's answer. */
 export type MachineResponse =
   | { readonly ok: true; readonly value?: unknown }
   | { readonly ok: false; readonly error: string; readonly code?: string };
@@ -149,7 +112,6 @@ declare const self: Worker;
 
 let init: Extract<MachineRequest, { kind: "init" }> | undefined;
 let upkeep: V3ReplicationUpkeep | undefined;
-/** The short lease a `lease` request took, released when the machine closes. */
 let leaseRelease: (() => Promise<void>) | undefined;
 const launched = new Set<number>();
 const warnings: string[] = [];
@@ -199,7 +161,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** The binary lookup behind `gated`: waits while the step's gate exists. */
 async function gatedBinary(
   request: Extract<MachineRequest, { kind: "init" }>,
 ): Promise<string> {
@@ -243,10 +204,9 @@ async function handle(request: MachineRequest): Promise<unknown> {
         [V3_REPLICA_ENV]: request.replica,
         [LOCK_TIMEOUT_ENV_VAR]: String(request.lockTimeoutMs),
       });
-      // Only the writer lease sees this machine's name: another machine's
-      // lease then expires by its TTL, as a remote holder's does. The
-      // sidecar's supervisor is a real process on this host, which its
-      // checks must still recognise.
+      // only the writer lease sees this machine's name, so another machine's
+      // lease expires by TTL as a remote holder's does; the sidecar's
+      // supervisor is a real local process its checks must still recognise
       const hostname = request.hostname;
       const realHostname = Deno.hostname.bind(Deno);
       Object.defineProperty(Deno, "hostname", {
@@ -367,8 +327,6 @@ async function handle(request: MachineRequest): Promise<unknown> {
       });
     case "read":
       return await inEnv(async () => {
-        // A read-only command's context: the copy made current, then the
-        // read model caught up.
         const refresh = await ensureV3CopyCurrent(
           init!.repoDir,
           config(),

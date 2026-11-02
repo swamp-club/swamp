@@ -65,8 +65,6 @@ Deno.test("integration: concurrent auto-creation converges on a single definitio
     const deps = {
       lookupDefinition: () => {
         lookupCount++;
-        // Simulate filesystem scan: return the first saved definition
-        // (mimics what YamlDefinitionRepository.findByNameGlobal does)
         if (savedDefinitions.length > 0) {
           return Promise.resolve({
             definition: savedDefinitions[0],
@@ -100,17 +98,14 @@ Deno.test("integration: concurrent auto-creation converges on a single definitio
         )),
     );
 
-    // All N calls succeed
     for (const result of results) {
       assertEquals(result.ok, true);
     }
 
-    // Exactly one definition was created; the rest adopted it
     assertEquals(savedDefinitions.length, 1, "expected exactly one save");
     const createdCount = results.filter((r) => r.ok && r.created).length;
     assertEquals(createdCount, 1, "expected exactly one created=true");
 
-    // All results reference the same definition ID
     const ids = new Set(
       results.filter((r) => r.ok).map((r) => r.ok ? r.definition.id : ""),
     );
@@ -120,7 +115,6 @@ Deno.test("integration: concurrent auto-creation converges on a single definitio
       "all results should share the same definition ID",
     );
 
-    // The lookup was called more than N times (fast path + re-checks under lock)
     assertEquals(
       lookupCount > N,
       true,

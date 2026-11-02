@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins swamp doctor workflows to the files the workflow loader reads
-// (swamp-club#2942): doctor takes its directories from the same repository
-// context the loader uses and applies each loader's file rule, so a workflow
-// doctor passes is one the loader loads, a loadable file the loader never
-// reads is a warning, and nothing the loader skips as non-workflow YAML is
-// reported.
+// doctor workflows uses the loader's directories and file rules: a workflow it
+// passes loads, a loadable file the loader never reads warns, and YAML the
+// loader skips as non-workflow is not reported
 
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -129,7 +126,6 @@ Deno.test("doctor workflows: checks exactly the workflows the loader reads", asy
       report.workflows.filter((w) => w.status === "fail").map((w) => w.file),
       [join(extensionDir, "ns", "broken.yaml")],
     );
-    // A loadable workflow the loader never reads warns rather than fails.
     assertPathArrayEquals(
       report.workflows.filter((w) => w.status === "warn").map((w) => w.file),
       [join(yamlWorkflowsDir, "deploy.yaml")],
@@ -137,8 +133,8 @@ Deno.test("doctor workflows: checks exactly the workflows the loader reads", asy
   } finally {
     context.catalogStore.close();
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on windows before V8 frees native sqlite handles; the
+      // temp dir is ephemeral
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });

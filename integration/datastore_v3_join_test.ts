@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Joining a v3 datastore through `.swamp.yaml` (swamp-club#3690): a
- * checkout whose `.swamp/` holds v2 records is refused at its first v3 open,
- * writing nothing, and `swamp doctor datastores --repair` moves the records
- * aside so it catches up to exactly the datastore's records.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -79,7 +72,6 @@ async function initRepo(repoDir: string): Promise<void> {
   }).init(RepoPath.create(repoDir), { tools: [] });
 }
 
-/** Every file under `root`, by path, with its bytes as text. */
 async function snapshot(root: string): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   try {
@@ -94,7 +86,6 @@ async function snapshot(root: string): Promise<Record<string, string>> {
   return files;
 }
 
-/** Saves one version of `dataName` owned by `model`, holding `content`. */
 async function saveVersion(
   repo: ServeRepo,
   model: Definition,
@@ -128,11 +119,6 @@ interface JoinRepos {
   model: Definition;
 }
 
-/**
- * Checkout A sets up a v3 datastore and commits versions 1 and 2 of `log`
- * for `m1`. Checkout B, still on v2, holds its own versions 1 to 3 of the
- * same record, then pulls A's `.swamp.yaml`: the issue's adoption path.
- */
 async function withJoiningCheckout(
   fn: (repos: JoinRepos) => Promise<void>,
   options: { readonly bHoldsRecords?: boolean } = {},
@@ -152,8 +138,8 @@ async function withJoiningCheckout(
       },
     },
   });
-  // The CLI resolves --repo-dir through a symlink (swamp-club#3552), and
-  // the macOS temp dir is one.
+  // the CLI resolves --repo-dir through a symlink, and the macOS temp dir is
+  // one
   const dir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-v3-join-" }),
   );
@@ -196,8 +182,6 @@ async function withJoiningCheckout(
     );
     await closeV3Datastores();
 
-    // B is a clone from before the move to v3, with the same model, and has
-    // written three versions of its own under v2.
     await initRepo(repoB);
     await copy(join(repoA, "models"), join(repoB, "models"), {
       overwrite: true,
@@ -226,13 +210,11 @@ async function withJoiningCheckout(
         [1, 2, 3],
       );
     }
-    // Repo-local and always-local files are never records.
     for (const local of ["logs", "telemetry", "secrets"]) {
       await Deno.mkdir(swampPath(repoB, local), { recursive: true });
       await Deno.writeTextFile(swampPath(repoB, local, "local.json"), "{}");
     }
 
-    // B pulls the commit that moves the repo to v3.
     await Deno.copyFile(
       join(repoA, ".swamp.yaml"),
       join(repoB, ".swamp.yaml"),
@@ -286,7 +268,6 @@ Deno.test({
       async ({ repoA, repoB, modelType, model }) => {
         await withMockedEnv(UNSET_ENV, async () => {
           const json = ["--repo-dir", repoB, "--json"];
-          // Without --repair the check names the refusal.
           const refused = await runCliRejecting({
             args: ["doctor", "datastores", ...json],
           });
@@ -301,7 +282,6 @@ Deno.test({
           );
           assertEquals(preview.status, "pre_v3_records_preview");
           assert(preview.recordDirs.includes("data"));
-          // A preview moves nothing.
           assertEquals(await snapshot(swampPath(repoB, "data")), before);
 
           const moved = JSON.parse(
@@ -354,7 +334,6 @@ Deno.test({
         };
         const inA = await versionsIn(repoA);
         assertEquals(inA, { versions: [1, 2], contents: ["A-v3-1", "A-v3-2"] });
-        // B catches up to exactly A's records.
         assertEquals(await versionsIn(repoB), inA);
       },
     );
@@ -380,7 +359,6 @@ Deno.test({
         [1, 2],
       );
       await closeV3Datastores();
-      // A later open, with v3 state, is not checked again.
       await requireInitializedRepoUnlocked({
         repoDir: repoB,
         outputMode: "json",
@@ -438,7 +416,6 @@ Deno.test({
         [1, 2],
       );
       assertEquals(await hasV3CheckoutState(repoB), true);
-      // The checkout's own files are left where they are.
       assertEquals(await Deno.readTextFile(lockfile), "{}");
       await Deno.stat(pulled);
     }, { bHoldsRecords: false });

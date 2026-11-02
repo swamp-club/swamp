@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's quarantine (swamp-club#4195) through its datastore API: a change
- * refused because its author lacks a grant is kept, and only then; an admin
- * lands it, rebased on what landed meanwhile, as its author.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type {
@@ -71,11 +65,6 @@ import {
   writer,
 } from "./serve_datastore_api_harness.ts";
 
-/**
- * Bob's reads of the behavior and its data: a member whose write grant was
- * revoked can still read, and serve keeps a refused change only for a
- * caller who may read its partition.
- */
 function bobReads(
   subject: { kind: "user" | "idp-group"; name: string } = {
     kind: "user",
@@ -88,8 +77,8 @@ function bobReads(
       actions: ["read"],
       resource: { kind: "model", pattern: "*" },
     }),
-    // The harness behavior's own data, not data:* — a data grant also
-    // reads a vault of that name, which the vault tests rely on bob lacking.
+    // the harness behavior's own data, not data:*: a data grant also reads a
+    // vault of that name, which the vault tests rely on bob lacking
     grant({
       subject,
       actions: ["read"],
@@ -98,7 +87,6 @@ function bobReads(
   ];
 }
 
-/** Bob's change to version `version` of `vpc`, as his checkout built it. */
 async function bobsChange(
   server: Server,
   version: number,
@@ -146,7 +134,6 @@ function depositBody(
   };
 }
 
-/** Captures the audit events serve emits. */
 function captureAudit(server: Server): AuditEvent[] {
   const events: AuditEvent[] = [];
   (server.ctx as { auditEmitter?: unknown }).auditEmitter = {
@@ -165,7 +152,6 @@ Deno.test({
     await withServer([...writer(), ...bobReads()], async (server) => {
       const change = await bobsChange(server, 1);
 
-      // Alice may write it: nothing to keep.
       const allowed = await deposit(
         server,
         "alice-token",
@@ -174,7 +160,6 @@ Deno.test({
       assertEquals(allowed.status, 409, JSON.stringify(allowed.json));
       assertEquals(allowed.json.code, "not_quarantinable");
 
-      // A deposit must carry exactly the chunks its commit names.
       const missing = await deposit(
         server,
         "bob-token",
@@ -188,7 +173,6 @@ Deno.test({
       assertEquals(forged.status, 400);
       assertEquals(forged.json.message, "Malformed quarantine deposit");
 
-      // Bob lacks the grant: kept, stamped as bob.
       const kept = await deposit(server, "bob-token", depositBody(change));
       assertEquals(kept.status, 201, JSON.stringify(kept.json));
       const again = await deposit(server, "bob-token", depositBody(change));
@@ -202,7 +186,6 @@ Deno.test({
         change.chunk.sha256,
       ]);
 
-      // Another caller cannot claim bob's txnId.
       const claimed = await deposit(server, "alice-token", depositBody(change));
       assertEquals(claimed.status, 409);
 
@@ -267,7 +250,6 @@ Deno.test({
   fn: async () => {
     await withServer([...writer(), ...bobReads()], async (server) => {
       const audit = captureAudit(server);
-      // Bob built version 1 while offline; alice landed version 1 meanwhile.
       const change = await bobsChange(server, 1);
       assertEquals(
         (await deposit(server, "bob-token", depositBody(change))).status,
@@ -282,7 +264,6 @@ Deno.test({
         (await server.quarantine.find(change.commit.txnId))?.state,
         "held",
       );
-      // The refusal is audited, as discard's and a forced release's are.
       const refusal = audit.find((event) =>
         event.action === "datastore.quarantine.accept" &&
         event.outcome === "failure"
@@ -293,7 +274,6 @@ Deno.test({
       assertEquals(accepted.status, 200, JSON.stringify(accepted.json));
       assertEquals(accepted.json.principal, "user:bob");
       assertEquals(accepted.json.acceptedBy, "user:caller");
-      // Each renumbered version names the behavior it belongs to.
       const renumbered = accepted.json.renumbered as {
         behavior: string;
         name: string;
@@ -312,7 +292,6 @@ Deno.test({
           : change.commit.partition.toString(),
       );
 
-      // Landed under bob's txnId, as bob, at the next seq.
       const partition = change.commit.partition;
       const seq = await server.v3.commitStore.landedSeq(
         server.v3.namespace,
@@ -333,7 +312,6 @@ Deno.test({
         ),
       );
 
-      // Kept, accepted; its content gone.
       const record = await server.quarantine.find(change.commit.txnId);
       assertEquals(record?.state, "accepted");
       assertEquals(record?.acceptedBy, "user:caller");
@@ -351,7 +329,6 @@ Deno.test({
       assertEquals(accept[0].principalId, "caller");
       assert(accept[0].resourceName.includes("user:bob"));
 
-      // A second accept lands nothing more.
       const repeat = await call(server, "POST", path, "alice-token");
       assertEquals(repeat.json.duplicate, true);
       assertEquals(
@@ -416,14 +393,6 @@ Deno.test({
   },
 });
 
-/**
- * Bob's change naming two chunks: `vpc` at `version` with his own bytes, and
- * `subnet` 1 with `shared`, bytes another member may already have landed.
- */
-/**
- * Bob's change saving `creds` version 1 whose sensitive field names a vault
- * secret: inline, so it carries no chunk.
- */
 async function bobsVaultChange(server: Server): Promise<{ commit: Commit }> {
   const type = server.modelType.normalized;
   const id = server.model.id;
@@ -522,7 +491,6 @@ Deno.test({
         ),
         "the refused accept is audited",
       );
-      // An admin can still discard it.
       const discarded = await call(
         server,
         "POST",
@@ -545,8 +513,8 @@ Deno.test({
       actions: ["read"],
       resource: { kind: "vault", pattern: "prod" },
     });
-    // Bob's token named group ops when he deposited; by the accept it no
-    // longer does, so the read ops was granted is not his to lend.
+    // bob's token named group ops at deposit but not at accept, so the read ops
+    // was granted is not his to lend
     const tokenGroups = { "bob-token": ["ops"] };
     await withServer(
       [...writer(), ...bobReads(), opsMayReadProd],
@@ -577,7 +545,6 @@ Deno.test({
       undefined,
       { tokenGroups },
     );
-    // A read the author is granted as themselves still lands.
     const bobMayReadProd = grant({
       subject: { kind: "user", name: "bob" },
       actions: ["read"],
@@ -613,8 +580,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Bob reads the behavior only through a group his token names, which
-    // an accept never counts: at the accept he may not read alice's chunk.
     await withServer(
       [
         ...writer(),
@@ -624,8 +589,6 @@ Deno.test({
         }),
       ],
       async (server) => {
-        // Bob built version 1 while offline, observed two minutes before
-        // alice's version, whose metadata says it was made at midnight.
         const change = await bobsChange(
           server,
           1,
@@ -636,8 +599,6 @@ Deno.test({
           (await deposit(server, "bob-token", depositBody(change))).status,
           201,
         );
-        // Alice's version 1, over the inline limit, so restating it re-puts
-        // her chunk, which bob may not read.
         const big = new TextEncoder().encode("x".repeat(20 * 1024));
         const landed = await post(
           partitionPath(server),
@@ -745,7 +706,6 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer([...writer(), ...bobReads()], async (server) => {
-      // Alice landed the bytes bob's change also names.
       assertEquals((await save(server, "alice-token", 1, 0)).status, 200);
       const change = await bobsTwoChunkChange(
         server,
@@ -760,7 +720,6 @@ Deno.test({
         })).status,
         201,
       );
-      // The kept content loses the shared chunk.
       const record = await server.quarantine.find(change.commit.txnId);
       assert(record !== undefined);
       await server.quarantine.deposit(record, {
@@ -801,8 +760,8 @@ Deno.test({
           (_, index) => bobsChange(server, index + 1),
         ),
       );
-      // Sent as many at a time as serve takes one caller's uploads
-      // (swamp-club#4258), so every one reaches the cap check.
+      // sent as many at a time as serve takes one caller's uploads, so every
+      // one reaches the cap check
       const codes: string[] = [];
       for (
         let at = 0;
@@ -852,7 +811,6 @@ Deno.test({
       const txnId = change.commit.txnId;
       const path = `quarantine/${txnId}/discard`;
 
-      // Its author sees it held; nobody else learns it exists.
       const asBob = await call(
         server,
         "GET",
@@ -861,8 +819,6 @@ Deno.test({
       );
       assertEquals(asBob.status, 200, JSON.stringify(asBob.json));
       assertEquals(asBob.json.state, "held");
-      // Another member, neither its author nor an admin, is told nothing:
-      // not that it exists, nor its state.
       const asCarol = await call(
         server,
         "GET",
@@ -889,7 +845,6 @@ Deno.test({
       assertEquals(discarded.json.principal, "user:bob");
       assert(typeof discarded.json.discardedBy === "string");
       assert(typeof discarded.json.discardedAt === "string");
-      // The record is kept, marked; the content is gone.
       const record = await server.quarantine.find(txnId);
       assertEquals(record?.state, "discarded");
       assertEquals(await server.quarantine.content(txnId), undefined);
@@ -1006,7 +961,6 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    // Bob has no grant at all on the behavior: not even a read.
     await withServer(writer(), async (server) => {
       const change = await bobsChange(server, 1);
       const refused = await deposit(server, "bob-token", depositBody(change));
@@ -1043,8 +997,8 @@ Deno.test({
 
       const unconfirmed = await call(server, "POST", path, "alice-token");
       assertEquals(unconfirmed.status, 503, JSON.stringify(unconfirmed.json));
-      // Held, with its content: a leader that loses the lead now leaves the
-      // change for the next one to land.
+      // held with its content: a leader that loses the lead leaves the change
+      // for the next one to land
       assertEquals((await server.quarantine.find(txnId))?.state, "held");
       assert(await server.quarantine.content(txnId) !== undefined);
       const partition = change.commit.partition;
@@ -1121,8 +1075,6 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer([...writer(), ...bobReads()], async (server) => {
-      // Deposits whose bodies have not arrived yet hold every slot, each
-      // started once the one before holds its own.
       const bodies: ReadableStreamDefaultController<Uint8Array>[] = [];
       const pending: Promise<Response>[] = [];
       for (let slot = 0; slot < MAX_CONCURRENT_CHUNK_REQUESTS; slot++) {
@@ -1133,7 +1085,6 @@ Deno.test({
               authorization: "Bearer bob-token",
               "content-type": "application/json",
             },
-            // Pulled only once serve reads the body, inside its slot.
             body: new ReadableStream<Uint8Array>(
               {
                 pull: (controller) => {
@@ -1178,8 +1129,6 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withServer([...writer(), ...bobReads()], async (server) => {
-      // Alice may make the change, so it is not one serve keeps; its chunk
-      // data is not even base64.
       const change = await bobsChange(server, 1);
       const refused = await deposit(server, "alice-token", {
         commit: change.commit.toJSON(),

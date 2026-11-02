@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve follower relaying WebSocket requests to its team's leader
- * (swamp-club#4120), over real sockets on port 0. The follower is serve's
- * own connection handling; the leader is scripted, so each case controls
- * exactly what the leader does: a run's stream comes back whole, a cancel
- * reaches the leader, a leader that drops mid-request gives the in-flight
- * refusal, a session the leader revoked closes the client, and a worker's
- * connection is relayed whole.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServeLeader } from "../src/domain/datastore_v3/serve_leader.ts";
@@ -53,7 +43,6 @@ interface LeaderSocket {
   readonly socket: WebSocket;
 }
 
-/** A scripted leader: records each socket's credential and frames. */
 async function withLeader(
   script: (leader: LeaderSocket, frame: Record<string, unknown>) => void,
   fn: (address: string, sockets: LeaderSocket[]) => Promise<void>,
@@ -87,7 +76,6 @@ async function withLeader(
   }
 }
 
-/** Runs `fn` with a follower relaying to the leader at `address`. */
 async function withFollower(
   address: string,
   fn: (connect: () => Promise<WebSocket & { frames: unknown[] }>) => Promise<
@@ -265,7 +253,6 @@ Deno.test({
         assertEquals(frame.error.details?.inFlight, true);
         assertEquals(sockets.length, 1);
         assertEquals(sockets[0].received.length, 1);
-        // The client's connection is still the follower's.
         assertEquals(client.readyState, WebSocket.OPEN);
       });
     });

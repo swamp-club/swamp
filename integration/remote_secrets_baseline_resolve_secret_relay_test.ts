@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote-secrets baseline, path 3: the resolveSecret control-RPC relay
- * (swamp-club#3512).
- *
- * Wires the three hops in-process: the runner's RpcChannel over stdio pipes,
- * the supervisor's `bridgeCapabilityVerbs`, and a worker control channel
- * enrolled with serve, whose `CapabilityService.registerHandlers` answers.
- * The dispatch is registered through the real `DispatchService` path. Pins
- * what crosses each hop and what each hop logs; Phase 5 moves secret reads
- * off this relay (design/enablers/typed-secrets.md §9).
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -61,26 +49,14 @@ import { IT_DEFINITION_ID, IT_TYPE } from "./remote_execution_test_model.ts";
 await initializeLogging({});
 
 interface Relay {
-  /** The runner's channel; calls here go runner → supervisor → serve. */
   runner: RpcChannel;
-  /** The dispatch the supervisor bridge stamps on every call. */
   dispatchId: string;
-  /** Params as the bridge sent them on to serve. */
   forwarded: Record<string, unknown>[];
-  /** A key the dispatched step references, stored with `value`. */
   allowedKey: string;
   value: string;
-  /** A key the step references but the vault does not hold. */
   missingKey: string;
 }
 
-/**
- * Starts an orchestrator, enrolls an in-memory worker and dispatches a step
- * whose method args reference `allowedKey` and `missingKey` with literal
- * vault.get calls. While the dispatch is held open on the worker, `fn` runs
- * against a runner channel bridged to serve exactly as the supervisor
- * bridges a child runner.
- */
 async function withRelay(fn: (relay: Relay) => Promise<void>): Promise<void> {
   await withTempDir(async (dir) => {
     const o = await startBaselineOrchestrator(dir);
@@ -123,7 +99,6 @@ async function withRelay(fn: (relay: Relay) => Promise<void>): Promise<void> {
       stepName: "relay-step",
     });
 
-    // runner → supervisor and supervisor → runner stdio pipes.
     const toSupervisor = new TransformStream<Uint8Array>();
     const toRunner = new TransformStream<Uint8Array>();
     const runnerTransport = new StdioTransport(toSupervisor.writable);
@@ -146,7 +121,6 @@ async function withRelay(fn: (relay: Relay) => Promise<void>): Promise<void> {
     try {
       await waitFor(() => dispatch !== null, "the dispatch reached the worker");
       const dispatchId = (dispatch as DispatchParams | null)!.dispatchId;
-      // Records what the bridge forwards, then sends it on unchanged.
       const orchestrator = {
         call: (
           verb: string,
@@ -193,10 +167,6 @@ async function withRelay(fn: (relay: Relay) => Promise<void>): Promise<void> {
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 
-/**
- * One hop's records as `level: text`, with the per-run dispatch id, request
- * ids, worker name and durations replaced by placeholders.
- */
 function hop(logs: CapturedLog[], category: string): string[] {
   return logs
     .filter((log) => log.category === category)
@@ -251,8 +221,6 @@ Deno.test({
         });
       });
 
-      // Plaintext travels the control channel and both stdio pipes: the
-      // relay Phase 5 replaces with a protected data-plane reveal route.
       assertEquals(reply, { value: relay.value });
       assertEquals(logsHolding(logs, relay.value), []);
 
@@ -268,7 +236,6 @@ Deno.test({
   },
 });
 
-/** Calls resolveSecret from the runner and returns the error it gets. */
 async function refused(
   relay: Relay,
   secretKey: string,

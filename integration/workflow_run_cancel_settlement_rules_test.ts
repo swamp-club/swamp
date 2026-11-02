@@ -18,24 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness test for cancelling a workflow run:
- *
- *   Only `src/domain/workflows/abort_settlement.ts` calls
- *   `WorkflowRun.endAsCancelled`.
- *
- * `endAsCancelled` changes only the run's status. Called directly, it leaves
- * the run's jobs `running` and its steps `running`, `waiting_approval`, `waiting` or
- * `pending` in a record marked cancelled (swamp-club#2895). Every cancel
- * goes through `cancelAndSettle`, which settles that work first.
- *
- *   Only `src/domain/workflows/execution_service.ts`, which walks the run,
- *   and `src/domain/workflows/abort_settlement.ts` call a run's `complete()`.
- *
- * `complete()` derives only the run's status. Called on a stored run that no
- * process walks, it leaves the same open work in a record marked failed
- * (swamp-club#2905). A reject goes through `completeAndSettle`.
- *
- * Static — no subprocesses, nothing is executed.
+ * endAsCancelled and complete() change only status, leaving open work in a
+ * settled record; cancels go through cancelAndSettle and rejects through
+ * completeAndSettle
  */
 
 import { assertEquals } from "@std/assert";
@@ -46,18 +31,14 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-/** A call of the raw cancel transition, not its declaration. */
 const END_AS_CANCELLED_CALL = /\.endAsCancelled\s*\(/;
 
-/** A call of `complete` with no arguments: a run's, not a tracker's. */
 const COMPLETE_CALL = /\.complete\s*\(\s*\)/;
 
-/** True when `source` calls `endAsCancelled` outside a comment line. */
 function callsEndAsCancelled(source: string): boolean {
   return callsOutsideComments(source, END_AS_CANCELLED_CALL);
 }
 
-/** True when `source` calls a run's `complete()` outside a comment line. */
 function callsComplete(source: string): boolean {
   return callsOutsideComments(source, COMPLETE_CALL);
 }
@@ -89,7 +70,6 @@ Deno.test("callsEndAsCancelled: matches a call, not the declaration or a comment
   assertEquals(callsEndAsCancelled("  // run.endAsCancelled()"), false);
 });
 
-/** The only production file allowed to call `endAsCancelled`. */
 const PINNED = ["src/domain/workflows/abort_settlement.ts"];
 
 Deno.test("WorkflowRun.endAsCancelled is called only by cancelAndSettle", async () => {
@@ -121,7 +101,6 @@ Deno.test("callsComplete: matches a run's complete(), not a tracker's or a comme
   assertEquals(callsComplete("  // service after run.complete())."), false);
 });
 
-/** The only production files allowed to call a run's `complete()`. */
 const PINNED_COMPLETE = [
   "src/domain/workflows/abort_settlement.ts",
   "src/domain/workflows/execution_service.ts",

@@ -17,12 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The empty option value check over the real command tree (swamp-club#3542).
-//
-// Cliffy reads an empty `--opt=` as no value and takes the next token, so the
-// check runs before it parses. Every option of every command is given an
-// empty value — `--opt=` and `--opt ""` — ahead of another flag: an option
-// that takes a value must be reported, one that takes none must not.
+// cliffy reads an empty --opt= as no value and takes the next token, so the
+// check runs before parsing: an option that takes a value must be reported for
+// an empty one, one that takes none must not
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
@@ -31,7 +28,6 @@ import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCommands } from "../src/cli/mod.ts";
 import { findEmptyOptionValue } from "../src/cli/empty_option_value.ts";
 
-/** The root as runCli configures it, minus invocation state. */
 function buildRoot(): AnyCommand {
   const root = new Command()
     .name("swamp")

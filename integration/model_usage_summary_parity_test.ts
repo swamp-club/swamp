@@ -17,10 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `model.usage.summary` and an unlimited `model.output.search` answer for the
-// same outputs: over a real repository and through serve's request handling,
-// for the same window and principal the summary's counts are what counting the
-// search's rows gives (swamp-club#4144).
+// for the same window and principal, the usage summary's counts equal counting
+// the unlimited output search's rows, over a real repository and through
+// serve's request handling
 
 import { assert, assertEquals } from "@std/assert";
 import "../src/domain/models/models.ts";
@@ -73,7 +72,6 @@ async function dataOf<T>(
   return (found.payload as { data: T }).data;
 }
 
-/** Asserts the summary's counts are what counting the search's rows gives. */
 async function assertParity(
   ctx: ConnectionContext,
   window: Record<string, unknown>,
@@ -161,7 +159,6 @@ Deno.test("model usage summary: counts match an unlimited output search for the 
       { since: "2030-01-01T00:00:00Z" },
     ];
 
-    // Auth off, everything, then with a tag deny and a methods-scoped grant.
     const principals: [string, Grant[] | undefined, number][] = [
       ["auth off", undefined, 6],
       ["every model", [allModels], 6],

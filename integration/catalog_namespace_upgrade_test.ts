@@ -18,13 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration test for the giga-swamp Phase 2 catalog schema v4 upgrade path.
- *
- * Bumping CATALOG_SCHEMA_VERSION from "3" to "4" makes the self-healing backfill
- * drop and rebuild the catalog on the first command after upgrade. EVERY existing
- * repo hits this. This test verifies that rebuilding the catalog from disk
- * produces identical query results, with every row carrying the solo namespace
- * (""), since Phase 2 does not change the filesystem layout (that is Phase 3).
+ * rebuilding the catalog from disk after the schema bump must give identical
+ * query results, every row in the solo namespace
  */
 
 import { assertEquals } from "@std/assert";
@@ -65,7 +60,6 @@ function makeData(name: string): Data {
   });
 }
 
-/** Runs a query against a freshly-opened catalog/repo/service over `repoDir`. */
 async function queryFresh(
   repoDir: string,
   predicate: string,
@@ -86,7 +80,6 @@ async function queryFresh(
   }
 }
 
-/** Deletes the catalog db and its WAL/SHM sidecars, forcing a rebuild on reopen. */
 function deleteCatalog(repoDir: string): void {
   const dbPath = join(repoDir, ".swamp", "data", "_catalog.db");
   for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
@@ -99,7 +92,6 @@ Deno.test("Catalog upgrade: rebuilding from disk preserves query results with na
     await ensureDir(join(repoDir, ".swamp", "data"));
     const modelId = crypto.randomUUID();
 
-    // 1. Write two data items through a repo (solo mode — no namespace).
     {
       const catalog = new CatalogStore(
         join(repoDir, ".swamp", "data", "_catalog.db"),
@@ -124,23 +116,20 @@ Deno.test("Catalog upgrade: rebuilding from disk preserves query results with na
       catalog.close();
     }
 
-    // 2. Baseline query before the simulated upgrade.
     const baseline = (await queryFresh(repoDir, 'modelName == "ingest"'))
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name));
     assertEquals(baseline.length, 2);
     assertEquals(baseline.map((r) => r.namespace), ["", ""]);
 
-    // 3. Simulate the v3 -> v4 upgrade: delete the catalog so the next open
-    //    rebuilds it from disk via the self-healing backfill.
+    // delete the catalog so the next open rebuilds it from disk via the
+    // self-healing backfill
     deleteCatalog(repoDir);
 
-    // 4. Re-query after the rebuild.
     const rebuilt = (await queryFresh(repoDir, 'modelName == "ingest"'))
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    // 5. Results must be identical, and every row carries the solo namespace.
     assertEquals(rebuilt.length, baseline.length);
     for (let i = 0; i < rebuilt.length; i++) {
       assertEquals(rebuilt[i].id, baseline[i].id);

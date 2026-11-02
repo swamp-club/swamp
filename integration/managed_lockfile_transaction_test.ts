@@ -52,12 +52,9 @@ import {
 } from "../src/libswamp/extensions/pull.ts";
 import { RemoveExtensionService } from "../src/libswamp/extensions/remove_extension_service.ts";
 
-// swamp-club#2838: two checkouts share one datastore's config tier. A
-// directory stands in for the bucket, copied whole on each fetch and
-// publish, last-writer-wins, and a FileLock in it for the datastore global
-// lock. Each checkout's extension writes run through a managed lockfile
-// transaction, so a write from a stale cache never erases the other
-// checkout's entries.
+// two checkouts share one datastore's config tier; a directory stands in for
+// the bucket, copied whole on fetch and publish, last-writer-wins, with a
+// FileLock for the global lock
 
 const VERSION = "2026.01.01.1";
 const LOCKFILE = "upstream_extensions.json";
@@ -92,7 +89,6 @@ async function buildArchive(
 interface Checkout {
   repoDir: string;
   lockfilePath: string;
-  /** Makes the next publishes fail, as an unreachable datastore would. */
   failPublish: { value: boolean };
   install(name: string): Promise<void>;
   remove(name: string): Promise<void>;
@@ -244,7 +240,6 @@ Deno.test("managed lockfile: a pull from a stale cache keeps the other checkout'
     const b = await w.checkout("b");
 
     await a.install("@test/x");
-    // B has not fetched since A's write.
     assertEquals(await b.entries(), []);
     await b.install("@test/y");
 
@@ -262,7 +257,6 @@ Deno.test("managed lockfile: a removal from a stale cache does not revert the ot
 
     await a.install("@test/x");
     await b.install("@test/z");
-    // A's cache still lacks B's entry.
     assertEquals(await a.entries(), ["@test/x"]);
     await a.remove("@test/x");
 
@@ -355,10 +349,9 @@ Deno.test("managed lockfile: a dependency whose entry points outside the repo co
 });
 
 /**
- * A datastore sync service that, like @swamp/s3-datastore before its fix,
- * forgets a file whose push failed once an unscoped pull marks the cache
- * clean: marking the file dirty again is a no-op, so the next push sends
- * nothing and reports success.
+ * a sync service that forgets a file whose push failed once an unscoped pull
+ * marks the cache clean: marking it dirty again is a no-op, so the next push
+ * sends nothing and reports success
  */
 function forgetfulSyncService(remoteConfigDir: string, configBase: string) {
   const dirty = new Set<string>();
@@ -412,8 +405,8 @@ Deno.test("managed lockfile: a change whose push sends nothing after an unscoped
     const transaction = () =>
       new ManagedLockfileTransaction({
         lockfilePath,
-        // As the CLI wires it: a root over the service's hook, pushing the
-        // namespace at its checkpoint (swamp-club#3192).
+        // as the CLI wires it: a root over the service's hook, pushing the
+        // namespace at its checkpoint
         inRoot: (fn) =>
           runInRootUnitOfWork(
             { markDirty: service.markDirty },
@@ -449,8 +442,6 @@ Deno.test("managed lockfile: a change whose push sends nothing after an unscoped
     service.state.failPush = true;
     await assertRejects(() => addEntry("@test/w"), Error, "unreachable");
     await b.install("@test/v");
-    // `datastore sync --pull` or a serve restart, between the failure and
-    // the retry.
     await service.pullChanged();
     service.state.failPush = false;
 

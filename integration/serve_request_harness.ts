@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Drives serve requests through `handleMessage` — the real dispatch path —
- * against a real repository on disk. Shared by the serve request
- * characterization and id-deny conformance tests (swamp-club#2674).
+ * drives serve requests through `handleMessage`, the real dispatch path,
+ * against a real repository on disk; shared by the request characterization and
+ * id-deny conformance tests
  */
 
 import { join } from "@std/path";
@@ -50,14 +50,12 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { ModelOutput } from "../src/domain/models/model_output.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 
-/** A serve request frame as the client sends it. */
 export interface ServeRequest {
   type: string;
   id: string;
   payload?: Record<string, unknown>;
 }
 
-/** A frame the server sent back, parsed. */
 export type Frame = Record<string, unknown> & {
   type: string;
   id?: string;
@@ -65,31 +63,23 @@ export type Frame = Record<string, unknown> & {
   payload?: Record<string, unknown>;
 };
 
-/** A temp swamp repository with real repositories wired as serve does. */
 export interface ServeRepo {
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreConfig: ConnectionContext["datastoreConfig"];
   datastoreResolver: ConnectionContext["datastoreResolver"];
-  /** A per-run model type with one no-op read method, `noop`. */
   modelType: ModelType;
 }
 
-/** Options for {@link withServeRepo}. */
 export interface ServeRepoOptions {
-  /**
-   * Register the per-run model type in an extension collective
-   * (`@test/serve-…`) rather than as a bare type (`test/serve-…`).
-   */
   scopedType?: boolean;
 }
 
-/** The principal every conformance request is sent as. */
 export const CALLER: Principal = { kind: "user", id: "caller" };
 
 /**
- * Runs `fn` against a fresh initialized repo. The model type is registered
- * per run (crypto.randomUUID) so `deno test --repeats` re-exercises it.
+ * the model type is registered per run (crypto.randomUUID) so deno test
+ * --repeats re-exercises it
  */
 export async function withServeRepo(
   fn: (repo: ServeRepo) => Promise<void>,
@@ -138,7 +128,6 @@ export async function withServeRepo(
   }
 }
 
-/** An allow grant for {@link CALLER}; override any field. */
 export function grant(overrides: Partial<Grant>): Grant {
   return {
     id: crypto.randomUUID(),
@@ -154,41 +143,23 @@ export function grant(overrides: Partial<Grant>): Grant {
   };
 }
 
-/** Options for {@link createServeCtx}. */
 export interface ServeCtxOptions {
-  /**
-   * Give the context an active run registry, so runs take serve's detached
-   * path (registered, cancellable, attachable) instead of the inline one.
-   */
   detached?: boolean;
-  /** The repo's shared sync service, as serve hands it to every handler. */
   syncService?: ConnectionContext["syncService"];
-  /** Serve's sync gate; `connection.ts` wraps gated handlers in it. */
   syncGate?: ConnectionContext["syncGate"];
-  /** Serve's run tracker. */
   runTracker?: ConnectionContext["runTracker"];
-  /** The managed definitions directory, set under `managedConfig`. */
   managedDefinitionsDir?: ConnectionContext["managedDefinitionsDir"];
-  /** The repo's vaults directory. */
   vaultsDir?: ConnectionContext["vaultsDir"];
   /**
-   * A specific active run registry, for a test that must see runs it
-   * registered itself. Takes precedence over `detached`.
+   * a specific active run registry for a test that must see runs it registered
+   * itself; takes precedence over `detached`
    */
   activeRunRegistry?: ConnectionContext["activeRunRegistry"];
-  /** Entries of `restricted-model-types`, as serve's config holds them. */
   restrictedModelTypes?: string[];
-  /**
-   * Serve's `tag-requires-explicit-grant`: a `write` grant no longer implies
-   * `tag` (swamp-club#3085).
-   */
+  /** serve's `tag-requires-explicit-grant`: a `write` grant does not imply `tag` */
   tagRequiresExplicitGrant?: boolean;
 }
 
-/**
- * Builds a connection context over `repo`. With `grants`, the context runs in
- * token mode and enforces them; without, it runs in `none` mode.
- */
 export function createServeCtx(
   repo: ServeRepo,
   grants?: Grant[],
@@ -238,10 +209,6 @@ export function createServeCtx(
   } as ConnectionContext;
 }
 
-/**
- * Sends one request through `handleMessage` and returns every frame the
- * server sent for it, once the request is no longer active.
- */
 export async function sendRequest(
   ctx: ConnectionContext,
   request: ServeRequest,
@@ -278,12 +245,10 @@ export async function sendRequest(
     .filter((frame) => frame.id === undefined || frame.id === request.id);
 }
 
-/** The error frame among `frames`, if any. */
 export function errorFrame(frames: Frame[]): Frame | undefined {
   return frames.find((frame) => frame.type === "error");
 }
 
-/** Saves a model definition of the repo's test type. */
 export async function saveModel(
   repo: ServeRepo,
   name: string,
@@ -294,7 +259,6 @@ export async function saveModel(
   return definition;
 }
 
-/** Saves one version of a data item owned by `model`. */
 export async function saveData(
   repo: ServeRepo,
   model: Definition,
@@ -321,10 +285,6 @@ export async function saveData(
   return data;
 }
 
-/**
- * Saves one version of a data item owned by `model` as step output of `run`,
- * recording the run, job and step the catalog indexes for data query.
- */
 export async function saveRunStepData(
   repo: ServeRepo,
   model: Definition,
@@ -357,10 +317,6 @@ export async function saveRunStepData(
   return data;
 }
 
-/**
- * Saves one version of a workflow-scope data item — as a workflow-scope
- * report writes one — stored under the workflow itself.
- */
 export async function saveWorkflowData(
   repo: ServeRepo,
   workflow: Workflow,
@@ -386,10 +342,6 @@ export async function saveWorkflowData(
   return data;
 }
 
-/**
- * Saves a succeeded run of `workflow` whose single step recorded `stepData`
- * and whose run recorded `workflowData` as workflow-scope artifacts.
- */
 export async function saveRunWithData(
   repo: ServeRepo,
   workflow: Workflow,
@@ -421,7 +373,6 @@ export async function saveRunWithData(
   return run;
 }
 
-/** Saves a workflow with one job whose one step runs `model`'s noop method. */
 export async function saveWorkflow(
   repo: ServeRepo,
   name: string,
@@ -447,7 +398,6 @@ export async function saveWorkflow(
   return workflow;
 }
 
-/** Saves a workflow that suspends at a manual approval gate named `gate`. */
 export async function saveGatedWorkflow(
   repo: ServeRepo,
   name: string,
@@ -480,12 +430,6 @@ export async function saveGatedWorkflow(
  */
 let outputSequence = 0;
 
-/**
- * Saves a succeeded `noop` output of `model` whose artifacts are its `state`
- * data item and a `log` item tagged as a log, saving either first if the
- * model has none yet. Pass `id` to choose the output id, for prefix and
- * ambiguity cases.
- */
 export async function saveOutput(
   repo: ServeRepo,
   model: Definition,
@@ -522,10 +466,6 @@ export async function saveOutput(
   return output;
 }
 
-/**
- * Saves a pending run of `workflow`. Pass `id` to choose the run id, for
- * prefix and ambiguity cases.
- */
 export async function saveRun(
   repo: ServeRepo,
   workflow: Workflow,

@@ -17,14 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// End-to-end wiring test for the OTel logs signal (swamp-club#1158). Stubs
-// globalThis.fetch (no production seam needed), enables the OTLP endpoint, and
-// verifies that initializeLogging routes a getSwampLogger().info() call all the
-// way to a POST /v1/logs whose serialized body carries the message, the active
-// span's trace/span ids, and redacted secrets — while --json stdout stays clean.
-//
-// Runs in its own process (each *_test.ts file does), so it may call the
-// once-per-process initializeLogging() freely.
+// initializeLogging routes a getSwampLogger().info() call to a POST /v1/logs
+// whose body carries the message, the active span's ids and redacted secrets,
+// while --json stdout stays clean
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -46,7 +41,6 @@ interface OtlpLogRecord {
   attributes?: Array<{ key: string; value: { stringValue?: string } }>;
 }
 
-/** Collects every OTLP log record from all captured POSTs to /v1/logs. */
 function collectLogRecords(
   captured: { url: string; body: string }[],
 ): OtlpLogRecord[] {
@@ -82,7 +76,6 @@ Deno.test("OTel logs: initializeLogging exports correlated, redacted records to 
     // deno-lint-ignore no-explicit-any
   }) as any;
 
-  // Register an active run redactor so secret scrubbing is exercised.
   const tmpDir = await Deno.makeTempDir();
   const redactor = new SecretRedactor();
   redactor.addSecret("hunter2-secret-value");
@@ -93,13 +86,13 @@ Deno.test("OTel logs: initializeLogging exports correlated, redacted records to 
   );
 
   try {
-    // Clear any stale provider from a prior test so initLogs() creates a fresh
-    // one that picks up our stubbed fetch.
+    // clear any stale provider so initLogs() creates a fresh one that picks up
+    // the stubbed fetch
     await shutdownLogs();
 
-    // initTracing registers the context manager so logs can correlate; --json
-    // keeps stdout clean while logs still export (orthogonal to output mode).
-    // Pass endpoint via config to avoid racing on Deno.env with parallel tests.
+    // initTracing registers the context manager so logs can correlate; the
+    // endpoint is passed via config to avoid racing on Deno.env with parallel
+    // tests
     await initTracing({ endpoint: "http://collector.test" });
     await initializeLogging({
       jsonMode: true,
@@ -126,7 +119,6 @@ Deno.test("OTel logs: initializeLogging exports correlated, redacted records to 
       return Promise.resolve();
     });
 
-    // Drain in-flight exports (SimpleLogRecordProcessor + shutdown()).
     await shutdownLogs();
     await shutdownTracing();
 
@@ -140,7 +132,6 @@ Deno.test("OTel logs: initializeLogging exports correlated, redacted records to 
       r.body?.stringValue === "starting up without a span"
     );
     assert(outside, "outside-span log record was not exported");
-    // No active span -> no (or zero) trace correlation.
     assert(
       !outside.traceId ||
         outside.traceId === "00000000000000000000000000000000",
@@ -156,7 +147,6 @@ Deno.test("OTel logs: initializeLogging exports correlated, redacted records to 
     assertEquals(wantTrace.length, 32);
     assertEquals(wantSpan.length, 16);
     assertEquals(inside.severityText, "INFO");
-    // The secret must be scrubbed before egress.
     assertStringIncludes(inside.body!.stringValue!, "***");
     assertEquals(
       inside.body!.stringValue!.includes("hunter2-secret-value"),

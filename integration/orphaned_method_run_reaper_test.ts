@@ -16,12 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-// A workflow step saves its method-run record `running` before it finishes,
-// so an owner that dies mid-step leaves that record `running` under a dead
-// pid (swamp-club#2930). These tests wire the real output repository and
-// SQLite run tracker together, with the row and record written as a step
-// writes them, and check that run doctor --fix and workflow recover settle
-// the record without touching ones they cannot vouch for.
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
@@ -80,11 +74,6 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * A step's method run as the execution service starts it: the record saved
- * `running` under `pid`, then a model_method row with the record's id and
- * the normalized model type.
- */
 async function startStepMethodRun(
   outputRepo: OutputRepository,
   tracker: RunTrackerStore,

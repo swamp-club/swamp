@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Control-plane records — grants, groups, server tokens and the worker
- * fleet's records — are stored as model data, but they are access state, not
- * user data (swamp-club#2756). Served, they are owned by the `access` kind and
- * need `admin`: a principal with read or write on data:* and model:* never
- * sees or changes them through the data requests, and no expression can read
- * them. Requests go through `handleMessage`, the real dispatch path, against
- * a real repository whose control-plane definitions live in the
- * auto-definitions directory, as serve writes them.
+ * control-plane records are access state, owned by the access kind and needing
+ * admin: data and model grants never see or change them through data requests,
+ * and no expression can read them
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -55,20 +50,17 @@ await initializeLogging({});
 const GRANT_TYPE = ModelType.create("swamp/grant");
 const TOKEN_TYPE = ModelType.create("swamp/server-token");
 
-/** Every control-plane record's name starts with this; no user one does. */
 const ACL_PREFIX = "acl-";
 const GRANT_MODEL = "acl-grant-reader";
 const TOKEN_MODEL = "acl-token-ci";
 const GRANT_SECRET = "grant-secret-value";
 const USER_MODEL = "user-db";
 
-/** Read on data:* and model:* — everything a data reader has. */
 const READER: Grant[] = [
   grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
   grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } }),
 ];
 
-/** Read, write and run on data:* and model:*, but no access grant. */
 const WRITER: Grant[] = [
   grant({
     actions: ["read", "write", "run"],
@@ -80,7 +72,6 @@ const WRITER: Grant[] = [
   }),
 ];
 
-/** The superuser: admin on access:*. */
 const ADMIN: Grant[] = [
   grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
 ];
@@ -91,7 +82,6 @@ interface Fixtures {
   tokenDef: Definition;
 }
 
-/** Saves a control-plane definition where serve mints them. */
 async function saveControlPlaneModel(
   repo: ServeRepo,
   type: ModelType,
@@ -108,7 +98,6 @@ async function saveControlPlaneModel(
   return definition;
 }
 
-/** Saves one version of a control-plane record owned by `model`. */
 async function saveControlPlaneData(
   repo: ServeRepo,
   type: ModelType,
@@ -227,7 +216,6 @@ Deno.test("serve control-plane data: reading a grant record needs admin on acces
         assert(!JSON.stringify(frames).includes(GRANT_SECRET), label);
       }
     }
-    // The user model's data stays readable with the same grants.
     reply(
       await sendRequest(
         ctx,
@@ -307,8 +295,6 @@ Deno.test("serve control-plane data: write on model:* cannot edit a control-plan
 
 Deno.test("serve control-plane data: model.evaluate expressions cannot read a grant record", async () => {
   await withFixtures(async (f) => {
-    // A user model whose argument reads the grant record through the data
-    // namespace, and one reading user data as a control.
     const leak = Definition.create({
       name: "user-leak",
       globalArguments: {
@@ -328,7 +314,6 @@ Deno.test("serve control-plane data: model.evaluate expressions cannot read a gr
       const args = (frames.find((frame) => frame.type === "model.evaluate")!
         .payload!.data as { globalArguments: Record<string, unknown> })
         .globalArguments;
-      // The data namespace itself works: the user record resolves.
       assertEquals(args.user, "state", body);
       assert(args.grant !== GRANT_SECRET, body);
     }

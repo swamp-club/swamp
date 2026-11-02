@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Reads of lazily hydrated data on another host's model (swamp-club#3179)
- * and of content a metadata-only pull left stale (swamp-club#3178), through
- * every reader: the model map, `file.contents`, `data.latest`,
- * `data.version`, `data query`, `getContent`, `stream`, and the workflow
- * evaluate path that saves its values.
- *
- * Wired by hand, as `data_query_get_parity_test.ts` is, because the
- * in-memory remote models neither `hydrateFile` nor metadata-only pulls: a
- * writer repository holds the data, a lazy pull copies everything but `raw`
- * into a reader, and the reader's hook copies `raw` from the writer when
- * first read.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { dirname, join, relative } from "@std/path";
@@ -87,9 +73,9 @@ function item(
 }
 
 /**
- * Copies the writer's data tree into the reader without `raw` files, as a
- * lazy pull does. A `raw` already in the reader is left as it is, as the
- * S3 and GCS datastores skip every lazily skippable file.
+ * copies the writer's data without raw files, as a lazy pull does; a raw
+ * already in the reader is left alone, as S3 and GCS datastores skip lazily
+ * skippable files
  */
 async function lazyPull(writerData: string, readerData: string): Promise<void> {
   for await (const entry of walk(writerData, { includeDirs: false })) {
@@ -151,7 +137,6 @@ async function withHosts(fn: (hosts: Hosts) => Promise<void>): Promise<void> {
       undefined,
       hook,
     );
-    // As repo_context wires a custom datastore.
     const queryService = new DataQueryService(readerCatalog, reader, {
       filterStaleRows: false,
     });
@@ -332,14 +317,12 @@ Deno.test("lazy hydration: content appended on another host is read in full afte
       encoder.encode("line1\n"),
     );
     await hosts.pull();
-    // The reader reads it once, so a local copy exists...
     assertEquals(
       decoder.decode(
         (await hosts.reader.getContent(modelType, hosts.vpc.id, "events"))!,
       ),
       "line1\n",
     );
-    // ...then the writer appends and the next pull brings only metadata.
     await hosts.writer.append(
       modelType,
       hosts.vpc.id,
@@ -355,7 +338,6 @@ Deno.test("lazy hydration: content appended on another host is read in full afte
     ) chunks.push(chunk);
     assertEquals(decoder.decode(concat(chunks)), full);
 
-    // Each reader is checked against a fresh copy of the stale state.
     const stale = async () => {
       await Deno.writeFile(
         hosts.reader.getContentPath(modelType, hosts.vpc.id, "events", 1),

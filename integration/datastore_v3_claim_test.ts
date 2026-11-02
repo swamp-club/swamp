@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// `swamp datastore claim` and `release` on a filesystem v3 datastore
-// (swamp-club#4063): a claim makes serve the datastore's owner, a direct
-// writer that finds it refuses with `datastore_claimed` once it holds the
-// writer lease, reads and the owner serve keep working, and a release
-// restores direct writing. The race tests run the other writer in a Worker,
-// with module state of its own, as another process.
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -82,7 +75,6 @@ await initializeLogging({});
 
 const OWNER = "https://swamp.example.com";
 
-/** Opens `repoDir` to write, as a command does, with `ownerCheck`. */
 async function hold(repoDir: string, ownerCheck?: V3OwnerCheck) {
   return await requireInitializedRepoUnlocked({
     repoDir,
@@ -91,7 +83,6 @@ async function hold(repoDir: string, ownerCheck?: V3OwnerCheck) {
   });
 }
 
-/** The claim log of `repoDir`'s datastore, under a claimer's hold. */
 async function claimLog(repoDir: string) {
   const context = await hold(repoDir, { as: "claimer" });
   return v3ClaimCommitLog(
@@ -100,7 +91,6 @@ async function claimLog(repoDir: string) {
   );
 }
 
-/** `swamp datastore claim --address address` in `repoDir`, serve stopped. */
 async function claim(
   repoDir: string,
   address: string,
@@ -127,7 +117,6 @@ async function claim(
   }
 }
 
-/** `swamp datastore release` in `repoDir`, serve stopped. */
 async function release(repoDir: string): Promise<DatastoreReleaseData> {
   try {
     let data: DatastoreReleaseData | undefined;
@@ -150,7 +139,6 @@ async function release(repoDir: string): Promise<DatastoreReleaseData> {
   }
 }
 
-/** A writing command's start in `repoDir`, then its end. */
 async function write(repoDir: string, ownerCheck?: V3OwnerCheck) {
   try {
     await hold(repoDir, ownerCheck);
@@ -159,7 +147,6 @@ async function write(repoDir: string, ownerCheck?: V3OwnerCheck) {
   }
 }
 
-/** Commits one data version through the handle's sink, as serve commits. */
 async function commitOne(repoDir: string): Promise<void> {
   const context = await requireInitializedRepoReadOnly({
     repoDir,
@@ -187,7 +174,6 @@ function commitsDb(datastorePath: string): string {
   return join(datastorePath, "commits.db");
 }
 
-/** The log's high-water mark, read from the file. */
 function highWater(datastorePath: string): number {
   const store = SqliteCommitStore.open(commitsDb(datastorePath));
   try {
@@ -211,15 +197,12 @@ Deno.test("datastore claim: a direct writer is refused with datastore_claimed wh
     assertEquals(refused.code, DATASTORE_CLAIMED_CODE);
     assert(refused.message.includes(OWNER), refused.message);
 
-    // Reads stay allowed.
     await requireInitializedRepoReadOnly({
       repoDir: repos.repoB,
       outputMode: "json",
     });
     await closeV3Datastores();
 
-    // The owner serve writes; another serve does not, nor one without its
-    // address.
     await write(repos.repoB, { as: "serve", address: `${OWNER}:443` });
     await assertRejects(
       () =>
@@ -327,7 +310,6 @@ Deno.test("datastore claim: a claim that lands while serve's lease had moved sto
       );
       await commitOne(repos.repoA);
 
-      // Serve's own claim, through its hold, keeps it the owner.
       const log = v3ClaimCommitLog(context.repoDir, config);
       await log.claim(
         DatastoreOwner.create({
@@ -362,7 +344,6 @@ Deno.test("datastore claim: a claim that lands while serve's lease had moved sto
   });
 });
 
-/** A WebSocket that records what serve sends on it. */
 function recordingSocket(): WebSocket & { sent: string[] } {
   const sent: string[] = [];
   return {
@@ -374,7 +355,6 @@ function recordingSocket(): WebSocket & { sent: string[] } {
   } as unknown as WebSocket & { sent: string[] };
 }
 
-/** Serve's connection context over its own hold of `repoDir`. */
 async function serveContext(repoDir: string): Promise<ConnectionContext> {
   const context = await hold(repoDir, { as: "serve", address: OWNER });
   return {
@@ -417,7 +397,6 @@ Deno.test("datastore claim: a claim through serve, which holds the lease, makes 
       assertEquals(frame.type, "datastore.claim", socket.sent[0]);
       assertEquals(frame.payload.data.address, OWNER);
       assertEquals(frame.payload.data.alreadyClaimed, false);
-      // Serve is the owner: it keeps committing.
       await commitOne(repos.repoA);
     } finally {
       await closeV3Datastores();
@@ -452,7 +431,6 @@ Deno.test("datastore claim: a claim through serve, which holds the lease, makes 
   });
 });
 
-/** Starts the race worker writing `repoDir`; resolves its messages. */
 function startWriter(request: ClaimRaceRequest) {
   const messages: ClaimRaceMessage[] = [];
   const worker = new Worker(
@@ -492,7 +470,6 @@ Deno.test("datastore claim: a writer that holds the lease when the claim is aske
     });
     try {
       await writer.seen((m) => "held" in m);
-      // The claim waits for the writer's lease.
       const claiming = claim(repos.repoA, OWNER);
       writer.worker.postMessage("commit");
       const committed = await writer.seen((m) => "committed" in m);
@@ -513,7 +490,6 @@ Deno.test("datastore claim: a writer that holds the lease when the claim is aske
 Deno.test("datastore claim: a writer that waits for the lease while the claim lands is refused once it holds it, and commits nothing", async () => {
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await closeV3Datastores();
-    // The claimer holds the lease before the writer starts.
     const log = await claimLog(repos.repoA);
     const writer = startWriter({
       repoDir: repos.repoB,
@@ -541,7 +517,6 @@ Deno.test("datastore claim: a writer that waits for the lease while the claim la
       );
       const mark = highWater(datastorePath);
       await closeV3Datastores();
-      // A writer that took the lease past the claim reports held instead.
       const outcome = await writer.seen((m) => "refused" in m || "held" in m);
       assertEquals(outcome, { refused: DATASTORE_CLAIMED_CODE });
       assertEquals(

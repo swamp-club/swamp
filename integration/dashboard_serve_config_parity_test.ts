@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The dashboard's System tab renders the serve.config payload that serve's
- * admin handler sends (swamp-club#2519). Build that payload with the real
- * redactServeOptions so a change to its shape fails here rather than in the
- * dashboard. These cases live here, not next to serve_config_rows.ts, because
- * the dashboard is type-checked with DOM libs that serve's code does not
- * compile under.
+ * build the payload with the real redactServeOptions so a shape change fails
+ * here, not in the dashboard; the cases live here because the dashboard is
+ * type-checked with DOM libs serve does not compile under
  */
 
 import { assertEquals } from "@std/assert";
@@ -31,7 +28,6 @@ import { redactServeOptions } from "../src/serve/handlers/admin_handlers.ts";
 import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import { serveConfigRows } from "../packages/dashboard/src/views/serve_config_rows.ts";
 
-// Build the payload exactly as handleServeConfig sends it.
 function serveConfigPayload(opts: Record<string, unknown>): unknown {
   return {
     config: redactServeOptions(opts as unknown as MergedServeOptions),

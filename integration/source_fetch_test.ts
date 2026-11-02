@@ -17,12 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Wires HttpSourceDownloader against a port-0 archive server rather than
-// github.com. These previously fetched
-// https://github.com/swamp-club/swamp/archive/... for real, which made the
-// suite fail whenever GitHub was slow or unreachable — observed as a 504
-// where the 404 test expected a missing tag. A served fixture exercises the
-// same download, extract, symlink and status-code paths deterministically.
+// wires HttpSourceDownloader against a port-0 archive server, not github.com,
+// so the suite stays deterministic when GitHub is slow or unreachable
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -30,13 +26,8 @@ import { ensureDir } from "@std/fs";
 import { HttpSourceDownloader } from "../src/infrastructure/source/http_source_downloader.ts";
 import { createTarGz } from "../src/infrastructure/archive/tar_archive.ts";
 
-/** The version the fixture archive is served for; anything else 404s. */
 const SERVED_VERSION = "main";
 
-/**
- * Builds an archive shaped like a GitHub source tarball — a single top-level
- * directory — containing the files and symlinks the downloader must handle.
- */
 async function buildFixtureArchive(tempDir: string): Promise<string> {
   const stagingDir = join(tempDir, "staging");
   const archiveRoot = join(stagingDir, "swamp-main");
@@ -73,10 +64,6 @@ async function buildFixtureArchive(tempDir: string): Promise<string> {
   return archivePath;
 }
 
-/**
- * Serves `archivePath` for {@link SERVED_VERSION} and 404s anything else,
- * mirroring GitHub's behaviour for a tag that does not exist.
- */
 function serveArchive(archivePath: string): {
   downloader: HttpSourceDownloader;
   shutdown: () => Promise<void>;
@@ -130,14 +117,12 @@ async function withFixtureServer(
   }
 }
 
-/** Counts symlinks anywhere under `dir`. */
 async function countSymlinks(dir: string): Promise<number> {
   let symlinkCount = 0;
   for await (const entry of Deno.readDir(dir)) {
     const fullPath = join(dir, entry.name);
     if (entry.isSymlink) {
       symlinkCount++;
-      // A preserved symlink must still carry a target.
       assert(
         (await Deno.readLink(fullPath)).length > 0,
         `Symlink ${entry.name} should have a target`,
@@ -172,7 +157,6 @@ Deno.test("HttpSourceDownloader preserves symlinks to files and directories", as
 
     const dirLink = join(skillsDir, "linked-skill");
     assertEquals((await Deno.lstat(dirLink)).isSymlink, true);
-    // Resolves through the link to the real file behind it.
     assertEquals(
       await Deno.readTextFile(join(dirLink, "SKILL.md")),
       "# skill\n",

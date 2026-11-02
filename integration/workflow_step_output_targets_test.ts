@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Task targets chosen from data an earlier step of the same run wrote
- * (swamp-club#2351).
- *
- * A driver step writes a record naming the next workflow; a later step's
- * `workflowIdOrName` reads it with `data.latest`. That target used to be
- * evaluated once at run start, before the record existed, so it silently took
- * the `orValue` fallback — or a previous run's value. These tests wire the
- * evaluator, execution service, data repository and nested workflows together
- * in-process against a real temp repo.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -49,14 +37,12 @@ await initializeLogging({});
 
 type RepositoryContext = ReturnType<typeof createRepositoryContext>;
 
-/** What a consumer step saw when it ran. */
 interface Execution {
   definition: string;
   value: string;
   seen?: string;
 }
 
-/** The record every driver step writes: `data.latest("driver", "next")`. */
 const NEXT = 'data.latest("driver", "next")';
 
 const WriteArgs = z.object({ workflow: z.string() });
@@ -126,7 +112,6 @@ async function withRepo(
   }
 }
 
-/** A child workflow that reports its own name and the `seen` input. */
 function childWorkflow(name: string): Workflow {
   return Workflow.create({
     name,
@@ -147,7 +132,6 @@ function childWorkflow(name: string): Workflow {
   });
 }
 
-/** Writes `${{ inputs.target }}` into the driver record. */
 function writeStep(): Step {
   return Step.create({
     name: "write",
@@ -157,7 +141,6 @@ function writeStep(): Step {
   });
 }
 
-/** A parent workflow: the driver write, then `consumer` depending on it. */
 function driverWorkflow(
   name: string,
   consumer: Omit<StepInput, "name" | "dependsOn">,
@@ -226,15 +209,11 @@ Deno.test("step-output targets: a nested workflow target reads the record an ear
       task: { type: "workflow", workflowIdOrName: FALLBACK_TARGET },
     }));
 
-    // First run: no record exists at run start. Before the fix this took the
-    // orValue fallback (child-a).
     const first = await runWorkflow(repo, dir, "driver-flow", {
       target: "child-b",
     });
     assertEquals(first.status, "succeeded", JSON.stringify(first.toData()));
 
-    // Second run: the first run's record exists at run start. Before the fix
-    // this ran the stale child-b.
     const second = await runWorkflow(repo, dir, "driver-flow", {
       target: "child-c",
     });
@@ -253,7 +232,6 @@ Deno.test("step-output targets: a target without the null-safe form resolves at 
       },
     }));
 
-    // Before the fix the whole run failed at start: "No such key: attributes".
     const run = await runWorkflow(repo, dir, "plain-target", {
       target: "child-b",
     });
@@ -330,8 +308,6 @@ Deno.test("step-output targets: forEach with self.* and data.* in the target res
       },
     }));
 
-    // Before the fix the raw template reached the child lookup:
-    // "Workflow not found: ${{ self.x == ... }}".
     const run = await runWorkflow(repo, dir, "foreach-target", {
       target: "child-b",
     });
@@ -350,8 +326,6 @@ Deno.test("step-output targets: an input sharing the target's text gets the fres
       },
     }));
 
-    // Before the fix substitution, keyed on the raw text, wrote the target's
-    // run-start value (the fallback) into the identical input too.
     const run = await runWorkflow(repo, dir, "shared-text", {
       target: "child-b",
     });
@@ -371,8 +345,8 @@ Deno.test("step-output targets: a --last-evaluated replay resolves the target at
     }));
 
     await runWorkflow(repo, dir, "replayed", { target: "child-b" });
-    // The cache baked the writer's input (child-b) but must keep the target
-    // raw. Before the fix it baked the run-start fallback, child-a.
+    // the cache bakes the writer's input (child-b) but must keep the target
+    // raw, not the run-start fallback
     const replay = await runWorkflow(
       repo,
       dir,
@@ -441,7 +415,6 @@ Deno.test("step-output targets: a target resolving to a record fails the step wi
 
 Deno.test("step-output targets: resume resolves the target from the record written after it", async () => {
   await withRepo(async (repo, dir, executions) => {
-    // A stale record from an earlier run names child-a.
     await repo.workflowRepo.save(driverWorkflow("seed", {
       task: { type: "workflow", workflowIdOrName: "child-a" },
     }));
@@ -475,8 +448,8 @@ Deno.test("step-output targets: resume resolves the target from the record writt
     toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
     await repo.workflowRunRepo.save(gated.id, toApprove!);
 
-    // Resume re-evaluates the workflow while the record still names child-a.
-    // Before the fix the target baked that in; now it waits for the writer.
+    // resume re-evaluates the workflow while the record still names child-a;
+    // the target must wait for the writer instead of baking that in
     let resumed: WorkflowRun | undefined;
     for await (const event of svc.resume("gated", suspended.id)) {
       if (event.kind === "completed") resumed = event.run;
@@ -497,7 +470,6 @@ Deno.test("step-output targets: steps.* in task inputs and a target resolves at 
       },
     }));
 
-    // Before the fix both runs failed at start: "Unknown variable: steps".
     for (const lastEvaluated of [false, true]) {
       const run = await runWorkflow(
         repo,

@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Worker prune deletes a worker model whose auto-definition is kept in the
-// datastore, with the model delete deps wired as the worker prune callers wire
-// them (swamp-club#3155).
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -83,7 +79,6 @@ Deno.test("integration: worker prune deletes a worker auto-definition kept in th
       datastoreResolver,
     });
     try {
-      // Saved the way the worker model run deps save it.
       const autoRepo = new YamlDefinitionRepository(
         repoDir,
         undefined,
@@ -99,8 +94,6 @@ Deno.test("integration: worker prune deletes a worker auto-definition kept in th
       const path = autoRepo.getPath(WORKER_MODEL_TYPE, definition.id);
       assertEquals(path.startsWith(cacheRoot), true);
 
-      // Deps wired as worker prune, serve's worker GC and the serve admin
-      // worker prune handler wire them.
       const deleteDeps = createModelDeleteDeps(
         repoDir,
         datastoreResolver,

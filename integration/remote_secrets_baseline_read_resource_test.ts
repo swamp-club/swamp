@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote-secrets baseline, path 2: remote `readResource` (swamp-club#3512).
- *
- * The runner's `createRemoteMethodContext` reads through the real capability
- * bridge (runner channel → supervisor bridge → serve CapabilityService, with
- * the dispatch registry wired as `swamp serve` wires it) and a real
- * DataPlaneClient holding a per-dispatch credential against the harness's
- * port-0 data plane. Pins how serve authorizes tagged fields through a
- * resource claim verified against the record (swamp-club#3529), and that the
- * remote reader, fed the verified bundle's resource specs, reads an untagged
- * record and a malformed sensitive-fields tag as the local reader does
- * (swamp-club#3530).
- */
-
 import {
   assertEquals,
   assertExists,
@@ -85,7 +71,6 @@ await initializeLogging({});
 const WORKER = "w-read-resource";
 const SPEC = "secret";
 
-/** The resource spec both readers see: `password` is schema-sensitive. */
 const RESOURCE_SPECS: Record<string, ResourceOutputSpec> = {
   [SPEC]: {
     description: "a resource with one sensitive field",
@@ -105,9 +90,7 @@ interface Fixture {
   typeB: ModelType;
   modelIdB: string;
   dispatchId: string;
-  /** The runner-side method context for a dispatch of model A. */
   context: ReturnType<typeof createRemoteMethodContext>["context"];
-  /** The dispatch's per-dispatch data-plane credential. */
   credential: string;
 }
 
@@ -142,7 +125,6 @@ async function seedResource(
   );
 }
 
-/** Wires one in-process channel pair; each side delivers to the other. */
 function channelPair(): [RpcChannel, RpcChannel] {
   const a: RpcChannel = new RpcChannel({
     send: (data) => void Promise.resolve().then(() => b.handleRaw(data)),
@@ -153,14 +135,6 @@ function channelPair(): [RpcChannel, RpcChannel] {
   return [a, b];
 }
 
-/**
- * Registers a dispatch of model A for the worker and builds the runner's
- * remote method context over the production verb path. `allowedSecrets`
- * defaults to what DispatchService derives for a step whose (resolved) args
- * carry no vault expression: an empty allowlist. `null` registers no
- * allowlist at all, which CapabilityService treats as allow-all (`undefined`
- * would take the default instead).
- */
 async function withFixture(
   fn: (f: Fixture) => Promise<void>,
   allowedSecrets: VaultExtractionResult | null = extractVaultReferences(
@@ -192,8 +166,6 @@ async function withFixture(
         definitionName: "baseline-rr",
         definitionTags: {},
         allowedSecrets: allowedSecrets ?? undefined,
-        // The step's bag, as serve registers it from the references its
-        // arguments carry: the static references of the allowlist.
         bagReferences: new Set(
           (allowedSecrets?.staticRefs ?? []).map((ref) =>
             bagReferenceId(ref.vaultName, ref.secretKey)
@@ -203,8 +175,6 @@ async function withFixture(
       });
       const record = o.gateway.sessions.issueForDispatch(WORKER, dispatchId);
 
-      // serve ⇄ supervisor over the control socket; supervisor ⇄ runner
-      // over stdio. The bridge stamps its own dispatchId on every verb.
       const [serveSide, supervisorSide] = channelPair();
       o.capabilityService.registerHandlers(serveSide, WORKER);
       const [bridgeChild, runner] = channelPair();
@@ -266,7 +236,6 @@ async function withFixture(
   });
 }
 
-/** The local reader, wired as in_process_executor wires it. */
 async function readLocally(
   f: Fixture,
   name: string,
@@ -294,7 +263,6 @@ Deno.test({
 
       assertEquals(await f.context.readResource!("own"), { note: "a" });
 
-      // A read of another behavior type through the verb path is refused.
       const repo = f.context.dataRepository;
       await assertRejects(
         () => repo.findByName(f.typeB, f.modelIdB, "other"),
@@ -317,10 +285,6 @@ Deno.test({
         note: otherSecret,
       });
 
-      // The bytes route repeats getData's check (swamp-club#3528): a
-      // dispatch of model A asking for model B's stored bytes with its own
-      // credential is refused before the lookup, with the same phrase, and
-      // none of B's content leaves serve.
       const response = await fetch(
         `${f.o.dataPlaneUrl}${
           dataContentPath(f.typeB.normalized, f.modelIdB, "other", 1)
@@ -378,9 +342,9 @@ Deno.test({
           note: "n",
         });
 
-        // The allowlist a workflow step's dispatch registers is empty, so the
-        // read resolves only because the reader claims the record it is for
-        // and serve verifies the claim against that record's tagged fields.
+        // the allowlist is empty, so the read resolves only because the reader
+        // claims the record and serve verifies the claim against that record's
+        // tagged fields
         assertEquals(await f.context.readResource!("tagged"), {
           password: secret,
           note: "n",
@@ -396,15 +360,11 @@ Deno.test({
             dispatchId: f.dispatchId,
             ...(resource ? { resource } : {}),
           });
-        // Without a claim, the empty allowlist refuses the same key.
         await assertRejects(
           () => resolve(key),
           Error,
           `resolveSecret: secret '${key}' is not referenced by the dispatched step`,
         );
-        // A claim is verified against the record: a resource the dispatch
-        // does not have, a reference the tagged fields do not hold, an
-        // untagged record, and a wrong version are each refused.
         const refused = (k: string, name: string, reason: string) =>
           `resolveSecret: secret '${k}' is not a tagged sensitive field of resource '${name}' (${reason})`;
         await assertRejects(
@@ -451,16 +411,15 @@ Deno.test({
           LEGACY_PLAINTEXT_PROTOCOL_VERSION,
           "the record predates verified sensitive-field writes",
         ],
-        // The route names its code and the reference, never serve's reason.
         [REMOTE_PROTOCOL_VERSION, "resource_claim_refused"],
       ] as const
     ) {
       await withFixture(
         async (f) => {
           await f.o.putSecret(key, canary("rr-preplanted"));
-          // These are the shapes older writers could persist: a caller-supplied
-          // tag on an ordinary field, or a dotted own key skipped by vaulting.
-          // Neither has the version stamp issued by the corrected writer.
+          // shapes older writers could persist: a caller-supplied tag on an
+          // ordinary field, or a dotted own key skipped by vaulting; neither
+          // has the corrected writer's version stamp
           for (
             const { name, content, tag } of [
               {
@@ -603,8 +562,8 @@ Deno.test({
             const metadata = await findByName(...args);
             if (!shadowWritten) {
               shadowWritten = true;
-              // Complete a normal file write after persistent metadata was
-              // selected and before the claim verifier asks for its content.
+              // complete a normal file write after persistent metadata was
+              // selected and before the claim verifier asks for its content
               const shadow = await createFileWriter("shadow", "state")
                 .writeText(
                   JSON.stringify({ password: vaultRef(target) }),
@@ -755,11 +714,9 @@ Deno.test({
   fn: async () => {
     const key = `rr-untagged-${crypto.randomUUID()}`;
     const secret = canary("rr-untagged");
-    // No allowlist at all, so the resolveSecret the remote reader issues for
-    // the schema-sensitive field is allowed. Under a dispatch's default empty
-    // allowlist serve refuses it (swamp-club#3529), as for a tagged field: the
-    // read then fails loudly where, before swamp-club#3530, it returned the
-    // raw reference text.
+    // no allowlist at all, so the resolveSecret for the schema-sensitive field
+    // is allowed; under a dispatch's default empty allowlist serve refuses it
+    // and the read fails loudly
     await withFixture(
       async (f) => {
         await f.o.putSecret(key, secret);
@@ -768,7 +725,6 @@ Deno.test({
           note: "n",
         });
 
-        // Both readers fall back to the resource schema and resolve it.
         assertEquals(await f.context.readResource!("untagged"), {
           password: secret,
           note: "n",
@@ -792,10 +748,8 @@ Deno.test({
   fn: async () => {
     const key = `rr-untagged-v6-${crypto.randomUUID()}`;
     const secret = canary("rr-untagged-v6");
-    // The route verifies tagged claims only (design/enablers/typed-secrets.md
-    // Section 9): a reference an untagged record holds is admitted by the
-    // bag, as a version 5 read is by a static allowlist, and refused
-    // otherwise, where a version 5 step's dynamic reference opened it.
+    // the route verifies tagged claims only: a reference an untagged record
+    // holds is admitted by the bag, and refused otherwise
     await withFixture(async (f) => {
       await f.o.putSecret(key, secret);
       await seedResource(f.o, f.typeA, f.modelIdA, "untagged", {
@@ -842,9 +796,6 @@ Deno.test({
           note: "n",
         }, { [SENSITIVE_FIELDS_TAG]: malformed });
 
-        // A present tag that is not the vaulting step's is refused rather
-        // than read as absent, on both executors, with the refusal naming
-        // the record (typed-secrets Section 6.1).
         for (
           const read of [
             () => f.context.readResource!("malformed"),

@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Runner entry point for the output-protection baseline (swamp-club#3512):
- * registers the fixture model, then runs one dispatch. Logging goes to
- * stderr at info, as the real `swamp worker exec-dispatch` runner's does, so
- * the supervisor sees what a runner writes there.
+ * logging goes to stderr at info as the real `swamp worker exec-dispatch`
+ * runner's does, so the supervisor sees what a runner writes there
  */
 
 import "../../src/domain/models/models.ts";

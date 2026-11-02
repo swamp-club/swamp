@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 teardown once the datastore's storage is unreachable
- * (swamp-club#3802), against a real Litestream sidecar whose control answers
- * are faked: a closing sync that would wait out its deadline is given up as
- * soon as a probe of the storage cannot reach it, and a command that already
- * found the storage unreachable gives its closing sync a short deadline.
- *
- * Like the other sidecar tests, these spawn the supervisor and Litestream,
- * the components under test, and kill them afterwards.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { V3ReplicationError } from "../src/domain/datastore_v3/litestream_replication.ts";
@@ -60,7 +49,6 @@ const ignore = SIDECAR_TESTS_IGNORED;
  */
 const NEVER_MS = 30_000;
 
-/** Storage whose `has` is refused, as an unreachable bucket refuses it, while `down.on`. */
 function probedStorage(
   down: { on: boolean },
   probes: { count: number },
@@ -87,10 +75,6 @@ function probedStorage(
     });
 }
 
-/**
- * A sync that answers only when given up, recording the signal it got, or
- * times out at its deadline as the real client does.
- */
 function hangingSync(signals: (AbortSignal | undefined)[]) {
   return (
     _socket: string,
@@ -240,7 +224,6 @@ Deno.test({
   },
 });
 
-/** A sidecar whose sync fails: Litestream answers with an error. */
 const FAILING_SYNC = {
   control: {
     info: unixLitestreamControl.info,

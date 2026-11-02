@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * v3 on a bucket (swamp-club#3534, Phase 4E), in-process on the in-memory
- * remote registered as a datastore type with every v3 capability: setup and
- * its refusals, the format guard, the namespaced records under `ns/`, the
- * lock commands, lineage path collection through the binding, and the v2
- * paths a v3 bucket datastore never takes.
- *
- * The writers' cases run a real Litestream sidecar, as D1 and D2's do, so
- * they are skipped without `SWAMP_LITESTREAM_PATH`; they replicate to a file
- * replica through the internal setting, which wins in tests. The provider's
- * own target is exercised where no Litestream runs.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -154,10 +141,8 @@ await initializeLogging({});
 
 const encode = (text: string) => new TextEncoder().encode(text);
 
-/** The marker a v3 setup writes, as a control-plane record. */
 const MARKER_RECORD = "_control/datastore-format";
 
-/** A bucket the in-memory remote stands in for, registered as a type. */
 interface Bucket {
   readonly remote: InMemoryRemote;
   readonly typeName: string;
@@ -215,8 +200,6 @@ async function withRoot(
   const bucket = createBucket(options);
   try {
     await fn(root, bucket);
-    // Whatever the case did, no v2 sync method was called on the bucket
-    // (swamp-club#3549).
     assertEquals(v2SyncOps(bucket), [], "a v2 sync method was called");
   } finally {
     await closeV3Datastores().catch(() => {});
@@ -250,10 +233,8 @@ function setupBucket(
 }
 
 /**
- * The v2 sync operations the bucket's sync services were asked for:
- * markDirty, push (pushChanged), pull (pullChanged), prepare (preparePush)
- * and commit (commitPush). A v3 bucket datastore never calls one, which the
- * extensions' refusal of a format-3 bucket relies on (swamp-club#3549).
+ * a v3 bucket datastore never calls a v2 sync operation; the extensions'
+ * refusal of a format-3 bucket relies on that
  */
 function v2SyncOps(bucket: Bucket): string[] {
   return bucket.remote.ops()
@@ -274,7 +255,6 @@ async function swampYaml(repoDir: string): Promise<Record<string, unknown>> {
   ) as Record<string, unknown>;
 }
 
-/** A checkout of the same datastore: `.swamp.yaml` copied into a new repo. */
 async function cloneRepo(
   from: string,
   to: string,
@@ -352,7 +332,6 @@ Deno.test({
       const repoDir = join(root, "repo");
       await initRepo(repoDir);
       assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
-      // As doctor reads it, from the repository's datastore config.
       const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
       const kept = () => inspectV3KeptLineages({ repoDir, datastoreConfig });
       assertEquals(await kept(), []);
@@ -381,7 +360,6 @@ Deno.test({
   },
 });
 
-/** Runs a read-only CLI command in-process, in JSON mode; returns its error. */
 async function runReadCommand(
   repoDir: string,
   args: string[],
@@ -425,8 +403,6 @@ Deno.test({
         ]
       ) {
         const error = await runReadCommand(repoDir, args);
-        // The vault does not exist: read-secret is refused once the repo is
-        // open. Every other command succeeds.
         if (args[1] === "read-secret") {
           assertStringIncludes(String(error), "no-such-vault");
         } else {
@@ -566,7 +542,6 @@ Deno.test({
         encode('{"format":3,"minReaderFormat":3,"writtenBy":"earlier"}'),
       );
       assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
-      // The first setup's marker stays.
       assertStringIncludes(
         new TextDecoder().decode(
           bucket.remote.controlPlaneRecords().get(MARKER_RECORD),
@@ -647,7 +622,6 @@ Deno.test({
     await withRoot(async (root, bucket) => {
       const repoDir = join(root, "repo");
       await initRepo(repoDir);
-      // A v2 setup persists no format key.
       const marker = await swampYaml(repoDir);
       await Deno.writeTextFile(
         join(repoDir, ".swamp.yaml"),
@@ -729,8 +703,6 @@ Deno.test({
       const solo = join(root, "solo");
       await initRepo(solo);
       assertEquals(errorOf(await setupBucket(solo, bucket)), undefined);
-      // Two more checkouts on the same prefix, in namespaces named like the
-      // lease's and the lineages' own records.
       const writer = join(root, "writer");
       const lineage = join(root, "lineage");
       await cloneRepo(solo, writer, (ds) => ds.namespace = "writer");
@@ -790,7 +762,6 @@ Deno.test({
       const location = await v3DatastoreConfigOf(repoDir, datastoreConfig);
       const handle = v3WriterLockHandle(location.path);
       assertEquals(await handle.inspect(), null);
-      // Another machine holds the lease.
       const hold = await (await v3WriterLease(
         datastoreWriterLeaseStore(bucket.provider(), bucket.typeName),
         60_000,
@@ -816,7 +787,6 @@ Deno.test({
       const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
       const location = await v3DatastoreConfigOf(repoDir, datastoreConfig);
       const binding = v3BucketBindingAt(location.path)!;
-      // The provider's own target: no internal setting is set here.
       assertEquals(binding.replica.type, "s3");
       assertEquals(binding.replicaPaths?.root, "s3::team-bucket:");
       const copy = {
@@ -851,12 +821,6 @@ Deno.test({
   },
 });
 
-// --- Writers, with a real Litestream sidecar --------------------------------
-
-/**
- * Runs `fn` with test timings, replicating to a file replica through the
- * internal setting, or with `providerReplica` to the provider's own target.
- */
 async function withSidecar(
   root: string,
   fn: () => Promise<void>,
@@ -891,9 +855,7 @@ async function withSidecar(
   }
 }
 
-/** One write command in `repoDir`: `commits` commits, then teardown. */
 async function writeIn(repoDir: string, commits: number): Promise<void> {
-  // Opened as a write command opens it: the writer lease and the context.
   await requireInitializedRepo({ repoDir, outputMode: "json" });
   const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
   const location = await v3DatastoreConfigOf(repoDir, datastoreConfig);
@@ -930,11 +892,6 @@ async function commitThrough(
   }
 }
 
-/**
- * One write command in `repoDir` committing an inline-sized and a chunked
- * auto-definition whose puts carry `access` (swamp-club#3693), as a writer
- * staging an executable or private file records it.
- */
 async function writeWithAccess(
   repoDir: string,
   access: FileAccess,
@@ -969,7 +926,6 @@ async function writeWithAccess(
   await closeV3Datastores();
 }
 
-/** The record files under a checkout's `.swamp/<subdir>`, sorted. */
 async function recordsIn(repoDir: string, subdir: string): Promise<string[]> {
   const names: string[] = [];
   try {
@@ -982,7 +938,6 @@ async function recordsIn(repoDir: string, subdir: string): Promise<string[]> {
   return names.sort();
 }
 
-/** Opens `repoDir` read-only, which restores its copy, and counts its commits. */
 async function restoredCommits(repoDir: string): Promise<number> {
   await requireInitializedRepoReadOnly({ repoDir, outputMode: "json" });
   const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
@@ -1005,12 +960,9 @@ Deno.test({
       await cloneRepo(first, second);
       await withSidecar(root, async () => {
         await writeIn(first, 2);
-        // The first command on the clone restores the published lineage.
         assertEquals(await restoredCommits(second), 2);
-        // The clone takes over writing.
         await writeIn(second, 1);
         assertEquals(await restoredCommits(first), 3);
-        // Its chunks went through the provider's storage.
         const chunks = [];
         for await (
           const chunk of bucket.remote.storage!().list(
@@ -1021,7 +973,6 @@ Deno.test({
           chunks.push(chunk);
         }
         assert(chunks.length > 0, "the commits' chunks are in the bucket");
-        // Lease and lineage records sit at the datastore root.
         const keys = [...bucket.remote.controlPlaneRecords().keys()];
         assert(keys.some((key) => key.startsWith("_control/writer/")));
         assert(keys.some((key) => key.startsWith("_control/lineage/")));
@@ -1063,7 +1014,6 @@ Deno.test({
               refresh,
             ),
           );
-          // Read once without the restore lock and once under it.
           const reads = spans.filter((span) =>
             span.name === "swamp.datastore.v3.lineage.read"
           );
@@ -1093,7 +1043,6 @@ Deno.test({
               .attributes["swamp.datastore.v3.restore_outcome"],
             "ok",
           );
-          // The catch-up that materialises the restored commits.
           const catchUps = spans.filter((span) =>
             span.name === "swamp.datastore.v3.readmodel.catchup" &&
             (span.attributes["swamp.datastore.v3.commits"] as number) > 0
@@ -1139,7 +1088,6 @@ Deno.test({
           small: "p.key",
           large: "p.bin",
         });
-        // One commit per auto-definition: each is its own partition.
         assertEquals(await restoredCommits(second), 4);
       });
       const modeOf = async (name: string) =>
@@ -1168,7 +1116,6 @@ Deno.test({
       assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
       const second = join(root, "second");
       await cloneRepo(first, second);
-      // The clone wrote records of its own before it pulled the v3 config.
       const v2Record = swampPath(second, "data", "m", "log", "1", "raw");
       await Deno.mkdir(dirname(v2Record), { recursive: true });
       await Deno.writeTextFile(v2Record, "B-pre-join");
@@ -1180,7 +1127,6 @@ Deno.test({
           () => restoredCommits(second),
           V3CheckoutHoldsRecordsError,
         );
-        // Nothing was restored or leased for the refused checkout.
         assertEquals(await recordsIn(second, "data"), before);
         assertEquals(await recordsIn(second, "_read_model_v3"), []);
         assertEquals(
@@ -1190,7 +1136,6 @@ Deno.test({
         const { moved } = await movePreV3CheckoutRecords(second);
         assertEquals([...moved], ["data"]);
         assertEquals(await restoredCommits(second), 2);
-        // It holds the two committed records, and none of its own.
         assertEquals((await recordsIn(second, "auto-definitions")).length, 2);
         assertEquals(await recordsIn(second, "data"), []);
       });
@@ -1240,7 +1185,6 @@ Deno.test({
         assertEquals((await recordsIn(second, "auto-definitions")).length, 2);
         await writeIn(second, 1);
         assertEquals(await restoredCommits(first), 3);
-        // The checkout's own files are left where they are.
         assertEquals(await Deno.readTextFile(lockfile), "{}");
         await Deno.stat(pulled);
       });
@@ -1279,7 +1223,6 @@ Deno.test({
         assert(await lease.forceRelease(held!.nonce!));
         await holdV3Writer(takerLocation, taker);
         await commitThrough(taker, takerLocation, 1);
-        // The zombie commits on, then closes: its lease check fails.
         await commitThrough(zombie, zombieLocation, 2);
         const error = await assertRejects(() => closeV3Datastores());
         assert(
@@ -1287,11 +1230,9 @@ Deno.test({
             error instanceof V3ReplicationError,
           `fenced, not ${error}`,
         );
-        // The published state is the taker's: 1 + 1, none of the zombie's 2.
         assertEquals(await restoredCommits(reader), 2);
-        // The zombie's next command restores the published state and drops
-        // its late records from its checkout (swamp-club#3553): it lists only
-        // what the datastore holds.
+        // the zombie's next command restores the published state and drops its
+        // late records from its checkout, listing only what the datastore holds
         assertEquals(await restoredCommits(zombie), 2);
         assertEquals(
           await recordsIn(zombie, "auto-definitions"),
@@ -1302,11 +1243,6 @@ Deno.test({
   },
 });
 
-/**
- * A fresh checkout's first read, after `hide` made the replica's lineage
- * unreadable while its records still name it: it fails with the restore's
- * error instead of reading an empty datastore, every time (swamp-club#3642).
- */
 async function freshCheckoutRefusesUnreadableReplica(
   root: string,
   bucket: Bucket,
@@ -1355,9 +1291,9 @@ Deno.test({
 });
 
 /**
- * How Litestream meets a replica listing the storage drops: on S3 it
- * retries for about two minutes (a restore that never ends here, stopped by
- * the watch); on GCS it fails within seconds, before the watch lists.
+ * how Litestream meets a replica listing the storage drops: on S3 it retries
+ * until the watch stops the restore; on GCS it fails fast, before the watch
+ * lists
  */
 const CUT_RESTORES = {
   "retried": {
@@ -1392,7 +1328,6 @@ for (const [kind, cut] of Object.entries(CUT_RESTORES)) {
         await withSidecar(root, async () => {
           await writeIn(first, 2);
           assertEquals(await restoredCommits(second), 2);
-          // The second checkout is behind now.
           await writeIn(first, 1);
         });
         // Exec, so killing a restore that never ends ends the process
@@ -1429,7 +1364,6 @@ for (const [kind, cut] of Object.entries(CUT_RESTORES)) {
                 UserError,
               );
               assertEquals(refused.code, CATCH_UP_UNREACHABLE_CODE);
-              // A writer's restore stops the same way, with the storage's code.
               const cutOff = await assertRejects(
                 () => writeIn(second, 1),
                 UserError,
@@ -1462,7 +1396,6 @@ Deno.test({
       await withSidecar(root, async () => {
         await writeIn(first, 2);
         assertEquals(await restoredCommits(second), 2);
-        // The second checkout is behind now.
         await writeIn(first, 1);
       });
       setV3ReplicationForTesting({
@@ -1570,7 +1503,6 @@ Deno.test({
     const s3Bucket = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_BUCKET") ??
       "swamp-test";
     await withRoot(async (root, bucket) => {
-      // The lineage's objects go; the records naming it stay.
       await freshCheckoutRefusesUnreadableReplica(root, bucket, async () => {
         const listing = await (await fetch(
           `${S3_ENDPOINT}/${s3Bucket}?list-type=2&prefix=${prefix}/_litestream/`,
@@ -1687,7 +1619,6 @@ Deno.test({
           }),
         );
         await writeIn(repoDir, 1);
-        // A long-running process (serve) that sees the rename itself.
         const local = await localProcess();
         setLocalProcessForTesting({
           ...local,

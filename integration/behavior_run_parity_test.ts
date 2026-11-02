@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * `swamp behavior run` and `swamp model method run` are two spellings of one
- * invocation (swamp-club#3265). This drives both leaves in-process against a
- * temp repository and checks that a local run — definition lookup, locks, the
- * run record and the method itself — comes out the same.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { Command } from "@cliffy/command";
@@ -76,7 +69,6 @@ interface RunResult {
   status: string;
 }
 
-/** The root as runCli wires it: both groups, the model_name type, --json. */
 function root(): AnyCommand {
   return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")
@@ -85,14 +77,9 @@ function root(): AnyCommand {
 }
 
 /**
- * Runs the given command words in-process with `--json` and returns the run
- * record the renderer prints on completion. Captures console.log the way
- * integration/model_get_datastore_auto_definition_test.ts does, which holds
- * because Deno runs the tests in a file one at a time.
- *
- * The legacy direct-type words are given post-rewrite (`model method run
- * @type ...`): `rewriteDirectTypeArgs` runs in `runCli`, before Cliffy, and
- * has its own unit tests.
+ * captures console.log, which holds because Deno runs the tests in a file one
+ * at a time; legacy direct-type words are given post-rewrite, as
+ * rewriteDirectTypeArgs runs before Cliffy
  */
 async function runJson(repoDir: string, words: string[]): Promise<RunResult> {
   const printed: string[] = [];
@@ -116,7 +103,6 @@ async function runJson(repoDir: string, words: string[]): Promise<RunResult> {
   throw new Error(`no run record printed; got:\n${printed.join("\n")}`);
 }
 
-/** A type whose method records what it was called with, in process. */
 function registerType(
   executions: Record<string, unknown>[],
 ): ModelType {
@@ -248,15 +234,6 @@ Deno.test({
   },
 });
 
-// ---------------------------------------------------------------------------
-// The --server path: both leaves send the same request to a swamp serve
-// endpoint. A port-0 WebSocket server stands in for serve.
-// ---------------------------------------------------------------------------
-
-/**
- * Captures the payload sent over the WebSocket by the --server path and
- * answers with a scripted run result.
- */
 function payloadCapturingServer(run: Record<string, unknown>): {
   url: string;
   shutdown: () => Promise<void>;
@@ -366,15 +343,6 @@ Deno.test({
   },
 });
 
-// ---------------------------------------------------------------------------
-// --literal-inputs over --server (swamp-club#3205): the flag is only sent to a
-// server that says it honours it, through either spelling.
-// ---------------------------------------------------------------------------
-
-/**
- * A server that answers `server.version` with `capabilities` (or none, as
- * an older server does) and records every method-run payload.
- */
 function versionedServer(capabilities: string[] | undefined): {
   url: string;
   shutdown: () => Promise<void>;

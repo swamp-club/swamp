@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * An interrupted run on a v3 filesystem datastore (swamp-club#3299): a run
- * cancelled by its signal commits as cancelled, and the files a writer that
- * ended without tearing down left uncommitted are removed by the next
- * command in its checkout, so every checkout converges.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -94,11 +87,6 @@ await initializeLogging({});
 /** A pid no process has: above every platform's pid limit. */
 const GONE_PID = 99_999_999;
 
-/**
- * Registers a model whose `write` method writes two part resources and a
- * payload file, calls `onWritten`, then waits on its signal, as swamp-uat's
- * write-then-wait fixture does. The type name is per run.
- */
 function registerWriteThenWait(onWritten: () => void): ModelType {
   const type = ModelType.create(`test/write-then-wait-${crypto.randomUUID()}`);
   modelRegistry.register({
@@ -152,7 +140,6 @@ function registerWriteThenWait(onWritten: () => void): ModelType {
   return type;
 }
 
-/** A promise `written` that settles when the returned callback runs. */
 function writtenLatch(): { written: Promise<void>; onWritten: () => void } {
   let onWritten = () => {};
   const written = new Promise<void>((resolve) => {
@@ -165,11 +152,6 @@ function inRoot<T>(repos: RowRepos, fn: () => Promise<T>): Promise<T> {
   return runInRootUnitOfWork(repos.a.repoContext, { flush: undefined }, fn);
 }
 
-/**
- * Runs `write` on a fresh write-then-wait model in A, inside a root as the
- * CLI runs it, and aborts the run's signal once its outputs are written, as
- * SIGTERM does. Resolves with the model's name.
- */
 async function abortedMethodRun(repos: RowRepos): Promise<string> {
   const { written, onWritten } = writtenLatch();
   const type = registerWriteThenWait(onWritten);
@@ -208,7 +190,6 @@ async function abortedMethodRun(repos: RowRepos): Promise<string> {
   return name;
 }
 
-/** The statuses of every method run record under the cache root `root`. */
 async function outputStatuses(root: string): Promise<string[]> {
   const statuses: string[] = [];
   for (const path of await filesUnder(join(root, "outputs"), ".yaml")) {
@@ -220,7 +201,6 @@ async function outputStatuses(root: string): Promise<string[]> {
   return statuses.sort();
 }
 
-/** The data names held under the cache root `root`. */
 async function dataNames(root: string): Promise<string[]> {
   const names = new Set<string>();
   for (const path of await filesUnder(join(root, "data"), ".yaml")) {
@@ -336,13 +316,6 @@ Deno.test("v3 interrupted run: a workflow run aborted after a step wrote its out
   });
 });
 
-/**
- * Leaves A as a writer killed mid-run leaves it: a committed record, a
- * record whose root never committed (its files and catalog rows stay), a
- * committed file overwritten in place, a marker and a writer lock naming a
- * pid that is gone, and checkout-local files that must survive. Resolves
- * with what the recovery must restore and keep.
- */
 async function leaveInterruptedWriter(
   repos: RowRepos,
   datastorePath: string,
@@ -381,10 +354,9 @@ async function leaveInterruptedWriter(
     await Deno.writeTextFile(path, "local");
   }
 
-  // The process ends without tearing down: its marker and lock stay behind.
-  // Here it ends its hold, then restores what a killed writer leaves, naming
-  // a pid that is gone. A killed writer never recovers its dropped work at
-  // teardown (swamp-club#3553), so this one forgets it first.
+  // the process ends without tearing down, leaving its marker and lock; a
+  // killed writer never recovers its dropped work at teardown, so this one
+  // forgets it first
   v3DatastoreFor(repos.repoA, filesystemConfig(repos)).forgetDroppedWork();
   await closeV3Datastores();
   await Deno.writeTextFile(
@@ -395,7 +367,6 @@ async function leaveInterruptedWriter(
   return { kept, overwritten: committedFile, committed };
 }
 
-/** The writer lease held by `pid` on this host, last renewed at `acquiredAt`. */
 async function writeLock(
   datastorePath: string,
   pid: number,
@@ -518,7 +489,6 @@ Deno.test("v3 interrupted run: a marker naming a live process, or a lock its liv
     assertEquals((await readWriterMarker(repos.repoA))?.pid, GONE_PID);
     await lapsed.release();
 
-    // Once the lock is free, the next read recovers.
     await v3RepositoryFactoryConfig(repos.repoA, config, { readOnly: true });
     await assertRecovered(repos, datastorePath, left);
   });
@@ -571,7 +541,6 @@ Deno.test({
           ),
       );
       const registry = new ActiveRunRegistry();
-      // Serve's shutdown drain aborts every run still registered.
       const aborting = written.then(() => {
         for (const run of registry.list()) {
           run.controller.abort(new Error("server shutdown"));
@@ -641,7 +610,6 @@ Deno.test({
       } finally {
         await Deno.chmod(blocked, 0o755);
       }
-      // Once the cause is fixed, the next writer recovers.
       await holdV3Writer(config, repos.repoA);
       assertEquals((await readWriterMarker(repos.repoA))?.pid, Deno.pid);
     });
@@ -675,7 +643,6 @@ Deno.test("v3 interrupted run: a hold whose checkout record cannot be written re
   await withV3RowRepos({}, async (repos, datastorePath) => {
     const config = filesystemConfig(repos);
     await closeV3Datastores();
-    // A directory where the writer's checkout record goes: its write fails.
     const sidecar = join(datastorePath, "_control", "writer.checkout.json");
     await Deno.mkdir(join(sidecar, "blocked"), { recursive: true });
     try {
@@ -712,10 +679,6 @@ Deno.test("v3 interrupted run: a restarted container's process recovers its pred
   });
 });
 
-/**
- * Leaves an interrupted writer whose marker a crash left `text`
- * (swamp-club#3617), dated when that writer started.
- */
 async function leaveUnreadableMarker(
   repos: RowRepos,
   datastorePath: string,
@@ -760,7 +723,6 @@ Deno.test("v3 interrupted run: a read-only command recovers an unreadable marker
     assertEquals((await readWriterMarkerFile(repos.repoA)).kind, "unreadable");
     await live.release();
 
-    // Once the lease is free, the next read recovers.
     await v3RepositoryFactoryConfig(repos.repoA, config, { readOnly: true });
     await assertRecovered(repos, datastorePath, left);
   });
@@ -768,7 +730,6 @@ Deno.test("v3 interrupted run: a read-only command recovers an unreadable marker
 
 Deno.test("v3 interrupted run: recovery stores a chunk a power cut tore again from the checkout file, so every checkout can read the record (swamp-club#3617)", async () => {
   await withV3RowRepos({}, async (repos, datastorePath) => {
-    // Content over the inline limit, stored as one chunk.
     const big = new TextEncoder().encode(
       JSON.stringify({ value: "x".repeat(20_000) }),
     );

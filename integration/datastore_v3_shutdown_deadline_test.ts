@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's shutdown deadline over the v3 teardown (swamp-club#3961), against
- * a real Litestream sidecar whose sync answers are faked: the closing sync
- * gets what the deadline has left when it starts, a probe's sync the
- * upkeep's stop stops waiting for is aborted, and a closing sync queued
- * behind a probe's sync counts that wait against its own deadline.
- *
- * Like the other sidecar tests, these spawn the supervisor and Litestream,
- * the components under test, and kill them afterwards.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { V3ReplicationError } from "../src/domain/datastore_v3/litestream_replication.ts";
@@ -53,19 +42,13 @@ import {
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/** A deadline no sync in these tests is meant to reach. */
 const NEVER_MS = 30_000;
 
-/** A sync the test sees start. */
 interface SeenSync {
   readonly deadlineMs: number;
   readonly signal?: AbortSignal;
 }
 
-/**
- * A sync that never answers: it fails at its deadline as a timeout, as the
- * real client does, or at once when its signal aborts.
- */
 function hangingSync(seen: SeenSync[]) {
   return (
     _socket: string,
@@ -96,7 +79,6 @@ function hangingSync(seen: SeenSync[]) {
   };
 }
 
-/** A shutdown deadline with `leftMs` left, whatever the time. */
 function deadlineWith(leftMs: number) {
   return {
     remaining: (capMs?: number) =>
@@ -208,7 +190,6 @@ Deno.test({
           error.message.includes("an earlier sync"),
           error.message,
         );
-        // The closing sync never started one of its own.
         assertEquals(seen.length, 1);
       } finally {
         setV3ClosingDeadline(undefined);
@@ -239,7 +220,6 @@ Deno.test({
       try {
         await waitFor(() => probeHeld, "the probe to start a sync");
         await commitIn(env, 1);
-        // The probe holds its sync longer than this sync's own deadline.
         await confirmV3CommandReplicated();
         // A later probe's sync can land after this one, so it need not be last.
         assert(deadlines.includes(500), `the deadlines were ${deadlines}`);

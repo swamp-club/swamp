@@ -17,19 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test for position and value provenance
-// (swamp-club#3205, design/enablers/expressions.md "Position and Value
-// Provenance").
-//
-// 1. A pass over substituted data decides what to evaluate with
-//    `partitionAuthoredAt`, which also refuses expression text sitting in
-//    data. Calling the raw-text `partitionAuthored` directly would re-admit
-//    data that byte-matches an authored expression, so only its own module
-//    may call it.
-// 2. Every evaluated-cache writer states where data sits in what it saves.
-//    `undefined` writes the legacy format and an empty map claims the whole
-//    tree is authored; either one at a production save site would make replay
-//    trust data. The scan is textual; the pin-lists prove it still matches.
+// only partitionAuthoredAt's module may call raw partitionAuthored, which would
+// re-admit data matching authored text; cache saves must pass a provenance map,
+// since undefined or empty makes replay trust data
 
 import { assertGreater } from "@std/assert";
 import {
@@ -41,7 +31,6 @@ import {
 
 const RAW_TEXT_GATE = /\bpartitionAuthored\(/g;
 
-/** Production files allowed to call the raw-text gate directly. */
 const PINNED_RAW_TEXT_GATE_CALLERS: readonly string[] = [
   // The definition and its one caller, partitionAuthoredAt.
   "src/domain/expressions/expression_evaluation_service.ts",
@@ -71,7 +60,6 @@ const PINNED_AUTHORED_SAVES: readonly string[] = [
   "src/libswamp/workflows/evaluate.ts: ProvenanceMap.authored()",
 ];
 
-/** The top-level arguments of the call whose `(` ends at `open`. */
 function callArguments(source: string, open: number): string[] {
   const args: string[] = [];
   let depth = 0;
@@ -145,9 +133,8 @@ Deno.test("expression provenance rules: evaluated-cache writers record where dat
 });
 
 /**
- * Runtime passes over a definition that may hold spliced data. Each must
- * pass the definition's provenance. The deprecated legacy seam was removed
- * in typed-secrets 4.5, so no production caller may leave it out.
+ * runtime passes over a definition that may hold spliced data must pass its
+ * provenance; no production caller may leave it out
  */
 const PINNED_RUNTIME_PASSES_WITHOUT_PROVENANCE: readonly string[] = [];
 
@@ -179,10 +166,9 @@ Deno.test("expression provenance rules: every runtime pass over a definition pas
 });
 
 /**
- * Method deliveries over an evaluated definition. Each must pass the
- * argument provenance the runtime pass returned, or a method that places
- * data text (command/shell, swamp-club#3868) runs all of it as authored.
- * `options` is optional only so unit tests can leave it out.
+ * method deliveries over an evaluated definition must pass the argument
+ * provenance the runtime pass returned, or a method placing data text runs all
+ * of it as authored; options is optional only for unit tests
  */
 const PINNED_DELIVERIES_WITHOUT_ARGUMENT_PROVENANCE: readonly string[] = [];
 

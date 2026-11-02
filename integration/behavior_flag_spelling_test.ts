@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The behavior spelling of flags and completion types (swamp-club#3410),
- * checked on the root src/cli/mod.ts builds: every `--model` option lists
- * `--behavior` first with `--model` as its alias, `--restricted-model-types`
- * keeps its model name with no behavior twin, `swamp behavior` arguments
- * complete through `behavior_name`/`behavior_type` while the `swamp model`
- * tree keeps `model_name`/`model_type`, and every completion type an
- * installed completion script may call stays registered.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { generateShellCompletions } from "@cliffy/command/completions";
@@ -42,7 +32,6 @@ interface Visited {
   command: AnyCommand;
 }
 
-/** Every command under `command` once, by its canonical names. */
 function walk(command: AnyCommand, path: string[] = []): Visited[] {
   return command.getCommands(true).flatMap((child: AnyCommand) => {
     const childPath = [...path, child.getName()];
@@ -52,14 +41,12 @@ function walk(command: AnyCommand, path: string[] = []): Visited[] {
 
 const commands = walk(root);
 
-/** The flags of each option declared on `command` itself. */
 function localOptionFlags(command: AnyCommand): string[][] {
   return command.getBaseOptions(true).map((option: { flags: string[] }) =>
     option.flags
   );
 }
 
-/** The type names of `command`'s declared arguments. */
 function argumentTypes(command: AnyCommand): string[] {
   return (command.getArguments() as { type: string }[]).map((a) => a.type);
 }

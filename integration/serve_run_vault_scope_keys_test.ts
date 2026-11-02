@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Key-conditioned vault grants on a serve run's sensitive outputs
- * (swamp-club#2676): the pre-run check decides with a field's own
- * `vaultKey`, leaves a key it cannot know yet to the put, and the put decides
- * every field with its key before storing any of them.
- */
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
@@ -46,7 +39,6 @@ function withCondition(g: Grant, condition: string): Grant {
   return { ...g, condition };
 }
 
-/** A key generated for the fixture's minter starts with its type. */
 const GENERATED_KEY_PREFIX = "test-vault-scope-";
 
 Deno.test({
@@ -118,7 +110,6 @@ Deno.test({
       const frames = await runMethodAs(f, "minter", "mint", BOT);
       const message = methodError(frames) ?? "";
       assertStringIncludes(message, "Writing vault 'outputs' is refused");
-      // The key was unknown before the run, so the method ran ...
       assertEquals(f.sideEffects.count, 1);
       // ... and neither field was stored: the token's key is allowed, but it
       // was not written ahead of the backup's refusal.
@@ -145,7 +136,6 @@ Deno.test({
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
-      // bot may list erp, but not read its `password` key.
       await runMethodAs(f, "ops", "ops", BOT, { vault: "erp" });
       const [ops] = f.ops;
       assertEquals(ops.list, "ok");
@@ -185,7 +175,6 @@ Deno.test({
       // Each replica's key extends the declared one and is only known at
       // write time, so the method ran ...
       assertEquals(f.sideEffects.count, 1);
-      // ... and nothing was stored ahead of the refusal.
       assertEquals(await (await f.vaults()).list("outputs"), []);
       assertEquals(
         vaultDenials(f.audits).map((d) => [d.resourceName, d.action]),

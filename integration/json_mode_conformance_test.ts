@@ -17,70 +17,31 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Conformance test for the CLAUDE.md architecture rule:
- *
- *   "Every command _must_ support both `log` and `json` output modes."
- *
- * Nothing enforced that rule before this file — `--json` is a single
- * `globalOption` on the root command, so it *parses* everywhere by
- * construction, but a command whose action never consults the resolved
- * `OutputMode` silently prints human text under `--json` and corrupts a
- * caller's stdout.
- *
- * The test reconstructs the real Cliffy command tree (the same top-level
- * commands `src/cli/mod.ts` registers, discovered by parsing that file so a
- * newly registered command cannot be silently skipped) and asserts two
- * invariants over every *leaf* command — a command with no subcommands, i.e.
- * one that actually does work:
- *
- *   1. Structural: the leaf resolves `--json` through the inherited global
- *      option, and declares an action handler.
- *   2. Behavioural: the leaf's action routes through the OutputMode plumbing
- *      (`createContext(...).outputMode`, `writeOutput`, an `OutputMode`-aware
- *      renderer, ...). Verified statically from the action function's own
- *      source text, plus one level of same-module delegation for actions that
- *      immediately hand off to a module-local helper.
- *
- * It is entirely static — no subprocesses, no command is ever executed.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { walk as walkFs } from "@std/fs";
 import { dirname, fromFileUrl, join, relative, toFileUrl } from "@std/path";
 import { Command } from "@cliffy/command";
 
-// Import models barrel to trigger self-registration
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { definingModuleOf } from "../src/cli/commands/command_syntax.ts";
 
-// Initialize logging for tests
 await initializeLogging({});
 
 /**
- * Cliffy's `Command` carries eight generic parameters that change with every
- * chained call, so a precise type is impossible here — mirror the relaxed
- * alias `src/cli/cli_schema.ts` uses.
+ * Cliffy's Command has eight generic parameters that change with every chained
+ * call, so a precise type is impossible; mirrors the relaxed alias in
+ * cli_schema.ts
  */
 // deno-lint-ignore no-explicit-any
 type AnyCommand = any;
 
-/**
- * Evidence that an action participates in the two-mode output contract. Any
- * one of these means the code branches on, threads through, or delegates to
- * the resolved `OutputMode`.
- */
 const OUTPUT_MODE_MARKERS = /outputMode|OutputMode|writeOutput|jsonMode/;
 
 /**
- * Leaf commands that legitimately cannot honour `--json`, pinned by their full
- * command path. Pinning them here is what makes the test a ratchet: a command
- * that does not support JSON either fails the test or has to be argued for in
- * this list.
- *
- * Do NOT add a command here to silence a failure — the default answer for a
- * new command is to render through `createContext(...).outputMode`.
+ * leaf commands that legitimately cannot honour --json, pinned by command path;
+ * do not add one to silence a failure, new commands render through
+ * createContext(...).outputMode
  */
 const EXEMPT_COMMAND_PATHS = new Map<string, string>([
   // Cliffy's built-in `CompletionsCommand`. These emit shell completion
@@ -129,20 +90,13 @@ const EXEMPT_COMMAND_PATHS = new Map<string, string>([
 interface LeafCommand {
   path: string;
   command: AnyCommand;
-  /** Source text of the leaf's action handler, or "" when it has none. */
   actionSource: string;
-  /**
-   * Absolute path of the module that defines this command, when known: the
-   * module whose factory built it, else the module that exports it.
-   */
   definingFile: string | undefined;
 }
 
 interface CliTree {
   leaves: LeafCommand[];
-  /** Absolute file path -> source text, for every scanned command module. */
   sources: Map<string, string>;
-  /** Top-level command names registered in `src/cli/mod.ts`. */
   topLevelNames: string[];
 }
 
@@ -150,7 +104,6 @@ const repoRoot = join(dirname(fromFileUrl(import.meta.url)), "..");
 const cliDir = join(repoRoot, "src", "cli");
 const commandsDir = join(cliDir, "commands");
 
-/** Cliffy commands are objects exposing the command-tree accessors. */
 function isCliffyCommand(value: unknown): boolean {
   return typeof value === "object" && value !== null &&
     typeof (value as AnyCommand).getName === "function" &&
@@ -158,32 +111,20 @@ function isCliffyCommand(value: unknown): boolean {
 }
 
 /**
- * Modules under `src/cli/commands/` that execute on import (subprocess entry
- * points with top-level `await`) must not be imported by this test — doing so
- * would run them. Detected from the source rather than pinned by name so a new
- * entry point cannot hang the suite.
+ * modules that execute on import must not be imported here; detected from
+ * source rather than pinned by name so a new entry point cannot hang the suite
  */
 function isEntryScript(source: string): boolean {
   return /^await /m.test(source) || /^if \(import\.meta\.main\)/m.test(source);
 }
 
-/**
- * Extracts a top-level declaration's body: from the declaration to the first
- * line consisting solely of `}`. Reliable because every file in this
- * repository is `deno fmt`-formatted, so a top-level closing brace is always
- * at column 0.
- */
+/** relies on deno fmt: a top-level closing brace is always at column 0 */
 function declarationBody(source: string, declarationIndex: number): string {
   const rest = source.slice(declarationIndex);
   const end = rest.search(/\n\}\n/);
   return end === -1 ? rest : rest.slice(0, end);
 }
 
-/**
- * One level of delegation: an action that immediately hands off to a
- * module-local helper (`handleStaticToken(...)`, `renderFoo(...)`) satisfies
- * the contract when that helper carries the OutputMode markers.
- */
 function delegatesToOutputModeHelper(
   actionSource: string,
   definingFile: string | undefined,
@@ -214,11 +155,6 @@ function delegatesToOutputModeHelper(
   return false;
 }
 
-/**
- * Imports every non-entry module under `src/cli/commands/` and maps each
- * exported Cliffy command object back to the file that defines it, so a leaf
- * discovered by walking the tree can be traced to its source.
- */
 async function loadCommandModules(): Promise<{
   fileOfCommand: Map<unknown, string>;
   sources: Map<string, string>;
@@ -226,12 +162,9 @@ async function loadCommandModules(): Promise<{
   const fileOfCommand = new Map<unknown, string>();
   const sources = new Map<string, string>();
 
-  // Settle every command module in production evaluation order before the
-  // per-file imports below. The walk yields files in filesystem order, which
-  // differs across platforms; entering a module cycle (extension.ts ->
-  // extension_source.ts -> extension_source_add.ts) from the wrong side
-  // throws a TDZ ReferenceError. After this import the per-file imports only
-  // hit the module cache.
+  // import mod.ts first to settle command modules in production order; entering
+  // the extension.ts -> extension_source.ts -> extension_source_add.ts cycle
+  // from the wrong side throws a TDZ ReferenceError
   await import(toFileUrl(join(cliDir, "mod.ts")).href);
 
   for await (
@@ -256,14 +189,6 @@ async function loadCommandModules(): Promise<{
   return { fileOfCommand, sources };
 }
 
-/**
- * Reads the top-level command registrations out of `src/cli/mod.ts` — both
- * `.command("data", dataCommand)` and factory forms such as
- * `.command("help", createHelpCommand(cli))` — and resolves each symbol to the
- * module it is imported from. Parsing the real registration site (instead of
- * hard-coding a list here) is what stops a newly registered command from
- * escaping the conformance check.
- */
 async function readTopLevelRegistrations(): Promise<
   Array<{ name: string; symbol: string; specifier: string }>
 > {
@@ -302,12 +227,9 @@ async function readTopLevelRegistrations(): Promise<
 }
 
 /**
- * The defining module of `command`. A command built by a factory records the
- * factory's module (src/cli/commands/command_syntax.ts); that is preferred,
- * because the `swamp behavior` leaves are built by the same factories as
- * their `swamp model` twins and mounted only inside the behavior tree, so no
- * module exports them (swamp-club#3331). Other commands fall back to the
- * module that exports them.
+ * prefer the factory's recorded module: swamp behavior leaves are built by the
+ * same factories as their model twins and no module exports them; otherwise
+ * fall back to the exporting module
  */
 function definingFileOf(
   command: AnyCommand,
@@ -321,11 +243,6 @@ function definingFileOf(
 
 let cachedTree: CliTree | undefined;
 
-/**
- * Rebuilds the swamp command tree the way `src/cli/mod.ts` does — the same
- * `--json` global option, the same top-level commands — then walks it and
- * collects every leaf. Cached: the three tests below share one traversal.
- */
 async function buildCliTree(): Promise<CliTree> {
   if (cachedTree) return cachedTree;
 
@@ -351,7 +268,6 @@ async function buildCliTree(): Promise<CliTree> {
       `src/cli/mod.ts imports "${symbol}" from ${specifier}, but that module ` +
         `does not export it.`,
     );
-    // Factory registrations (e.g. createHelpCommand(cli)) take the root.
     const command = typeof exported === "function"
       ? (exported as (root: AnyCommand) => AnyCommand)(root)
       : exported;
@@ -401,7 +317,6 @@ Deno.test("cli command tree: root declares --json as a global option", async () 
 Deno.test("cli command tree: every leaf command declares an action and inherits --json", async () => {
   const { leaves, topLevelNames } = await buildCliTree();
 
-  // Sanity: the traversal really covered the whole CLI, not a stub tree.
   assert(
     topLevelNames.length >= 25,
     `expected ~27 top-level commands, found ${topLevelNames.length}: ` +

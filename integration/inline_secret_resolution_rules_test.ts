@@ -17,9 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pins the actual calls at the typed-secrets loading/evaluation boundary.
-// Babel is already the source parser used by the barrel fitness rule. Parsing
-// here excludes comments, strings and declarations and catches multiline calls.
+// pins the actual calls at the typed-secrets boundary; parsing with Babel
+// excludes comments, strings and declarations and catches multiline calls
 import { parse } from "@babel/parser";
 import {
   assertEquals,
@@ -117,7 +116,6 @@ function callSites(source: string, file: string): string[] {
   return countedKeys(found);
 }
 
-/** Each call maps to a Section 3.3 row, or a Section 5 pass/bag implementation. */
 const PINNED: readonly { site: string; row: string }[] = [
   {
     "site":
@@ -235,7 +233,6 @@ Deno.test("inline secret resolution: every evaluation and loading call is pinned
   const found: string[] = [];
   for await (const path of productionSourceFiles(SRC_DIR)) {
     const source = await Deno.readTextFile(path);
-    // Avoid parsing files that cannot contain a relevant call.
     if (![...METHODS].some((name) => source.includes(name))) continue;
     found.push(...callSites(source, repoRelative(path)));
   }

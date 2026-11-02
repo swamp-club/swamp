@@ -17,29 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Every serve run enters the vault scope of the principal that triggered it
- * (swamp-club#2676). This ratchet enumerates every call that starts a run in
- * `src/serve` and `src/libswamp/workflows` — `executeWorkflow*(`,
- * `execute(` (webhook's alias), `service.resume(` and `modelMethodRun(` —
- * and classifies each one:
- *
- * - **user-run**: a run a principal triggered. It must enter that
- *   principal's scope: an `executeWorkflowWithLocks` call passes
- *   `vaultAccess`; a `modelMethodRun` or `resume` generator is driven through
- *   `runGeneratorWithVaultAccess`.
- * - **queue**: a scheduler or webhook queue entry. It starts outside any
- *   scope (`withoutVaultAccess`) so the queue's inherited context never
- *   carries another entry's.
- * - **injected**: the scheduler's injected executor; serve's executor passes
- *   `vaultAccess` (checked in `src/cli/commands/serve.ts`).
- * - **control-plane**: bookkeeping a run triggers (enrollment, lease
- *   transitions, worker prune). It runs outside any scope.
- *
- * A new call must be classified here, and must carry its classification's
- * marker.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -53,7 +30,6 @@ import {
 
 type Classification = "user-run" | "queue" | "injected" | "control-plane";
 
-/** `<file>: <owner>: <callee>` → its classification, one per call. */
 const PINNED: Readonly<Record<string, Classification>> = {
   "src/libswamp/workflows/scheduled_execution.ts: ScheduledExecutionService: this.executeWorkflow":
     "queue",
@@ -83,7 +59,6 @@ const PINNED: Readonly<Record<string, Classification>> = {
 const CALL =
   /(?<![\w.])((?:this\.(?:deps\.)?)?executeWorkflow\w*|modelMethodRun|execute|service\.resume)\(/g;
 
-/** A call's text from its callee to its matching close paren. */
 function callText(source: string, start: number): string {
   let depth = 0;
   for (let i = source.indexOf("(", start); i < source.length; i++) {
@@ -97,7 +72,6 @@ function callText(source: string, start: number): string {
 
 interface FoundCall {
   key: string;
-  /** The call and the three lines before it. */
   context: string;
   call: string;
 }
@@ -115,7 +89,6 @@ async function runEntryCalls(): Promise<FoundCall[]> {
         const lineIndex = source.slice(0, match.index).split("\n").length - 1;
         const line = lines[lineIndex];
         if (isCommentLine(line)) continue;
-        // A declaration, not a call.
         if (
           /\b(function|async|private)\s+\w*\s*$/.test(
             line.slice(0, line.indexOf(match[1])),
@@ -201,10 +174,8 @@ Deno.test("serve run entries: the scheduler's executor passes vaultAccess", asyn
 });
 
 Deno.test("serve run entries: serve's HTTP handler starts every request outside every ambient store", async () => {
-  // Deno can call a serve handler with the async context a run left
-  // behind (a first-time dynamic import inside a run does), so every
-  // request — WebSocket upgrades included — must leave it first
-  // (swamp-club#3125).
+  // Deno can call a serve handler with the async context a run left behind, so
+  // every request, WebSocket upgrades included, must leave it first
   const serve = await Deno.readTextFile(
     join(SRC_DIR, "cli", "commands", "serve.ts"),
   );

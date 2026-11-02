@@ -17,31 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Fitness ratchets on the datastore write seams that the datastore refactor
-// moves (swamp-club#2856). Phase 1 puts a unit of work between repositories
-// and the mark hook; phase 2 makes libswamp use cases own it. Pinning the
-// seams now means no new one appears while that work is in flight, and each
-// refactor PR shows its progress by shrinking these lists.
-//
-// Keys name the repo-relative file and the top-level declaration that holds
-// the site, never a line number. A key that occurs more than once carries
-// " (xN)", so a second site under an already pinned owner still fails.
-//
-// Reproduce the raw counts (non-test src/):
-//   mark calls:
-//     grep -rnE "\b(markDirty|notifyDirty|markDirtyHook|markDirtyBulk)\??\.?\(" src \
-//       --include='*.ts' --include='*.tsx' | grep -v "_test.tsx\?:" \
-//       | grep -vE ":\s*(//|\*)" | grep -vE "(async |private |public )(markDirty|notifyDirty)\("
-//   repository constructions:
-//     grep -rnE "new (YamlDefinition|FileSystemUnifiedData|YamlWorkflow|YamlWorkflowRun|YamlOutput|YamlEvaluatedWorkflow|YamlEvaluatedDefinition|YamlVaultConfig|JsonlAudit|JsonlVaultAudit|CompositeUnifiedData|Lockfile)Repository\b" src \
-//       --include='*.ts' | grep -v "_test.ts:" | grep -v repository_factory.ts
-//   staged changes (datastore-tier repository classes):
-//     grep -nE 'kind: (.*\? )?"(write|remove|bulk)"' src/infrastructure/persistence/*_repository.ts
-// The grep counts differ slightly from the scans below: the scans also skip
-// interface members and catch constructions split across lines.
-//
-// Passing a hook as a value (`markDirty: repoContext.markDirty`) is not a
-// call and is not pinned here.
+// ratchets pin the datastore write seams so no new one appears mid-refactor;
+// refactor PRs shrink these lists. Keys name file and top-level declaration,
+// never a line; repeats carry " (xN)"
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
@@ -59,7 +37,6 @@ import {
 
 const FACTORY = "src/infrastructure/persistence/repository_factory.ts";
 
-/** Test doubles that live under src/ but are not production code. */
 function isTestHelper(rel: string): boolean {
   return rel.includes("/test_helpers/") ||
     rel.startsWith("src/infrastructure/testing/");
@@ -84,21 +61,15 @@ async function sourceFiles(): Promise<SourceFile[]> {
   return files;
 }
 
-// ---------------------------------------------------------------------------
-// Rule 1: direct mark calls
-// ---------------------------------------------------------------------------
-
 const MARK_CALL =
   /\b(markDirty|notifyDirty|markDirtyHook|markDirtyBulk)\s*(?:\?\.)?\(/g;
-// A modifier right before the name means a method or function definition.
 const DEFINITION_PREFIX =
   /\b(?:async|private|public|protected|static|function|readonly|get|set)\s+(?:\*\s*)?$/;
 
-/** Whether a mark name that starts its line is a definition, not a call. */
 function isDefinitionLine(line: string): boolean {
-  return /\)\s*:\s*[^=]*[;{]\s*$/.test(line) || // `name(...): T;` / `: T {`
-    /\)\s*\{\s*$/.test(line) || // `name(...) {`
-    /^\s*\w+\??\s*:/.test(line); // `name?: Hook`
+  return /\)\s*:\s*[^=]*[;{]\s*$/.test(line) ||
+    /\)\s*\{\s*$/.test(line) ||
+    /^\s*\w+\??\s*:/.test(line);
 }
 
 function markCallSites(files: readonly SourceFile[]): string[] {
@@ -117,10 +88,6 @@ function markCallSites(files: readonly SourceFile[]): string[] {
   return countedKeys(keys);
 }
 
-// ---------------------------------------------------------------------------
-// Rules 2 and 3: repository constructions
-// ---------------------------------------------------------------------------
-
 const DATASTORE_TIER_REPOSITORIES = [
   "YamlDefinitionRepository",
   "FileSystemUnifiedDataRepository",
@@ -136,7 +103,6 @@ const DATASTORE_TIER_REPOSITORIES = [
   "LockfileRepository",
 ];
 
-/** Zero-based position of the mark hook in each hook-taking constructor. */
 const HOOK_ARGUMENT: Record<string, { index: number; file: string }> = {
   YamlDefinitionRepository: { index: 4, file: "yaml_definition_repository.ts" },
   YamlWorkflowRepository: { index: 3, file: "yaml_workflow_repository.ts" },
@@ -193,10 +159,6 @@ function unhookedWriters(files: readonly SourceFile[]): string[] {
   return countedKeys(keys);
 }
 
-// ---------------------------------------------------------------------------
-// Rule 4: unit-of-work scopes
-// ---------------------------------------------------------------------------
-
 const SCOPE_MODULE = "src/infrastructure/persistence/unit_of_work_scope.ts";
 // Any reference, not only a call: an import (aliased or not) is how a scope
 // would reach production code, so it counts too.
@@ -216,19 +178,10 @@ function unitOfWorkScopes(files: readonly SourceFile[]): string[] {
   return countedKeys(keys);
 }
 
-// ---------------------------------------------------------------------------
-// Rule 4b: transactional use cases and the unit-of-work test seam
-// ---------------------------------------------------------------------------
-
 const TRANSACTION_MODULE = "src/libswamp/unit_of_work.ts";
 const TRANSACTION_WRAP = /\b(?:return|yield\*)\s+withUnitOfWork\s*\(/g;
 const EXPORTED_FUNCTION = /^export (?:async )?function\*?\s+(\w+)/gm;
 
-/**
- * One key per exported libswamp use case that runs its body through
- * `withUnitOfWork`, as "<file>: <export>". The helper module itself and
- * non-exported helpers do not count.
- */
 function transactionalUseCases(files: readonly SourceFile[]): string[] {
   const keys: string[] = [];
   for (const { rel, code, lines, owners } of files) {
@@ -284,22 +237,16 @@ function unscopedReporterSeamCallers(files: readonly SourceFile[]): string[] {
   return countedKeys(keys);
 }
 
-// ---------------------------------------------------------------------------
-// Rule 4c: CLI commands run in a root unit of work (swamp-club#3033)
-// ---------------------------------------------------------------------------
-
 const CLI_COMMANDS_DIR = "src/cli/commands/";
 const CLI_ROOT_CALL =
   /\b(?:runCommandInRootUnit|runManagedConfigMutation|runInCoordinatorRoot)\s*\(/g;
 const LOCK_FLUSH_REFERENCE = /\blockResult\.flush\b/g;
 const PUSH_CALL = /\.pushChanged\s*\(/g;
-// Every `.checkpoint(` call, whatever the receiver is named, so a root's
-// mid-operation push (swamp-club#3053) can't escape the pin under another
-// parameter name. The catalog's WAL checkpoint shares the name and is
-// pinned in its own group.
+// matches every .checkpoint( call whatever the receiver is named, so a push
+// cannot escape the pin under another name; the catalog's WAL checkpoint shares
+// the name and is pinned in its own group
 const CHECKPOINT_CALL = /\.checkpoint\s*\(/g;
 
-/** One key per non-comment match of `pattern` in files `include` keeps. */
 function referenceKeys(
   files: readonly SourceFile[],
   pattern: RegExp,
@@ -320,23 +267,12 @@ function referenceKeys(
 
 const inCliCommands = (rel: string) => rel.startsWith(CLI_COMMANDS_DIR);
 
-// ---------------------------------------------------------------------------
-// Rule 5: typed changes repositories stage
-// ---------------------------------------------------------------------------
-
-// The kind property of a StagedChange literal: a literal kind, or a ternary
-// between two literal kinds, keyed "write|remove" (a delete that stages a
-// write when it keeps the file, swamp-club#2980). Matched on its own, so a
-// call that deno fmt wraps over several lines still counts once. Any other
-// kind expression does not match, so the change goes missing from the pin.
+// kind of a StagedChange literal: a literal kind or a ternary of two, keyed
+// write|remove; matched alone so wrapped calls count once; any other kind
+// expression goes missing from the pin
 const STAGED_KIND =
   /\bkind:\s*(?:"(write|remove|bulk)"|[^,}\n?"]+\?\s*"(write|remove|bulk)"\s*:\s*"(write|remove|bulk)")/g;
 
-/**
- * One key per staged change inside a datastore-tier repository class, as
- * "<file>: <class> <kind>". Scoped to those classes, so the StagedChange type
- * union and the legacy adapter never count.
- */
 function stagedChanges(files: readonly SourceFile[]): string[] {
   const repositories = new Set<string>(DATASTORE_TIER_REPOSITORIES);
   const keys: string[] = [];
@@ -352,17 +288,12 @@ function stagedChanges(files: readonly SourceFile[]): string[] {
   return countedKeys(keys);
 }
 
-// ---------------------------------------------------------------------------
-// Rule 6: mark calls in the persistence layer
-// ---------------------------------------------------------------------------
-
 const PERSISTENCE_DIR = "src/infrastructure/persistence/";
 
 /**
- * The only persistence files that may call a mark hook, each with its reason
- * (datastore rework Phase 1 close-out, swamp-club#2996). Repositories stage
- * through signalChange instead. A Phase 3 adapter that forwards staged
- * changes is added here on purpose.
+ * the only persistence files that may call a mark hook, each with its reason;
+ * repositories stage through signalChange, so a forwarding adapter is added
+ * here on purpose
  */
 const PERSISTENCE_MARK_ADAPTERS: Record<string, string> = {
   "src/infrastructure/persistence/legacy_unit_of_work.ts":
@@ -371,7 +302,6 @@ const PERSISTENCE_MARK_ADAPTERS: Record<string, string> = {
     "signalChange calls the hook directly when no scope is bound to it",
 };
 
-/** Mark call sites under the persistence layer outside the allowed adapters. */
 function persistenceMarksOutsideAdapters(
   files: readonly SourceFile[],
 ): string[] {
@@ -382,39 +312,16 @@ function persistenceMarksOutsideAdapters(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Rule 7: repositories reach their hook only through signalChange,
-// withChangeSignalled and stageTyped
-// ---------------------------------------------------------------------------
-
-// A reference to a repository's hook field. The field is markDirty or
-// markDirtyHook depending on the class.
 const HOOK_FIELD = /\bthis\.(?:markDirty|markDirtyHook)\b/g;
-// How far before a hook reference to look for `signalChange(`: enough for
-// the call name plus the newline and indentation deno fmt adds when it wraps
-// the arguments. A longer gap reports a false violation, never misses one.
+// how far before a hook reference to look for signalChange(: the call name plus
+// the newline and indentation deno fmt adds when wrapping; a longer gap reports
+// a false violation, never misses one
 const SIGNAL_CHANGE_LOOKBACK = 200;
 
 /**
- * One key per reference to the hook field inside a datastore-tier repository
- * class that is not the first argument of a `signalChange(...)` call, or of
- * a `withChangeSignalled(...)` call, which signals before and after a write
- * (swamp-club#2421), or of a `stageTyped(...)` call, the typed route after a write, or the only
- * argument of `typedStagingActive(...)` (swamp-club#3250) or
- * `versionFloorSource(...)` (swamp-club#3532), or the first of
- * `unitAdmitsKey(...)` (swamp-club#4019), lookups of the unit the hook
- * routes to, as
- * "<file>: <class>": calling the hook, passing it elsewhere, or storing it.
- * Code before and after the reference is read across lines, so a call that
- * deno fmt wraps still counts as signalChange's argument. The constructor
- * parameter (`private readonly markDirty?: MarkDirtyHook`) is not a
- * `this.` reference and never counts.
- *
- * Known limits: only classes in DATASTORE_TIER_REPOSITORIES are scanned, so a
- * new hooked repository must be added there (rule 6 still catches a direct
- * hook call anywhere under the persistence layer). As a textual scan it
- * cannot see the hook reached by aliasing, such as destructuring it off
- * `this`, or by bracket access such as `this["markDirty"]`.
+ * flags hook references in repository classes outside signalChange and the
+ * allowed staging and lookup calls; reads across wrapped lines; scans only
+ * listed classes and misses aliasing or bracket access
  */
 function hookReferencesOutsideSignalChange(
   files: readonly SourceFile[],
@@ -452,47 +359,30 @@ function hookReferencesOutsideSignalChange(
   return countedKeys(keys);
 }
 
-// ---------------------------------------------------------------------------
-// Pinned lists
-// ---------------------------------------------------------------------------
-
 const PINNED_MARK_CALL_SITES: readonly string[] = [
-  // CLI marks that stay outside a root unit (swamp-club#3033); the CLI write
-  // commands stage theirs through their root instead.
-  // A bulk migration of the whole tree.
   "src/cli/commands/datastore_namespace.ts: buildMigrateDeps",
-  // The sync command itself, which owns its pull and push.
   "src/cli/commands/datastore_sync.ts: datastoreSyncCommand",
-  // Serve's start-up (swamp-club#3034 covers serve).
   "src/cli/commands/serve.ts: serveCommand",
-  // The one-call managed-config publish the remote-failure suite exercises.
-  // No command calls it: they publish through runManagedConfigMutation's
-  // root unit (swamp-club#3033).
+  // the one-call managed-config publish the remote-failure suite exercises; no
+  // command calls it, they publish through runManagedConfigMutation's root unit
   "src/cli/managed_config_sync.ts: pushManagedConfigChanges",
-  // The mark hook itself.
   "src/cli/repo_context.ts: buildMarkDirtyHook (x2)",
-  // Written outside any repository, at push time.
   "src/cli/repo_context.ts: writeCatalogExportIfNeeded",
-  // The legacy unit of work forwarding staged changes to the mark hook
-  // (datastore rework Phase 1, swamp-club#2970). Exactly one call: later
-  // phases stage through the unit of work rather than adding calls here. A
-  // change staged after commit under afterCommit "forward" (swamp-club#3025)
-  // goes through the same call.
+  // the legacy unit of work forwarding staged changes to the mark hook; exactly
+  // one call, later phases stage through the unit of work instead of adding
+  // calls here
   "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
-  // The one routing helper the repositories stage their changes through:
-  // it stages into an ambient unit of work bound to the hook, or calls the
-  // hook (swamp-club#2971). Exactly one call.
+  // the one routing helper repositories stage changes through: it stages into
+  // an ambient unit of work bound to the hook, or calls the hook; exactly one
+  // call
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
-  // Use cases that mark directly. datastoreNamespaceMigrate: a bulk
-  // migration of the whole tree.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
   // datastoreSetupExtension: a bulk mark for .swamp/ copied into the cache
-  // behind the sync service, before its push (swamp-club#4100).
+  // behind the sync service, before its push
   "src/libswamp/datastores/setup.ts: datastoreSetupExtension",
 ];
 
 const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
-  // Built directly in src/cli/commands/.
   "src/cli/commands/access_helpers.ts: buildModelMethodRunDeps: YamlDefinitionRepository",
   "src/cli/commands/audit.ts: recordHookEntry: JsonlAuditRepository",
   "src/cli/commands/datastore_setup.ts: nudgeVaultMigration: YamlVaultConfigRepository",
@@ -508,19 +398,14 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlDefinitionRepository",
   "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlEvaluatedWorkflowRepository",
-  // Built directly in src/cli/completion_types.ts.
   "src/cli/completion_types.ts: ModelNameType: YamlDefinitionRepository",
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
-  // Built directly in src/cli/datastore_expression_resolver.ts.
   "src/cli/datastore_expression_resolver.ts: createEarlyVaultService: YamlVaultConfigRepository",
-  // Built directly in src/cli/mod.ts.
   "src/cli/mod.ts: configureExtensionAutoResolver: LockfileRepository",
   "src/cli/mod.ts: configureStartupExtensions: LockfileRepository",
   "src/cli/mod.ts: initTelemetryService: YamlVaultConfigRepository",
-  // Built directly in src/domain/vaults/.
   "src/domain/vaults/vault_service.ts: VaultService: JsonlVaultAuditRepository",
   "src/domain/vaults/vault_service.ts: VaultService: YamlVaultConfigRepository",
-  // Built directly in src/domain/workflows/.
   "src/domain/workflows/execution_service.ts: DefaultStepExecutor: CompositeUnifiedDataRepository",
   "src/domain/workflows/execution_service.ts: DefaultStepExecutor: FileSystemUnifiedDataRepository",
   "src/domain/workflows/execution_service.ts: DefaultStepExecutor: YamlDefinitionRepository",
@@ -531,13 +416,9 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/domain/workflows/execution_service.ts: WorkflowExecutionService: YamlDefinitionRepository",
   "src/domain/workflows/execution_service.ts: WorkflowExecutionService: YamlEvaluatedDefinitionRepository",
   "src/domain/workflows/execution_service.ts: WorkflowExecutionService: YamlEvaluatedWorkflowRepository",
-  // Built directly in src/infrastructure/persistence/.
   "src/infrastructure/persistence/ephemeral_store.ts: wrapWithEphemeral: CompositeUnifiedDataRepository",
-  // Built directly in src/libswamp/access/.
   "src/libswamp/access/run_deps.ts: createServerTokenRunDeps: YamlDefinitionRepository",
-  // Built directly in src/libswamp/audit/.
   "src/libswamp/audit/timeline.ts: createAuditTimelineDeps: JsonlAuditRepository",
-  // Built directly in src/libswamp/data/.
   "src/libswamp/data/delete.ts: createDataDeleteDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/data/delete.ts: createDataDeleteDeps: YamlDefinitionRepository",
   "src/libswamp/data/gc.ts: createDataGcDeps: FileSystemUnifiedDataRepository",
@@ -560,19 +441,15 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/data/run_gc.ts: createRunLifecycleService: YamlOutputRepository",
   "src/libswamp/data/run_gc.ts: createRunLifecycleService: YamlWorkflowRunRepository",
   "src/libswamp/data/versions.ts: createDataVersionsDeps: FileSystemUnifiedDataRepository",
-  // swamp-club#3473: the retention pass prunes the repo-local agent command
-  // log (.swamp/audit), never a datastore tier.
+  // the retention pass prunes the repo-local agent command log (.swamp/audit),
+  // never a datastore tier
   "src/libswamp/retention/collectors.ts: createRetentionCollectors: JsonlAuditRepository",
   "src/libswamp/data/versions.ts: createDataVersionsDeps: YamlDefinitionRepository",
-  // Built directly in src/libswamp/datastores/.
-  // `doctor datastores --retention` lists run snapshots, read-only
-  // (swamp-club#3473).
+  // doctor datastores --retention lists run snapshots, read-only
   "src/libswamp/datastores/retention_check.ts: checkSnapshots: YamlEvaluatedWorkflowRepository",
   "src/libswamp/datastores/setup.ts: createDatastoreSetupDeps: YamlVaultConfigRepository",
-  // Built directly in src/libswamp/extensions/.
   "src/libswamp/extensions/list.ts: createExtensionListDeps: LockfileRepository",
   "src/libswamp/extensions/managed_lockfile_transaction.ts: ManagedLockfileTransaction: LockfileRepository",
-  // Built directly in src/libswamp/models/.
   "src/libswamp/models/create.ts: createModelCreateDeps: YamlDefinitionRepository",
   "src/libswamp/models/delete.ts: createModelDeleteDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/models/delete.ts: createModelDeleteDeps: YamlDefinitionRepository",
@@ -598,16 +475,12 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/models/output_logs.ts: createModelOutputLogsDeps: YamlOutputRepository",
   "src/libswamp/models/validate.ts: createModelValidateDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/models/validate.ts: createModelValidateDeps: YamlDefinitionRepository",
-  // Built directly in src/libswamp/reports/.
   "src/libswamp/reports/search.ts: createReportSearchDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/reports/search.ts: createReportSearchDeps: YamlDefinitionRepository",
   "src/libswamp/reports/search.ts: createReportSearchDeps: YamlWorkflowRepository",
-  // Built directly in src/libswamp/repo/.
   "src/libswamp/repo/init.ts: createRepoInitDeps: YamlVaultConfigRepository",
-  // swamp start's summary lists a workspace's models and workflows by name.
   "src/libswamp/start/start.ts: listContents: YamlDefinitionRepository",
   "src/libswamp/start/start.ts: listContents: YamlWorkflowRepository",
-  // Built directly in src/libswamp/vaults/.
   "src/libswamp/vaults/annotate.ts: createVaultAnnotateDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/audit_trail.ts: createVaultAuditTrailDeps: JsonlVaultAuditRepository",
   "src/libswamp/vaults/create.ts: createVaultCreateDeps: YamlVaultConfigRepository",
@@ -620,9 +493,7 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/vaults/migrate.ts: createVaultMigrateDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/put.ts: createVaultPutDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/read_secret.ts: createVaultReadSecretDeps: YamlVaultConfigRepository",
-  // Built directly in src/libswamp/worker/.
   "src/libswamp/worker/run_deps.ts: createWorkerModelRunDeps: YamlDefinitionRepository",
-  // Built directly in src/libswamp/workflows/.
   "src/libswamp/workflows/create.ts: createWorkflowCreateDeps: YamlWorkflowRepository",
   "src/libswamp/workflows/delete.ts: createWorkflowDeleteDeps: YamlEvaluatedWorkflowRepository",
   "src/libswamp/workflows/delete.ts: createWorkflowDeleteDeps: YamlWorkflowRepository",
@@ -635,7 +506,6 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/workflows/history_get.ts: createWorkflowHistoryGetDeps: YamlWorkflowRunRepository",
   "src/libswamp/workflows/history_logs.ts: createWorkflowHistoryLogsDeps: YamlWorkflowRepository",
   "src/libswamp/workflows/history_logs.ts: createWorkflowHistoryLogsDeps: YamlWorkflowRunRepository",
-  // Built directly in src/serve/.
   "src/serve/deps.ts: createModelMethodRunDeps: YamlDefinitionRepository",
   "src/serve/deps.ts: createWorkflowRunDeps: YamlDefinitionRepository",
   "src/serve/deps.ts: createWorkflowRunDeps: YamlEvaluatedWorkflowRepository",
@@ -649,12 +519,10 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
 ];
 
 const PINNED_UNHOOKED_WRITERS: readonly string[] = [
-  // Read only: these repositories never write.
-  // swamp start's summary only lists a workspace's models and workflows.
+  // read only: these repositories never write
   "src/libswamp/start/start.ts: listContents: YamlDefinitionRepository",
   "src/libswamp/start/start.ts: listContents: YamlWorkflowRepository",
   "src/cli/commands/workflow_approvals.ts: workflowApprovalsCommand: YamlEvaluatedWorkflowRepository",
-  // Read a run's evaluated snapshot to settle a cancelled run against it.
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_approve.ts: workflowApproveCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_reject.ts: workflowRejectCommand: YamlEvaluatedWorkflowRepository",
@@ -708,11 +576,9 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprovals: YamlEvaluatedWorkflowRepository",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprove: YamlEvaluatedWorkflowRepository",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowReject: YamlEvaluatedWorkflowRepository",
-  // Read a run's evaluated snapshot to settle a cancelled run against it.
   "src/serve/deps.ts: createWorkflowRunDeps: YamlEvaluatedWorkflowRepository",
   "src/serve/nested_run_cascade.ts: serveNestedCascade: YamlEvaluatedWorkflowRepository",
   "src/serve/suspended_run_cancel.ts: cancelSuspendedRunAndPush: YamlEvaluatedWorkflowRepository",
-  // Factory helpers with no callers.
   "src/infrastructure/persistence/repository_factory.ts: createDefinitionRepository: YamlDefinitionRepository",
   "src/infrastructure/persistence/repository_factory.ts: createWorkflowRepository: YamlWorkflowRepository",
   // Fallback only: every CLI and serve caller injects the hooked repoContext repository.
@@ -724,13 +590,11 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/models/create.ts: createModelCreateDeps: YamlDefinitionRepository",
   "src/libswamp/models/edit.ts: createModelEditDeps: YamlDefinitionRepository",
   "src/libswamp/workflows/create.ts: createWorkflowCreateDeps: YamlWorkflowRepository",
-  // GAP: evaluated definitions and workflows are written to the datastore tier and
-  // nothing marks them; serve never pushes after evaluate. Left for datastore
-  // refactor phase 2.
+  // gap: evaluated definitions and workflows are written to the datastore tier
+  // and nothing marks them; serve never pushes after evaluate
   "src/libswamp/models/evaluate.ts: createModelEvaluateDeps: YamlEvaluatedDefinitionRepository",
   "src/libswamp/workflows/evaluate.ts: createWorkflowEvaluateDeps: YamlEvaluatedWorkflowRepository",
-  // Vault configs (swamp-club#2995). Read only: these never save or delete a
-  // vault config.
+  // vault configs: read only, these never save or delete a vault config
   "src/cli/commands/datastore_setup.ts: nudgeVaultMigration: YamlVaultConfigRepository",
   "src/cli/commands/doctor_datastores.ts: createDoctorDatastoresDeps: YamlVaultConfigRepository",
   "src/cli/commands/serve.ts: serveCommand: YamlVaultConfigRepository",
@@ -745,13 +609,11 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/vaults/list_keys.ts: createVaultListKeysDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/put.ts: createVaultPutDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/read_secret.ts: createVaultReadSecretDeps: YamlVaultConfigRepository",
-  // Only lists run snapshots: `doctor datastores --retention` writes nothing
-  // (swamp-club#3473).
+  // only lists run snapshots: doctor datastores --retention writes nothing
   "src/libswamp/datastores/retention_check.ts: checkSnapshots: YamlEvaluatedWorkflowRepository",
   "src/libswamp/datastores/setup.ts: createDatastoreSetupDeps: YamlVaultConfigRepository",
-  // repo init writes the default vault (swamp-club#3259) into the new repo's
-  // own vaults/ before any datastore is configured, so there is nothing to
-  // sync it to.
+  // repo init writes the default vault into the new repo's own vaults/ before
+  // any datastore is configured, so there is nothing to sync it to
   "src/libswamp/repo/init.ts: createRepoInitDeps: YamlVaultConfigRepository",
   // The CLI writes vault configs through these, then runManagedConfigMutation
   // sends a bare mark (managedConfig only); serve injects the hooked
@@ -761,27 +623,18 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/vaults/migrate.ts: createVaultMigrateDeps: YamlVaultConfigRepository",
 ];
 
-// Typed changes the moved repositories stage before each write or remove
-// (datastore rework Phase 1 repository moves). A write names a path that
-// exists after the operation, a remove one that is gone after it;
-// integration/repository_dirty_coverage_test.ts checks that against the disk.
+// typed changes repositories stage before each write or remove: a write names a
+// path that exists after, a remove one that is gone;
+// repository_dirty_coverage_test checks this against the disk
 const PINNED_STAGED_CHANGES: readonly string[] = [
-  // swamp-club#2979, move A.
-  // swamp-club#3473: delete(version) of a name's last version also removes
-  // its latest marker.
   "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x11)",
-  // Two more from reassertLatestVersion (swamp-club#3146): the version
-  // directory and the latest marker, both present after it.
-  // swamp-club#3473: deleting a name's newest version writes its version
-  // floor (v2 only).
-  // swamp-club#3955: resetLatestMarkerToReadable writes the latest marker,
-  // and rollBackToReadable writes it as NO_PROMOTED_VERSION when only
-  // unpublished versions are left; both present after it.
+  // reassertLatestVersion writes the version directory and latest marker;
+  // deleting a name's newest version writes its version floor (v2 only)
   "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x13)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
-  // swamp-club#2980, move B. "write|remove" is a delete whose resolved path
-  // is kept when it holds another definition or workflow sharing the id.
+  // "write|remove" is a delete whose resolved path is kept when it holds
+  // another definition or workflow sharing the id
   "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository remove",
   "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository write",
   "src/infrastructure/persistence/yaml_definition_repository.ts: YamlDefinitionRepository write|remove",
@@ -791,41 +644,32 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts: YamlEvaluatedWorkflowRepository write (x2)",
   "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write",
   "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write|remove",
-  // swamp-club#2992, move C1.
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository remove (x3)",
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository write",
-  // swamp-club#2995, move C2.
   "src/infrastructure/persistence/yaml_vault_config_repository.ts: YamlVaultConfigRepository remove",
   "src/infrastructure/persistence/yaml_vault_config_repository.ts: YamlVaultConfigRepository write",
 ];
 
-// Production code that opens an ambient unit of work. Datastore rework
-// Phase 2 (swamp-club#3025): withUnitOfWork, which runs each write use case
-// inside the unit its context opens (its import, and its three calls:
-// creating the inner stream, each next(), and a forwarded return()). Use
-// cases never open a scope themselves; they go through withUnitOfWork.
-// swamp-club#3032: runInRootUnitOfWork, the one root unit per CLI command or
-// serve request that the use cases' units nest inside, and that pushes once
-// when it ends (its import, and its one call).
+// production code that opens an ambient unit of work: withUnitOfWork wraps each
+// write use case; runInRootUnitOfWork is the one root per command or request
+// that use-case units nest in, and pushes once at its end
 const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [
   "src/infrastructure/persistence/repo_unit_of_work.ts: <module>",
   "src/infrastructure/persistence/repo_unit_of_work.ts: runInRootUnitOfWork",
   "src/libswamp/unit_of_work.ts: <module>",
   "src/libswamp/unit_of_work.ts: withUnitOfWork (x3)",
-  // swamp-club#3240: runInCommitLogRoot, the v3 commit-log root (dormant:
-  // only tests call it until the v3 opt-in), with its import and one call.
+  // runInCommitLogRoot, the v3 commit-log root, is dormant: only tests call it
+  // until the v3 opt-in
   "src/infrastructure/datastore_v3/commit_log_root.ts: <module>",
   "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
-  // swamp-club#3257: the same root runs onRefused with itself ambient, so a
-  // run's re-save stages into it.
+  // the same root runs onRefused with itself ambient, so a run's re-save stages
+  // into it
   "src/infrastructure/datastore_v3/commit_log_root.ts: settle",
 ];
 
-// libswamp use cases that run inside a unit of work (swamp-club#3025): every
-// use case that writes through a datastore-tier repository. A use case
-// gaining or losing its unit shows up here. Read-only use cases, and those
-// that write only secrets, lockfiles, credentials or raw files, are not
-// wrapped.
+// every libswamp use case that writes through a datastore-tier repository runs
+// in a unit of work; read-only ones and those writing only secrets, lockfiles,
+// credentials or raw files are not wrapped
 const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
   "src/libswamp/access/token_create.ts: serverTokenCreate",
   "src/libswamp/access/token_revoke.ts: serverTokenRevoke",
@@ -862,26 +706,22 @@ const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
 // install a factory, so production units always forward late changes.
 const PINNED_UNIT_OF_WORK_SEAM_CALLERS: readonly string[] = [];
 
-// Production references to the unscoped-change test seams
-// (useUnscopedChangeReporterForTesting, resetUnscopedWarningsForTesting;
-// swamp-club#3056). Empty: only tests replace or reset the route-2 warning.
+// production references to the unscoped-change test seams; empty because only
+// tests replace or reset the route-2 warning
 const PINNED_UNSCOPED_REPORTER_SEAM_CALLERS: readonly string[] = [];
 
-// Production callers that still write on route 2 (swamp-club#3056). The list
-// itself is PINNED_UNSCOPED_WRITERS in integration/unscoped_write_guard.ts,
-// which the guard reads at runtime; this pins its keys. Empty: every
-// route-2 caller found runs in a root unit of work.
+// production callers that still write on route 2; the guard reads
+// PINNED_UNSCOPED_WRITERS at runtime and this pins its keys. Empty: every
+// route-2 caller runs in a root unit of work
 const EXPECTED_UNSCOPED_WRITERS: readonly string[] = [];
 
-// Hook references in datastore-tier repositories other than signalChange's
-// first argument. Empty since the datastore rework Phase 1 repository moves
-// (swamp-club#2996): repositories never call, pass on or store their hook.
+// hook references in repositories other than signalChange's first argument;
+// empty because repositories never call, pass on or store their hook
 const PINNED_HOOK_MISUSES: readonly string[] = [];
 
-// CLI write commands that run in a root unit of work whose flush is the push
-// the command performs (swamp-club#3033). Commands on the global lock run in
-// runInCoordinatorRoot, whose flush is the coordinator's push
-// (swamp-club#3055).
+// CLI write commands in a root unit of work whose flush is their push; commands
+// on the global lock run in runInCoordinatorRoot, whose flush is the
+// coordinator's push
 const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/access_grant.ts: accessGrantCreateCommand",
   "src/cli/commands/access_grant.ts: accessGrantRevokeCommand",
@@ -895,8 +735,8 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/data_rename.ts: dataRenameCommand",
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
   "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
-  // swamp-club#3955: doctor datastores --repair -y rolls back unreadable
-  // data versions under the affected models' locks.
+  // doctor datastores --repair rolls back unreadable data versions under the
+  // affected models' locks
   "src/cli/commands/doctor_datastores.ts: createUnreadableVersionsRepairDeps",
   "src/cli/commands/model_create.ts: createModelCreateCommand",
   "src/cli/commands/model_delete.ts: createModelDeleteCommand",
@@ -918,178 +758,157 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/workflow_evaluate.ts: workflowEvaluateCommand (x2)",
   "src/cli/commands/workflow_resume.ts: workflowResumeCommand",
   "src/cli/commands/workflow_run.ts: workflowRunCommand",
-  // Commands that push nothing, in a root with no push, so their saves
-  // stage into it rather than through signalChange's hook fallback
-  // (swamp-club#3056).
+  // commands that push nothing, in a root with no push, so their saves stage
+  // into it rather than through signalChange's hook fallback
   "src/cli/commands/model_cancel.ts: createModelCancelCommand (x2)",
   "src/cli/commands/run.ts: runDoctorCommand",
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand (x2)",
   "src/cli/commands/workflow_recover.ts: workflowRecoverCommand",
-  // swamp-club#3759: their result waits for the root's commit.
+  // their result waits for the root's commit
   "src/cli/commands/workflow_approve.ts: workflowApproveCommand",
   "src/cli/commands/workflow_reject.ts: workflowRejectCommand",
-  // swamp-club#3279: `datastore gc` sweeps chunks under the global lock's
-  // coordinator root, as `datastore compact` runs.
+  // datastore gc sweeps chunks under the global lock's coordinator root, as
+  // datastore compact runs
   "src/cli/commands/datastore_gc.ts: datastoreGcCommand",
-  // swamp-club#4063: `datastore claim` and `release` change the claim under
-  // the coordinator root, as `datastore gc` runs.
+  // datastore claim and release change the claim under the coordinator root, as
+  // datastore gc runs
   "src/cli/commands/datastore_claim.ts: datastoreClaimCommand",
   "src/cli/commands/datastore_release.ts: datastoreReleaseCommand",
 ];
 
-// Callers of ModelLockResult.flush (push, then release) whose push is not a
-// root's flush. No CLI command (swamp-club#3033) or serve method run
-// (swamp-club#3055) remains.
+// callers of ModelLockResult.flush (push, then release) whose push is not a
+// root's flush; no CLI command or serve method run remains
 const PINNED_LOCK_FLUSH_CALLERS: readonly string[] = [
-  // Per-step locks inside a workflow run: the step's lock owns its push and
-  // release; Phase 3 replaces model locks with leases (swamp-club#3055).
+  // per-step locks inside a workflow run: the step's lock owns its push and
+  // release
   "src/domain/workflows/execution_service.ts: DefaultStepExecutor",
 ];
 
-// Every production `.pushChanged(` call (swamp-club#3055). Commands and
-// handlers reach a push only as a root unit's flush or checkpoint, through
-// the push paths; the rest are the coordinator and the deliberate exceptions.
+// every production .pushChanged( call; commands and handlers reach a push only
+// as a root unit's flush or checkpoint through the push paths, the rest are the
+// coordinator and deliberate exceptions
 const PINNED_DIRECT_PUSHES: readonly string[] = [
-  // The push paths every root's flush or checkpoint calls. pushNamespace
-  // goes through pushNamespaceCounted, which the managed lockfile publish's
-  // checkpoint calls directly for the count and the bound (swamp-club#3192).
+  // the push paths every root's flush or checkpoint calls; the managed lockfile
+  // publish's checkpoint calls pushNamespaceCounted directly for the count and
+  // the bound
   "src/infrastructure/persistence/push_paths.ts: pushModelLockScope (x3)",
   "src/infrastructure/persistence/push_paths.ts: pushNamespaceCounted",
-  // The coordinator's push, which runInCoordinatorRoot's flush and the
-  // mod.ts teardown safety net make.
+  // the coordinator's push, made by runInCoordinatorRoot's flush and the mod.ts
+  // teardown safety net
   "src/infrastructure/persistence/datastore_sync_coordinator.ts: flushDatastoreSyncNamed",
-  // Deliberate exceptions.
-  // `datastore sync` owns its pull and push, by design.
+  // deliberate exception: datastore sync owns its pull and push by design
   "src/cli/commands/datastore_sync.ts: datastoreSyncCommand",
   "src/libswamp/datastores/sync.ts: createDatastoreSyncDeps (x2)",
-  // `datastore setup` pushes the data it migrates to the new datastore.
   "src/libswamp/datastores/setup.ts: datastoreSetupExtension",
-  // Serve start-up migration and token GC, outside any request.
+  // serve start-up migration and token GC run outside any request
   "src/cli/commands/serve.ts: serveCommand (x2)",
   "src/serve/token_secret_migration.ts: createTokenMigrationLockDeps",
-  // Serve background garbage collection, outside any request.
   "src/serve/bookkeeping_gc.ts: reapBatch",
   "src/serve/worker_gc_service.ts: pruneWorkersAndPush",
 ];
 
-// Every `.checkpoint(` call in src.
 const PINNED_CHECKPOINT_CALLS: readonly string[] = [
-  // A root's checkpoint (swamp-club#3053): the CLI commands that push
-  // mid-command.
+  // a root's checkpoint: the CLI commands that push mid-command
   "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
   "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
   "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
   "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
-  // The managed extension lockfile publish, CLI and serve: it stages the
-  // lockfile into the root the transaction runs in and pushes at that
-  // root's checkpoint, under the global lock (swamp-club#3192).
+  // the managed extension lockfile publish, CLI and serve: stages the lockfile
+  // into the transaction's root and pushes at that root's checkpoint, under the
+  // global lock
   "src/libswamp/extensions/managed_lockfile_transaction.ts: createRootLockfileSync",
-  // The root running the checkpoint option it was given.
   "src/infrastructure/persistence/repo_unit_of_work.ts: runInRootUnitOfWork",
-  // The v3 commit-log root's view handing checkpoint to its unit, which
-  // commits the partitions touched so far (swamp-club#3240, dormant).
+  // the v3 commit-log root's view hands checkpoint to its unit, which commits
+  // the partitions touched so far; dormant
   "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
-  // Before a run's root commits, its checkpoint finds a refusal to settle
-  // with onRefused (swamp-club#3257, dormant).
+  // before a run's root commits, its checkpoint finds a refusal to settle with
+  // onRefused; dormant
   "src/infrastructure/datastore_v3/commit_log_root.ts: settleRefusals",
-  // The catalog's SQLite WAL checkpoint, which shares the name and pushes
-  // nothing.
+  // the catalog's SQLite WAL checkpoint shares the name and pushes nothing
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
   "src/libswamp/data/gc.ts: createDataGcDepsFrom",
   "src/libswamp/data/prune.ts: createDataPruneDeps",
-  // swamp-club#3473: after a retention pass, serve's timer and the CLI's
-  // end-of-command pass checkpoint the catalog's WAL.
+  // after a retention pass, serve's timer and the CLI's end-of-command pass
+  // checkpoint the catalog's WAL
   "src/cli/commands/serve.ts: serveCommand",
   "src/cli/retention_teardown.ts: runRetentionAtCommandEnd",
   "src/libswamp/datastores/compact.ts: datastoreCompact",
-  // swamp-club#3279: a v3 root's checkpoint commits the partitions touched
-  // so far, then runs the checkpoint option it was given; the managed
-  // lockfile's v3 publish commits the lockfile at its root's checkpoint.
+  // a v3 root's checkpoint commits the partitions touched so far, then runs the
+  // checkpoint option it was given; the managed lockfile's v3 publish commits
+  // at its root's checkpoint
   "src/infrastructure/persistence/repo_unit_of_work.ts: runInCommitLogEngineRoot (x2)",
   "src/infrastructure/datastore_v3/v3_lockfile_sync.ts: createV3LockfileSync",
-  // swamp-club#3587: a workflow run checkpoints as it saves its record, so a
-  // crashed v3 run keeps its record and its completed steps' data;
-  // checkpointFrom hands the run's open units' changes to the root, whose
-  // checkpoint commits them. It pushes nothing on v2.
+  // a workflow run checkpoints as it saves its record so a crashed v3 run keeps
+  // its record and completed steps' data; it pushes nothing on v2
   "src/domain/workflows/execution_service.ts: WorkflowExecutionService",
   "src/infrastructure/datastore_v3/commit_log_unit_of_work.ts: checkpointFrom",
 ];
 
-// ---------------------------------------------------------------------------
-// Rule 9: the unit-of-work binding registry (swamp-club#3240)
-// ---------------------------------------------------------------------------
-
-// The registry in src/infrastructure/persistence/unit_of_work_binding.ts is
-// the one production change the v3 commit-log unit shares with v2: which
-// unit a repository stages into, and which context refuses a write outside
-// every unit. Pinning its callers keeps v2 routing where the
-// characterization suites prove it.
+// the unit-of-work binding registry is the one production change the v3
+// commit-log unit shares with v2; pinning its callers keeps v2 routing where
+// the characterization suites prove it
 const BIND_CALL = /\bunitOfWorkBinding\.bind\s*\(/g;
 const BOUND_HOOK_CALL = /\bunitOfWorkBinding\.boundHook\s*\(/g;
 const REQUIRE_UNIT_CALL = /\bunitOfWorkBinding\.requireUnit\s*\(/g;
 const LEGACY_TARGET_CALL = /\blegacyUnitOfWorkTarget\s*\(/g;
-// The typed-stager registry beside it (swamp-club#3250): which units take a
-// repository's typed changes.
+// the typed-stager registry beside it: which units take a repository's typed
+// changes
 const TYPED_STAGER_REGISTER_CALL = /\btypedStagers\.register\s*\(/g;
 const TYPED_STAGER_LOOKUP_CALL = /\btypedStagers\.stagerOf\s*\(/g;
 
-// The adapters that bind the units they build: the legacy adapter, and the
-// v3 commit-log adapter.
+// the adapters that bind the units they build: the legacy adapter and the v3
+// commit-log adapter
 const PINNED_UNIT_OF_WORK_BINDERS: readonly string[] = [
   "src/infrastructure/datastore_v3/commit_log_unit_of_work.ts: createCommitLogUnitOfWork",
   "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
 ];
 
-// Who asks which hook a unit is bound to: signalChange's routing, and the
-// legacy-only view of the binding.
+// who asks which hook a unit is bound to: signalChange's routing and the
+// legacy-only view of the binding
 const PINNED_BOUND_HOOK_READERS: readonly string[] = [
   "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyUnitOfWorkTarget",
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange (x2)",
-  // swamp-club#3250: the typed route (stageTyped and typedStagingActive),
-  // which stages only into a unit bound to the repository's hook.
-  // (x2) since swamp-club#3279: an unbound unit does not hide the v3 unit
-  // around it that is bound to the write's hook.
+  // the typed route (stageTyped, typedStagingActive) stages only into a unit
+  // bound to the repository's hook; (x2) because an unbound unit must not hide
+  // the bound v3 unit around it
   "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager (x2)",
-  // swamp-club#3532: version allocation finds the unit's version-floor
-  // source the way the typed route finds its stager.
+  // version allocation finds the unit's version-floor source the way the typed
+  // route finds its stager
   "src/infrastructure/persistence/unit_of_work_scope.ts: versionFloorSource (x2)",
 ];
 
-// Who registers a unit as taking typed changes: only the v3 commit-log
-// adapter (swamp-club#3250).
+// who registers a unit as taking typed changes: only the v3 commit-log adapter
 const PINNED_TYPED_STAGER_REGISTRARS: readonly string[] = [
   "src/infrastructure/datastore_v3/commit_log_unit_of_work.ts: createCommitLogUnitOfWork",
 ];
 
-// Who asks whether a unit takes typed changes: the routing in signalChange
-// (a typed declaration stages no path) and the typed route's lookup.
+// who asks whether a unit takes typed changes: signalChange's routing (a typed
+// declaration stages no path) and the typed route's lookup
 const PINNED_TYPED_STAGER_LOOKUPS: readonly string[] = [
-  // (x2) since swamp-club#3279: an unbound unit does not hide the v3 unit
-  // around it that is bound to the write's hook.
+  // (x2) because an unbound unit must not hide the v3 unit around it that is
+  // bound to the write's hook
   "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager (x2)",
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange (x2)",
-  // swamp-club#3257: whether a unit is v3, which withUnitOfWork asks to end
-  // it as decision 5 says.
+  // whether a unit is v3, which withUnitOfWork asks in order to end it
   "src/infrastructure/persistence/unit_of_work_scope.ts: takesTypedChanges",
-  // swamp-club#3279: the innermost v3 unit around a call, which a
-  // repository with no hook stages into (adoptingStager), tracked when a
-  // unit that takes typed changes runs (runInUnitOfWork).
+  // the innermost v3 unit around a call, which a repository with no hook stages
+  // into (adoptingStager), tracked when a typed-changes unit runs
   "src/infrastructure/persistence/unit_of_work_scope.ts: adoptingStager",
   "src/infrastructure/persistence/unit_of_work_scope.ts: runInUnitOfWork",
 ];
 
-// Who marks a context as one that refuses writes outside a unit: only the
-// v3 commit-log root. The v3 opt-in adds the context factory here.
+// who marks a context as refusing writes outside a unit: only the v3 commit-log
+// root; the v3 opt-in adds the context factory here
 const PINNED_REQUIRE_UNIT_CALLERS: readonly string[] = [
   "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
-  // swamp-club#3279: a v3 repository context is marked when it is built,
-  // so a write before any root opens is refused too.
+  // a v3 repository context is marked when built, so a write before any root
+  // opens is refused too
   "src/infrastructure/persistence/repository_factory.ts: createRepositoryContext",
 ];
 
 // legacyUnitOfWorkTarget, the legacy-only view: its definition, the legacy
 // adapter's parent lookup, and signalChange's refusal to stage a v3 hook's
-// write into a legacy unit. signalChange routes by the registry otherwise.
+// write into a legacy unit
 const PINNED_LEGACY_TARGET_CALLS: readonly string[] = [
   "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyParentFor",
   "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyUnitOfWorkTarget",
@@ -1585,74 +1404,66 @@ Deno.test("datastore write seams: legacyUnitOfWorkTarget stays inside the legacy
   );
 });
 
-// ---------------------------------------------------------------------------
-// The v3 opt-in's engine choice (swamp-club#3279)
-// ---------------------------------------------------------------------------
-
 /**
- * Every read of which engine a datastore opens with. The marker decides it
- * once, at the format guard; code past that point follows the repository
- * context (its commit-log engine, its resolver), so the choice cannot spread
- * through the codebase. A new read here needs a reason.
+ * every read of which engine a datastore opens with; the marker decides once at
+ * the format guard and later code follows the repository context, so the choice
+ * cannot spread. A new read needs a reason
  */
 const ENGINE_READ =
   /\b(?:checkedDatastoreEngine|datastoreEngineOf|resolverEngine)\s*\(/g;
 
 const PINNED_ENGINE_READERS: readonly string[] = [
-  // The definitions, and the guard's own cache read.
+  // the definitions, and the guard's own cache read
   "src/domain/datastore/datastore_path_resolver.ts: resolverEngine",
   "src/infrastructure/persistence/datastore_format_guard.ts: checkedDatastoreEngine",
   "src/infrastructure/persistence/datastore_format_guard.ts: datastoreEngineOf",
-  // The engine of the datastore a .swamp.yaml block names, which setup (to
-  // refuse moving off v3) and the CLI's managed lockfile transaction read.
+  // the engine of the datastore a .swamp.yaml block names, read by setup (to
+  // refuse moving off v3) and the CLI's managed lockfile transaction
   "src/infrastructure/persistence/datastore_format_guard.ts: datastoreBlockEngine",
-  // swamp-club#3534: whether an extension datastore syncs the v2 way.
+  // whether an extension datastore syncs the v2 way
   "src/infrastructure/persistence/datastore_format_guard.ts: isV2CustomDatastore",
-  // swamp-club#3534: a lock asked of a v3 bucket datastore no binding has
-  // seen is refused, never taken the v2 way in its bucket.
+  // a lock asked of a v3 bucket datastore no binding has seen is refused, never
+  // taken the v2 way in its bucket
   "src/infrastructure/persistence/datastore_lock_target.ts: lockingConfigOf",
-  // A resolver resolves records into the checkout on v3.
+  // a resolver resolves records into the checkout on v3
   "src/infrastructure/persistence/default_datastore_path_resolver.ts: DefaultDatastorePathResolver",
-  // swamp-club#4032: the macOS ordering barrier is for v2 writes only; a
-  // v3 repository syncs in full. It reads the engine the context opened.
+  // the macOS ordering barrier is for v2 writes only; a v3 repository syncs in
+  // full, reading the engine the context opened
   "src/infrastructure/persistence/ordered_sync.ts: selectDurableWriteSync",
-  // The catalog is the read model's on v3; no shared-datastore write
-  // tracker there.
+  // the catalog is the read model's on v3; there is no shared-datastore write
+  // tracker
   "src/infrastructure/persistence/repository_factory.ts: catalogDbPath",
   "src/infrastructure/persistence/repository_factory.ts: sharedDatastoreWriteTracker",
-  // Commands that act on the v3 datastore itself: chunk GC, status, and
-  // serve's compaction timer and status handler.
+  // commands that act on the v3 datastore itself: chunk GC, status, and serve's
+  // compaction timer and status handler
   "src/cli/commands/datastore_gc.ts: datastoreGcCommand",
   "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
   "src/cli/commands/serve.ts: serveCommand",
   "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
-  // swamp-club#4063: a claim and a release apply only to a v3 datastore's
-  // commit log, CLI and serve.
+  // a claim and a release apply only to a v3 datastore's commit log, CLI and
+  // serve
   "src/cli/commands/datastore_claim.ts: datastoreClaimCommand",
   "src/cli/commands/datastore_release.ts: datastoreReleaseCommand",
   "src/serve/handlers/admin_handlers.ts: serveClaimCommitLog",
-  // swamp-club#3741: a traced dashboard read records the engine as a span
-  // attribute; nothing is chosen by it.
+  // a traced dashboard read records the engine as a span attribute; nothing is
+  // chosen by it
   "src/serve/connection.ts: handleMessage",
-  // swamp-club#3617: serve's `doctor datastores` adds the v3 content check
-  // (unreadable records, at-risk copies, torn chunks) on a v3 datastore.
+  // serve's doctor datastores adds the v3 content check (unreadable records,
+  // at-risk copies, torn chunks) on a v3 datastore
   "src/serve/handlers/admin_handlers.ts: handleDoctorDatastores",
-  // `datastore namespace list`, CLI and serve: a v3 datastore has no
-  // namespace manifests, so its commits.db names the namespaces
-  // (swamp-club#3301). It also sends a v2 extension datastore to its
-  // provider and a v3 one to its commits (swamp-club#3534).
+  // datastore namespace list: a v3 datastore has no namespace manifests, so its
+  // commits.db names them; a v2 extension datastore goes to its provider, a v3
+  // one to its commits
   "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps (x2)",
-  // `doctor datastores --retention` reports a v3 datastore's history
-  // (swamp-club#3473).
+  // doctor datastores --retention reports a v3 datastore's history
   "src/libswamp/datastores/retention_check.ts: retentionScanSourcesFor",
-  // Commands v3 refuses choose a read-only open before they open, so the
-  // refusal takes no writer lease and changes nothing (swamp-club#3359):
-  // `datastore sync` and `datastore migrate-index`. Their deps refuse a v3
-  // datastore on a bucket too (swamp-club#3534).
+  // commands v3 refuses choose a read-only open first, so the refusal takes no
+  // writer lease and changes nothing; their deps refuse a v3 datastore on a
+  // bucket too
   "src/cli/repo_context.ts: peekRepoDatastoreEngine",
   "src/libswamp/datastores/migrate_index.ts: createMigrateIndexDeps",
   "src/libswamp/datastores/sync.ts: createDatastoreSyncDeps (x2)",
-  // Run-record artifacts resolve through resolveRunArtifact on v3.
+  // run-record artifacts resolve through resolveRunArtifact on v3
   "src/libswamp/data/run_artifact_check.ts: v3RunArtifactCheck",
   "src/libswamp/models/output_data.ts: createModelOutputDataDeps",
 ];
@@ -1669,10 +1480,9 @@ Deno.test("datastore write seams: reads of the datastore engine are pinned (swam
 });
 
 /**
- * Every production CatalogStore (swamp-club#3279). The catalog a repository
- * reads must be the one `catalogDbPath` names for its engine: on v3 the read
- * model's, so a new construction on another path could reopen the v2
- * catalog over a v3 datastore and answer from a disk walk.
+ * every production CatalogStore must use the path catalogDbPath names for its
+ * engine; on v3 another path could reopen the v2 catalog over a v3 datastore
+ * and answer from a disk walk
  */
 const CATALOG_STORE_CONSTRUCTION = /\bnew CatalogStore\s*\(/g;
 
@@ -1681,8 +1491,8 @@ const PINNED_CATALOG_STORE_CONSTRUCTIONS: readonly string[] = [
   "src/infrastructure/persistence/repository_factory.ts: createCatalogStore",
   // An in-memory catalog for ephemeral stores, never a repository's.
   "src/infrastructure/persistence/ephemeral_store.ts: createEphemeralStore",
-  // The read model's own catalog, at v3CatalogPath, the path catalogDbPath
-  // returns on v3.
+  // the read model's own catalog, at v3CatalogPath, the path catalogDbPath
+  // returns on v3
   "src/infrastructure/datastore_v3/v3_catalog.ts: V3Catalog",
   "src/infrastructure/datastore_v3/v3_datastore.ts: openV3Datastore",
 ];

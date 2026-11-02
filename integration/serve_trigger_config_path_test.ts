@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The workflow.trigger handlers read and write the config file serve was
-// started with (ctx.serveConfigPath, the resolved --config), not
-// <repo>/.swamp/serve.yaml, and get reports what the scheduler applies
-// (swamp-club#2468, #2472).
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";

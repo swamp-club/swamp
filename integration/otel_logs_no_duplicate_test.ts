@@ -17,15 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Adversarial regression for the double-export bug (swamp-club#1158): in
-// NON-JSON mode the run/workflow loggers inherit the root's sinks, so listing
-// the otel sink on BOTH the root and the run logger would export every per-run
-// record twice. This test drives the real production wiring (initializeLogging
-// in log mode, real LoggerProvider, real serializer) with only the network
-// transport stubbed, and asserts each logged line is exported EXACTLY ONCE.
-//
-// Runs in its own process, so initializeLogging()'s once-per-process guard is
-// fresh and configures log (non-JSON) mode.
+// in non-JSON mode run loggers inherit the root's sinks, so listing the otel
+// sink on both root and run logger would export every per-run record twice;
+// each line must export exactly once
 
 import { assertEquals } from "@std/assert";
 import {
@@ -34,10 +28,9 @@ import {
 } from "../src/infrastructure/logging/logger.ts";
 import { shutdownLogs } from "../src/infrastructure/tracing/mod.ts";
 
-// With --parallel, other test files may have already called initializeLogging,
-// setting both the module-level isInitialized guard and LogTape's own
-// configure guard. We must clear both before this test can reconfigure
-// logging with a stubbed fetch.
+// other test files may already have set the module-level guard and LogTape's
+// configure guard; both must be cleared before reconfiguring logging with a
+// stubbed fetch
 
 function countBodies(
   captured: { url: string; body: string }[],
@@ -75,15 +68,10 @@ Deno.test("OTel logs (log mode): each record is exported exactly once, never dup
   }) as any;
 
   try {
-    // Clear any prior OTel logs provider so initLogs() creates a fresh one
-    // that picks up our stubbed fetch.
     await shutdownLogs();
 
-    // Log (non-JSON) mode — the path where run loggers inherit root sinks.
-    // _reset clears the once-per-process guard and passes reset:true to
-    // LogTape's configure(), so this works even when another test file
-    // already called initializeLogging in the same --parallel run.
-    // _logsConfig bypasses Deno.env to avoid races with other parallel tests.
+    // _reset clears the once-per-process guard and resets LogTape's configure;
+    // _logsConfig bypasses Deno.env to avoid races with parallel tests
     await initializeLogging({
       _reset: true,
       _logsConfig: { endpoint: "http://collector.test" },
@@ -94,7 +82,6 @@ Deno.test("OTel logs (log mode): each record is exported exactly once, never dup
     // record would be exported twice.
     getSwampLogger(["model", "method", "run", "m", "execute"])
       .info`unique-run-line-abc123`;
-    // A plain root-category logger for good measure.
     getSwampLogger(["cli"]).info`unique-root-line-def456`;
 
     await shutdownLogs();

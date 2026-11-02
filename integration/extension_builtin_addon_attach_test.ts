@@ -17,11 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Add-ons that extend a built-in model type (swamp-club#2846). Built-in
-// types are registered eagerly, so they never pass through the lazy type
-// loader that attaches add-ons to local types. On a warm start the add-on
-// must still attach when the type is resolved, through the extension
-// attacher the CLI wires to the loader.
+// built-in types are registered eagerly and skip the lazy loader that attaches
+// add-ons, so on a warm start the add-on must still attach when the type is
+// resolved, through the attacher the CLI wires to the loader
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -126,11 +124,6 @@ async function withRepo(fn: (repo: Repo) => Promise<void>): Promise<void> {
   }
 }
 
-/**
- * Indexes the repo cold, then starts a second loader on the warm catalog and
- * wires it into the registry the way `loadUserModels` does. Returns how many
- * times the attacher ran, per type.
- */
 async function warmStart(repo: Repo): Promise<Map<string, number>> {
   const additionalDirs = [repo.pulledDir];
   await new ExtensionLoader(

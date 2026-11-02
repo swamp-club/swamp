@@ -18,14 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Helpers for the v3 Litestream sidecar's integration tests
- * (swamp-club#3416): a filesystem v3 datastore replicated to a file replica
- * by a real Litestream, and write commands run in-process against it.
- *
- * The tests need the pinned Litestream binary at `SWAMP_LITESTREAM_PATH`,
- * which verify-build fetches; without it, or on Windows, they are ignored.
- *
- * @module
+ * needs the pinned Litestream at `SWAMP_LITESTREAM_PATH`, which verify-build
+ * fetches; without it, or on Windows, the tests are ignored
  */
 
 import { dirname, join } from "@std/path";
@@ -66,11 +60,9 @@ import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
 
 /**
- * Kills a sidecar a test started, with its whole process group, at
- * teardown. Resumed first, in case the test stopped it. On macOS, signalling
- * a group whose processes have all exited but are not reaped yet fails with
- * EPERM: the group is already gone, so that is not a failure here
- * (swamp-club#4148). The caller still waits for every sidecar to stop.
+ * resumed first in case the test stopped it; on macOS signalling a group whose
+ * processes exited but are not reaped fails with EPERM, which means the group
+ * is already gone
  */
 export function killSidecarAtTeardown(pid: number): void {
   hostLitestreamProcesses.signal(pid, "SIGCONT");
@@ -81,10 +73,8 @@ export function killSidecarAtTeardown(pid: number): void {
   }
 }
 
-/** The pinned Litestream, when the run provides one. */
 export const LITESTREAM_BINARY = Deno.env.get("SWAMP_LITESTREAM_PATH");
 
-/** Why the sidecar tests are ignored here, if they are. */
 export const SIDECAR_TESTS_IGNORED = Deno.build.os === "windows" ||
   LITESTREAM_BINARY === undefined || LITESTREAM_BINARY === "";
 
@@ -100,7 +90,6 @@ export const TEST_TIMINGS: ReplicatorTimings = {
   pollMs: 25,
 };
 
-/** A replicated datastore and a checkout of it. */
 export interface ReplicationEnv {
   readonly root: string;
   readonly datastorePath: string;
@@ -111,10 +100,7 @@ export interface ReplicationEnv {
   paths(): Promise<ReplicationPaths>;
 }
 
-/**
- * Runs `fn` against a fresh replicated datastore under /tmp (macOS TMPDIR
- * is too long for a socket path). Every sidecar it started is killed after.
- */
+/** under /tmp because the macOS TMPDIR is too long for a socket path */
 export async function withReplicationEnv(
   fn: (env: ReplicationEnv) => Promise<void>,
   options: {
@@ -140,9 +126,8 @@ export async function withReplicationEnv(
     replicaRoot,
     privateRoot,
     config: { type: "filesystem", path: datastorePath },
-    // The checkout's own copy while replicating (swamp-club#3482),
-    // computed once inside the replica setting, so the cleanup outside it
-    // finds the same sidecar.
+    // computed once inside the replica setting, so the cleanup outside it finds
+    // the same sidecar
     paths: () =>
       paths ??= (async () => {
         const commitsDb = v3CommitsDbPath(datastorePath, repoDir);
@@ -185,7 +170,6 @@ export async function withReplicationEnv(
   }
 }
 
-/** Kills every sidecar process the env's database ever recorded. */
 async function killSidecars(env: ReplicationEnv): Promise<void> {
   const paths = await env.paths().catch(() => undefined);
   if (paths === undefined) return;
@@ -201,7 +185,6 @@ async function killSidecars(env: ReplicationEnv): Promise<void> {
 
 const startedPids = new Set<number>();
 
-/** The sidecar's presence record, remembering its supervisor for cleanup. */
 export async function presenceOf(
   env: ReplicationEnv,
 ): Promise<PresenceRecord | undefined> {
@@ -211,10 +194,6 @@ export async function presenceOf(
   return read.record;
 }
 
-/**
- * One write command in-process: takes the writer lease (and the sidecar),
- * makes `commits` commits, then tears down as the CLI does.
- */
 export async function writeCommand(
   env: ReplicationEnv,
   commits = 1,
@@ -233,7 +212,6 @@ export async function writeCommand(
   await closeV3Datastores();
 }
 
-/** Makes `commits` commits through the held writer's engine. */
 export async function commitIn(
   env: Pick<ReplicationEnv, "repoDir" | "config">,
   commits: number,
@@ -261,7 +239,6 @@ export async function commitIn(
   }
 }
 
-/** How many commits a `commits.db` holds. */
 export function commitCount(dbPath: string): number {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
@@ -273,7 +250,6 @@ export function commitCount(dbPath: string): number {
   }
 }
 
-/** A database's logical size, its WAL's committed pages included. */
 export function logicalBytes(dbPath: string): number {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
@@ -289,7 +265,6 @@ export function logicalBytes(dbPath: string): number {
   }
 }
 
-/** Restores the replica at `replicaPath` and counts its commits. */
 export async function restoredCommitCount(
   env: ReplicationEnv,
   replicaPath: string,
@@ -308,7 +283,6 @@ export async function restoredCommitCount(
   return commitCount(out);
 }
 
-/** The bytes under `dir`, recursively; 0 when it is missing. */
 export async function bytesUnder(dir: string): Promise<number> {
   let total = 0;
   try {

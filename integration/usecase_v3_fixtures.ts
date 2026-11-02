@@ -17,18 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 gate over the use-case sync characterization rows (swamp-club#3279).
- *
- * Each row's CLI and serve composition runs against a checkout of a v3
- * filesystem datastore, through the production entry points
- * (`requireInitializedRepo*`, `runCommandInRootUnit`, serve's handlers). A
- * second checkout of the same datastore then catches up from the commit
- * log, and its datastore records and catalog must equal the writer's.
- * Local-only files (run logs, the run index, the stream directories) are
- * left out by an explicit list.
- */
-
 import { AsyncResource } from "node:async_hooks";
 import { join, relative, SEPARATOR } from "@std/path";
 import { walk } from "@std/fs";
@@ -73,11 +61,8 @@ import {
   withOutsideSeedRoot,
 } from "./usecase_sync_fixtures.ts";
 
-/** Options for {@link withV3RowRepos}. */
 export interface V3RowRepoOptions {
-  /** Add `managedConfig: true` under the repos' `datastore:` block. */
   managedConfig?: boolean;
-  /** The datastore namespace both checkouts use; solo when absent. */
   namespace?: string;
 }
 
@@ -108,11 +93,6 @@ async function initV3Repo(
   );
 }
 
-/**
- * Runs `fn` against a fresh v3 datastore and two checkouts of it, A (the
- * writer, open as serve and the CLI open it) and B. Everything is closed and
- * removed in a `finally`.
- */
 export async function withV3RowRepos(
   options: V3RowRepoOptions,
   fn: (repos: RowRepos, datastorePath: string) => Promise<void>,
@@ -138,8 +118,8 @@ export async function withV3RowRepos(
       },
     },
   });
-  // The CLI resolves a --repo-dir through a symlink (swamp-club#3552), and
-  // the macOS temp dir is one, so the fixture spells its repos that way too.
+  // the CLI resolves a --repo-dir through a symlink and the macOS temp dir is
+  // one, so the fixture spells its repos that way too
   const dir = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "swamp-usecase-v3-" }),
   );
@@ -182,18 +162,12 @@ export async function withV3RowRepos(
   }
 }
 
-/**
- * Whether a checkout file is local to the checkout that wrote it, never a
- * commit: the run index the run repository rebuilds on read, and run logs.
- * The stream directories are outside {@link MATERIALISED_SUBDIRS} already.
- */
 export function isCheckoutLocal(rel: string): boolean {
   const name = rel.split("/").at(-1) ?? "";
   return name === RUNS_INDEX_FILENAME || name.endsWith(".log") ||
     /^_catalog\.db(-journal|-wal|-shm)?$/.test(name);
 }
 
-/** Every datastore record file a checkout holds, by path, with its digest. */
 export async function datastoreRecords(
   repoDir: string,
   namespace = "",
@@ -225,10 +199,6 @@ export async function datastoreRecords(
   return new Map([...files].sort(([x], [y]) => (x < y ? -1 : 1)));
 }
 
-/**
- * Catches B up from the commit log and asserts it holds the same datastore
- * records and catalog rows as A, the writer, caught up too.
- */
 export async function assertCheckoutsAgree(
   repos: RowRepos,
   datastorePath: string,
@@ -241,8 +211,8 @@ export async function assertCheckoutsAgree(
   }
   const writerHandle = v3DatastoreFor(repos.repoA, config);
   await writerHandle.catchUp();
-  // The stream directories stay in the checkout that wrote them: no commit
-  // may name one (swamp-club#3278).
+  // stream directories stay in the checkout that wrote them: no commit may name
+  // one
   for (
     const change of await writerHandle.commitStore.changesSince(0, 100_000)
   ) {
@@ -279,11 +249,6 @@ export async function assertCheckoutsAgree(
   return writer.size;
 }
 
-/**
- * Runs one row through one composition on v3, then checks the second
- * checkout. The seed runs in a commit-log root of its own, as a v3 write
- * must; a refusing row must still refuse.
- */
 export async function runRowOnV3(
   row: AnyRow,
   composition: Composition,
@@ -330,10 +295,6 @@ export async function runRowOnV3(
   return records;
 }
 
-/**
- * Registers one step per row and composition that runs it on v3. Rows in
- * `skip` are left out, each with the reason it cannot run on v3.
- */
 export async function checkRowsOnV3(
   t: Deno.TestContext,
   rows: AnyRow[],

@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A managed-config edit names the version it started from through serve
- * too (swamp-club#4097): two serve-mode checkouts of one datastore load a
- * definition, one forwards an edit, and the other's edit of the version it
- * loaded is refused by serve as `config_edit_conflict`, naming who changed
- * it. Two checkouts racing one edit get exactly one success.
- */
-
 import "../src/domain/models/models.ts";
 import { AsyncResource } from "node:async_hooks";
 import { assert, assertEquals, assertRejects } from "@std/assert";
@@ -48,7 +40,6 @@ await initializeLogging({});
 
 const API_ID = "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a11";
 
-/** `api` as `by` last edited it. */
 function api(by: string): Definition {
   return Definition.create({
     id: API_ID,
@@ -58,7 +49,6 @@ function api(by: string): Definition {
   });
 }
 
-/** Who last edited `api`, as `client` reads it. */
 function editedBy(
   scratch: Scratch,
   client: Client,
@@ -74,7 +64,6 @@ function editedBy(
   );
 }
 
-/** A user's edit, as the CLI's edit commands run it. */
 function userEdit(
   scratch: Scratch,
   client: Client,
@@ -84,7 +73,6 @@ function userEdit(
   return runAsUserConfigEdit(() => writeCommand(scratch, client, env, fn));
 }
 
-/** Asserts `error` is serve's stale-edit refusal of behavior `api`. */
 function assertConflict(error: unknown): void {
   const conflict = configEditConflictOf(error);
   assert(conflict !== undefined, `not an edit conflict: ${error}`);
@@ -115,7 +103,6 @@ Deno.test({
         env,
         (repos) => repos.definitionRepo.save(type, api("seed")),
       );
-      // Both checkouts load api at the same version.
       assertEquals(await editedBy(scratch, b, env, type), "seed");
       assertEquals(await editedBy(scratch, a, env, type), "seed");
 

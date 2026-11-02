@@ -18,14 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A private publication refused on entitlement names the collective, the
- * plan the registry reported for it and what it needs, in the dry run and in
- * the real push alike, from the one whoami call the push already makes.
- *
- * The prepare deps are the real factory's, with credentials supplied as a
- * literal so the operator's auth.json is never read, pointed at a port-0
- * registry that answers whoami, the versions list and the push initiation.
- * Packaging is faked, as in extension_publish_visibility_test.ts.
+ * a private publication refused on entitlement names the collective, its plan
+ * and what it needs, in dry run and real push alike, from the one whoami call
+ * push already makes
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
@@ -54,7 +49,6 @@ interface Registry {
   shutdown: () => Promise<void>;
 }
 
-/** A registry that reports `entitlements` from whoami and refuses private pushes. */
 function serveRegistry(
   entitlements: Record<string, unknown>[] | undefined,
 ): Registry {
@@ -221,9 +215,9 @@ const ENDED_TRIAL = {
   totalDays: 30,
 } as const;
 
-// The registry's verdict decides; a registry that sends none (older or
-// self-hosted) is decided from the trial, and reads the same. The registry
-// never starts a trial at publish, so no trial is refused like an ended one.
+// the registry's verdict decides; one that sends none (older or self-hosted) is
+// decided from the trial and reads the same; the registry never starts a trial
+// at publish, so no trial is refused like an ended one
 const REFUSED_STANDINGS = [
   {
     trial: ENDED_TRIAL,
@@ -294,7 +288,7 @@ async function assertRefusedAlike(
 }
 
 Deno.test("extension push entitlement: a personal namespace the registry covers through another collective passes and the push proceeds (swamp-club#3311)", async () => {
-  // The issue's repro: the personal trial ended, a paid team covers it.
+  // the personal trial ended but a paid team covers it
   await withScenario(
     [
       {
@@ -330,7 +324,6 @@ Deno.test("extension push entitlement: a personal namespace the registry covers 
           ?.privateExtensions,
         "allowed",
       );
-      // The push went on past the check to the version lookup.
       assertEquals(registry.requests, [
         "GET /api/whoami",
         "GET /api/v1/extensions/%40seth%2Finternal/versions",

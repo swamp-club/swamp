@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's `GET base` (swamp-club#4006) over a real compacted v3 repository:
- * what a caller is sent of the compacted base is what it may read, decided
- * per record, never more than the changes feed decides the op that wrote
- * it.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
@@ -45,7 +38,6 @@ const SECRET_ID =
   "5b0c7a1e-2f3d-4c5b-8a6e-9d0f1e2a3b4c" as Server["model"]["id"];
 const STAMP = "2026-01-01T00-00-00-000Z";
 
-/** Bob may read web's data, and nothing else: not its outputs. */
 const bobReadsWebData = (): Grant[] => [
   grant({
     subject: { kind: "user", name: "bob" },
@@ -54,7 +46,6 @@ const bobReadsWebData = (): Grant[] => [
   }),
 ];
 
-/** A data save of `name` version `version`, its content inline. */
 function saveOps(
   server: Server,
   name: string,
@@ -87,7 +78,6 @@ function saveOps(
   ];
 }
 
-/** An output of the behavior, which reading needs read on the behavior. */
 function outputOp(server: Server): unknown {
   const type = server.modelType.normalized;
   return {
@@ -121,7 +111,6 @@ async function commit(
   assertEquals(committed.status, 200, JSON.stringify(committed.json));
 }
 
-/** Compacts serve's whole log. */
 async function compactAll(server: Server): Promise<number> {
   const store = server.v3.commitStore;
   const fence = store.writerFence();
@@ -131,7 +120,6 @@ async function compactAll(server: Server): Promise<number> {
   return report.point;
 }
 
-/** Every page of the base `token` is sent, at `limit` entries a page. */
 async function readBase(
   server: Server,
   token: string,
@@ -169,8 +157,6 @@ Deno.test({
   fn: async () => {
     await withServer([...writer(), ...bobReadsWebData()], async (server) => {
       await commit(server, saveOps(server, "vpc", 1));
-      // One commit holding web's data and its output: the feed hides it
-      // from bob whole, for the output.
       await commit(server, [...saveOps(server, "net", 1), outputOp(server)]);
       await commit(server, saveOps(server, "key", 1, SECRET_ID), SECRET_ID);
       const point = await compactAll(server);
@@ -199,13 +185,10 @@ Deno.test({
 
       const bob = await readBase(server, "bob-token");
       assertEquals(bob.point, point);
-      // Nothing of the behavior bob may not read reaches him.
       assertEquals(
         bob.entries.filter((e) => partitionOfEntry(e) === secret),
         [],
       );
-      // Web's partition reaches him once, before its first record, with its
-      // data names' marks: he may read its data, not the whole partition.
       const partitions = bob.entries.filter((e) => e.kind === "partition");
       assertEquals(partitions.map((e) => e.partition), [web]);
       assertEquals(bob.entries[0].kind, "partition");
@@ -213,8 +196,6 @@ Deno.test({
         (partitions[0].names as { name: string }[]).map((n) => n.name).sort(),
         ["net", "vpc"],
       );
-      // Web's data records, including the one from the commit the feed
-      // hides from him, and never its output.
       const keys = bob.entries.filter((e) => e.kind === "record").map((e) =>
         String(e.key)
       );
@@ -227,7 +208,6 @@ Deno.test({
         ),
         [],
       );
-      // The feed decides the whole commit: bob sees none of its ops there.
       const changes = await getJson(
         `${server.url}/changes?cursor=${point}`,
         "bob-token",
@@ -249,7 +229,6 @@ Deno.test({
   },
 });
 
-/** Bob may read behavior web, so its outputs, and none of its data. */
 const bobReadsWebOutputs = (): Grant[] => [
   grant({
     subject: { kind: "user", name: "bob" },
@@ -276,14 +255,11 @@ Deno.test({
       }).toString();
 
       const bob = await readBase(server, "bob-token");
-      // The partition reaches him before its output, with its compacted
-      // seq: he may read part of it, not all.
       const partitions = bob.entries.filter((e) => e.kind === "partition");
       assertEquals(partitions.length, 1);
       assertEquals(bob.entries[0], partitions[0]);
       assertEquals(partitions[0].partition, web);
       assertEquals(partitions[0].seq, 3);
-      // No data name, and no version mark, of data he may not read.
       assertEquals(partitions[0].names, []);
       assertEquals(
         bob.entries.filter((e) =>
@@ -298,7 +274,6 @@ Deno.test({
       assert(keys.some((key) => key.startsWith("outputs/")));
       assertEquals(keys.filter((key) => key.startsWith("data/")), []);
 
-      // A caller who may read the data gets its names and marks.
       const alice = await readBase(server, "alice-token");
       const named = alice.entries.find((e) =>
         e.kind === "partition" && e.partition === web

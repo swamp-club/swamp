@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The dependency input vectors (swamp-club#3969): one directory per input
- * form an author can push, each an `input.yaml` (the files of a project, the
- * packages installed in its node_modules) and an `expected.json` (what push,
- * quality, fmt and the loader make of it). Each runs against real Deno, so
- * a Deno upgrade that changes how a form resolves fails the vector that
- * names it instead of changing what ships.
- *
- * Each vector's tree is written to a temporary directory and run by
- * dependency_input_vectors_driver.ts in a Deno process whose working
- * directory is the vector's repository, as an author runs push. The
- * registries are local (dependency_input_vectors_registry.ts).
- *
- * Run with SWAMP_UPDATE_INPUT_VECTORS=1 to write each expected.json from
- * what the code does now; review the diff before keeping it.
+ * one directory per input form an author can push, each an input.yaml and an
+ * expected.json, run against real Deno so a Deno upgrade that changes how a
+ * form resolves fails its vector
  */
 
 import { assertEquals } from "@std/assert";
@@ -67,18 +56,12 @@ const SWAMP_CONFIG = join(HERE, "..", "deno.json");
 
 const UPDATE = Deno.env.get("SWAMP_UPDATE_INPUT_VECTORS") === "1";
 
-/** A vector's input.yaml. */
 interface VectorInput {
   description: string;
-  /** The repository directory within the tree; the tree root by default. */
   repo?: string;
-  /** The manifest, relative to the repository; `manifest.yaml` by default. */
   manifest?: string;
-  /** Every file of the tree, by forward-slash path. */
   files: Record<string, string>;
-  /** Packages installed in a node_modules, as an installer leaves them. */
   installed?: {
-    /** The package's directory in the tree (`node_modules/vecpkg`). */
     dir: string;
     name: string;
     version: string;
@@ -90,7 +73,6 @@ async function write(path: string, text: string): Promise<void> {
   await Deno.writeTextFile(path, text);
 }
 
-/** Writes the vector's tree under `root` and initializes its repository. */
 async function writeTree(
   root: string,
   input: VectorInput,
@@ -130,7 +112,6 @@ async function writeTree(
   return repoDir;
 }
 
-/** Runs the driver over the vector written at `root`; returns its outcome. */
 async function runDriver(
   root: string,
   repoDir: string,
@@ -167,9 +148,9 @@ async function runDriver(
 }
 
 /**
- * Installs esbuild in the shared cache from the real npm registry. The
- * driver points npm at the vector registry, which does not serve esbuild,
- * so `deno bundle` on a cache without it fails every vector (swamp-club#4000).
+ * installs esbuild in the shared cache from the real npm registry: the driver
+ * points npm at the vector registry, which does not serve it, so deno bundle
+ * would fail every vector
  */
 async function warmEsbuild(): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-input-vector-warm-" });
@@ -187,10 +168,9 @@ async function warmEsbuild(): Promise<void> {
 }
 
 /**
- * Removes what Deno cached from this run's registry's port in the shared
- * cache. It runs before the vectors too: another suite's registry on the
- * same port may have left a packument there that names none of this
- * registry's versions, and Deno would resolve against it (swamp-club#4189).
+ * removes what Deno cached for this registry's port in the shared cache; runs
+ * before the vectors too, since another suite's registry on that port may have
+ * left a stale packument
  */
 async function forgetRegistry(registry: VectorRegistry): Promise<void> {
   const port = new URL(registry.origin).port;

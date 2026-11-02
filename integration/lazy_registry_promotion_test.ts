@@ -18,20 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration tests for the lazy registry promotion pattern.
- *
- * PR #1089 introduced lazy per-bundle loading where registries track "lazy
- * entries" — types known to exist but whose bundles haven't been imported.
- * The critical invariant is:
- *
- *   get() returns undefined for lazy entries.
- *   ensureTypeLoaded(type) must be called before get() to promote them.
- *
- * Category 1 tests (fresh instances) document this invariant.
- * Category 2 tests verify that consumer functions (resolveVaultType,
- * resolveDatastoreType) promote lazy entries before returning, so that
- * callers can safely use get() afterwards. These tests FAIL on the
- * unfixed code (PR #1089) and PASS with the fix (PR #1116).
+ * get() returns undefined for lazy entries; ensureTypeLoaded must run first, so
+ * resolveVaultType and resolveDatastoreType must promote lazy entries before
+ * returning
  */
 
 import { assertEquals, assertNotEquals } from "@std/assert";
@@ -56,10 +45,6 @@ import {
   resolveDatastoreType,
   resolveVaultType,
 } from "../src/domain/extensions/extension_auto_resolver.ts";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function lazyVault(type: string): LazyVaultEntry {
   return {
@@ -113,16 +98,6 @@ function reportDef(): ReportDefinition {
     execute: () => Promise.resolve({ markdown: "", json: {} }),
   };
 }
-
-// ---------------------------------------------------------------------------
-// 1. Registry-level invariant tests (fresh instances)
-//
-// These document the contract introduced by PR #1089:
-//   - get() returns undefined for lazy entries
-//   - ensureTypeLoaded() promotes lazy entries so get() works
-//
-// These pass on both main and the fix — they test the registry itself.
-// ---------------------------------------------------------------------------
 
 Deno.test("VaultTypeRegistry: get() returns undefined for lazy entries", () => {
   const registry = new VaultTypeRegistry();
@@ -194,19 +169,6 @@ Deno.test("ReportRegistry: ensureTypeLoaded() promotes lazy entry for get()", as
   assertEquals(result!.description, "test report");
 });
 
-// ---------------------------------------------------------------------------
-// 2. Consumer function regression tests (global singletons)
-//
-// These verify that resolveVaultType() and resolveDatastoreType() promote
-// lazy entries so that callers can safely use get() after resolution.
-//
-// On the unfixed code (PR #1089): the resolve functions don't call
-// ensureTypeLoaded(), so get() returns undefined after resolution → FAIL.
-//
-// With the fix (PR #1116): ensureTypeLoaded() is called before has(),
-// promoting the lazy entry → get() works → PASS.
-// ---------------------------------------------------------------------------
-
 Deno.test("resolveVaultType: promotes lazy type so get() works after resolution", async () => {
   const typeName = "@test/resolve-vault-" + crypto.randomUUID().slice(0, 8);
 
@@ -216,13 +178,9 @@ Deno.test("resolveVaultType: promotes lazy type so get() works after resolution"
     return Promise.resolve();
   });
 
-  // resolveVaultType should ensure the type is promoted before returning.
-  // On unfixed code, has() returns true but ensureTypeLoaded() is never
-  // called, leaving the type lazy.
   const resolved = await resolveVaultType(typeName, null);
   assertEquals(resolved, true, "should resolve successfully");
 
-  // The critical assertion: get() must return the type, not undefined.
   const result = vaultTypeRegistry.get(typeName);
   assertNotEquals(
     result,
@@ -242,11 +200,9 @@ Deno.test("resolveDatastoreType: promotes lazy type so get() works after resolut
     return Promise.resolve();
   });
 
-  // resolveDatastoreType should ensure the type is promoted before returning.
   const resolved = await resolveDatastoreType(typeName, null);
   assertEquals(resolved, true, "should resolve successfully");
 
-  // The critical assertion: get() must return the type, not undefined.
   const result = datastoreTypeRegistry.get(typeName);
   assertNotEquals(
     result,

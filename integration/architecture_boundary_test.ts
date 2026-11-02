@@ -33,12 +33,6 @@ import {
 
 const DOMAIN_DIR = join(SRC_DIR, "domain");
 
-/**
- * Given a file inside src/domain/ and one of its import specifiers, return the
- * pair of bounded contexts (immediate subdirectories of src/domain/) the edge
- * connects. Returns undefined when the import leaves src/domain/ or stays
- * inside the same bounded context.
- */
 function resolveBoundedContext(
   filePath: string,
   importPath: string,
@@ -58,7 +52,6 @@ function resolveBoundedContext(
   return { source: sourceContext, target: targetContext };
 }
 
-/** Build the directed cross-bounded-context dependency graph. */
 async function buildBcGraph(): Promise<Map<string, Set<string>>> {
   const graph = new Map<string, Set<string>>();
 
@@ -75,11 +68,6 @@ async function buildBcGraph(): Promise<Map<string, Set<string>>> {
   return graph;
 }
 
-/**
- * Find mutual dependencies (A→B and B→A) in a directed graph.
- * Each cycle is reported once, alphabetically ordered within the pair, and the
- * whole list is sorted so it can be diffed against a pinned list.
- */
 function findMutualDependencies(graph: Map<string, Set<string>>): string[] {
   const pairs: string[] = [];
   for (const [src, targets] of graph) {
@@ -92,32 +80,9 @@ function findMutualDependencies(graph: Map<string, Set<string>>): string[] {
   return pairs.sort();
 }
 
-// Pinned ratchet: the exact set of bounded-context cycles that exist today.
-//
-// This is a set, not a count. A count-only ratchet passes when a cycle is
-// broken and a different one is introduced in the same change, which is how
-// the previous `KNOWN_MUTUAL_DEPENDENCIES = 15` guard drifted into being a
-// rubber stamp. Pinning the pairs means:
-//
-//   - A NEW cycle fails the test. Break it, or — if the coupling is genuinely
-//     intended — add the pair here in the same PR with a comment saying why,
-//     so the decision is reviewed rather than absorbed by a number.
-//   - A REMOVED cycle also fails the test. Delete the pair from this list so
-//     the improvement is locked in and the cycle cannot quietly return.
-//
-// Historical notes on individual entries:
-//   - extensions <-> models (#125): bundle_freshness is a cross-cutting
-//     extensions-domain service consumed by the models loader; the reverse
-//     edge already existed via extension_auto_resolver and friends.
-//   - datastore <-> extensions (#128): user_datastore_loader consumes
-//     bundle_freshness for content-fingerprint cache invalidation; the
-//     reverse edge already existed via extension_auto_resolver. The
-//     reports/drivers/vaults loaders gained unidirectional edges on
-//     extensions for the same reason.
-//   - extensions <-> vaults predates #128 (extension_auto_resolver <->
-//     user_vault_loader).
-// The remaining pairs are long-standing coupling inherited from before this
-// ratchet existed; none of them is endorsed, they are simply pinned as debt.
+// pinned as an exact set, not a count, so breaking one cycle while adding
+// another still fails; a new pair needs a reason here, a removed one must be
+// deleted from the list
 const PINNED_MUTUAL_DEPENDENCIES: readonly string[] = [
   "access <-> models",
   "data <-> definitions",

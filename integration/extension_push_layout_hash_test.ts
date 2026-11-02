@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * One extension hashes the same however it is pushed (swamp-club#3100):
- * from a repo initialised inside the extension directory (the publish.yml
- * layout), and from a sibling repo with the extensions root inferred from
- * the manifest or named by `--extensions-dir`. Each run resolves the
- * extension as `extension push` and `extension quality` do and hashes it
- * with the extensions root as `rootDir`, as both commands pass it.
- */
-
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";

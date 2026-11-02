@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Wires the real server token model, repository reads, connection registry and
- * audit emitter together to check that a token losing its authority ends the
- * WebSocket sessions already open with it (swamp-club#2454), and the health
- * streams bound to it (swamp-club#2504).
- */
-
 import { assert, assertEquals, assertExists } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { collect } from "../src/libswamp/testing.ts";
@@ -105,10 +98,6 @@ interface FakeSession {
   closes: { code?: number; reason?: string }[];
 }
 
-/**
- * A socket bound the way the WebSocket upgrade binds one. `log` records sends
- * and closes in order across sockets.
- */
 function openSession(
   name: string,
   createdAt: string,
@@ -260,7 +249,6 @@ Deno.test("revoke handler: ends the revoked token's sessions, after replying, an
     const emitter = new AuditEmitter({ sinks: [sink] });
     const log: string[] = [];
 
-    // The caller revokes the very token their own session is open with.
     const caller = openSession(victim, victimMint, "user:alice", log);
     const second = openSession(victim, victimMint, "user:alice");
     const survivor = openSession(other, otherMint, "user:alice");
@@ -498,7 +486,6 @@ interface FakeStream {
   unregister: () => void;
 }
 
-/** A health stream bound the way `/api/v1/health/stream` binds one. */
 function openStream(
   name: string,
   createdAt: string,

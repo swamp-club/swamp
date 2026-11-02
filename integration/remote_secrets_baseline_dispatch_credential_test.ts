@@ -17,19 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote-secrets baseline, path 5: the per-dispatch credential
- * (swamp-club#3512).
- *
- * Pins how the credential a runner presents to the data plane is issued,
- * how its expiry slides, and when it stops verifying: completion, failure,
- * a dropped worker, a revoked token and reassignment. Also pins the
- * off-loopback TLS and auth rule serve enforces at bind time, and that the
- * worker derives its data-plane URL from the connect URL without enforcing
- * one. Typed-secrets Phase 5 binds secret handles to this credential
- * (design/enablers/typed-secrets.md §9).
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -104,18 +91,12 @@ const SUCCESS: DispatchResult = {
   durationMs: 1,
 };
 
-/** One dispatch as the in-memory worker saw it, held open until settled. */
 interface HeldDispatch {
   dispatchId: string;
-  /** The out-of-schema field the gateway adds to the raw params. */
   credential: string;
   settle: (result: DispatchResult) => void;
 }
 
-/**
- * Registers a dispatch handler that records each dispatch and holds it
- * open until the test settles it.
- */
 function holdDispatches(worker: InMemoryWorker): HeldDispatch[] {
   const held: HeldDispatch[] = [];
   worker.channel.register(WorkerMethod.dispatch, (raw) => {
@@ -131,11 +112,6 @@ function holdDispatches(worker: InMemoryWorker): HeldDispatch[] {
   return held;
 }
 
-/**
- * The status the data plane answers with for `credential` on a route that
- * exists only past authentication: 404 means the credential verified, 401
- * means it did not.
- */
 async function dataPlaneStatus(
   o: BaselineOrchestrator,
   credential: string,
@@ -152,13 +128,9 @@ const AUTHENTICATED = 404;
 const REJECTED = 401;
 
 /**
- * Waits out the control-plane bookkeeping serve writes after a step has
- * settled, so it lands before the temp repo is removed. The gateway
- * records worker status (busy, idle, disconnected) and the dispatch service
- * records pending-dispatch queue ends on transition tails nobody awaits.
- * Each call below is queued behind them and awaited: a revoke of a token no
- * worker holds is a no-op, and a first-write mark for an unknown lease
- * fails once it runs.
+ * wait out the control-plane bookkeeping serve writes after a step settles so
+ * it lands before the temp repo is removed; each call is queued behind it and
+ * awaited
  */
 async function drainBookkeeping(o: BaselineOrchestrator): Promise<void> {
   await o.gateway.revokeToken(`drain-${crypto.randomUUID()}`, "revoked");
@@ -190,7 +162,6 @@ async function withOrchestrator(
   });
 }
 
-/** A controllable interval: `fire()` runs every registered callback. */
 function manualIntervals() {
   const callbacks = new Map<number, () => void>();
   let next = 1;
@@ -212,8 +183,6 @@ function manualIntervals() {
   };
 }
 
-// ── SessionCredentialService ────────────────────────────────────────────
-
 Deno.test("remote secrets baseline: dispatch credential: issueForDispatch scopes the credential to its worker and dispatch with the TTL", () => {
   const timers = manualIntervals();
   const sessions = new SessionCredentialService({
@@ -230,8 +199,6 @@ Deno.test("remote secrets baseline: dispatch credential: issueForDispatch scopes
     workerId: "w1",
     dispatchId: "d1",
   });
-  // A control credential for the same worker is a separate record; issuing
-  // one leaves the dispatch credential alone.
   const control = sessions.issue("w1");
   assert(control.credential !== record.credential);
   assertEquals(sessions.verify(record.credential)?.dispatchId, "d1");
@@ -252,8 +219,6 @@ Deno.test("remote secrets baseline: dispatch credential: without a refresh the c
   assert(sessions.verify(record.credential) !== null);
   now = record.expiresAtMs;
   assertEquals(sessions.verify(record.credential), null);
-  // Deleted, not just expired: the refresh timer goes with it, and moving
-  // the clock back does not bring the credential back.
   assertEquals(timers.active, 0);
   now = 1_000_000;
   assertEquals(sessions.verify(record.credential), null);
@@ -279,7 +244,6 @@ Deno.test("remote secrets baseline: dispatch credential: the refresh timer slide
   assertEquals(record.expiresAtMs, 1_110_000);
   now = 1_100_000;
   assert(sessions.verify(record.credential) !== null);
-  // The string never changes, so a runner holding it needs no update.
   assertEquals(
     sessions.verify(record.credential)?.dispatchId,
     "d1",
@@ -357,8 +321,6 @@ Deno.test("remote secrets baseline: dispatch credential: revokeAllForWorker revo
   assertEquals(timers.active, 1);
 });
 
-// ── Through the gateway and data plane ──────────────────────────────────
-
 Deno.test({
   name:
     "remote secrets baseline: dispatch credential: the gateway sends a fresh credential that the data plane accepts until the dispatch succeeds",
@@ -373,7 +335,6 @@ Deno.test({
       await waitFor(() => held.length === 1, "the dispatch reached the worker");
       const [dispatch] = held;
 
-      // A per-dispatch credential, distinct from the enrollment credential.
       assert(dispatch.credential.length > 0);
       assert(dispatch.credential !== worker.enrollResult.sessionCredential);
       assertEquals(o.gateway.sessions.verify(dispatch.credential), {
@@ -390,7 +351,6 @@ Deno.test({
 
       assertEquals(o.gateway.sessions.verify(dispatch.credential), null);
       assertEquals(await dataPlaneStatus(o, dispatch.credential), REJECTED);
-      // The control credential outlives the dispatch.
       assertEquals(
         await dataPlaneStatus(o, worker.enrollResult.sessionCredential),
         AUTHENTICATED,
@@ -451,7 +411,6 @@ Deno.test({
 
       await o.gateway.revokeToken("cred-revoked", "revoked");
 
-      // Rejected as soon as the revoke returns, before the step settles.
       assertEquals(o.gateway.sessions.verify(dispatch.credential), null);
       assertEquals(await dataPlaneStatus(o, dispatch.credential), REJECTED);
       assertEquals(
@@ -501,21 +460,16 @@ Deno.test({
 
       workers[first].dropSocket();
 
-      // The gateway's dispatch ends on the closed channel and revokes the
-      // credential in its finally.
       await waitFor(
         () => o.gateway.sessions.verify(old.credential) === null,
         "the dropped attempt's credential was revoked",
       );
       assertEquals(await dataPlaneStatus(o, old.credential), REJECTED);
-      // The old attempt's dispatch stays registered while serve waits out
-      // the dropped worker's grace window: capability verbs keyed by its
-      // dispatchId still resolve, though its data-plane credential no
-      // longer verifies.
+      // the old attempt's dispatch stays registered through the dropped
+      // worker's grace window: capability verbs by its dispatchId still
+      // resolve, though its data-plane credential fails verification
       assert(o.dispatches.forDispatch(names[first], old.dispatchId) !== null);
 
-      // The grace window expires, the attempt is unregistered and the step
-      // is dispatched again, to the other worker.
       await waitFor(
         () => held[second].length === 1,
         "the step was dispatched again to the other worker",
@@ -537,8 +491,6 @@ Deno.test({
     });
   },
 });
-
-// ── Off-loopback rule and the worker's data-plane URL ───────────────────
 
 Deno.test("remote secrets baseline: dispatch credential: an off-loopback bind needs TLS first, then an auth mode other than none", () => {
   assertThrows(
@@ -567,10 +519,8 @@ Deno.test("remote secrets baseline: dispatch credential: a loopback bind needs n
 });
 
 Deno.test("remote secrets baseline: dispatch credential: the worker derives a plain-HTTP data-plane URL from a non-loopback ws:// connect URL without refusing", () => {
-  // The worker side does not require TLS: a ws:// connect URL to another
-  // host gives an http:// data plane, over which the per-dispatch
-  // credential (and any secret the runner reads) travels unencrypted.
-  // Serve's own off-loopback rule above is what refuses this today.
+  // the worker side does not require TLS: a ws:// URL to another host gives an
+  // http:// data plane; serve's own off-loopback rule is what refuses this
   assertEquals(
     dataPlaneUrlFromConnectUrl("ws://orchestrator.example:9090/ws?x=1"),
     "http://orchestrator.example:9090/",

@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration test for swamp-club#2491: the definition pass and the run-time
-// guard on global arguments share one judgement of which `${{ ... }}` text is
-// swamp's. The definition pass leaves another templating system's text raw;
-// the guard must then hand it to the method, while still refusing swamp
-// expressions that failed or that it cannot parse.
-//
-// It also covers swamp-club#2496: a workflow step that runs a model type
-// directly validates the definition it builds from its evaluated arguments,
-// so the template-syntax scan must read the step's authored arguments, or
-// text that evaluation produced reads as a swamp expression missing its `$`.
-
 import {
   assertEquals,
   assertRejects,
@@ -87,11 +76,8 @@ Deno.test("foreign template text: the definition pass and the globalArgs guard a
     type: MODEL_TYPE.normalized,
     inputs: { properties: { region: { type: "string" } } },
     globalArguments: {
-      // Swamp's: a declared input given no value, so evaluation fails.
       region: "${{ inputs.region }}",
-      // Swamp's, but cut short at the }} inside its string literal.
       label: '${{ "a}}" + inputs.region }}',
-      // GitHub Actions and Datadog text.
       message: "deploy ${{ github.sha }}",
       alert: "crashed on {{host.name}}",
     },
@@ -177,10 +163,6 @@ Deno.test("foreign template text: the definition pass and the globalArgs guard a
   });
 });
 
-/**
- * Runs `fn` over a temp repo with a model type, registered per run, whose one
- * global argument is plain text and whose method records what it receives.
- */
 async function withDirectRepo(
   fn: (
     repo: ReturnType<typeof createRepositoryContext>,
@@ -282,15 +264,12 @@ Deno.test("foreign template text: a direct step scans its authored global argume
     );
     const service = await executionService(repo, dir);
 
-    // CEL concatenation, the documented way to write colliding braces.
     const concat = await service.execute("concat");
     assertEquals(concat.status, "succeeded", JSON.stringify(concat.toData()));
-    // A workflow input carrying the text: data, not an authored mistake.
     const input = await service.execute("input", {
       inputs: { msg: "{{env.name}}" },
     });
     assertEquals(input.status, "succeeded", JSON.stringify(input.toData()));
-    // A forEach step finds its authored arguments through its template name.
     const each = await service.execute("each", {
       inputs: { items: ["{{env.name}}"] },
     });
@@ -366,7 +345,6 @@ Deno.test("foreign template text: a direct step scans its authored global argume
     );
     assertEquals(received, Array(7).fill("{{env.name}}"));
 
-    // Written literally, the braces are still a swamp expression missing its $.
     const literal = await service.execute("literal");
     assertEquals(literal.status, "failed");
     assertStringIncludes(
@@ -407,7 +385,6 @@ Deno.test("foreign template text: a workflow step's arguments pass it through to
       },
     });
     try {
-      // A direct step: GitHub Actions text nested in its global arguments.
       await repo.workflowRepo.save(Workflow.create({
         name: "direct",
         jobs: [Job.create({
@@ -427,7 +404,6 @@ Deno.test("foreign template text: a workflow step's arguments pass it through to
           })],
         })],
       }));
-      // A step on an existing definition: the text in its inputs.
       await repo.definitionRepo.save(
         type,
         Definition.create({
@@ -449,8 +425,6 @@ Deno.test("foreign template text: a workflow step's arguments pass it through to
           })],
         })],
       }));
-      // A nested workflow: the parent's text arrives in the child as an
-      // input value, which the child hands to its own step.
       await repo.workflowRepo.save(Workflow.create({
         name: "child",
         inputs: { type: "object", properties: { note: { type: "string" } } },
@@ -474,7 +448,6 @@ Deno.test("foreign template text: a workflow step's arguments pass it through to
           })],
         })],
       }));
-      // The same text where a step names what it runs is still an error.
       await repo.workflowRepo.save(Workflow.create({
         name: "target",
         jobs: [Job.create({
@@ -519,7 +492,6 @@ Deno.test("foreign template text: a workflow step's arguments pass it through to
   });
 });
 
-/** Runs `fn` with the expression logger's warnings captured, as messages. */
 async function capturingRunWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -636,8 +608,6 @@ Deno.test("foreign template text: only known foreign roots pass through step arg
           })],
         })],
       });
-    // A made-up or misspelt root, in step inputs and in a direct step's
-    // global arguments. A known root beside it does not excuse it.
     const rejected: [Workflow, string][] = [
       [
         stored("inputs-unlisted", "echo ${{ nonexistent.variable }}"),
@@ -656,7 +626,6 @@ Deno.test("foreign template text: only known foreign roots pass through step arg
         "Unknown variable: nonexistent",
       ],
     ];
-    // A nested workflow's input value follows the same rule.
     await repo.workflowRepo.save(Workflow.create({
       name: "child",
       inputs: { type: "object", properties: { note: { type: "string" } } },
@@ -688,7 +657,6 @@ Deno.test("foreign template text: only known foreign roots pass through step arg
     const service = await executionService(repo, dir);
     for (const [workflow, message] of rejected) {
       await repo.workflowRepo.save(workflow);
-      // The run fails before any step starts.
       await assertRejects(
         () => service.execute(workflow.name),
         Error,
@@ -697,8 +665,6 @@ Deno.test("foreign template text: only known foreign roots pass through step arg
     }
     assertEquals(received, []);
 
-    // A known root still reaches the method, hyphenated name and all, and
-    // literal() still carries any text through step inputs.
     const passed = [
       stored("known", "${{ matrix.node-version }}"),
       stored("literal", "${{ literal('${{ nonexistent.variable }}') }}"),
@@ -727,7 +693,6 @@ Deno.test("foreign template text: an unlisted root deferred past run start fails
         methods: { run: { arguments: {} } },
       }),
     );
-    // Deferred by self.*, so only the step-time pass sees it.
     await repo.workflowRepo.save(Workflow.create({
       name: "deferred-inputs",
       jobs: [Job.create({
@@ -751,7 +716,6 @@ Deno.test("foreign template text: an unlisted root deferred past run start fails
         },
       ),
     );
-    // A direct step whose inputs carry it, with no global arguments.
     await repo.workflowRepo.save(Workflow.create({
       name: "deferred-direct-inputs",
       jobs: [Job.create({
@@ -792,7 +756,6 @@ Deno.test("foreign template text: an unlisted root deferred past run start fails
 
 Deno.test("foreign template text: outside step arguments it still fails when the step runs (swamp-club#2528)", async () => {
   await withDirectRepo(async (repo, dir, type, received) => {
-    // Deferred past run start by self.*, so only the step-time pass sees it.
     await repo.workflowRepo.save(Workflow.create({
       name: "placement",
       jobs: [Job.create({
@@ -850,7 +813,6 @@ Deno.test("foreign template text: a run warns about step arguments deferred past
       "${{ self.h + matrix.os }}",
       "${{ self.h + matrix.os }}",
     ]);
-    // Once for the step as authored, not once per iteration.
     assertEquals(warnings.filter((m) => m.includes("Template syntax")), [
       "Template syntax passed through in workflow deferred, job main, step capture: globalArgs.message holds ${{ self.h + matrix.os }}, which reads a name swamp does not provide. Unless it evaluates when the step runs, the step receives it as literal text",
     ]);
@@ -880,7 +842,6 @@ Deno.test("foreign template text: literal() output and foreign text in step argu
       },
     });
     try {
-      // The issue's text: literal() of a swamp-shaped and a foreign template.
       const literalNote =
         "echo ${{ literal('${{ inputs.version }}') }} ${{ literal('${{ github.sha }}') }}";
       const expected = "echo ${{ inputs.version }} ${{ github.sha }}";
@@ -919,7 +880,6 @@ Deno.test("foreign template text: literal() output and foreign text in step argu
         forEach: { item: "x", in: "${{ ['a', 'b'] }}" },
         task: StepTask.model("stored-model", "run", { note: literalNote }),
       })]);
-      // A nested child hands the parent's literal() output to its own step.
       await save("child", [Step.create({
         name: "capture",
         task: StepTask.model("stored-model", "run", {
@@ -1006,7 +966,6 @@ Deno.test("foreign template text: data-borne swamp text is refused and reported 
           methods: { run: { arguments: {} } },
         }),
       );
-      // Two steps that run concurrently and receive the same input text.
       const capture = (name: string) =>
         Step.create({
           name,

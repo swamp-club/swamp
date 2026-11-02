@@ -18,19 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A serve-mode checkout's catch-up meeting a commit this process landed
- * while the unit that landed it is still open (swamp-club#4249).
- *
- * A workflow run checkpoints its new run record mid-run, then saves it
- * again as suspended; the root commits that last save at the end, reading
- * the record's file. `workflow run` watches serve's feed meanwhile, and a
- * frame bringing the checkpoint ran the checkout's catch-up between the
- * suspended save and the root's commit: the read model replayed the
- * checkpoint onto the file, and the root committed `running`. The command
- * still printed `suspended`, and serve refused to approve the run.
- *
- * The catch-up here runs at that moment on purpose, as the feed watch's
- * would, through the handle every catch-up of the checkout goes through.
+ * the catch-up runs between the suspended save and the root's commit on
+ * purpose, as the feed watch's would, through the handle every catch-up of the
+ * checkout goes through
  */
 
 import "../src/domain/models/models.ts";
@@ -88,7 +78,6 @@ function gateWorkflow(): Workflow {
   });
 }
 
-/** The `status:` line of the run record file the checkout holds. */
 async function fileStatus(
   repoDir: string,
   workflow: Workflow,
@@ -128,21 +117,16 @@ Deno.test({
         async (repos) => {
           run.start();
           await repos.workflowRunRepo.save(workflow.id, run);
-          // The run's record lands at serve mid-run, as a run's first
-          // checkpoint lands it.
           const unit = currentUnitOfWork();
           if (unit === undefined) throw new Error("no unit is open");
           assertEquals(await checkpointFrom(unit), true);
           run.suspend();
           await repos.workflowRunRepo.save(workflow.id, run);
-          // The feed watch's catch-up, after the run's last save and before
-          // its root commits.
           await catchUpV3HandlesAt(root);
           return await fileStatus(client.repoDir, workflow, run);
         },
       );
 
-      // Serve holds the suspended record: another checkout reads it so.
       const atServe = await readCommand(
         scratch,
         reader,
@@ -153,7 +137,6 @@ Deno.test({
       // The catch-up left the run's last save in its file for the root to
       // commit.
       assertEquals(afterCatchUp, "suspended");
-      // And the checkout that ran it reads it so.
       const own = await readCommand(
         scratch,
         client,
@@ -295,10 +278,6 @@ Deno.test({
   },
 });
 
-/**
- * Runs `fn` with serve refusing the second commit of `run`'s partition: a
- * root that checkpointed the run then has its later save dropped.
- */
 async function withRunCommitRefused(
   run: WorkflowRun,
   fn: () => Promise<void>,
@@ -328,7 +307,6 @@ async function withRunCommitRefused(
   return runCommits;
 }
 
-/** A root's work on `run`: its checkpoint lands, then it saves suspended. */
 function checkpointThenSuspend(
   workflow: Workflow,
   run: WorkflowRun,

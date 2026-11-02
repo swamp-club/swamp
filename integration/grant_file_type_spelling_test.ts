@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Grant files whose model: selectors spell types non-canonically load
-// without error, reconcile into stored grants, and decide as a deny in any
-// spelling and an allow only as written (swamp-club#3130): files through the
-// shared loader, the reconciler, the policy snapshot loader and the decision
-// service, against a real repository.
-
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";

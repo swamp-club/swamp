@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's team mode on a v3 datastore (swamp-club#4096), with Workers as
- * machines: two serve nodes share a filesystem datastore, each with its own
- * checkout. One leads; the other follows, refuses writes naming the leader,
- * and takes over once the leader's lease expires, while the old leader,
- * resumed, lands nothing and follows.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -37,19 +29,15 @@ import type {
   TeamNodeState,
 } from "./serve_v3_team_machine_worker.ts";
 
-/** The address every node behind serve's one address is started with. */
 const OWNER = "http://serve.example:9090";
 
 /** Expiry of a 1.5 s lease, with the 10 s clock skew. */
 const STALL_MS = 14_000;
 
 /**
- * How long a node may take to answer one request, beyond a pause's own
- * length (swamp-club#4152). deno test has no per-test timeout and waitFor
- * awaits its condition before it looks at its deadline, so without this a
- * worker that never answers hangs the whole run instead of failing it. The
- * timer runs on the test's thread: it bounds a stalled or spinning worker,
- * not a spin on that thread, which only runs waitFor and the send queue.
+ * deno test has no per-test timeout and waitFor checks its condition before its
+ * deadline, so this bounds a worker that never answers instead of hanging the
+ * run
  */
 const REQUEST_TIMEOUT_MS = 60_000;
 
@@ -167,7 +155,6 @@ Deno.test("serve team mode: one node leads, the other follows and refuses writes
     assertEquals(follower.leader, "instance-a");
     assertEquals(await a.send({ kind: "commit" }), undefined);
     assertEquals(await b.send({ kind: "commit" }), SERVE_NOT_LEADER_CODE);
-    // A tick leaves the follower following while the leader holds on.
     await b.send({ kind: "tick" });
     assertEquals((await b.state()).role, "follower");
   });
@@ -180,7 +167,6 @@ Deno.test("serve team mode: the follower takes over once the leader's lease expi
     const b = await team.node("b");
     await b.send({ kind: "start", tickMs: 3_600_000 });
     const before = (await a.state()).fence!;
-    // A stalls past its lease's expiry; B's ticks take the lease.
     const stalled = a.send({ kind: "pause", ms: STALL_MS });
     await waitFor(
       async () => {

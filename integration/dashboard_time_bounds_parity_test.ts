@@ -18,11 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The dashboard sends a preset time range to serve as a relative duration
- * (packages/dashboard time_range.ts), so the request does not change as the
- * clock moves (swamp-club#3444, and for model output search
- * swamp-club#3449). Serve must read each one back as exactly the window the
- * dashboard shows for that preset.
+ * the dashboard sends a preset range as a relative duration so the request does
+ * not change as the clock moves; serve must read it back as exactly the window
+ * the dashboard shows
  */
 
 import { assertEquals } from "@std/assert";

@@ -17,19 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Concurrent first runs raced the extension catalog's v3 data migration
-// (swamp-club#2671). A deferred BEGIN read the catalog, then blocked on its
-// first write while another process held the write lock; when that process
-// committed, the stale WAL snapshot failed with "database is locked", which
-// the migration treated as a data failure: it warned and ran a cold-start
-// rebuild that emptied the catalog. A worker plays the other process here;
-// it runs on its own thread in this process, so its timer fires while the
-// main thread is blocked in SQLite's busy handler.
-//
-// The race is reproduced best-effort: the worker commits holdMs after the
-// main thread says it is opening the store, so the test exercises the race
-// only if the store reaches its migration within holdMs. A slower run still
-// passes, without exercising it; it never fails falsely.
+// reproduces the migration race best-effort: a worker commits holdMs after the
+// store opens, so a slower run passes without exercising it, never failing
+// falsely
 
 import { assertEquals } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
@@ -50,8 +40,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(tempDir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
-      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      // EBUSY can fire on windows before V8 frees native sqlite handles; the
+      // temp dir is ephemeral
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(tempDir, { recursive: true });
@@ -59,7 +49,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Seeds a v3-shaped catalog with one row whose data migration is pending. */
 function seedPendingCatalog(repoRoot: string): string {
   ensureDirSync(join(repoRoot, ".swamp"));
   const dbPath = join(repoRoot, ".swamp", "_extension_catalog.db");
@@ -108,8 +97,6 @@ Deno.test("ExtensionCatalogStore: a writer committing during the v3 data migrati
       );
       await waitFor(() => received.includes("locked"), "worker holds the lock");
 
-      // Opening the store runs the pending migration while the worker holds
-      // the write lock; the worker commits while the migration waits.
       worker.postMessage(
         { kind: "opening", holdMs: 300 } satisfies LockWorkerRequest,
       );

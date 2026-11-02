@@ -18,15 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Architecture fitness rule: every built-in `swamp/*` model type is a
- * control-plane type (swamp-club#2756).
- *
- * Control-plane records (grants, groups, tokens, workers, leases) are owned
- * by the `access` kind when served and are unreadable from expressions, and
- * both rules key on CONTROL_PLANE_MODEL_TYPES. A new built-in `swamp/*` type
- * that is left out of the list would store its records as plain data that a
- * `data:*` read grant reaches. Add it to the list, or — if it truly holds
- * user data — pin it below with the reason.
+ * control-plane records are owned by the access kind and unreadable from
+ * expressions, both keyed on CONTROL_PLANE_MODEL_TYPES; a swamp/* type left out
+ * would store records a data:* grant reaches
  */
 
 import { assertEquals } from "@std/assert";

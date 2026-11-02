@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Shared harness for the v3 read model's integration tests
- * (swamp-club#3239): a temp repository with a real `commits.db`, the
- * filesystem `storage/1` and a read model, plus readers for what the read
- * model produced.
- */
-
 import { join, relative, SEPARATOR } from "@std/path";
 import { walk } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
@@ -51,10 +44,8 @@ import {
 import type { PartitionKey } from "../src/domain/datastore_v3/partition_key.ts";
 import { OUTPUT_SUMMARIES_DIR } from "../src/infrastructure/persistence/output_summary_index.ts";
 
-/** The chunk size the tests store with, so content spans several chunks. */
 export const TEST_CHUNK_BYTES = 1024;
 
-/** A `storage/1` that delegates to another but reports smaller chunks. */
 export class SmallChunkStorage implements DatastoreStorage {
   readonly contract = "storage/1" as const;
   readonly touch?: DatastoreStorage["touch"];
@@ -92,7 +83,6 @@ export class SmallChunkStorage implements DatastoreStorage {
   }
 }
 
-/** One repository's v3 pieces: commit store, chunk store and directories. */
 export interface V3Env {
   readonly dir: string;
   readonly repoDir: string;
@@ -100,15 +90,12 @@ export interface V3Env {
   readonly store: SqliteCommitStore;
   readonly storage: SmallChunkStorage;
   readonly chunkStore: ChunkStore;
-  /** The cache directory of a namespace: `.swamp/` or `.swamp/<namespace>`. */
   cacheRoot(namespace: string): string;
-  /** Opens a read model over this repository. */
   openReadModel(
     overrides?: Partial<SqliteReadModelOptions>,
   ): SqliteReadModel;
 }
 
-/** Runs `fn` with a fresh temp repository, removing it after. */
 export async function withV3Env(
   fn: (env: V3Env) => Promise<void>,
 ): Promise<void> {
@@ -152,10 +139,6 @@ export async function withV3Env(
   }
 }
 
-/**
- * Every file under `root`, by forward-slash path relative to it, skipping
- * the read model's state directory and the checkout's own output summaries.
- */
 export async function readTree(root: string): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   try {
@@ -173,7 +156,6 @@ export async function readTree(root: string): Promise<Map<string, string>> {
   return new Map([...files].sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
-/** A catalog's rows and rename forwards, in key order, tags normalised. */
 export function readCatalog(path: string): {
   rows: Record<string, unknown>[];
   renames: Record<string, unknown>[];
@@ -197,12 +179,10 @@ export function readCatalog(path: string): {
   }
 }
 
-/** The v3 catalog file of a repository's read model. */
 export function catalogV3Path(env: V3Env): string {
   return join(env.stateDir, CATALOG_V3_FILE);
 }
 
-/** Everything a read model produced: files, catalog and index. */
 export async function observeReadModel(
   env: V3Env,
   readModel: SqliteReadModel,
@@ -228,7 +208,6 @@ export async function observeReadModel(
   return { files, catalog: readCatalog(catalogV3Path(env)), index };
 }
 
-/** Builds a commit with test defaults. */
 export function commitOf(
   props: Pick<CommitProps, "seq" | "partition" | "namespace"> & {
     ops: readonly Op[];
@@ -242,7 +221,6 @@ export function commitOf(
   });
 }
 
-/** Canonical base64 of bytes. */
 export function base64Of(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -266,11 +244,9 @@ function sortedJson(text: string): string {
 }
 
 /**
- * {@link withV3Env}, then checks that every commit the scenario landed
- * passes the binding rules serve applies to a forwarded commit
- * (swamp-club#3915): the write-path audit. The staging gates run through
- * it, so a repository write whose key, op kind or data-version pairing a
- * forwarded commit would be refused for fails its gate.
+ * then checks every landed commit passes the binding rules serve applies to a
+ * forwarded commit (the write-path audit), so a repository write a forwarded
+ * commit would be refused for fails its gate
  */
 export async function withAuditedV3Env(
   fn: (env: V3Env) => Promise<void>,
@@ -281,7 +257,6 @@ export async function withAuditedV3Env(
   });
 }
 
-/** Asserts every commit in `store` passes {@link checkCommitBindings}. */
 export async function assertCommitsBind(
   store: SqliteCommitStore,
 ): Promise<void> {

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for a nested workflow that suspends on a manual approval
- * gate (swamp-club#2736): the parent suspends on the child run, the child is
- * approved, rejected, resumed or cancelled as a run of its own, and the
- * parent's resume reads the child's outcome. Everything runs on real YAML
- * repositories and the per-workflow run index, through the libswamp
- * operations the CLI and serve call.
- */
-
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
@@ -257,7 +248,6 @@ Deno.test("nested approval: the parent suspends, the child is approved and resum
     assert(terminal[0].kind === "suspended");
     assertEquals(terminal[0].run.id, parentRun.id);
 
-    // Only the child has a gate to decide; its row names the waiting parent.
     const approvals = await completed<WorkflowApprovalsData>(
       workflowApprovals(
         createLibSwampContext(),
@@ -268,7 +258,6 @@ Deno.test("nested approval: the parent suspends, the child is approved and resum
     assertEquals(approvals.approvals[0].parentRun?.runId, parentRun.id);
     assertEquals(approvals.approvals[0].parentWaiting, true);
 
-    // Resuming the parent first is refused and changes nothing.
     await assertRejects(
       () => drain(h.service.resume(parent.name, parentRun.id)),
       NestedRunPendingError,
@@ -288,7 +277,6 @@ Deno.test("nested approval: the parent suspends, the child is approved and resum
       `swamp workflow resume ${parent.name} --run ${parentRun.id}`,
     );
 
-    // Still waiting: the parent is not resumable until the child finishes.
     let parentRow = (await searchRuns(h)).find((r) =>
       r.runId === parentRun.id
     )!;
@@ -298,7 +286,6 @@ Deno.test("nested approval: the parent suspends, the child is approved and resum
     await drain(h.service.resume(child.name, childRun.id));
     assertEquals((await only(h.runRepo, child)).status, "succeeded");
 
-    // Derived from the child, read from the index this time.
     parentRow = (await searchRuns(h)).find((r) => r.runId === parentRun.id)!;
     assertEquals(parentRow.awaitingResume, true);
     assertEquals(parentRow.nestedWaits?.[0].status, "succeeded");
@@ -315,7 +302,6 @@ Deno.test("nested approval: the parent suspends, the child is approved and resum
       h.executor.executed.includes(`${parent.name}/after-nested`),
       true,
     );
-    // No second child was ever started.
     assertEquals((await h.runRepo.findAllByWorkflowId(child.id)).length, 1);
   });
 });
@@ -443,7 +429,6 @@ Deno.test("nested approval: without a cascade, cancelling the waiting parent lea
       ),
     );
     assertEquals(approvals.approvals[0].parentWaiting, false);
-    // The gate can no longer be decided (swamp-club#2867).
     assertEquals(approvals.approvals[0].parentEnded, true);
   });
 });
@@ -638,7 +623,6 @@ Deno.test("nested approval: two levels of nesting suspend every ancestor and res
     assertEquals(back.ref.nestingDepth, 2);
     assertEquals(back.ref.ancestorWorkflowNames, [root.name, middle.name]);
 
-    // The root's refusal walks down to the gate that has to act.
     const error = await assertRejects(
       () => drain(h.service.resume(root.name, rootRun.id)),
       NestedRunPendingError,
@@ -661,9 +645,6 @@ Deno.test("nested approval: two levels of nesting suspend every ancestor and res
     assertEquals((await only(h.runRepo, root)).status, "succeeded");
   });
 });
-
-// --- swamp-club#2867: ending a parent cancels the nested runs it waited on,
-// and a nested run nothing waits on any more refuses to continue.
 
 function cascadeOf(h: Harness): NestedCascade {
   return createNestedCascade({
@@ -696,7 +677,6 @@ function cancelRun(
   );
 }
 
-/** A workflow with a nested step and, beside it, a gate of its own. */
 function callerWithOwnGate(name: string, callee: string): Workflow {
   return Workflow.create({
     name,
@@ -736,7 +716,6 @@ Deno.test("nested cascade: cancelling the waiting parent cancels the suspended c
     assertEquals(stored.status, "cancelled");
     assertEquals(stored.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
     assertEquals(stored.findWaitingApprovalStep(), undefined);
-    // Nothing is left to approve.
     const approvals = await completed<WorkflowApprovalsData>(
       workflowApprovals(
         createLibSwampContext(),
@@ -840,7 +819,6 @@ Deno.test("nested backstop: approving a child whose parent ended refuses and can
     await drain(h.service.run(parent.name));
     const parentRun = await only(h.runRepo, parent);
     const childRun = await only(h.runRepo, child);
-    // Ended by a path that does not cascade.
     await cancelRun(h, parentRun.id);
     assertEquals((await only(h.runRepo, child)).status, "suspended");
 
@@ -878,7 +856,6 @@ Deno.test("nested backstop: a child whose owner still saves it is not cancelled 
     await cancelRun(h, (await only(h.runRepo, parent)).id);
     const childRun = await only(h.runRepo, child);
 
-    // The child's tracker row: owned here, running, by a live process.
     const tracker = {
       findById: (id: string) =>
         id === childRun.id
@@ -956,7 +933,6 @@ Deno.test("nested backstop: rejecting or resuming a child whose parent ended ref
         ),
       )
     );
-    // Cancelled with its parent, not failed as a rejected approval.
     assertEquals((await only(h.runRepo, child)).status, "cancelled");
   });
 });
@@ -1039,7 +1015,6 @@ Deno.test("nested approval: a child record that does not parse refuses the paren
       `swamp workflow resume ${parent.name} --run ${parentRun.id}`,
     );
     assertEquals(refusal.message.includes("not: valid"), false);
-    // The bare form, which finds the one suspended run, refuses the same way.
     await assertRejects(
       () => resolveResumableRun(h.workflowRepo, h.runRepo, parent.name),
       NestedRunUnreadableError,
@@ -1050,7 +1025,6 @@ Deno.test("nested approval: a child record that does not parse refuses the paren
     );
     assertEquals(await Deno.readTextFile(parentPath), parentRecord);
 
-    // Listed without a status, and not offered as ready to resume.
     const view = await nestedWaitView(
       { runRepo: h.runRepo, workflowRepo: h.workflowRepo },
       parentRun,
@@ -1059,7 +1033,6 @@ Deno.test("nested approval: a child record that does not parse refuses the paren
     assertEquals(view.nestedWaits?.[0].status, undefined);
     assertEquals(view.awaitingResume, undefined);
 
-    // Repaired, the child is an unfinished run again.
     await Deno.writeTextFile(childPath, childRecord);
     await assertRejects(
       () => drain(h.service.resume(parent.name, parentRun.id)),
@@ -1084,7 +1057,6 @@ Deno.test("nested approval: a child that turns unreadable after the resume check
     );
     await drain(h.service.resume(child.name, childRun.id));
 
-    // The child reads until the resumed parent is first saved, then fails.
     const findById = h.runRepo.findById.bind(h.runRepo);
     const save = h.runRepo.save.bind(h.runRepo);
     let parentSaved = false;
@@ -1111,7 +1083,6 @@ Deno.test("nested approval: a child that turns unreadable after the resume check
       "call-nested",
     ]);
 
-    // Readable again, the parent adopts the finished child.
     await drain(h.service.resume(parent.name, parentRun.id));
     assertEquals((await only(h.runRepo, parent)).status, "succeeded");
   });

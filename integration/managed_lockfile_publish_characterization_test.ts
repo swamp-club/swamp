@@ -17,21 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Managed lockfile publish characterization (swamp-club#3192): what the
- * extension lockfile publish does today, through the real CLI and serve
- * wiring, for the cases the use-case rows cannot reach. Those rows refuse
- * every network request, so `extension pull` and `extension update`, which
- * reach the registry, run here against a stubbed one. The failure cases run
- * the CLI's own transaction (`buildManagedLockfileTransaction`) or serve's
- * handlers over an in-memory remote.
- *
- * Each case records A's sync ops, where its pushes sit relative to lock
- * releases and gate exits, the lockfile warnings, the error, the pending
- * record and the datastore's lockfile. These were recorded before the
- * publish moved to a root unit's checkpoint, and must not change with it.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -77,19 +62,12 @@ const REGISTRY = "https://registry.test";
 const ARCHIVE_HOST = "https://archives.test";
 const LOCKFILE_KEY = "config/upstream_extensions.json";
 
-/** What one case did, as pinned. */
 interface Recorded {
-  /** A's sync ops, as {@link observe} renders them. */
   ops: string[];
-  /** A's pushes and pulls with lock releases and gate exits between them. */
   order: string[];
-  /** Warnings logged by the lockfile publish, in order. */
   warnings: string[];
-  /** The error the operation ended with, when it failed. */
   error?: { name: string; code?: string; message: string };
-  /** The pending record's kind afterwards. */
   pending: string;
-  /** The datastore lockfile's entries afterwards, as `name@version`. */
   remote: string[];
 }
 
@@ -114,7 +92,6 @@ async function buildArchive(version: string): Promise<Uint8Array> {
   }
 }
 
-/** A registry that serves {@link EXTENSION} at `latest.version`. */
 function registry(
   archives: Map<string, Uint8Array>,
   latest: { version: string },
@@ -180,7 +157,6 @@ function registry(
   };
 }
 
-/** Runs `fn` with a stubbed registry and a throwaway home. */
 async function withRegistry(
   latest: { version: string },
   fn: () => Promise<void>,
@@ -207,7 +183,6 @@ async function withRegistry(
   }
 }
 
-/** The lockfile publish's warnings logged while `fn` runs, in order. */
 async function captureLockfileWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -263,10 +238,6 @@ function describeError(
     : { name: "unknown", message: String(error) };
 }
 
-/**
- * Runs `fn` against fresh row repos under `managedConfig` and records what
- * it did after `seed` (which is settled onto the remote unless `noSettle`).
- */
 async function record(
   options: {
     seed?: (repos: RowRepos) => Promise<void>;
@@ -303,7 +274,6 @@ function cli(repos: RowRepos, ...args: string[]): string[] {
   return [...args, "--repo-dir", repos.repoA, "--json"];
 }
 
-/** Installs {@link EXTENSION} at V1 in A through the CLI. */
 async function pullV1(repos: RowRepos): Promise<void> {
   await runCli({ args: cli(repos, "extension", "pull", `${EXTENSION}@${V1}`) });
 }
@@ -316,7 +286,6 @@ async function lockfilePath(repos: RowRepos): Promise<string> {
     .lockfilePath;
 }
 
-/** A's datastore lock, recording each release as the rows' locks do. */
 function recordingLock(
   repos: RowRepos,
   release: () => Promise<void> = () => Promise.resolve(),
@@ -330,7 +299,6 @@ function recordingLock(
   };
 }
 
-/** The CLI's own transaction over A, as `createManagedLockfileTransaction` builds it. */
 async function cliTransaction(
   repos: RowRepos,
   options: {
@@ -353,7 +321,6 @@ async function writeEntry(path: string, name: string): Promise<void> {
 }
 
 const EXPECTED: Record<string, Recorded> = {
-  // One transaction: the fetch, the publish of the new entry, the release.
   "cli pull": {
     ops: [
       "pull[0]",
@@ -371,7 +338,6 @@ const EXPECTED: Record<string, Recorded> = {
       "@test/lockpub@2026.01.01.1",
     ],
   },
-  // As the CLI, inside the handler's sync gate.
   "serve pull": {
     ops: [
       "pull[0]",
@@ -389,8 +355,6 @@ const EXPECTED: Record<string, Recorded> = {
       "@test/lockpub@2026.01.01.1",
     ],
   },
-  // The update refreshes in its own transaction (fetch, release), then
-  // installs the new version: fetch, publish, release.
   "cli update": {
     ops: [
       "pull[0]",
@@ -411,7 +375,6 @@ const EXPECTED: Record<string, Recorded> = {
       "@test/lockpub@2026.02.01.1",
     ],
   },
-  // As the CLI: a refresh, then the install's transaction.
   "serve update": {
     ops: [
       "pull[0]",
@@ -432,9 +395,6 @@ const EXPECTED: Record<string, Recorded> = {
       "@test/lockpub@2026.02.01.1",
     ],
   },
-  // The lockfile is marked, the push reports 0 files, and the change is
-  // kept pending; the CLI raises the unpublished error with the push's
-  // reason and code.
   "zero-count push": {
     ops: [
       "pull[0]",
@@ -454,8 +414,6 @@ const EXPECTED: Record<string, Recorded> = {
     pending: "delta",
     remote: [],
   },
-  // An older swamp's record: warn, merge every local entry into the
-  // fetched lockfile, publish it and clear the record.
   "unknown pending": {
     ops: [
       "pull[0]",
@@ -476,7 +434,6 @@ const EXPECTED: Record<string, Recorded> = {
       "@test/unrecorded@2026.01.01.1",
     ],
   },
-  // The change's entry still publishes, and its own error is rethrown.
   "throwing change": {
     ops: [
       "pull[0]",
@@ -498,8 +455,6 @@ const EXPECTED: Record<string, Recorded> = {
       "@test/partial@2026.01.01.1",
     ],
   },
-  // The failed push warns, the request succeeds, and the removal stays
-  // pending; the datastore keeps the entry.
   "serve defer": {
     ops: [
       "pull[0]",
@@ -517,7 +472,6 @@ const EXPECTED: Record<string, Recorded> = {
       "@test/lockpub@2026.01.01.1",
     ],
   },
-  // The publish error is the one thrown; the release error only warns.
   "failed publish, failed release": {
     ops: [
       "pull[0]",

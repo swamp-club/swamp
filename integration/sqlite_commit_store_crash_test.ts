@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Crash safety of the SQLite commit store (swamp-club#3236): an append that
- * dies part-way leaves no partial row.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -60,7 +55,6 @@ async function save(seq: number): Promise<Commit> {
   });
 }
 
-/** The rows of every table, read through a separate connection. */
 function rows(path: string) {
   const db = new DatabaseSync(path);
   // A terminated worker's lock is released asynchronously.
@@ -122,7 +116,6 @@ Deno.test("SqliteCommitStore crash: a failure after the commit row leaves no par
 Deno.test("SqliteCommitStore crash: a writer killed before COMMIT leaves no row", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");
-    // Create the schema, then hand the file to the doomed writer.
     await SqliteCommitStore.open(path).close();
 
     const commit = await save(1);

@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * A vault-only definition on a type whose schemas hold a transform — in a
- * method that is not run, on a global the type does not mark sensitive, and
- * as the run method's own pipeline into a sensitive output — caches its
- * references and authored literals and replays under --last-evaluated
- * (swamp-club#3681). A position a transform might feed is only potentially
- * sensitive, so only data is masked there.
+ * a vault-only definition on a type with transforms caches references and
+ * literals and replays; a position a transform might feed is only potentially
+ * sensitive, so only data is masked there
  */
 
 import { assertEquals } from "@std/assert";
@@ -95,7 +92,6 @@ Deno.test("evaluated cache: a transform in an unrelated method, on a non-sensiti
     globalArguments: z.object({
       apiKey: secret.optional(),
       region: z.string().optional(),
-      // A transform on a global the type does not mark sensitive.
       count: z.string().transform(Number).optional(),
     }),
     methods: {
@@ -104,13 +100,11 @@ Deno.test("evaluated cache: a transform in an unrelated method, on a non-sensiti
         arguments: z.object({ token: secret.optional() }),
         execute: record,
       },
-      // An unrelated method whose sensitive field has a transform.
       other: {
         description: "other",
         arguments: z.object({ token: secret.transform((s) => s.trim()) }),
         execute: record,
       },
-      // A root pipeline into a sensitive output.
       pipeline: {
         description: "pipeline",
         arguments: z.object({ raw: z.string() }).transform((x) => ({

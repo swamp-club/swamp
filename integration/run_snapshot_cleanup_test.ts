@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Per-run evaluated-workflow snapshots share their run's lifetime: run GC and
-// workflow delete remove them together with the run records (swamp-club#2522).
-
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -92,7 +89,6 @@ function snapshotWorkflow(): Workflow {
   });
 }
 
-/** Runs the workflow `count` times through the real execution service. */
 async function runWorkflow(
   repoDir: string,
   workflow: Workflow,
@@ -152,8 +148,6 @@ Deno.test("run gc: removes the snapshots of collected runs and old orphans, keep
     const runIds = await runWorkflow(repoDir, workflow, 2);
     assertEquals(await snapshotIds(repoDir), [...runIds].sort());
 
-    // An orphan older than retention (its run record is gone) and a fresh
-    // orphan (a run whose record has not been saved yet).
     const evaluatedRepo = new YamlEvaluatedWorkflowRepository(repoDir);
     const oldOrphan = crypto.randomUUID();
     const freshOrphan = crypto.randomUUID();
@@ -166,7 +160,6 @@ Deno.test("run gc: removes the snapshots of collected runs and old orphans, keep
       longAgo,
     );
 
-    // Make the first run old enough to collect; the second stays.
     const runRepo = new YamlWorkflowRunRepository(repoDir);
     const oldRun = await runRepo.findById(
       workflow.id,
@@ -225,7 +218,6 @@ Deno.test("workflow delete: a run record with a tampered ID deletes nothing", as
     const workflow = snapshotWorkflow();
     await new YamlWorkflowRepository(repoDir).save(workflow);
     const [runId] = await runWorkflow(repoDir, workflow, 1);
-    // A snapshot that belongs to some other run and must survive.
     const bystander = crypto.randomUUID();
     await new YamlEvaluatedWorkflowRepository(repoDir).saveForRun(
       bystander,
@@ -262,7 +254,6 @@ Deno.test("workflow delete: takes snapshot IDs from run filenames, never from a 
     await new YamlWorkflowRepository(repoDir).save(workflow);
     const [runId, emptyRunId] = await runWorkflow(repoDir, workflow, 2);
 
-    // A live run of another workflow, whose snapshot must survive.
     const liveRunId = crypto.randomUUID();
     await new YamlEvaluatedWorkflowRepository(repoDir).saveForRun(
       liveRunId,
@@ -270,14 +261,12 @@ Deno.test("workflow delete: takes snapshot IDs from run filenames, never from a 
     );
 
     const runRepo = new YamlWorkflowRunRepository(repoDir);
-    // This run's body names the live run.
     const path = runRepo.getPath(workflow.id, createWorkflowRunId(runId));
     const content = await Deno.readTextFile(path);
     await Deno.writeTextFile(
       path,
       content.replace(`id: ${runId}`, `id: ${liveRunId}`),
     );
-    // This run's file is empty; its snapshot must still go.
     await Deno.writeTextFile(
       runRepo.getPath(workflow.id, createWorkflowRunId(emptyRunId)),
       "",

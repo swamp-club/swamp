@@ -25,16 +25,12 @@ import {
 } from "../src/domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../src/infrastructure/http/extension_api_client.ts";
 
-// Regression guard for swamp-club#3243: a registry that cannot answer during
-// auto-resolution (timeout, 5xx, rate limit) must be reported as a network
-// error with the client's message, not as "no extension publishes this type".
-// The bug was a contract mismatch between the HTTP client's errors and the
-// resolver's classification, so this wires the real client into the real
-// resolver the way src/cli/mod.ts does, with only fetch replaced.
+// a registry that cannot answer is reported as a network error with the
+// client's message, not as no extension publishing the type; real client and
+// resolver, only fetch replaced
 
 const TYPE = "@swamp/s3-datastore";
 
-/** Output port that records the events the resolver emits. */
 function recordingOutput(): AutoResolveOutputPort & { events: string[] } {
   const events: string[] = [];
   const record = (event: string) => () => {
@@ -60,7 +56,6 @@ function recordingOutput(): AutoResolveOutputPort & { events: string[] } {
   };
 }
 
-/** Installer that must never be reached: every lookup here finds nothing. */
 const unreachableInstaller: ExtensionInstallerPort = {
   inspectInstallation: () => Promise.reject(new Error("unexpected inspect")),
   install: () => Promise.reject(new Error("unexpected install")),
@@ -73,7 +68,6 @@ const unreachableInstaller: ExtensionInstallerPort = {
   providesType: () => Promise.resolve(false),
 };
 
-/** Installer whose install succeeds and provides the requested type. */
 function succeedingInstaller(): ExtensionInstallerPort & {
   installs: string[];
 } {
@@ -90,7 +84,6 @@ function succeedingInstaller(): ExtensionInstallerPort & {
   };
 }
 
-/** Resolves {@link TYPE} against a registry whose every answer is `fetch`. */
 async function resolveAgainst(
   fetch: (url: string | URL) => Promise<Response>,
   installer: ExtensionInstallerPort = unreachableInstaller,
@@ -128,8 +121,6 @@ Deno.test("integration: auto-resolver reports a registry timeout as a network er
   assertStringIncludes(events[1], "Is the server running?");
 });
 
-// swamp-club#3656: one stalled registry request no longer fails extension
-// setup; the read is retried and the install goes ahead.
 Deno.test("integration: auto-resolver installs after a registry timeout that recovers", async () => {
   let calls = 0;
   const installer = succeedingInstaller();

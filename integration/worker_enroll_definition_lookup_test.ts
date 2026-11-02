@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * swamp-club#3405: serve's control-plane runs (enrollment-token redeem,
- * worker enroll and set_status) resolve their definitions by type, so a user
- * definition in models/ that shares a token's name but has another type
- * neither shadows the token nor fails the enrollment. Wires a real repo, the
- * real enrollment-token and worker models, and a real WorkerGateway with its
- * default model runner.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -113,7 +104,6 @@ Deno.test("worker enroll ignores a user definition of another type that shares t
     assertEquals(created.type, "worker.token.create", socket.sent[0]);
     const token = created.payload.data.token as string;
 
-    // A user definition under models/ with the token's name and another type.
     const userDir = join(repoDir, "models", "command", "shell");
     await Deno.mkdir(userDir, { recursive: true });
     await Deno.writeTextFile(
@@ -156,7 +146,6 @@ Deno.test("worker enroll ignores a user definition of another type that shares t
     assertEquals(result.workerId, name);
     assertEquals(gateway.worker(name)?.connected, true);
 
-    // The disconnect record runs set_status through the same lookup.
     attached.closed();
     channel.close("test done");
     await waitFor(() => disconnected.includes(name), "disconnect seen");

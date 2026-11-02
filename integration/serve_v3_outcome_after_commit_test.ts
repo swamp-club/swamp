@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve reports a v3 run's outcome only once the run's root has committed
- * (swamp-club#3759). A method run whose commit cannot reach the storage
- * sends no `completed` event, to the requesting socket or to a detached
- * run's followers, and answers with the error; one whose commit lands
- * sends `completed` and then `done`.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { COMMIT_UNREACHABLE_CODE } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
@@ -52,13 +44,11 @@ import {
 
 await initializeLogging({});
 
-/** What a detached run's follower saw: event kinds, then the terminal. */
 interface Followed {
   readonly events: string[];
   terminal?: BufferTerminal;
 }
 
-/** A registry that follows each run it registers, as an attached client. */
 class FollowingRegistry extends ActiveRunRegistry {
   readonly followed: Followed[] = [];
 
@@ -76,7 +66,6 @@ class FollowingRegistry extends ActiveRunRegistry {
   }
 }
 
-/** A connection context over A's v3 checkout, as serve builds it. */
 function v3ServeCtx(
   repos: RowRepos,
   registry?: ActiveRunRegistry,
@@ -91,7 +80,6 @@ function v3ServeCtx(
   };
 }
 
-/** Runs `write` on a fresh big-writer model over serve. */
 async function methodRun(
   repos: RowRepos,
   cut: boolean,
@@ -111,7 +99,6 @@ async function methodRun(
   }
 }
 
-/** The kinds of the run events among `frames`, in order. */
 function eventKinds(frames: Frame[]): string[] {
   return frames
     .filter((frame) => frame.type === "event")

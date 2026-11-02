@@ -17,11 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Integration test for swamp-club#2492: one value can mix a swamp expression
-// with another service's `{{...}}` text through literal(). The raw text of
-// each `${{ ... }}` keys the values the definition pass, the workflow passes,
-// forEach expansion, trigger inputs and deferred records carry, so every one
-// of them must agree on where an expression holding a `}}` in a string ends.
+// the raw text of each ${{ ... }} keys values in every pass, so all must agree
+// where an expression holding }} inside a string ends
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { ensureDir } from "@std/fs";
@@ -57,7 +54,6 @@ import {
 
 await initializeLogging({});
 
-/** The value from the issue: a swamp input beside Datadog template text. */
 const MIXED =
   "${{ inputs.env }} alert, crashed on ${{ literal('{{host.name}}') }}";
 const EXPECTED = "prod alert, crashed on {{host.name}}";
@@ -100,7 +96,6 @@ Deno.test("literal(): a global argument mixing swamp and foreign text reaches th
     },
   });
 
-  // Model validate's template-syntax scan finds nothing to report.
   assertEquals(
     scanTemplateSyntax(
       { globalArguments: { message: MIXED } },
@@ -226,9 +221,8 @@ Deno.test("literal(): workflow inputs, a direct step's global arguments and forE
           name: "main",
           steps: [step("${{ self.item }} on ${{ literal('{{host.name}}') }}", {
             item: "item",
-            // A }} inside a string in forEach.in, keyed by its raw text. One
-            // item: iterations sharing a modelName race on the definition's
-            // global arguments when it is first created (swamp-club#2713).
+            // one item: iterations sharing a modelName race on the definition's
+            // global arguments when it is first created
             in: "${{ [literal('}}a {{b}}')] }}",
           })],
         })],
@@ -278,7 +272,6 @@ Deno.test("literal(): a deferred expression holding a }} in a string round-trips
     bindings: {},
   };
   assertEquals(DeferredExpressionSchema.parse(record), record);
-  // A record is exactly one expression, as before.
   assertThrows(() =>
     DeferredExpressionSchema.parse({
       ...record,

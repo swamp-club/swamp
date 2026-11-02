@@ -17,13 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The commit outbox while replicating (swamp-club#3490): it lives beside the
- * checkout's own copy of `commits.db`, its fence chain records the lease a
- * writer takes once the copy is current, and a dead writer's entry is landed
- * by the next writer of that copy.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
 import { dirname } from "@std/path";
@@ -71,7 +64,6 @@ Deno.test({
       const fence = v3WriterFence(env.datastorePath)!;
       assertEquals((await handle.outbox.chain())?.lastFence, fence);
 
-      // A writer of this copy prepares a commit and dies before its append.
       const id = crypto.randomUUID();
       const unit = createCommitLogUnitOfWork(() => Promise.resolve(), {
         sink: {

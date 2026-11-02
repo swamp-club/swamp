@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for data versioning expressions.
- *
- * Tests the full flow:
- * 1. Create model definitions
- * 2. Emit versioned data
- * 3. Verify CEL expressions can access data via model.X.data.Y and data namespace functions
- */
-
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
@@ -68,10 +59,6 @@ function createOwner(ref: string): OwnerDefinition {
   };
 }
 
-// ============================================================================
-// Model Resource Namespace Access: model.<name>.resource.<specName>
-// ============================================================================
-
 Deno.test("Integration: model.X.resource.specName accesses latest version of resource", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -83,7 +70,6 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create a model definition
     const definition = Definition.create({
       name: "my-vpc",
       tags: {},
@@ -91,10 +77,8 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
     });
     await definitionRepo.save(type, definition);
 
-    // Create owner for data
     const owner = createOwner("test/model:create");
 
-    // Emit data with multiple versions
     const dataEntity = Data.create({
       name: "vpc-info",
       contentType: "application/json",
@@ -104,7 +88,6 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
       ownerDefinition: owner,
     });
 
-    // Version 1
     await dataRepo.save(
       type,
       definition.id,
@@ -114,7 +97,6 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
       ),
     );
 
-    // Version 2 (latest)
     await dataRepo.save(
       type,
       definition.id,
@@ -124,14 +106,12 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
       ),
     );
 
-    // Build context
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Verify model.my-vpc.resource.vpc-info.vpc-info exists and has latest version
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
     assertExists(modelData.resource);
@@ -142,7 +122,6 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
     assertEquals(resourceRecord.version, 2);
     assertEquals(resourceRecord.attributes.vpcId, "vpc-222");
 
-    // Evaluate CEL expression with new pattern: model.X.resource.specName.instanceName.attributes.field
     const celEvaluator = new CelEvaluator();
     const result = celEvaluator.evaluate(
       'model["my-vpc"].resource["vpc-info"]["vpc-info"].attributes.vpcId',
@@ -151,10 +130,6 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
     assertEquals(result, "vpc-222");
   });
 });
-
-// ============================================================================
-// Data Namespace Function: data.version()
-// ============================================================================
 
 Deno.test("Integration: data.version() retrieves specific version", async () => {
   await withTempDir(async (repoDir) => {
@@ -168,7 +143,6 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create a model definition
     const definition = Definition.create({
       name: "my-model",
       tags: {},
@@ -176,10 +150,8 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
     });
     await definitionRepo.save(type, definition);
 
-    // Create owner for data
     const owner = createOwner("test/model:create");
 
-    // Emit data with multiple versions
     const dataEntity = Data.create({
       name: "result",
       contentType: "application/json",
@@ -189,7 +161,6 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
       ownerDefinition: owner,
     });
 
-    // Create 3 versions
     for (let i = 1; i <= 3; i++) {
       await dataRepo.save(
         type,
@@ -199,7 +170,6 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
       );
     }
 
-    // Build context
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
@@ -207,7 +177,6 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Access specific versions via data.version()
     assertExists(context.data);
 
     const v1 = await context.data.version("my-model", "result", 1);
@@ -238,7 +207,6 @@ Deno.test("Integration: data.version() returns null for missing version", async 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create a model definition
     const definition = Definition.create({
       name: "my-model",
       tags: {},
@@ -268,16 +236,11 @@ Deno.test("Integration: data.version() returns null for missing version", async 
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Try to access non-existent version
     assertExists(context.data);
     const result = await context.data.version("my-model", "result", 99);
     assertEquals(result, null);
   });
 });
-
-// ============================================================================
-// Data Namespace Function: data.latest()
-// ============================================================================
 
 Deno.test("Integration: data.latest() retrieves latest version", async () => {
   await withTempDir(async (repoDir) => {
@@ -290,7 +253,6 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create a model definition
     const definition = Definition.create({
       name: "my-model",
       tags: {},
@@ -308,7 +270,6 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
       ownerDefinition: owner,
     });
 
-    // Create 3 versions
     for (let i = 1; i <= 3; i++) {
       await dataRepo.save(
         type,
@@ -344,10 +305,6 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
   });
 });
 
-// ============================================================================
-// Data Namespace Function: data.listVersions()
-// ============================================================================
-
 Deno.test("Integration: data.listVersions() returns sorted version numbers", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -377,7 +334,6 @@ Deno.test("Integration: data.listVersions() returns sorted version numbers", asy
       ownerDefinition: owner,
     });
 
-    // Create several versions
     for (let i = 1; i <= 5; i++) {
       await dataRepo.save(
         type,
@@ -430,10 +386,6 @@ Deno.test("Integration: data.listVersions() returns empty array for missing data
   });
 });
 
-// ============================================================================
-// Data Namespace Function: data.findByTag()
-// ============================================================================
-
 Deno.test("Integration: data.findByTag() returns matching records", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -445,7 +397,6 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create two model definitions
     const modelA = Definition.create({
       name: "model-a",
       tags: {},
@@ -461,7 +412,6 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
 
     const owner = createOwner("test/model:create");
 
-    // Create log-type data for model A
     const logA = Data.create({
       name: "execution-log",
       contentType: "application/json",
@@ -477,7 +427,6 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
       new TextEncoder().encode(JSON.stringify({ source: "A" })),
     );
 
-    // Create log-type data for model B
     const logB = Data.create({
       name: "execution-log",
       contentType: "application/json",
@@ -493,7 +442,6 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
       new TextEncoder().encode(JSON.stringify({ source: "B" })),
     );
 
-    // Create output-type data for model A
     const outputA = Data.create({
       name: "result",
       contentType: "application/json",
@@ -526,17 +474,14 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
 
       assertExists(context.data);
 
-      // Find all logs
       const logs = await context.data.findByTag("type", "log");
       assertEquals(logs.length, 2);
       assertEquals(logs.every((r) => r.tags.type === "log"), true);
 
-      // Find all outputs
       const outputs = await context.data.findByTag("type", "output");
       assertEquals(outputs.length, 1);
       assertEquals(outputs[0].tags.type, "output");
 
-      // Non-matching tag
       const nonexistent = await context.data.findByTag("type", "nonexistent");
       assertEquals(nonexistent.length, 0);
     } finally {
@@ -544,10 +489,6 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
     }
   });
 });
-
-// ============================================================================
-// Multiple Data Items Per Model
-// ============================================================================
 
 Deno.test("Integration: model can have multiple named data items with mixed types", async () => {
   await withTempDir(async (repoDir) => {
@@ -570,7 +511,6 @@ Deno.test("Integration: model can have multiple named data items with mixed type
 
     const owner = createOwner("test/model:create");
 
-    // Create resource data items
     const exitCode = Data.create({
       name: "exit-code",
       contentType: "application/json",
@@ -586,7 +526,6 @@ Deno.test("Integration: model can have multiple named data items with mixed type
       new TextEncoder().encode(JSON.stringify({ code: 0 })),
     );
 
-    // Create file data items
     const stdout = Data.create({
       name: "stdout",
       contentType: "text/plain",
@@ -624,31 +563,24 @@ Deno.test("Integration: model can have multiple named data items with mixed type
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Resource items accessible via model.X.resource.specName.instanceName
     const modelData = context.model["my-command"];
     assertExists(modelData);
     assertExists(modelData.resource);
     assertExists(modelData.resource!["exit-code"]);
     assertExists(modelData.resource!["exit-code"]["exit-code"]);
 
-    // File items accessible via model.X.file.specName.instanceName
     assertExists(modelData.file);
     assertExists(modelData.file!["stdout"]);
     assertExists(modelData.file!["stdout"]["stdout"]);
     assertExists(modelData.file!["stderr"]);
     assertExists(modelData.file!["stderr"]["stderr"]);
 
-    // Also via data functions
     assertExists(context.data);
     assertEquals(context.data.listVersions("my-command", "stdout"), [1]);
     assertEquals(context.data.listVersions("my-command", "stderr"), [1]);
     assertEquals(context.data.listVersions("my-command", "exit-code"), [1]);
   });
 });
-
-// ============================================================================
-// Hyphenated Model Names
-// ============================================================================
 
 Deno.test("Integration: handles hyphenated model names in data expressions", async () => {
   await withTempDir(async (repoDir) => {
@@ -699,7 +631,6 @@ Deno.test("Integration: handles hyphenated model names in data expressions", asy
         new RunSensitiveValues(),
       );
 
-      // Access via bracket notation (required for hyphenated names)
       assertExists(context.data);
       const latest = await context.data.latest(
         "my-hyphenated-model",
@@ -712,10 +643,6 @@ Deno.test("Integration: handles hyphenated model names in data expressions", asy
     }
   });
 });
-
-// ============================================================================
-// Context Without Data Repository
-// ============================================================================
 
 Deno.test("Integration: buildContext works without dataRepo", async () => {
   await withTempDir(async (repoDir) => {
@@ -730,18 +657,14 @@ Deno.test("Integration: buildContext works without dataRepo", async () => {
     });
     await definitionRepo.save(type, definition);
 
-    // Build context without dataRepo
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
-      // No dataRepo
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Model should still be accessible
     assertExists(context.model["my-model"]);
     assertEquals(context.model["my-model"].input.name, "my-model");
 
-    // Data namespace should still exist but return empty results
     assertExists(context.data);
     assertEquals(context.data.listVersions("my-model", "anything"), []);
     assertEquals(await context.data.findByTag("type", "any"), []);

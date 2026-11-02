@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The read model's durable file writer (swamp-club#3239) and its batch
- * (swamp-club#3337) on a real temp directory.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
@@ -36,8 +31,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when handles are not yet released.
-      // Temp dir is ephemeral, OS reclaims.
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -127,7 +120,6 @@ Deno.test("writeFileDurably: a stream that fails part-way leaves the old file an
   });
 });
 
-/** A batch that counts the files it syncs, which it then closes. */
 function countingBatch(maxOpenFiles?: number) {
   const counts = { synced: 0 };
   const batch = new DurableWriteBatch({
@@ -178,7 +170,6 @@ Deno.test("DurableWriteBatch: syncs each touched directory once, deepest first, 
       dir,
     ];
     assertEquals([...synced].sort(), [...expected].sort());
-    // Every directory is synced before each of its ancestors.
     for (const d of synced) {
       for (let up = dirname(d); up !== dirname(up); up = dirname(up)) {
         const at = synced.indexOf(up);
@@ -216,7 +207,6 @@ Deno.test("DurableWriteBatch: holds written files until the barrier, syncing ear
         );
         syncedAfter.push(capped.counts.synced);
       }
-      // At most two written files are ever held unsynced.
       assertEquals(syncedAfter, [0, 2, 2, 4, 4]);
       await capped.batch.barrier();
       assertEquals(capped.counts.synced, 5);
@@ -261,7 +251,6 @@ Deno.test("DurableWriteBatch: discard closes held files unsynced and leaves no t
     await batch.write(join(dir, "a"), new Uint8Array([1]), signal());
     await batch.write(join(dir, "b"), new Uint8Array([2]), signal());
     batch.discard();
-    // A barrier after discard has nothing left to sync.
     await batch.barrier();
     assertEquals(counts.synced, 0);
     assertEquals([...Deno.readDirSync(dir)].map((e) => e.name).sort(), [
@@ -328,7 +317,6 @@ Deno.test({
     await withTempDir(async (dir) => {
       const plainPath = join(dir, "plain");
       await writeFileDurably(plainPath, new Uint8Array([1]), signal());
-      // What this process's umask gives a new file.
       const created = (await Deno.stat(plainPath)).mode! & 0o777;
       for (const sync of [true, false]) {
         for (
@@ -354,12 +342,10 @@ Deno.test({
           }
           const expected = modeWithAccess(created, access);
           assertEquals((await Deno.stat(path)).mode! & 0o777, expected);
-          // The stat handed on is the file as renamed into place.
           assertEquals(seen, [expected]);
           assertEquals(await Deno.readFile(path), new Uint8Array([1, 2]));
         }
       }
-      // A rewrite without access leaves a plain file, whatever was there.
       const path = join(dir, "executable-true");
       await writeFileDurably(path, new Uint8Array([3]), signal());
       assertEquals((await Deno.stat(path)).mode! & 0o777, created);

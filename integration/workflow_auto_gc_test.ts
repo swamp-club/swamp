@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Workflow steps keep the repo's `autoGc` version caps (swamp-club#3251).
- *
- * Runs go through `executeWorkflowWithLocks`, the path serve's scheduler,
- * webhooks and API runs take, against a real repository whose `.swamp.yaml`
- * sets `autoGc`. The model's resource declares a cap of 3; it is written by a
- * top-level step, from a nested workflow, and by a `rollbackOnFailure` method
- * whose deferred writes are promoted when the step succeeds.
- */
-
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
@@ -41,7 +31,6 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -139,7 +128,6 @@ function singleStep(name: string, task: StepTask): Workflow {
   });
 }
 
-/** Saves the workflows, runs the first one RUNS times, returns the versions. */
 async function runAndCountVersions(
   repoDir: string,
   type: ModelType,

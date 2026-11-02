@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for webhook payload extraction into workflow inputs (#717).
- *
- * Webhook runs flow through `executeWorkflowWithLocks` carrying a `webhook`
- * payload. The workflow's `trigger.inputs` CEL expressions are evaluated against
- * that payload BEFORE input validation, so a payload field can satisfy a
- * required input. These tests drive `executeWorkflowWithLocks` directly with a
- * payload (rather than standing up an HTTP server) and assert that the extracted
- * value reaches the workflow as a validated input.
- */
-
 import { join } from "@std/path";
 import { assertEquals, assertRejects } from "@std/assert";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
@@ -48,14 +37,12 @@ import {
   setActiveTelemetryService,
 } from "../src/cli/telemetry_integration.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 
 await initializeLogging({});
 
-/** Minimal spool that records what a run wrote. */
 class RecordingRepository implements TelemetryRepository {
   saved: TelemetryEntry[] = [];
   save(entry: TelemetryEntry): Promise<void> {
@@ -94,11 +81,6 @@ const requiredInputSchema = {
   required: ["identifier"],
 };
 
-/**
- * A workflow that requires `identifier` and maps it from the webhook payload via
- * trigger.inputs. The step echoes the resolved input so the evaluated workflow
- * carries the extracted value where we can assert on it.
- */
 function webhookWorkflow(
   name: string,
   triggerInputs: Record<string, unknown>,
@@ -251,7 +233,6 @@ Deno.test({
       });
       await new YamlWorkflowRepository(repoDir).save(workflow);
 
-      // Payload has no data.issue — the strict resolver propagates the error.
       await assertRejects(() =>
         runWebhook(repoDir, workflow.name, {
           body: { data: {} },
@@ -288,13 +269,9 @@ Deno.test({
         });
         assertEquals(events.at(-1)?.kind, "completed");
 
-        // Exactly one parent entry for the run, attributed to the webhook
-        // trigger. The status is deliberately not asserted here: this
-        // fixture's step passes an input the shell model does not accept, so
-        // the run fails — the surrounding tests only ever asserted that the
-        // payload value reached the evaluated workflow. Success and failure
-        // statuses are pinned in the scheduled tests, where the fixture runs
-        // clean.
+        // status is not asserted: this fixture passes the shell model an input
+        // it does not accept, so the run fails; success and failure are pinned
+        // in the scheduled tests
         const parents = repo.saved.filter((e) => !e.parentInvocationId);
         assertEquals(parents.length, 1);
         assertEquals(parents[0].triggerSource, "webhook");
@@ -316,22 +293,9 @@ Deno.test({
 });
 
 /**
- * swamp-club#2172 — a webhook payload is the purest form of the injection this
- * issue is about: the attacker needs no write access to the repo at all, only
- * the ability to POST. TriggerInputResolver splices payload text into the run's
- * inputs, the CEL pass splices those into the definition, and before the
- * authored-expression gate the runtime pass re-parsed that tree and resolved
- * whatever looked like a vault or env reference.
- *
- * This drives the whole path — trigger resolution, workflow evaluation, step
- * options, step context, runtime pass, step execution — so it covers the
- * plumbing as well as the gate.
- *
- * The assertion is on what the shell step actually ran and printed, NOT on the
- * evaluated workflow on disk: that artifact is persisted *before* the runtime
- * pass, so it shows the raw text whether or not the gate works. `env.*` is used
- * because it is the variant with no redaction anywhere — if the gate fails, the
- * plaintext is simply there in the output.
+ * a webhook payload needs no repo write access to inject text; assert on what
+ * the shell step printed, not the evaluated workflow on disk, which is
+ * persisted before the runtime pass
  */
 Deno.test({
   name:
@@ -401,10 +365,8 @@ Deno.test({
 });
 
 /**
- * The positive counterpart: an env reference written in the workflow source
- * still resolves at the step, in the same run shape as the test above. Without
- * this, the gate could "pass" by refusing everything — including the references
- * authors legitimately write.
+ * the positive counterpart: without it the gate could pass by refusing every
+ * env reference, including ones authors legitimately write
  */
 Deno.test({
   name:
@@ -465,14 +427,9 @@ Deno.test({
 });
 
 /**
- * The bypass found in adversarial review of the first fix. The runtime pass
- * only sees expressions classified as runtime, and the classifier used to
- * recognise only the dotted form of an env reference. The bracket-index form
- * slipped past it, and the step executor's second CEL pass over the
- * already-substituted step inputs evaluated it with the process environment
- * in scope. Two things now stop it, and this test fails if either is undone
- * on its own: every env form is classified as runtime, and the second pass is
- * gated on the authored set like the runtime pass is.
+ * the bracket-index env form must be classified as runtime and the step-input
+ * second pass gated on the authored set; the test fails if either is undone
+ * alone
  */
 Deno.test({
   name:
@@ -539,10 +496,9 @@ Deno.test({
 });
 
 /**
- * A non-runtime CEL expression injected through the payload must be just as
- * inert at the second pass: here it names another record through
- * data.latest(). The runtime gate never sees this shape, so only the gate on
- * the step-input pass stops it.
+ * a non-runtime CEL expression injected via the payload must be inert at the
+ * second pass; the runtime gate never sees it, so only the step-input pass gate
+ * stops it
  */
 Deno.test({
   name:
@@ -586,12 +542,9 @@ Deno.test({
         route: "/hooks/linear",
       });
 
-      // The shell must print the raw expression text, byte for byte,
-      // proving it was neither evaluated nor stripped. The run's recorded
-      // inputs echo the raw text regardless, so read the shell model's result
-      // record instead. The text is webhook data, so the command holds an
-      // environment reference and the shell prints the text as it came
-      // (swamp-club#3868).
+      // the shell must print the raw text unevaluated and unstripped; read the
+      // shell model's result record, since the run's recorded inputs echo the
+      // raw text regardless
       const { repoContext } = await requireInitializedRepoUnlocked({
         repoDir,
         outputMode: "log",

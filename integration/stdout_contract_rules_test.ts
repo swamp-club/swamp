@@ -40,13 +40,8 @@ type Resolvable = AnyCommand & {
 };
 
 /**
- * Top-level commands that registry entries are resolved against.
- *
- * Deliberately resolved through the exported command objects rather than
- * `buildCliSchema`: that walker excludes hidden commands, and `first-rule` is
- * registered `.hidden()` — so a schema-based check would silently skip the one
- * entry most likely to be renamed, which is the opposite of what this test is
- * for.
+ * resolved through the exported command objects, not buildCliSchema, which
+ * skips hidden commands such as first-rule, the entry most likely to be renamed
  */
 const ROOTS: Record<string, Resolvable> = {
   invite: inviteCommand as unknown as Resolvable,
@@ -87,9 +82,9 @@ Deno.test("every value-on-stdout registry entry names a registered command", () 
     }
   }
 
-  // A registry entry that names nothing is worse than no entry at all: the
-  // lookup in runCli just misses, `stderrOnly` stays off, and the only symptom
-  // is a log line in whatever the user was piping (swamp-club#2254).
+  // an entry that names nothing is worse than none: the runCli lookup just
+  // misses, stderrOnly stays off, and the only symptom is a log line in
+  // whatever the user was piping
   assertEquals(
     unresolved,
     [],

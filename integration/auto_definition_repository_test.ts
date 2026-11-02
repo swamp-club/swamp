@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Auto-definitions (direct type execution) through the real model delete and
-// model edit wiring: the shared definition repository must find, report,
-// save and delete the file in .swamp/auto-definitions, by id or by name
-// (swamp-club#2515), and model delete must find it in the datastore when one
-// is configured (swamp-club#2382).
-
 import "../src/domain/models/models.ts";
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
@@ -76,7 +70,6 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/** Saves an auto-definition the way direct type execution does. */
 async function saveAutoDefinition(
   repoDir: string,
   name: string,
@@ -262,7 +255,6 @@ for (const by of ["uuid", "name"] as const) {
         datastoreResolver,
       });
       try {
-        // Saved the way direct type execution saves it.
         const autoRepo = new YamlDefinitionRepository(
           repoDir,
           undefined,
@@ -279,7 +271,6 @@ for (const by of ["uuid", "name"] as const) {
         assertEquals(path.startsWith(cacheRoot), true);
         const modelIdOrName = by === "uuid" ? definition.id : definition.name;
 
-        // Deps wired as swamp model delete wires them.
         const deps = () =>
           createModelDeleteDeps(
             repoDir,

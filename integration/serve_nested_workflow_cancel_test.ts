@@ -17,14 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration test for cancelling, through serve, a workflow that runs a
- * nested workflow step (swamp-club#2470). Uses a real repository on disk,
- * the detached `workflow.run` handler and the serve cancel path. The nested
- * step's method waits on its abort signal, as a long-running method that
- * honours cancellation does.
- */
-
 import { join } from "@std/path";
 import { assert, assertEquals } from "@std/assert";
 import { z } from "zod";
@@ -50,7 +42,6 @@ import { cancelExecution } from "../src/cli/commands/serve.ts";
 import { cancelSuspendedRunAndPush } from "../src/serve/suspended_run_cancel.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -186,7 +177,6 @@ Deno.test({
         // The registry stays keyed on the run the request started.
         assert(registry.get(parentRunId) !== undefined);
         assertEquals(registry.get(childRunId), undefined);
-        // A client that reconnects by the child's id reattaches to the parent.
         assertEquals(registry.findForAttach(childRunId)?.runId, parentRunId);
 
         const result = await cancelExecution("workflow-run", parentRunId, {
@@ -268,7 +258,6 @@ Deno.test({
         send: (data: string) => frames.push(JSON.parse(data)),
       } as unknown as WebSocket;
 
-      // The parent suspends on the child, which suspends at its gate.
       await handleWorkflowRun(
         socket,
         ctx,
@@ -318,12 +307,10 @@ Deno.test({
       );
       assertEquals(endedParent?.status, "cancelled");
       assertEquals(endedChild?.status, "cancelled");
-      // The stored reason names no other run (swamp-club#2867).
       assertEquals(
         endedChild?.tags["cancel_reason"],
         PARENT_ENDED_CANCEL_REASON,
       );
-      // Neither id is left reserved.
       for (const id of [parentRun.id, childRun.id]) {
         const release = registry.reserve(id);
         assert(release, "the cancel released its reservation");

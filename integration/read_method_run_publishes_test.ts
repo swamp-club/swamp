@@ -17,14 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A read or list method run takes no model lock while it runs
-// (swamp-club#1992), and on a v2 extension datastore that lock was the only
-// path that pulled before a run and published what it wrote: the versions a
-// `get` that refreshes its resource wrote stayed on this host
-// (swamp-club#3934). The run now pulls unlocked, runs unlocked, and takes the
-// lock only to publish, refusing a version another clone wrote meanwhile.
-// These tests drive `swamp model method run` in-process against two clones
-// of one in-memory remote.
+// a read or list method run takes no model lock while running, so on a v2
+// extension datastore it pulls and runs unlocked and locks only to publish,
+// refusing a version another clone wrote meanwhile
 
 import "../src/domain/models/models.ts";
 import {
@@ -78,19 +73,13 @@ import {
 
 await initializeLogging({});
 
-/** Hooks the probe's methods call, set per test. */
 interface Hooks {
-  /** Awaited before the read method writes. */
   beforeWrite?: () => Promise<void>;
-  /** Awaited after the read method wrote. */
   afterWrite?: () => Promise<void>;
 }
 let hooks: Hooks = {};
-/** Set to connect a sync service without `clearDirty`. */
 let hideClearDirty = false;
-/** While set, every clone's pull fails, as with an unreachable remote. */
 let failPulls = false;
-/** While set, a remote read of a matching path answers that it is missing. */
 let hideFromFetch: ((relPath: string) => boolean) | undefined;
 /**
  * While set, a pull leaves the content files already in the cache as they
@@ -98,10 +87,8 @@ let hideFromFetch: ((relPath: string) => boolean) | undefined;
  * at once for a file already present, a fair reading of its contract.
  */
 let keepCachedContent = false;
-/** While set, the sync service has no `fetchContent`. */
 let withoutFetchContent = false;
 
-/** Every content file under `cacheDir`, with its bytes. */
 async function cachedContent(
   cacheDir: string,
 ): Promise<Map<string, Uint8Array>> {
@@ -165,20 +152,11 @@ function registerProbe(): ModelType {
   return type;
 }
 
-/**
- * Per-key locks over one bucket, shared by both clones: `acquire` waits
- * while another holder has the key, as S3Lock does, and throws
- * `LockTimeoutError` once `maxWaitMs` passes.
- */
 class LockTable {
   readonly held = new Set<string>();
-  /** What `inspect` reports for the global lock, as a crashed holder left it. */
   staleGlobal: LockInfo | undefined;
-  /** While set, reading a lock fails, as with an unreachable bucket. */
   failInspect = false;
-  /** The host a held lock names; this host when unset. */
   holderHost: string | undefined;
-  /** While set, taking any lock fails with it, as credentials that cannot write. */
   refuseAcquire: Error | undefined;
   #waiters = new Map<string, Array<() => void>>();
 
@@ -297,7 +275,6 @@ async function initRepo(
   }
 }
 
-/** Two clones of one repo, holding one probe definition, on one remote. */
 async function withClones(
   fn: (clones: Clones) => Promise<void>,
   options: { lazy?: boolean } = {},
@@ -398,7 +375,6 @@ async function withClones(
   }
 }
 
-/** `swamp model method run probe <method> --input value=<value>`. */
 async function runMethod(
   repoDir: string,
   method: string,
@@ -424,7 +400,6 @@ async function runMethod(
   ]);
 }
 
-/** The remote's committed object under the model ending with `suffix`. */
 function remoteFile(
   c: Clones,
   suffix: string,
@@ -435,7 +410,6 @@ function remoteFile(
   return undefined;
 }
 
-/** The value version `version` of the state holds on the remote. */
 function remoteValue(c: Clones, version: number): string | undefined {
   const bytes = remoteFile(c, `/main/${version}/raw`);
   if (bytes === undefined) return undefined;
@@ -448,7 +422,6 @@ function remoteLatest(c: Clones): string | undefined {
   return bytes === undefined ? undefined : new TextDecoder().decode(bytes);
 }
 
-/** The value version `version` of the state holds in `repoDir`'s cache. */
 async function localValue(
   repoDir: string,
   c: Clones,
@@ -476,7 +449,6 @@ async function localValue(
   }
 }
 
-/** An S3 refusal of credentials that may not write, as the extension throws it. */
 function accessDenied(): Error {
   return Object.assign(
     new Error("S3 putObject failed HTTP 403 AccessDenied — Access Denied."),
@@ -484,7 +456,6 @@ function accessDenied(): Error {
   );
 }
 
-/** The JSON documents `fn` writes to stdout. */
 async function jsonResults(
   fn: () => Promise<void>,
 ): Promise<Array<Record<string, unknown>>> {
@@ -505,11 +476,6 @@ async function jsonResults(
   return docs;
 }
 
-/**
- * The records `fn` logs where the CLI's console would show them: as the CLI
- * routes it without `--log`, the run's own category reaches only its log
- * file.
- */
 async function consoleRecords(fn: () => Promise<void>): Promise<LogRecord[]> {
   const captured: LogRecord[] = [];
   await configure({
@@ -543,7 +509,6 @@ function messageOf(record: LogRecord): string {
   return record.message.map((part) => String(part)).join("");
 }
 
-/** How many deferred publishes `repoDir`'s cache has left. */
 async function pendingRecords(repoDir: string): Promise<number> {
   let count = 0;
   try {
@@ -566,7 +531,6 @@ Deno.test("model method run: a read method's writes reach the remote with no lat
 
     assertEquals(remoteValue(c, 1), "from-read");
     assertEquals(remoteLatest(c), "1");
-    // The run's method-summary report is published with it.
     assert(
       remoteFile(c, "/report-swamp-method-summary/1/metadata.yaml"),
       "the run's summary report should be on the remote",
@@ -652,9 +616,6 @@ Deno.test("model method run: a publish after a deferred version was overwritten 
     }
     await runMethod(c.repoB, "write", "b1");
 
-    // While A's next read runs (it writes no state of its own), B writes
-    // versions 2 and 3, which A's pre-run pull never saw. B skips its
-    // reports, so A's own versions conflict with nothing.
     hooks = {
       beforeWrite: async () => {
         await runMethod(c.repoB, "write", "b2", ["--skip-reports"]);
@@ -698,8 +659,6 @@ Deno.test("model method run: a conflict on a sync service that cannot clear its 
 
 Deno.test("model method run: two clones' reads that write nothing but their reports both succeed when run at once (swamp-club#3934)", async () => {
   await withClones(async (c) => {
-    // A pulls and blocks; B's read runs and publishes version 1 of its
-    // summary reports; A then numbers its own reports version 1 too.
     let started!: () => void;
     const aStarted = new Promise<void>((resolve) => started = resolve);
     let resume!: () => void;
@@ -727,9 +686,6 @@ Deno.test("model method run: two clones' reads that write nothing but their repo
 
 Deno.test("model method run: a read method's version already uploaded by another push publishes without a conflict (swamp-club#3934)", async () => {
   await withClones(async (c) => {
-    // After A writes, an unchecked namespace-wide push from this host (a
-    // workflow's end-of-run push, serve's maintenance pass) uploads A's
-    // version before A's own publish checks the remote.
     let wrote!: () => void;
     const aWrote = new Promise<void>((resolve) => wrote = resolve);
     let resume!: () => void;
@@ -800,13 +756,11 @@ Deno.test("model method run: a read method finishes while a writer holds the mod
       { repoContext: holder.repoContext },
     );
     try {
-      // The run neither waits for the writer nor fails (swamp-club#1992).
       const docs = await jsonResults(() =>
         runMethod(c.repoA, "observe", "from-a")
       );
       assertEquals(remoteValue(c, 1), undefined, "nothing published yet");
       assertEquals(await pendingRecords(c.repoA), 1);
-      // Its JSON result says the data waits for the next lock.
       assertStringIncludes(
         unpublishedOf(docs.find((d) => d.methodName === "observe")).join(","),
         "main/1/deferred",
@@ -818,7 +772,6 @@ Deno.test("model method run: a read method finishes while a writer holds the mod
     }
     assertEquals(c.locks.held.size, 0);
 
-    // A's next locked run on the model publishes the deferred version.
     await runMethod(c.repoA, "write", "from-a-write");
     assertEquals(remoteValue(c, 1), "from-a");
     assertEquals(remoteValue(c, 2), "from-a-write");
@@ -852,7 +805,6 @@ Deno.test("model method run: a deferred version another clone also wrote is drop
       await flushDatastoreSync();
       holder.repoContext.catalogStore.close();
     }
-    // B writes version 1 before A's deferred version 1 is published.
     await runMethod(c.repoB, "write", "from-b");
     assertEquals(remoteValue(c, 1), "from-b");
 
@@ -892,8 +844,6 @@ Deno.test("model method run: a read run after a deferred version was overwritten
     }
     await runMethod(c.repoB, "write", "from-b");
 
-    // The pre-run pull replaces A's deferred version 1 with B's; this run
-    // writes version 2, which conflicts with nothing.
     await runMethod(c.repoA, "observe", "from-a-again");
     assertEquals(remoteValue(c, 1), "from-b", "B's version is kept");
     assertEquals(remoteValue(c, 2), "from-a-again");
@@ -904,7 +854,6 @@ Deno.test("model method run: a read run after a deferred version was overwritten
 
 Deno.test("model method run: a stale global lock does not stop a read from pulling and publishing (swamp-club#3934)", async () => {
   await withClones(async (c) => {
-    // A structural command crashed holding the global lock, long past its TTL.
     c.locks.staleGlobal = {
       holder: "crashed@elsewhere",
       hostname: "elsewhere",
@@ -931,7 +880,6 @@ Deno.test("model method run: a read whose pull fails still runs, on this host's 
     };
     failPulls = true;
     try {
-      // The publish pulls too, so the command fails after the method ran.
       const error = await assertRejects(
         () => runMethod(c.repoA, "observe", "from-a"),
         UserError,
@@ -956,8 +904,6 @@ Deno.test("model method run: a read whose global-lock check fails still runs, on
     };
     c.locks.failInspect = true;
     try {
-      // The publish cannot read the lock either, so the command fails after
-      // the method ran; the pull before it no longer stops it running.
       await assertRejects(() => runMethod(c.repoA, "observe", "from-a"));
     } finally {
       c.locks.failInspect = false;
@@ -1037,7 +983,6 @@ for (const elsewhere of [false, true]) {
           repoDir: c.repoA,
           outputMode: "json",
         });
-        // A writer holding the lock with an unpublished change in A's cache.
         const writerLock = await acquireModelLocks(
           holder.datastoreConfig,
           [{ modelType: c.type.normalized, modelId: c.definition.id }],
@@ -1105,8 +1050,6 @@ Deno.test("acquireModelLocks: a locked push that cannot confirm an earlier read'
       await flushDatastoreSync();
       holder.repoContext.catalogStore.close();
     }
-    // A workflow step's lock on this host publishes the deferred versions,
-    // and the datastore keeps answering that one of them is missing.
     const a = await requireInitializedRepoUnlocked({
       repoDir: c.repoA,
       outputMode: "json",
@@ -1124,7 +1067,6 @@ Deno.test("acquireModelLocks: a locked push that cannot confirm an earlier read'
         { repoContext: a.repoContext },
       );
       try {
-        // The step wrote nothing of its own, so nothing of its own fails.
         await locks.pushWritten([]);
       } finally {
         await locks.release();
@@ -1310,7 +1252,6 @@ Deno.test("model method run: on a lazy cache a conflicting read whose content ca
       "the replaced versions are kept for the next lock",
     );
 
-    // The next locked run reads the content back before it pushes.
     hooks = {};
     await runMethod(c.repoA, "write", "from-a-write");
     assertEquals(remoteValue(c, 1), "from-b");
@@ -1378,7 +1319,6 @@ Deno.test("model method run: on a lazy cache without fetchContent a conflicting 
   }, { lazy: true });
 });
 
-/** `dataName/version/reason` of each version a result names unpublished. */
 function unpublishedOf(result: Record<string, unknown> | undefined): string[] {
   const versions = result?.unpublishedVersions as
     | Array<{ dataName: string; version: number; reason: string }>
@@ -1456,7 +1396,6 @@ Deno.test("model method run: a read whose publish lock is refused for its creden
     ]);
     assertEquals(remoteValue(c, 1), undefined, "nothing was published");
     assertEquals(await localValue(c.repoA, c, 1), "from-a");
-    // The same credentials would be refused again by every later lock.
     assertEquals(await pendingRecords(c.repoA), 0);
   });
 });
@@ -1525,8 +1464,6 @@ Deno.test("model method run: a read whose pull under the publish lock is refused
 
 Deno.test("model method run: a read whose publish finds a conflict and then fails to push the rest fails the command, and its JSON result still names the conflict (swamp-club#3934)", async () => {
   await withClones(async (c) => {
-    // B writes only the state, so A's summary reports conflict with nothing
-    // and are left for the push, which fails.
     let started!: () => void;
     const aStarted = new Promise<void>((resolve) => started = resolve);
     let resume!: () => void;

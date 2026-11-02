@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Cross-component contract for serve WebSocket compression: the upgrade
- * opt-in (`resolveConnectionCompression`), the server sender (`send`) and the
- * CLI client (`requestServerResponse`) must agree on the frame encoding.
- */
-
 import { assertEquals } from "@std/assert";
 import {
   COMPRESSION_THRESHOLD_BYTES,
@@ -38,7 +32,6 @@ const results = Array.from(
   (_, i) => ({ name: `workflow-${i}`, jobCount: 1 }),
 );
 
-/** Serve endpoint wired like `swamp serve`: opt-in resolved at upgrade. */
 function startServer(): { url: string; shutdown: () => Promise<void> } {
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },

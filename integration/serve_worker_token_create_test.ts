@@ -72,10 +72,6 @@ async function removeRepo(repoDir: string): Promise<void> {
   }
 }
 
-/**
- * Initializes a repo, optionally with one local_encryption user vault, and
- * registers the control-plane vault globally the way serve boot does.
- */
 async function createServeRepo(
   userVault: string | undefined,
 ): Promise<{ repoDir: string; repoContext: RepositoryContext }> {
@@ -169,10 +165,9 @@ async function redeem(
   );
 }
 
-// swamp-club#2422: serve always registers the reserved _token-secrets vault,
-// so a repo with one user vault has two. Without --vault the handler must
-// pick the control-plane vault instead of failing with "Multiple vaults are
-// configured"; an explicit --vault must still be honoured.
+// serve always registers the reserved _token-secrets vault, so omitting --vault
+// must pick it instead of failing on multiple vaults; an explicit --vault must
+// still be honoured
 Deno.test("handleWorkerTokenCreate: stores the secret in the control-plane vault when --vault is omitted", async () => {
   const { repoDir, repoContext } = await createServeRepo("local");
   try {
@@ -255,8 +250,6 @@ Deno.test("handleWorkerTokenCreate: an unknown --vault is rejected, not replaced
   }
 });
 
-// The same miscount made `doctor vaults` on serve report a vault when the
-// only one registered was the reserved control-plane vault.
 Deno.test("createDoctorVaultsDeps: hasVault ignores the control-plane vault serve registers", async () => {
   const bare = await createServeRepo(undefined);
   try {
@@ -279,7 +272,6 @@ Deno.test("createDoctorVaultsDeps: hasVault ignores the control-plane vault serv
       true,
     );
 
-    // The teardown in removeRepo leaves no control-plane vault behind.
     VaultService.unregisterGlobalProvider(TOKEN_SECRETS_VAULT_NAME);
     assertEquals(
       (await VaultService.fromRepository(withVault.repoDir)).getVaultNames(),

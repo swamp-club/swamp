@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// The collective check at push and install loads every source of an
-// extension tree with the real loader, bundler and probe host
-// (swamp-club#3456). These tests run that wiring end to end over a tree on
-// disk and over a push archive, with no fakes in between.
-
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir, walk } from "@std/fs";
 import { dirname, join } from "@std/path";
@@ -58,7 +53,6 @@ export const model = {
 };
 `;
 
-/** A tree of every source shape the collective check has to judge. */
 const TREE: Record<string, string> = {
   "models/literal.ts": model('"@acme/literal"'),
   "models/constant.ts": model("TYPE", 'const TYPE = "@acme/constant";'),
@@ -145,7 +139,6 @@ Deno.test("createExtensionTreeIndexer: reports the type each source registers wh
       "shared/type.ts": null,
       "spread.ts": "@other/spread",
     });
-    // Bundles go under repoDir's .swamp, never into the tree itself.
     assertEquals(await filesUnder(root), before);
   });
 });
@@ -166,7 +159,6 @@ Deno.test("createExtensionPushPrepareDeps: indexArchive loads the sources a push
       "@acme/ext",
     );
 
-    // Failures first, so a failed source shows its reason.
     assertEquals(index.failures, []);
     assertEquals(typesByFile(index), {
       "constant.ts": "@acme/constant",

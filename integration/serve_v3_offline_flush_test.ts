@@ -17,24 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Offline work in team mode (swamp-club#4195), end to end: serve in a
- * Worker, and a checkout reaching it through a proxy that can be taken down
- * (serve unreachable) and brought back on the same address.
- *
- * - Under an explicit lease taken while online, a changing run queues its
- *   commits in the outbox and succeeds; two offline commands never share a
- *   version; the next writing command that reaches serve lands them.
- * - Without a lease, a changing run is refused with a stable code before
- *   it starts; reads and read-kind runs work; a definition edit is refused.
- * - On reconnect, offline versions are renumbered past what landed
- *   meanwhile, and `latest` follows when the work was observed, judged by
- *   serve's clock as last measured.
- * - Entries queued under a lease that ended are rebased, never applied over
- *   newer data; a flush cut off after a send resumes without duplicates;
- *   read-only commands never flush.
- */
-
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { walk } from "@std/fs";
@@ -86,14 +68,12 @@ import type { GrantSpec } from "./serve_upstream_server_worker.ts";
 
 await initializeLogging({});
 
-/** A writing command's context, as `model method run` opens it. */
 type CommandContext = Awaited<
   ReturnType<typeof requireInitializedRepoUnlocked>
 >;
 
 const DATA_ID = "4f9b1f0e-2c3d-4e5f-8a6b-7c8d9e0f1a2b";
 
-/** Alice (the harness's caller) and bob may both write every behavior. */
 const TEAM: readonly GrantSpec[] = [
   ...MEMBER,
   {
@@ -105,12 +85,6 @@ const TEAM: readonly GrantSpec[] = [
   { user: "bob", actions: ["read", "write"], kind: "data", pattern: "*" },
 ];
 
-/**
- * A proxy in front of serve that can be taken down, so the address refuses
- * connections, and brought back on the same port. `dateShiftMs` moves the
- * `Date` header serve's replies carry, as a serve whose clock is off does.
- * `answer` may answer a request itself.
- */
 interface OfflineProxy {
   readonly origin: string;
   dateShiftMs: number;
@@ -184,7 +158,6 @@ function startOfflineProxy(target: string): OfflineProxy {
   return proxy;
 }
 
-/** Runs `fn` with a proxy in front of `serve`, closing it after. */
 async function withProxy(
   serve: Serve,
   fn: (proxy: OfflineProxy) => Promise<void>,
@@ -197,11 +170,6 @@ async function withProxy(
   }
 }
 
-/**
- * One writing command in `client`, opened as `model method run` opens it,
- * with `fn` given the command's context in its root unit. Starts as a new
- * process does: no lease registered or renewed, no offline mode.
- */
 async function command<T>(
   scratch: Pick<Scratch, "configDir">,
   client: Pick<Client, "repoDir">,
@@ -228,7 +196,6 @@ async function command<T>(
   });
 }
 
-/** A save of `out` on web carrying `by`; resolves with its version. */
 async function saveOut(
   ctx: CommandContext,
   serve: Serve,
@@ -242,7 +209,6 @@ async function saveOut(
   )).version;
 }
 
-/** A read-kind run's save: judged by the offline rules first. */
 async function readKindSave(
   ctx: CommandContext,
   serve: Serve,
@@ -258,10 +224,6 @@ async function readKindSave(
   return await saveOut(ctx, serve, by);
 }
 
-/**
- * One locked save of `out` on web in `client`, as `model method run` takes
- * the lock: resolves with the version it saved.
- */
 async function lockedSave(
   scratch: Scratch,
   serve: Serve,
@@ -305,7 +267,6 @@ async function lockedSave(
   });
 }
 
-/** Takes an explicit lease on web for `client`, as `lease acquire` does. */
 async function takeLease(
   scratch: Scratch,
   serve: Serve,
@@ -336,7 +297,6 @@ async function takeLease(
   });
 }
 
-/** The versions of `out` serve's log recorded, in log order. */
 async function servedVersions(serve: Serve): Promise<number[]> {
   const versions: number[] = [];
   for (const entry of await serve.log()) {
@@ -349,7 +309,6 @@ async function servedVersions(serve: Serve): Promise<number[]> {
   return versions;
 }
 
-/** The content's `by` of the latest version of `out`, read in `client`. */
 async function latestBy(
   scratch: Scratch,
   serve: Serve,
@@ -370,7 +329,6 @@ async function latestBy(
   };
 }
 
-/** The content's `by` of version `version` of `out`, read in `client`. */
 async function versionBy(
   scratch: Scratch,
   serve: Serve,
@@ -419,7 +377,6 @@ Deno.test({
         const lease = await takeLease(scratch, serve, alice, env);
 
         await proxy.down();
-        // Json mode says it through notices, as the CLI sets them.
         const notices: ServeOfflineNotice[] = [];
         setServeOfflineNoticeWriter((notice) => notices.push(notice));
         try {
@@ -564,14 +521,12 @@ Deno.test({
           ),
           2,
         );
-        // Reads work offline, from the copy, and see the queued write.
         assertEquals(await latestBy(scratch, serve, alice, env), {
           version: 2,
           by: "read offline",
         });
 
         proxy.up();
-        // A read-only command never flushes.
         await latestBy(scratch, serve, alice, env);
         assertEquals(await servedVersions(serve), [1]);
         await command(scratch, alice, env, () => Promise.resolve());
@@ -631,7 +586,6 @@ for (
             ),
             2,
           );
-          // Bob writes meanwhile, online.
           assertEquals(
             await writeCommand(
               scratch,
@@ -650,11 +604,9 @@ for (
 
           proxy.up();
           await command(scratch, alice, env, () => Promise.resolve());
-          // Bob's version is never renumbered or overwritten.
           const served = await servedVersions(serve);
           assertEquals(served.slice(0, 3), [1, 2, 3]);
           assertEquals(await latestBy(scratch, serve, bob, bobEnv), latest);
-          // Alice's checkout reads what landed, not what it queued.
           assertEquals(await latestBy(scratch, serve, alice, env), latest);
           assertEquals(
             await versionBy(scratch, serve, alice, env, 2),
@@ -747,13 +699,11 @@ Deno.test({
         await command(scratch, alice, env, () => Promise.resolve());
         const served = await servedVersions(serve);
         assertEquals(served.slice(0, 3), [1, 2, 3]);
-        // Alice's queued write landed after bob's, under no lease.
         const landed = (await serve.log()).filter((entry) =>
           entry.keys.some((key) => key.endsWith("/out/3/metadata.yaml"))
         );
         assertEquals(landed.length, 1);
         assertEquals(landed[0].leaseFence, undefined);
-        // Bob's version 2 still holds bob's content.
         assertEquals(await latestBy(scratch, serve, bob, bobEnv), {
           version: 4,
           by: "bob online",
@@ -786,7 +736,6 @@ Deno.test({
         await lockedSave(scratch, serve, alice, env, "offline 2");
 
         proxy.up();
-        // The second commit reaches serve, and its reply is cut off.
         let commits = 0;
         proxy.answer = async (request, forward) => {
           if (
@@ -877,10 +826,7 @@ Deno.test({
           listed: [2],
           catalog: 2,
         };
-        // Offline, in a separate command from the one that queued it.
         assertEquals(await reads(), expected);
-        // Serve back: a read-only command catches up but never flushes,
-        // and the queued version is still read.
         proxy.up();
         assertEquals(await reads(), expected);
         assertEquals(await servedVersions(serve), [1]);
@@ -921,7 +867,6 @@ Deno.test({
             (ctx) => readKindSave(ctx, serve, by),
           );
         }
-        // Bob writes meanwhile, online.
         await writeCommand(
           scratch,
           bob,
@@ -945,7 +890,6 @@ Deno.test({
           (await latestBy(scratch, serve, alice, env))?.by,
           "bob online",
         );
-        // Every offline write landed, after Bob's version.
         const served = await servedVersions(serve);
         assertEquals(served.slice(0, 2), [1, 2]);
         const contents: (string | null)[] = [];
@@ -974,7 +918,6 @@ Deno.test({
         // Read online first, so the copy has read the feed; a read-only
         // command adopts nothing.
         await readCommand(scratch, alice, env, () => Promise.resolve());
-        // A vault config the datastore's config tier does not hold yet.
         const vaultId = crypto.randomUUID();
         const vaultDir = join(alice.repoDir, "vaults", "local_encryption");
         await Deno.mkdir(vaultDir, { recursive: true });

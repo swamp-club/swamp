@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for concurrent webhook runs (swamp-club#3665).
- *
- * The first two drive a real WebhookService on a temp repo through the real
- * workflow executor: runs of different workflows overlap, and runs of the
- * same route overlap too while a step on the same model still waits for its
- * lock. The last wires the service to a real run tracker, the shutdown
- * drain and boot replay, so pending entries survive a restart with runs
- * in flight.
- */
-
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -87,16 +76,10 @@ function completedRuns(events: WebhookEvent[], workflow: string): number {
 interface Harness {
   readonly service: WebhookService;
   readonly events: WebhookEvent[];
-  /** Blocking model methods entered and not yet released. */
   entered(): number;
-  /** Releases every blocking model method entered so far. */
   release(): void;
 }
 
-/**
- * Boots a real repo with two webhook routes: `/hooks/slow` runs a model
- * method that blocks until released, `/hooks/fast` one that returns at once.
- */
 async function withHarness(
   maxConcurrentRuns: number,
   fn: (h: Harness) => Promise<void>,

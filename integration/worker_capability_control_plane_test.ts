@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Control-plane records never reach a worker: every capability read and the
- * data-plane artifact read hide them, in any spelling, while user data stays
- * readable and a fleet-probe dispatch still reads its own records
- * (swamp-club#3129). The capability service and data plane run over a real
- * repository and data query service, with grants and groups stored under
- * their `@swamp/...` types as the access commands write them.
- */
-
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import "../src/domain/models/models.ts";
@@ -303,7 +294,6 @@ Deno.test("worker control plane: a fleet-probe dispatch reads its own records an
       ),
       404,
     );
-    // Another worker cannot read the probe's records.
     assertEquals(
       await f.capabilities.queryData(USER_WORKER, {
         predicate: 'modelType == "swamp/fleet-probe"',

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Run search and run summary over real repositories on a temp directory,
- * with a second set of repositories on the same directories standing in for
- * another process (swamp-club#3443). That is the shape of the local
- * dashboard child, which serves reads from one long-lived process while the
- * CLI writes runs: whatever the writer does, the reader's cached run index
- * snapshots must follow it.
- */
-
 import { assert, assertEquals, assertStrictEquals } from "@std/assert";
 import { basename, dirname, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -101,10 +92,9 @@ function workflowNamed(name: string): Workflow {
 }
 
 /**
- * One process's view of the repository. Its run index cache judges file
- * times by a clock a minute ahead: `settle` sets mtimes back, but
- * `Deno.utime` moves ctimes to now, and a recent ctime is not trusted
- * (swamp-club#3467).
+ * its run index cache judges file times by a clock a minute ahead: settle sets
+ * mtimes back, but Deno.utime moves ctimes to now, and a recent ctime is not
+ * trusted
  */
 function processOn(dir: string) {
   const workflowRepo = new YamlWorkflowRepository(dir);
@@ -151,10 +141,6 @@ function processOn(dir: string) {
   };
 }
 
-/**
- * Sets a workflow's run index file and records directory back a minute, so
- * the reader's next snapshot of it is kept.
- */
 async function settle(dir: string, workflow: Workflow) {
   const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
   const when = new Date(Date.now() - 60_000);
@@ -190,7 +176,6 @@ Deno.test("run index cache: the reader follows runs another process saves, updat
     assertEquals(before.total, 1);
     assertEquals((await reader.summary()).totals.running, 2);
 
-    // Same record count: only the index changes.
     first.interruptOrphaned("test");
     await writer.runRepo.save(deploy.id, first);
     assertEquals(
@@ -200,7 +185,6 @@ Deno.test("run index cache: the reader follows runs another process saves, updat
     await settle(dir, deploy);
     assertEquals((await reader.summary()).totals.failed, 1);
 
-    // A new record.
     const second = await startRun(writer.runRepo, deploy);
     const after = await reader.search({ workflow: "deploy", limit: 20 });
     assertEquals(after.total, 2);
@@ -222,8 +206,8 @@ Deno.test({
       const edited = await startRun(writer.runRepo, deploy);
       const other = await startRun(writer.runRepo, deploy);
       const runsDir = join(dir, ".swamp", "workflow-runs", deploy.id);
-      // A record the index does not list, added where the reader cannot
-      // write its repaired index (swamp-club#3467).
+      // a record the index does not list, added where the reader cannot write
+      // its repaired index
       const extra = crypto.randomUUID();
       const otherText = await Deno.readTextFile(
         join(runsDir, `workflow-run-${other.id}.yaml`),
@@ -314,7 +298,6 @@ Deno.test("run index cache: renamed and deleted workflows are seen through the w
     await settle(dir, doomed);
     assertEquals((await reader.search({})).total, 2);
 
-    // Renamed: runs keep the name they recorded.
     const renamed = Workflow.fromData({ ...deploy.toData(), name: "shipped" });
     await writer.workflowRepo.delete(deploy.id, deploy.name);
     await writer.workflowRepo.save(renamed);
@@ -332,7 +315,6 @@ Deno.test("run index cache: renamed and deleted workflows are seen through the w
       [newRun.id],
     );
 
-    // Deleted: its runs are no longer listed.
     await writer.workflowRepo.delete(doomed.id, doomed.name);
     const remaining = await reader.search({});
     assertEquals(remaining.total, 2);
@@ -369,10 +351,9 @@ Deno.test("run index cache: the serve warm-up leaves each snapshot cached for th
       },
     });
     warmup.start();
-    // A request that arrives during the warm-up shares its loads.
     const during = await serve.search({});
-    // Waited on, not disposed: a stopped warm-up lets go of the load in
-    // flight rather than waiting for it (swamp-club#3468).
+    // waited on, not disposed: a stopped warm-up lets go of the load in flight
+    // rather than waiting for it
     await warmup.finished();
 
     assertEquals(during.total, 2);
@@ -386,9 +367,6 @@ Deno.test("run index cache: the serve warm-up leaves each snapshot cached for th
   });
 });
 
-// The requests a dashboard issues together, over the same long-lived repo.
-// A queued cohort validates once after every member's observation; readers
-// arriving during a scan share one subsequent pass, never its older result.
 for (
   const scenario of ["queued", "rebuilding", "writer", "recent-stamp"] as const
 ) {

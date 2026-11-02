@@ -18,10 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Serve's shutdown disposes the continuation sweep, and must not wait for
- * the boot pass's read of a run index that has to be rebuilt or repaired
- * (swamp-club#3472): a real repository, a real serve context, and the
- * sweep as serve wires it.
+ * serve shutdown disposes the continuation sweep and must not wait for the boot
+ * pass's read of a run index that has to be rebuilt or repaired
  */
 
 import { assertEquals } from "@std/assert";
@@ -55,11 +53,6 @@ await initializeLogging({});
 
 const opts = { sanitizeOps: false, sanitizeResources: false };
 
-/**
- * Saves a workflow with `count` suspended runs, then deletes its run index,
- * so the next read of it rebuilds the index from every record. Returns the
- * directory the index lives in.
- */
 async function suspendedRunsWithoutIndex(
   repo: ServeRepo,
   count: number,
@@ -92,7 +85,6 @@ async function suspendedRunsWithoutIndex(
   return indexDir;
 }
 
-/** The continuation sweep as serve builds it, over `repo`. */
 function sweepService(repo: ServeRepo): ContinuationSweepService {
   const ctx = createServeCtx(repo);
   return new ContinuationSweepService({
@@ -102,7 +94,6 @@ function sweepService(repo: ServeRepo): ContinuationSweepService {
   });
 }
 
-/** Whether a file exists. */
 async function exists(path: string): Promise<boolean> {
   try {
     await Deno.stat(path);

@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Serve's shared control plane in team mode on a v3 datastore
- * (swamp-club#4096): heartbeats, active runs and continuation claims live in
- * the datastore, so a new leader settles what the instance before it left,
- * whichever checkout that instance ran in. Closes swamp-club#3962: a run a
- * stopped serve left `running` is settled by the next leader, from a second
- * checkout or after a quick restart of the same one.
- */
-
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -61,7 +52,6 @@ await initializeLogging({});
 
 const NEW_LEADER = "new-leader";
 
-/** A workflow run left `running` by serve instance `instanceId`. */
 function runningRun(instanceId: string) {
   const workflowId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
@@ -90,7 +80,6 @@ function inRoot<T>(repos: RowRepos, fn: () => Promise<T>): Promise<T> {
   return runInRootUnitOfWork(repos.a.repoContext, { flush: undefined }, fn);
 }
 
-/** The datastore's shared serve control plane, as A's serve opens it. */
 function sharedStore(repos: RowRepos, datastorePath: string) {
   const config = repos.a.datastoreConfig;
   if (isCustomDatastoreConfig(config)) throw new Error("not filesystem");
@@ -128,7 +117,6 @@ async function statusOf(
   ))?.status;
 }
 
-/** The boot reap serve's new leader runs, with team mode's rule. */
 async function reapAsNewLeader(
   repos: RowRepos,
   store: ReturnType<typeof sharedStore>,
@@ -211,7 +199,6 @@ Deno.test("serve team mode: reconciliation settles a demoted leader's runs while
     );
     await heartbeat(store, "demoted", 1_000);
     await heartbeat(store, "follower", 1_000);
-    // The record a running workflow's leader keeps for it.
     await store.put(
       `active-runs/demoted/${run.id}`,
       new TextEncoder().encode(JSON.stringify({
@@ -277,7 +264,6 @@ Deno.test("serve team mode: local token and schedule commands write where serve 
       await served.get("token-secrets/values/minted-locally") !== null,
       true,
     );
-    // A pause set without --server is one serve's scheduler sees.
     const workflowId = crypto.randomUUID();
     await new ControlPlaneSchedulePauseRepository(local).save({
       workflowId,
@@ -304,7 +290,6 @@ Deno.test("serve team mode: a token command run before serve restarts moves the 
       "token-secrets/values/old-token",
       new TextEncoder().encode("old-secret"),
     );
-    // The upgraded CLI's token command opens serve's store first.
     await localServeControlPlane(repos.repoA);
     const served = sharedStore(repos, datastorePath);
     assertEquals(

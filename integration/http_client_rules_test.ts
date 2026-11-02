@@ -18,18 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness test for HTTP client construction:
- *
- *   No `Deno.HttpClient` is created at module scope.
- *
- * `Deno.createHttpClient()` reads the platform certificate store. On a macOS
- * machine where that read fails, a module-scope client took the whole CLI
- * down with an uncaught `SecTrustSettingsCopyCertificates` error before any
- * command ran — including offline ones like `swamp help` and
- * `swamp model search` (swamp-club#2293). Clients must be created lazily, so
- * the failure reaches only the commands that actually open a connection.
- *
- * Static — no subprocesses, nothing is executed.
+ * no Deno.HttpClient at module scope: createHttpClient reads the platform cert
+ * store and a failure there would take down the whole CLI, offline commands
+ * included; create clients lazily
  */
 
 import { assertEquals } from "@std/assert";
@@ -39,7 +30,6 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-/** A client bound at module scope: `const`/`let` in column 0. */
 const MODULE_SCOPE_CLIENT =
   /^(?:export\s+)?(?:const|let|var)\s+\w+[^\n=]*=\s*(?:Deno\.createHttpClient|createTlsHttpClient)\(/m;
 

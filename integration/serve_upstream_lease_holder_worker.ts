@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Holds a v3 datastore's writer lease from a Worker, as another command of
- * the same checkout does while it writes (swamp-club#4089). The Worker has
- * its own module state, so the test's process does not join its hold.
- *
- * Send `{ kind: "hold", root }`; it answers `"held"`. Send `"release"`; it
- * answers `"released"`.
+ * holds a v3 writer lease from a Worker, as another command of the same
+ * checkout does while it writes; the Worker has its own module state, so the
+ * test's process does not join its hold
  */
 
 import { acquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";

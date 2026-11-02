@@ -28,13 +28,8 @@ import { ExtensionAutoResolver } from "../src/domain/extensions/extension_auto_r
 import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 import { createTarGz } from "../src/infrastructure/archive/tar_archive.ts";
 
-// Regression guard for swamp-club issue 121: an auto-resolver attempt on
-// a type whose extension is already installed on disk must NEVER overwrite
-// the local copy. Pre-fix, the adapter passed force:true to installExtension
-// and silently clobbered user edits. This test assembles the real adapter
-// and real domain service and confirms the file-survival invariant: the
-// on-disk file's mtime and contents are unchanged after a failed
-// auto-resolution.
+// auto-resolving an installed type must never overwrite the local copy: the
+// file's mtime and contents stay unchanged after a failed resolution
 
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/usr/bin/false"),
@@ -54,8 +49,6 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
     const modelsDir = join(extRoot, "models");
     await ensureDir(modelsDir);
 
-    // "User's local edits" — a marker comment that must survive the
-    // failed auto-resolve attempt.
     const localFile = join(modelsDir, "local_wip.ts");
     const localContents = [
       "// MY LOCAL WIP — do not lose this",
@@ -64,8 +57,7 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
     await Deno.writeTextFile(localFile, localContents);
     const originalMtime = (await Deno.stat(localFile)).mtime?.getTime();
 
-    // Lockfile records the fixture extension — isInstalled must return
-    // true on this combination (lockfile entry AND dir present).
+    // isInstalled needs both a lockfile entry and the dir present
     const lockfilePath = join(
       tmpDir,
       "extensions",
@@ -88,9 +80,8 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
       ),
     );
 
-    // The getExtension callback advertises the fixture — but install()
-    // must never be called, because isInstalled will short-circuit it.
-    // downloadArchive throws if reached; that's the regression signal.
+    // install must never be called because isInstalled short-circuits it;
+    // downloadArchive throws if reached
     let downloadArchiveCalled = false;
     const adapter = createAutoResolveInstallerAdapter({
       getExtension: (name: string) =>
@@ -115,9 +106,6 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
       denoRuntime: stubDenoRuntime,
     });
 
-    // Assemble the real service with a silent output adapter so the
-    // test stays quiet. We check behavior via adapter calls and file
-    // state, not via log lines.
     const output = createAutoResolveOutputAdapter("json");
     const resolver = new ExtensionAutoResolver({
       allowedCollectives: ["test"],
@@ -140,13 +128,8 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
 
     const result = await resolver.resolve(`${extensionName}/some-type`);
 
-    // The resolver must report failure — the type couldn't be
-    // registered and we refused to install.
     assertEquals(result, false);
-    // install() must not have reached the downloadArchive callback.
     assertEquals(downloadArchiveCalled, false);
-    // The local file must still exist with the original contents and
-    // mtime. These two assertions are the core user-visible invariant.
     const currentContents = await Deno.readTextFile(localFile);
     assertEquals(currentContents, localContents);
     const currentMtime = (await Deno.stat(localFile)).mtime?.getTime();
@@ -235,10 +218,9 @@ Deno.test("integration: auto-resolver preserves legacy source files", async () =
   }
 });
 
-// swamp-club#3727: a pinned extension whose recorded skill dir survives
-// an empty pulled cache is reinstalled, not refused as legacy. The skill
-// goes back where the lockfile records it, so the entry keeps its skill
-// path and the dir is not pruned.
+// a pinned extension whose recorded skill dir survives an empty pulled cache is
+// reinstalled, not refused as legacy, and the skill goes back where the
+// lockfile records it
 Deno.test("integration: auto-resolver reinstalls a pinned extension over its surviving skill dir", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_issue_3727_" });
   try {

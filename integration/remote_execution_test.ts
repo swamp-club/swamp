@@ -17,17 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Remote execution integration tests (design/enablers/remote-execution.md).
- *
- * Runs a real orchestrator assembly (worker gateway + capability service +
- * dispatch service + HTTP data plane on one localhost listener) and a real
- * worker (`runWorker` over an actual WebSocket): token mint and redemption
- * through the built-in models against a real datastore and vault, dispatch
- * of a method that exercises the capability verbs, environment shipping,
- * lease lifecycle, scheduling, and cancel propagation.
- */
-
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 
@@ -60,7 +49,6 @@ import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { RpcStreamEvent } from "../src/domain/remote/protocol.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
@@ -265,9 +253,8 @@ async function startOrchestrator(
     serverUrl: `ws://127.0.0.1:${port}`,
     shutdown: async () => {
       await server.shutdown();
-      // The disconnects the closed sockets recorded (swamp-club#3854) and the
-      // queue records a queued step wrote (swamp-club#3954) are written
-      // before the test removes the repo.
+      // wait for the disconnect and queue records still being written, so they
+      // land before the test removes the repo
       await gateway.settled();
       await dispatchService.settled();
     },
@@ -370,7 +357,6 @@ Deno.test({
         assertEquals(snapshot?.status, "idle");
         assertEquals(snapshot?.labels, { tier: "it" });
 
-        // ── Full dispatch exercising the capability verbs ────────────────
         const result = await orchestrator.dispatchService.executeRemote(
           remoteStepRequest(),
         );
@@ -379,8 +365,6 @@ Deno.test({
           ["log", "result"],
         );
 
-        // The written resource is durable in the orchestrator's datastore,
-        // with the shipped environment visible during execution only.
         const content = await orchestrator.repoContext.unifiedDataRepo
           .getContent(IT_TYPE, IT_DEFINITION_ID, "result-main");
         const attributes = JSON.parse(new TextDecoder().decode(content!));
@@ -390,7 +374,6 @@ Deno.test({
         assertEquals(attributes.vaultRoundTrip, "round-trip");
         assertEquals(Deno.env.get("REMOTE_IT_ENV"), undefined);
 
-        // The live-log file accumulated both durable lines.
         const log = await orchestrator.repoContext.unifiedDataRepo.getContent(
           IT_TYPE,
           IT_DEFINITION_ID,
@@ -401,8 +384,6 @@ Deno.test({
           "line one\nline two\n",
         );
 
-        // The method's write overrides survived the worker-to-serve hop
-        // (swamp-club#3574).
         const resultRecord = await orchestrator.repoContext.unifiedDataRepo
           .findByName(IT_TYPE, IT_DEFINITION_ID, "result-main");
         assertEquals(resultRecord!.lifetime, "7d");
@@ -415,11 +396,9 @@ Deno.test({
         assertEquals(logRecord!.lifetime, "1h");
         assertEquals(logRecord!.tags.probe, "file");
 
-        // The vault write the method performed landed in the real vault.
         const vault = await VaultService.fromRepository(dir);
         assertEquals(await vault.get("local", "from-method"), "round-trip");
 
-        // The lease lifecycle is queryable swamp data: completed, hasWrites.
         const leases = await orchestrator.repoContext.dataQueryService.query(
           'modelType == "swamp/step-lease" && specName == "lease"',
           { loadAttributes: true },
@@ -429,7 +408,6 @@ Deno.test({
         assertEquals(leases[0].attributes?.hasWrites, true);
         assertEquals(leases[0].attributes?.workerName, "it-worker");
 
-        // A second run sees the first run's data (read-your-own-writes).
         const second = await orchestrator.dispatchService.executeRemote(
           remoteStepRequest({ methodArgs: { echo: "again" } }),
         );
@@ -445,7 +423,6 @@ Deno.test({
         );
         assertEquals(after.priorWasNull, false);
 
-        // ── Scheduling: no-match placement queues then times out ────────
         const queueTimeout = await assertRejects(
           () =>
             orchestrator.dispatchService.executeRemote(
@@ -465,7 +442,6 @@ Deno.test({
         );
         assertEquals(targeted.outputs.length, 2);
 
-        // ── Cancel propagation ───────────────────────────────────────────
         const cancel = new AbortController();
         const hung = orchestrator.dispatchService.executeRemote(
           remoteStepRequest({
@@ -477,10 +453,8 @@ Deno.test({
           () => orchestrator.gateway.worker("it-worker")?.status === "busy",
           "hung dispatch to start",
         );
-        // Busy flips before the dispatch frame is sent (the durable status
-        // write sits between); give the frame time to reach the worker so
-        // the abort exercises the cooperative cancel path, not the
-        // pre-send fast path.
+        // give the dispatch frame time to reach the worker so the abort
+        // exercises the cooperative cancel path, not the pre-send fast path
         await new Promise((r) => setTimeout(r, 300));
         cancel.abort();
         await assertRejects(() => hung, Error);
@@ -489,13 +463,11 @@ Deno.test({
           "worker to return to idle after cancel",
         );
 
-        // The worker is still usable after a cancelled dispatch.
         const postCancel = await orchestrator.dispatchService.executeRemote(
           remoteStepRequest({ methodArgs: { echo: "post-cancel" } }),
         );
         assertEquals(postCancel.outputs.length, 2);
 
-        // ── Data plane authentication ────────────────────────────────────
         const unauthenticated = await fetch(
           orchestrator.serverUrl.replace("ws://", "http://") +
             "/data/resource",
@@ -600,9 +572,9 @@ Deno.test({
         await orchestrator.shutdown();
       }
 
-      // After first shutdown, the worker record should still show as
-      // non-disconnected (shutdown doesn't clean up worker model state).
-      // Second boot runs reconciliation and sweeps stale records.
+      // shutdown does not clean up worker model state, so the record stays
+      // non-disconnected until the second boot's reconciliation sweeps stale
+      // records
       orchestrator = await startOrchestrator(dir, { skipInit: true });
       try {
         const leases = await orchestrator.repoContext.dataQueryService.query(
@@ -703,7 +675,6 @@ Deno.test({
           assertEquals(worker.connected, true);
         }
 
-        // Both fleet members are dispatchable.
         const result1 = await orchestrator.dispatchService.executeRemote(
           remoteStepRequest({
             placement: { target: names[0] },
@@ -728,32 +699,26 @@ Deno.test({
   },
 });
 
-// ── Secret delivery on the worker (swamp-club#2760) ─────────────────────
-
 const SHELL_TYPE = ModelType.create("command/shell");
 const SHELL_DEFINITION_ID = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
 const VAULT_SECRET = "vault-s3cret-value";
 const DATA_SECRET = "data-s3cret-value";
 
 /**
- * Prints the step shell's own command line. `&& true` keeps `ps` from being
- * the last command of the `-c` string, which bash would exec in place of the
- * shell (pattern from integration/sensitive_data_delivery_test.ts).
+ * prints the step shell's own command line; `&& true` keeps ps from being the
+ * last command of the -c string, which bash would exec in place of the shell
  */
 const SHOW_ARGV = "ps -o args= -p $$ && true";
 
-/** Checks a delivered value without writing it into the command line. */
 function checkValue(word: string, secret: string, label: string): string {
   return `v=${word}; [ \${#v} -eq ${secret.length} ] && ` +
     `case "$v" in ${secret.slice(0, 5)}*) echo ${label}_OK;; esac`;
 }
 
-/** Where the shell step's secrets live in the orchestrator's vault. */
 const VAULT_REF = { vaultName: "local", key: "shell-vault-secret" };
 const DATA_REF = { vaultName: "local", key: "shell-data-secret" };
 const QUOTED_REF = { vaultName: "local", key: "shell-quoted-secret" };
 
-/** Stores the shell step's secrets in the orchestrator's vault. */
 async function storeShellSecrets(repoDir: string): Promise<void> {
   const vault = await VaultService.fromRepository(repoDir);
   await vault.put(VAULT_REF.vaultName, VAULT_REF.key, VAULT_SECRET);
@@ -761,18 +726,12 @@ async function storeShellSecrets(repoDir: string): Promise<void> {
   await vault.put(QUOTED_REF.vaultName, QUOTED_REF.key, "quoted-s3cret-value");
 }
 
-/**
- * A command/shell dispatch built the way #executeRemotely builds it for a
- * protocol version 6 worker: the arguments with their sentinels, and the
- * reference behind each, which the worker loads through the protected route.
- */
 function shellStepRequest(onEvent?: (event: RpcStreamEvent) => void) {
   const step = new VaultSecretBag(new SecretBagRegistry());
   const vaultSentinel = step.addSecret(
     VAULT_REF,
     "methods.execute.arguments.run",
   );
-  // A data entry holds its value on serve and still ships by reference.
   const dataSentinel = step.addDataSecret(DATA_SECRET, DATA_REF);
   // Kept separate so only this secret's single-quoted use raises the warning.
   const quotedSentinel = step.addSecret(
@@ -857,8 +816,6 @@ Deno.test({
           "worker enrollment",
         );
 
-        // The worker loads the references itself, through the protected
-        // route, and its command line carries env references.
         await storeShellSecrets(dir);
         const events: RpcStreamEvent[] = [];
         const result = await orchestrator.dispatchService.executeRemote(
@@ -872,9 +829,7 @@ Deno.test({
         );
         assertEquals(argv !== undefined, true, stdout);
         assertStringIncludes(argv!, "__SWAMP_VAULT_");
-        // The worker redacts both values, so plaintext in argv shows as ***.
         assertEquals(argv!.includes("***"), false, argv);
-        // The single-quote warning raised on the worker reached serve.
         assertEquals(
           events.some((e) =>
             e.kind === "method_event" &&
@@ -892,8 +847,6 @@ Deno.test({
     });
   },
 });
-
-// ── Draining with work in flight (swamp-club#3156) ──────────────────────
 
 Deno.test({
   name:
@@ -936,7 +889,6 @@ Deno.test({
           "both workers enrolled and idle",
         );
 
-        // A step on drain-a that runs until the test releases it.
         let firstSettled = false;
         const first = orchestrator.dispatchService.executeRemote({
           ...shellStepRequest(),
@@ -958,7 +910,6 @@ Deno.test({
           }
         }, "the first step to start on drain-a");
 
-        // The worker is told to stop, as SIGTERM does, with that step running.
         drainFirst!("signal");
         await waitFor(
           () => orchestrator.gateway.worker("drain-a")?.status === "draining",
@@ -966,13 +917,11 @@ Deno.test({
         );
         assertEquals(firstSettled, false);
 
-        // A step dispatched during the drain goes to the other worker.
         const second = await orchestrator.dispatchService.executeRemote(
           remoteStepRequest({ methodArgs: { echo: "during the drain" } }),
         );
         assertEquals(second.workerName, "drain-b");
 
-        // The step in flight still finishes, and then the worker leaves.
         await Deno.writeTextFile(release, "");
         const finished = await first;
         assertEquals(finished.workerName, "drain-a");

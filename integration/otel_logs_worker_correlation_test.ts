@@ -17,18 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Worker-subprocess coverage for the OTel logs signal (swamp-club#1158).
-//
-// The production worker child (`swamp worker exec-dispatch`) boots through
-// main.ts, which runs initTracing() (extracting the propagated TRACEPARENT) and
-// shutdownLogs(); and dispatch_handler.ts builds the child env
-// (buildRunnerEnvironment) from the worker's own environment, so the worker's
-// OTEL_* is inherited, with the dispatch's trace headers on top. This test
-// proves both halves without spawning a subprocess:
-//   1. The env plumbing carries OTEL_* + TRACEPARENT into the child env.
-//   2. Feeding that child env through the real initTracing's env lookup, then
-//      runWithParentTrace, makes the child's exported log records carry the
-//      *parent's* trace id.
+// the worker child's env carries OTEL_* and TRACEPARENT, and feeding it through
+// initTracing and runWithParentTrace makes exported log records carry the
+// parent's trace id; no subprocess is spawned
 
 import { assert, assertEquals } from "@std/assert";
 import { isDeniedEnvVar } from "../src/domain/remote/environment_snapshot.ts";
@@ -56,21 +47,19 @@ Deno.test("worker env: OTEL_* is inherited and TRACEPARENT is overlaid into the 
     base,
     {
       SOME_SHIPPED: "value",
-      // The orchestrator's own telemetry settings are never shipped
-      // (swamp-club#2467); an older orchestrator that ships them is ignored.
+      // the orchestrator's own telemetry settings are never shipped; an older
+      // orchestrator that ships them is ignored
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://orchestrator-collector.test",
     },
     { traceparent: `00-${PARENT_TRACE}-${PARENT_SPAN}-01` },
   );
 
-  // OTEL_* survives from the worker's own env into the child.
   assertEquals(
     env.OTEL_EXPORTER_OTLP_ENDPOINT,
     "http://collector.test",
   );
   assertEquals(env.OTEL_EXPORTER_OTLP_HEADERS, "x-honeycomb-team=key");
   assertEquals(env.SOME_SHIPPED, "value");
-  // Propagated trace context is present as the env var initTracing reads.
   assertEquals(env.TRACEPARENT, `00-${PARENT_TRACE}-${PARENT_SPAN}-01`);
 
   // The snapshot denylist keeps the orchestrator's telemetry config and trace
@@ -83,11 +72,9 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
   const savedFetch = globalThis.fetch;
   const captured: { url: string; body: string }[] = [];
 
-  // The worker child reads TRACEPARENT from its own environment, which
-  // dispatch_handler.ts builds by overlaying the propagated trace headers. Hand
-  // that child env to initTracing through its env lookup instead of writing it
-  // into the process-wide Deno.env: parallel test files and InProcessExecutor
-  // save, set, and delete TRACEPARENT there concurrently (swamp-club#2445).
+  // hand the child env to initTracing through its env lookup, not the
+  // process-wide Deno.env, which parallel test files and InProcessExecutor
+  // mutate concurrently
   const childEnv = buildRunnerEnvironment({}, {}, {
     traceparent: `00-${PARENT_TRACE}-${PARENT_SPAN}-01`,
   });
@@ -106,9 +93,9 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
   try {
     await shutdownLogs();
 
-    // This mirrors main.ts: initTracing() extracts TRACEPARENT and returns the
-    // parent context; runWithParentTrace activates it for the run.
-    // Endpoint passed via config to avoid Deno.env races with parallel tests.
+    // mirrors main.ts: initTracing extracts TRACEPARENT and runWithParentTrace
+    // activates it; the endpoint is passed via config to avoid Deno.env races
+    // with parallel tests
     const parentCtx = await initTracing({
       endpoint: "http://collector.test",
       envGet: (key) => childEnv[key],
@@ -121,7 +108,6 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
 
     await runWithParentTrace(parentCtx, async () => {
       await withSpan("swamp.model.method.run", {}, (span) => {
-        // The child span must be parented to the propagated trace.
         assertEquals(span.spanContext().traceId, PARENT_TRACE);
         getSwampLogger(["model", "method", "run", "m", "execute"])
           .info`work in the worker child`;
@@ -132,7 +118,6 @@ Deno.test("worker correlation: child logs carry the propagated parent trace id",
     await shutdownLogs();
     await shutdownTracing();
 
-    // Find the exported log record and confirm it carries the PARENT trace id.
     let found:
       | { traceId?: string; body?: { stringValue?: string } }
       | undefined;

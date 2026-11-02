@@ -17,16 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for CEL expression data access.
- *
- * Tests the full flow:
- * 1. Reference other models by name
- * 2. Access data from other models (latest and specific versions)
- * 3. Access vault secrets via CEL
- * 4. Verify lazy evaluation
- */
-
 import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import {
   assertEquals,
@@ -94,17 +84,12 @@ function createOwner(ref: string): OwnerDefinition {
   };
 }
 
-// ============================================================================
-// Reference Other Models by Name
-// ============================================================================
-
 Deno.test("CEL Data Access: reference model input attributes by name", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create source model
     const sourceModel = Definition.create({
       name: "config_model",
       globalArguments: {
@@ -115,7 +100,6 @@ Deno.test("CEL Data Access: reference model input attributes by name", async () 
     });
     await definitionRepo.save(type, sourceModel);
 
-    // Create dependent model
     const dependentModel = Definition.create({
       name: "app_model",
       globalArguments: {
@@ -153,7 +137,6 @@ Deno.test("CEL Data Access: reference model by UUID", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create source model
     const sourceModel = Definition.create({
       name: "source_by_id",
       globalArguments: {
@@ -162,15 +145,12 @@ Deno.test("CEL Data Access: reference model by UUID", async () => {
     });
     await definitionRepo.save(type, sourceModel);
 
-    // Build context to verify UUID access works
     const modelResolver = new ModelResolver(definitionRepo, { repoDir });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Model should be accessible by both name and UUID
     assertExists(context.model["source_by_id"]);
     assertExists(context.model[sourceModel.id]);
 
-    // Both should have the same data
     assertEquals(
       context.model["source_by_id"].input.globalArguments.value,
       "accessed-by-id",
@@ -188,7 +168,6 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create model with hyphenated name
     const hyphenModel = Definition.create({
       name: "my-hyphenated-model",
       globalArguments: {
@@ -197,18 +176,15 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
     });
     await definitionRepo.save(type, hyphenModel);
 
-    // Build context
     const modelResolver = new ModelResolver(definitionRepo, { repoDir });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Should be accessible by name
     assertExists(context.model["my-hyphenated-model"]);
     assertEquals(
       context.model["my-hyphenated-model"].input.globalArguments.vpc_id,
       "vpc-12345",
     );
 
-    // Test CEL evaluation with bracket notation
     const celEvaluator = new CelEvaluator();
     const result = celEvaluator.evaluate(
       'model["my-hyphenated-model"].input.globalArguments.vpc_id',
@@ -217,10 +193,6 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
     assertEquals(result, "vpc-12345");
   });
 });
-
-// ============================================================================
-// Access Data from Other Models
-// ============================================================================
 
 Deno.test("CEL Data Access: access latest resource via model.X.resource.specName", async () => {
   await withTempDir(async (repoDir) => {
@@ -234,14 +206,12 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:create");
 
-    // Create model
     const sourceModel = Definition.create({
       name: "data_source",
       globalArguments: {},
     });
     await definitionRepo.save(type, sourceModel);
 
-    // Create data with multiple versions
     const data = Data.create({
       name: "resource_state",
       contentType: "application/json",
@@ -251,7 +221,6 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
       ownerDefinition: owner,
     });
 
-    // Write 3 versions
     for (let i = 1; i <= 3; i++) {
       await dataRepo.save(
         type,
@@ -261,14 +230,12 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
       );
     }
 
-    // Build context
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Access latest resource via model.X.resource.specName.instanceName
     const modelData = context.model["data_source"];
     assertExists(modelData);
     assertExists(modelData.resource);
@@ -277,7 +244,6 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
     const resourceRecord = resourceInstances["resource_state"];
     assertExists(resourceRecord);
 
-    // Latest version should be 3
     assertEquals(resourceRecord.version, 3);
     assertEquals(resourceRecord.attributes.version, 3);
     assertEquals(resourceRecord.attributes.id, "id-3");
@@ -297,14 +263,12 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:version-access");
 
-    // Create model
     const model = Definition.create({
       name: "versioned_model",
       globalArguments: {},
     });
     await definitionRepo.save(type, model);
 
-    // Create versioned data
     const data = Data.create({
       name: "history",
       contentType: "application/json",
@@ -314,7 +278,6 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
       ownerDefinition: owner,
     });
 
-    // Write 5 versions with different values
     for (let i = 1; i <= 5; i++) {
       await dataRepo.save(
         type,
@@ -328,7 +291,6 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
       );
     }
 
-    // Build context
     const dqs = new DataQueryService(catalog, dataRepo);
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
@@ -339,7 +301,6 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
 
     assertExists(context.data);
 
-    // Access specific versions
     for (let v = 1; v <= 5; v++) {
       const vData: DataRecord | null = await context.data.version(
         "versioned_model",
@@ -352,7 +313,6 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
       assertEquals(vData.attributes.value, v * 100);
     }
 
-    // Non-existent version returns null
     const nonexistent = await context.data.version(
       "versioned_model",
       "history",
@@ -389,7 +349,6 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
       ownerDefinition: owner,
     });
 
-    // Write versions
     for (let i = 1; i <= 4; i++) {
       await dataRepo.save(
         type,
@@ -454,7 +413,6 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
       ownerDefinition: owner,
     });
 
-    // Write 7 versions
     for (let i = 1; i <= 7; i++) {
       await dataRepo.save(
         type,
@@ -479,10 +437,6 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
   });
 });
 
-// ============================================================================
-// Cross-Model Data References
-// ============================================================================
-
 Deno.test("CEL Data Access: reference resource from dependent model", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -495,14 +449,12 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:cross-ref");
 
-    // Create VPC model with resource data
     const vpcModel = Definition.create({
       name: "my_vpc",
       globalArguments: { cidr: "10.0.0.0/16" },
     });
     await definitionRepo.save(type, vpcModel);
 
-    // Create VPC resource data
     const vpcData = Data.create({
       name: "resource",
       contentType: "application/json",
@@ -522,11 +474,9 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
       })),
     );
 
-    // Create subnet model that references VPC resource data via new pattern
     const subnetModel = Definition.create({
       name: "my_subnet",
       globalArguments: {
-        // New pattern: model.X.resource.specName.instanceName.attributes.field
         vpc_id_ref:
           "${{ model.my_vpc.resource.resource.resource.attributes.vpcId }}",
         vpc_state_ref:
@@ -535,7 +485,6 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
     });
     await definitionRepo.save(type, subnetModel);
 
-    // Evaluate subnet model
     const evalService = new ExpressionEvaluationService(
       definitionRepo,
       repoDir,
@@ -566,7 +515,6 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:chain");
 
-    // Model A - base config
     const modelA = Definition.create({
       name: "model_a",
       globalArguments: { base_value: 100 },
@@ -589,7 +537,6 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
       new TextEncoder().encode(JSON.stringify({ computed: 100 })),
     );
 
-    // Model B - uses A
     const modelB = Definition.create({
       name: "model_b",
       globalArguments: { multiplier: 2 },
@@ -612,7 +559,6 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
       new TextEncoder().encode(JSON.stringify({ computed: 200 })),
     );
 
-    // Model C - references both A and B resource data via new pattern
     const modelC = Definition.create({
       name: "model_c",
       globalArguments: {
@@ -644,17 +590,12 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
   });
 });
 
-// ============================================================================
-// Environment Variables in CEL
-// ============================================================================
-
 Deno.test("CEL Data Access: access environment variables", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Set test env vars
     await withMockedEnv(
       { CEL_TEST_VAR: "test-value", CEL_TEST_NUMBER: "42" },
       async () => {
@@ -688,7 +629,6 @@ Deno.test("CEL Data Access: access environment variables", async () => {
           "${{ env.CEL_TEST_NUMBER }}",
         );
 
-        // Resolve runtime expressions (env + vault) — this is the runtime phase
         const runtimeResult = await evalService
           .resolveRuntimeExpressionsInDefinition(
             result.definition,
@@ -709,10 +649,6 @@ Deno.test("CEL Data Access: access environment variables", async () => {
     );
   });
 });
-
-// ============================================================================
-// Complex CEL Expressions
-// ============================================================================
 
 Deno.test("CEL Data Access: conditional expressions", async () => {
   await withTempDir(async (repoDir) => {
@@ -802,23 +738,16 @@ Deno.test("CEL Data Access: string concatenation and formatting", async () => {
   });
 });
 
-// ============================================================================
-// Edge Cases
-// ============================================================================
-
 Deno.test("CEL Data Access: handle missing model gracefully", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-    // Build context with no models
     const modelResolver = new ModelResolver(definitionRepo, { repoDir });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Context should have empty model map
     assertEquals(Object.keys(context.model).length, 0);
 
-    // Data functions should handle missing models
     assertExists(context.data);
     const versions = context.data.listVersions("nonexistent", "data");
     assertEquals(versions, []);
@@ -839,7 +768,6 @@ Deno.test("CEL Data Access: handle missing data gracefully", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
-    // Create model without any data
     const model = Definition.create({
       name: "no_data_model",
       globalArguments: { value: 1 },
@@ -852,10 +780,8 @@ Deno.test("CEL Data Access: handle missing data gracefully", async () => {
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // Model exists but has no data
     assertExists(context.model["no_data_model"]);
 
-    // Data namespace functions handle gracefully
     assertExists(context.data);
     const versions = context.data.listVersions("no_data_model", "nonexistent");
     assertEquals(versions, []);
@@ -883,7 +809,6 @@ Deno.test("CEL Data Access: multiple resource items from same model", async () =
     });
     await definitionRepo.save(type, model);
 
-    // Create multiple resource data items
     const dataItems = ["stdout", "stderr", "exitcode", "timing"];
 
     for (const name of dataItems) {
@@ -910,7 +835,6 @@ Deno.test("CEL Data Access: multiple resource items from same model", async () =
     });
     const context = await modelResolver.buildContext(new RunSensitiveValues());
 
-    // All resource items accessible via model.X.resource.specName.instanceName
     const modelData = context.model["multi_data_model"];
     assertExists(modelData);
     assertExists(modelData.resource);
@@ -922,10 +846,6 @@ Deno.test("CEL Data Access: multiple resource items from same model", async () =
     }
   });
 });
-
-// ============================================================================
-// specName != dataName (writeResource pattern)
-// ============================================================================
 
 Deno.test(
   "CEL Data Access: cross-model resource with specName != dataName (writeResource pattern)",
@@ -941,16 +861,12 @@ Deno.test(
       const type = ModelType.create("test/model");
       const owner = createOwner("test/model:spec-name-test");
 
-      // Create "s3-infra" model
       const s3InfraModel = Definition.create({
         name: "s3-infra",
         globalArguments: {},
       });
       await definitionRepo.save(type, s3InfraModel);
 
-      // Write resource data with specName="summary", dataName="current"
-      // This mirrors what writeResource("summary", "current", data) produces:
-      //   tags.type = "resource", tags.specName = "summary", data.name = "current"
       const resourceData = Data.create({
         name: "current",
         contentType: "application/json",
@@ -966,7 +882,6 @@ Deno.test(
         new TextEncoder().encode(JSON.stringify({ totalBuckets: 42 })),
       );
 
-      // Create "s3-report" model referencing model.s3-infra.resource.summary.current
       const s3ReportModel = Definition.create({
         name: "s3-report",
         globalArguments: {
@@ -1008,7 +923,6 @@ Deno.test(
       const type = ModelType.create("test/model");
       const owner = createOwner("test/model:cli-spec-name-test");
 
-      // Create "infra" model with resource data: specName="report", dataName="current"
       const infraModel = Definition.create({
         name: "infra",
         globalArguments: {},
@@ -1030,7 +944,6 @@ Deno.test(
         new TextEncoder().encode(JSON.stringify({ instanceCount: 7 })),
       );
 
-      // Create "app" model referencing the infra resource
       const appModel = Definition.create({
         name: "app",
         globalArguments: {
@@ -1040,7 +953,6 @@ Deno.test(
       });
       await definitionRepo.save(type, appModel);
 
-      // Run model evaluate via CLI
       const { stdout, stderr, code } = await runCliCommand(
         ["--json", "model", "evaluate", "app", "--repo-dir", repoDir],
         Deno.cwd(),
@@ -1057,10 +969,6 @@ Deno.test(
   },
 );
 
-// ============================================================================
-// Cross-Model Type Resource References (Issue #370)
-// ============================================================================
-
 Deno.test("CEL Data Access: cross-type resource with specName tag via ExpressionEvaluationService (#370)", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -1072,20 +980,15 @@ Deno.test("CEL Data Access: cross-type resource with specName tag via Expression
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const owner = createOwner("user/s3-inventory:create");
 
-    // Two distinct model types — mirrors the real-world scenario from issue #370
-    // Uses @-prefixed types as in the actual user report
     const inventoryType = ModelType.create("@user/s3-inventory");
     const reportType = ModelType.create("@user/s3-report");
 
-    // Source model under inventory type — uses hyphenated name like issue #370
     const sourceModel = Definition.create({
       name: "s3-infra",
       globalArguments: { region: "us-east-1" },
     });
     await definitionRepo.save(inventoryType, sourceModel);
 
-    // Write resource data the way createResourceWriter does:
-    //   name = "current" (instance name), specName tag = "summary"
     const resourceData = Data.create({
       name: "current",
       contentType: "application/json",
@@ -1102,9 +1005,6 @@ Deno.test("CEL Data Access: cross-type resource with specName tag via Expression
       new TextEncoder().encode(JSON.stringify({ totalBuckets: 42 })),
     );
 
-    // Dependent model under a *different* type referencing the source's resource
-    // Uses bracket notation for hyphenated name, matching the error from issue #370:
-    //   model["s3-infra"].resource.summary.current.attributes.totalBuckets
     const reportModel = Definition.create({
       name: "s3-report",
       globalArguments: {
@@ -1114,8 +1014,6 @@ Deno.test("CEL Data Access: cross-type resource with specName tag via Expression
     });
     await definitionRepo.save(reportType, reportModel);
 
-    // Evaluate via ExpressionEvaluationService — the code path used by
-    // `swamp model method run` and `swamp model evaluate`
     const evalService = new ExpressionEvaluationService(
       definitionRepo,
       repoDir,
@@ -1146,7 +1044,6 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
     const reportType = ModelType.create("@user/s3-report");
     const owner = createOwner("user/s3-inventory:create");
 
-    // Step 1: Create source model and save resource data under its UUID
     const originalModel = Definition.create({
       name: "s3-infra",
       globalArguments: { region: "us-east-1" },
@@ -1169,8 +1066,6 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
       new TextEncoder().encode(JSON.stringify({ totalBuckets: 42 })),
     );
 
-    // Step 2: Delete the definition and recreate with a NEW UUID
-    // (simulates `swamp model delete` + `swamp model create`)
     await definitionRepo.delete(inventoryType, originalModel.id);
     const recreatedModel = Definition.create({
       name: "s3-infra",
@@ -1178,11 +1073,9 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
     });
     await definitionRepo.save(inventoryType, recreatedModel);
 
-    // Sanity check: the UUIDs are different
     const uuidsDiffer = originalModel.id !== recreatedModel.id;
     assertEquals(uuidsDiffer, true);
 
-    // Step 3: Create dependent model referencing the source's resource
     const reportModel = Definition.create({
       name: "s3-report",
       globalArguments: {
@@ -1192,8 +1085,6 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
     });
     await definitionRepo.save(reportType, reportModel);
 
-    // Step 4: Evaluate — this used to fail with "No such key: resource"
-    // because data lived under the old UUID and the new UUID had no data.
     const evalService = new ExpressionEvaluationService(
       definitionRepo,
       repoDir,
@@ -1210,10 +1101,6 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
     assertEquals(result.definition.globalArguments.bucket_count, 42);
   });
 });
-
-// ============================================================================
-// Sync Disk Read: data.latest() sees fresh data written after buildContext()
-// ============================================================================
 
 Deno.test("CEL Data Access: data.latest() sees data written after buildContext()", async () => {
   await withTempDir(async (repoDir) => {
@@ -1233,7 +1120,6 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
     });
     await definitionRepo.save(type, model);
 
-    // Write initial data
     const data = Data.create({
       name: "live_state",
       contentType: "application/json",
@@ -1255,7 +1141,6 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
     try {
-      // Build context — captures a snapshot of coordinates
       const modelResolver = new ModelResolver(definitionRepo, {
         repoDir,
         dataRepo,
@@ -1265,7 +1150,6 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
         new RunSensitiveValues(),
       );
 
-      // Write NEW data AFTER context was built
       await dataRepo.save(
         type,
         model.id,
@@ -1273,10 +1157,8 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
         new TextEncoder().encode(JSON.stringify({ step: 2, fresh: true })),
       );
 
-      // Invalidate catalog so re-backfill picks up the new data
       catalog.invalidate();
 
-      // data.latest() should see the fresh version
       assertExists(context.data);
       const latest = await context.data.latest(
         "fresh_data_model",
@@ -1292,20 +1174,10 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
   });
 });
 
-// ============================================================================
-// swamp-club#2172 — CEL-substituted data content must not re-enter as source
-// ============================================================================
-
 /**
- * A plain, NON-sensitive string field holding `${{ env.X }}` text is read via
- * `data.latest()`, spliced into the definition by the CEL pass, and must then
- * be left alone by the runtime pass. Before the authored-expression gate, the
- * runtime pass re-parsed the post-CEL tree and resolved it, letting anyone who
- * could write a plain string field read any environment variable of the swamp
- * process.
- *
- * The env variant is used rather than vault because it is the one with no
- * redaction anywhere — if the gate fails, the plaintext is simply present.
+ * a plain string field holding ${{ env.X }} text, read via data.latest() and
+ * spliced in by the CEL pass, must be left alone by the runtime pass; env has
+ * no redaction, so a gate failure shows plaintext
  */
 Deno.test("CEL Data Access: env expression injected through data.latest() is not resolved", async () => {
   await withMockedEnv(
@@ -1338,9 +1210,8 @@ Deno.test("CEL Data Access: env expression injected through data.latest() is not
           ownerDefinition: owner,
         });
 
-        // Attacker-controlled text in a field with no `sensitive` marking and no
-        // `_swamp.sensitiveFields` tag — the swamp-club#2119 read-side gate
-        // correctly passes it through as literal text.
+        // attacker-controlled text in a field with no sensitive marking, so the
+        // read-side gate passes it through as literal text
         await dataRepo.save(
           type,
           producer.id,
@@ -1419,9 +1290,9 @@ Deno.test("CEL Data Access: env expression injected through data.latest() is not
 });
 
 /**
- * The positive half of the same seam: an author-written runtime expression in
- * the source definition still resolves after a CEL pass that substitutes data
- * around it. Without this, the gate could "pass" by resolving nothing at all.
+ * the positive half: an author-written runtime expression still resolves after
+ * a CEL pass substitutes data around it, so the gate cannot pass by resolving
+ * nothing
  */
 Deno.test("CEL Data Access: authored env expression still resolves alongside substituted data", async () => {
   await withMockedEnv(
@@ -1512,14 +1383,9 @@ Deno.test("CEL Data Access: authored env expression still resolves alongside sub
 });
 
 /**
- * The vault route through the second pass. The injected text is not a vault
- * reference at all — it is a data.latest() call naming another model's
- * sensitive-tagged field, which the data-READ path resolves through the vault
- * on access. The runtime gate never sees this shape; only the gate on the
- * step-input pass stops it. Asserted on the vault call count, never on the
- * absence of a value: absence cannot distinguish a blocked read from a
- * redaction. The unrestricted control at the end proves the fixture really
- * does reach the vault, so the zero above is the gate and not a broken setup.
+ * the injected text is a data.latest() call naming a sensitive field, which the
+ * read path resolves via the vault; only the step-input gate stops it, asserted
+ * on vault call count, with an unrestricted control
  */
 Deno.test("CEL Data Access: data.latest() on a sensitive field injected through a plain field never reads the vault", async () => {
   await withTempDir(async (repoDir) => {
@@ -1542,8 +1408,8 @@ Deno.test("CEL Data Access: data.latest() on a sensitive field injected through 
       return originalGet(vaultName, secretKey, callerContext);
     };
 
-    // The victim: a sensitive-tagged field holding a vault reference, which
-    // the read path resolves on access (the swamp-club#2119 contract).
+    // a sensitive-tagged field holding a vault reference, which the read path
+    // resolves on access
     const victim = Definition.create({ name: "victim", globalArguments: {} });
     await definitionRepo.save(type, victim);
     await dataRepo.save(
@@ -1566,7 +1432,6 @@ Deno.test("CEL Data Access: data.latest() on a sensitive field injected through 
       ),
     );
 
-    // The attacker: a plain, non-sensitive field naming the victim's field.
     const injected = "${{ data.latest('victim', 'creds').attributes.token }}";
     const injector = Definition.create({
       name: "injector",
@@ -1650,11 +1515,6 @@ Deno.test("CEL Data Access: data.latest() on a sensitive field injected through 
   });
 });
 
-// ============================================================================
-// DataRecord.path replaces model.<name>.file.<spec>.<instance>.path
-// (swamp-club#2288)
-// ============================================================================
-
 Deno.test("CEL Data Access: data.latest().path matches the deprecated model.*.file path", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -1732,7 +1592,6 @@ Deno.test("CEL Data Access: data.latest().path matches the deprecated model.*.fi
       assertEquals(projected.length, 1);
       assertPathEquals(projected[0] as string, deprecated);
 
-      // Resources carry their stored JSON file too.
       const summary = await context.data.latest("r-lab", "summary");
       assertEquals(
         JSON.parse(await Deno.readTextFile(summary!.path)),
@@ -1810,10 +1669,6 @@ Deno.test("CEL Data Access: data.latest().path is empty for ephemeral data", asy
   });
 });
 
-// ============================================================================
-// Spec name passed where data.latest() expects a data name (swamp-club#2572)
-// ============================================================================
-
 Deno.test("CEL Data Access: data.latest() with a spec name explains the data names written under it", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -1828,7 +1683,6 @@ Deno.test("CEL Data Access: data.latest() with a spec name explains the data nam
     const model = Definition.create({ name: "mirror", globalArguments: {} });
     await definitionRepo.save(type, model);
 
-    // Extensions often write a spec under a per-run instance name.
     await dataRepo.save(
       type,
       model.id,
@@ -1871,7 +1725,6 @@ Deno.test("CEL Data Access: data.latest() with a spec name explains the data nam
       'mirror has 1 record of spec "syncRunSummary": "sync-2026-01-01T00-00-00Z".',
     );
 
-    // The data name the hint points to resolves.
     assertEquals(
       await celEvaluator.evaluateAsync(
         'data.latest("mirror", "sync-2026-01-01T00-00-00Z").attributes.prCount',
@@ -1883,11 +1736,6 @@ Deno.test("CEL Data Access: data.latest() with a spec name explains the data nam
   });
 });
 
-/**
- * Saves an active "web" and a "db" deleted by a deletion marker, indexing them
- * through write-through or through a full catalog rebuild, and checks that
- * data query and CEL data.query() filter on lifecycle the same way.
- */
 async function assertLifecycleQueries(
   indexedBy: "write-through" | "rebuild",
 ): Promise<void> {
@@ -1930,7 +1778,6 @@ async function assertLifecycleQueries(
       await saveServer(server("web"), { id: 1 });
       const db = server("db");
       await saveServer(db, { id: 2 });
-      // What a kind: delete method writes (method_execution_service.ts).
       await saveServer(db.withDeletionMarker({ version: 2 }), {
         id: 2,
         deletedAt: "2026-10-21T00:00:00.000Z",

@@ -17,13 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// A client machine for serve_upstream_lock_test.ts (swamp-club#3985): a
-// serve-mode checkout in a Worker of its own, so two of them write one
-// datastore through serve at once as two machines would, each with its own
-// process state (v3 handles, leases, serve-upstream bindings). Each command
-// takes the behavior's lock as `model method run` does
-// (`acquireModelLocks`), saves one data version in a root unit, and releases
-// the lock once the root has committed.
+// a serve-mode checkout in its own Worker, so two write one datastore through
+// serve at once as two machines would, each with its own process state
 
 import "../src/domain/models/models.ts";
 import { z } from "zod";
@@ -49,12 +44,9 @@ export type ClientWorkerRequest = {
   readonly env: Record<string, string | undefined>;
   readonly modelType: string;
   readonly modelId: string;
-  /** The data name and id every save writes a version of. */
   readonly dataName: string;
   readonly dataId: string;
-  /** How many commands to run, one after another. */
   readonly count: number;
-  /** Names this client in the content it saves. */
   readonly label: string;
 };
 
@@ -62,9 +54,7 @@ export type ClientWorkerMessage =
   | { readonly kind: "loaded" }
   | {
     readonly kind: "done";
-    /** The version each command saved, in order. */
     readonly versions: readonly number[];
-    /** Each command's failure, if any. */
     readonly errors: readonly string[];
   }
   | { readonly kind: "failed"; readonly error: string };

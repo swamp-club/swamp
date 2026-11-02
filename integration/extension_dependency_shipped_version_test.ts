@@ -18,10 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Push audits the dependency version it ships (swamp-club#3352): the real
- * prepare deps read the lockfile the bundler honours from a temp project on
- * disk and hand it to the trust checker. The registries are an injected
- * fetch, so only the lockfile wiring is under test.
+ * the real prepare deps read the lockfile the bundler honours and hand it to
+ * the trust checker; registries are an injected fetch, so only the lockfile
+ * wiring is under test
  */
 
 import { assertEquals } from "@std/assert";
@@ -100,8 +99,7 @@ Deno.test("push dependency audit: a deno.json project audits the version its den
     });
     assertEquals(result.audited[0].version, "2.0.0");
     assertEquals(result.audited[0].resolvedFrom, "lockfile");
-    // The lock fixed the range's version, so it costs nothing
-    // (swamp-club#3970).
+    // the lock fixed the range's version, so it costs nothing
     assertEquals(result.warnings.map((w) => w.message), []);
   });
 });

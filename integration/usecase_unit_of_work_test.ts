@@ -18,11 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Units of work for the write use cases the characterization suites don't
- * reach (swamp-club#3025). Each row runs through `runRow`, which builds every
- * repository-bound unit in reject mode and checks that the use cases' units
- * staged exactly the marks they made. Here each row must also have marked
- * something inside a use case, so the check cannot pass vacuously.
+ * each row must also have marked something inside a use case, so the
+ * staged-marks check cannot pass vacuously
  */
 
 import "../src/domain/models/models.ts";
@@ -56,8 +53,8 @@ async function workflowSeed(repos: RowRepos): Promise<void> {
 const ROWS: AnyRow[] = [
   row({
     name: "model method run",
-    // `noop` is a read method, whose publish lock re-stages its report
-    // versions outside the use case (swamp-club#3934).
+    // noop is a read method, whose publish lock re-stages its report versions
+    // outside the use case
     outsideUseCase: {
       cli: READ_RUN_PUBLISH_MARKS,
       serve: READ_RUN_PUBLISH_MARKS,

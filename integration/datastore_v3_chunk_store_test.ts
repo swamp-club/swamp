@@ -17,11 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * The v3 chunk store over the filesystem `storage/1` implementation, on a
- * real temp directory (swamp-club#3237).
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
@@ -49,7 +44,6 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** The filesystem storage, reporting a small chunk size. */
 function smallChunks(dir: string, maxChunkBytes: number): DatastoreStorage {
   const storage = new FileSystemStorage(dir);
   return {

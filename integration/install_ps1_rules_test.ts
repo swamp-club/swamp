@@ -17,17 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: scripts/install.ps1 is safe to run with
-// `irm https://swamp-club.com/install.ps1 | iex`, the documented Windows
-// install. Under iex the script runs inside the caller's own PowerShell
-// session, so `exit` closes the user's window and anything set at the top
-// level (the error preference, functions, variables) leaks into their session.
-// The script keeps only its param block at the top level and runs everything
-// else in a child scope (`& { ... }`), and never calls `exit`.
-//
-// The checks read the script as text: there is no PowerShell on the Linux and
-// macOS CI runners. The count assertions keep them from passing vacuously if
-// the comment stripping or the depth tracking stops matching.
+// install.ps1 must be safe under irm | iex, which runs in the caller's session:
+// only a param block at top level, everything else in a child scope (& { ...
+// }), and never exit
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
@@ -38,14 +30,9 @@ const INSTALL_PS1 = join(ROOT, "scripts", "install.ps1");
 interface CodeLine {
   lineNumber: number;
   text: string;
-  /** Combined brace and parenthesis nesting depth at the start of the line. */
   depth: number;
 }
 
-/**
- * The script's code lines with comments removed: the `<# ... #>` help block
- * and every line whose first non-blank character is `#`.
- */
 function codeLines(source: string): CodeLine[] {
   const lines = source.split(/\r?\n/);
   const result: CodeLine[] = [];

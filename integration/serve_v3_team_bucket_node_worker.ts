@@ -17,16 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// One serve node for serve_v3_team_bucket_policy_test.ts (swamp-club#4207):
-// a Worker with its own module state, so its writer lease, its v3 handles and
-// the serve team it follows are its own, and its own host name as its writer
-// lease sees it, so the other node's lease is a remote holder's. Each node
-// has its own checkout of one filesystem-v3 datastore that replicates to a
-// file replica through a real Litestream, as a bucket's does: the follower
-// restores its own copy and takes the leader's commits through
-// `applyV3LeaderChanges`, as serve's follower feed applies them. Each node
-// answers the datastore API on a port-0 server over its own repository,
-// with a real access policy loaded from its own read model.
+// a Worker with its own module state and host name, so the other node's lease
+// is a remote holder's; each node has its own checkout of one datastore
+// replicated through a real Litestream
 
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";
@@ -92,7 +85,6 @@ import {
   sendRequest,
 } from "./serve_request_harness.ts";
 
-/** What the test asks a node to do. */
 export type NodeRequest =
   | {
     readonly kind: "init";
@@ -101,97 +93,53 @@ export type NodeRequest =
     readonly privateRoot: string;
     readonly datastorePath: string;
     readonly repoDir: string;
-    /** The behavior type every node and the test's client register. */
     readonly modelType: string;
-    /** Bearer tokens the node's datastore API accepts, and whom they name. */
     readonly tokens: Readonly<Record<string, string>>;
   }
-  /**
-   * Opens the checkout as serve opens it: the writer lease when free, else
-   * following, with the follower's copy restored from the replica. Starts
-   * the datastore API and loads the access policy from the read model.
-   */
   | { readonly kind: "open" }
-  /**
-   * Saves a behavior definition `name` of the test's type, with `id` when
-   * given: the repository's file, as the node's clone of it holds it.
-   */
   | { readonly kind: "saveModel"; readonly name: string; readonly id?: string }
-  /** `count` saves of data `dataName` on behavior `modelId`. */
   | {
     readonly kind: "saveData";
     readonly modelId: string;
     readonly dataName: string;
     readonly count: number;
   }
-  /**
-   * Serve's grant config at boot or lead: `--admins` materialized as admin
-   * grant records, committed, then the node's policy reloaded.
-   */
   | { readonly kind: "materialize"; readonly admins: readonly string[] }
-  /** Serve's write confirmation: the published head covers every commit. */
   | { readonly kind: "confirm" }
-  /** The node's commits after `cursor`, as the leader's feed sends them. */
   | { readonly kind: "changesSince"; readonly cursor: number }
-  /** The last cursor this node's copy holds. */
   | { readonly kind: "head" }
-  /**
-   * The follower feed's step: the leader's changes applied, the effects
-   * poked as `onFresh` does, and their pass settled.
-   */
   | { readonly kind: "apply"; readonly changes: readonly LeaderChange[] }
-  /** Active grants the node's loaded policy holds for `subject`. */
   | { readonly kind: "grants"; readonly subject: string }
-  /** Serve's `data.list` request for `modelName`, as `principal` sends it. */
   | {
     readonly kind: "dataList";
     readonly principal: string;
     readonly modelName: string;
   }
-  /** Makes the follower's policy reloads fail, or succeed again. */
   | { readonly kind: "failReloads"; readonly fail: boolean }
-  /** What the follower feed's `onFresh` does: pokes the effects. */
   | { readonly kind: "poke" }
-  /** The follower's view of its own feed. */
   | { readonly kind: "feed" }
-  /**
-   * The head the leader names to the follower's feed (swamp-club#4254): the
-   * follower is caught up once its copy holds it, as the feed barrier
-   * decides.
-   */
   | { readonly kind: "leaderHead"; readonly cursor: number }
-  /**
-   * One readiness check of a follower at boot (swamp-club#4254): whether
-   * its first catch-up is done, so serve would report `/ready`.
-   */
   | { readonly kind: "ready" }
   | { readonly kind: "pids" }
   | { readonly kind: "close" };
 
-/** A node's answer. */
 export type NodeResponse =
   | { readonly ok: true; readonly value?: unknown }
   | { readonly ok: false; readonly error: string };
 
-/** What `open` answers. */
 export interface Opened {
   readonly role: "writer" | "follower";
-  /** The datastore API's origin. */
   readonly origin: string;
 }
 
-/** What `feed` answers. */
 export interface FeedState {
-  /** The last cursor the follower's copy holds. */
   readonly head: number;
-  /** The last cursor serve's reads may page to. */
   readonly bound: number;
   readonly policyKnown: boolean;
 }
 
 declare const self: Worker;
 
-/** The leader a follower's refusals name. */
 const LEADER = {
   instanceId: "instance-leader",
   fence: 1,
@@ -210,7 +158,6 @@ let upkeep: V3ReplicationUpkeep | undefined;
 let locks: DatastoreLockLeases | undefined;
 let http: Deno.HttpServer | undefined;
 let failReloads = false;
-/** The head the leader names to this follower's feed; unset, none yet. */
 let leaderHead: number | undefined;
 const launched = new Set<number>();
 
@@ -238,7 +185,6 @@ function setEnvironment(overrides: Record<string, string>): void {
   });
 }
 
-/** A checkout whose datastore is the shared filesystem-v3 datastore. */
 async function initCheckout(
   repoDir: string,
   datastorePath: string,
@@ -320,8 +266,8 @@ async function open(): Promise<Opened> {
       isStale: () => false,
     };
     node.followerGate = wiring.gate(leadership);
-    // The feed barrier's answer (swamp-club#4254): caught up once the copy
-    // holds the head the leader named; never while the feed has named none.
+    // caught up once the copy holds the head the leader named; never while the
+    // feed has named none
     const copyHead = () =>
       v3DatastoreFor(opened.repoDir, location!).commitStore
         .highWaterMark().cursor;

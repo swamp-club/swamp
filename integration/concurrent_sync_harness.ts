@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Test helpers for swamp-club#3146: one repo on an in-memory remote, a model
-// lock over it, and another connection to the same cache standing in for a
-// concurrent run of the same serve process.
-
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";
 import {
@@ -59,14 +55,8 @@ export interface Harness {
   modelType: ModelType;
   modelId: string;
   context: Awaited<ReturnType<typeof requireInitializedRepoUnlocked>>;
-  /** Another connection to the same cache: one serve process's other run. */
   other: InMemorySyncService;
-  /** Takes the model lock, pushing through `syncService` when given. */
   lock: (syncService?: DatastoreSyncService) => Promise<ModelLockResult>;
-  /**
-   * Writes one version of DATA_NAME, inside a unit of work like a step, for
-   * the harness model or `modelId`.
-   */
   write: (content: string, modelId?: string) => Promise<number>;
   remoteText: (relPath: string) => string | undefined;
   localLatest: () => Promise<string>;
@@ -75,9 +65,9 @@ export interface Harness {
 export async function withHarness(
   fn: (h: Harness) => Promise<void>,
 ): Promise<void> {
-  // The released extensions' clearing: a commit clears every mark, those
-  // made after its prepare included. That is the race these tests hold
-  // core to surviving while those releases are deployed (swamp-club#3860).
+  // the released extensions' clearing: a commit clears every mark, those made
+  // after its prepare included; core must survive that race while those
+  // releases are deployed
   const remote = createInMemoryRemote({
     semantics: EXTENSION_2026_10_20_SEMANTICS,
   });

@@ -17,20 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A serve team's follower on a replicating v3 datastore answers reads under
- * the grants the leader's commits carry (swamp-club#4207). Every other
- * team-mode test runs on a filesystem v3 datastore whose nodes share one
- * `commits.db`; here each node has its own copy, replicated through a real
- * Litestream to a file replica as a bucket's is, so the follower takes the
- * leader's commits through `applyV3LeaderChanges` and its access policy is
- * reloaded by serve's own follower wiring (`wireFollowerPolicy`). Each node
- * is a Worker, with its own writer lease and handles. The follower restores
- * its copy before the leader materializes an admin grant, then takes the
- * grant from the leader's feed. Ignored without `SWAMP_LITESTREAM_PATH`,
- * and on Windows.
- */
-
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -89,7 +75,6 @@ await initializeLogging({});
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/** Bearer tokens both nodes accept, and whom they name. */
 const TOKENS: Record<string, string> = {
   "boss-token": "user:boss",
   "carol-token": "user:carol",
@@ -218,25 +203,15 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
   }
 }
 
-/** A team mid-scenario: see {@link startTeam}. */
 interface Started {
   readonly leader: Node;
   readonly follower: Node;
   readonly leaderOrigin: string;
   readonly followerOrigin: string;
-  /** Behavior `web`'s id, whose data `vpc` the leader saves. */
   readonly modelId: string;
-  /** Behavior `api`'s id, which holds no data yet. */
   readonly apiId: string;
 }
 
-/**
- * The leader holds the lease, saves behaviors `web` and `api` and two
- * versions of web's data `vpc`, and has them replicated; the follower then
- * restores its own copy, which holds no grant. Behavior definitions are the
- * repository's, not the datastore's: each node's checkout holds them, as
- * each serve node's clone of the repository does.
- */
 async function startTeam(team: Team): Promise<Started> {
   const leader = await team.node("leader");
   const lead = await leader.send({ kind: "open" }) as Opened;
@@ -270,12 +245,6 @@ async function startTeam(team: Team): Promise<Started> {
   };
 }
 
-/**
- * The leader materializes `admins` as serve's `--admins` does, and saves
- * three more versions of `vpc` on `modelId` (web's by default) after it, as
- * the commits a team keeps making; then the follower's feed applies
- * everything the leader committed past its copy.
- */
 async function grantAndFollow(
   started: Started,
   admins: readonly string[],
@@ -305,7 +274,6 @@ interface ChangesPage {
   readonly access: string | null;
 }
 
-/** `GET changes` after `cursor`, every page, as `token`'s caller reads it. */
 async function changes(
   origin: string,
   token: string,
@@ -342,7 +310,6 @@ async function changes(
   }
 }
 
-/** A `data.list` reply's items, by name and version, or its error code. */
 function listed(frames: readonly Frame[]): unknown {
   const error = frames.find((frame) => frame.type === "error");
   if (error !== undefined) return { error: error.error?.code };
@@ -370,14 +337,12 @@ Deno.test({
       await grantAndFollow(started, ["user:boss"]);
       const { leader, follower, leaderOrigin, followerOrigin } = started;
 
-      // (a) The admin reads the same commits through either node.
       const fromLeader = await changes(leaderOrigin, "boss-token");
       const fromFollower = await changes(followerOrigin, "boss-token");
       assertEquals(fromLeader.status, 200);
       assert(fromLeader.cursors.length > 0, "the admin reads commits");
       assertEquals(fromFollower, fromLeader);
 
-      // The follower's policy holds the grant its feed brought in.
       assert(
         (await follower.send({
           kind: "grants",
@@ -386,7 +351,6 @@ Deno.test({
         "the follower's policy holds the admin grant",
       );
 
-      // (b) Serve's data listing answers the admin alike on both nodes.
       const leaderList = listed(
         await leader.send({
           kind: "dataList",
@@ -427,7 +391,6 @@ Deno.test({
       assertEquals(before.policyKnown, true);
       assertEquals(before.bound, before.head);
 
-      // Carol's grant arrives while the follower cannot reload its policy.
       await follower.send({ kind: "failReloads", fail: true });
       await grantAndFollow(started, ["user:boss", "user:carol"]);
       // Every read is refused as a stale follower's: no page is answered,
@@ -470,8 +433,6 @@ Deno.test({
         { error: SERVE_NOT_LEADER_CODE },
       );
 
-      // Reloaded, the follower answers carol as the leader does, from the
-      // cursor no refused read moved.
       await follower.send({ kind: "failReloads", fail: false });
       await follower.send({ kind: "poke" });
       const known = await follower.send({ kind: "feed" }) as FeedState;
@@ -484,7 +445,6 @@ Deno.test({
   },
 });
 
-/** The access a serve-mode checkout's copy of `origin` was built and seen under. */
 function copyState(
   client: Client,
   origin: string,
@@ -516,7 +476,6 @@ Deno.test({
       await withScratch(async (scratch) => {
         const member = await scratch.client("member");
         const env = serveEnv({ origin: followerOrigin }, "boss-token");
-        // The versions of web's vpc the member's checkout holds.
         const read = () =>
           readCommand(
             scratch,
@@ -530,8 +489,6 @@ Deno.test({
               )).sort((a, b) => a - b),
           );
 
-        // Built through the follower while its policy gives boss nothing:
-        // the copy's cursor moves past versions 1 and 2.
         assertEquals(await read(), []);
         const built = copyState(member, followerOrigin);
         const nothing = built.access.built;
@@ -560,7 +517,6 @@ Deno.test({
         assertEquals(seen.access.seen, admin);
         assertEquals(seen.access.built, nothing);
         assertEquals(seen.copyId, built.copyId);
-        // The next rebuilds the copy under the new access and reads them.
         assertEquals(await read(), [1, 2]);
         const rebuilt = copyState(member, followerOrigin);
         assertNotEquals(rebuilt.copyId, built.copyId, "the copy was rebuilt");
@@ -603,8 +559,6 @@ Deno.test({
               (repos) => latestOf(repos, type, started.modelId, "vpc"),
             );
           await latest();
-          // The member writes through the leader: its copy now holds a
-          // commit the follower's copy does not.
           await writeCommand(
             scratch,
             member,
@@ -617,7 +571,6 @@ Deno.test({
                 json("from the member"),
               ),
           );
-          // A read through the leader moves the copy's feed anchor to it.
           await latest();
           const leaderHead = await leader.send({ kind: "head" }) as number;
           assert(
@@ -627,7 +580,6 @@ Deno.test({
           await follower.send({ kind: "leaderHead", cursor: leaderHead });
           assertEquals(await follower.send({ kind: "ready" }), "timed-out");
 
-          // The address reaches the follower before its feed caught it up.
           target = followerOrigin;
           const refused = await assertRejects(
             latest,
@@ -636,8 +588,6 @@ Deno.test({
           assertEquals(refused.code, SERVE_FOLLOWER_BEHIND_CODE);
           assertEquals(exitCodeForError(refused), 75);
 
-          // Its feed applies what the leader committed: ready, and the
-          // member's next command reads the commit with no manual step.
           const from = await follower.send({ kind: "head" }) as number;
           await follower.send({
             kind: "apply",

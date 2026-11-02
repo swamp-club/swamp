@@ -17,15 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * A path an error marks reaches the telemetry spool fully redacted, even when
- * its last segment has a space and it is not a value the command line or a
- * known directory supplied (swamp-club#2830). The error comes from a real
- * repository on a temp filesystem and travels each route that turns an error
- * into a string and back: the CLI's SwampError flattening, the workflow step
- * bridge, and a remote worker's dispatch result.
- */
-
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -40,13 +31,11 @@ import {
   WorkflowTelemetryBridge,
 } from "../src/libswamp/workflows/telemetry_bridge.ts";
 
-/** A vault id, and so a file name, whose last word the patterns cannot bound. */
 const VAULT_ID = "final report";
 
 interface Fixture {
   repoDir: string;
   spoolDir: string;
-  /** A real error naming the broken vault file. */
   vaultError: Error;
 }
 
@@ -137,7 +126,6 @@ Deno.test("error path marking: a workflow step failure is spooled without its pa
       recordChildInvocation: service.recordChildInvocation.bind(service),
     });
 
-    // As the execution service reports a model-method step that threw.
     await bridge.observe({
       kind: "step_failed",
       jobId: "job",

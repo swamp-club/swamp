@@ -17,25 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Integration tests for retrying a failed run: `workflow resume` without
- * `--from` (swamp-club#2409).
- *
- * The first half drives a run to failure on real YAML repositories and a
- * real run tracker, reloads the run through fresh repository instances, and
- * retries it with a counting step executor. The second half retries through
- * both branches of the serve handler against a real repository, where a
- * shell step's exit code comes from an input, and the retry adds a late
- * input that replaces it (swamp-club#3583). The last
- * section runs the `workflow resume` command in-process against a failed run
- * and checks how it reports a resume that fails (swamp-club#2432).
- *
- * Throughout, a resume hands the run to the process driving it: the run
- * record and the tracker row carry its pid and, when serve drives it, serve's
- * instance id, so cancel and serve's reapers act on the live resume
- * (swamp-club#2420).
- */
-
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -91,7 +72,6 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 
-// Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
@@ -115,18 +95,12 @@ async function withRepo(fn: (repoDir: string) => Promise<void>): Promise<void> {
   }
 }
 
-// ── Execution service on real repositories ──────────────────────────────
-
 interface TrackerRow {
   status: string;
   pid: number;
   hostname: string;
 }
 
-/**
- * Counts calls per `job/step`, fails the steps named in `failing`, and
- * records the tracker row as each step runs.
- */
 class CountingStepExecutor implements StepExecutor {
   readonly calls = new Map<string, number>();
   readonly failing = new Set<string>();
@@ -157,10 +131,6 @@ class CountingStepExecutor implements StepExecutor {
   }
 }
 
-/**
- * build: compile → package; deploy depends on build; docs is independent.
- * package reads an input, so a string override fails evaluation.
- */
 function pipelineWorkflow(): Workflow {
   return Workflow.create({
     name: "retry-pipeline",
@@ -207,7 +177,6 @@ function pipelineWorkflow(): Workflow {
   });
 }
 
-/** A service over fresh repository instances, as a new process would have. */
 function freshService(
   repoDir: string,
   executor: StepExecutor,
@@ -234,7 +203,6 @@ function freshService(
 async function failPipeline(repoDir: string) {
   const workflow = pipelineWorkflow();
   await new YamlWorkflowRepository(repoDir).save(workflow);
-  // The definition the steps name.
   const type = ModelType.create("command/shell");
   await new YamlDefinitionRepository(repoDir).save(
     type,
@@ -250,7 +218,6 @@ async function failPipeline(repoDir: string) {
   return { workflow, tracker, catalogStore, executor, failed };
 }
 
-/** Hands the tracker row to a dead process on another host. */
 function orphanTrackerRow(repoDir: string, runId: string): void {
   const db = new DatabaseSync(join(swampPath(repoDir), "run_tracker.db"));
   try {
@@ -302,7 +269,6 @@ Deno.test("retry: a reloaded failed run resumes without --from and re-runs only 
       assertEquals(executor.count("deploy/push"), 1);
       assertEquals(executor.count("docs/publish"), 1);
 
-      // The tracker row followed the resuming process while steps ran.
       for (const row of executor.trackerRows) {
         assertEquals(row, {
           status: "running",
@@ -403,7 +369,6 @@ Deno.test("retry: an evaluation failure after the early save leaves the reloaded
       assertEquals(reloaded?.status, "failed");
       assertEquals(reloaded?.toData(), before);
       assertEquals(executor.count("build/compile"), 1);
-      // The tracker row the resume took over is handed back as failed.
       assertEquals(tracker.findById(failed.id)?.status, "failed");
     } finally {
       tracker.close();
@@ -417,7 +382,6 @@ interface Owner {
   instanceId?: string;
 }
 
-/** Rewrites the run's record as if `owner` had started it. */
 async function startedBy(
   repoDir: string,
   workflow: Workflow,
@@ -433,12 +397,6 @@ async function startedBy(
   await repo.save(workflowId, WorkflowRun.fromData(data));
 }
 
-/**
- * Leaves the failed run as another process would have: its record names a
- * different pid and serve instance, and its tracker row is either stale
- * (still failed, owned by a dead process elsewhere) or purged by retention.
- * Returns that owner.
- */
 async function leaveAsAnotherProcessWould(
   repoDir: string,
   workflow: Workflow,
@@ -487,7 +445,6 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
             instanceId,
           });
           try {
-            // Held at started, before any step runs.
             assertEquals((await events.next()).value?.kind, "started");
             const record = (await new YamlWorkflowRunRepository(repoDir)
               .findById(
@@ -497,7 +454,6 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
             assertEquals(record.status, "running");
             assertEquals(record.pid, Deno.pid);
             assertEquals(record.instanceId, instanceId);
-            // A local resume is cancelled locally; a serve resume via serve.
             assertEquals(isServeOwnedRun(record), instanceId !== undefined);
 
             const tracked = tracker.findById(failed.id);
@@ -545,7 +501,6 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
               createWorkflowId(workflow.id),
               createWorkflowRunId(failed.id),
             );
-          // Finished, the run names its owner again.
           assertEquals(reloaded?.status, "succeeded");
           assertEquals(reloaded?.pid, owner.pid);
           assertEquals(reloaded?.instanceId, owner.instanceId);
@@ -559,9 +514,6 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
   }
 }
 
-// ── A resumed run that suspends again ───────────────────────────────────
-
-/** gate1 → build → gate2 → ship, so a resume past gate1 suspends at gate2. */
 function twoGateWorkflow(): Workflow {
   const after = (step: string) => [{
     step,
@@ -640,7 +592,6 @@ for (
         assertEquals(executor.count("main/build"), 1);
         assertEquals(suspended.pid, owner.pid);
         assertEquals(suspended.instanceId, owner.instanceId);
-        // Cancel and supersede treat it as the starter's run.
         assertEquals(isServeOwnedRun(suspended), starter === "serve");
         const superseded = await supersedeSuspendedRuns(
           workflow,
@@ -665,8 +616,6 @@ for (
   });
 }
 
-// ── Serve handler branches on a real repository ─────────────────────────
-
 const modeNone: ServeAuthConfig = {
   mode: "none",
   admins: [],
@@ -681,7 +630,6 @@ const modeNone: ServeAuthConfig = {
   tagRequiresExplicitGrant: false,
 };
 
-/** A step that passes, then a shell step that exits with `inputs.code`. */
 function exitCodeWorkflow(name: string): Workflow {
   return Workflow.create({
     name,
@@ -704,7 +652,6 @@ function exitCodeWorkflow(name: string): Workflow {
               "command/shell",
               `${name}-check`,
               "execute",
-              // `fix` is a late input the retry adds (swamp-club#3583).
               { run: "exit ${{ inputs.?fix.orValue(inputs.code) }}" },
             ),
             dependsOn: [{
@@ -766,7 +713,6 @@ async function failOverServe(
   return { ctx, runId };
 }
 
-/** Records the run data of every save through the context's run repository. */
 function recordSaves(ctx: ConnectionContext): WorkflowRunData[] {
   const saved: WorkflowRunData[] = [];
   const repo = ctx.repoContext.workflowRunRepo;
@@ -795,7 +741,6 @@ async function stepStatuses(
   };
 }
 
-/** How many times `text` appears in the run's log. */
 async function countInRunLog(
   ctx: ConnectionContext,
   workflow: Workflow,
@@ -870,8 +815,6 @@ for (const withRegistry of [false, true]) {
             prepare: "succeeded",
             check: "succeeded",
           });
-          // While serve drove the retry the record named serve; finished,
-          // it names the local run's owner again.
           const running = saved.filter((d) =>
             d.id === runId && d.status === "running"
           );
@@ -903,12 +846,6 @@ for (const withRegistry of [false, true]) {
   }
 }
 
-// ── The workflow resume command on a real repository ────────────────────
-
-/**
- * Runs `swamp workflow resume` in-process against `repoDir` and returns the
- * error it rejects with — the error `main.ts` would render.
- */
 async function resumeCommandError(
   repoDir: string,
   args: string[],
@@ -970,12 +907,10 @@ for (const from of [undefined, "package"]) {
           );
           assertStringIncludes(error.message, "no such overload");
 
-          // The --json shape: classified, and no internal stack.
           const json = buildErrorJson(error);
           assertEquals(json.code, "workflow_resume_failed");
           assertEquals("stack" in json, false);
 
-          // resume() restored the run, so it can be resumed again.
           const reloaded = await reloadRun(repoDir, workflow, failed.id);
           assertEquals(reloaded?.status, "failed");
           assertEquals(reloaded?.toData(), before);
