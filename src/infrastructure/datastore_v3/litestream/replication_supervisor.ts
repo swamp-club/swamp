@@ -40,6 +40,7 @@
 import { shouldIdleExit } from "../../../domain/datastore_v3/litestream_replication.ts";
 import {
   REPLICA_VERIFY_BACKSTOP_MS,
+  REPLICA_VERIFY_RETRY_MS,
   type ReplicaVerification,
   type ReplicaVerifyAttempt,
   shouldVerifyReplica,
@@ -457,6 +458,7 @@ class ReplicaCheck {
       lastAttempt: this.#lastAttempt,
       nowMs: now,
       backstopMs: this.options.verifyIntervalMs ?? REPLICA_VERIFY_BACKSTOP_MS,
+      retryMs: REPLICA_VERIFY_RETRY_MS,
     });
     if (!due) return;
     // Only a snapshot this check reads through: a newer one is still new
@@ -474,7 +476,7 @@ class ReplicaCheck {
         ...(snapshotTxid !== undefined ? { snapshotTxid } : {}),
       }).then(
         () => {},
-        // No verdict: tried again after the backstop or a new snapshot.
+        // No verdict: tried again after the retry delay or a new snapshot.
         () => {},
       ),
     );

@@ -44,6 +44,14 @@ import { normalizeTxid } from "./published_lineage.ts";
  */
 export const REPLICA_VERIFY_BACKSTOP_MS = 4 * 60 * 60 * 1000;
 
+/**
+ * How long a sidecar waits before it tries again after a check that
+ * recorded no verdict (swamp-club#4261): the replica was unreachable for a
+ * moment, or the restore passed its deadline. Such a check says nothing
+ * about the lineage, so the backstop does not apply to it.
+ */
+export const REPLICA_VERIFY_RETRY_MS = 10 * 60 * 1000;
+
 /** The verdict of one check of a lineage, recorded beside `commits.db`. */
 export interface ReplicaVerification {
   /** The lineage that was restored. */
@@ -117,6 +125,8 @@ export interface ReplicaVerifyObservation {
   readonly nowMs: number;
   /** {@link REPLICA_VERIFY_BACKSTOP_MS} outside tests. */
   readonly backstopMs: number;
+  /** {@link REPLICA_VERIFY_RETRY_MS} outside tests. */
+  readonly retryMs: number;
 }
 
 /**
@@ -128,9 +138,12 @@ export interface ReplicaVerifyObservation {
  * acknowledgements alone never start one, so neither a serve that writes
  * all day nor a run of short-lived CLI sidecars restores on a timer.
  *
- * A sidecar never starts a second check within the backstop of its own
- * last one unless a new snapshot appeared since, so one whose check ended
- * without a verdict still reaches its idle exit.
+ * After its own last check a sidecar waits, unless a new snapshot appeared
+ * since: until the backstop when that check recorded a verdict on this
+ * lineage (one dated at or after its start), and only
+ * {@link REPLICA_VERIFY_RETRY_MS} when it recorded none, since a check that
+ * could not run says nothing about the lineage. Either way one whose check
+ * ended without a verdict still reaches its idle exit.
  */
 export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   if (o.acknowledgedTxid === undefined) return false;
@@ -148,12 +161,16 @@ export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   const newSnapshotSince = (seen: string | undefined): boolean =>
     marker !== undefined &&
     (seen === undefined || normalizeTxid(seen) !== marker);
-  if (
-    o.lastAttempt !== undefined &&
-    o.nowMs - o.lastAttempt.startedAtMs < o.backstopMs &&
-    !newSnapshotSince(o.lastAttempt.snapshotTxid)
-  ) {
-    return false;
+  if (o.lastAttempt !== undefined) {
+    const recorded = last !== undefined &&
+      Date.parse(last.checkedAt) >= o.lastAttempt.startedAtMs;
+    const holdMs = recorded ? o.backstopMs : o.retryMs;
+    if (
+      o.nowMs - o.lastAttempt.startedAtMs < holdMs &&
+      !newSnapshotSince(o.lastAttempt.snapshotTxid)
+    ) {
+      return false;
+    }
   }
   if (last === undefined) return true;
   if (newSnapshotSince(last.snapshotTxid)) return true;

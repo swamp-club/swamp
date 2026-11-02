@@ -1836,9 +1836,14 @@ acknowledgement, is left out, so the next check sees it as new.
     sidecar's start, so a new sidecar does not check just because it
     started. This is what bounds a serve that writes all day.
 
-  A sidecar never starts a second check within the backstop of its own last
-  one unless a new snapshot appeared since, so one whose check ended without
-  a verdict still reaches its idle exit. The check runs beside the tick
+  After its own last check a sidecar waits before another, unless a new
+  snapshot appeared since: until the backstop when that check recorded a
+  verdict (one dated at or after its start), and only 10 minutes
+  (`REPLICA_VERIFY_RETRY_MS`) when it recorded none. A check that could not
+  run says nothing about the lineage, so a blip at a serve's first check of
+  a new lineage, or at a backstop check, costs 10 minutes, not another 4
+  hours. Either way a sidecar whose check ended without a verdict still
+  reaches its idle exit. The check runs beside the tick
   loop, never inside a command, so no command waits for it. An idle sidecar
   does not stop while a check or a listing runs, and a stop request cancels
   either.
@@ -1862,7 +1867,7 @@ acknowledgement, is left out, so the next check sees it as new.
   `SQLITE_NOTADB`, which is how a badly damaged file answers. A restore that
   could not run (the bucket unreachable, or past the check's 30-minute
   deadline, the same as a reader's restore) records nothing and is tried
-  again after the backstop or a new snapshot: restarting a lineage over a
+  again after the 10-minute retry delay: restarting a lineage over a
   network failure
   would upload a full snapshot for nothing. A SQLite error counts by its
   primary result code, so extended codes such as `SQLITE_CORRUPT_INDEX` are

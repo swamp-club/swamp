@@ -603,6 +603,50 @@ Deno.test({
 
 Deno.test({
   name:
+    "runReplicationSupervisor: a serve whose first check of a new lineage could not run tries again after the retry delay, not the backstop (swamp-club#4261)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options, paths } = await verifySetup(dir, txidOf(1));
+      const h = harness();
+      const start = h.now();
+      const attempts: number[] = [];
+      const record = recordingVerify(h, paths, []);
+      // The replica is unreachable for the first check only.
+      h.deps.verifyReplica = async (request) => {
+        attempts.push(h.now() - start);
+        if (attempts.length === 1) throw new Error("replica unreachable");
+        await record!(request);
+      };
+      h.deps.readSnapshotTxid = () => Promise.resolve(txidOf(1));
+      let stop!: () => void;
+      h.deps.stopRequested = new Promise((resolve) => stop = resolve);
+      for (let m = 1; m < 60; m++) {
+        h.at(m * MINUTE, () =>
+          writeCopyState(paths, {
+            replicaRoot: "file:/r",
+            lineageFence: 3,
+            txid: txidOf(1 + m),
+          }));
+      }
+      h.at(HOUR, () => stop());
+      assertEquals(
+        await runReplicationSupervisor(
+          { ...options, tickMs: MINUTE, idleMs: 100 * HOUR },
+          h.deps,
+        ),
+        "stop-requested",
+      );
+      // The failed check, then one retry 10 minutes on, which records a
+      // verdict; nothing more within the hour.
+      assertEquals(attempts.length, 2);
+      assertEquals(attempts[1] - attempts[0], 10 * MINUTE);
+    });
+  },
+});
+
+Deno.test({
+  name:
     "runReplicationSupervisor: a covered lineage lists nothing and restores nothing (swamp-club#4261)",
   ignore: !UNIX,
   async fn() {

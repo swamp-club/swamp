@@ -28,6 +28,7 @@ import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   REPLICA_VERIFY_BACKSTOP_MS,
+  REPLICA_VERIFY_RETRY_MS,
   type ReplicaVerification,
   type ReplicaVerifyAttempt,
   shouldVerifyReplica,
@@ -67,6 +68,7 @@ Deno.test("shouldVerifyReplica (property): a verdict on the acknowledged TXID of
             lastAttempt: undefined,
             nowMs: elapsed,
             backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
+            retryMs: REPLICA_VERIFY_RETRY_MS,
           }),
           false,
         );
@@ -97,6 +99,7 @@ Deno.test("shouldVerifyReplica (property): a new lineage is always checked by a 
             lastAttempt: undefined,
             nowMs: now,
             backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
+            retryMs: REPLICA_VERIFY_RETRY_MS,
           }),
         );
       },
@@ -104,7 +107,7 @@ Deno.test("shouldVerifyReplica (property): a new lineage is always checked by a 
   );
 });
 
-Deno.test("shouldVerifyReplica (property): a sidecar checks at most once per snapshot it sees before the backstop, so it always reaches its exit", () => {
+Deno.test("shouldVerifyReplica (property): a sidecar checks at most once per snapshot it sees within the retry delay, so it always reaches its exit", () => {
   fc.assert(
     fc.property(
       arbFence,
@@ -127,6 +130,7 @@ Deno.test("shouldVerifyReplica (property): a sidecar checks at most once per sna
             lastAttempt,
             nowMs: now,
             backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
+            retryMs: REPLICA_VERIFY_RETRY_MS,
           });
           if (!due) continue;
           checks++;
@@ -183,6 +187,7 @@ function simulate(
         lastAttempt,
         nowMs: now,
         backstopMs: REPLICA_VERIFY_BACKSTOP_MS,
+        retryMs: REPLICA_VERIFY_RETRY_MS,
       })
     ) {
       restores++;

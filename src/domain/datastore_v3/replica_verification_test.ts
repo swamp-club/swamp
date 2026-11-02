@@ -28,6 +28,7 @@ import {
 } from "./replica_verification.ts";
 
 const BACKSTOP = 4 * 60 * 60 * 1000;
+const RETRY = 10 * 60 * 1000;
 /** 2026-10-25T12:00:00.000Z, the default verdict's checkedAt. */
 const CHECKED_AT_MS = Date.parse("2026-10-25T12:00:00.000Z");
 
@@ -42,6 +43,7 @@ function observe(
     lastAttempt: undefined,
     nowMs: CHECKED_AT_MS + 60_000,
     backstopMs: BACKSTOP,
+    retryMs: RETRY,
     ...overrides,
   };
 }
@@ -174,31 +176,84 @@ Deno.test("shouldVerifyReplica: a verdict from before snapshots were recorded is
   );
 });
 
-Deno.test("shouldVerifyReplica: a sidecar does not retry its own check before the backstop or a new snapshot", () => {
-  // Its check of a new lineage ended without a verdict.
+Deno.test("shouldVerifyReplica: a new lineage whose first check recorded no verdict is tried again after the retry delay, not the backstop", () => {
+  // The check started, and the replica could not be reached: no verdict.
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
     snapshotTxid: "0000000000000001",
   };
   assertEquals(
     shouldVerifyReplica(
-      observe({ lastAttempt: attempt, nowMs: CHECKED_AT_MS + BACKSTOP - 1 }),
+      observe({ lastAttempt: attempt, nowMs: CHECKED_AT_MS + RETRY - 1 }),
     ),
     false,
   );
   assertEquals(
     shouldVerifyReplica(
+      observe({ lastAttempt: attempt, nowMs: CHECKED_AT_MS + RETRY }),
+    ),
+    true,
+  );
+  // A new snapshot does not wait for the delay.
+  assertEquals(
+    shouldVerifyReplica(
       observe({
         lastAttempt: attempt,
         nowMs: CHECKED_AT_MS + 1,
+        acknowledgedTxid: "0000000000000010",
         snapshotTxid: "0000000000000002",
       }),
     ),
     true,
   );
+});
+
+Deno.test("shouldVerifyReplica: a backstop check that recorded no verdict is tried again after the retry delay", () => {
+  // The verdict is a backstop old; the check it started recorded nothing.
+  const started = CHECKED_AT_MS + BACKSTOP;
+  const attempt = { startedAtMs: started, snapshotTxid: "0000000000000001" };
   assertEquals(
     shouldVerifyReplica(
-      observe({ lastAttempt: attempt, nowMs: CHECKED_AT_MS + BACKSTOP }),
+      observe({ ...moved, lastAttempt: attempt, nowMs: started + RETRY - 1 }),
+    ),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...moved, lastAttempt: attempt, nowMs: started + RETRY }),
+    ),
+    true,
+  );
+});
+
+Deno.test("shouldVerifyReplica: a check that recorded a verdict holds back the next until the backstop or a new snapshot", () => {
+  // The verdict is dated at the attempt's start: that attempt recorded it.
+  const attempt = {
+    startedAtMs: CHECKED_AT_MS,
+    snapshotTxid: "0000000000000001",
+  };
+  const after = { ...moved, lastAttempt: attempt };
+  assertEquals(
+    shouldVerifyReplica(observe({ ...after, nowMs: CHECKED_AT_MS + RETRY })),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...after, nowMs: CHECKED_AT_MS + BACKSTOP - 1 }),
+    ),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(observe({ ...after, nowMs: CHECKED_AT_MS + BACKSTOP })),
+    true,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({
+        ...after,
+        nowMs: CHECKED_AT_MS + RETRY,
+        snapshotTxid: "0000000000000002",
+      }),
     ),
     true,
   );
