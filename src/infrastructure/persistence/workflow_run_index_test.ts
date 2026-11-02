@@ -569,6 +569,32 @@ Deno.test("dropRunIndexEntries: drops the entries of the run records named, keep
   });
 });
 
+Deno.test("dropRunIndexEntries: an index it cannot read is warned about and skipped, and the other workflows are still changed", async () => {
+  await withTempDir(async (repo) => {
+    const runs = join(repo, ".swamp", "workflow-runs");
+    const entry = SAMPLE_INDEX["run-1"];
+    await Deno.mkdir(getIndexPath(join(runs, "wf-bad")), { recursive: true });
+    await Deno.mkdir(join(runs, "wf-good"), { recursive: true });
+    await writeRunIndex(join(runs, "wf-good"), {
+      "run-1": entry,
+      "run-2": entry,
+    });
+
+    const { warnings } = await withIndexWarnings(() =>
+      dropRunIndexEntries(repo, [
+        "workflow-runs/wf-bad/workflow-run-run-1.yaml",
+        "workflow-runs/wf-good/workflow-run-run-1.yaml",
+      ])
+    );
+
+    assertEquals((await readRunIndex(join(runs, "wf-good")))?.entries, {
+      "run-2": entry,
+    });
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "wf-bad");
+  });
+});
+
 Deno.test("appendRunIndexLines: the last line for a run wins and a removal line drops it", async () => {
   await withTempDir(async (dir) => {
     await writeRunIndex(dir, SAMPLE_INDEX);

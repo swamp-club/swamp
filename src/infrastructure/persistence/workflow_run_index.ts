@@ -178,18 +178,24 @@ export async function dropRunIndexEntries(
   const root = swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
   for (const [workflowId, runIds] of runsByWorkflow) {
     const indexDir = join(root, workflowId);
-    // queuing would make the directory and lock file of a workflow with no index
-    if (await readRunIndexHeader(indexDir) === null) continue;
-    await withIndexQueue(indexDir, async () => {
-      const appended = await appendRunIndexLines(
-        indexDir,
-        [...runIds].map((id) => ({ id, removed: true })),
-        { create: false },
-      );
-      if (appended.kind === "appended" && needsCompaction(appended)) {
-        await compactRunIndex(indexDir);
-      }
-    });
+    // one index that cannot be changed must not fail the pull for the rest
+    try {
+      // queuing would make the directory and lock file of a workflow with no index
+      if (await readRunIndexHeader(indexDir) === null) continue;
+      await withIndexQueue(indexDir, async () => {
+        const appended = await appendRunIndexLines(
+          indexDir,
+          [...runIds].map((id) => ({ id, removed: true })),
+          { create: false },
+        );
+        if (appended.kind === "appended" && needsCompaction(appended)) {
+          await compactRunIndex(indexDir);
+        }
+      });
+    } catch (error) {
+      getSwampLogger(["workflow-runs", "index"])
+        .warn`Could not drop runs another writer changed from the run index of ${indexDir}; history search may show their old status until the index is rebuilt: ${error}`;
+    }
   }
 }
 
