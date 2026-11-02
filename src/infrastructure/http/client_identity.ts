@@ -30,7 +30,7 @@ export interface ClientIdentity {
 
 /**
  * identity headers are spread first and the caller's second, so a call can
- * override the identity (getCurrentUser sends its own session-token
+ * override the identity (createApiKey sends its own session-token
  * Authorization); flipping the order silently breaks that
  */
 export function mergeIdentityHeaders(

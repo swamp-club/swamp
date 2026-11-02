@@ -2075,8 +2075,7 @@ Deno.test(
     "appears between the first drain and the global lock acquisition " +
     "(regression for issue #234)",
   async () => {
-    // only verifies the drain is wired through requireInitializedRepo; timing
-    // coverage lives in integration/data_delete_test.ts
+    // only verifies the drain is wired through requireInitializedRepo
     await withTempDir(async (dir) => {
       await initializeRepo(dir);
       const { datastoreConfig } = await resolveDatastoreForRepo(dir);
@@ -2116,8 +2115,7 @@ Deno.test(
 );
 
 // real lock files, so the default scanner exercises PID matching (the
-// findModelLocksOverride seam bypasses it)
-
+// findModelLocks option bypasses it)
 Deno.test(
   "waitForPerModelLocks - skips locks held by parent process (SWAMP_LOCK_HOLDER_PID)",
   async () => {
