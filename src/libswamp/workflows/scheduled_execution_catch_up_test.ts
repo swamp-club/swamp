@@ -21,8 +21,6 @@ import { assert, assertEquals } from "@std/assert";
 import { Cron } from "croner";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
-  CATCH_UP_TAG,
-  SCHEDULED_FOR_TAG,
   type ScheduledExecutionEvent,
   ScheduledExecutionService,
   type WorkflowExecutor,
@@ -32,7 +30,11 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
-import type { ScheduleCatchUp } from "../../domain/workflows/schedule_catch_up.ts";
+import {
+  CATCH_UP_TAG,
+  type ScheduleCatchUp,
+  SCHEDULED_FOR_TAG,
+} from "../../domain/workflows/schedule_catch_up.ts";
 import type {
   ScheduleState,
   ScheduleStateRepository,
@@ -165,6 +167,7 @@ function seed(
     workflowId: workflow.id,
     workflowName: workflow.name,
     lastEvaluatedFireTime: watermark.toISOString(),
+    cronExpression: workflow.schedule,
   });
 }
 
@@ -625,7 +628,7 @@ Deno.test("catchUpMissedFires: a promoted follower measures from the stored wate
   assertEquals(states.states.get(wf.id)?.lastMissed, undefined);
 });
 
-Deno.test("catchUpMissedFires: a scheduled run newer than the watermark settles the slot", async () => {
+Deno.test("catchUpMissedFires: a run recording a slot newer than the watermark settles it", async () => {
   const { previous, missed } = slots();
   const wf = createWorkflow("history-wf", MONTHLY, {
     policy: "latest",
@@ -640,8 +643,7 @@ Deno.test("catchUpMissedFires: a scheduled run newer than the watermark settles 
     repoDir: "/tmp/nonexistent-test-repo",
     executeWorkflow: executor.executeWorkflow,
     scheduleState: states,
-    lastScheduledRunStart: () =>
-      Promise.resolve(new Date(missed.getTime() + 2_000)),
+    latestScheduledSlot: () => Promise.resolve(missed),
     now: () => missed.getTime() + 5 * HOUR,
   });
 
@@ -667,7 +669,7 @@ Deno.test("catchUpMissedFires: a run-history lookup that fails falls back to the
     repoDir: "/tmp/nonexistent-test-repo",
     executeWorkflow: executor.executeWorkflow,
     scheduleState: states,
-    lastScheduledRunStart: () => Promise.reject(new Error("runs unreadable")),
+    latestScheduledSlot: () => Promise.reject(new Error("runs unreadable")),
     now: () => missed.getTime() + HOUR,
   });
 
@@ -714,4 +716,115 @@ Deno.test("catchUpMissedFires: a slot fired here before the pass is not missed, 
   assert(Date.parse(missed[0].fireTime) < Date.parse(firstFired.fireTime));
   assert(Date.parse(missed[0].oldestFireTime) > seeded.getTime());
   assertEquals(missed[0].caughtUp, false);
+});
+
+Deno.test("catchUpMissedFires: a run without a newer recorded slot, such as a replayed one, does not hide the miss", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("replayed-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: () => Promise.resolve(previous),
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  await service.catchUpMissedFires();
+  await waitFor(() => executor.inputs.length === 1, "catch-up run");
+  await service.stop();
+});
+
+Deno.test("catchUpMissedFires: a watermark measured on another expression starts afresh", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("edited-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  states.states.set(wf.id, {
+    workflowId: wf.id,
+    workflowName: wf.name,
+    lastEvaluatedFireTime: previous.toISOString(),
+    cronExpression: "0 9 2 * *",
+  });
+  const now = new Date(missed.getTime() + HOUR);
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    now: () => now.getTime(),
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(executor.inputs.length, 0);
+  assertEquals(missedEvents(events), []);
+  assertEquals(states.watermark(wf.id), now.toISOString());
+  assertEquals(states.states.get(wf.id)?.cronExpression, MONTHLY);
+});
+
+Deno.test("catchUpMissedFires: a slot fired before the pass whose state write failed is not fired again", async () => {
+  const wf = createWorkflow("unrecorded-wf", "* * * * * *", {
+    policy: "latest",
+    maxDelay: "1h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, new Date(Math.floor(Date.now() / 1000) * 1000 - 10_000));
+  states.failSaves = true;
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_fired"),
+    "a fire before the pass",
+  );
+  states.failSaves = false;
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(
+    executor.inputs.filter((i) => i.runtimeTags?.[CATCH_UP_TAG]).length,
+    0,
+  );
+});
+
+Deno.test("ScheduledExecutionService: every cron-fired run records its slot", async () => {
+  const wf = createWorkflow("slot-tag-wf", "* * * * * *");
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(() => executor.inputs.length > 0, "a cron-fired run");
+  await service.stop();
+
+  const fired = events.find((e) => e.kind === "schedule_fired");
+  assert(fired?.kind === "schedule_fired");
+  assertEquals(executor.inputs[0].runtimeTags, {
+    [SCHEDULED_FOR_TAG]: fired.fireTime,
+  });
 });

@@ -32,12 +32,12 @@ import { createRepositoryContext } from "../src/infrastructure/persistence/repos
 import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
 import { ControlPlaneScheduleStateRepository } from "../src/infrastructure/persistence/control_plane_schedule_state_repository.ts";
 import {
-  CATCH_UP_TAG,
   normalizeFireTime,
   ScheduledExecutionService,
   type WorkflowExecutor,
 } from "../src/libswamp/workflows/scheduled_execution.ts";
 import type { WorkflowRunInput } from "../src/libswamp/workflows/run.ts";
+import { CATCH_UP_TAG } from "../src/domain/workflows/schedule_catch_up.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
 
@@ -181,6 +181,7 @@ Deno.test("schedule catch-up: two instances booting together run the catch-up on
       workflowId: workflow.id,
       workflowName: workflow.name,
       lastEvaluatedFireTime: previous.toISOString(),
+      cronExpression: MONTHLY,
     });
 
     const a = instance(missed.getTime() + HOUR);
@@ -201,6 +202,7 @@ Deno.test("schedule catch-up: a fire older than maxDelay is recorded for every r
       workflowId: workflow.id,
       workflowName: workflow.name,
       lastEvaluatedFireTime: previous.toISOString(),
+      cronExpression: MONTHLY,
     });
 
     const service = instance(missed.getTime() + 3 * 24 * HOUR);
@@ -238,6 +240,7 @@ Deno.test("schedule catch-up: a promoted follower catches up a slot the dead lea
       workflowId: workflow.id,
       workflowName: workflow.name,
       lastEvaluatedFireTime: previous.toISOString(),
+      cronExpression: MONTHLY,
     });
 
     leading = true;
@@ -259,6 +262,7 @@ Deno.test("schedule catch-up: a follower promoted after the leader fired the slo
       workflowId: workflow.id,
       workflowName: workflow.name,
       lastEvaluatedFireTime: previous.toISOString(),
+      cronExpression: MONTHLY,
     });
     let leading = false;
     const follower = instance(missed.getTime() + 5 * HOUR, {
@@ -270,6 +274,7 @@ Deno.test("schedule catch-up: a follower promoted after the leader fired the slo
       workflowId: workflow.id,
       workflowName: workflow.name,
       lastEvaluatedFireTime: missed.toISOString(),
+      cronExpression: MONTHLY,
     });
 
     leading = true;

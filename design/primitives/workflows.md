@@ -2815,18 +2815,27 @@ same path as a cron tick: pause check (evaluated at the missed slot), overlap
 check, dedup claim, queue and authorization. The run carries the tags
 `swamp.trigger.catchUp: "true"` and `swamp.trigger.scheduledFor: <slot>`, so a
 workflow can read `run.tags` and decline. A catch-up adds at most one run on
-top of any replayed fire. The pass starts from the later of the
-watermark and the workflow's latest schedule-triggered run, so a slot that ran
-but whose watermark write failed is not run again. When this process already
+top of any replayed fire. Every cron-fired run carries `swamp.trigger.scheduledFor: <slot>`. When slots
+look missed, the pass starts from the later of the watermark and the latest slot
+any run of the workflow recorded, so a slot that ran but whose watermark write
+failed is not run again; a replayed run records no slot and settles nothing.
+The watermark also records the cron expression it was measured on, and a
+different expression at startup starts afresh. When this process already
 fired a slot before the pass, only the slots before that one are recorded as
-missed and nothing is caught up.
+missed and nothing is caught up. This holds even when that fire's state write
+failed.
 
 Limits: a schedule with no watermark yet, such as on the first start after an
 upgrade, has its watermark seeded at now and nothing is called missed. A pause
 set and lifted entirely while serve was down leaves no record, so a slot in that
 window is caught up. A schedule registered while serve runs, or whose cron
 expression changes, has its watermark reset to now, so time spent unscheduled is
-never reported as missed.
+never reported as missed. A schedule's record outlives the schedule, so a
+workflow unscheduled and scheduled again with the same expression while serve
+was down is measured from its old watermark. A follower's health reports the
+`lastMissed` it read at startup until it is promoted. Each fire reads and writes
+the record before the run is queued, each step bounded by
+`SCHEDULE_STATE_TIMEOUT_MS`.
 
 #### Trigger Overrides
 

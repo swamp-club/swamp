@@ -45,6 +45,8 @@ export const ScheduleStateSchema = z.object({
   workflowId: z.string().min(1),
   workflowName: z.string().min(1),
   lastEvaluatedFireTime: z.string().datetime(),
+  /** the expression the watermark was measured on; another one starts afresh */
+  cronExpression: z.string().optional(),
   lastMissed: MissedFireSchema.optional(),
 });
 
@@ -52,7 +54,8 @@ export type ScheduleState = z.infer<typeof ScheduleStateSchema>;
 
 /**
  * the watermark never moves back, so instances racing to settle the same slot,
- * or a late write of an older slot, cannot reopen a slot already settled
+ * or a late write of an older slot, cannot reopen a slot already settled; the
+ * kept lastMissed is the most recent lost fire, whichever write reports it
  */
 export function advanceScheduleState(
   current: ScheduleState | null,
@@ -60,19 +63,33 @@ export function advanceScheduleState(
   workflowName: string,
   fireTime: Date,
   lastMissed?: MissedFire,
+  cronExpression?: string,
 ): ScheduleState {
   const fireIso = fireTime.toISOString();
   const watermark = current &&
       Date.parse(current.lastEvaluatedFireTime) > fireTime.getTime()
     ? current.lastEvaluatedFireTime
     : fireIso;
-  const missed = lastMissed ?? current?.lastMissed;
+  const missed = newerMissed(current?.lastMissed, lastMissed);
+  const expression = cronExpression ?? current?.cronExpression;
   return {
     workflowId,
     workflowName,
     lastEvaluatedFireTime: watermark,
+    ...(expression ? { cronExpression: expression } : {}),
     ...(missed ? { lastMissed: missed } : {}),
   };
+}
+
+function newerMissed(
+  current: MissedFire | undefined,
+  given: MissedFire | undefined,
+): MissedFire | undefined {
+  if (!given) return current;
+  if (!current) return given;
+  return Date.parse(current.fireTime) > Date.parse(given.fireTime)
+    ? current
+    : given;
 }
 
 export interface ScheduleStateRepository {

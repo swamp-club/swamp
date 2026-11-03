@@ -29,6 +29,11 @@ export type CatchUpPolicy = typeof CATCH_UP_POLICIES[number];
 export const CATCH_UP_MAX_DELAY_LIMIT = "31d";
 const CATCH_UP_MAX_DELAY_LIMIT_MS = parseDataDuration(CATCH_UP_MAX_DELAY_LIMIT);
 
+/** on a run started by a cron fire: the slot it was fired for */
+export const SCHEDULED_FOR_TAG = "swamp.trigger.scheduledFor";
+/** on a run fired at startup for a slot missed while serve was down */
+export const CATCH_UP_TAG = "swamp.trigger.catchUp";
+
 /** the count is advisory, so a dense schedule after a long outage saturates */
 export const MISSED_FIRE_COUNT_CAP = 1000;
 

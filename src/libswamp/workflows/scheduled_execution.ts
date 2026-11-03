@@ -30,9 +30,11 @@ import {
   WorkflowScheduler,
 } from "../../domain/workflows/workflow_scheduler.ts";
 import {
+  CATCH_UP_TAG,
   evaluateMissedFires,
   type MissedFires,
   type ScheduleCatchUp,
+  SCHEDULED_FOR_TAG,
 } from "../../domain/workflows/schedule_catch_up.ts";
 import {
   advanceScheduleState,
@@ -247,10 +249,11 @@ export interface ScheduledExecutionDeps {
    */
   scheduleState?: ScheduleStateRepository;
   /**
-   * When the workflow's latest schedule-triggered run started, so a fire whose
-   * watermark write failed is not caught up again once its dedup record is gone
+   * The latest slot any run of the workflow records in its
+   * swamp.trigger.scheduledFor tag, so a slot whose watermark write failed is
+   * not caught up again once its dedup record is gone
    */
-  lastScheduledRunStart?: (workflowId: WorkflowId) => Promise<Date | null>;
+  latestScheduledSlot?: (workflowId: WorkflowId) => Promise<Date | null>;
   /**
    * How many scheduled runs may be in flight at once. Different workflows run
    * together up to this limit; a workflow never overlaps itself. Defaults to
@@ -289,9 +292,6 @@ export interface ScheduleStatus {
   readonly lastMissed: MissedFire | null;
 }
 
-export const CATCH_UP_TAG = "swamp.trigger.catchUp";
-export const SCHEDULED_FOR_TAG = "swamp.trigger.scheduledFor";
-
 export class ScheduledExecutionService {
   private readonly scheduler: WorkflowScheduler;
   private readonly watcher: WorkflowWatcher;
@@ -328,8 +328,13 @@ export class ScheduledExecutionService {
    */
   private readonly firstOwnFire = new Map<
     WorkflowId,
-    { readonly prior: ScheduleState | null; readonly slot: Date }
+    {
+      /** undefined when the store could not be read before that fire */
+      readonly prior: ScheduleState | null | undefined;
+      readonly slot: Date;
+    }
   >();
+  private catchUpPassed = false;
   /** registrations before this are the boot scan, which keeps watermarks */
   private started = false;
 
@@ -750,10 +755,10 @@ export class ScheduledExecutionService {
             error: error instanceof Error ? error.message : String(error),
           },
         );
-      } finally {
-        this.firstOwnFire.delete(entry.workflowId);
       }
     }
+    this.catchUpPassed = true;
+    this.firstOwnFire.clear();
   }
 
   private async catchUpSchedule(
@@ -765,7 +770,7 @@ export class ScheduledExecutionService {
     const own = this.firstOwnFire.get(workflowId);
     if (own) {
       // a later slot already fired here, so only the gap before it was missed
-      if (!own.prior) return;
+      if (!own.prior || own.prior.cronExpression !== cronExpression) return;
       const missed = evaluateMissedFires(
         cronExpression,
         new Date(own.prior.lastEvaluatedFireTime),
@@ -776,24 +781,30 @@ export class ScheduledExecutionService {
     }
 
     const stored = await this.deps.scheduleState!.get(workflowId);
-    if (!stored) {
-      // nothing says what was seen before, so nothing can be called missed
+    // with nothing seen before, or measured on another expression, no slot of
+    // this one can be called missed
+    if (!stored || stored.cronExpression !== cronExpression) {
       await this.writeScheduleState(workflowId, workflowName, now);
       return;
     }
     this.cacheState(stored);
 
-    let base = new Date(stored.lastEvaluatedFireTime);
-    const lastRun = await this.lastScheduledRunStart(workflowId);
-    // a scheduled run the watermark failed to record still settles its slot
-    if (lastRun && lastRun.getTime() > base.getTime()) base = lastRun;
-
-    const missed = evaluateMissedFires(
+    const catchUp = this.resolveCatchUp(workflowId, workflowName);
+    let missed = evaluateMissedFires(
       cronExpression,
-      base,
+      new Date(stored.lastEvaluatedFireTime),
       now,
-      this.resolveCatchUp(workflowId, workflowName),
+      catchUp,
     );
+    if (missed.missedCount === 0) return;
+    const recorded = await this.latestScheduledSlot(workflowId);
+    // a run that recorded its slot settles it even if the watermark write failed
+    if (
+      recorded &&
+      recorded.getTime() > Date.parse(stored.lastEvaluatedFireTime)
+    ) {
+      missed = evaluateMissedFires(cronExpression, recorded, now, catchUp);
+    }
     if (!missed.catchUpFireTime) {
       await this.recordMissed(workflowId, workflowName, missed, now);
       return;
@@ -848,15 +859,15 @@ export class ScheduledExecutionService {
   }
 
   /** never rejects: without run history, the watermark alone decides */
-  private async lastScheduledRunStart(
+  private async latestScheduledSlot(
     workflowId: WorkflowId,
   ): Promise<Date | null> {
-    if (!this.deps.lastScheduledRunStart) return null;
+    if (!this.deps.latestScheduledSlot) return null;
     try {
-      return await this.deps.lastScheduledRunStart(workflowId);
+      return await this.deps.latestScheduledSlot(workflowId);
     } catch (error) {
       logger.warn(
-        "Cannot read the last scheduled run of workflow {name}: {error}",
+        "Cannot read the scheduled runs of workflow {name}: {error}",
         {
           name: this.workflowNames.get(workflowId) ?? workflowId,
           error: error instanceof Error ? error.message : String(error),
@@ -1092,17 +1103,13 @@ export class ScheduledExecutionService {
       workflowName,
       fireTime,
       options.lastMissed,
+      this.cronExpressions.get(workflowId),
     );
+    let wrote: boolean | "failed";
     try {
-      if (!await repo.save(next)) return;
-      if (
-        options.ownFire && stored !== undefined &&
-        !this.firstOwnFire.has(workflowId)
-      ) {
-        this.firstOwnFire.set(workflowId, { prior: stored, slot: fireTime });
-      }
-      this.scheduleStates.set(workflowId, next);
+      wrote = await repo.save(next);
     } catch (error) {
+      wrote = "failed";
       logger.warn(
         "Cannot record the schedule state of workflow {name}: {error}",
         {
@@ -1111,6 +1118,16 @@ export class ScheduledExecutionService {
         },
       );
     }
+    // a non-writer settles nothing; a failed write still fired the slot, so the
+    // catch-up pass must not fire it again
+    if (wrote === false) return;
+    if (
+      options.ownFire && !this.catchUpPassed &&
+      !this.firstOwnFire.has(workflowId)
+    ) {
+      this.firstOwnFire.set(workflowId, { prior: stored, slot: fireTime });
+    }
+    if (wrote === true) this.scheduleStates.set(workflowId, next);
   }
 
   private trackStateWrite(write: Promise<void>): void {
@@ -1334,11 +1351,11 @@ export class ScheduledExecutionService {
               workflowIdOrName: authorization.workflowIdOrName,
               inputs: override?.inputs,
               initiatedBy: this.deps.initiatedBy,
-              ...(entry.catchUp && fireTime
+              ...(fireTime
                 ? {
                   runtimeTags: {
-                    [CATCH_UP_TAG]: "true",
                     [SCHEDULED_FOR_TAG]: fireTime,
+                    ...(entry.catchUp ? { [CATCH_UP_TAG]: "true" } : {}),
                   },
                 }
                 : {}),
