@@ -285,9 +285,22 @@ these phases.
 | `candidate_scan`          | `swamp.model.output.search`                   | Finding the outputs to consider; counters below                                |
 | `candidate_authorization` | `candidate_scan`                              | `keys` asked about and `readable_keys`: which listed files the caller may read |
 | `definition_names`        | `swamp.model.output.search`, `candidate_scan` | `definitions` named, `owner_lookups`, `owner_lookups_reused`, `files_read`     |
-| `workflow_names`          | `swamp.model.output.search`                   | `workflow_ids`: the workflows named in one lookup; absent when none is named   |
+| `workflow_names`          | `swamp.model.output.search`                   | `workflow_ids`: the workflows named in one lookup; absent when none is named; `extension_workflow_walks`, the request's one scan of the extension workflows' listings |
 | `authorization`           | `swamp.serve.request`                         | `items` considered, `readable` kept, `owner_lookups`, `owner_lookups_reused`   |
-| `response`                | `swamp.serve.request`                         | `results` sent: the limit, then workflow-link redaction, then the reply itself |
+| `response`                | `swamp.serve.request`                         | `results` sent: the limit, then workflow-link redaction, then the reply itself; `extension_workflow_walks`, exported as `0` when redaction read none |
+
+Workflow-link redaction in `response` resolves each linked workflow through the
+request's own owner lookups and its one scan of the extension workflows, the
+scan `workflow_names` already made by naming from listings (lab #4356), so
+`extension_workflow_walks` there is `0` and stays so however many distinct
+workflows the results link. It counts each scan of every extension workflow
+file and each full read that parses them all. Without that, each distinct linked
+extension workflow scanned every extension workflow file once, or twice when its
+recorded id no longer matched. The workflow run search and history requests
+redact their run links the same way, and a run search's lookups there count as
+`owner_lookups_reused` where its authorization made them. A run stream's
+redaction keeps scanning the live extension workflows, since a stream outlasts a
+request.
 
 `definition_names` names the outputs from the request's owner lookups
 (lab #4141): it looks up each definition owning an output that is not already

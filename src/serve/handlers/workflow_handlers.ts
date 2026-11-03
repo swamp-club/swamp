@@ -1028,7 +1028,15 @@ export async function handleWorkflowHistoryGet(
       "swamp.serve.redact",
       {},
       () =>
-        redactRunViewLinks(view, nestedRunReadDecider(ctx, socket, principal)),
+        redactRunViewLinks(
+          view,
+          nestedRunReadDecider(
+            ctx,
+            socket,
+            principal,
+            canonicalResources(ctx, controller.signal),
+          ),
+        ),
     );
 
     await sendTraced(socket, {
@@ -1341,7 +1349,7 @@ export async function handleWorkflowRunSearch(
     const page = data.results ?? [];
     // links to other runs name only workflows the principal may read; the
     // derived awaitingResume flag stays
-    const canRead = nestedRunReadDecider(ctx, socket, principal);
+    const canRead = nestedRunReadDecider(ctx, socket, principal, canonical);
     await withSpan("swamp.serve.redact", {}, async () => {
       for (const item of page) {
         await redactParentRun(item, canRead);

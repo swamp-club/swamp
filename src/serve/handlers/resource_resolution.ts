@@ -650,6 +650,11 @@ export class CanonicalResources {
     this.#signal = signal;
   }
 
+  /** only to name workflows from the same view the owner lookups read */
+  get workflowRepo(): WorkflowRepository {
+    return this.#workflowRepo;
+  }
+
   #definitionsById(id: string): Promise<DefinitionOwner[]> {
     // inside a diagnostic phase every lookup is counted, and those answered
     // without a new lookup or scan count as reused

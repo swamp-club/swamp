@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -2057,10 +2059,6 @@ export async function handleModelOutputSearch(
     const libCtx = handlerLibSwampContext(ctx);
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
-    // one read of the extension workflows per request, as canonicalResources
-    // reads them
-    const workflowRepo = ctx.repoContext.workflowRepo.memoizedView?.() ??
-      ctx.repoContext.workflowRepo;
     // one owner lookup per definition names the outputs and authorizes them
     const canonical = canonicalResources(ctx, controller.signal);
 
@@ -2128,7 +2126,8 @@ export async function handleModelOutputSearch(
           controller.signal,
           selectReadable,
         ),
-      resolveWorkflowNames: (ids) => workflowNamesOf(workflowRepo, ids),
+      resolveWorkflowNames: (ids) =>
+        workflowNamesOf(canonical.workflowRepo, ids),
       // files the caller may not read are left unread
       ...candidateReadability(ctx, readable),
     };
@@ -2182,6 +2181,7 @@ export async function handleModelOutputSearch(
         );
       }
       await observeDiagnosticPhase("response", {}, async (phase) => {
+        phase.tally.add("extension_workflow_walks", 0);
         if (data.results) {
           if (payload?.limit !== undefined) {
             data.results = data.results.slice(0, payload.limit);
@@ -2189,7 +2189,7 @@ export async function handleModelOutputSearch(
           await redactWorkflowLinks(
             data.results,
             ctx.authConfig.mode === "none",
-            nestedRunReadDecider(ctx, socket, principal),
+            nestedRunReadDecider(ctx, socket, principal, canonical),
           );
           phase.tally.add("results", data.results.length);
         }
@@ -2239,8 +2239,6 @@ export async function handleModelUsageSummary(
   try {
     const libCtx = handlerLibSwampContext(ctx);
     const outputRepo = ctx.repoContext.outputRepo;
-    const workflowRepo = ctx.repoContext.workflowRepo.memoizedView?.() ??
-      ctx.repoContext.workflowRepo;
     const canonical = canonicalResources(ctx, controller.signal);
     const readable = outputReadability(canonical, socket, principal, ctx);
     // decides afresh once the scan is done, as filterOutputItems does, so a
@@ -2261,7 +2259,8 @@ export async function handleModelUsageSummary(
       resolveModelNames: (keys) =>
         resolveModelNames(canonical, keys, controller.signal),
       definitionNameById: (id) => canonical.anyModelName(id),
-      resolveWorkflowNames: (ids) => workflowNamesOf(workflowRepo, ids),
+      resolveWorkflowNames: (ids) =>
+        workflowNamesOf(canonical.workflowRepo, ids),
       ...candidateReadability(ctx, readable),
       isReadable: (group) => {
         finalCheck ??= outputReadability(canonical, socket, principal, ctx);
@@ -2296,10 +2295,11 @@ export async function handleModelUsageSummary(
 
       const summary = data;
       await observeDiagnosticPhase("response", {}, async (phase) => {
+        phase.tally.add("extension_workflow_walks", 0);
         await redactWorkflowLinks(
           summary.models.flatMap((model) => model.recent),
           ctx.authConfig.mode === "none",
-          nestedRunReadDecider(ctx, socket, principal),
+          nestedRunReadDecider(ctx, socket, principal, canonical),
         );
         phase.tally.add("results", summary.models.length);
         send(socket, {
@@ -3329,15 +3329,14 @@ function candidateReadability(
   };
 }
 
+// listings, not findAll: the request's lookups share the listing scan, and
+// findAll would parse every extension workflow besides
 async function workflowNamesOf(
-  workflowRepo: Pick<
-    ConnectionContext["repoContext"]["workflowRepo"],
-    "findAll"
-  >,
+  workflowRepo: WorkflowRepository,
   ids: ReadonlySet<string>,
 ): Promise<ReadonlyMap<string, string>> {
   const names = new Map<string, string>();
-  for (const workflow of await workflowRepo.findAll()) {
+  for (const workflow of await listWorkflows(workflowRepo)) {
     if (ids.has(workflow.id) && !names.has(workflow.id)) {
       names.set(workflow.id, workflow.name);
     }

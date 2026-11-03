@@ -48,12 +48,13 @@ export function nestedRunReadDecider(
   ctx: ConnectionContext,
   socket: WebSocket,
   principal: Principal | null,
+  // a request passes its own, so links resolve from the request's one walk; a
+  // run stream keeps the live repository, as a per-request view would keep the
+  // extension workflows it first read for the whole stream
+  canonical?: CanonicalResources,
 ): (workflow: NamedWorkflow) => Promise<boolean> {
   if (ctx.authConfig.mode === "none") return () => Promise.resolve(true);
-  // the live repository, not canonicalResources(ctx): a decider can last a
-  // whole run stream, and a per-request view would keep the extension workflows
-  // it first read for all of it
-  const canonical = new CanonicalResources(
+  const owners = canonical ?? new CanonicalResources(
     ctx.repoContext.definitionRepo,
     ctx.repoContext.workflowRepo,
   );
@@ -63,7 +64,7 @@ export function nestedRunReadDecider(
     const key = JSON.stringify([workflow.workflowId, workflow.workflowName]);
     let found = decided.get(key);
     if (!found) {
-      found = canonical.workflowOwners(
+      found = owners.workflowOwners(
         workflow.workflowId,
         workflow.workflowName,
       ).then((resources) => resources.length > 0 && resources.every(allows))
