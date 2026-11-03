@@ -2492,6 +2492,10 @@ const checkConfigCommand = new Command()
       "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
   )
   .option(
+    "--oauth-client-id <id:string>",
+    "OAuth client ID, as passed to 'swamp serve' (overrides the config file; env: SWAMP_OAUTH_CLIENT_ID)",
+  )
+  .option(
     `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
     "OAuth client secret file to check, as passed to 'swamp serve' (overrides " +
       "SWAMP_OAUTH_CLIENT_SECRET_FILE and SWAMP_OAUTH_CLIENT_SECRET)",

@@ -1044,6 +1044,22 @@ Deno.test("checkOAuthClientSecret: passes with no secret, or a secret and a clie
   });
 });
 
+Deno.test("serve check-config: declares --oauth-client-id beside --oauth-client-secret-file, and the flag reaches the merged options", async () => {
+  const { serveCommand } = await import("./serve.ts");
+  const checkConfig = serveCommand.getCommand("check-config")!;
+  const flags = checkConfig.getOptions().flatMap((o) => o.flags);
+  assert(flags.includes("--oauth-client-id"));
+  assert(flags.includes("--oauth-client-secret-file"));
+  const { mergeServeOptions } = await import("../../serve/serve_config.ts");
+  const merged = mergeServeOptions(
+    null,
+    { oauthClientId: "flag-id" },
+    new Set(["oauth-client-id"]),
+    () => undefined,
+  );
+  assertEquals(merged.oauthClientId, "flag-id");
+});
+
 Deno.test("checkOAuthClientSecret: reports a secret without a client id", () => {
   withMockedEnv({
     ...NO_CLIENT_SECRET_ENV,
