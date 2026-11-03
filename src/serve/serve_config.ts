@@ -123,6 +123,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   dashboard: "SWAMP_DASHBOARD",
   autoResume: "SWAMP_AUTO_RESUME",
   approveRequiresExplicitGrant: "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT",
+  keepOauthClientInVault: "SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT",
   signalRequiresExplicitGrant: "SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT",
   tagRequiresExplicitGrant: "SWAMP_TAG_REQUIRES_EXPLICIT_GRANT",
 };
@@ -161,6 +162,7 @@ export interface ServeConfigFile {
     "approve-requires-explicit-grant"?: boolean;
     "signal-requires-explicit-grant"?: boolean;
     "tag-requires-explicit-grant"?: boolean;
+    "keep-oauth-client-in-vault"?: boolean;
   };
   tls?: {
     "cert-file"?: string;
@@ -350,6 +352,7 @@ const KNOWN_AUTH_KEYS = new Set([
   "approve-requires-explicit-grant",
   "signal-requires-explicit-grant",
   "tag-requires-explicit-grant",
+  "keep-oauth-client-in-vault",
 ]);
 
 const KNOWN_TLS_KEYS = new Set([
@@ -656,6 +659,7 @@ function validateConfigValues(
         "approve-requires-explicit-grant",
         "signal-requires-explicit-grant",
         "tag-requires-explicit-grant",
+        "keep-oauth-client-in-vault",
       ]
     ) {
       const value = authObj[name];
@@ -1028,6 +1032,7 @@ export interface MergedServeOptions {
   approveRequiresExplicitGrant: boolean;
   signalRequiresExplicitGrant: boolean;
   tagRequiresExplicitGrant: boolean;
+  keepOauthClientInVault: boolean;
   trustProxy: boolean;
   wsIdleTimeout?: string;
   queueTimeout?: string;
@@ -1509,6 +1514,13 @@ export function mergeServeOptions(
     false,
   );
 
+  const keepOauthClientInVault = resolveBoolean(
+    "keep-oauth-client-in-vault",
+    cliOptions.keepOauthClientInVault as boolean,
+    config?.auth?.["keep-oauth-client-in-vault"],
+    false,
+  );
+
   const approveRequiresExplicitGrant = resolveBoolean(
     "approve-requires-explicit-grant",
     cliOptions.approveRequiresExplicitGrant as boolean,
@@ -1582,6 +1594,7 @@ export function mergeServeOptions(
     approveRequiresExplicitGrant,
     signalRequiresExplicitGrant,
     tagRequiresExplicitGrant,
+    keepOauthClientInVault,
     trustProxy,
     wsIdleTimeout,
     queueTimeout,

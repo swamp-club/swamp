@@ -1391,6 +1391,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.tagRequiresExplicitGrant) {
     args.push("--tag-requires-explicit-grant");
   }
+  if (options.keepOauthClientInVault) {
+    args.push("--keep-oauth-client-in-vault");
+  }
   if (options.groupRefreshInterval) {
     args.push(
       "--group-refresh-interval",
@@ -2023,6 +2026,14 @@ const daemonEnableCommand = new Command()
       "a write grant alone no longer implies tag. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_TAG_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--keep-oauth-client-in-vault",
+    "Leave oauth-client-id and oauth-client-secret in the user vault when " +
+      "moving OAuth secrets into the datastore, so a vault seeded with them " +
+      "serves instances recreated with an empty datastore. Off by default: " +
+      "anything that can read that vault can read the client secret " +
+      "(env: SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -2866,6 +2877,14 @@ export const serveCommand = new Command()
       "a write grant alone no longer implies tag. Off by default. " +
       "Requires --auth-mode token or oauth " +
       "(env: SWAMP_TAG_REQUIRES_EXPLICIT_GRANT)",
+  )
+  .option(
+    "--keep-oauth-client-in-vault",
+    "Leave oauth-client-id and oauth-client-secret in the user vault when " +
+      "moving OAuth secrets into the datastore, so a vault seeded with them " +
+      "serves instances recreated with an empty datastore. Off by default: " +
+      "anything that can read that vault can read the client secret " +
+      "(env: SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT)",
   )
   .option(
     "--group-refresh-interval <duration:string>",
@@ -5052,6 +5071,7 @@ export const serveCommand = new Command()
       await migrateOAuthSecrets(
         migrationVaultService,
         TOKEN_SECRETS_VAULT_NAME,
+        { keepClientInUserVault: merged.keepOauthClientInVault },
       );
     }
 

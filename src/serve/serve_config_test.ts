@@ -735,6 +735,42 @@ Deno.test("mergeServeOptions: env var wins over config file when CLI not explici
   assertEquals(merged.certFile, "/from/env.crt");
 });
 
+Deno.test("mergeServeOptions: keep-oauth-client-in-vault is off by default and read from flag, env and config", () => {
+  const none = () => undefined;
+  assertEquals(
+    mergeServeOptions(null, {}, new Set<string>(), none).keepOauthClientInVault,
+    false,
+  );
+  assertEquals(
+    mergeServeOptions(
+      { auth: { "keep-oauth-client-in-vault": true } },
+      {},
+      new Set<string>(),
+      none,
+    ).keepOauthClientInVault,
+    true,
+  );
+  assertEquals(
+    mergeServeOptions(
+      null,
+      {},
+      new Set<string>(),
+      (name) =>
+        name === "SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT" ? "true" : undefined,
+    ).keepOauthClientInVault,
+    true,
+  );
+  assertEquals(
+    mergeServeOptions(
+      null,
+      { keepOauthClientInVault: true },
+      new Set(["keep-oauth-client-in-vault"]),
+      none,
+    ).keepOauthClientInVault,
+    true,
+  );
+});
+
 Deno.test("mergeServeOptions: SWAMP_OAUTH_CLIENT_ID sits between the flag and the config file", () => {
   const config: ServeConfigFile = {
     auth: { "oauth-client-id": "from-config" },

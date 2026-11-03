@@ -146,7 +146,7 @@ Deno.test("migrateOAuthSecrets: keys missing from the user vault listing are nev
   assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
 });
 
-Deno.test("migrateOAuthSecrets: copies every legacy key, keeps only the client id and secret in the user vault, and records the migration", async () => {
+Deno.test("migrateOAuthSecrets: moves every legacy key out of the user vault and records the migration", async () => {
   const fake = createFakeVaults();
   userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
   userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");
@@ -169,7 +169,7 @@ Deno.test("migrateOAuthSecrets: copies every legacy key, keeps only the client i
   assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
   assertEquals(
     [...userSecrets(fake).keys()].sort(),
-    [OAUTH_CLIENT_ID_KEY, OAUTH_CLIENT_SECRET_KEY, "unrelated"].sort(),
+    ["unrelated"],
   );
 });
 
@@ -233,14 +233,44 @@ Deno.test("migrateOAuthSecrets: once recorded, oauth keys added to the user vaul
   );
 });
 
-Deno.test("migrateOAuthSecrets: a recreated instance with an empty store finds the seeded client in the user vault again", async () => {
+Deno.test("migrateOAuthSecrets: opted in, only the client id and secret stay in the user vault", async () => {
   const fake = createFakeVaults();
   userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
   userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");
+  userSecrets(fake).set(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY, "access-token");
+  userSecrets(fake).set(OAUTH_RESOLVED_ADMINS_KEY, "{}");
 
-  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME);
+  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME, {
+    keepClientInUserVault: true,
+  });
+
+  assertEquals(
+    tokenSecrets(fake).get(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY),
+    "access-token",
+  );
+  assertEquals(
+    [...userSecrets(fake).keys()].sort(),
+    [OAUTH_CLIENT_ID_KEY, OAUTH_CLIENT_SECRET_KEY].sort(),
+  );
+});
+
+Deno.test("migrateOAuthSecrets: opted in, a recreated instance with an empty store finds the seeded client in the user vault again", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
+  userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");
+  const options = { keepClientInUserVault: true };
+
+  await migrateOAuthSecrets(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+    options,
+  );
   fake.secrets.set(TOKEN_SECRETS_VAULT_NAME, new Map());
-  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME);
+  await migrateOAuthSecrets(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+    options,
+  );
 
   assertEquals(tokenSecrets(fake).get(OAUTH_CLIENT_ID_KEY), "client-id");
   assertEquals(

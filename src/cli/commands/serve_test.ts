@@ -1020,6 +1020,12 @@ Deno.test("collectServeExtraArgs: forwards --oauth-client-secret-file as an abso
   assert(isAbsolute(args[1]));
 });
 
+Deno.test("collectServeExtraArgs: forwards --keep-oauth-client-in-vault", () => {
+  assertEquals(collectServeExtraArgs({ keepOauthClientInVault: true }), [
+    "--keep-oauth-client-in-vault",
+  ]);
+});
+
 const NO_CLIENT_SECRET_ENV = {
   SWAMP_OAUTH_CLIENT_SECRET: undefined,
   SWAMP_OAUTH_CLIENT_SECRET_FILE: undefined,

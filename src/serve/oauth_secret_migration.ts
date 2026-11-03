@@ -46,10 +46,9 @@ const OAUTH_SECRET_KEYS = [
   OAUTH_RESOLVED_ADMINS_KEY,
 ] as const;
 
-// A seeded vault such as AWS Secrets Manager is how an instance recreated with
-// an empty datastore finds its client, so the client id and secret stay there;
-// the operator's bootstrap token and the admin cache are still moved out.
-const USER_VAULT_KEPT_KEYS: ReadonlySet<string> = new Set([
+// Opt-in: a seeded vault lets an instance recreated with an empty datastore
+// find its client, at the cost of the secret staying readable in that vault.
+const SEEDABLE_CLIENT_KEYS: ReadonlySet<string> = new Set([
   OAUTH_CLIENT_ID_KEY,
   OAUTH_CLIENT_SECRET_KEY,
 ]);
@@ -68,6 +67,7 @@ export const OAUTH_SECRETS_MIGRATED_KEY = "oauth-secrets-migrated";
 export async function migrateOAuthSecrets(
   vaultService: OAuthSecretMigrationVaults,
   tokenSecretsVaultName: string,
+  options: { keepClientInUserVault?: boolean } = {},
 ): Promise<void> {
   if (
     await hasSecret(
@@ -110,7 +110,7 @@ export async function migrateOAuthSecrets(
         );
         await vaultService.put(tokenSecretsVaultName, key, value);
         if (
-          !USER_VAULT_KEPT_KEYS.has(key) &&
+          !(options.keepClientInUserVault && SEEDABLE_CLIENT_KEYS.has(key)) &&
           vaultService.supportsDelete(userVaultForMigration)
         ) {
           await vaultService.delete(userVaultForMigration, key)
