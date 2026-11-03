@@ -6015,7 +6015,7 @@ export const serveCommand = new Command()
           controlPlaneStore,
           { canWrite: leadsScheduledFires },
         ),
-        latestScheduledSlot: (workflowId, signal) =>
+        latestScheduledSlot: (workflowId, signal, notAfter) =>
           firstRecordedSlot(
             repoContext.workflowRunRepo.findByTimeTagLatestFirst(
               workflowId,
@@ -6023,6 +6023,7 @@ export const serveCommand = new Command()
               signal,
             ),
             principalToString(SCHEDULER_PRINCIPAL),
+            notAfter,
           ),
         cronFireDedup: controlPlaneStore?.putIfAbsent
           ? async (workflowId, fireTime) => {

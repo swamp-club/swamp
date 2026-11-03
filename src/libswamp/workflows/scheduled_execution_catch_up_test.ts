@@ -377,7 +377,7 @@ Deno.test("catchUpMissedFires: a schedule paused at the missed slot is not caugh
   assert(events.some((e) => e.kind === "schedule_skipped" && e.paused));
 });
 
-Deno.test("catchUpMissedFires: a slot claimed by another instance is left to it", async () => {
+Deno.test("catchUpMissedFires: a slot claimed elsewhere but never recorded is reported missed, not caught up", async () => {
   const { previous, missed } = slots();
   const wf = createWorkflow("dedup-wf", MONTHLY, {
     policy: "latest",
@@ -404,10 +404,61 @@ Deno.test("catchUpMissedFires: a slot claimed by another instance is left to it"
   await service.catchUpMissedFires();
   await service.stop();
 
-  assertEquals(missedEvents(events), []);
   assertEquals(claims, [missed.toISOString()]);
   assertEquals(executor.inputs.length, 0);
-  assertEquals(states.watermark(wf.id), previous.toISOString());
+  assertEquals(states.watermark(wf.id), missed.toISOString());
+  const recorded = states.states.get(wf.id)?.lastMissed;
+  assertEquals(recorded?.fireTime, missed.toISOString());
+  assertEquals(recorded?.caughtUp, false);
+  const reported = missedEvents(events);
+  assertEquals(reported.length, 1);
+  assertEquals(
+    reported[0].kind === "schedule_missed" && reported[0].caughtUp,
+    false,
+  );
+});
+
+Deno.test("catchUpMissedFires: a slot claimed elsewhere whose claimer recorded it is left to it", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("dedup-recorded-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const claimerState: ScheduleState = {
+    workflowId: wf.id,
+    workflowName: wf.name,
+    lastEvaluatedFireTime: missed.toISOString(),
+    cronExpression: MONTHLY,
+    lastMissed: {
+      fireTime: missed.toISOString(),
+      count: 1,
+      reason: "serve_down",
+      caughtUp: true,
+      detectedAt: new Date(missed.getTime() + HOUR).toISOString(),
+    },
+  };
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+    cronFireDedup: () => {
+      states.states.set(wf.id, claimerState);
+      return Promise.resolve(false);
+    },
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(missedEvents(events), []);
+  assertEquals(states.saves, 0);
+  assertEquals(states.states.get(wf.id), claimerState);
 });
 
 Deno.test("catchUpMissedFires: a store that cannot save still lets the catch-up run", async () => {
@@ -669,6 +720,8 @@ Deno.test("catchUpMissedFires: a run recording a slot newer than the watermark s
 
   assertEquals(executor.inputs.length, 0);
   assertEquals(missedEvents(events), []);
+  assertEquals(states.watermark(wf.id), missed.toISOString());
+  assertEquals(states.states.get(wf.id)?.lastMissed, undefined);
 });
 
 Deno.test("catchUpMissedFires: a run-history lookup that fails falls back to the watermark", async () => {
@@ -1705,4 +1758,219 @@ Deno.test("ScheduledExecutionService.start: a schedule-state list that lands lat
   await service.stop();
 
   assertEquals(service.scheduleStatus(wf.id).lastMissed, recorded);
+});
+
+function slotBefore(slot: Date): Date {
+  return new Cron(MONTHLY).nextRun(new Date(slot.getTime() - 40 * 24 * HOUR))!;
+}
+
+Deno.test("catchUpMissedFires: a recorded slot equal to the latest missed reports the gap before it and moves the watermark to it", async () => {
+  const { previous, missed } = slots();
+  const watermark = slotBefore(previous);
+  const wf = createWorkflow("history-gap-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "1d",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, watermark);
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: () => Promise.resolve(missed),
+    now: () => missed.getTime() + 5 * HOUR,
+  });
+
+  const warnings = await capturingWarnings(async () => {
+    await service.start((e) => events.push(e));
+    await service.catchUpMissedFires();
+    await service.stop();
+  });
+
+  assertEquals(executor.inputs.length, 0);
+  assertEquals(states.watermark(wf.id), missed.toISOString());
+  const recorded = states.states.get(wf.id)?.lastMissed;
+  assertEquals(recorded?.fireTime, previous.toISOString());
+  assertEquals(recorded?.count, 1);
+  assertEquals(recorded?.caughtUp, false);
+  const reported = missedEvents(events);
+  assertEquals(reported.length, 1);
+  assertEquals(
+    reported[0].kind === "schedule_missed" && reported[0].caughtUp,
+    false,
+  );
+  const missedLines = warnings.filter((w) =>
+    w.includes("while serve was down")
+  );
+  assertEquals(missedLines.length, 1);
+  assert(!missedLines[0].includes("maxDelay"), missedLines[0]);
+});
+
+Deno.test("catchUpMissedFires: a recorded slot mid-way reports the gap with the slots after it and catches up the latest", async () => {
+  const { previous, missed } = slots();
+  const gap = slotBefore(previous);
+  const watermark = slotBefore(gap);
+  const wf = createWorkflow("history-mid-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, watermark);
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: () => Promise.resolve(previous),
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await waitFor(() => executor.inputs.length === 1, "catch-up run");
+  await service.stop();
+
+  assertEquals(
+    executor.inputs[0].runtimeTags?.[SCHEDULED_FOR_TAG],
+    missed.toISOString(),
+  );
+  assertEquals(states.watermark(wf.id), missed.toISOString());
+  const recorded = states.states.get(wf.id)?.lastMissed;
+  assertEquals(recorded?.fireTime, missed.toISOString());
+  assertEquals(recorded?.count, 2);
+  assertEquals(recorded?.caughtUp, true);
+  const reported = missedEvents(events);
+  assertEquals(reported.length, 1);
+  const event = reported[0];
+  assert(event.kind === "schedule_missed");
+  assertEquals(event.missedCount, 2);
+  assertEquals(event.oldestFireTime, gap.toISOString());
+  assertEquals(event.caughtUp, true);
+});
+
+Deno.test("catchUpMissedFires: the run-history lookup is bounded by the pass's now", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("history-bound-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const bounds: Date[] = [];
+  const now = missed.getTime() + HOUR;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: (_id, _signal, notAfter) => {
+      bounds.push(notAfter);
+      return Promise.resolve(null);
+    },
+    now: () => now,
+  });
+
+  await service.start();
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(bounds.map((b) => b.getTime()), [now]);
+});
+
+Deno.test("catchUpMissedFires: an instance that may not write and finds the slot claimed elsewhere reports nothing", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("silent-claim-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  states.canWrite = false;
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+    cronFireDedup: () => Promise.resolve(false),
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(missedEvents(events), []);
+  assertEquals(states.watermark(wf.id), previous.toISOString());
+});
+
+Deno.test("catchUpMissedFires: a claim refused after the pass deadline records nothing", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("late-refusal-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const claim = Promise.withResolvers<boolean>();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+    cronFireDedup: () => claim.promise,
+    catchUpTimeoutMs: 20,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  claim.resolve(false);
+  await service.stop();
+
+  assertEquals(missedEvents(events), []);
+  assertEquals(states.watermark(wf.id), previous.toISOString());
+  assertEquals(states.states.get(wf.id)?.lastMissed, undefined);
+});
+
+Deno.test("catchUpMissedFires: a slot whose claimer fired it on time and recorded it is not reported missed", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("dedup-tick-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const tickState: ScheduleState = {
+    workflowId: wf.id,
+    workflowName: wf.name,
+    lastEvaluatedFireTime: missed.toISOString(),
+    cronExpression: MONTHLY,
+  };
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+    cronFireDedup: () => {
+      states.states.set(wf.id, tickState);
+      return Promise.resolve(false);
+    },
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(missedEvents(events), []);
+  assertEquals(states.saves, 0);
+  assertEquals(states.states.get(wf.id), tickState);
 });

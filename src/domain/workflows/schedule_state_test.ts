@@ -239,3 +239,48 @@ Deno.test("advanceScheduleState: a sum that lands exactly on the cap is an exact
   assertEquals(next.lastMissed?.count, MISSED_FIRE_COUNT_CAP);
   assertEquals(next.lastMissed?.saturated, undefined);
 });
+
+Deno.test("advanceScheduleState: a slot caught up is not reported missed again by a later write for the same slot", () => {
+  const caughtUp = missed({ count: 2, caughtUp: true });
+  const current = advanceScheduleState(null, ID, "nightly", EARLY, {
+    lastMissed: caughtUp,
+    fired: true,
+  });
+  const next = advanceScheduleState(current, ID, "nightly", EARLY, {
+    lastMissed: missed({ count: 2, detectedAt: "2026-11-01T10:00:02.000Z" }),
+  });
+  assertEquals(next.lastMissed, caughtUp);
+});
+
+Deno.test("advanceScheduleState: a slot reported missed is replaced when its catch-up lands later", () => {
+  const current = advanceScheduleState(null, ID, "nightly", EARLY, {
+    lastMissed: missed({ count: 2 }),
+  });
+  const caughtUp = missed({ count: 2, caughtUp: true });
+  const next = advanceScheduleState(current, ID, "nightly", EARLY, {
+    lastMissed: caughtUp,
+    fired: true,
+  });
+  assertEquals(next.lastMissed, caughtUp);
+});
+
+Deno.test("advanceScheduleState: a fire of a slot reported missed clears the report", () => {
+  const current = advanceScheduleState(null, ID, "nightly", EARLY, {
+    lastMissed: missed(),
+  });
+  const next = advanceScheduleState(current, ID, "nightly", EARLY, {
+    fired: true,
+  });
+  assertEquals(next.lastMissed, undefined);
+});
+
+Deno.test("advanceScheduleState: a fire of a slot already caught up keeps it", () => {
+  const caughtUp = missed({ caughtUp: true });
+  const current = advanceScheduleState(null, ID, "nightly", EARLY, {
+    lastMissed: caughtUp,
+  });
+  const next = advanceScheduleState(current, ID, "nightly", EARLY, {
+    fired: true,
+  });
+  assertEquals(next.lastMissed, caughtUp);
+});

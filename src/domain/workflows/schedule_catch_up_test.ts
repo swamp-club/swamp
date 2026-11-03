@@ -23,6 +23,7 @@ import {
   firstRecordedSlot,
   latestRecordedSlot,
   MISSED_FIRE_COUNT_CAP,
+  missedAroundRecordedSlot,
   ScheduleCatchUpSchema,
   SCHEDULED_FOR_TAG,
 } from "./schedule_catch_up.ts";
@@ -275,7 +276,12 @@ Deno.test("firstRecordedSlot: passes over runs the scheduler did not start and s
     }
   }
   assertEquals(
-    (await firstRecordedSlot(latestFirst(), scheduler))?.toISOString(),
+    (await firstRecordedSlot(
+      latestFirst(),
+      scheduler,
+      new Date("2026-11-01T10:00:00.000Z"),
+    ))
+      ?.toISOString(),
     "2026-11-01T09:00:00.000Z",
   );
   assertEquals(read, 2);
@@ -288,5 +294,183 @@ Deno.test("firstRecordedSlot: with no run the scheduler started gives null", asy
       tags: { [SCHEDULED_FOR_TAG]: "2026-11-01T09:00:00.000Z" },
     });
   }
-  assertEquals(await firstRecordedSlot(none(), "service:scheduler"), null);
+  assertEquals(
+    await firstRecordedSlot(
+      none(),
+      "service:scheduler",
+      new Date("2026-11-01T10:00:00.000Z"),
+    ),
+    null,
+  );
+});
+
+Deno.test("firstRecordedSlot: passes over a slot after notAfter and takes the next one the scheduler started", async () => {
+  const scheduler = "service:scheduler";
+  async function* latestFirst() {
+    yield await Promise.resolve({
+      initiatedBy: scheduler,
+      tags: { [SCHEDULED_FOR_TAG]: "2099-01-01T00:00:00.000Z" },
+    });
+    yield await Promise.resolve({
+      initiatedBy: scheduler,
+      tags: { [SCHEDULED_FOR_TAG]: "2026-10-01T09:00:00.000Z" },
+    });
+  }
+  assertEquals(
+    (await firstRecordedSlot(
+      latestFirst(),
+      scheduler,
+      new Date("2026-11-01T00:00:00.000Z"),
+    ))?.toISOString(),
+    "2026-10-01T09:00:00.000Z",
+  );
+});
+
+Deno.test("firstRecordedSlot: a slot exactly at notAfter counts, and only slots after it give null", async () => {
+  const scheduler = "service:scheduler";
+  const slot = "2026-11-01T09:00:00.000Z";
+  async function* one() {
+    yield await Promise.resolve({
+      initiatedBy: scheduler,
+      tags: { [SCHEDULED_FOR_TAG]: slot },
+    });
+  }
+  assertEquals(
+    (await firstRecordedSlot(one(), scheduler, new Date(slot)))?.toISOString(),
+    slot,
+  );
+  assertEquals(
+    await firstRecordedSlot(
+      one(),
+      scheduler,
+      new Date(Date.parse(slot) - 1),
+    ),
+    null,
+  );
+});
+
+const QUARTER = "*/15 * * * *";
+
+Deno.test("missedAroundRecordedSlot: a recorded slot equal to the latest missed reports the gap before it and catches up nothing", () => {
+  const result = missedAroundRecordedSlot(
+    QUARTER,
+    new Date("2026-11-01T10:00:00.000Z"),
+    new Date("2026-11-01T11:00:00.000Z"),
+    new Date("2026-11-01T11:05:00.000Z"),
+    LATEST_6H,
+  );
+  assertEquals(result.missedCount, 3);
+  assertEquals(result.saturated, false);
+  assertEquals(result.oldestMissed, new Date("2026-11-01T10:15:00.000Z"));
+  assertEquals(result.latestMissed, new Date("2026-11-01T10:45:00.000Z"));
+  assertEquals(result.catchUpFireTime, null);
+});
+
+Deno.test("missedAroundRecordedSlot: a recorded slot mid-way reports the gap and the slots after it, and catches up only the latest after it", () => {
+  const result = missedAroundRecordedSlot(
+    QUARTER,
+    new Date("2026-11-01T10:00:00.000Z"),
+    new Date("2026-11-01T10:30:00.000Z"),
+    new Date("2026-11-01T11:05:00.000Z"),
+    LATEST_6H,
+  );
+  assertEquals(result.missedCount, 3);
+  assertEquals(result.oldestMissed, new Date("2026-11-01T10:15:00.000Z"));
+  assertEquals(result.latestMissed, new Date("2026-11-01T11:00:00.000Z"));
+  assertEquals(result.catchUpFireTime, new Date("2026-11-01T11:00:00.000Z"));
+});
+
+Deno.test("missedAroundRecordedSlot: a recorded slot right after the watermark leaves no gap", () => {
+  const result = missedAroundRecordedSlot(
+    QUARTER,
+    new Date("2026-11-01T10:00:00.000Z"),
+    new Date("2026-11-01T10:15:00.000Z"),
+    new Date("2026-11-01T10:20:00.000Z"),
+    LATEST_6H,
+  );
+  assertEquals(result.missedCount, 0);
+  assertEquals(result.oldestMissed, null);
+  assertEquals(result.latestMissed, null);
+  assertEquals(result.catchUpFireTime, null);
+});
+
+Deno.test("missedAroundRecordedSlot: a recorded time off the schedule splits without removing a slot", () => {
+  const result = missedAroundRecordedSlot(
+    QUARTER,
+    new Date("2026-11-01T10:00:00.000Z"),
+    new Date("2026-11-01T10:20:00.000Z"),
+    new Date("2026-11-01T10:50:00.000Z"),
+    LATEST_6H,
+  );
+  assertEquals(result.missedCount, 3);
+  assertEquals(result.oldestMissed, new Date("2026-11-01T10:15:00.000Z"));
+  assertEquals(result.latestMissed, new Date("2026-11-01T10:45:00.000Z"));
+  assertEquals(result.catchUpFireTime, new Date("2026-11-01T10:45:00.000Z"));
+});
+
+Deno.test("missedAroundRecordedSlot: slots after the recorded one older than maxDelay are reported but not caught up", () => {
+  const result = missedAroundRecordedSlot(
+    QUARTER,
+    new Date("2026-11-01T10:00:00.000Z"),
+    new Date("2026-11-01T10:30:00.000Z"),
+    new Date("2026-11-01T18:00:00.000Z"),
+    { policy: "latest", maxDelay: "1m" },
+  );
+  assertEquals(result.missedCount, 31);
+  assertEquals(result.latestMissed, new Date("2026-11-01T18:00:00.000Z"));
+  assertEquals(result.catchUpFireTime, new Date("2026-11-01T18:00:00.000Z"));
+  const late = missedAroundRecordedSlot(
+    QUARTER,
+    new Date("2026-11-01T10:00:00.000Z"),
+    new Date("2026-11-01T10:30:00.000Z"),
+    new Date("2026-11-01T18:05:00.000Z"),
+    { policy: "latest", maxDelay: "1m" },
+  );
+  assertEquals(late.latestMissed, new Date("2026-11-01T18:00:00.000Z"));
+  assertEquals(late.catchUpFireTime, null);
+});
+
+Deno.test("missedAroundRecordedSlot: without a catch-up policy nothing is caught up", () => {
+  const result = missedAroundRecordedSlot(
+    QUARTER,
+    new Date("2026-11-01T10:00:00.000Z"),
+    new Date("2026-11-01T10:30:00.000Z"),
+    new Date("2026-11-01T11:05:00.000Z"),
+  );
+  assertEquals(result.missedCount, 3);
+  assertEquals(result.catchUpFireTime, null);
+});
+
+Deno.test("missedAroundRecordedSlot: a saturated gap saturates the result, and the sum stays capped", () => {
+  const watermark = new Date("2026-11-01T00:00:00.000Z");
+  const recorded = new Date(
+    watermark.getTime() + 2 * MISSED_FIRE_COUNT_CAP * 1000,
+  );
+  const now = new Date(recorded.getTime() + 10 * 1000);
+  const result = missedAroundRecordedSlot(
+    "* * * * * *",
+    watermark,
+    recorded,
+    now,
+    LATEST_6H,
+  );
+  assertEquals(result.missedCount, MISSED_FIRE_COUNT_CAP);
+  assertEquals(result.saturated, true);
+  assertEquals(result.oldestMissed, new Date(watermark.getTime() + 1000));
+  assertEquals(result.latestMissed, now);
+  assertEquals(result.catchUpFireTime, now);
+});
+
+Deno.test("missedAroundRecordedSlot: two parts that together pass the cap saturate though neither does", () => {
+  const watermark = new Date("2026-11-01T00:00:00.000Z");
+  const recorded = new Date(watermark.getTime() + 601 * 1000);
+  const now = new Date(recorded.getTime() + 600 * 1000);
+  const result = missedAroundRecordedSlot(
+    "* * * * * *",
+    watermark,
+    recorded,
+    now,
+  );
+  assertEquals(result.missedCount, MISSED_FIRE_COUNT_CAP);
+  assertEquals(result.saturated, true);
 });

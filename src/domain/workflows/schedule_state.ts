@@ -56,7 +56,10 @@ export type ScheduleState = z.infer<typeof ScheduleStateSchema>;
 export interface ScheduleStateAdvance {
   readonly lastMissed?: MissedFire;
   readonly cronExpression?: string;
-  /** the slot started a run, so an earlier lost fire is no longer current */
+  /**
+   * the slot started a run, so an earlier lost fire, or a report that this one
+   * was missed, is no longer current
+   */
   readonly fired?: boolean;
 }
 
@@ -85,7 +88,12 @@ export function advanceScheduleState(
   ) {
     kept = undefined;
   }
-  if (kept && fired && Date.parse(kept.fireTime) < fireTime.getTime()) {
+  const keptAt = kept ? Date.parse(kept.fireTime) : NaN;
+  if (
+    kept && fired &&
+    (keptAt < fireTime.getTime() ||
+      (keptAt === fireTime.getTime() && !kept.caughtUp))
+  ) {
     kept = undefined;
   }
   const missed = mergeMissed(kept, options.lastMissed);
@@ -101,7 +109,8 @@ export function advanceScheduleState(
 
 /**
  * lost fires in a row for the same reason add up; the same slot reported again
- * replaces without adding, so racing writers never count it twice
+ * replaces without adding, so racing writers never count it twice, and a slot
+ * once caught up stays caught up whichever writer lands last
  */
 function mergeMissed(
   current: MissedFire | undefined,
@@ -112,6 +121,9 @@ function mergeMissed(
   const currentAt = Date.parse(current.fireTime);
   const givenAt = Date.parse(given.fireTime);
   if (currentAt > givenAt) return current;
+  if (currentAt === givenAt && current.caughtUp && !given.caughtUp) {
+    return current;
+  }
   if (
     currentAt === givenAt || current.reason !== given.reason ||
     current.caughtUp || given.caughtUp

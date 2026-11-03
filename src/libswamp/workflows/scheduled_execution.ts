@@ -32,6 +32,7 @@ import {
 import {
   CATCH_UP_TAG,
   evaluateMissedFires,
+  missedAroundRecordedSlot,
   type MissedFires,
   type ScheduleCatchUp,
   SCHEDULED_FOR_TAG,
@@ -274,12 +275,14 @@ export interface ScheduledExecutionDeps {
    */
   scheduleState?: ScheduleStateRepository;
   /**
-   * The latest swamp.trigger.scheduledFor slot recorded by a run the scheduler
-   * started, so a slot whose watermark write failed is not caught up again
+   * The latest swamp.trigger.scheduledFor slot at or before notAfter recorded
+   * by a run the scheduler started, so a slot whose watermark write failed is
+   * not caught up again
    */
   latestScheduledSlot?: (
     workflowId: WorkflowId,
     signal: AbortSignal,
+    notAfter: Date,
   ) => Promise<Date | null>;
   /** the whole catch-up pass shares this budget for reading run history */
   runHistoryTimeoutMs?: number;
@@ -328,6 +331,8 @@ interface ScheduleStateWriteOptions {
   lastMissed?: MissedFire;
   ownFire?: boolean;
   fired?: boolean;
+  /** skipped when the record read for the write is already at or past the slot */
+  unlessSettled?: boolean;
 }
 
 interface StateWriteRequest {
@@ -1019,36 +1024,42 @@ export class ScheduledExecutionService {
     this.cacheState(stored);
 
     const catchUp = this.resolveCatchUp(workflowId, workflowName);
-    let missed = evaluateMissedFires(
-      cronExpression,
-      new Date(stored.lastEvaluatedFireTime),
-      now,
-      catchUp,
-    );
+    const watermark = new Date(stored.lastEvaluatedFireTime);
+    let missed = evaluateMissedFires(cronExpression, watermark, now, catchUp);
     if (missed.missedCount === 0) return;
+    let settled: Date | undefined;
     // history only stops a slot running twice; a miss nothing catches up is
     // reported from the watermark, even if a failed watermark write overstates it
     if (missed.catchUpFireTime) {
-      const recorded = await this.latestScheduledSlot(workflowId, history);
+      const recorded = await this.latestScheduledSlot(workflowId, history, now);
       if (pass.signal.aborted) return;
       // a run that recorded its slot settles it even if the watermark write
-      // failed; a slot after now was never fired, so it settles nothing
+      // failed; a slot after now is refused, as the watermark never moves back
       if (
         recorded &&
-        recorded.getTime() > Date.parse(stored.lastEvaluatedFireTime) &&
+        recorded.getTime() > watermark.getTime() &&
         recorded.getTime() <= now.getTime()
       ) {
-        missed = evaluateMissedFires(cronExpression, recorded, now, catchUp);
+        missed = missedAroundRecordedSlot(
+          cronExpression,
+          watermark,
+          recorded,
+          now,
+          catchUp,
+        );
+        settled = recorded;
       }
     }
     if (!missed.catchUpFireTime) {
-      await this.recordMissed(
-        workflowId,
-        workflowName,
-        missed,
-        now,
-        catchUp?.policy === "latest" ? catchUp : undefined,
-      );
+      // slots before a recorded one were settled by its run, not by maxDelay
+      const tooLate = catchUp?.policy === "latest" && missed.latestMissed &&
+          (!settled || missed.latestMissed.getTime() > settled.getTime())
+        ? catchUp
+        : undefined;
+      await this.recordMissed(workflowId, workflowName, missed, now, {
+        tooLateFor: tooLate,
+        settledThrough: settled,
+      });
       return;
     }
 
@@ -1067,8 +1078,18 @@ export class ScheduledExecutionService {
       missed.catchUpFireTime,
       { of: missedFireOf(missed, now), deadline: pass.deadline },
     );
-    // claimed elsewhere, the claimer records it; dropped, the next boot does
-    if (outcome === "claimed_elsewhere" || outcome === "dropped") return;
+    // dropped, the next boot records it
+    if (outcome === "dropped") return;
+    if (outcome === "claimed_elsewhere") {
+      if (pass.signal.aborted) return;
+      // a claimer that recorded its slot settled it; one that stopped first
+      // left it claimed and unrecorded. Without v3 leadership a live claimer's
+      // read and save can interleave with this write, so it may be reported too
+      await this.recordMissed(workflowId, workflowName, missed, now, {
+        unlessSettled: true,
+      });
+      return;
+    }
     const caughtUp = outcome === "queued";
     this.emitMissed(workflowId, workflowName, missed, caughtUp);
     this.logMissed(workflowName, missed, caughtUp);
@@ -1099,20 +1120,32 @@ export class ScheduledExecutionService {
     workflowName: string,
     missed: MissedFires,
     now: Date,
-    tooLateFor?: ScheduleCatchUp,
+    options: {
+      tooLateFor?: ScheduleCatchUp;
+      /** a slot a run recorded; the watermark reaches it even with no miss */
+      settledThrough?: Date;
+      unlessSettled?: boolean;
+    } = {},
   ): Promise<void> {
-    if (!missed.latestMissed) return;
+    const { tooLateFor, settledThrough, unlessSettled } = options;
+    const toSettled = settledThrough !== undefined &&
+      (!missed.latestMissed ||
+        settledThrough.getTime() > missed.latestMissed.getTime());
+    const fireTime = toSettled ? settledThrough : missed.latestMissed;
+    if (!fireTime) return;
     // an instance not allowed to write reports nothing; peers that may all write
     // (no v3 leadership) can each report the same miss
     const wrote = await this.writeScheduleState(
       workflowId,
       workflowName,
-      missed.latestMissed,
+      fireTime,
       {
-        lastMissed: missedFireOf(missed, now),
+        lastMissed: missed.latestMissed ? missedFireOf(missed, now) : undefined,
+        fired: toSettled,
+        unlessSettled,
       },
     );
-    if (!wrote) return;
+    if (!wrote || !missed.latestMissed) return;
     this.emitMissed(workflowId, workflowName, missed, false);
     this.logMissed(workflowName, missed, false, tooLateFor);
   }
@@ -1154,6 +1187,7 @@ export class ScheduledExecutionService {
   private async latestScheduledSlot(
     workflowId: WorkflowId,
     history: HistoryBudget,
+    notAfter: Date,
   ): Promise<Date | null> {
     const lookup = this.deps.latestScheduledSlot;
     if (!lookup) return null;
@@ -1162,7 +1196,7 @@ export class ScheduledExecutionService {
       history.skipped++;
       return null;
     }
-    const read = lookup(workflowId, signal);
+    const read = lookup(workflowId, signal, notAfter);
     const tracked: Promise<void> = read.then(() => {}, () => {}).finally(() =>
       this.historyReads.delete(tracked)
     );
@@ -1453,8 +1487,12 @@ export class ScheduledExecutionService {
     while (queue.pending.length > 0) {
       const batch = queue.pending.splice(0);
       let wrote = false;
+      let skipped: ReadonlySet<StateWriteRequest> = new Set();
       try {
-        wrote = await this.writeScheduleStateNow(workflowId, batch);
+        ({ wrote, skipped } = await this.writeScheduleStateNow(
+          workflowId,
+          batch,
+        ));
       } catch (error) {
         logger.warn(
           "Cannot record the schedule state of workflow {name}: {error}",
@@ -1464,7 +1502,9 @@ export class ScheduledExecutionService {
           },
         );
       }
-      for (const request of batch) request.resolve(wrote);
+      for (const request of batch) {
+        request.resolve(wrote && !skipped.has(request));
+      }
     }
     queue.writing = null;
     this.stateWriteQueues.delete(workflowId);
@@ -1478,9 +1518,10 @@ export class ScheduledExecutionService {
   private async writeScheduleStateNow(
     workflowId: WorkflowId,
     batch: readonly StateWriteRequest[],
-  ): Promise<boolean> {
+  ): Promise<{ wrote: boolean; skipped: ReadonlySet<StateWriteRequest> }> {
+    const skipped = new Set<StateWriteRequest>();
     const repo = this.deps.scheduleState;
-    if (!repo) return false;
+    if (!repo) return { wrote: false, skipped };
     const workflowName = batch[batch.length - 1].workflowName;
     let stored: ScheduleState | null | undefined;
     // a draining fire must reach replay within the settle budget, so it skips
@@ -1497,8 +1538,15 @@ export class ScheduledExecutionService {
     }
     const cronExpression = this.cronExpressions.get(workflowId);
     const next = batch.reduce<ScheduleState | null>(
-      (state, request) =>
-        advanceScheduleState(
+      (state, request) => {
+        if (
+          request.options.unlessSettled && state &&
+          Date.parse(state.lastEvaluatedFireTime) >= request.fireTime.getTime()
+        ) {
+          skipped.add(request);
+          return state;
+        }
+        return advanceScheduleState(
           state,
           workflowId,
           request.workflowName,
@@ -1508,9 +1556,14 @@ export class ScheduledExecutionService {
             cronExpression,
             fired: request.options.fired,
           },
-        ),
+        );
+      },
       this.scheduleStates.get(workflowId) ?? null,
-    )!;
+    );
+    // a skip trusts even a cache the re-read failed to refresh, as it only lags
+    if (!next || skipped.size === batch.length) {
+      return { wrote: false, skipped };
+    }
     let wrote: boolean | "failed";
     try {
       if (readError !== undefined) throw readError;
@@ -1538,7 +1591,7 @@ export class ScheduledExecutionService {
       else own.prior = stored;
     }
     if (wrote === true) this.cacheState(next);
-    return wrote === true;
+    return { wrote: wrote === true, skipped };
   }
 
   private trackStateWrite(write: Promise<unknown>): void {
