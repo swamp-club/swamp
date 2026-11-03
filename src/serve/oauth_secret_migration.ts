@@ -32,7 +32,9 @@ export type OAuthSecretMigrationVaults = Pick<
   VaultService,
   | "get"
   | "put"
+  | "delete"
   | "list"
+  | "supportsDelete"
   | "getDefaultVaultName"
   | "getVaultNames"
 >;
@@ -43,6 +45,14 @@ const OAUTH_SECRET_KEYS = [
   OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
   OAUTH_RESOLVED_ADMINS_KEY,
 ] as const;
+
+// A seeded vault such as AWS Secrets Manager is how an instance recreated with
+// an empty datastore finds its client, so the client id and secret stay there;
+// the operator's bootstrap token and the admin cache are still moved out.
+const USER_VAULT_KEPT_KEYS: ReadonlySet<string> = new Set([
+  OAUTH_CLIENT_ID_KEY,
+  OAUTH_CLIENT_SECRET_KEY,
+]);
 
 /**
  * a key that is legitimately absent, such as the bootstrap access token after
@@ -98,9 +108,14 @@ export async function migrateOAuthSecrets(
           key,
           "serve:oauth-migration",
         );
-        // The user-vault copy stays: a seeded vault such as AWS Secrets Manager
-        // is how a recreated instance with an empty datastore finds its client.
         await vaultService.put(tokenSecretsVaultName, key, value);
+        if (
+          !USER_VAULT_KEPT_KEYS.has(key) &&
+          vaultService.supportsDelete(userVaultForMigration)
+        ) {
+          await vaultService.delete(userVaultForMigration, key)
+            .catch(() => {});
+        }
         logger.info(
           "Migrated OAuth secret {key} from vault to control-plane store",
           { key },

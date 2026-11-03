@@ -598,11 +598,13 @@ half-migrates after the marker exists.
 **OAuth bootstrap secrets.** Older serves stored `oauth-client-id`,
 `oauth-client-secret`, `oauth-bootstrap-access-token` and
 `oauth-resolved-admins` in the default user vault. On start, serve lists that
-vault once and copies any of the four that `_token-secrets` lacks, leaving the
-user-vault copy in place: a vault seeded with a client id and secret, such as
-AWS Secrets Manager, is how an instance recreated with an empty datastore finds
-its client again. The documented route for that case is `--oauth-client-id`
-with a supplied secret; a user-vault seed only matters to a fresh store. When the listing succeeds and
+vault once and copies any of the four that `_token-secrets` lacks. It deletes
+the bootstrap access token and resolved admins from the user vault when it
+supports deletes, but leaves `oauth-client-id` and `oauth-client-secret`: a
+vault seeded with them, such as AWS Secrets Manager, is how an instance
+recreated with an empty datastore finds its client again. The documented route
+for that case is `--oauth-client-id` with a supplied secret; a user-vault seed
+only matters to a fresh store. When the listing succeeds and
 every key moves, serve records `oauth-secrets-migrated` in `_token-secrets`, and
 the migration never touches the user vault again. A key that is legitimately
 absent, such as the bootstrap access token after an API-key registration,

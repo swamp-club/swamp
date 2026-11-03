@@ -30,9 +30,12 @@ import { createLibSwampContext } from "../../libswamp/context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { renderAuthOAuthClientRegister } from "../../presentation/output/auth_oauth_client_output.ts";
+import { CLUB_API_KEY_FILE_FLAG } from "../../infrastructure/persistence/api_key_source.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+const REGISTER_TIMEOUT_MS = 60_000;
 
 export const authOAuthClientRegisterCommand = new Command()
   .name("register")
@@ -48,6 +51,11 @@ export const authOAuthClientRegisterCommand = new Command()
     { required: true },
   )
   .option(
+    `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
+    "Path to a file containing the collective API key (oauth:manage scope); " +
+      "overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
+  )
+  .option(
     "--oauth-provider <url:string>",
     "OAuth authorization server URL, as passed to swamp serve (default: https://swamp-club.com)",
   )
@@ -61,7 +69,9 @@ export const authOAuthClientRegisterCommand = new Command()
       "oauth-client",
       "register",
     ]);
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const ctx = createLibSwampContext({ logger: cliCtx.logger }).withTimeout(
+      REGISTER_TIMEOUT_MS,
+    );
 
     let data: AuthOAuthClientRegisterData | undefined;
     await consumeStream(

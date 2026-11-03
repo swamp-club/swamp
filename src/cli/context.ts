@@ -517,7 +517,8 @@ export function getExtensionsDirFromArgs(
 
 /**
  * startup loads credentials before any command runs, so the flag is pre-parsed.
- * only serve commands declare it; elsewhere it is ignored so a stray flag never
+ * only serve commands and auth oauth-client register declare it; elsewhere it is
+ * ignored so a stray flag never
  * has its file read and sent as a credential before Cliffy rejects it
  */
 export function getClubApiKeyFileFromArgs(
@@ -548,6 +549,10 @@ function declaresClubApiKeyFile(
   args: string[],
   commandInfo: { command: string; subcommand?: string },
 ): boolean {
+  if (commandInfo.command === "auth") {
+    return commandInfo.subcommand === "oauth-client" &&
+      args[args.indexOf("oauth-client") + 1] === "register";
+  }
   if (commandInfo.command !== "serve") return false;
   const sub = commandInfo.subcommand;
   if (sub === undefined || sub === "check-config") return true;

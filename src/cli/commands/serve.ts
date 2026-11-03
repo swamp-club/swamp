@@ -1974,12 +1974,9 @@ const daemonEnableCommand = new Command()
   .option(
     "--oauth-client-id <id:string>",
     "OAuth client ID (env: SWAMP_OAUTH_CLIENT_ID). When set, serve never " +
-      "registers a client: supply its secret with --oauth-client-secret-file, " +
-      "SWAMP_OAUTH_CLIENT_SECRET_FILE or SWAMP_OAUTH_CLIENT_SECRET, or reuse the " +
-      "secret stored for that same client. When omitted, a client is registered " +
-      "on first start and stored in the datastore; set SWAMP_API_KEY, " +
-      "SWAMP_API_KEY_FILE or --club-api-key-file (a collective API token with " +
-      "oauth:manage scope) to register without browser interaction.",
+      "registers and needs the client's secret from --oauth-client-secret-file " +
+      "or its stored copy; when omitted, a client is registered on first start " +
+      "(headless with a collective key holding oauth:manage).",
   )
   .option(
     `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
@@ -2820,12 +2817,9 @@ export const serveCommand = new Command()
   .option(
     "--oauth-client-id <id:string>",
     "OAuth client ID (env: SWAMP_OAUTH_CLIENT_ID). When set, serve never " +
-      "registers a client: supply its secret with --oauth-client-secret-file, " +
-      "SWAMP_OAUTH_CLIENT_SECRET_FILE or SWAMP_OAUTH_CLIENT_SECRET, or reuse the " +
-      "secret stored for that same client. When omitted, a client is registered " +
-      "on first start and stored in the datastore; set SWAMP_API_KEY, " +
-      "SWAMP_API_KEY_FILE or --club-api-key-file (a collective API token with " +
-      "oauth:manage scope) to register without browser interaction.",
+      "registers and needs the client's secret from --oauth-client-secret-file " +
+      "or its stored copy; when omitted, a client is registered on first start " +
+      "(headless with a collective key holding oauth:manage).",
   )
   .option(
     `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,

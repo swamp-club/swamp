@@ -43,6 +43,7 @@ interface FakeVaults {
   failList: boolean;
   failGetKeys: Set<string>;
   failPutKeys: Set<string>;
+  deleteSupported: boolean;
   vaultService: OAuthSecretMigrationVaults;
 }
 
@@ -61,6 +62,7 @@ function createFakeVaults(
     failList: false,
     failGetKeys: new Set(),
     failPutKeys: new Set(),
+    deleteSupported: true,
     vaultService: {
       get(vaultName: string, key: string): Promise<string> {
         if (vaultName === userVault) fake.userVaultCalls.push(`get:${key}`);
@@ -83,12 +85,20 @@ function createFakeVaults(
         secrets.get(vaultName)!.set(key, value);
         return Promise.resolve();
       },
+      delete(vaultName: string, key: string): Promise<void> {
+        if (vaultName === userVault) fake.userVaultCalls.push(`delete:${key}`);
+        secrets.get(vaultName)?.delete(key);
+        return Promise.resolve();
+      },
       list(vaultName: string): Promise<string[]> {
         if (vaultName === userVault) fake.userVaultCalls.push("list");
         if (fake.failList) {
           return Promise.reject(new Error("vault unavailable"));
         }
         return Promise.resolve([...(secrets.get(vaultName)?.keys() ?? [])]);
+      },
+      supportsDelete(_vaultName: string): boolean {
+        return fake.deleteSupported;
       },
       getDefaultVaultName(): string | undefined {
         return userVault ?? undefined;
@@ -136,7 +146,7 @@ Deno.test("migrateOAuthSecrets: keys missing from the user vault listing are nev
   assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
 });
 
-Deno.test("migrateOAuthSecrets: copies every legacy key into _token-secrets, keeps the user-vault copy and records the migration", async () => {
+Deno.test("migrateOAuthSecrets: copies every legacy key, keeps only the client id and secret in the user vault, and records the migration", async () => {
   const fake = createFakeVaults();
   userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
   userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");
@@ -159,13 +169,7 @@ Deno.test("migrateOAuthSecrets: copies every legacy key into _token-secrets, kee
   assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
   assertEquals(
     [...userSecrets(fake).keys()].sort(),
-    [
-      OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
-      OAUTH_CLIENT_ID_KEY,
-      OAUTH_CLIENT_SECRET_KEY,
-      OAUTH_RESOLVED_ADMINS_KEY,
-      "unrelated",
-    ].sort(),
+    [OAUTH_CLIENT_ID_KEY, OAUTH_CLIENT_SECRET_KEY, "unrelated"].sort(),
   );
 });
 
@@ -242,6 +246,28 @@ Deno.test("migrateOAuthSecrets: a recreated instance with an empty store finds t
   assertEquals(
     tokenSecrets(fake).get(OAUTH_CLIENT_SECRET_KEY),
     "client-secret",
+  );
+  assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
+});
+
+Deno.test("migrateOAuthSecrets: a user vault without delete support keeps every key and still records the migration", async () => {
+  const fake = createFakeVaults();
+  fake.deleteSupported = false;
+  userSecrets(fake).set(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY, "access-token");
+
+  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME);
+
+  assertEquals(
+    tokenSecrets(fake).get(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY),
+    "access-token",
+  );
+  assertEquals(
+    userSecrets(fake).get(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY),
+    "access-token",
+  );
+  assertEquals(
+    fake.userVaultCalls.some((c) => c.startsWith("delete:")),
+    false,
   );
   assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
 });

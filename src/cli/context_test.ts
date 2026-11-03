@@ -673,6 +673,15 @@ Deno.test("getClubApiKeyFileFromArgs: gates on the command path extractCommandIn
         "--club-api-key-file",
         key,
       ],
+      [
+        "auth",
+        "oauth-client",
+        "register",
+        "--name",
+        "x",
+        "--club-api-key-file",
+        key,
+      ],
     ]
   ) {
     assertPathEquals(read(args)!, resolve(key));
@@ -683,6 +692,8 @@ Deno.test("getClubApiKeyFileFromArgs: gates on the command path extractCommandIn
       ["serve", "daemon", "disable", "--club-api-key-file", key],
       ["issue", "search", "x", "--club-api-key-file", key],
       ["auth", "whoami", "--club-api-key-file", key],
+      ["auth", "oauth-client", "--club-api-key-file", key],
+      ["auth", "token", "create", "--club-api-key-file", key],
     ]
   ) {
     assertEquals(read(args), undefined, args.join(" "));
