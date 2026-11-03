@@ -40,7 +40,7 @@ function startFakeChild(): FakeChild {
   const exited = new Promise<void>((resolve) => resolveExited = resolve);
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    (req) => {
+    (req): Response | Promise<Response> => {
       const url = new URL(req.url);
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (req.headers.get("sec-websocket-protocol") !== `bearer.${token}`) {
@@ -87,6 +87,18 @@ function startFakeChild(): FakeChild {
       if (url.pathname === "/local/busy") {
         state.busyAsks++;
         return Response.json({ busy: state.busy });
+      }
+      if (url.pathname === "/api/v1/request") {
+        return req.text().then((body) =>
+          Response.json({ path: url.pathname, body })
+        );
+      }
+      if (url.pathname === "/gzip") {
+        const body = new Blob(["plain text\n"]).stream()
+          .pipeThrough(new CompressionStream("gzip"));
+        return new Response(body, {
+          headers: { "content-encoding": "gzip", "content-type": "text/plain" },
+        });
       }
       return Response.json({ path: url.pathname, search: url.search });
     },
@@ -894,4 +906,51 @@ Deno.test("workspaceHub: a request whose lookup is still in flight when shutdown
   assertEquals(res?.status, 503);
   await res?.body?.cancel();
   assertEquals(spawned, []);
+});
+
+Deno.test("workspaceHub: forwards a dashboard read on the HTTP request route to the child", async () => {
+  await withHub(async ({ base }) => {
+    const body = read("r1", "data.get");
+    const res = await hubFetch(`http://${base}/w/alpha/api/v1/request`, {
+      method: "POST",
+      body,
+    });
+    assertEquals(await res.json(), { path: "/api/v1/request", body });
+  });
+});
+
+Deno.test("workspaceHub: a request the child is not given goes back to the socket without starting the child", async () => {
+  await withHub(async ({ base, spawned }) => {
+    for (const type of ["data.list", "model.method.run", "vault.put"]) {
+      const res = await hubFetch(`http://${base}/w/alpha/api/v1/request`, {
+        method: "POST",
+        body: read("r1", type),
+      });
+      assertEquals(res.status, 404, type);
+      assertEquals((await res.json()).code, "use_websocket", type);
+    }
+    assertEquals(spawned, []);
+  });
+});
+
+Deno.test("workspaceHub: an HTTP request body over the cap is refused with 413", async () => {
+  await withHub(async ({ base, spawned }) => {
+    const res = await hubFetch(`http://${base}/w/alpha/api/v1/request`, {
+      method: "POST",
+      body: "x".repeat(64 * 1024 + 1),
+    });
+    assertEquals(res.status, 413);
+    await res.body?.cancel();
+    assertEquals(spawned, []);
+  });
+});
+
+Deno.test("workspaceHub: a body fetch already decoded is forwarded without its content-encoding", async () => {
+  await withHub(async ({ base }) => {
+    const res = await hubFetch(`http://${base}/w/alpha/gzip`, {
+      headers: { "accept-encoding": "gzip" },
+    });
+    assertEquals(res.headers.get("content-encoding"), null);
+    assertEquals(await res.text(), "plain text\n");
+  });
 });

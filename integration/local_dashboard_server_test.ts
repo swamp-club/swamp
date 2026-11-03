@@ -35,9 +35,10 @@ const TOKEN = "hub-token-for-tests";
  */
 async function withServer(
   fn: (server: LocalDashboardServer, base: string) => Promise<void>,
+  ctx: ConnectionContext = {} as unknown as ConnectionContext,
 ): Promise<void> {
   const server = startLocalDashboardServer({
-    ctx: {} as unknown as ConnectionContext,
+    ctx,
     healthCollector: new HealthCollector({
       instanceId: "test",
       deploymentMode: "local",
@@ -133,4 +134,29 @@ Deno.test("localDashboardServer: answers a foreign Host with 421", async () => {
       conn.close();
     }
   });
+});
+
+Deno.test("localDashboardServer: the HTTP request route needs the hub token", async () => {
+  await withServer(async (_server, base) => {
+    const res = await fetch(`${base}/api/v1/request`, {
+      method: "POST",
+      body: JSON.stringify({ type: "data.get", id: "r1", payload: {} }),
+    });
+    assertEquals(res.status, 401);
+    await res.body?.cancel();
+  });
+});
+
+Deno.test("localDashboardServer: answers the HTTP request route as an anonymous caller", async () => {
+  // a type the route sends back answers before the request touches the repo
+  const ctx = { authConfig: { mode: "none" } } as unknown as ConnectionContext;
+  await withServer(async (_server, base) => {
+    const res = await fetch(`${base}/api/v1/request`, {
+      method: "POST",
+      headers: { "x-swamp-hub-token": TOKEN },
+      body: JSON.stringify({ type: "model.search", id: "r1", payload: {} }),
+    });
+    assertEquals(res.status, 404);
+    assertEquals((await res.json()).code, "use_websocket");
+  }, ctx);
 });

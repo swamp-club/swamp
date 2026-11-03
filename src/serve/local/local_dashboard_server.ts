@@ -37,6 +37,8 @@ import type {
   HealthSnapshotRun,
 } from "../health_collector.ts";
 import { createHealthStreamResponse } from "../health_stream.ts";
+import { handleHttpRequest } from "../http_request_route.ts";
+import { SERVE_REQUEST_PATH } from "../protocol.ts";
 
 export interface LocalDashboardServerOptions {
   ctx: ConnectionContext;
@@ -148,6 +150,18 @@ export function startLocalDashboardServer(
         return response;
       }
 
+      if (url.pathname === SERVE_REQUEST_PATH) {
+        return await handleHttpRequest(req, info.remoteAddr.hostname, {
+          ctx,
+          // auth mode none never asks; refuse rather than trust a token here
+          authenticate: () =>
+            Promise.resolve({
+              ok: false,
+              error: "the local dashboard takes no tokens",
+              reason: "invalid-format",
+            }),
+        });
+      }
       if (req.method === "GET" && url.pathname === "/local/busy") {
         return Response.json({ busy: options.busy?.() ?? false });
       }

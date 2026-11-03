@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { FOLLOWER_READ_REQUESTS } from "./follower_requests.ts";
+import { HTTP_REQUEST_TYPES } from "./protocol.ts";
 import type {
   ModelMethodRunPayload,
   SerializedError,
@@ -192,4 +194,13 @@ Deno.test("ServerRequest - round-trips through JSON", () => {
     assertEquals(parsed.payload.workflowIdOrName, "build");
     assertEquals(parsed.payload.inputs, { version: "1.0.0" });
   }
+});
+
+// The HTTP route accepts the dashboard's session cookie, which is safe only
+// while every request it runs is a read.
+Deno.test("HTTP_REQUEST_TYPES: holds only reads a follower may answer", () => {
+  const writes = [...HTTP_REQUEST_TYPES].filter((type) =>
+    !FOLLOWER_READ_REQUESTS.has(type)
+  );
+  assertEquals(writes, []);
 });

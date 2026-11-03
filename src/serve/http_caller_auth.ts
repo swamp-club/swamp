@@ -26,7 +26,16 @@ import {
   clearRateLimit,
   rateLimitKey,
 } from "./rate_limiter.ts";
-import type { ServerTokenAuthResult } from "./token_auth.ts";
+import { resolveDashboardSessionForOrigin } from "./dashboard_session_handler.ts";
+import type {
+  DashboardSession,
+  DashboardSessionStore,
+} from "./dashboard_session_store.ts";
+import {
+  extractDashboardSessionId,
+  type ServerTokenAuthResult,
+  shouldInvalidateDashboardSession,
+} from "./token_auth.ts";
 
 /** The principal an unauthenticated server (`--auth-mode none`) stamps. */
 export const ANONYMOUS_PRINCIPAL = "@anonymous";
@@ -41,6 +50,19 @@ export interface HttpCallerAuthDeps {
   readonly now?: () => number;
   /** the per-principal request rate; on unless false */
   readonly limitPrincipalRate?: boolean;
+  /**
+   * accepts the dashboard's session cookie from the exact origin that created
+   * it; absent, only a bearer token is accepted
+   */
+  readonly dashboardSession?: HttpCallerSessionAuth;
+}
+
+export interface HttpCallerSessionAuth {
+  readonly sessions: DashboardSessionStore;
+  readonly authenticate: (
+    session: DashboardSession,
+    sourceIp: string,
+  ) => Promise<ServerTokenAuthResult>;
 }
 
 export interface HttpCallerToken {
@@ -72,9 +94,21 @@ export async function authenticateHttpCaller(
       principal: ANONYMOUS_PRINCIPAL,
     };
   }
-  // bearer only: a cookie-authenticated POST would be reachable cross-site
   const token = bearerToken(req);
   if (token === null) {
+    const sessionAuth = deps.dashboardSession;
+    const sessionId = sessionAuth === undefined
+      ? null
+      : extractDashboardSessionId(req);
+    if (sessionAuth !== undefined && sessionId !== null) {
+      return await authenticateSessionCaller(
+        req,
+        sessionId,
+        sourceIp,
+        deps,
+        sessionAuth,
+      );
+    }
     const ipBurst = checkIpBurst(sourceIp);
     if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     return httpFailure(401, "unauthorized", "Unauthorized: token required");
@@ -89,6 +123,62 @@ export async function authenticateHttpCaller(
     return httpFailure(401, "unauthorized", `Unauthorized: ${auth.reason}`);
   }
   clearRateLimit(key);
+  return authenticatedCaller(auth, sourceIp, deps);
+}
+
+/**
+ * The origin binding is what makes a cookie-authenticated POST safe: a page on
+ * another origin, same-site ports included, never resolves the session.
+ */
+async function authenticateSessionCaller(
+  req: Request,
+  sessionId: string,
+  sourceIp: string,
+  deps: HttpCallerAuthDeps,
+  sessionAuth: HttpCallerSessionAuth,
+): Promise<HttpCaller | Response> {
+  const session = await resolveDashboardSessionForOrigin(
+    sessionId,
+    req.headers.get("origin"),
+    sessionAuth.sessions,
+  );
+  if (session === null) {
+    const ipBurst = checkIpBurst(sourceIp);
+    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
+    if (await sessionAuth.sessions.get(sessionId) === null) {
+      return httpFailure(
+        401,
+        "unauthorized",
+        "Unauthorized: dashboard session expired",
+      );
+    }
+    return httpFailure(
+      403,
+      "forbidden",
+      "Forbidden: dashboard session origin mismatch",
+    );
+  }
+  const key = rateLimitKey(`${session.tokenName}.${session.id}`, sourceIp);
+  const rateCheck = checkRateLimit(key);
+  if (!rateCheck.allowed) return tooManyRequests(rateCheck.retryAfterSeconds);
+  const auth = await sessionAuth.authenticate(session, sourceIp);
+  if (!auth.ok) {
+    if (shouldInvalidateDashboardSession(auth.reason)) {
+      await sessionAuth.sessions.delete(session.id);
+    }
+    const ipBurst = checkIpBurst(sourceIp);
+    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
+    return httpFailure(401, "unauthorized", `Unauthorized: ${auth.reason}`);
+  }
+  clearRateLimit(key);
+  return authenticatedCaller(auth, sourceIp, deps);
+}
+
+function authenticatedCaller(
+  auth: Extract<ServerTokenAuthResult, { ok: true }>,
+  sourceIp: string,
+  deps: HttpCallerAuthDeps,
+): HttpCaller | Response {
   if (deps.limitPrincipalRate !== false) {
     const rate = checkPrincipalRate(auth.principalId, deps.now?.());
     if (!rate.allowed) return tooManyRequests(rate.retryAfterSeconds);

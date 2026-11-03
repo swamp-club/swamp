@@ -23,8 +23,16 @@ import {
   authenticateHttpCaller,
   bearerToken,
   type HttpCaller,
+  type HttpCallerSessionAuth,
 } from "./http_caller_auth.ts";
-import type { ServerTokenAuthResult } from "./token_auth.ts";
+import type {
+  DashboardSession,
+  DashboardSessionStore,
+} from "./dashboard_session_store.ts";
+import {
+  DASHBOARD_SESSION_COOKIE,
+  type ServerTokenAuthResult,
+} from "./token_auth.ts";
 
 function request(authorization?: string): Request {
   return new Request("http://serve.test/api/v1/request", {
@@ -183,4 +191,201 @@ Deno.test("authenticateHttpCaller: limitPrincipalRate false leaves the per-princ
     );
     assertEquals(result instanceof Response, false, `request ${i}`);
   }
+});
+
+const DASHBOARD_ORIGIN = "https://serve.test";
+
+function sessionStore(): DashboardSessionStore & {
+  sessions: Map<string, DashboardSession>;
+  add(): DashboardSession;
+} {
+  const sessions = new Map<string, DashboardSession>();
+  return {
+    sessions,
+    add() {
+      const id = crypto.randomUUID().replaceAll("-", "").padEnd(64, "0");
+      const session: DashboardSession = {
+        id,
+        tokenName: "laptop",
+        tokenCreatedAt: "2026-11-01T00:00:00.000Z",
+        origin: DASHBOARD_ORIGIN,
+        createdAt: "2026-11-01T00:00:00.000Z",
+        expiresAt: "2026-11-02T00:00:00.000Z",
+      };
+      sessions.set(id, session);
+      return session;
+    },
+    create: () => Promise.reject(new Error("not used")),
+    get: (id) => Promise.resolve(sessions.get(id) ?? null),
+    delete: (id) => {
+      sessions.delete(id);
+      return Promise.resolve();
+    },
+  };
+}
+
+function cookieRequest(sessionId: string, origin?: string): Request {
+  const headers: Record<string, string> = {
+    cookie: `${DASHBOARD_SESSION_COOKIE}=${sessionId}`,
+  };
+  if (origin !== undefined) headers.origin = origin;
+  return new Request("https://serve.test/api/v1/request", {
+    method: "POST",
+    headers,
+  });
+}
+
+function sessionAuth(
+  sessions: DashboardSessionStore,
+  result: ServerTokenAuthResult = validToken,
+): HttpCallerSessionAuth & { asked: DashboardSession[] } {
+  const asked: DashboardSession[] = [];
+  return {
+    asked,
+    sessions,
+    authenticate: (session) => {
+      asked.push(session);
+      return Promise.resolve(result);
+    },
+  };
+}
+
+function rejectBearer(): Promise<ServerTokenAuthResult> {
+  return Promise.reject(new Error("a session caller presents no bearer token"));
+}
+
+Deno.test("authenticateHttpCaller: a dashboard session from its own origin gives the session token's caller", async () => {
+  const store = sessionStore();
+  const session = store.add();
+  const auth = sessionAuth(store);
+  const caller = await authenticateHttpCaller(
+    cookieRequest(session.id, DASHBOARD_ORIGIN),
+    uniqueIp(),
+    { authMode: "token", authenticate: rejectBearer, dashboardSession: auth },
+  );
+
+  assertEquals(auth.asked, [session]);
+  assertEquals((caller as HttpCaller).principal, "user:adam");
+  assertEquals((caller as HttpCaller).token?.name, "laptop");
+});
+
+Deno.test("authenticateHttpCaller: a dashboard session is refused without an Origin header or from another origin", async () => {
+  const store = sessionStore();
+  const session = store.add();
+  const auth = sessionAuth(store);
+  for (
+    const origin of [
+      undefined,
+      "https://evil.test",
+      "https://serve.test:8443",
+      "http://serve.test",
+    ]
+  ) {
+    const response = await authenticateHttpCaller(
+      cookieRequest(session.id, origin),
+      uniqueIp(),
+      { authMode: "token", authenticate: rejectBearer, dashboardSession: auth },
+    );
+    assertInstanceOf(response, Response);
+    assertEquals(response.status, 403, `origin ${origin}`);
+    assertEquals((await response.json()).code, "forbidden");
+  }
+  assertEquals(auth.asked, []);
+});
+
+Deno.test("authenticateHttpCaller: an unknown dashboard session is refused with 401", async () => {
+  const store = sessionStore();
+  const response = await authenticateHttpCaller(
+    cookieRequest("f".repeat(64), DASHBOARD_ORIGIN),
+    uniqueIp(),
+    {
+      authMode: "token",
+      authenticate: rejectBearer,
+      dashboardSession: sessionAuth(store),
+    },
+  );
+  assertInstanceOf(response, Response);
+  assertEquals(response.status, 401);
+  assertEquals(
+    (await response.json()).message,
+    "Unauthorized: dashboard session expired",
+  );
+});
+
+Deno.test("authenticateHttpCaller: a session whose token was revoked is refused and deleted", async () => {
+  const store = sessionStore();
+  const session = store.add();
+  const response = await authenticateHttpCaller(
+    cookieRequest(session.id, DASHBOARD_ORIGIN),
+    uniqueIp(),
+    {
+      authMode: "token",
+      authenticate: rejectBearer,
+      dashboardSession: sessionAuth(store, {
+        ok: false,
+        error: "revoked",
+        reason: "revoked",
+      }),
+    },
+  );
+  assertInstanceOf(response, Response);
+  assertEquals(response.status, 401);
+  assertEquals(store.sessions.has(session.id), false);
+});
+
+Deno.test("authenticateHttpCaller: failed dashboard session attempts count toward the IP burst", async () => {
+  const store = sessionStore();
+  const sourceIp = uniqueIp();
+  let last: HttpCaller | Response | undefined;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    last = await authenticateHttpCaller(
+      cookieRequest(crypto.randomUUID(), DASHBOARD_ORIGIN),
+      sourceIp,
+      {
+        authMode: "token",
+        authenticate: rejectBearer,
+        dashboardSession: sessionAuth(store),
+      },
+    );
+    if (last instanceof Response && last.status === 429) break;
+  }
+  assertInstanceOf(last, Response);
+  assertEquals(last.status, 429);
+});
+
+Deno.test("authenticateHttpCaller: without the session dep a dashboard cookie is not a credential", async () => {
+  const store = sessionStore();
+  const session = store.add();
+  const response = await authenticateHttpCaller(
+    cookieRequest(session.id, DASHBOARD_ORIGIN),
+    uniqueIp(),
+    { authMode: "token", authenticate: rejectBearer },
+  );
+  assertInstanceOf(response, Response);
+  assertEquals(response.status, 401);
+  assertEquals(
+    (await response.json()).message,
+    "Unauthorized: token required",
+  );
+});
+
+Deno.test("authenticateHttpCaller: a bearer token wins over a dashboard cookie", async () => {
+  const store = sessionStore();
+  const session = store.add();
+  const auth = sessionAuth(store);
+  const req = new Request("https://serve.test/api/v1/request", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${crypto.randomUUID()}`,
+      cookie: `${DASHBOARD_SESSION_COOKIE}=${session.id}`,
+      origin: DASHBOARD_ORIGIN,
+    },
+  });
+  const caller = await authenticateHttpCaller(req, uniqueIp(), {
+    authMode: "token",
+    authenticate: () => Promise.resolve(validToken),
+    dashboardSession: auth,
+  });
+  assertEquals((caller as HttpCaller).principal, "user:adam");
+  assertEquals(auth.asked, []);
 });

@@ -42,6 +42,14 @@ import {
   notAvailableLocally,
 } from "./local_actions.ts";
 
+import { httpFailure } from "../http_caller_auth.ts";
+import {
+  MAX_HTTP_REQUEST_BODY_BYTES,
+  SERVE_REQUEST_PATH,
+  USE_WEBSOCKET_CODE,
+} from "../protocol.ts";
+import { readBodyWithLimit } from "../webhook.ts";
+
 const logger = getLogger(["swamp", "dashboard", "hub"]);
 
 const STDERR_TAIL_LINES = 20;
@@ -303,6 +311,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     path: string,
     search: string,
     done: () => void,
+    body?: string,
   ): Promise<Response> => {
     const headers = new Headers(req.headers);
     headers.delete("host");
@@ -320,7 +329,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
         {
           method: req.method,
           headers,
-          body: hasBody ? req.body : undefined,
+          body: body ?? (hasBody ? req.body : undefined),
           redirect: "manual",
           signal: hubSignal.signal,
         },
@@ -332,16 +341,21 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
         status: 502,
       });
     }
+    // fetch has decoded the body but keeps these, which would make the
+    // browser decode it again
+    const replyHeaders = new Headers(upstream.headers);
+    replyHeaders.delete("content-encoding");
+    replyHeaders.delete("content-length");
     if (!upstream.body) {
       done();
       return new Response(null, {
         status: upstream.status,
-        headers: upstream.headers,
+        headers: replyHeaders,
       });
     }
     return new Response(endOnAbort(upstream.body, hubSignal.signal, done), {
       status: upstream.status,
-      headers: upstream.headers,
+      headers: replyHeaders,
     });
   };
 
@@ -477,6 +491,12 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
           return new Response("Forbidden origin", { status: 403 });
         }
       }
+      let readBody: string | undefined;
+      if (!isUpgrade && path === SERVE_REQUEST_PATH && req.method === "POST") {
+        const read = await forwardableRead(req);
+        if (read instanceof Response) return read;
+        readBody = read;
+      }
       const entry = entryFor(repoDir);
       let child: HubChild;
       try {
@@ -499,7 +519,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
           finished = true;
           entry.requests--;
           armIdle(repoDir, entry);
-        });
+        }, readBody);
       }
       let response: Response;
       try {
@@ -656,6 +676,35 @@ export async function spawnDashboardChild(repoDir: string): Promise<HubChild> {
       await Promise.all([status, drained, stderrDrained]);
     },
   };
+}
+
+/**
+ * The child gets only the reads the dashboard makes, on HTTP as on the
+ * socket; any other request goes back to the socket, where the hub runs or
+ * refuses it.
+ */
+async function forwardableRead(
+  req: Request,
+): Promise<string | Response> {
+  const bytes = await readBodyWithLimit(req, MAX_HTTP_REQUEST_BODY_BYTES);
+  if (bytes === null) {
+    return httpFailure(
+      413,
+      "payload_too_large",
+      `Request body exceeds ${MAX_HTTP_REQUEST_BODY_BYTES} bytes`,
+    );
+  }
+  const text = new TextDecoder().decode(bytes);
+  const frame = parseFrame(text);
+  if (!frame) return httpFailure(400, "invalid_request", "Invalid request");
+  if (!FORWARDED_READS.has(frame.type)) {
+    return httpFailure(
+      404,
+      USE_WEBSOCKET_CODE,
+      `'${frame.type}' is not answered over HTTP here; send it over the WebSocket`,
+    );
+  }
+  return text;
 }
 
 function parseFrame(

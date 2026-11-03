@@ -476,3 +476,27 @@ export async function saveRun(
   await repo.repoContext.workflowRunRepo.save(workflow.id, run);
   return run;
 }
+
+export const OVER_FRAME_LIMIT_BYTES = 64 * 1024 * 1024 + 1024;
+
+/** text data named big on a model named big-model, over a WebSocket frame */
+export async function saveLargeText(repo: ServeRepo): Promise<void> {
+  const model = await saveModel(repo, "big-model");
+  const data = Data.create({
+    name: "big",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", modelName: model.name },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: `${repo.modelType.normalized}:${model.id}`,
+    },
+  });
+  await repo.repoContext.unifiedDataRepo.save(
+    repo.modelType,
+    model.id,
+    data,
+    new TextEncoder().encode("x".repeat(OVER_FRAME_LIMIT_BYTES)),
+  );
+}

@@ -211,6 +211,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
 | HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
 | HTTP POST | `/api/v1/signal/{waitId}`, `/api/v1/signal` (by workflow and key, in the body) | token + `signal` on the wait's workflow (IP burst and per-token rate limits) | Delivers a signal to a `wait_for_signal` step (`src/serve/signal_http.ts`; see "Signal" below) |
+| HTTP POST | `/api/v1/request` | bearer token, or the dashboard session cookie from its own `Origin`, unless mode `none` | Reads whose replies can outgrow a WebSocket frame (`HTTP_REQUEST_TYPES`), streamed as NDJSON (`src/serve/http_request_route.ts`) |
 | HTTP GET | `/api/v1/health` | any valid bearer token or dashboard session (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and behaviors they may `read`, decided on each resource's resolved name, tags and behavior type (entries that do not resolve are hidden), without run principals, workers or component detail |
 | SSE | `/api/v1/health/stream?interval=` | any valid bearer token or dashboard session; at most 10 open streams per token, else 429 | The same narrowed snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` (`src/serve/health_stream.ts`). The stream is a token session: when its token is revoked, rotated or expires, or its principal loses access, it ends with a `session-ended` event carrying the close code and reason. A change to the principal's collectives or groups ends it with 4004 so the client reconnects under the new access |
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
@@ -283,9 +284,9 @@ Reads whose replies grow without bound (`HTTP_REQUEST_TYPES` in
 `src/serve/protocol.ts`: data, output, history and report reads) are answered
 over `POST /api/v1/request` instead (`src/serve/http_request_route.ts`). The
 route sits behind the same no-auth host and Origin checks as every `/api`
-route, accepts bearer tokens only (`authenticateHttpCaller`, shared with the
-datastore API, so no cookie-authenticated POST exists) without the
-per-principal request rate a socket read never had, caps the body at 64 KiB,
+route, accepts a bearer token or the dashboard session cookie
+(`authenticateHttpCaller`) without the per-principal request rate a socket read
+never had, caps the body at 64 KiB,
 and applies the follower freshness gate. It runs the request through
 `handleMessage` against a WebSocket-shaped reply channel, so validation,
 authorization, audit and the handler are the socket's own, and streams every
@@ -297,9 +298,24 @@ per source IP) are refused with `use_websocket`. `requestServerResponse` sends t
 there and falls back to the socket on `use_websocket`, on 404 or 405 (a serve
 that predates the route, or a proxy that does not pass it), and on any refusal
 that is not a serve `{code, message}` body; serve's own refusals map to the
-socket path's errors. Run streams and the dashboard stay on the
-socket under the cap; the dashboard reaches serve through the workspace hub, a
-Deno relay with the same receive limit.
+socket path's errors. Run streams stay on the socket under the cap.
+
+The dashboard sends the same types there first and falls back to the socket on
+the same rules (`packages/dashboard/src/client/http_request.ts`, whose copy of
+`HTTP_REQUEST_TYPES` a test pins to core's). It holds no token, only its
+session cookie, so the route accepts that cookie when the request's own
+`Origin` header matches the origin the session was created from
+(`resolveDashboardSessionForOrigin`, the WebSocket upgrade's check, without the
+`x-swamp-dashboard-origin` stand-in): a missing or other origin is 403, an
+unknown session 401, and each failure counts toward the IP burst. This
+cookie-authenticated POST is safe only because the route runs reads: a test
+pins every `HTTP_REQUEST_TYPES` member to `FOLLOWER_READ_REQUESTS`. The datastore
+API shares `authenticateHttpCaller` but does not pass the session store, so it
+stays bearer-only. The local dashboard reaches the route through the workspace
+hub, which forwards `POST /w/<name>/api/v1/request` to the workspace's child
+only for a type in `FORWARDED_READS` (others get `use_websocket`), and drops
+`content-encoding` from every forwarded reply, whose body `fetch` has already
+decoded.
 
 `workflow.search` and `workflow.run.search` take `offset` and `limit` and return
 `total` beside `data`. Paging is applied after the per-workflow authorization
