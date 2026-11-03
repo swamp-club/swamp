@@ -248,3 +248,29 @@ Deno.test("pendingDispatchModel: every method's outputs expire after a day", () 
     assertEquals(method.outputLifetime, "1d", name);
   }
 });
+
+Deno.test("pendingDispatchModel: a __proto__ label key is stored the same way by enqueue and by an end transition", async () => {
+  const { context, store } = harness();
+  const labels: Record<string, string> = { gpu: "a100" };
+  Object.defineProperty(labels, "__proto__", {
+    value: "",
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  const args = { ...enqueueArgs, labels };
+  await pendingDispatchModel.methods.enqueue.execute(args, context);
+  let expected = startPendingDispatch(args, null);
+  assertEquals(store.get("pending-q-1"), expected);
+  const end = {
+    state: "timed_out" as const,
+    endedAt: "2026-07-04T00:01:00.000Z",
+  };
+  await pendingDispatchModel.methods.timeout.execute(
+    { queueId: "q-1", endedAt: end.endedAt },
+    context,
+  );
+  expected = endedPendingDispatch(expected, end)!;
+  assertEquals(store.get("pending-q-1"), expected);
+  assertEquals(expected.labels?.gpu, "a100");
+});

@@ -28,6 +28,7 @@ import {
   pendingDataName,
   type PendingDispatchEnd,
   pendingDispatchModel,
+  PendingDispatchSchema,
   startPendingDispatch,
   TERMINAL_PENDING_DISPATCH_STATES,
 } from "./pending_dispatch_model.ts";
@@ -84,7 +85,10 @@ Deno.test("pending dispatch transitions: the first end wins and later ends chang
           record = endedPendingDispatch(record, end) ?? record;
         }
         const first = ends[0];
-        assertEquals(record, { ...args, ...first });
+        assertEquals(
+          record,
+          PendingDispatchSchema.parse({ ...args, ...first }),
+        );
         assertEquals(TERMINAL_PENDING_DISPATCH_STATES.has(record.state), true);
       },
     ),

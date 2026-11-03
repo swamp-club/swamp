@@ -125,7 +125,8 @@ export function startPendingDispatch(
   if (existing !== null) {
     throw new Error(`Pending dispatch '${args.queueId}' already exists`);
   }
-  return { ...args, state: "waiting" };
+  // through the schema the end transitions read with, so a key it drops is dropped here too
+  return PendingDispatchSchema.parse({ ...args, state: "waiting" });
 }
 
 export function endedPendingDispatch(
