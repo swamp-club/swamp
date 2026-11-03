@@ -423,7 +423,13 @@ the swamp data dir at `cache/extension-archives/sha256/<checksum>.tar.gz`, so
 - **Content addressed.** `prepareInstall` fetches the registry checksum first
   and uses it as the key. A hit skips the download URL and the download; the
   checksum request is kept, so a hit is always the bytes the registry names
-  now and no name-to-version index is trusted.
+  now and no name-to-version index is trusted. That request is also what
+  authorizes a hit: the registry applies the same private and collective
+  access check and the same extension and version yank refusals to
+  `/checksum` as to `/download`. A refused checksum fails the install and a
+  missing one bypasses the cache, so a cache shared by several identities, CI
+  tenants or `swamp serve` repos never hands an archive to a caller the
+  registry would refuse.
 - **Verified on every read.** A cached entry is re-hashed before use; a
   mismatch removes it and the archive is downloaded again. A symlink, a
   non-regular file or an entry over the archive size limit is a miss.

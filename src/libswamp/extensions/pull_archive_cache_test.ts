@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import type { ExtensionArchiveCache } from "../../domain/extensions/extension_archive_cache.ts";
@@ -269,6 +274,55 @@ Deno.test("prepareInstall: a cache hit still refuses an archive that drifted fro
   );
   assert(error.message.includes("Checksum mismatch"));
   assertEquals(reg.downloads, []);
+});
+
+Deno.test("prepareInstall: a checksum the registry refuses fails the install before the cache is read", async () => {
+  await using repo = await tempRepo();
+  const name = uniqueName();
+  const reg = await registry({ [name]: await buildArchive(name) });
+  const cache = new RecordingCache();
+  cache.entries.set(reg.checksums[name]!, reg.archives[name]);
+
+  const error = await assertRejects(
+    async () =>
+      await prepareInstall({ name, version: VERSION }, {
+        ...await context(repo.dir, reg, cache),
+        getChecksum: () =>
+          Promise.reject(
+            new UserError("Version has been yanked (compromised)"),
+          ),
+      }),
+    UserError,
+  );
+  assertEquals(error.message, "Version has been yanked (compromised)");
+  assertEquals(cache.gets, []);
+  assertEquals(reg.downloads, []);
+});
+
+Deno.test("prepareInstall: a caller the registry hides the checksum from never reads the cache", async () => {
+  await using repo = await tempRepo();
+  const name = uniqueName();
+  const reg = await registry({ [name]: await buildArchive(name) });
+  const cache = new RecordingCache();
+  cache.entries.set(reg.checksums[name]!, reg.archives[name]);
+
+  const error = await assertRejects(
+    async () =>
+      await prepareInstall({ name, version: VERSION }, {
+        ...await context(repo.dir, reg, cache),
+        getChecksum: () => Promise.resolve(null),
+        downloadArchive: (refused) => {
+          reg.downloads.push(refused);
+          return Promise.reject(
+            new UserError(`Extension ${refused} not found in the registry.`),
+          );
+        },
+      }),
+    UserError,
+  );
+  assertStringIncludes(error.message, "not found in the registry");
+  assertEquals(cache.gets, []);
+  assertEquals(reg.downloads, [name]);
 });
 
 Deno.test("installExtension: dependencies share the cache, so a second repo downloads nothing", async () => {
