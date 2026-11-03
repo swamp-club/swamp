@@ -1676,3 +1676,33 @@ Deno.test("catchUpMissedFires: a schedule the deadline skipped reports the gap b
     0,
   );
 });
+
+Deno.test("ScheduledExecutionService.start: a schedule-state list that lands late does not replace a state cached since", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("late-list-wf", MONTHLY);
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const listing = Promise.withResolvers<ScheduleState[]>();
+  states.list = () => listing.promise;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  await service.catchUpMissedFires();
+  const recorded = service.scheduleStatus(wf.id).lastMissed;
+  assertEquals(recorded?.fireTime, missed.toISOString());
+  listing.resolve([{
+    workflowId: wf.id,
+    workflowName: wf.name,
+    lastEvaluatedFireTime: missed.toISOString(),
+    cronExpression: MONTHLY,
+  }]);
+  await service.stop();
+
+  assertEquals(service.scheduleStatus(wf.id).lastMissed, recorded);
+});

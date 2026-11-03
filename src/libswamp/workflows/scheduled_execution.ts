@@ -1411,7 +1411,10 @@ export class ScheduledExecutionService {
     if (!this.deps.scheduleState) return;
     try {
       for (const state of await this.deps.scheduleState.list({ signal })) {
-        this.cacheState(state);
+        // anything cached meanwhile was read or written since, so it is fresher
+        if (!this.scheduleStates.has(state.workflowId as WorkflowId)) {
+          this.cacheState(state);
+        }
       }
     } catch (error) {
       if (signal.aborted) return;

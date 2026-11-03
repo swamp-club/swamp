@@ -2876,7 +2876,8 @@ workflow unscheduled and scheduled again with the same expression while serve
 was down is measured from its old watermark. Serve loads every schedule's state
 for health in the background at startup, bounded by `SCHEDULE_STATE_TIMEOUT_MS`
 for the listing and for each record, so a hung control plane never delays
-binding the port; until it lands, health shows no `lastMissed`. A follower's
+binding the port; until it lands, health shows no `lastMissed`, and it never
+replaces a state this process has read or written since. A follower's
 health reports the
 `lastMissed` it read at startup until it is promoted. Each fire reads and writes
 the record before the run is queued, each step bounded by
