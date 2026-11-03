@@ -19,6 +19,7 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
+import type { Ref } from "react";
 import type { AgentSessionToolCall } from "../../lib/agent_sessions/record.ts";
 import {
   clampedDuration,
@@ -57,15 +58,17 @@ function SpanList({ nodes }: { nodes: SpanNode[] }) {
  * It docks to the bottom of the window, full width, so the turns keep theirs.
  */
 export function CallInspector(
-  { call, subagentLabel, onClose }: {
+  { call, subagentLabel, onClose, ref }: {
     call: AgentSessionToolCall;
     /** For a subagent call: the child it started, as the page names it. */
     subagentLabel?: string;
     onClose: () => void;
+    ref?: Ref<HTMLElement>;
   },
 ) {
   return (
     <section
+      ref={ref}
       className="panel as-inspector"
       aria-label="Call inspector"
       aria-live="polite"

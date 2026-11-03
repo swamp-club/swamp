@@ -24,7 +24,7 @@
  * (swamp-club#4155).
  */
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
 /** Rows rendered beyond each edge of the view, so a fast scroll stays drawn. */
 export const OVERSCAN_ROWS = 8;
@@ -47,6 +47,23 @@ export function visibleWindow(
   return { first: Math.min(first, end), end };
 }
 
+/** The scrollTop that puts row `index` at the top, as far as the list can scroll. */
+export function scrollTopFor(
+  index: number,
+  rowHeight: number,
+  height: number,
+  count: number,
+): number {
+  const max = Math.max(0, count * rowHeight - height);
+  return Math.min(max, Math.max(0, Math.floor(index) * rowHeight));
+}
+
+/** A row to scroll to; a new `nonce` asks again for the same row. */
+export interface ScrollRequest {
+  readonly index: number;
+  readonly nonce: number;
+}
+
 export interface VirtualRowsProps {
   readonly count: number;
   readonly rowHeight: number;
@@ -54,12 +71,21 @@ export interface VirtualRowsProps {
   readonly height: number;
   readonly renderRow: (index: number) => ReactNode;
   readonly label: string;
+  readonly scrollTo?: ScrollRequest;
 }
 
 export function VirtualRows(
-  { count, rowHeight, height, renderRow, label }: VirtualRowsProps,
+  { count, rowHeight, height, renderRow, label, scrollTo }: VirtualRowsProps,
 ) {
   const [scrollTop, setScrollTop] = useState(0);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!scrollTo || !box) return;
+    const top = scrollTopFor(scrollTo.index, rowHeight, height, count);
+    box.scrollTop = top;
+    setScrollTop(top);
+  }, [scrollTo?.index, scrollTo?.nonce]);
   const { first, end } = visibleWindow(scrollTop, height, rowHeight, count);
   const rows: ReactNode[] = [];
   for (let i = first; i < end; i++) {
@@ -81,6 +107,8 @@ export function VirtualRows(
   }
   return (
     <div
+      ref={boxRef}
+      className="virtual-rows"
       role="list"
       aria-label={label}
       aria-rowcount={count}

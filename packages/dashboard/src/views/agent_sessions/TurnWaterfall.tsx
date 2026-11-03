@@ -35,7 +35,10 @@ import {
   turnScale,
 } from "../../lib/agent_session_view.ts";
 import { formatCompactCount, formatDuration } from "../../lib/format.ts";
-import { VirtualRows } from "../../components/VirtualRows.tsx";
+import {
+  type ScrollRequest,
+  VirtualRows,
+} from "../../components/VirtualRows.tsx";
 
 /** Turns with more calls than this draw only the rows in view. */
 export const VIRTUALISE_OVER = 100;
@@ -47,22 +50,43 @@ export interface SelectedCall {
   readonly callId: string;
 }
 
+/** A call to bring into view; a new `nonce` asks again for the same call. */
+export interface RevealCall extends SelectedCall {
+  readonly nonce: number;
+}
+
 export interface WaterfallProps {
   readonly record: AgentSessionRecord;
   readonly filter: CallFilter;
   readonly openTurns: ReadonlySet<string>;
   readonly onToggleTurn: (key: string) => void;
+  /** Opens a turn, if closed, and jumps to it. */
+  readonly onRevealTurn: (key: string) => void;
   readonly selected: SelectedCall | null;
   readonly onSelect: (call: SelectedCall) => void;
   readonly openSubagents: ReadonlySet<string>;
   readonly onToggleSubagent: (childId: string) => void;
   /** Draws an opened subagent: its own turns, at full detail. */
   readonly renderSubagent: (childId: string) => ReactNode;
+  readonly reveal: RevealCall | null;
 }
 
 /** The key that opens one turn of one session. */
 export function turnKey(sessionId: string, n: number): string {
   return `${sessionId}#${n}`;
+}
+
+/** The element id of a turn's header, the target of a jump to the turn. */
+export function turnHeadId(key: string): string {
+  return `as-turn-head-${key}`;
+}
+
+export function callRowId(sessionId: string, callId: string): string {
+  return `as-call-${sessionId}-${callId}`;
+}
+
+export function subagentBoxId(childId: string): string {
+  return `as-subagent-${childId}`;
 }
 
 function CallRow(
@@ -100,6 +124,7 @@ function CallRow(
   const child = call.subagentSessionId;
   return (
     <div
+      id={callRowId(sessionId, call.id)}
       className="as-call"
       role="button"
       tabIndex={0}
@@ -174,6 +199,12 @@ function TurnCalls(
     .filter((id): id is string =>
       id !== undefined && props.openSubagents.has(id)
     );
+  const revealAt = props.reveal?.sessionId === sessionId
+    ? turn.calls.findIndex((c) => c.id === props.reveal!.callId)
+    : -1;
+  const scrollTo: ScrollRequest | undefined = revealAt >= 0
+    ? { index: revealAt, nonce: props.reveal!.nonce }
+    : undefined;
   return (
     <div>
       {turn.calls.length > VIRTUALISE_OVER
@@ -184,11 +215,18 @@ function TurnCalls(
             height={ROW_HEIGHT * VISIBLE_ROWS}
             label={`Calls in turn ${turn.n}`}
             renderRow={(i) => row(turn.calls[i])}
+            scrollTo={scrollTo}
           />
         )
         : turn.calls.map(row)}
       {opened.map((childId) => (
-        <div key={childId} className="as-subagent">
+        <div
+          key={childId}
+          id={subagentBoxId(childId)}
+          className="as-subagent"
+          tabIndex={-1}
+          aria-label="Subagent"
+        >
           {props.renderSubagent(childId)}
         </div>
       ))}
@@ -241,21 +279,12 @@ function place(segment: StripSegment, total: number) {
  * strip. A row opens into its calls, on the turn's own time scale.
  */
 export function TurnWaterfall(props: WaterfallProps) {
-  const { record, filter, openTurns, onToggleTurn } = props;
+  const { record, filter, openTurns, onToggleTurn, onRevealTurn } = props;
   const [hovered, setHovered] = useState<number | null>(null);
   const { segments, total } = compressIdle(record.turns);
   const segmentOf = new Map(segments.map((s) => [s.n, s]));
   const idle = segments.reduce((sum, s) => sum + s.idleBefore, 0);
   const byN = new Map(record.turns.map((t) => [t.n, t]));
-
-  const openFromStrip = (n: number) => {
-    const key = turnKey(record.id, n);
-    if (!openTurns.has(key)) onToggleTurn(key);
-    document.getElementById(turnRowId(record.id, n))?.scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-    });
-  };
 
   return (
     <div className="as-timeline">
@@ -285,7 +314,7 @@ export function TurnWaterfall(props: WaterfallProps) {
                 style={place(segment, total)}
                 onMouseEnter={() => setHovered(segment.n)}
                 onMouseLeave={() => setHovered(null)}
-                onClick={() => openFromStrip(segment.n)}
+                onClick={() => onRevealTurn(turnKey(record.id, segment.n))}
               >
                 <Ticks turn={turn} sessionId={record.id} filter={filter} />
               </button>
@@ -312,6 +341,7 @@ export function TurnWaterfall(props: WaterfallProps) {
           >
             <button
               type="button"
+              id={turnHeadId(key)}
               className="as-tl-row as-turn-head"
               aria-expanded={open}
               title={`${formatCompactCount(turn.tokens.output)} output tokens`}

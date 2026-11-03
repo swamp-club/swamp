@@ -19,7 +19,7 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import type { KeyboardEvent } from "react";
+import { type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import {
   firstSortDir,
   repoLabel,
@@ -30,6 +30,7 @@ import {
 } from "../../client/agent_sessions.ts";
 import type { AgentSessionSummary } from "../../lib/agent_sessions/record.ts";
 import { labelMix, swampShare } from "../../lib/agent_session_view.ts";
+import { centerScrollTop } from "../../lib/jump.ts";
 import {
   formatCompactCount,
   formatDuration,
@@ -223,6 +224,25 @@ export function SessionsTable(
     onSort: (sort: SessionSort) => void;
   },
 ) {
+  const box = useRef<HTMLDivElement>(null);
+  const openAt = rows.findIndex((r) => r.name === openName);
+  const compact = openName !== null;
+  // The open row sits centred in the list box as it shrinks, pages or gains
+  // older rows; clientHeight leaves out the horizontal scrollbar.
+  useLayoutEffect(() => {
+    const view = box.current;
+    const row = view?.querySelectorAll("tbody tr")[openAt];
+    if (!view || !(row instanceof HTMLElement)) return;
+    const at = row.getBoundingClientRect();
+    view.scrollTop = centerScrollTop({
+      clientHeight: view.clientHeight,
+      header: view.querySelector("thead")?.getBoundingClientRect().height ?? 0,
+    }, {
+      offset: at.top - view.getBoundingClientRect().top - view.clientTop +
+        view.scrollTop,
+      height: at.height,
+    });
+  }, [openName, openAt, compact, rows.length]);
   const onKey = (row: SessionRow) => (e: KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -230,7 +250,11 @@ export function SessionsTable(
     }
   };
   return (
-    <div className="table-wrap">
+    <div
+      ref={box}
+      className="table-wrap as-list-box"
+      data-compact={compact}
+    >
       <table className="data-table as-table" aria-label="Agent sessions">
         <thead>
           <tr>

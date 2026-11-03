@@ -22,7 +22,12 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { renderToStaticMarkup } from "react-dom/server";
-import { OVERSCAN_ROWS, VirtualRows, visibleWindow } from "./VirtualRows.tsx";
+import {
+  OVERSCAN_ROWS,
+  scrollTopFor,
+  VirtualRows,
+  visibleWindow,
+} from "./VirtualRows.tsx";
 
 Deno.test("visibleWindow: the rows in view plus overscan", () => {
   assertEquals(visibleWindow(0, 100, 20, 500, 2), { first: 0, end: 7 });
@@ -62,4 +67,27 @@ Deno.test("VirtualRows: renders only the first window of a long list", () => {
   assert(!html.includes("row-18<"));
   assert(!html.includes("row-999"));
   assert(html.includes('aria-rowcount="1000"'));
+});
+
+Deno.test("scrollTopFor: puts the row at the top, as far as the list scrolls", () => {
+  assertEquals(scrollTopFor(0, 26, 416, 200), 0);
+  assertEquals(scrollTopFor(10, 26, 416, 200), 260);
+  assertEquals(scrollTopFor(199, 26, 416, 200), 200 * 26 - 416);
+  assertEquals(scrollTopFor(5, 26, 416, 3), 0);
+  assertEquals(scrollTopFor(-4, 26, 416, 200), 0);
+});
+
+Deno.test("scrollTopFor: the requested row is always in the window drawn", () => {
+  fc.assert(fc.property(
+    fc.integer({ min: 1, max: 5000 }),
+    fc.integer({ min: 1, max: 100 }),
+    fc.integer({ min: 1, max: 2000 }),
+    fc.nat(),
+    (count, rowHeight, height, pick) => {
+      const index = pick % count;
+      const top = scrollTopFor(index, rowHeight, height, count);
+      const { first, end } = visibleWindow(top, height, rowHeight, count);
+      assert(index >= first && index < end);
+    },
+  ));
 });
