@@ -811,7 +811,13 @@ export class ScheduledExecutionService {
       missed = evaluateMissedFires(cronExpression, recorded, now, catchUp);
     }
     if (!missed.catchUpFireTime) {
-      await this.recordMissed(workflowId, workflowName, missed, now);
+      await this.recordMissed(
+        workflowId,
+        workflowName,
+        missed,
+        now,
+        catchUp?.policy === "latest" ? catchUp : undefined,
+      );
       return;
     }
 
@@ -862,9 +868,11 @@ export class ScheduledExecutionService {
     workflowName: string,
     missed: MissedFires,
     now: Date,
+    tooLateFor?: ScheduleCatchUp,
   ): Promise<void> {
     if (!missed.latestMissed) return;
-    // only the instance that records a miss reports it, so peers do not repeat it
+    // an instance not allowed to write reports nothing; peers that may all write
+    // (no v3 leadership) can each report the same miss
     const wrote = await this.writeScheduleState(
       workflowId,
       workflowName,
@@ -875,24 +883,37 @@ export class ScheduledExecutionService {
     );
     if (!wrote) return;
     this.emitMissed(workflowId, workflowName, missed, false);
-    this.logMissed(workflowName, missed, false);
+    this.logMissed(workflowName, missed, false, tooLateFor);
   }
 
   private logMissed(
     workflowName: string,
     missed: MissedFires,
     caughtUp: boolean,
+    tooLateFor?: ScheduleCatchUp,
   ): void {
-    logger.warn(
-      caughtUp
-        ? "Workflow {name} missed {count} scheduled fire(s) while serve was down; catching up the one at {fireTime}"
-        : "Workflow {name} missed {count} scheduled fire(s) while serve was down, the latest at {fireTime}",
-      {
-        name: workflowName,
-        count: missed.saturated ? `${missed.missedCount}+` : missed.missedCount,
-        fireTime: missed.latestMissed!.toISOString(),
-      },
-    );
+    const values = {
+      name: workflowName,
+      count: missed.saturated ? `${missed.missedCount}+` : missed.missedCount,
+      fireTime: missed.latestMissed!.toISOString(),
+      maxDelay: tooLateFor?.maxDelay,
+    };
+    if (caughtUp) {
+      logger.warn(
+        "Workflow {name} missed {count} scheduled fire(s) while serve was down; catching up the one at {fireTime}",
+        values,
+      );
+    } else if (tooLateFor?.maxDelay !== undefined) {
+      logger.warn(
+        "Workflow {name} missed {count} scheduled fire(s) while serve was down, the latest at {fireTime}; not caught up, it is older than the catch-up maxDelay {maxDelay}",
+        values,
+      );
+    } else {
+      logger.warn(
+        "Workflow {name} missed {count} scheduled fire(s) while serve was down, the latest at {fireTime}",
+        values,
+      );
+    }
   }
 
   /** never rejects: without run history, the watermark alone decides */
@@ -1153,15 +1174,15 @@ export class ScheduledExecutionService {
     if (!repo) return false;
     let stored: ScheduleState | null | undefined;
     // a draining fire must reach replay within the settle budget, so it skips
-    // the re-read; last write wins between instances, as lastMissed is advisory
-    if (this.draining) {
-      stored = undefined;
-    } else {
+    // the re-read; otherwise an unread record is never overwritten from the
+    // cache, which could move a peer's later watermark back
+    let readError: unknown;
+    if (!this.draining) {
       try {
         stored = await repo.get(workflowId);
         if (stored) this.cacheState(stored);
-      } catch {
-        stored = undefined;
+      } catch (error) {
+        readError = error;
       }
     }
     const next = advanceScheduleState(
@@ -1174,6 +1195,7 @@ export class ScheduledExecutionService {
     );
     let wrote: boolean | "failed";
     try {
+      if (readError !== undefined) throw readError;
       wrote = await repo.save(next);
     } catch (error) {
       wrote = "failed";

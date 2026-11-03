@@ -123,6 +123,8 @@ up. The run is tagged `swamp.trigger.catchUp: "true"` and
 first start after an upgrade only starts tracking, so nothing is caught up then.
 For an extension workflow, set it as an override:
 `swamp workflow trigger set <name> --schedule "<cron>" --catch-up latest --catch-up-max-delay 6h`.
+`trigger set` replaces the whole override, so repeat any `--input` (and
+`--catch-up`) you want to keep.
 
 ### Trigger inputs
 

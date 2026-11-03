@@ -105,9 +105,11 @@ class MemoryStateRepo implements ScheduleStateRepository {
   readonly states = new Map<string, ScheduleState>();
   saves = 0;
   failSaves = false;
+  failGets = false;
   canWrite = true;
 
   get(workflowId: WorkflowId): Promise<ScheduleState | null> {
+    if (this.failGets) return Promise.reject(new Error("store unreadable"));
     return Promise.resolve(this.states.get(workflowId) ?? null);
   }
 
@@ -962,4 +964,26 @@ Deno.test("catchUpMissedFires: a tick that begins while the pass reads run histo
     executor.inputs.filter((i) => i.runtimeTags?.[CATCH_UP_TAG]).length,
     0,
   );
+});
+
+Deno.test("ScheduledExecutionService: a fire whose state cannot be re-read still runs and overwrites nothing", async () => {
+  const wf = createWorkflow("unread-wf", "* * * * * *");
+  const states = new MemoryStateRepo();
+  const later = new Date("2099-01-01T00:00:00.000Z");
+  seed(states, wf, later);
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+  });
+
+  await service.start();
+  states.failGets = true;
+  await waitFor(() => executor.inputs.length > 0, "a fire");
+  await service.stop();
+
+  assertEquals(states.saves, 0);
+  assertEquals(states.watermark(wf.id), later.toISOString());
 });
