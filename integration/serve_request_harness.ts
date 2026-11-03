@@ -479,7 +479,6 @@ export async function saveRun(
 
 export const OVER_FRAME_LIMIT_BYTES = 64 * 1024 * 1024 + 1024;
 
-/** text data named big on a model named big-model, over a WebSocket frame */
 export async function saveLargeText(repo: ServeRepo): Promise<void> {
   const model = await saveModel(repo, "big-model");
   const data = Data.create({

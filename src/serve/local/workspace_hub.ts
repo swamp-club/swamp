@@ -686,11 +686,7 @@ export async function spawnDashboardChild(repoDir: string): Promise<HubChild> {
   };
 }
 
-/**
- * The child gets only the reads the dashboard makes, on HTTP as on the
- * socket; any other request goes back to the socket, where the hub runs or
- * refuses it.
- */
+/** only FORWARDED_READS reach the child; the rest go back to the socket */
 async function forwardableRead(
   req: Request,
 ): Promise<string | Response> {

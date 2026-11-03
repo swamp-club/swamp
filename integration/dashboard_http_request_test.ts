@@ -74,7 +74,6 @@ function startChild(ctx: ConnectionContext): HubChild {
   };
 }
 
-/** the hub in front of an in-process local dashboard child for the repo */
 async function withHub(
   ctx: ConnectionContext,
   fn: (base: string) => Promise<void>,
