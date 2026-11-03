@@ -6226,6 +6226,11 @@ process's start time (`/proc/<pid>/stat` field 22 on Linux, `kern.proc`'s
 Probes never signal beyond `isProcessGone`'s SIGURG: `isProcessDead`, whose
 SIGCONT resumed a stopped process (a Ctrl-Z'd writer probed by `lock
 status`), is gone, and every lock and tracker probe uses `isProcessGone`.
+A probe of this process's own pid answers alive without probing, and on
+Windows the probe asks the kernel in process (`OpenProcess`,
+`GetExitCodeProcess`), spawning `tasklist` only for a pid it cannot open: a
+synchronous spawn on every lock retry froze the whole process, the holder
+included.
 The fence record, marker and sidecar fields are JSON that older parsers
 drop, so they need no format bump; an older swamp judges those records by
 hostname as before.
