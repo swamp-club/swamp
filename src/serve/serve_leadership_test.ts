@@ -638,3 +638,107 @@ Deno.test("ServeLeadership: a feed that is not current is stopped before the res
     await leadership.stop();
   }
 });
+
+Deno.test("ServeLeadership.stop: a promotion in flight sees the stop and never takes the leader role (swamp-club#4327)", async () => {
+  const lease = new FakeLease();
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  let stoppedSeen: boolean | undefined;
+  let led = false;
+  const leadership: ServeLeadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: () => Promise.resolve(),
+    onLead: async (stopped) => {
+      entered.resolve();
+      await gate.promise;
+      stoppedSeen = stopped();
+    },
+    onLed: () => {
+      led = true;
+      return Promise.resolve();
+    },
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  lease.free = 2;
+  const ticking = leadership.tick();
+  await entered.promise;
+  const stopping = leadership.stop();
+  gate.resolve();
+  await ticking;
+  await stopping;
+  assertEquals(stoppedSeen, true);
+  assertEquals(leadership.role, "follower");
+  assertEquals(led, false);
+});
+
+Deno.test("ServeLeadership.stop: a stop while the leader record is written runs no promotion (swamp-club#4327)", async () => {
+  const lease = new FakeLease();
+  const store = memoryStore();
+  const writing = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  const put = store.put;
+  store.put = async (key, value) => {
+    writing.resolve();
+    await gate.promise;
+    return await put(key, value);
+  };
+  const events: string[] = [];
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store,
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => {
+      events.push("lead");
+      return Promise.resolve();
+    },
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  lease.free = 2;
+  const ticking = leadership.tick();
+  await writing.promise;
+  const stopping = leadership.stop();
+  gate.resolve();
+  await ticking;
+  await stopping;
+  assertEquals(events, []);
+  assertEquals(leadership.role, "follower");
+});
+
+Deno.test("ServeLeadership.stop: a follower stopped during its restore follows no feed after it (swamp-club#4327)", async () => {
+  const lease = new FakeLease();
+  const feed = new FakeFeed();
+  const restoring = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  let restores = 0;
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed,
+    refreshCopy: async () => {
+      restores++;
+      restoring.resolve();
+      await gate.promise;
+    },
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  const followedAtStart = feed.followed.length;
+  const ticking = leadership.tick();
+  await restoring.promise;
+  const stopping = leadership.stop();
+  gate.resolve();
+  await ticking;
+  await stopping;
+  assertEquals(restores, 1);
+  assertEquals(feed.followed.length, followedAtStart);
+});

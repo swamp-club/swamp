@@ -1578,12 +1578,15 @@ deadline. The continuation sweep must finish before the stopped heartbeat, so
 a claim it holds is never a gone instance's. On v3, the maintenance tick,
 retention GC, leadership and commit effects must finish before the closing
 compaction and writer-lease release, which a chunk sweep or promotion still in
-flight must never overlap. Those v3 stages are bounded only by their own
-budgets (the tick's 60 s compaction and 10 min chunk sweep, the retention
-pass's batch boundary), so a v3 serve caught mid-pass can still stop later than
-the deadline. Before this, a bucket that held each write 15 s kept a v3 serve
-shutting down for 97 s with the default 30 s drain, and a background pass
-stalled on a large datastore held shutdown for minutes after the drain. Set
+flight must never overlap. They cap themselves instead (swamp-club#4327):
+stopping the maintenance timer or retention GC aborts a compaction or chunk
+sweep in flight, which ends at its next batch or storage call, and a retention
+pass waiting on a tick gives up; a leadership tick checks its stop before it
+writes its record, promotes or restores, and a promotion already running skips
+its remaining steps; a commit-effects pass ends at its next page. Before the
+shutdown deadline, a bucket that held each write 15 s kept a v3 serve shutting
+down for 97 s with the default 30 s drain, and a background pass stalled on a
+large datastore held shutdown for minutes after the drain. Set
 the pod's `terminationGracePeriodSeconds` above the drain timeout plus about
 25 s (the 22 s shutdown deadline after the drain, covering the 5 s abort
 grace, up to 2 s for the write fence, the 5 s interrupt push or commit and,

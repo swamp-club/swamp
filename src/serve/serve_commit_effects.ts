@@ -62,6 +62,7 @@ export class ServeCommitEffects {
   #replaced = false;
   #replacedUnread = false;
   #off: (() => void) | undefined;
+  #stopped = false;
 
   constructor(deps: ServeCommitEffectsDeps) {
     this.#deps = deps;
@@ -84,6 +85,7 @@ export class ServeCommitEffects {
   }
 
   async stop(): Promise<void> {
+    this.#stopped = true;
     this.#off?.();
     this.#off = undefined;
     await this.#running;
@@ -148,6 +150,8 @@ export class ServeCommitEffects {
       for (const effect of EVERY_EFFECT) effects.add(effect);
     }
     for (;;) {
+      // stopped: what was read stays pending, unapplied
+      if (this.#stopped) return;
       const head = this.#deps.isFollower()
         ? this.#deps.source.datastore.readModel.cursor()
         : store.highWaterMark().cursor;
@@ -182,6 +186,7 @@ export class ServeCommitEffects {
       this.#cursor = page[page.length - 1].cursor;
     }
     const cursor = this.#cursor;
+    if (this.#stopped) return;
     try {
       await this.#apply(effects);
     } catch (error) {

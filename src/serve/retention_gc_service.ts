@@ -43,6 +43,8 @@ export const DEFAULT_RETENTION_GC_BUDGET_MS = 5 * 60 * 1000;
 export interface RetentionPassControl {
   readonly budgetMs: number;
   isStopping(): boolean;
+  /** aborted by dispose, so storage work a pass waits on stops with it */
+  readonly signal: AbortSignal;
   manualGcWaiting(): boolean;
 }
 
@@ -72,6 +74,7 @@ export class RetentionGcService {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #running = false;
   #disposed = false;
+  readonly #abort = new AbortController();
 
   constructor(deps: RetentionGcDeps) {
     this.#deps = deps;
@@ -87,6 +90,7 @@ export class RetentionGcService {
 
   async dispose(): Promise<void> {
     this.#disposed = true;
+    this.#abort.abort();
     if (this.#timer !== null) {
       clearTimeout(this.#timer);
       this.#timer = null;
@@ -144,6 +148,7 @@ export class RetentionGcService {
       return await this.#deps.runPass(policy, {
         budgetMs: this.#deps.budgetMs ?? DEFAULT_RETENTION_GC_BUDGET_MS,
         isStopping: () => this.#disposed,
+        signal: this.#abort.signal,
         manualGcWaiting: () => this.#deps.mutex.waiting,
       });
     });
