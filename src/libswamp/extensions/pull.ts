@@ -1140,7 +1140,13 @@ export async function prepareInstall(
   );
   // stored only once the archive has passed extraction and the safety checks
   if (archive.storeKey !== null && ctx.archiveCache) {
-    await ctx.archiveCache.put(archive.storeKey, archiveBytes);
+    try {
+      await ctx.archiveCache.put(archive.storeKey, archiveBytes);
+    } catch (error) {
+      if (logger) {
+        logger.debug`Could not cache ${ref.name}@${version}: ${error}`;
+      }
+    }
   }
   return prepared;
 }
@@ -1165,17 +1171,21 @@ async function fetchArchive(
   const serverChecksum = await ctx.getChecksum(ref.name, version, ctx.channel);
   const cacheKey = ctx.archiveCache ? archiveCacheKey(serverChecksum) : null;
   if (cacheKey !== null && ctx.archiveCache) {
-    const cached = await ctx.archiveCache.get(cacheKey);
+    const cached = await readCachedArchive(ctx.archiveCache, cacheKey, ctx);
     if (cached !== null) {
-      assertArchiveSize(ref, version, cached);
-      const localChecksum = await computeChecksum(cached);
-      if (localChecksum === cacheKey) {
-        setActiveSpanAttributes({
-          "extension.archive.source": "cache",
-          "extension.archive.bytes": cached.byteLength,
-        });
-        return { bytes: cached, localChecksum, serverChecksum, storeKey: null };
+      if (ctx.logger) {
+        ctx.logger.debug`Using the cached archive for ${ref.name}@${version}`;
       }
+      setActiveSpanAttributes({
+        "extension.archive.source": "cache",
+        "extension.archive.bytes": cached.byteLength,
+      });
+      return {
+        bytes: cached,
+        localChecksum: cacheKey,
+        serverChecksum,
+        storeKey: null,
+      };
     }
   }
   const bytes = await ctx.downloadArchive(ref.name, version, ctx.channel);
@@ -1190,6 +1200,30 @@ async function fetchArchive(
     serverChecksum,
     storeKey: cacheKey,
   };
+}
+
+/**
+ * a throwing cache, an oversized entry or bytes that do not hash to the key
+ * are all a miss, so no cache implementation can fail an install
+ */
+async function readCachedArchive(
+  cache: ExtensionArchiveCache,
+  key: string,
+  ctx: InstallContext,
+): Promise<Uint8Array | null> {
+  let cached: Uint8Array | null;
+  try {
+    cached = await cache.get(key);
+  } catch (error) {
+    if (ctx.logger) {
+      ctx.logger.debug`Could not read the archive cache: ${error}`;
+    }
+    return null;
+  }
+  if (cached === null || cached.byteLength > MAX_EXTENSION_ARCHIVE_BYTES) {
+    return null;
+  }
+  return await computeChecksum(cached) === key ? cached : null;
 }
 
 // Checked here as well as in the HTTP client so every archive source is bounded

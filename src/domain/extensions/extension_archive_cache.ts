@@ -19,7 +19,8 @@
 
 /**
  * a host-wide store of verified extension archives, addressed by their SHA-256
- * so a hit is the exact bytes the registry's checksum names
+ * so a hit is the exact bytes the registry's checksum names; installs treat a
+ * throw as a miss or a skipped write
  */
 export interface ExtensionArchiveCache {
   get(key: string): Promise<Uint8Array | null>;

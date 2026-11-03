@@ -906,8 +906,7 @@ Deno.test("auto_resolver_adapters: install treats a dependency in the resolved l
     );
 
     assertEquals(result?.version, version);
-    // the resolver's own lookup of the root is reused, and the dependency the
-    // team's lockfile records is never fetched
+    // the root's record comes from the resolver
     assertEquals(fetched, []);
     const recorded = await LockfileRepository.create(lockfilePath);
     assertEquals(Object.keys(recorded.getAllEntries()), [parent]);

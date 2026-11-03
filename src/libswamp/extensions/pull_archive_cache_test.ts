@@ -23,10 +23,12 @@ import { join } from "@std/path";
 import type { ExtensionArchiveCache } from "../../domain/extensions/extension_archive_cache.ts";
 import { UserError } from "../../domain/errors.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
+import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { withCapturedSpans } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
+import { collect } from "../testing.ts";
 import {
   createInstallContext,
   extensionPull,
@@ -345,14 +347,12 @@ Deno.test("extensionPull: forwards the archive cache into the install context", 
       return Promise.resolve(undefined);
     },
   };
-  for await (
-    const _ of extensionPull(createLibSwampContext({}), deps, {
+  await collect(
+    extensionPull(createLibSwampContext({}), deps, {
       ref: { name: uniqueName(), version: VERSION },
       force: false,
-    })
-  ) {
-    // drain
-  }
+    }),
+  );
   assertEquals(seen, cache);
 });
 
@@ -391,4 +391,50 @@ Deno.test("installExtension: applies the install in its own span", async () => {
     assertEquals(apply.length, 1);
     assertEquals(apply[0].attributes["extension.version"], VERSION);
   });
+});
+
+class ThrowingCache implements ExtensionArchiveCache {
+  get(): Promise<Uint8Array | null> {
+    return Promise.reject(new Error("cache read failed"));
+  }
+  put(): Promise<void> {
+    return Promise.reject(new Error("cache write failed"));
+  }
+}
+
+Deno.test("prepareInstall: a cache that throws is a miss and a skipped store, not a failed install", async () => {
+  await using repo = await tempRepo();
+  await using tempRoot = await tempRepo();
+  const name = uniqueName();
+  const reg = await registry({ [name]: await buildArchive(name) });
+
+  const prepared = await prepareInstall(
+    { name, version: null },
+    await context(repo.dir, reg, new ThrowingCache()),
+    { tempRoot: tempRoot.dir },
+  );
+  await prepared.dispose();
+
+  assertEquals(reg.downloads, [name]);
+  assertEquals(prepared.integrityStatus, "verified");
+  assertEquals([...Deno.readDirSync(tempRoot.dir)], []);
+});
+
+Deno.test("prepareInstall: a cached entry over the archive size limit is a miss", async () => {
+  await using repo = await tempRepo();
+  const name = uniqueName();
+  const reg = await registry({ [name]: await buildArchive(name) });
+  const cache = new RecordingCache();
+  cache.entries.set(
+    reg.checksums[name]!,
+    new Uint8Array(MAX_EXTENSION_ARCHIVE_BYTES + 1),
+  );
+
+  const prepared = await prepareInstall(
+    { name, version: null },
+    await context(repo.dir, reg, cache),
+  );
+  await prepared.dispose();
+
+  assertEquals(reg.downloads, [name]);
 });

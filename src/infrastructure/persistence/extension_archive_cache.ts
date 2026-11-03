@@ -37,8 +37,8 @@ const ORPHAN_TEMP_MAX_AGE_MS = DAY_MS;
 const READ_CHUNK_BYTES = 64 * 1024;
 
 /**
- * every failure is logged at debug and reported as a miss or a skipped write:
- * the cache may only make an install faster, never fail it
+ * every failure is reported as a miss or a skipped write: the cache may only
+ * make an install faster, never fail it
  */
 export class FileExtensionArchiveCache implements ExtensionArchiveCache {
   readonly #dir: string;

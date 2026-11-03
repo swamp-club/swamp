@@ -94,7 +94,7 @@ export interface ExtensionInstallerPort {
   inspectInstallation(
     extensionName: string,
   ): Promise<InstallationInspection>;
-  /** extInfo is the record the resolver already looked up for extensionName */
+  /** extInfo was already looked up, so the install need not ask again */
   install(
     extensionName: string,
     extInfo: ExtensionLookupInfo,
