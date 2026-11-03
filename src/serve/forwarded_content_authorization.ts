@@ -34,6 +34,7 @@ import type {
   ContentAuthority,
   ContentRefusal,
 } from "../domain/datastore_v3/commit_authorization.ts";
+import { ADMIN_RESOURCE } from "../domain/datastore_v3/commit_authorization.ts";
 import {
   type DeclaredIdentity,
   identityRefusal,
@@ -536,12 +537,22 @@ async function behaviorNameRefusal(
   context: ContentCheckContext,
   declared: DeclaredIdentity,
 ): Promise<string | undefined> {
-  const definitionRepo = context.deps.ctx.repoContext.definitionRepo;
+  const { ctx } = context.deps;
+  const definitionRepo = ctx.repoContext.definitionRepo;
   const holder = await definitionRepo.findByNameGlobal(declared.name);
   if (holder === null || holder.definition.id === declared.id) return undefined;
-  // an authored behavior shadows an auto-definition, as on a direct repo
+  // an authored behavior shadows an auto-definition, as on a direct repo, only
+  // for a caller who could write that auto-definition: shadowing one of an
+  // admin-only type would otherwise route its runs to the caller's behavior
   if (await definitionRepo.isAutoDefinition(holder.definition, holder.type)) {
-    return undefined;
+    const mayWriteHolder = isAdminOnlyModelType(
+        undefined,
+        holder.type.normalized,
+        ctx.authConfig.restrictedModelTypes,
+      )
+      ? context.authority.allows("admin", ADMIN_RESOURCE)
+      : context.authority.allows("write", behaviorResource(holder.definition));
+    if (mayWriteHolder) return undefined;
   }
   return "its name is held by another behavior";
 }
