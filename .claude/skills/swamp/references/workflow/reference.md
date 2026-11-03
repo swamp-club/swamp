@@ -97,8 +97,10 @@ modifying, or removing a schedule takes effect without restart.
   [execution-semantics.md](references/execution-semantics.md#webhook-delivery)
 - Missed fires: serve records each schedule's last missed fire (serve was down,
   paused, or previous run still going) as `lastMissed` in `/api/v1/health`, the
-  dashboard and `swamp workflow schedule list`. It does not fire a missed
-  schedule unless the trigger opts in to catch-up (below)
+  dashboard and `swamp workflow schedule list`. Lost fires in a row for the same
+  reason add to its `count`; the next fire that starts a run, or a cron change,
+  clears it. It does not fire a missed schedule unless the trigger opts in to
+  catch-up (below)
 - Use `--no-schedule` on `swamp serve` to disable scheduled execution
 - The serve dashboard and `/api/v1/health` (needs a token unless auth mode is
   `none`) report scheduled workflows, next fire times and queue state per

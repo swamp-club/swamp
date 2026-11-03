@@ -1622,28 +1622,39 @@ Deno.test("loadServeConfig: accepts trigger override with inputs only", () => {
   });
 });
 
-Deno.test("loadServeConfig: accepts trigger override with catchUp only", () => {
+Deno.test("loadServeConfig: rejects a trigger override with catchUp but no schedule", () => {
   withTempDir((dir) => {
     writeConfig(dir, {
       triggers: {
         "my-workflow": { catchUp: { policy: "latest", maxDelay: "6h" } },
       },
     });
-    const config = loadServeConfig(undefined, dir)!;
-    assertEquals(config.triggers!["my-workflow"].catchUp, {
-      policy: "latest",
-      maxDelay: "6h",
-    });
-    assertEquals(config.triggers!["my-workflow"].schedule, undefined);
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "catchUp requires 'schedule' in the same override",
+    );
   });
 });
 
-Deno.test("validateTriggerOverrideEntry: accepts a catchUp-only override", () => {
-  validateTriggerOverrideEntry(
-    { catchUp: { policy: "none" } },
-    "/repo/.swamp/serve.yaml",
-    "my-workflow",
-  );
+Deno.test("validateTriggerOverrideEntry: catchUp needs a schedule beside it, inputs alone are not enough", () => {
+  for (
+    const entry of [{ catchUp: { policy: "none" } }, {
+      inputs: { count: 5 },
+      catchUp: { policy: "latest", maxDelay: "6h" },
+    }]
+  ) {
+    assertThrows(
+      () =>
+        validateTriggerOverrideEntry(
+          entry,
+          "/repo/.swamp/serve.yaml",
+          "my-workflow",
+        ),
+      Error,
+      "catchUp requires 'schedule' in the same override",
+    );
+  }
   validateTriggerOverrideEntry(
     { schedule: "0 9 1 * *", catchUp: { policy: "latest", maxDelay: "6h" } },
     "/repo/.swamp/serve.yaml",

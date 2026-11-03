@@ -546,7 +546,10 @@ import { ServeLeadership } from "../../serve/serve_leadership.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
 import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
 import { ControlPlaneScheduleStateRepository } from "../../infrastructure/persistence/control_plane_schedule_state_repository.ts";
-import { latestRecordedSlot } from "../../domain/workflows/schedule_catch_up.ts";
+import {
+  firstRecordedSlot,
+  SCHEDULED_FOR_TAG,
+} from "../../domain/workflows/schedule_catch_up.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
 import {
@@ -6009,9 +6012,13 @@ export const serveCommand = new Command()
           controlPlaneStore,
           { canWrite: leadsScheduledFires },
         ),
-        latestScheduledSlot: async (workflowId) =>
-          latestRecordedSlot(
-            await repoContext.workflowRunRepo.findAllByWorkflowId(workflowId),
+        latestScheduledSlot: (workflowId, signal) =>
+          firstRecordedSlot(
+            repoContext.workflowRunRepo.findByTimeTagLatestFirst(
+              workflowId,
+              SCHEDULED_FOR_TAG,
+              signal,
+            ),
             principalToString(SCHEDULER_PRINCIPAL),
           ),
         cronFireDedup: controlPlaneStore?.putIfAbsent

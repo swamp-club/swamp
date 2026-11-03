@@ -1828,6 +1828,35 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return runs.filter((run) => run !== null);
   }
 
+  /**
+   * runs whose listed tag holds a time, latest first; each record is read only
+   * when reached, so a caller that stops at the first it accepts reads one. The
+   * listing is not trusted: callers check the record they are handed
+   */
+  async *findByTimeTagLatestFirst(
+    workflowId: WorkflowId,
+    tag: string,
+    signal: AbortSignal,
+  ): AsyncGenerator<WorkflowRun> {
+    const open: OpenFile = (opened) => withScanPermit("search", opened, signal);
+    const runsDir = this.getRunsDir(workflowId);
+    const indexDir = this.getLocalIndexDir(workflowId);
+    const index = await this.getValidatedIndex(runsDir, indexDir, signal, open);
+    await this.warnLeftOut(runsDir);
+    const listed: Array<{ id: string; tags: Record<string, string> }> = index
+      ? Object.entries(index).map(([id, entry]) => ({ id, tags: entry.tags }))
+      : await this.readSummariesByWorkflowId(workflowId, open);
+    const candidates = listed.flatMap(({ id, tags }) => {
+      const at = Date.parse(tags?.[tag] ?? "");
+      return Number.isNaN(at) ? [] : [{ id, at }];
+    }).sort((a, b) => b.at - a.at);
+    for (const { id } of candidates) {
+      signal.throwIfAborted();
+      const run = await this.readById(workflowId, id as WorkflowRunId, open);
+      if (run) yield run;
+    }
+  }
+
   private async getValidatedIndex(
     runsDir: string,
     indexDir: string,

@@ -2891,6 +2891,7 @@ Deno.test("handleWorkflowTriggerGet: the running scheduler's override catch-up p
       catchUp: { policy: "none" },
     });
     const override: TriggerOverrideEntry = {
+      schedule: "0 6 * * *",
       catchUp: { policy: "latest", maxDelay: "6h" },
     };
     const ctx = {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { MISSED_FIRE_COUNT_CAP } from "./schedule_catch_up.ts";
 import type { WorkflowId } from "./workflow_id.ts";
 
 export const MISSED_FIRE_REASONS = ["serve_down", "paused", "overlap"] as const;
@@ -52,6 +53,13 @@ export const ScheduleStateSchema = z.object({
 
 export type ScheduleState = z.infer<typeof ScheduleStateSchema>;
 
+export interface ScheduleStateAdvance {
+  readonly lastMissed?: MissedFire;
+  readonly cronExpression?: string;
+  /** the slot started a run, so an earlier lost fire is no longer current */
+  readonly fired?: boolean;
+}
+
 /**
  * the watermark never moves back, so instances racing to settle the same slot,
  * or a late write of an older slot, cannot reopen a slot already settled; the
@@ -62,15 +70,25 @@ export function advanceScheduleState(
   workflowId: WorkflowId,
   workflowName: string,
   fireTime: Date,
-  lastMissed?: MissedFire,
-  cronExpression?: string,
+  options: ScheduleStateAdvance = {},
 ): ScheduleState {
+  const { cronExpression, fired } = options;
   const fireIso = fireTime.toISOString();
   const watermark = current &&
       Date.parse(current.lastEvaluatedFireTime) > fireTime.getTime()
     ? current.lastEvaluatedFireTime
     : fireIso;
-  const missed = newerMissed(current?.lastMissed, lastMissed);
+  let kept = current?.lastMissed;
+  // a miss measured on another expression says nothing about this one
+  if (
+    cronExpression !== undefined && current?.cronExpression !== cronExpression
+  ) {
+    kept = undefined;
+  }
+  if (kept && fired && Date.parse(kept.fireTime) < fireTime.getTime()) {
+    kept = undefined;
+  }
+  const missed = mergeMissed(kept, options.lastMissed);
   const expression = cronExpression ?? current?.cronExpression;
   return {
     workflowId,
@@ -81,15 +99,33 @@ export function advanceScheduleState(
   };
 }
 
-function newerMissed(
+/**
+ * lost fires in a row for the same reason add up; the same slot reported again
+ * replaces without adding, so racing writers never count it twice
+ */
+function mergeMissed(
   current: MissedFire | undefined,
   given: MissedFire | undefined,
 ): MissedFire | undefined {
   if (!given) return current;
   if (!current) return given;
-  return Date.parse(current.fireTime) > Date.parse(given.fireTime)
-    ? current
-    : given;
+  const currentAt = Date.parse(current.fireTime);
+  const givenAt = Date.parse(given.fireTime);
+  if (currentAt > givenAt) return current;
+  if (
+    currentAt === givenAt || current.reason !== given.reason ||
+    current.caughtUp || given.caughtUp
+  ) {
+    return given;
+  }
+  const sum = current.count + given.count;
+  const saturated = current.saturated === true || given.saturated === true ||
+    sum >= MISSED_FIRE_COUNT_CAP;
+  return {
+    ...given,
+    count: Math.min(sum, MISSED_FIRE_COUNT_CAP),
+    ...(saturated ? { saturated: true } : {}),
+  };
 }
 
 export interface ScheduleStateRepository {

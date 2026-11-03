@@ -924,14 +924,19 @@ export function validateTriggerOverrideEntry(
         }`,
       );
     }
+    // as on a workflow trigger; it also keeps the file loadable by an older
+    // serve, which ignores catchUp but refuses an override with nothing else
+    if (obj.schedule === undefined) {
+      throw configError(
+        path,
+        `Invalid trigger override for '${workflowName}' in ${path}: catchUp requires 'schedule' in the same override`,
+      );
+    }
   }
-  if (
-    obj.schedule === undefined && obj.inputs === undefined &&
-    obj.catchUp === undefined
-  ) {
+  if (obj.schedule === undefined && obj.inputs === undefined) {
     throw configError(
       path,
-      `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule', 'inputs' or 'catchUp'`,
+      `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule' or 'inputs'`,
     );
   }
 }

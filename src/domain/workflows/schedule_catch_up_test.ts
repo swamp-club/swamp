@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   evaluateMissedFires,
+  firstRecordedSlot,
   latestRecordedSlot,
   MISSED_FIRE_COUNT_CAP,
   ScheduleCatchUpSchema,
@@ -248,4 +249,44 @@ Deno.test("latestRecordedSlot: counts only runs the scheduler started", () => {
   );
   assertEquals(latestRecordedSlot(runs.slice(2), scheduler), null);
   assertEquals(latestRecordedSlot([], scheduler), null);
+});
+
+Deno.test("firstRecordedSlot: passes over runs the scheduler did not start and stops at the first it did", async () => {
+  const scheduler = "service:scheduler";
+  let read = 0;
+  async function* latestFirst() {
+    const runs = [
+      {
+        initiatedBy: "user:mallory",
+        tags: { [SCHEDULED_FOR_TAG]: "2099-01-01T00:00:00.000Z" },
+      },
+      {
+        initiatedBy: scheduler,
+        tags: { [SCHEDULED_FOR_TAG]: "2026-11-01T09:00:00.000Z" },
+      },
+      {
+        initiatedBy: scheduler,
+        tags: { [SCHEDULED_FOR_TAG]: "2026-10-01T09:00:00.000Z" },
+      },
+    ];
+    for (const run of runs) {
+      read++;
+      yield await Promise.resolve(run);
+    }
+  }
+  assertEquals(
+    (await firstRecordedSlot(latestFirst(), scheduler))?.toISOString(),
+    "2026-11-01T09:00:00.000Z",
+  );
+  assertEquals(read, 2);
+});
+
+Deno.test("firstRecordedSlot: with no run the scheduler started gives null", async () => {
+  async function* none() {
+    yield await Promise.resolve({
+      initiatedBy: "user:mallory",
+      tags: { [SCHEDULED_FOR_TAG]: "2026-11-01T09:00:00.000Z" },
+    });
+  }
+  assertEquals(await firstRecordedSlot(none(), "service:scheduler"), null);
 });

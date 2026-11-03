@@ -37,7 +37,15 @@ import {
   type WorkflowExecutor,
 } from "../src/libswamp/workflows/scheduled_execution.ts";
 import type { WorkflowRunInput } from "../src/libswamp/workflows/run.ts";
-import { CATCH_UP_TAG } from "../src/domain/workflows/schedule_catch_up.ts";
+import {
+  CATCH_UP_TAG,
+  firstRecordedSlot,
+  SCHEDULED_FOR_TAG,
+} from "../src/domain/workflows/schedule_catch_up.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { principalToString } from "../src/domain/access/principal.ts";
+import { SCHEDULER_PRINCIPAL } from "../src/domain/access/service_principal.ts";
+import type { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
 
@@ -58,6 +66,7 @@ interface Fixture {
   workflowRepo: WorkflowRepository;
   workflow: Workflow;
   store: FileSystemControlPlaneStore;
+  runRepo: YamlWorkflowRunRepository;
   runs: WorkflowRunInput[];
   instance: (
     now: number,
@@ -81,7 +90,9 @@ async function withCatchUpRepo(
       }),
     );
     assertEquals(initEvents.some((event) => event.kind === "error"), false);
-    const { workflowRepo } = createRepositoryContext({ repoDir });
+    const { workflowRepo, workflowRunRepo: runRepo } = createRepositoryContext(
+      { repoDir },
+    );
     const workflow = Workflow.create({
       name: "monthly-maintenance",
       trigger: {
@@ -127,12 +138,30 @@ async function withCatchUpRepo(
             `fire-records/${workflowId}/${normalizeFireTime(fireTime)}`,
             new TextEncoder().encode("{}"),
           ),
+        // the lookup serve wires, over the real run repository
+        latestScheduledSlot: (workflowId, signal) =>
+          firstRecordedSlot(
+            runRepo.findByTimeTagLatestFirst(
+              workflowId,
+              SCHEDULED_FOR_TAG,
+              signal,
+            ),
+            principalToString(SCHEDULER_PRINCIPAL),
+          ),
         now: () => now,
       });
       services.push(service);
       return service;
     };
-    await fn({ repoDir, workflowRepo, workflow, store, runs, instance });
+    await fn({
+      repoDir,
+      workflowRepo,
+      workflow,
+      store,
+      runRepo,
+      runs,
+      instance,
+    });
   } finally {
     for (const service of services) await service.stop();
     await Deno.remove(repoDir, { recursive: true }).catch((error) => {
@@ -284,4 +313,70 @@ Deno.test("schedule catch-up: a follower promoted after the leader fired the slo
     const [state] = await shared.list();
     assertEquals(state.lastMissed, undefined);
   });
+});
+
+async function recordRun(
+  runRepo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+  slot: Date,
+  initiatedBy: string,
+): Promise<void> {
+  const run = WorkflowRun.create(
+    workflow,
+    { [SCHEDULED_FOR_TAG]: slot.toISOString() },
+    initiatedBy,
+  );
+  run.start();
+  await runRepo.save(workflow.id, run);
+}
+
+Deno.test("schedule catch-up: a slot the scheduler ran whose watermark write was lost is not run again", async () => {
+  await withCatchUpRepo(
+    async ({ workflow, store, runRepo, runs, instance }) => {
+      const { previous, missed } = slots();
+      await new ControlPlaneScheduleStateRepository(store).save({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        lastEvaluatedFireTime: previous.toISOString(),
+        cronExpression: MONTHLY,
+      });
+      await recordRun(
+        runRepo,
+        workflow,
+        missed,
+        principalToString(SCHEDULER_PRINCIPAL),
+      );
+
+      const service = instance(missed.getTime() + HOUR);
+      await service.start();
+      await service.catchUpMissedFires();
+      await service.stop();
+
+      assertEquals(runs.length, 0);
+    },
+  );
+});
+
+Deno.test("schedule catch-up: a run someone else tagged with the slot does not stop the catch-up", async () => {
+  await withCatchUpRepo(
+    async ({ workflow, store, runRepo, runs, instance }) => {
+      const { previous, missed } = slots();
+      await new ControlPlaneScheduleStateRepository(store).save({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        lastEvaluatedFireTime: previous.toISOString(),
+        cronExpression: MONTHLY,
+      });
+      await recordRun(runRepo, workflow, previous, "user:someone");
+      await recordRun(runRepo, workflow, missed, "user:someone");
+
+      const service = instance(missed.getTime() + HOUR);
+      await service.start();
+      await service.catchUpMissedFires();
+      await waitFor(() => runs.length === 1, "catch-up run");
+      await service.stop();
+
+      assertEquals(runs[0].runtimeTags?.[CATCH_UP_TAG], "true");
+    },
+  );
 });

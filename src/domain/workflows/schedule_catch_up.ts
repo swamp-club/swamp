@@ -56,6 +56,24 @@ export function latestRecordedSlot(
   return latest === null ? null : new Date(latest);
 }
 
+/**
+ * the slot of the first run the scheduler started, for runs listed latest slot
+ * first, so the rest are never read
+ */
+export async function firstRecordedSlot(
+  runs: AsyncIterable<{
+    readonly initiatedBy?: string;
+    readonly tags: Readonly<Record<string, string>>;
+  }>,
+  scheduler: string,
+): Promise<Date | null> {
+  for await (const run of runs) {
+    const slot = latestRecordedSlot([run], scheduler);
+    if (slot) return slot;
+  }
+  return null;
+}
+
 /** the count is advisory, so a dense schedule after a long outage saturates */
 export const MISSED_FIRE_COUNT_CAP = 1000;
 
