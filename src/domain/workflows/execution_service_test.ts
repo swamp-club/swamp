@@ -24752,3 +24752,22 @@ Deno.test("run(): SWAMP_MAX_CONCURRENT_STEPS caps the level total across steps w
       }),
   );
 });
+
+Deno.test("run(): plain steps that set concurrency stay under the job concurrency", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: undefined },
+    () =>
+      withTempDir(async (tempDir) => {
+        const workflow = levelWorkflow([
+          modelStep("a", { concurrency: 1 }),
+          modelStep("b", { concurrency: 1 }),
+          modelStep("c"),
+        ], 1);
+
+        const { run, executor } = await runWithFirstWave(tempDir, workflow, 1);
+
+        assertEquals(run.status, "succeeded");
+        assertEquals(executor.peak, 1);
+      }),
+  );
+});

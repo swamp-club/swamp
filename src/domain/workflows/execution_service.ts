@@ -5230,8 +5230,8 @@ export class WorkflowExecutionService {
           failAbandonedSteps(jobRun);
         }
 
-        // A step's own limit caps its iterations; steps without one share
-        // the job, then workflow, limit; the host ceiling caps the level.
+        // A forEach step's own limit caps its iterations; every other step
+        // shares the job, then workflow, limit; the host ceiling caps the level.
         const levelLimits = new Map<string, number>();
         const fallbackConcurrency = job.concurrency ?? workflow.concurrency;
         if (fallbackConcurrency && fallbackConcurrency > 0) {
@@ -5322,8 +5322,8 @@ export class WorkflowExecutionService {
           const stepConc = originalStep?.concurrency ??
             job.getStep(stepName)?.concurrency;
           let localGate = LEVEL_GATE;
-          if (stepConc && stepConc > 0) {
-            localGate = `step:${forEachTemplate ?? stepName}`;
+          if (forEachTemplate !== undefined && stepConc && stepConc > 0) {
+            localGate = `step:${forEachTemplate}`;
             levelLimits.set(localGate, stepConc);
           }
 

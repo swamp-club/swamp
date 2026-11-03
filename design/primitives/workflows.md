@@ -2525,8 +2525,9 @@ jobs:
 - Resolution order is step > job > workflow > unbounded, decided per step. A
   step's own value caps that step's forEach iterations only and overrides the
   job and workflow values for them; it never throttles sibling steps in the
-  same topological level. Steps that set no value share the job value, or the
-  workflow value when the job sets none
+  same topological level. Every other step shares the job value, or the
+  workflow value when the job sets none; on a step without `forEach` the
+  step value has no effect
   (`src/domain/workflows/execution_service.ts`, enforced by `mergeGated` in
   `src/infrastructure/stream/merge.ts`). Only absent values fall through. An
   explicit `0` at the job level does not fall through to the workflow value; it
