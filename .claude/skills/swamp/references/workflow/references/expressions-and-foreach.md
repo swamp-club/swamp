@@ -228,11 +228,12 @@ steps:
 ```
 
 With 10 targets and `concurrency: 3`, at most 3 iterations execute at once. The
-remaining iterations queue until a permit is released. Resolution order:
-`step → job → workflow → unbounded` — the most-local non-zero value wins.
+remaining iterations queue until a permit is released. The limit applies to this
+step's iterations only: another forEach step in the same job runs alongside
+under its own limit, or under the job's (then workflow's) limit if it sets none.
 
-A global `SWAMP_MAX_CONCURRENT_STEPS` environment variable provides a host-level
-ceiling: `min(local, global)` is the effective limit.
+A global `SWAMP_MAX_CONCURRENT_STEPS` environment variable provides a ceiling on
+top: `min(local, global)` is the effective limit.
 
 ### forEach with Vary Dimensions
 

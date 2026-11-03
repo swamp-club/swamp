@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { merge, mergeWithConcurrency } from "./merge.ts";
+import { merge, mergeGated, mergeWithConcurrency } from "./merge.ts";
 
 async function* fromArray<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) {
@@ -483,4 +483,168 @@ Deno.test("mergeWithConcurrency: finishStartedOnAbort with a pre-aborted signal 
   ));
   assertEquals(items, []);
   assertEquals(started.size, 0);
+});
+
+class GateProbe {
+  total = 0;
+  peakTotal = 0;
+  readonly active = new Map<string, number>();
+  readonly peak = new Map<string, number>();
+  readonly started = new Set<string>();
+
+  enter(id: string, gates: readonly string[]): void {
+    this.started.add(id);
+    this.total++;
+    this.peakTotal = Math.max(this.peakTotal, this.total);
+    for (const gate of gates) {
+      const n = (this.active.get(gate) ?? 0) + 1;
+      this.active.set(gate, n);
+      this.peak.set(gate, Math.max(this.peak.get(gate) ?? 0, n));
+    }
+  }
+
+  exit(gates: readonly string[]): void {
+    this.total--;
+    for (const gate of gates) {
+      this.active.set(gate, this.active.get(gate)! - 1);
+    }
+  }
+}
+
+function probed(
+  probe: GateProbe,
+  id: string,
+  gates: readonly string[],
+  release: Promise<void>,
+): { stream: AsyncIterable<string>; gates: readonly string[] } {
+  async function* run(): AsyncGenerator<string> {
+    probe.enter(id, gates);
+    yield `${id}:start`;
+    await release;
+    probe.exit(gates);
+    yield `${id}:end`;
+  }
+  return { stream: run(), gates };
+}
+
+Deno.test("mergeGated: streams behind different gates run together, each gate capping its own", async () => {
+  const probe = new GateProbe();
+  const release = Promise.withResolvers<void>();
+  const entries = [
+    ...["a1", "a2", "a3"].map((id) =>
+      probed(probe, id, ["a"], release.promise)
+    ),
+    ...["b1", "b2", "b3"].map((id) =>
+      probed(probe, id, ["b"], release.promise)
+    ),
+  ];
+
+  const items: string[] = [];
+  let starts = 0;
+  for await (
+    const item of mergeGated(entries, new Map([["a", 1], ["b", 1]]))
+  ) {
+    items.push(item);
+    if (item.endsWith(":start") && ++starts === 2) release.resolve();
+  }
+
+  assertEquals(items.length, 12);
+  assertEquals(probe.peakTotal, 2);
+  assertEquals(probe.peak.get("a"), 1);
+  assertEquals(probe.peak.get("b"), 1);
+});
+
+Deno.test("mergeGated: a gate shared by every stream caps the total across their own gates", async () => {
+  const probe = new GateProbe();
+  const release = Promise.withResolvers<void>();
+  const entries = [
+    ...["a1", "a2", "a3"].map((id) =>
+      probed(probe, id, ["a", "host"], release.promise)
+    ),
+    ...["b1", "b2", "b3"].map((id) =>
+      probed(probe, id, ["b", "host"], release.promise)
+    ),
+  ];
+
+  const items: string[] = [];
+  let starts = 0;
+  for await (
+    const item of mergeGated(
+      entries,
+      new Map([["a", 2], ["b", 2], ["host", 3]]),
+    )
+  ) {
+    items.push(item);
+    if (item.endsWith(":start") && ++starts === 3) release.resolve();
+  }
+
+  assertEquals(items.length, 12);
+  assertEquals(probe.peakTotal, 3);
+  assert(probe.peak.get("a")! <= 2);
+  assert(probe.peak.get("b")! <= 2);
+});
+
+Deno.test("mergeGated: gates without a positive limit do not hold streams back", async () => {
+  const probe = new GateProbe();
+  const release = Promise.withResolvers<void>();
+  const entries = ["x1", "x2", "x3"].map((id) =>
+    probed(probe, id, ["unlisted", "zero", "loose"], release.promise)
+  );
+
+  const items: string[] = [];
+  let starts = 0;
+  for await (
+    const item of mergeGated(entries, new Map([["zero", 0], ["loose", 3]]))
+  ) {
+    items.push(item);
+    if (item.endsWith(":start") && ++starts === 3) release.resolve();
+  }
+
+  assertEquals(items.length, 6);
+  assertEquals(probe.peakTotal, 3);
+});
+
+Deno.test("mergeGated: an empty list yields nothing", async () => {
+  assertEquals(await collect(mergeGated([], new Map([["a", 1]]))), []);
+});
+
+Deno.test("mergeGated: a stream aborted while queued on its second gate never starts and the merge still ends", async () => {
+  const probe = new GateProbe();
+  const controller = new AbortController();
+  const release = Promise.withResolvers<void>();
+  const entries = [
+    probed(probe, "holder", ["host"], release.promise),
+    probed(probe, "queued", ["a", "host"], release.promise),
+    probed(probe, "behind", ["a"], release.promise),
+  ];
+
+  const items: string[] = [];
+  for await (
+    const item of mergeGated(
+      entries,
+      new Map([["a", 1], ["host", 1]]),
+      controller.signal,
+      { finishStartedOnAbort: true },
+    )
+  ) {
+    items.push(item);
+    if (item === "holder:start") {
+      controller.abort();
+      release.resolve();
+    }
+  }
+
+  assertEquals(items, ["holder:start", "holder:end"]);
+  assertEquals([...probe.started], ["holder"]);
+});
+
+Deno.test("mergeGated: a gate a stream names twice is taken once", async () => {
+  const items = await collect(mergeGated(
+    [
+      { stream: fromArray([1]), gates: ["a", "a"] },
+      { stream: fromArray([2]), gates: ["a", "a"] },
+    ],
+    new Map([["a", 1]]),
+  ));
+  assertEquals(items.sort(), [1, 2]);
 });

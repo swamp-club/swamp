@@ -110,14 +110,53 @@ export async function* mergeWithConcurrency<T>(
   signal?: AbortSignal,
   options?: MergeOptions,
 ): AsyncGenerator<T> {
-  if (!limit || limit <= 0 || limit >= streams.length) {
-    yield* merge(streams, signal, options);
+  yield* mergeGated(
+    streams.map((stream) => ({ stream, gates: ["limit"] })),
+    new Map([["limit", limit ?? 0]]),
+    signal,
+    options,
+  );
+}
+
+export interface GatedStream<T> {
+  stream: AsyncIterable<T>;
+  // Acquired in this order before the stream starts and released when it ends.
+  // Streams sharing two gates must name them in the same order, or two can
+  // each hold one and wait on the other forever.
+  gates: readonly string[];
+}
+
+/**
+ * Each gate named in `limits` with a positive limit caps how many of the
+ * streams naming it run at once; any other gate name is unbounded.
+ */
+export async function* mergeGated<T>(
+  entries: readonly GatedStream<T>[],
+  limits: ReadonlyMap<string, number>,
+  signal?: AbortSignal,
+  options?: MergeOptions,
+): AsyncGenerator<T> {
+  const users = new Map<string, number>();
+  for (const entry of entries) {
+    for (const gate of new Set(entry.gates)) {
+      users.set(gate, (users.get(gate) ?? 0) + 1);
+    }
+  }
+  // A gate no tighter than the number of streams using it never blocks.
+  const semaphores = new Map<string, Semaphore>();
+  for (const [gate, count] of users) {
+    const limit = limits.get(gate);
+    if (limit && limit > 0 && limit < count) {
+      semaphores.set(gate, new Semaphore(limit));
+    }
+  }
+  if (semaphores.size === 0) {
+    yield* merge(entries.map((entry) => entry.stream), signal, options);
     return;
   }
 
   const queue = new AsyncQueue<T>();
-  let remaining = streams.length;
-  const sem = new Semaphore(limit);
+  let remaining = entries.length;
   let firstStreamError: unknown;
   let errorWasAbortInduced = false;
 
@@ -132,12 +171,23 @@ export async function* mergeWithConcurrency<T>(
     }
   }
 
-  const drainStream = async (stream: AsyncIterable<T>) => {
+  const releaseAll = (held: Semaphore[]): void => {
+    for (let i = held.length - 1; i >= 0; i--) held[i].release();
+  };
+
+  const drainStream = async (entry: GatedStream<T>) => {
+    const held: Semaphore[] = [];
     try {
-      await sem.acquire(signal);
+      for (const gate of new Set(entry.gates)) {
+        const sem = semaphores.get(gate);
+        if (!sem) continue;
+        await sem.acquire(signal);
+        held.push(sem);
+      }
     } catch {
-      // aborted while queued: the stream never starts but still counts toward
-      // closing the queue
+      // aborted while queued: the gates already taken go back, the stream
+      // never starts but still counts toward closing the queue
+      releaseAll(held);
       remaining--;
       if (remaining === 0) {
         queue.close();
@@ -145,7 +195,7 @@ export async function* mergeWithConcurrency<T>(
       return;
     }
     try {
-      for await (const item of stream) {
+      for await (const item of entry.stream) {
         try {
           queue.push(item);
         } catch {
@@ -163,7 +213,7 @@ export async function* mergeWithConcurrency<T>(
         queue.abort();
       }
     } finally {
-      sem.release();
+      releaseAll(held);
       remaining--;
       if (remaining === 0) {
         queue.close();
@@ -171,7 +221,7 @@ export async function* mergeWithConcurrency<T>(
     }
   };
 
-  const tasks = streams.map((s) => drainStream(s));
+  const tasks = entries.map((entry) => drainStream(entry));
 
   try {
     yield* queue;

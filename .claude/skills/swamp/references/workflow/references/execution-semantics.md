@@ -221,14 +221,18 @@ guard at all if its dependencies haven't been met.
 
 The `concurrency` field caps parallel execution at three levels:
 
-| Level    | Scope                                 |
-| -------- | ------------------------------------- |
-| workflow | caps parallel jobs                    |
-| job      | caps parallel steps within the job    |
-| step     | caps forEach iterations for that step |
+| Level    | Scope                                                               |
+| -------- | ------------------------------------------------------------------- |
+| workflow | caps parallel jobs; fallback for steps when job is unset            |
+| job      | caps parallel steps, except iterations of a limited forEach step    |
+| step     | caps that forEach step's iterations only (no effect on plain steps) |
 
-Resolution order: step > job > workflow > `SWAMP_MAX_CONCURRENT_STEPS` env var >
-unbounded. The most-local non-zero value wins.
+A forEach step's own limit overrides the job and workflow values for its
+iterations and never throttles sibling steps: two independent forEach steps in
+one job, each with `concurrency: 1`, run side by side. Every other step shares
+the job (then workflow) limit. `SWAMP_MAX_CONCURRENT_STEPS` is a ceiling on top:
+at most that many steps of a level run at once, whatever the step, job or
+workflow values say. `0` or absent means unbounded.
 
 ## Timeouts and Cancellation
 

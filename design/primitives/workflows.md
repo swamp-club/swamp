@@ -15,9 +15,9 @@ met, for example only when one of its upstream dependencies fails. Like steps,
 jobs have conditions that trigger them.
 
 Steps within a job, and jobs within the workflow, run in a weighted topological
-sort for maximum parallelism. An optional `concurrency` field caps how many
-steps in a topological level run at once. This helps with `forEach` expansions
-that hit rate-limited APIs.
+sort for maximum parallelism. An optional `concurrency` field caps how many jobs,
+steps, or iterations of one `forEach` step run at once. This helps with
+`forEach` expansions that hit rate-limited APIs.
 
 ## Step Task Variants
 
@@ -2522,12 +2522,16 @@ jobs:
 
 - A positive integer is a hard cap on units running at once at that level.
 - `0` or absent means unbounded (the current default).
-- Resolution order is step > job > workflow > unbounded. Step-level values are
-  collected across the topological level, and the minimum applies to every
-  step stream in that level (`src/domain/workflows/execution_service.ts`).
-  Only absent values fall through. An explicit `0` at the job level does not
-  fall through to the workflow value; it resolves to unbounded (or the global
-  ceiling).
+- Resolution order is step > job > workflow > unbounded, decided per step. A
+  step's own value caps that step's forEach iterations only and overrides the
+  job and workflow values for them; it never throttles sibling steps in the
+  same topological level. Every other step shares the job value, or the
+  workflow value when the job sets none; on a step without `forEach` the
+  step value has no effect
+  (`src/domain/workflows/execution_service.ts`, enforced by `mergeGated` in
+  `src/infrastructure/stream/merge.ts`). Only absent values fall through. An
+  explicit `0` at the job level does not fall through to the workflow value; it
+  resolves to unbounded (or the global ceiling).
 - The global `SWAMP_MAX_CONCURRENT_STEPS` environment variable sets a
   host-level ceiling. When both are set, the effective limit is
   `min(local, global)`. On `workflow resume` the ceiling applies at the step

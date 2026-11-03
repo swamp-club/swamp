@@ -356,7 +356,10 @@ import {
   type ResolvedStepOutputs,
   StepOutputResolver,
 } from "./step_output_resolver.ts";
-import { mergeWithConcurrency } from "../../infrastructure/stream/merge.ts";
+import {
+  mergeGated,
+  mergeWithConcurrency,
+} from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
 import {
@@ -382,7 +385,6 @@ import {
   type ExecutionObservation,
   observeExecution,
 } from "../remote/observability.ts";
-import { minOf } from "../array_extrema.ts";
 import { StepStartUnrecordedError } from "./step_start.ts";
 import {
   currentVaultAccess,
@@ -5228,7 +5230,14 @@ export class WorkflowExecutionService {
           failAbandonedSteps(jobRun);
         }
 
-        const stepConcurrencies: number[] = [];
+        // A forEach step's own limit caps its iterations; every other step
+        // shares the job, then workflow, limit; the host ceiling caps the level.
+        const levelLimits = new Map<string, number>();
+        const fallbackConcurrency = job.concurrency ?? workflow.concurrency;
+        if (fallbackConcurrency && fallbackConcurrency > 0) {
+          levelLimits.set(LEVEL_GATE, fallbackConcurrency);
+        }
+        if (globalLimit) levelLimits.set(HOST_GATE, globalLimit);
         const levelSteps = new Map<string, Step>();
         const levelIterations = new Set<string>();
         // Settles a step this level will not start, even when its guard
@@ -5312,11 +5321,13 @@ export class WorkflowExecutionService {
 
           const stepConc = originalStep?.concurrency ??
             job.getStep(stepName)?.concurrency;
-          if (stepConc && stepConc > 0) {
-            stepConcurrencies.push(stepConc);
+          let localGate = LEVEL_GATE;
+          if (forEachTemplate !== undefined && stepConc && stepConc > 0) {
+            localGate = `step:${forEachTemplate}`;
+            levelLimits.set(localGate, stepConc);
           }
 
-          return this.runStep(
+          const stream = this.runStep(
             workflow,
             run,
             job,
@@ -5331,7 +5342,8 @@ export class WorkflowExecutionService {
             stepWaits,
             progress.get(stepName),
           );
-        }).filter((stream) => stream !== undefined);
+          return { stream, gates: [localGate, HOST_GATE] };
+        }).filter((entry) => entry !== undefined);
 
         const levelSignal: AbortSignal | undefined = levelStartsCleanup
           ? cleanupSignal
@@ -5339,18 +5351,8 @@ export class WorkflowExecutionService {
         // Only a level the abort interrupted settles its never-started steps.
         const abortedBeforeLevel: boolean = levelSignal?.aborted ?? false;
 
-        const levelStepConc = minOf(stepConcurrencies);
-        const stepConcurrency = resolveEffectiveConcurrency(
-          levelStepConc ?? job.concurrency ?? workflow.concurrency,
-          globalLimit,
-        );
-
         for await (
-          const event of mergeWithConcurrency(
-            stepStreams,
-            stepConcurrency,
-            levelSignal,
-          )
+          const event of mergeGated(stepStreams, levelLimits, levelSignal)
         ) {
           yield event;
           if (event.kind === "step_failed" && !event.allowedFailure) {
@@ -5368,7 +5370,7 @@ export class WorkflowExecutionService {
         }
 
         // When the signal aborts mid-level with parallel steps,
-        // mergeWithConcurrency may exit before step_failed events are
+        // mergeGated may exit before step_failed events are
         // consumed. Derive jobFailed from model state so cleanup kicks in.
         if (!jobFailed && options.signal?.aborted) {
           jobFailed = jobRun.steps.some((s) =>
@@ -8212,6 +8214,9 @@ function tryCreateModelType(rawType: string): ModelType | null {
     return null;
   }
 }
+
+const LEVEL_GATE = "level";
+const HOST_GATE = "host";
 
 function readGlobalConcurrencyLimit(): number | undefined {
   const raw = Deno.env.get("SWAMP_MAX_CONCURRENT_STEPS");
