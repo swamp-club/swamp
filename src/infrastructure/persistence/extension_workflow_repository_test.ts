@@ -1003,27 +1003,51 @@ Deno.test("ExtensionWorkflowRepository: a broken file is not read again until it
   });
 });
 
-Deno.test("ExtensionWorkflowRepository: a matched path swapped for a symlink after the scan is not followed, and findAll answers", async () => {
+Deno.test("ExtensionWorkflowRepository: a symlinked workflow file is followed, as findAll follows it, and read without a full walk", async () => {
   await withTempDir(async (dir) => {
     await withTempDir(async (outside) => {
-      const path = join(dir, "target.yaml");
-      const original = createWorkflowYaml("target");
-      await writeWorkflow(path, original);
+      const target = join(outside, "linked.yaml");
+      const linked = createWorkflowYaml("linked");
+      await writeWorkflow(target, linked);
+      const path = join(dir, "linked.yaml");
+      await Deno.symlink(target, path, { type: "file" });
       await settleFiles(dir);
-      const escaped = join(outside, "escaped.yaml");
-      await writeWorkflow(escaped, original);
       const repo = new CountingExtensionWorkflowRepository(dir);
-      repo.afterScan = async () => {
-        repo.afterScan = undefined;
-        await Deno.remove(path);
-        await Deno.symlink(escaped, path, { type: "file" });
-      };
+      assertEquals((await repo.findAll()).map((w) => w.id), [linked.id]);
+      await repo.findAllListings();
 
-      const found = await repo.findByName("target");
+      const [byName, nameReads] = await repo.readsDuring(() =>
+        repo.findByName("linked")
+      );
+      const [byId, idReads] = await repo.readsDuring(() =>
+        repo.findById(linked.id as WorkflowId)
+      );
 
+      assertEquals(byName?.id, linked.id);
+      assertEquals(byId?.name, "linked");
+      assertPathArrayEquals(nameReads, [path]);
+      assertPathArrayEquals(idReads, [path]);
       assertEquals(repo.fullReads, 1);
-      assertEquals(found?.id, (await repo.findAll()).at(0)?.id);
     });
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a matched file renamed after the scan is not returned, and findAll answers", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "target.yaml");
+    const original = createWorkflowYaml("target");
+    await writeWorkflow(path, original);
+    await settleFiles(dir);
+    const repo = new CountingExtensionWorkflowRepository(dir);
+    repo.afterScan = async () => {
+      repo.afterScan = undefined;
+      await writeWorkflow(path, { ...original, name: "renamed" });
+    };
+
+    const found = await repo.findByName("target");
+
+    assertEquals(found, null);
+    assertEquals(repo.fullReads, 1);
   });
 });
 

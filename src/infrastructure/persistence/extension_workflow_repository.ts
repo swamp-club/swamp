@@ -146,15 +146,14 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   }
 
   /**
-   * null on any failure so the caller falls back to findAll; a path that is no
-   * longer a regular file is not followed
+   * null on any failure so the caller falls back to findAll; a symlink is
+   * followed, as findAll follows it
    */
   private async readWorkflowIf(
     path: string,
     wanted: (workflow: Workflow) => boolean,
   ): Promise<Workflow | null> {
     try {
-      if (!(await Deno.lstat(path)).isFile) return null;
       const data = parseYaml(await this.readWorkflowFile(path)) as
         | WorkflowData
         | null;
