@@ -144,6 +144,7 @@ export interface CollectiveTokenMetadata {
   createdAt: string;
   lastUsedAt: string | null;
   scopes: string[];
+  mintedByTokenId?: string | null;
 }
 
 export interface CreateCollectiveTokenResponse {
@@ -159,6 +160,17 @@ export interface CreateCollectiveTokenResponse {
 
 export interface ListCollectiveTokensResponse {
   tokens: CollectiveTokenMetadata[];
+  /** the server lists only the most recently used inactive tokens */
+  moreInactive?: boolean;
+}
+
+function serverErrorOf(text: string): string | undefined {
+  try {
+    const error = (JSON.parse(text) as { error?: unknown })?.error;
+    return typeof error === "string" && error.length > 0 ? error : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type RevokePresentingApiKeyResult =
@@ -897,14 +909,10 @@ export class SwampClubClient {
     return await res.json();
   }
 
-  /**
-   * Create a scoped API token for a collective.
-   * Requires a personal API key — collective tokens cannot create other tokens.
-   */
   async createCollectiveToken(
     apiKey: string,
     collectiveSlug: string,
-    input: { name: string; scopes: string[] },
+    input: { name: string; scopes: string[]; expiresAt?: string },
     signal?: AbortSignal,
   ): Promise<CreateCollectiveTokenResponse> {
     const res = await this.fetch(
@@ -915,7 +923,13 @@ export class SwampClubClient {
           "Content-Type": "application/json",
           "x-api-key": apiKey,
         },
-        body: JSON.stringify({ name: input.name, scopes: input.scopes }),
+        body: JSON.stringify({
+          name: input.name,
+          scopes: input.scopes,
+          ...(input.expiresAt !== undefined
+            ? { expiresAt: input.expiresAt }
+            : {}),
+        }),
       },
       signal,
     );
@@ -929,7 +943,8 @@ export class SwampClubClient {
       }
       if (res.status === 403) {
         throw new UserError(
-          `You do not have permission to create tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
+          serverErrorOf(text) ??
+            `You do not have permission to create tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
         );
       }
       if (res.status === 404) {
@@ -938,16 +953,9 @@ export class SwampClubClient {
         );
       }
       if (res.status === 422) {
-        let message = text;
-        try {
-          const parsed = JSON.parse(text);
-          if (typeof parsed?.error === "string") {
-            message = parsed.error;
-          }
-        } catch {
-          // use raw text
-        }
-        throw new UserError(`Invalid token request: ${message}`);
+        throw new UserError(
+          serverErrorOf(text) ?? `Invalid token request: ${text}`,
+        );
       }
       throw new UserError(
         `Failed to create collective token (HTTP ${res.status}): ${text}`,
@@ -998,23 +1006,60 @@ export class SwampClubClient {
     return await res.json();
   }
 
-  /**
-   * swamp-club answers a successful DELETE with {ok:true} and no metadata, so a
-   * 2xx counts as revoked only when its body confirms it; any other answer
-   * throws UserError
-   */
-  async revokeCollectiveToken(
+  /** revoke disables the token and keeps it listed; only a personal login may delete */
+  revokeCollectiveToken(
     apiKey: string,
     collectiveSlug: string,
     tokenId: string,
     signal?: AbortSignal,
   ): Promise<void> {
+    return this.#changeCollectiveToken("revoke", {
+      apiKey,
+      collectiveSlug,
+      tokenId,
+      signal,
+    });
+  }
+
+  deleteCollectiveToken(
+    apiKey: string,
+    collectiveSlug: string,
+    tokenId: string,
+    options: { collectiveKey: boolean; signal?: AbortSignal },
+  ): Promise<void> {
+    return this.#changeCollectiveToken("delete", {
+      apiKey,
+      collectiveSlug,
+      tokenId,
+      signal: options.signal,
+      unauthorized: options.collectiveKey
+        ? "Deleting a collective token needs a personal login: sign in with `swamp auth login`. A minting token can revoke the tokens it minted with `swamp auth token revoke`."
+        : undefined,
+    });
+  }
+
+  /**
+   * swamp-club answers a successful change with {ok:true} and no metadata, so a
+   * 2xx counts only when its body confirms it; any other answer throws UserError
+   */
+  async #changeCollectiveToken(
+    action: "revoke" | "delete",
+    request: {
+      apiKey: string;
+      collectiveSlug: string;
+      tokenId: string;
+      signal?: AbortSignal;
+      unauthorized?: string;
+    },
+  ): Promise<void> {
+    const { apiKey, collectiveSlug, tokenId, signal } = request;
+    const done = action === "revoke" ? "revoked" : "deleted";
     const res = await this.fetch(
       `/api/v1/collectives/${encodeURIComponent(collectiveSlug)}/api-tokens/${
         encodeURIComponent(tokenId)
       }`,
       {
-        method: "DELETE",
+        method: action === "revoke" ? "PATCH" : "DELETE",
         headers: {
           "x-api-key": apiKey,
         },
@@ -1026,19 +1071,16 @@ export class SwampClubClient {
       const text = await res.text();
       if (res.status === 401) {
         throw new UserError(
-          "Not authenticated. Sign in with `swamp auth login`.",
+          request.unauthorized ??
+            "Not authenticated. Sign in with `swamp auth login`.",
         );
       }
+      const serverError = serverErrorOf(text);
       if (res.status === 403) {
         throw new UserError(
-          `You do not have permission to revoke tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
+          serverError ??
+            `You do not have permission to ${action} tokens for collective "${collectiveSlug}". Only owners and admins can manage collective API tokens.`,
         );
-      }
-      let serverError: unknown;
-      try {
-        serverError = (JSON.parse(text) as { error?: unknown })?.error;
-      } catch {
-        serverError = undefined;
       }
       // an older swamp-club answers an unknown token with 422
       if (
@@ -1054,8 +1096,11 @@ export class SwampClubClient {
           `Collective "${collectiveSlug}" not found.`,
         );
       }
+      if (res.status === 422 && serverError) {
+        throw new UserError(serverError);
+      }
       throw new UserError(
-        `Failed to revoke collective token (HTTP ${res.status}): ${text}`,
+        `Failed to ${action} collective token (HTTP ${res.status}): ${text}`,
       );
     }
 
@@ -1072,7 +1117,7 @@ export class SwampClubClient {
       }
       const message = error instanceof Error ? error.message : String(error);
       throw new UserError(
-        `Lost the connection to ${this.serverUrl} while reading its response, so whether token "${tokenId}" was revoked is unknown: ${message}. Check with \`swamp auth token list --collective ${collectiveSlug}\`.`,
+        `Lost the connection to ${this.serverUrl} while reading its response, so whether token "${tokenId}" was ${done} is unknown: ${message}. Check with \`swamp auth token list --collective ${collectiveSlug}\`.`,
       );
     }
 
@@ -1087,7 +1132,7 @@ export class SwampClubClient {
       (data as Record<string, unknown>).ok !== true
     ) {
       throw new UserError(
-        `${this.serverUrl} answered HTTP ${res.status} without confirming token "${tokenId}" was revoked from collective "${collectiveSlug}". Check with \`swamp auth token list --collective ${collectiveSlug}\`.`,
+        `${this.serverUrl} answered HTTP ${res.status} without confirming token "${tokenId}" was ${done} from collective "${collectiveSlug}". Check with \`swamp auth token list --collective ${collectiveSlug}\`.`,
       );
     }
   }

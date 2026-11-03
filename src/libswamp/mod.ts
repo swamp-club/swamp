@@ -1655,6 +1655,16 @@ export {
 } from "./auth/token_revoke.ts";
 
 export {
+  authTokenDelete,
+  type AuthTokenDeleteData,
+  type AuthTokenDeleteDeps,
+  type AuthTokenDeleteEvent,
+  type AuthTokenDeleteInput,
+  createAuthTokenDeleteDeps,
+  type CreateAuthTokenDeleteDepsOptions,
+} from "./auth/token_delete.ts";
+
+export {
   authLogout,
   type AuthLogoutData,
   type AuthLogoutDeps,

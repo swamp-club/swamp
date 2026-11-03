@@ -47,11 +47,16 @@ export interface AuthTokenListItem {
   createdAt: string;
   lastUsedAt: string | null;
   scopes: string[];
+  mintedByTokenId: string | null;
+  status: AuthTokenStatus;
 }
+
+export type AuthTokenStatus = "active" | "revoked" | "expired";
 
 export interface AuthTokenListData {
   collective: string;
   tokens: AuthTokenListItem[];
+  moreInactive: boolean;
 }
 
 export type AuthTokenListEvent =
@@ -72,6 +77,7 @@ export interface AuthTokenListDeps {
     signal: AbortSignal,
   ) => Promise<ListCollectiveTokensResponse>;
   isCollectiveToken: () => boolean;
+  getTimestamp: () => number;
   serverUrlOverride?: string;
 }
 
@@ -93,11 +99,26 @@ export function createAuthTokenListDeps(
       return client.listCollectiveTokens(apiKey, collective, signal);
     },
     isCollectiveToken: options.isCollectiveToken,
+    getTimestamp: () => Date.now(),
     serverUrlOverride: options.serverUrlOverride,
   };
 }
 
-function toListItem(token: CollectiveTokenMetadata): AuthTokenListItem {
+export function authTokenStatus(
+  token: Pick<CollectiveTokenMetadata, "enabled" | "expiresAt">,
+  now: number,
+): AuthTokenStatus {
+  if (!token.enabled) return "revoked";
+  if (token.expiresAt !== null && Date.parse(token.expiresAt) <= now) {
+    return "expired";
+  }
+  return "active";
+}
+
+function toListItem(
+  token: CollectiveTokenMetadata,
+  now: number,
+): AuthTokenListItem {
   return {
     id: token.id,
     name: token.name,
@@ -108,6 +129,8 @@ function toListItem(token: CollectiveTokenMetadata): AuthTokenListItem {
     createdAt: token.createdAt,
     lastUsedAt: token.lastUsedAt,
     scopes: token.scopes,
+    mintedByTokenId: token.mintedByTokenId ?? null,
+    status: authTokenStatus(token, now),
   };
 }
 
@@ -149,7 +172,10 @@ export async function* authTokenList(
       kind: "completed",
       data: {
         collective: input.collective,
-        tokens: response.tokens.map(toListItem),
+        tokens: response.tokens.map((token) =>
+          toListItem(token, deps.getTimestamp())
+        ),
+        moreInactive: response.moreInactive === true,
       },
     };
   } catch (error: unknown) {

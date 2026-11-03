@@ -26,6 +26,7 @@ import {
   authTokenList,
   type AuthTokenListDeps,
   type AuthTokenListEvent,
+  authTokenStatus,
 } from "./token_list.ts";
 
 const testCredentials: AuthCredentials = {
@@ -67,6 +68,7 @@ function makeDeps(
     loadCredentials: () => Promise.resolve(testCredentials),
     listTokens: () => Promise.resolve(testListResponse),
     isCollectiveToken: () => false,
+    getTimestamp: () => Date.parse("2026-11-03T00:00:00Z"),
     ...overrides,
   };
 }
@@ -235,4 +237,64 @@ Deno.test("authTokenList: passes through a server fingerprint and omits the fiel
   >;
   assertEquals(completed.data.tokens[0].fingerprint, "7cba95208c56e033");
   assertEquals("fingerprint" in completed.data.tokens[1], false);
+});
+
+Deno.test("authTokenStatus: revoked wins over expiry, and expiry at now counts as expired", () => {
+  const now = Date.parse("2026-11-03T00:00:00Z");
+  assertEquals(
+    authTokenStatus({ enabled: false, expiresAt: "2026-01-01T00:00:00Z" }, now),
+    "revoked",
+  );
+  assertEquals(
+    authTokenStatus({ enabled: true, expiresAt: "2026-11-03T00:00:00Z" }, now),
+    "expired",
+  );
+  assertEquals(
+    authTokenStatus({ enabled: true, expiresAt: "2026-11-03T00:00:01Z" }, now),
+    "active",
+  );
+  assertEquals(
+    authTokenStatus({ enabled: true, expiresAt: null }, now),
+    "active",
+  );
+});
+
+Deno.test("authTokenList: reports status, minting token and moreInactive", async () => {
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    listTokens: () =>
+      Promise.resolve({
+        tokens: [
+          { ...testListResponse.tokens[0], mintedByTokenId: "tok-parent" },
+          { ...testListResponse.tokens[1], enabled: false },
+        ],
+        moreInactive: true,
+      }),
+  });
+
+  const events = await collect<AuthTokenListEvent>(
+    authTokenList(ctx, deps, { collective: "myorg" }),
+  );
+
+  const completed = events[1] as Extract<
+    AuthTokenListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(
+    completed.data.tokens.map((t) => [t.status, t.mintedByTokenId]),
+    [["active", "tok-parent"], ["revoked", null]],
+  );
+  assertEquals(completed.data.moreInactive, true);
+});
+
+Deno.test("authTokenList: moreInactive is false when the server omits it", async () => {
+  const ctx = createLibSwampContext();
+  const events = await collect<AuthTokenListEvent>(
+    authTokenList(ctx, makeDeps(), { collective: "myorg" }),
+  );
+  const completed = events[1] as Extract<
+    AuthTokenListEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.moreInactive, false);
 });

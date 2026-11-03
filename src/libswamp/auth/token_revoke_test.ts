@@ -41,7 +41,6 @@ function makeDeps(
   return {
     loadCredentials: () => Promise.resolve(testCredentials),
     revokeToken: () => Promise.resolve(),
-    isCollectiveToken: () => false,
     ...overrides,
   };
 }
@@ -83,18 +82,24 @@ Deno.test("authTokenRevoke: completed data has no key field", async () => {
   assertEquals("keyPrefix" in completed.data, false);
 });
 
-Deno.test("authTokenRevoke: rejects collective tokens", async () => {
+Deno.test("authTokenRevoke: a collective-token login reaches the server", async () => {
   const ctx = createLibSwampContext();
-  const deps = makeDeps({ isCollectiveToken: () => true });
+  let presented: string | undefined;
+  const deps = makeDeps({
+    loadCredentials: () =>
+      Promise.resolve({ ...testCredentials, apiKey: "swamp_org_minting" }),
+    revokeToken: (_serverUrl, apiKey) => {
+      presented = apiKey;
+      return Promise.resolve();
+    },
+  });
 
   const events = await collect<AuthTokenRevokeEvent>(
-    authTokenRevoke(ctx, deps, { collective: "myorg", tokenId: "tok-1" }),
+    authTokenRevoke(ctx, deps, { collective: "myorg", tokenId: "tok-child" }),
   );
 
-  assertEquals(events.length, 1);
-  const err = events[0] as Extract<AuthTokenRevokeEvent, { kind: "error" }>;
-  assertEquals(err.kind, "error");
-  assertEquals(err.error.code, "validation_failed");
+  assertEquals(presented, "swamp_org_minting");
+  assertEquals(events.map((e) => e.kind), ["revoking", "completed"]);
 });
 
 Deno.test("authTokenRevoke: yields not_authenticated when no credentials", async () => {

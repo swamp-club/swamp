@@ -26,12 +26,7 @@ import {
   type AuthRepositoryOptions,
 } from "../../infrastructure/persistence/auth_repository.ts";
 import type { LibSwampContext } from "../context.ts";
-import {
-  cancelled,
-  notAuthenticated,
-  type SwampError,
-  validationFailed,
-} from "../errors.ts";
+import { cancelled, notAuthenticated, type SwampError } from "../errors.ts";
 
 export interface AuthTokenRevokeData {
   id: string;
@@ -57,7 +52,6 @@ export interface AuthTokenRevokeDeps {
     tokenId: string,
     signal: AbortSignal,
   ) => Promise<void>;
-  isCollectiveToken: () => boolean;
   serverUrlOverride?: string;
 }
 
@@ -65,7 +59,6 @@ export interface CreateAuthTokenRevokeDepsOptions {
   serverUrlOverride?: string;
   identity?: ClientIdentity;
   repo?: AuthRepositoryOptions;
-  isCollectiveToken: () => boolean;
 }
 
 export function createAuthTokenRevokeDeps(
@@ -78,7 +71,6 @@ export function createAuthTokenRevokeDeps(
       const client = new SwampClubClient(serverUrl, options.identity);
       return client.revokeCollectiveToken(apiKey, collective, tokenId, signal);
     },
-    isCollectiveToken: options.isCollectiveToken,
     serverUrlOverride: options.serverUrlOverride,
   };
 }
@@ -88,16 +80,6 @@ export async function* authTokenRevoke(
   deps: AuthTokenRevokeDeps,
   input: AuthTokenRevokeInput,
 ): AsyncIterable<AuthTokenRevokeEvent> {
-  if (deps.isCollectiveToken()) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Collective tokens cannot revoke other collective tokens. Sign in with a personal account using `swamp auth login`.",
-      ),
-    };
-    return;
-  }
-
   const credentials = await deps.loadCredentials();
   if (!credentials) {
     yield { kind: "error", error: notAuthenticated() };

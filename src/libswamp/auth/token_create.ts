@@ -44,6 +44,8 @@ export interface AuthTokenCreateData {
   name: string;
   collective: string;
   scopes: string[];
+  expiresAt: string | null;
+  mintedByTokenId: string | null;
   signinToken?: string;
 }
 
@@ -56,6 +58,7 @@ export interface AuthTokenCreateInput {
   collective: string;
   scopes: string[];
   name?: string;
+  ttlMs?: number;
 }
 
 export interface AuthTokenCreateDeps {
@@ -64,12 +67,11 @@ export interface AuthTokenCreateDeps {
     serverUrl: string,
     apiKey: string,
     collective: string,
-    input: { name: string; scopes: string[] },
+    input: { name: string; scopes: string[]; expiresAt?: string },
     signal: AbortSignal,
   ) => Promise<CreateCollectiveTokenResponse>;
   getHostname: () => string;
   getTimestamp: () => number;
-  isCollectiveToken: () => boolean;
   serverUrlOverride?: string;
 }
 
@@ -77,7 +79,6 @@ export interface CreateAuthTokenCreateDepsOptions {
   serverUrlOverride?: string;
   identity?: ClientIdentity;
   repo?: AuthRepositoryOptions;
-  isCollectiveToken: () => boolean;
 }
 
 export function createAuthTokenCreateDeps(
@@ -98,7 +99,6 @@ export function createAuthTokenCreateDeps(
       }
     },
     getTimestamp: () => Date.now(),
-    isCollectiveToken: options.isCollectiveToken,
     serverUrlOverride: options.serverUrlOverride,
   };
 }
@@ -108,16 +108,6 @@ export async function* authTokenCreate(
   deps: AuthTokenCreateDeps,
   input: AuthTokenCreateInput,
 ): AsyncIterable<AuthTokenCreateEvent> {
-  if (deps.isCollectiveToken()) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Collective tokens cannot create other collective tokens. Sign in with a personal account using `swamp auth login`.",
-      ),
-    };
-    return;
-  }
-
   if (input.scopes.length === 0) {
     yield {
       kind: "error",
@@ -135,7 +125,11 @@ export async function* authTokenCreate(
   const serverUrl = deps.serverUrlOverride ?? credentials.serverUrl ??
     DEFAULT_SWAMP_CLUB_URL;
   const host = deps.getHostname().slice(0, 14);
-  const tokenName = input.name ?? `cli-${host}-${deps.getTimestamp()}`;
+  const now = deps.getTimestamp();
+  const tokenName = input.name ?? `cli-${host}-${now}`;
+  const expiresAt = input.ttlMs !== undefined
+    ? new Date(now + input.ttlMs).toISOString()
+    : undefined;
 
   yield { kind: "creating", collective: input.collective, name: tokenName };
 
@@ -144,7 +138,11 @@ export async function* authTokenCreate(
       serverUrl,
       credentials.apiKey,
       input.collective,
-      { name: tokenName, scopes: input.scopes },
+      {
+        name: tokenName,
+        scopes: input.scopes,
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+      },
       ctx.signal,
     );
 
@@ -157,6 +155,8 @@ export async function* authTokenCreate(
         name: response.token.name,
         collective: input.collective,
         scopes: response.token.scopes,
+        expiresAt: response.token.expiresAt ?? null,
+        mintedByTokenId: response.token.mintedByTokenId ?? null,
         ...(response.signinToken ? { signinToken: response.signinToken } : {}),
       },
     };

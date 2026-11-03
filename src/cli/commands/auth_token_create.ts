@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { isAuthenticated, isCollectiveToken } from "../auth_context.ts";
+import { isAuthenticated } from "../auth_context.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   authTokenCreate,
@@ -30,6 +30,7 @@ import {
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseDuration } from "../../libswamp/data/search.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { renderAuthTokenCreate } from "../../presentation/output/auth_token_output.ts";
 
@@ -38,7 +39,9 @@ type AnyOptions = any;
 
 export const authTokenCreateCommand = new Command()
   .name("create")
-  .description("Create a scoped API token for a collective")
+  .description(
+    "Create a scoped API token for a collective, from a personal login or a collective token holding tokens:mint",
+  )
   .option(
     "--collective <collective:string>",
     "Collective slug to create the token for",
@@ -53,6 +56,10 @@ export const authTokenCreateCommand = new Command()
     "--name <name:string>",
     "Token label (default: cli-<hostname>-<timestamp>)",
   )
+  .option(
+    "--ttl <duration:string>",
+    "Expire the token after this long (e.g. 12h, 30d, 1w); swamp-club requires one, at most 90 days, when a collective token mints the token",
+  )
   .example(
     "Create a token with extension push scope",
     "swamp auth token create --collective myorg --scopes extensions:push",
@@ -60,6 +67,10 @@ export const authTokenCreateCommand = new Command()
   .example(
     "Create a named token with multiple scopes",
     'swamp auth token create --collective myorg --scopes "extensions:push,serve:*" --name ci-deploy',
+  )
+  .example(
+    "Mint a 30-day token from a collective token holding tokens:mint",
+    "SWAMP_API_KEY=swamp_org_... swamp auth token create --collective myorg --scopes serve:* --ttl 30d",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -70,9 +81,8 @@ export const authTokenCreateCommand = new Command()
 
     if (!isAuthenticated()) {
       throw new UserError(
-        "Creating collective tokens requires a personal swamp-club.com account.\n\n" +
-          "Sign in with:\n\n" +
-          "  swamp auth login\n",
+        "Creating collective tokens requires a swamp-club.com login.\n\n" +
+          "Sign in with `swamp auth login`, or set SWAMP_API_KEY to a collective token holding tokens:mint.\n",
         "auth_required",
       );
     }
@@ -86,12 +96,15 @@ export const authTokenCreateCommand = new Command()
       throw new UserError("At least one scope is required (--scopes).");
     }
 
+    const ttlMs = options.ttl === undefined
+      ? undefined
+      : parseTokenTtl(options.ttl as string);
+
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const identity = await loadIdentity();
     const deps = createAuthTokenCreateDeps({
       serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
       identity,
-      isCollectiveToken,
     });
 
     let data: AuthTokenCreateData | undefined;
@@ -101,6 +114,7 @@ export const authTokenCreateCommand = new Command()
         collective: options.collective as string,
         scopes,
         name: options.name as string | undefined,
+        ttlMs,
       }),
       withDefaults<AuthTokenCreateEvent>({
         creating: (event) => {
@@ -123,3 +137,17 @@ export const authTokenCreateCommand = new Command()
       renderAuthTokenCreate(data, cliCtx.outputMode);
     }
   });
+
+export function parseTokenTtl(value: string): number {
+  const invalid = new UserError(
+    `Invalid --ttl value "${value}": expected a duration like 30m, 12h, 30d or 1w`,
+  );
+  let ms: number;
+  try {
+    ms = parseDuration(value.trim());
+  } catch {
+    throw invalid;
+  }
+  if (!(ms > 0) || !Number.isSafeInteger(ms)) throw invalid;
+  return ms;
+}
