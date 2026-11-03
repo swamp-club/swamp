@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   AppendUnrecordedError,
   COMMIT_UNREACHABLE_CODE,
@@ -152,9 +157,18 @@ Deno.test("StepStartUnrecordedError: a refused start keeps the refusal's code an
     );
     assertEquals(each.message.includes("reachable"), false, each.message);
     assertEquals(each.message.includes("could not"), false, each.message);
-    assertEquals(each.message.includes("workflow recover"), false);
     assertEquals(each.message.includes("workflow resume"), false);
   }
+  assertStringIncludes(
+    error.withEnd(true).message,
+    "The run is recorded as failed.",
+  );
+  assertEquals(error.withEnd(true).message.includes("workflow recover"), false);
+  assertStringIncludes(
+    error.withEnd(false).message,
+    `The run is still recorded as running; run swamp workflow recover ` +
+      `deploy-all --run ${DATA.runId} before resuming it.`,
+  );
 });
 
 Deno.test("StepStartUnrecordedError: a refused move into running says no step ran and names the refusal (swamp-club#4368)", () => {
@@ -169,6 +183,10 @@ Deno.test("StepStartUnrecordedError: a refused move into running says no step ra
   assertEquals(error.code, "forbidden");
   assertEquals(error.message.includes("No step of it ran"), true);
   assertEquals(error.message.includes("reachable"), false, error.message);
+  assertStringIncludes(
+    error.message,
+    `run swamp workflow recover deploy-all --run ${DATA.runId}`,
+  );
 });
 
 Deno.test("StepStartUnrecordedError: a refusal with no code of its own takes commit_ and its reason, as serve reports it (swamp-club#4368)", () => {

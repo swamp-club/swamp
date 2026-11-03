@@ -44,10 +44,7 @@ import {
 
 await initializeLogging({});
 
-/**
- * a member's gate run, suspended at serve, then moved back into running as
- * resume does, with `change` applied to the member's copy first
- */
+/** `change` lands on the member's copy before the run moves into running */
 async function resumeGateRun(
   scratch: Scratch,
   change: (gate: StepRun) => void,
@@ -85,9 +82,9 @@ async function resumeGateRun(
   });
 
   let failure: unknown;
+  change(gate);
+  run.resumeFromSuspended({ pid: Deno.pid });
   try {
-    change(gate);
-    run.resumeFromSuspended({ pid: Deno.pid });
     await writeCommand(scratch, client, env, async (repos) => {
       await repos.workflowRunRepo.save(workflow.id, run);
       try {

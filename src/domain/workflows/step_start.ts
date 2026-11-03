@@ -128,10 +128,15 @@ export class StepStartUnrecordedError extends UserError {
         `${start.stepName} of workflow run ${start.runId}`
       : `the start of step ${start.stepName} of workflow run ${start.runId}`;
     const next = refusal !== undefined
-      ? `${
-        start.stepName === undefined ? "No step of it ran. " : ""
-      }Running it again meets the same refusal while the refused change ` +
-        `stands.`
+      ? start.stepName === undefined
+        ? `No step of it ran. If swamp workflow history shows the run as ` +
+          `running, run swamp workflow recover ${start.workflowName} --run ` +
+          `${start.runId} before resuming it.`
+        : endLanded === true
+        ? `The run is recorded as failed.`
+        : `The run is still recorded as running; run swamp workflow ` +
+          `recover ${start.workflowName} --run ${start.runId} before ` +
+          `resuming it.`
       : start.stepName === undefined
       ? `No step of it ran. Once the datastore is reachable, if swamp ` +
         `workflow history shows the run as running, run swamp workflow ` +
