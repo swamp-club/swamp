@@ -285,12 +285,64 @@ Deno.test("CompositeWorkflowRepository findAllListings lists findAll, deduplicat
 
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   walks = 0;
+  fullReads = 0;
+
+  protected override scanListings() {
+    this.walks++;
+    return super.scanListings();
+  }
 
   override findAll(): Promise<Workflow[]> {
-    this.walks++;
+    this.fullReads++;
     return super.findAll();
   }
 }
+
+Deno.test("CompositeWorkflowRepository findAllListings lists the extension through its listings, not findAll", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-composite-list-test-" });
+  try {
+    const shared = createTestWorkflow("shared");
+    for (const name of ["shared", "ext-only"]) {
+      await Deno.writeTextFile(
+        join(dir, `${name}.yaml`),
+        stringifyYaml({
+          id: crypto.randomUUID(),
+          name,
+          version: 1,
+          jobs: [{
+            name: "job",
+            steps: [{
+              name: "step",
+              task: {
+                type: "model_method",
+                modelIdOrName: "model",
+                methodName: "method",
+              },
+            }],
+          }],
+        }),
+      );
+    }
+    const extension = new CountingExtensionWorkflowRepository(dir);
+    const composite = new CompositeWorkflowRepository(
+      new InMemoryWorkflowRepository([shared]),
+      extension,
+    );
+
+    const listings = await composite.findAllListings();
+
+    assertEquals(listings.map((l) => l.name), ["shared", "ext-only"]);
+    assertEquals(listings[0].id, shared.id);
+    assertEquals(extension.walks, 1);
+    assertEquals(extension.fullReads, 0);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
 
 Deno.test("CompositeWorkflowRepository.memoizedView: keeps primary precedence and reads the extension once", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp-composite-view-test-" });

@@ -34,10 +34,22 @@ import {
 import { isWorkflowDocument } from "../../domain/workflows/workflow_document.ts";
 import { MANIFEST_FILENAMES } from "../../domain/extensions/manifest_cross_kind_discovery.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  type WorkflowListing,
+  workflowListingOf,
+} from "../../domain/workflows/workflow_listing.ts";
+import {
+  fingerprintMatches,
+  type RecordFingerprint,
+  statRecord,
+} from "./workflow_run_index.ts";
 
 const logger = getLogger(["extension-workflow-repo"]);
 
 const WORKFLOW_FILE_PATTERN = /\.ya?ml$/;
+
+// an edit within one tick of a coarse file clock could leave its stat unchanged
+const LISTING_RACY_WINDOW_MS = 2_000;
 
 /**
  * visits each level in name order for the same sequence on every filesystem;
@@ -67,9 +79,14 @@ export async function* extensionWorkflowFiles(
 export class ExtensionWorkflowRepository implements WorkflowRepository {
   private readonly baseDir: string;
   private workflowsDirs: string[];
-  // Broken files already warned about, keyed by path and error, so repeated
-  // scans (one per findByName during push, every reload in serve) warn once.
+  // keyed by path and error, so a broken file warns once however often read
   private readonly warnedBroken = new Set<string>();
+  // reused only while a fresh stat matches; never a parsed Workflow, since the
+  // aggregate is mutable, so lookups re-read the one matching file
+  private readonly listingsByPath = new Map<
+    string,
+    { fingerprint: RecordFingerprint; listing: WorkflowListing | "skip" }
+  >();
 
   constructor(
     workflowsDir: string,
@@ -88,22 +105,150 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
-    const workflows = await this.findAll();
-    return workflows.find((w) => w.id === id) ?? null;
+    return await lookUp(
+      await this.scanListings(),
+      (listing) => listing.id === id,
+      (workflow) => workflow.id === id,
+      (path, wanted) => this.readWorkflowIf(path, wanted),
+      () => this.findAll(),
+    );
   }
 
   async findByName(name: string): Promise<Workflow | null> {
-    const workflows = await this.findAll();
-    return workflows.find((w) => w.name === name) ?? null;
+    return await lookUp(
+      await this.scanListings(),
+      (listing) => listing.name === name,
+      (workflow) => workflow.name === name,
+      (path, wanted) => this.readWorkflowIf(path, wanted),
+      () => this.findAll(),
+    );
+  }
+
+  async findAllListings(): Promise<WorkflowListing[]> {
+    return unshadowedListings(await this.scanListings());
   }
 
   /**
-   * A read-only view that walks the extension workflows on its first lookup
-   * and answers every later lookup from that walk, a failed walk included.
+   * A read-only view that scans the extension workflows on its first lookup
+   * and answers every later lookup from that scan, a failed scan included.
    * Creating the view reads nothing.
    */
   memoizedView(): WorkflowRepository {
-    return new MemoizedExtensionWorkflows(this);
+    return new MemoizedExtensionWorkflows(this, {
+      scan: () => this.scanListings(),
+      readIf: (path, wanted) => this.readWorkflowIf(path, wanted),
+    });
+  }
+
+  /** every read of an extension workflow file goes through here */
+  protected readWorkflowFile(path: string): Promise<string> {
+    return Deno.readTextFile(path);
+  }
+
+  /**
+   * null on any failure so the caller falls back to findAll; a symlink is
+   * followed, as findAll follows it
+   */
+  private async readWorkflowIf(
+    path: string,
+    wanted: (workflow: Workflow) => boolean,
+  ): Promise<Workflow | null> {
+    try {
+      const data = parseYaml(await this.readWorkflowFile(path)) as
+        | WorkflowData
+        | null;
+      if (!isWorkflowDocument(data)) return null;
+      const workflow = Workflow.fromData(data);
+      return wanted(workflow) ? workflow : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * walks the same files in the same order as findAll; a file whose stat
+   * matches its kept entry is not read again
+   */
+  protected async scanListings(): Promise<ScannedListing[]> {
+    const listed: ScannedListing[] = [];
+    // only workflows claim a name, as in findAll's dedupe
+    const seenNames = new Set<string>();
+    const seenPaths = new Set<string>();
+    for (const dir of this.workflowsDirs) {
+      try {
+        for await (const path of extensionWorkflowFiles(dir)) {
+          seenPaths.add(path);
+          const listing = await this.listingAt(path);
+          if (listing === "skip") continue;
+          const unshadowed = !seenNames.has(listing.name);
+          seenNames.add(listing.name);
+          listed.push({ path, listing, unshadowed });
+        }
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+    }
+    for (const path of [...this.listingsByPath.keys()]) {
+      if (!seenPaths.has(path)) this.listingsByPath.delete(path);
+    }
+    return listed;
+  }
+
+  private async listingAt(path: string): Promise<WorkflowListing | "skip"> {
+    // Stat before reading: a change after the stat makes the next stat
+    // differ, so the entry read here is never kept past it.
+    let fingerprint: RecordFingerprint | undefined | null;
+    try {
+      fingerprint = await statRecord(path);
+    } catch (error) {
+      if (isIoError(error)) throw extensionReadError(path, error);
+      this.warnBrokenOnce(path, error);
+      return "skip";
+    }
+    if (fingerprint === null) return "skip";
+    const cached = this.listingsByPath.get(path);
+    if (
+      cached && fingerprint &&
+      fingerprintMatches(cached.fingerprint, fingerprint)
+    ) {
+      return cached.listing;
+    }
+    this.listingsByPath.delete(path);
+    const listing = await this.readListing(path);
+    if (
+      fingerprint &&
+      fingerprint.mtimeMs <= Date.now() - LISTING_RACY_WINDOW_MS
+    ) {
+      this.listingsByPath.set(path, { fingerprint, listing });
+    }
+    return listing;
+  }
+
+  private async readListing(path: string): Promise<WorkflowListing | "skip"> {
+    try {
+      const data = parseYaml(await this.readWorkflowFile(path)) as
+        | WorkflowData
+        | null;
+      if (!data) return "skip";
+      if (!isWorkflowDocument(data)) {
+        logger.debug`Skipping ${path}: not a workflow (no top-level jobs key)`;
+        return "skip";
+      }
+      return workflowListingOf(Workflow.fromData(data));
+    } catch (error) {
+      if (isIoError(error)) throw extensionReadError(path, error);
+      this.warnBrokenOnce(path, error);
+      return "skip";
+    }
+  }
+
+  private warnBrokenOnce(path: string, error: unknown): void {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const warnKey = `${path}\0${errorMsg}`;
+    if (this.warnedBroken.has(warnKey)) return;
+    this.warnedBroken.add(warnKey);
+    logger.warn`Skipping broken extension workflow ${path}: ${errorMsg}`;
   }
 
   async findAll(): Promise<Workflow[]> {
@@ -114,7 +259,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
       try {
         for await (const path of extensionWorkflowFiles(dir)) {
           try {
-            const content = await Deno.readTextFile(path);
+            const content = await this.readWorkflowFile(path);
             const data = parseYaml(content) as WorkflowData | null;
             if (!data) continue;
             if (!isWorkflowDocument(data)) {
@@ -129,24 +274,8 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
               workflows.push(workflow);
             }
           } catch (error) {
-            if (isIoError(error)) {
-              throw markErrorPaths(
-                new UserError(
-                  `Failed to read extension workflow ${path}: ${
-                    error instanceof Error ? error.message : error
-                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
-                ),
-                [path, ...errorPaths(error)],
-              );
-            }
-            const errorMsg = error instanceof Error
-              ? error.message
-              : String(error);
-            const warnKey = `${path}\0${errorMsg}`;
-            if (this.warnedBroken.has(warnKey)) continue;
-            this.warnedBroken.add(warnKey);
-            logger
-              .warn`Skipping broken extension workflow ${path}: ${errorMsg}`;
+            if (isIoError(error)) throw extensionReadError(path, error);
+            this.warnBrokenOnce(path, error);
           }
         }
       } catch (error) {
@@ -190,23 +319,14 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
       try {
         for await (const path of extensionWorkflowFiles(dir)) {
           try {
-            const content = await Deno.readTextFile(path);
+            const content = await this.readWorkflowFile(path);
             const data = parseYaml(content) as WorkflowData | null;
             if (!isWorkflowDocument(data)) continue;
             if (data.id === id) {
               return path;
             }
           } catch (error) {
-            if (isIoError(error)) {
-              throw markErrorPaths(
-                new UserError(
-                  `Failed to read extension workflow ${path}: ${
-                    error instanceof Error ? error.message : error
-                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
-                ),
-                [path, ...errorPaths(error)],
-              );
-            }
+            if (isIoError(error)) throw extensionReadError(path, error);
           }
         }
       } catch (error) {
@@ -217,31 +337,107 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   }
 }
 
+interface ScannedListing {
+  path: string;
+  listing: WorkflowListing;
+  /** false when an earlier file holds the name, so findAll drops this one */
+  unshadowed: boolean;
+}
+
+type ReadWorkflowIf = (
+  path: string,
+  wanted: (workflow: Workflow) => boolean,
+) => Promise<Workflow | null>;
+
+function unshadowedListings(scanned: ScannedListing[]): WorkflowListing[] {
+  return scanned.filter((l) => l.unshadowed).map((l) => l.listing);
+}
+
 /**
- * reads the source's findAll at most once; every lookup returns the same
- * Workflow instances, so callers must not mutate them
+ * re-reads only the matched file and keeps it only if it still matches;
+ * anything else is answered by findAll, so a parsed Workflow is never cached
+ */
+async function lookUp(
+  scanned: ScannedListing[],
+  listed: (listing: WorkflowListing) => boolean,
+  wanted: (workflow: Workflow) => boolean,
+  readIf: ReadWorkflowIf,
+  all: () => Promise<Workflow[]>,
+): Promise<Workflow | null> {
+  const match = scanned.find((l) => l.unshadowed && listed(l.listing));
+  if (!match) return null;
+  // the scan judged shadowing by this name, so a file renamed since is not trusted
+  const stillListed = (workflow: Workflow) =>
+    workflow.name === match.listing.name && wanted(workflow);
+  return await readIf(match.path, stillListed) ??
+    (await all()).find(wanted) ?? null;
+}
+
+function extensionReadError(path: string, error: unknown): Error {
+  return markErrorPaths(
+    new UserError(
+      `Failed to read extension workflow ${path}: ${
+        error instanceof Error ? error.message : error
+      }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+    ),
+    [path, ...errorPaths(error)],
+  );
+}
+
+/**
+ * scans the source at most once and re-reads only each matched file; findAll
+ * is also read at most once and returns the same Workflow instances, so
+ * callers must not mutate them
  */
 class MemoizedExtensionWorkflows implements WorkflowRepository {
+  #scanned: Promise<ScannedListing[]> | undefined;
   #all: Promise<Workflow[]> | undefined;
 
-  constructor(private readonly source: ExtensionWorkflowRepository) {}
+  constructor(
+    private readonly source: ExtensionWorkflowRepository,
+    private readonly reads: {
+      scan: () => Promise<ScannedListing[]>;
+      readIf: ReadWorkflowIf;
+    },
+  ) {}
 
-  // Assigned before any await, so lookups started together share one walk.
-  #read(): Promise<Workflow[]> {
+  // Assigned before any await, so lookups started together share one scan.
+  #scan(): Promise<ScannedListing[]> {
+    this.#scanned ??= this.reads.scan();
+    return this.#scanned;
+  }
+
+  #readAll(): Promise<Workflow[]> {
     this.#all ??= this.source.findAll();
     return this.#all;
   }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
-    return (await this.#read()).find((w) => w.id === id) ?? null;
+    return await lookUp(
+      await this.#scan(),
+      (listing) => listing.id === id,
+      (workflow) => workflow.id === id,
+      this.reads.readIf,
+      () => this.#readAll(),
+    );
   }
 
   async findByName(name: string): Promise<Workflow | null> {
-    return (await this.#read()).find((w) => w.name === name) ?? null;
+    return await lookUp(
+      await this.#scan(),
+      (listing) => listing.name === name,
+      (workflow) => workflow.name === name,
+      this.reads.readIf,
+      () => this.#readAll(),
+    );
   }
 
   async findAll(): Promise<Workflow[]> {
-    return [...await this.#read()];
+    return [...await this.#readAll()];
+  }
+
+  async findAllListings(): Promise<WorkflowListing[]> {
+    return unshadowedListings(await this.#scan());
   }
 
   save(workflow: Workflow): Promise<void> {

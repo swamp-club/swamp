@@ -100,8 +100,9 @@ export class CompositeWorkflowRepository implements WorkflowRepository {
 
   /**
    * The same composite over the live primary and the extension's memoized
-   * view, so the extension workflows are read at most once for the view's
-   * life. The primary's lookups are already cheap and stay live.
+   * view, so the extension workflows are scanned at most once for the view's
+   * life and each lookup reads only its matched file. The primary's lookups
+   * are already cheap and stay live.
    */
   memoizedView(): WorkflowRepository {
     if (!this.extension?.memoizedView) return this;

@@ -593,8 +593,13 @@ Deno.test("nestedRunReadDecider: reads extension workflows afresh for each new w
   class CountingExtensionWorkflowRepository
     extends ExtensionWorkflowRepository {
     walks = 0;
-    override findAll(): Promise<Workflow[]> {
+    fullReads = 0;
+    protected override scanListings() {
       this.walks++;
+      return super.scanListings();
+    }
+    override findAll(): Promise<Workflow[]> {
+      this.fullReads++;
       return super.findAll();
     }
   }
@@ -620,6 +625,7 @@ Deno.test("nestedRunReadDecider: reads extension workflows afresh for each new w
 
     assert(afterFirst > 0);
     assert(extension.walks > afterFirst);
+    assertEquals(extension.fullReads, 0);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});
