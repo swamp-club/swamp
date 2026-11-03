@@ -46,6 +46,13 @@ const OAUTH_SECRET_KEYS = [
   OAUTH_RESOLVED_ADMINS_KEY,
 ] as const;
 
+// Opt-in: a seeded vault lets an instance recreated with an empty datastore
+// find its client, at the cost of the secret staying readable in that vault.
+const SEEDABLE_CLIENT_KEYS: ReadonlySet<string> = new Set([
+  OAUTH_CLIENT_ID_KEY,
+  OAUTH_CLIENT_SECRET_KEY,
+]);
+
 /**
  * a key that is legitimately absent, such as the bootstrap access token after
  * API-key registration, would otherwise send every boot to the user vault
@@ -60,6 +67,7 @@ export const OAUTH_SECRETS_MIGRATED_KEY = "oauth-secrets-migrated";
 export async function migrateOAuthSecrets(
   vaultService: OAuthSecretMigrationVaults,
   tokenSecretsVaultName: string,
+  options: { keepClientInUserVault?: boolean } = {},
 ): Promise<void> {
   if (
     await hasSecret(
@@ -101,7 +109,10 @@ export async function migrateOAuthSecrets(
           "serve:oauth-migration",
         );
         await vaultService.put(tokenSecretsVaultName, key, value);
-        if (vaultService.supportsDelete(userVaultForMigration)) {
+        if (
+          !(options.keepClientInUserVault && SEEDABLE_CLIENT_KEYS.has(key)) &&
+          vaultService.supportsDelete(userVaultForMigration)
+        ) {
           await vaultService.delete(userVaultForMigration, key)
             .catch(() => {});
         }

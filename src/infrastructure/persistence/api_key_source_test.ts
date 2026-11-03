@@ -189,12 +189,7 @@ Deno.test("resolveApiKey: an empty key file is a UserError", async () => {
   });
 });
 
-Deno.test({
-  name: "resolveApiKey: a directory path is a UserError",
-  // Windows reports a directory read as a different error class; the
-  // directory hint is for the Linux container secret mounts it guards.
-  ignore: Deno.build.os === "windows",
-}, async () => {
+Deno.test("resolveApiKey: a directory path is a UserError", async () => {
   await withKeyDir((dir) => {
     withMockedEnv({ ...UNSET, SWAMP_API_KEY_FILE: dir }, () => {
       const err = assertThrows(() => resolveApiKey(), UserError);

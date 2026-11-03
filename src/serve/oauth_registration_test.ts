@@ -18,65 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { UserError } from "../domain/errors.ts";
 import {
   OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY,
   OAUTH_CLIENT_ID_KEY,
   OAUTH_CLIENT_SECRET_KEY,
   OAUTH_RESOLVED_ADMINS_KEY,
   type OAuthRegistrationDeps,
-  registerClientWithApiKey,
   resolveOAuthClientCredentials,
   storeResolvedAdmins,
 } from "./oauth_registration.ts";
-
-interface StubResponse {
-  url: string;
-  status: number;
-  body: string;
-}
-
-function stubFetch(
-  responses: StubResponse[],
-): {
-  [Symbol.dispose]: () => void;
-  calls: { url: string; init?: RequestInit }[];
-} {
-  const originalFetch = globalThis.fetch;
-  let callIndex = 0;
-  const calls: { url: string; init?: RequestInit }[] = [];
-  globalThis.fetch = (
-    input: string | URL | Request,
-    init?: RequestInit,
-  ): Promise<Response> => {
-    const url = typeof input === "string"
-      ? input
-      : input instanceof URL
-      ? input.href
-      : input.url;
-    calls.push({ url, init });
-    const stub = responses[callIndex++];
-    if (!stub) {
-      throw new Error(`stubFetch: unexpected call #${callIndex} to ${url}`);
-    }
-    if (url !== stub.url) {
-      throw new Error(
-        `stubFetch: call #${callIndex} expected ${stub.url} but got ${url}`,
-      );
-    }
-    return Promise.resolve(
-      new Response(stub.body, {
-        status: stub.status,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-  };
-  return {
-    calls,
-    [Symbol.dispose]: () => {
-      globalThis.fetch = originalFetch;
-    },
-  };
-}
 
 function createMockDeps(
   overrides: Partial<OAuthRegistrationDeps> = {},
@@ -109,6 +60,7 @@ Deno.test("resolveOAuthClientCredentials: uses stored credentials when both exis
     "https://swamp-club.com",
     "default",
     undefined,
+    undefined,
     AbortSignal.timeout(5000),
   );
   assertEquals(result.clientId, "stored-id");
@@ -133,6 +85,7 @@ Deno.test("resolveOAuthClientCredentials: returns cached resolved admins on subs
     "https://swamp-club.com",
     "default",
     undefined,
+    undefined,
     AbortSignal.timeout(5000),
   );
   assertEquals(result.resolvedAdmins, { swampadmin: "6a4d-sub-id" });
@@ -150,6 +103,7 @@ Deno.test("resolveOAuthClientCredentials: bootstrap registers and returns access
     deps,
     "https://swamp-club.com",
     "default",
+    undefined,
     undefined,
     AbortSignal.timeout(5000),
   );
@@ -185,6 +139,7 @@ Deno.test("resolveOAuthClientCredentials: returns stored access token when no ca
     "https://swamp-club.com",
     "default",
     undefined,
+    undefined,
     AbortSignal.timeout(5000),
   );
   assertEquals(result.clientId, "stored-id");
@@ -213,6 +168,7 @@ Deno.test("resolveOAuthClientCredentials: prefers cached resolutions over stored
     "https://swamp-club.com",
     "default",
     undefined,
+    undefined,
     AbortSignal.timeout(5000),
   );
   assertEquals(result.accessToken, null);
@@ -238,6 +194,7 @@ Deno.test("resolveOAuthClientCredentials: does not store null access token in va
     "https://swamp-club.com",
     "default",
     undefined,
+    undefined,
     AbortSignal.timeout(5000),
   );
   assertEquals(result.clientId, "api-key-client");
@@ -246,103 +203,6 @@ Deno.test("resolveOAuthClientCredentials: does not store null access token in va
   assertEquals(storedSecrets.get(OAUTH_CLIENT_ID_KEY), "api-key-client");
   assertEquals(storedSecrets.get(OAUTH_CLIENT_SECRET_KEY), "api-key-secret");
   assertEquals(storedSecrets.has(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY), false);
-});
-
-Deno.test("registerClientWithApiKey: registers client and returns credentials without accessToken", async () => {
-  using stub = stubFetch([
-    {
-      url: "https://swamp-club.com/api/whoami",
-      status: 200,
-      body: JSON.stringify({ scopes: ["oauth:manage", "serve:*"] }),
-    },
-    {
-      url: "https://swamp-club.com/api/auth/oauth2/register",
-      status: 200,
-      body: JSON.stringify({
-        client_id: "headless-client-id",
-        client_secret: "headless-client-secret",
-      }),
-    },
-  ]);
-  const result = await registerClientWithApiKey(
-    "https://swamp-club.com",
-    "test-api-key",
-    "swamp-serve-myrepo-myhost",
-    AbortSignal.timeout(5000),
-  );
-  assertEquals(result.clientId, "headless-client-id");
-  assertEquals(result.clientSecret, "headless-client-secret");
-  assertEquals("accessToken" in result, false);
-  const registerBody = JSON.parse(stub.calls[1].init?.body as string);
-  assertEquals(registerBody.client_name, "swamp-serve-myrepo-myhost");
-});
-
-Deno.test("registerClientWithApiKey: throws on invalid API key", async () => {
-  using _fetch = stubFetch([
-    {
-      url: "https://swamp-club.com/api/whoami",
-      status: 401,
-      body: "Unauthorized",
-    },
-  ]);
-  await assertRejects(
-    () =>
-      registerClientWithApiKey(
-        "https://swamp-club.com",
-        "bad-key",
-        "swamp-serve-myrepo-myhost",
-        AbortSignal.timeout(5000),
-      ),
-    Error,
-    "SWAMP_API_KEY validation failed: 401",
-  );
-});
-
-Deno.test("registerClientWithApiKey: throws when token is missing oauth:manage scope", async () => {
-  using _fetch = stubFetch([
-    {
-      url: "https://swamp-club.com/api/whoami",
-      status: 200,
-      body: JSON.stringify({ scopes: ["serve:*", "extensions:*"] }),
-    },
-  ]);
-  await assertRejects(
-    () =>
-      registerClientWithApiKey(
-        "https://swamp-club.com",
-        "no-oauth-scope-key",
-        "swamp-serve-myrepo-myhost",
-        AbortSignal.timeout(5000),
-      ),
-    Error,
-    'SWAMP_API_KEY is missing the "oauth:manage" scope',
-  );
-});
-
-Deno.test("registerClientWithApiKey: throws on registration failure", async () => {
-  using _fetch = stubFetch([
-    {
-      url: "https://swamp-club.com/api/whoami",
-      status: 200,
-      body: JSON.stringify({ scopes: ["oauth:manage"] }),
-    },
-    {
-      url: "https://swamp-club.com/api/auth/oauth2/register",
-      status: 403,
-      body: "Forbidden — missing serve:* scope",
-    },
-  ]);
-  await assertRejects(
-    () =>
-      registerClientWithApiKey(
-        "https://swamp-club.com",
-        "test-api-key",
-        "swamp-serve-myrepo-myhost",
-        AbortSignal.timeout(5000),
-      ),
-    Error,
-    "OAuth client registration via API key failed: 403",
-  );
 });
 
 Deno.test("storeResolvedAdmins: stores admin mapping in vault", async () => {
@@ -354,4 +214,172 @@ Deno.test("storeResolvedAdmins: stores admin mapping in vault", async () => {
   );
   const parsed = JSON.parse(stored.get(OAUTH_RESOLVED_ADMINS_KEY)!);
   assertEquals(parsed, { swampadmin: "6a4d-sub-id", alice: "abc-123" });
+});
+
+function storeWith(
+  values: Record<string, string>,
+): { deps: OAuthRegistrationDeps; reads: string[]; writes: string[] } {
+  const reads: string[] = [];
+  const writes: string[] = [];
+  const deps = createMockDeps({
+    getVaultSecret: (_, key) => {
+      reads.push(key);
+      return Promise.resolve(values[key] ?? null);
+    },
+    putVaultSecret: (_, key) => {
+      writes.push(key);
+      return Promise.resolve();
+    },
+    registerClient: () => Promise.reject(new Error("must not register")),
+  });
+  return { deps, reads, writes };
+}
+
+Deno.test("resolveOAuthClientCredentials: an explicit id with a supplied secret is used for the run and never touches the stored client", async () => {
+  const { deps, reads, writes } = storeWith({
+    [OAUTH_CLIENT_ID_KEY]: "stored-id",
+    [OAUTH_CLIENT_SECRET_KEY]: "stored-secret",
+  });
+  const result = await resolveOAuthClientCredentials(
+    deps,
+    "https://swamp-club.com",
+    "default",
+    "explicit-id",
+    "supplied-secret",
+    AbortSignal.timeout(5000),
+  );
+  assertEquals(result.clientId, "explicit-id");
+  assertEquals(result.clientSecret, "supplied-secret");
+  assertEquals(reads.includes(OAUTH_CLIENT_ID_KEY), false);
+  assertEquals(reads.includes(OAUTH_CLIENT_SECRET_KEY), false);
+  assertEquals(writes, []);
+});
+
+Deno.test("resolveOAuthClientCredentials: a supplied secret keeps the cached admins and bootstrap token reads", async () => {
+  const { deps } = storeWith({
+    [OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY]: "bootstrap-token",
+  });
+  const result = await resolveOAuthClientCredentials(
+    deps,
+    "https://swamp-club.com",
+    "default",
+    "explicit-id",
+    "supplied-secret",
+    AbortSignal.timeout(5000),
+  );
+  assertEquals(result.accessToken, "bootstrap-token");
+  assertEquals(result.resolvedAdmins, null);
+});
+
+Deno.test("resolveOAuthClientCredentials: an explicit id matching the stored client uses the stored secret", async () => {
+  const { deps, writes } = storeWith({
+    [OAUTH_CLIENT_ID_KEY]: "explicit-id",
+    [OAUTH_CLIENT_SECRET_KEY]: "stored-secret",
+  });
+  const result = await resolveOAuthClientCredentials(
+    deps,
+    "https://swamp-club.com",
+    "default",
+    "explicit-id",
+    undefined,
+    AbortSignal.timeout(5000),
+  );
+  assertEquals(result.clientId, "explicit-id");
+  assertEquals(result.clientSecret, "stored-secret");
+  assertEquals(writes, []);
+});
+
+Deno.test("resolveOAuthClientCredentials: an explicit id with a different stored client is refused, not registered", async () => {
+  const { deps, writes } = storeWith({
+    [OAUTH_CLIENT_ID_KEY]: "other-id",
+    [OAUTH_CLIENT_SECRET_KEY]: "other-secret",
+  });
+  await assertRejects(
+    () =>
+      resolveOAuthClientCredentials(
+        deps,
+        "https://swamp-club.com",
+        "default",
+        "explicit-id",
+        undefined,
+        AbortSignal.timeout(5000),
+      ),
+    UserError,
+    "The stored OAuth client is other-id, not explicit-id",
+  );
+  assertEquals(writes, []);
+});
+
+Deno.test("resolveOAuthClientCredentials: an explicit id uses a seeded secret that has no recorded client id", async () => {
+  const { deps, writes } = storeWith({
+    [OAUTH_CLIENT_SECRET_KEY]: "seeded-secret",
+  });
+  const result = await resolveOAuthClientCredentials(
+    deps,
+    "https://swamp-club.com",
+    "default",
+    "explicit-id",
+    undefined,
+    AbortSignal.timeout(5000),
+  );
+  assertEquals(result.clientId, "explicit-id");
+  assertEquals(result.clientSecret, "seeded-secret");
+  assertEquals(writes, []);
+});
+
+Deno.test("resolveOAuthClientCredentials: an explicit id with a recorded id but no secret is refused", async () => {
+  const { deps } = storeWith({ [OAUTH_CLIENT_ID_KEY]: "explicit-id" });
+  await assertRejects(
+    () =>
+      resolveOAuthClientCredentials(
+        deps,
+        "https://swamp-club.com",
+        "default",
+        "explicit-id",
+        undefined,
+        AbortSignal.timeout(5000),
+      ),
+    UserError,
+    "No client secret for OAuth client explicit-id",
+  );
+});
+
+Deno.test("resolveOAuthClientCredentials: an explicit id with an empty store is refused, not registered", async () => {
+  const { deps, writes } = storeWith({});
+  const error = await assertRejects(
+    () =>
+      resolveOAuthClientCredentials(
+        deps,
+        "https://swamp-club.com",
+        "default",
+        "explicit-id",
+        undefined,
+        AbortSignal.timeout(5000),
+      ),
+    UserError,
+  );
+  assertEquals(error.message.includes("SWAMP_OAUTH_CLIENT_SECRET_FILE"), true);
+  assertEquals(writes, []);
+});
+
+Deno.test("resolveOAuthClientCredentials: a supplied secret without a client id is refused", async () => {
+  const { deps, reads, writes } = storeWith({
+    [OAUTH_CLIENT_ID_KEY]: "stored-id",
+    [OAUTH_CLIENT_SECRET_KEY]: "stored-secret",
+  });
+  await assertRejects(
+    () =>
+      resolveOAuthClientCredentials(
+        deps,
+        "https://swamp-club.com",
+        "default",
+        undefined,
+        "supplied-secret",
+        AbortSignal.timeout(5000),
+      ),
+    UserError,
+    "supplied without a client id",
+  );
+  assertEquals(reads, []);
+  assertEquals(writes, []);
 });

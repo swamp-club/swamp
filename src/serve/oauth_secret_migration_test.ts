@@ -230,15 +230,68 @@ Deno.test("migrateOAuthSecrets: once recorded, oauth keys added to the user vaul
   );
 });
 
-Deno.test("migrateOAuthSecrets: a user vault without delete support keeps the key and still records the migration", async () => {
+Deno.test("migrateOAuthSecrets: opted in, only the client id and secret stay in the user vault", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
+  userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");
+  userSecrets(fake).set(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY, "access-token");
+  userSecrets(fake).set(OAUTH_RESOLVED_ADMINS_KEY, "{}");
+
+  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME, {
+    keepClientInUserVault: true,
+  });
+
+  assertEquals(
+    tokenSecrets(fake).get(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY),
+    "access-token",
+  );
+  assertEquals(
+    [...userSecrets(fake).keys()].sort(),
+    [OAUTH_CLIENT_ID_KEY, OAUTH_CLIENT_SECRET_KEY].sort(),
+  );
+});
+
+Deno.test("migrateOAuthSecrets: opted in, a recreated instance with an empty store finds the seeded client in the user vault again", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
+  userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");
+  const options = { keepClientInUserVault: true };
+
+  await migrateOAuthSecrets(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+    options,
+  );
+  fake.secrets.set(TOKEN_SECRETS_VAULT_NAME, new Map());
+  await migrateOAuthSecrets(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+    options,
+  );
+
+  assertEquals(tokenSecrets(fake).get(OAUTH_CLIENT_ID_KEY), "client-id");
+  assertEquals(
+    tokenSecrets(fake).get(OAUTH_CLIENT_SECRET_KEY),
+    "client-secret",
+  );
+  assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
+});
+
+Deno.test("migrateOAuthSecrets: a user vault without delete support keeps every key and still records the migration", async () => {
   const fake = createFakeVaults();
   fake.deleteSupported = false;
-  userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
+  userSecrets(fake).set(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY, "access-token");
 
   await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME);
 
-  assertEquals(tokenSecrets(fake).get(OAUTH_CLIENT_ID_KEY), "client-id");
-  assertEquals(userSecrets(fake).get(OAUTH_CLIENT_ID_KEY), "client-id");
+  assertEquals(
+    tokenSecrets(fake).get(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY),
+    "access-token",
+  );
+  assertEquals(
+    userSecrets(fake).get(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY),
+    "access-token",
+  );
   assertEquals(
     fake.userVaultCalls.some((c) => c.startsWith("delete:")),
     false,

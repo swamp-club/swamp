@@ -59,7 +59,16 @@ export function hasApiKeySource(): boolean {
   return apiKeySourceName() !== undefined;
 }
 
-function readKeyFile(path: string, source: ApiKeySourceName): string {
+function isDirectory(path: string): boolean {
+  try {
+    return Deno.statSync(path).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
+/** the file-read rules every credential file follows: trimmed, never empty */
+export function readCredentialFile(path: string, source: string): string {
   let raw: string;
   try {
     raw = Deno.readTextFileSync(path);
@@ -76,7 +85,8 @@ function readKeyFile(path: string, source: ApiKeySourceName): string {
         [path],
       );
     }
-    if (err instanceof Deno.errors.IsADirectory) {
+    // Windows reports reading a directory as a plain "Incorrect function" error.
+    if (err instanceof Deno.errors.IsADirectory || isDirectory(path)) {
       throw markErrorPaths(
         new UserError(`${source} is a directory, not a file: ${path}`),
         [path],
@@ -84,9 +94,9 @@ function readKeyFile(path: string, source: ApiKeySourceName): string {
     }
     throw err;
   }
-  // Keys never contain whitespace, so trim all of it (blank lines, trailing
-  // spaces, a BOM) rather than only one newline: whitespace left in a key
-  // fails later as an opaque invalid-header error.
+  // Credentials never contain whitespace, so trim all of it (blank lines,
+  // trailing spaces, a BOM) rather than only one newline: whitespace left in a
+  // key fails later as an opaque invalid-header error.
   const value = raw.trim();
   if (value === "") {
     throw markErrorPaths(
@@ -103,7 +113,7 @@ function readKeyFile(path: string, source: ApiKeySourceName): string {
  */
 export function resolveApiKey(): string | undefined {
   if (apiKeyFileOverride !== undefined) {
-    return readKeyFile(apiKeyFileOverride, CLUB_API_KEY_FILE_FLAG);
+    return readCredentialFile(apiKeyFileOverride, CLUB_API_KEY_FILE_FLAG);
   }
   const keyFile = readEnv(API_KEY_FILE_ENV);
   const key = readEnv(API_KEY_ENV);
@@ -112,6 +122,8 @@ export function resolveApiKey(): string | undefined {
       `${API_KEY_ENV} and ${API_KEY_FILE_ENV} are mutually exclusive — unset one of them`,
     );
   }
-  if (keyFile !== undefined) return readKeyFile(keyFile, API_KEY_FILE_ENV);
+  if (keyFile !== undefined) {
+    return readCredentialFile(keyFile, API_KEY_FILE_ENV);
+  }
   return key;
 }
