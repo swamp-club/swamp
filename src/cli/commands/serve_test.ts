@@ -1050,7 +1050,6 @@ Deno.test("serve check-config: declares --oauth-client-id beside --oauth-client-
   const flags = checkConfig.getOptions().flatMap((o) => o.flags);
   assert(flags.includes("--oauth-client-id"));
   assert(flags.includes("--oauth-client-secret-file"));
-  const { mergeServeOptions } = await import("../../serve/serve_config.ts");
   const merged = mergeServeOptions(
     null,
     { oauthClientId: "flag-id" },

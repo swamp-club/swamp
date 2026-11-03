@@ -22,7 +22,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
 
-Deno.test("authOAuthClientRegisterCommand is registered under auth oauth-client", async () => {
+Deno.test("authOAuthClientRegisterCommand: is registered under auth oauth-client", async () => {
   const { authCommand, authOAuthClientCommand } = await import("./auth.ts");
   assertEquals(
     authCommand.getCommands().map((c) => c.getName()).includes("oauth-client"),
@@ -34,7 +34,7 @@ Deno.test("authOAuthClientRegisterCommand is registered under auth oauth-client"
   );
 });
 
-Deno.test("authOAuthClientRegisterCommand requires --name and takes --oauth-provider, never a secret", async () => {
+Deno.test("authOAuthClientRegisterCommand: requires --name and takes --oauth-provider, never a secret", async () => {
   const { authOAuthClientRegisterCommand } = await import(
     "./auth_oauth_client_register.ts"
   );

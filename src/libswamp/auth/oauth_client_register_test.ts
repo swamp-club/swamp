@@ -19,12 +19,15 @@
 
 import { assertEquals } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
 import {
   authOAuthClientRegister,
   type AuthOAuthClientRegisterDeps,
   type AuthOAuthClientRegisterEvent,
+  canonicalServerUrl,
+  createAuthOAuthClientRegisterDeps,
 } from "./oauth_client_register.ts";
 
 interface RegisterCall {
@@ -91,8 +94,16 @@ Deno.test("authOAuthClientRegister: an --oauth-provider matching the key's serve
   const { deps, calls } = makeDeps({
     keyServerUrl: () => "http://localhost:8000",
   });
-  await run(deps, { name: "local", provider: "http://localhost:8000/" });
-  assertEquals(calls[0].provider, "http://localhost:8000/");
+  const events = await run(deps, {
+    name: "local",
+    provider: "http://localhost:8000/",
+  });
+  assertEquals(calls[0].provider, "http://localhost:8000");
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed" && completed.data.provider,
+    "http://localhost:8000",
+  );
 });
 
 Deno.test("authOAuthClientRegister: never sends the key to an --oauth-provider that did not issue it", async () => {
@@ -168,4 +179,40 @@ Deno.test("authOAuthClientRegister: a failed registration is an error event, not
     events[1].kind === "error" && events[1].error.code,
     "registration_failed",
   );
+});
+
+Deno.test("canonicalServerUrl: strips trailing slashes and maps the legacy domain", () => {
+  assertEquals(
+    canonicalServerUrl("https://swamp-club.com/"),
+    "https://swamp-club.com",
+  );
+  assertEquals(
+    canonicalServerUrl("https://swamp.club"),
+    "https://swamp-club.com",
+  );
+  assertEquals(
+    canonicalServerUrl("http://localhost:8000//"),
+    "http://localhost:8000",
+  );
+});
+
+Deno.test("createAuthOAuthClientRegisterDeps: the key's server is SWAMP_CLUB_URL, else swamp-club.com", () => {
+  withMockedEnv({ SWAMP_CLUB_URL: undefined }, () => {
+    assertEquals(
+      createAuthOAuthClientRegisterDeps().keyServerUrl(),
+      "https://swamp-club.com",
+    );
+  });
+  withMockedEnv({ SWAMP_CLUB_URL: " https://club.corp.example/ " }, () => {
+    assertEquals(
+      canonicalServerUrl(createAuthOAuthClientRegisterDeps().keyServerUrl()),
+      "https://club.corp.example",
+    );
+  });
+});
+
+Deno.test("authOAuthClientRegister: --oauth-provider on the legacy domain matches a key for swamp-club.com", async () => {
+  const { deps, calls } = makeDeps();
+  await run(deps, { name: "x", provider: "https://swamp.club" });
+  assertEquals(calls[0].provider, "https://swamp-club.com");
 });

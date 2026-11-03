@@ -1294,12 +1294,14 @@ export function mergeServeOptions(
     undefined,
   );
 
+  // An empty SWAMP_OAUTH_CLIENT_ID (a template rendering an unset variable)
+  // must not erase the configured id: serve would then register a new client.
   const oauthClientId = resolveString(
     "oauth-client-id",
     cliOptions.oauthClientId as string | undefined,
     config?.auth?.["oauth-client-id"],
     undefined,
-  );
+  ) || config?.auth?.["oauth-client-id"] || undefined;
 
   const oauthClientName = resolveString(
     "oauth-client-name",

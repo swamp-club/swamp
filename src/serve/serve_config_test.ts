@@ -735,6 +735,24 @@ Deno.test("mergeServeOptions: env var wins over config file when CLI not explici
   assertEquals(merged.certFile, "/from/env.crt");
 });
 
+Deno.test("mergeServeOptions: an empty SWAMP_OAUTH_CLIENT_ID does not erase the configured client id", () => {
+  const envLookup = (name: string) =>
+    name === "SWAMP_OAUTH_CLIENT_ID" ? "" : undefined;
+  assertEquals(
+    mergeServeOptions(
+      { auth: { "oauth-client-id": "from-config" } },
+      {},
+      new Set<string>(),
+      envLookup,
+    ).oauthClientId,
+    "from-config",
+  );
+  assertEquals(
+    mergeServeOptions(null, {}, new Set<string>(), envLookup).oauthClientId,
+    undefined,
+  );
+});
+
 Deno.test("mergeServeOptions: keep-oauth-client-in-vault is off by default and read from flag, env and config", () => {
   const none = () => undefined;
   assertEquals(

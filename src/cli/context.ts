@@ -518,8 +518,8 @@ export function getExtensionsDirFromArgs(
 /**
  * startup loads credentials before any command runs, so the flag is pre-parsed.
  * only serve commands and auth oauth-client register declare it; elsewhere it is
- * ignored so a stray flag never
- * has its file read and sent as a credential before Cliffy rejects it
+ * ignored so a stray flag never has its file read and sent as a credential
+ * before Cliffy rejects it
  */
 export function getClubApiKeyFileFromArgs(
   args: string[],

@@ -22,6 +22,7 @@ import {
   DEFAULT_SWAMP_CLUB_URL,
   LEGACY_SWAMP_CLUB_URL,
 } from "../../domain/auth/auth_credentials.ts";
+import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { UserError } from "../../domain/errors.ts";
 import { registerClientWithApiKey } from "../../infrastructure/http/oauth_client_registration.ts";
 import { resolveApiKey } from "../../infrastructure/persistence/api_key_source.ts";
@@ -59,11 +60,8 @@ export interface AuthOAuthClientRegisterDeps {
 export function createAuthOAuthClientRegisterDeps(): AuthOAuthClientRegisterDeps {
   return {
     resolveApiKey,
-    keyServerUrl: () => {
-      const url = Deno.env.get("SWAMP_CLUB_URL")?.trim().replace(/\/+$/, "");
-      if (!url) return DEFAULT_SWAMP_CLUB_URL;
-      return url === LEGACY_SWAMP_CLUB_URL ? DEFAULT_SWAMP_CLUB_URL : url;
-    },
+    keyServerUrl: () =>
+      Deno.env.get("SWAMP_CLUB_URL")?.trim() || DEFAULT_SWAMP_CLUB_URL,
     registerClient: registerClientWithApiKey,
   };
 }
@@ -84,7 +82,9 @@ export async function* authOAuthClientRegister(
 
   let provider: string;
   try {
-    provider = resolveOAuthProviderUrl(input.provider ?? deps.keyServerUrl());
+    provider = canonicalServerUrl(
+      resolveOAuthProviderUrl(input.provider ?? deps.keyServerUrl()),
+    );
   } catch (error) {
     if (error instanceof UserError) {
       yield { kind: "error", error: validationFailed(error.message) };
@@ -117,7 +117,7 @@ export async function* authOAuthClientRegister(
   }
 
   // The key is only sent to the server that issued it, as check-config does.
-  const keyServer = deps.keyServerUrl();
+  const keyServer = canonicalServerUrl(deps.keyServerUrl());
   if (new URL(provider).origin !== originOrSelf(keyServer)) {
     yield {
       kind: "error",
@@ -167,6 +167,20 @@ export async function* authOAuthClientRegister(
     }
     throw error;
   }
+}
+
+// the same server as AuthRepository sees it: no trailing slash, legacy domain
+// mapped, so a key is matched and requests are built from one spelling
+export function canonicalServerUrl(url: string): string {
+  let normalized: string;
+  try {
+    normalized = normalizeServerUrl(url);
+  } catch {
+    return url;
+  }
+  return normalized === LEGACY_SWAMP_CLUB_URL
+    ? DEFAULT_SWAMP_CLUB_URL
+    : normalized;
 }
 
 function originOrSelf(url: string): string {
