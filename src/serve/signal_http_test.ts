@@ -170,6 +170,36 @@ Deno.test("handleSignalHttpRequest: repeated bad tokens are rate limited without
   resetRateLimitState();
 });
 
+Deno.test("handleSignalHttpRequest: concurrent signals on one valid token all authenticate", async () => {
+  resetRateLimitState();
+  const base = deps();
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => release = resolve);
+  const gated: SignalHttpDeps = {
+    ...base,
+    authenticate: async (token, sourceIp) => {
+      await released;
+      return await base.authenticate(token, sourceIp);
+    },
+  };
+  const signals = Array.from(
+    { length: 20 },
+    () =>
+      handleSignalHttpRequest(
+        request({ token: "good.secret", body: "{not json" }),
+        { waitId: WAIT_ID },
+        "203.0.113.5",
+        gated,
+      ),
+  );
+  release();
+  for (const response of await Promise.all(signals)) {
+    assertEquals(response.status, 400);
+    await response.body?.cancel();
+  }
+  resetRateLimitState();
+});
+
 Deno.test("handleSignalHttpRequest: a malformed or oversized body is refused before delivery", async () => {
   resetRateLimitState();
   const cases: Array<[string, number]> = [

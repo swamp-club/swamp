@@ -6634,7 +6634,8 @@ and every intent must belong to it.
 1. Authenticate, and rate-limit: a token bucket per principal
    (`checkPrincipalRate`, 600 a minute with a burst of 200). The per-IP burst
    and the failed-token limiter count only failed authentication, so one CI
-   host's chunk traffic is not capped at 50 requests a minute.
+   host's chunk traffic is not capped at 50 requests a minute; at most 200
+   attempts per token name authenticate at once.
 2. Read and check the envelope. Its ops are built by `opFromJSON` and
    `createIntent`, as stored commits are.
 3. Catch serve's read model up, then authorise every op's access with

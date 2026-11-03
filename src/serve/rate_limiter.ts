@@ -90,7 +90,22 @@ export function checkIpBurst(ip: string): RateLimitResult {
   return checkBucket(ipBurstBuckets, ip, MAX_IP_BURST, IP_BURST_WINDOW_MS);
 }
 
-export function checkRateLimit(key: string): RateLimitResult {
+/** Refuses a key that already holds the maximum failures; never counts. */
+export function checkFailedAttempts(key: string): RateLimitResult {
+  const now = Date.now();
+  const entry = principalBuckets.get(key);
+  if (
+    !entry || now > entry.resetAt || entry.count < MAX_PRINCIPAL_ATTEMPTS
+  ) {
+    return { allowed: true };
+  }
+  return {
+    allowed: false,
+    retryAfterSeconds: Math.ceil((entry.resetAt - now) / 1000),
+  };
+}
+
+export function recordFailedAttempt(key: string): RateLimitResult {
   return checkBucket(
     principalBuckets,
     key,
@@ -99,16 +114,60 @@ export function checkRateLimit(key: string): RateLimitResult {
   );
 }
 
-export function clearRateLimit(key: string): void {
+function clearFailedAttempts(key: string): void {
   const entry = principalBuckets.get(key);
   if (entry) {
     entry.count = 0;
   }
 }
 
+const pendingAttempts = new Map<string, number>();
+
+export type FailedAttemptGuard<T> =
+  | { readonly limited: true; readonly retryAfterSeconds: number }
+  | { readonly limited: false; readonly result: T };
+
+/**
+ * Only a failed attempt counts, so concurrent requests on one valid credential
+ * are never refused by each other; the in-flight cap bounds what concurrent
+ * wrong guesses cost before any of them has failed.
+ */
+export async function limitFailedAttempts<T extends { readonly ok: boolean }>(
+  key: string,
+  attempt: () => Promise<T>,
+): Promise<FailedAttemptGuard<T>> {
+  const failures = checkFailedAttempts(key);
+  if (!failures.allowed) {
+    return { limited: true, retryAfterSeconds: failures.retryAfterSeconds };
+  }
+  const pending = pendingAttempts.get(key) ?? 0;
+  if (pending >= MAX_PENDING_ATTEMPTS) {
+    return { limited: true, retryAfterSeconds: 1 };
+  }
+  pendingAttempts.set(key, pending + 1);
+  try {
+    const result = await attempt();
+    if (result.ok) clearFailedAttempts(key);
+    else recordFailedAttempt(key);
+    return { limited: false, result };
+  } finally {
+    // released on every path, or a throwing attempt would hold its slot forever
+    const left = (pendingAttempts.get(key) ?? 1) - 1;
+    if (left > 0) pendingAttempts.set(key, left);
+    else pendingAttempts.delete(key);
+  }
+}
+
+export function pendingAttemptCount(): number {
+  return pendingAttempts.size;
+}
+
 export const PRINCIPAL_RATE_PER_MINUTE = 600;
 
 export const PRINCIPAL_RATE_BURST = 200;
+
+/** a valid principal is never accepted past its burst on a rate-limited route */
+export const MAX_PENDING_ATTEMPTS = PRINCIPAL_RATE_BURST;
 
 export const MAX_PRINCIPAL_RATE_BUCKETS = 10_000;
 
@@ -174,6 +233,7 @@ export function principalRateBucketCount(): number {
 
 export function resetRateLimitState(): void {
   principalBuckets.clear();
+  pendingAttempts.clear();
   ipBurstBuckets.clear();
   principalRateBuckets.clear();
 }

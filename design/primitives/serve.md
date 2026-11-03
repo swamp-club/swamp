@@ -232,7 +232,9 @@ session check needs. The Host check compares hostnames only, so both forms
 trust the entry's hostname there. Two rate limits
 also apply to every upgrade (`src/serve/rate_limiter.ts`): 50 upgrades per IP
 per minute, and 5 failed auth attempts per minute per token name (per IP if the
-token is malformed; cleared on success). A connection allows at most
+token is malformed; checked before authenticating, counted only when it fails,
+cleared on success), with at most 200 attempts per token name authenticating at
+once. A connection allows at most
 `MAX_ACTIVE_REQUESTS` in-flight requests and rejects an already-active id with
 `duplicate_id` (`src/serve/connection.ts`).
 
@@ -1032,11 +1034,13 @@ did has to read the run, which needs `read`.
 
 **Rate limits.** The route shares serve's two limits with WebSocket logins and
 the cancel routes (`src/serve/rate_limiter.ts`): 50 requests per source address
-per minute, counting successful deliveries, and 5 attempts per token name per
-minute, counted before the token is checked and cleared when it authenticates.
-A caller that sends many signals at once on one token, such as one answering
-every wait of a `forEach`, can therefore be answered 429 while earlier requests
-are still authenticating, and should retry. Behind a proxy without
+per minute, counting successful deliveries, and 5 failed attempts per token
+name per minute, checked before the token is authenticated, counted only when
+it fails and cleared when it authenticates, with at most 200 attempts per token
+name authenticating at once. Concurrent signals on one valid token are not refused by
+the token limit; a caller that sends more than 50 a minute from one address,
+such as one answering every wait of a large `forEach`, is answered 429 by the
+address limit and should retry. Behind a proxy without
 `--trust-proxy` every caller shares one source address.
 
 `workflow.waits` lists open waits to a caller with `read`, filtered to the

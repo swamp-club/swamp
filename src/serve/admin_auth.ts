@@ -32,8 +32,7 @@ import type { DashboardSession } from "./dashboard_session_store.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
 import {
   checkIpBurst,
-  checkRateLimit,
-  clearRateLimit,
+  limitFailedAttempts,
   rateLimitKey,
 } from "./rate_limiter.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
@@ -148,32 +147,34 @@ export async function authenticateToken(
     };
   }
 
-  const rlKey = rateLimitKey(token, clientAddr);
-  const rateCheck = checkRateLimit(rlKey);
-  if (!rateCheck.allowed) {
+  const guarded = await limitFailedAttempts(
+    rateLimitKey(token, clientAddr),
+    () =>
+      authenticateServerToken(
+        token,
+        deps.repoDir,
+        deps.repoContext,
+        {
+          emitter: deps.auditEmitter,
+          instanceId: deps.instanceId,
+          sourceIp: clientAddr,
+          ingress: new URL(req.url).pathname,
+          resolvedUserNames: deps.resolvedUserNames,
+          onUsernamesResolved: deps.onUsernamesResolved,
+        },
+      ),
+  );
+  if (guarded.limited) {
     return {
       ok: false,
       response: new Response("Too Many Requests", {
         status: 429,
-        headers: { "Retry-After": String(rateCheck.retryAfterSeconds) },
+        headers: { "Retry-After": String(guarded.retryAfterSeconds) },
       }),
     };
   }
 
-  const authResult = await authenticateServerToken(
-    token,
-    deps.repoDir,
-    deps.repoContext,
-    {
-      emitter: deps.auditEmitter,
-      instanceId: deps.instanceId,
-      sourceIp: clientAddr,
-      ingress: new URL(req.url).pathname,
-      resolvedUserNames: deps.resolvedUserNames,
-      onUsernamesResolved: deps.onUsernamesResolved,
-    },
-  );
-
+  const authResult = guarded.result;
   if (!authResult.ok) {
     return {
       ok: false,
@@ -183,8 +184,6 @@ export async function authenticateToken(
       ),
     };
   }
-
-  clearRateLimit(rlKey);
 
   const { tokenName, tokenCreatedAt, ...principal } = authResult;
   return {
@@ -205,33 +204,33 @@ export async function authenticateDashboardSessionToken(
   deps: AdminAuthDeps,
   session: DashboardSession,
 ): Promise<DashboardSessionTokenAuthResult> {
-  const rateKey = rateLimitKey(
-    `${session.tokenName}.${session.id}`,
-    clientAddr,
+  const guarded = await limitFailedAttempts(
+    rateLimitKey(`${session.tokenName}.${session.id}`, clientAddr),
+    () =>
+      authenticateDashboardSession(
+        session,
+        deps.repoContext,
+        {
+          emitter: deps.auditEmitter,
+          instanceId: deps.instanceId,
+          sourceIp: clientAddr,
+          ingress: new URL(req.url).pathname,
+          resolvedUserNames: deps.resolvedUserNames,
+          onUsernamesResolved: deps.onUsernamesResolved,
+        },
+      ),
   );
-  const rateCheck = checkRateLimit(rateKey);
-  if (!rateCheck.allowed) {
+  if (guarded.limited) {
     return {
       ok: false,
       invalidateSession: false,
       response: new Response("Too Many Requests", {
         status: 429,
-        headers: { "Retry-After": String(rateCheck.retryAfterSeconds) },
+        headers: { "Retry-After": String(guarded.retryAfterSeconds) },
       }),
     };
   }
-  const authResult = await authenticateDashboardSession(
-    session,
-    deps.repoContext,
-    {
-      emitter: deps.auditEmitter,
-      instanceId: deps.instanceId,
-      sourceIp: clientAddr,
-      ingress: new URL(req.url).pathname,
-      resolvedUserNames: deps.resolvedUserNames,
-      onUsernamesResolved: deps.onUsernamesResolved,
-    },
-  );
+  const authResult = guarded.result;
   if (!authResult.ok) {
     return {
       ok: false,
@@ -241,7 +240,6 @@ export async function authenticateDashboardSessionToken(
       }),
     };
   }
-  clearRateLimit(rateKey);
   const { tokenName, tokenCreatedAt, ...principal } = authResult;
   return {
     ok: true,

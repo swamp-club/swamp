@@ -44,8 +44,7 @@ import {
 } from "./handlers/shared.ts";
 import {
   checkIpBurst,
-  checkRateLimit,
-  clearRateLimit,
+  limitFailedAttempts,
   rateLimitKey,
 } from "./rate_limiter.ts";
 import {
@@ -175,14 +174,15 @@ export async function handleSignalHttpRequest(
     if (!token) {
       return new Response("Unauthorized: token required", { status: 401 });
     }
-    const key = rateLimitKey(token, sourceIp);
-    const rateCheck = checkRateLimit(key);
-    if (!rateCheck.allowed) return tooManyRequests(rateCheck.retryAfterSeconds);
-    const auth = await deps.authenticate(token, sourceIp);
+    const guarded = await limitFailedAttempts(
+      rateLimitKey(token, sourceIp),
+      () => deps.authenticate(token, sourceIp),
+    );
+    if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
+    const auth = guarded.result;
     if (!auth.ok) {
       return new Response(`Unauthorized: ${auth.reason}`, { status: 401 });
     }
-    clearRateLimit(key);
     tokenBinding = {
       name: auth.tokenName,
       createdAt: auth.tokenCreatedAt,
