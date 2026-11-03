@@ -45,6 +45,35 @@ export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
 
 export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
 
+/** the HTTP route for client reads too large for a WebSocket frame */
+export const SERVE_REQUEST_PATH = "/api/v1/request";
+
+export const MAX_HTTP_REQUEST_BODY_BYTES = 64 * 1024;
+
+/** a refusal of the HTTP route that the WebSocket would answer */
+export const USE_WEBSOCKET_CODE = "use_websocket";
+
+/**
+ * reads whose replies grow without bound; the CLI sends these over
+ * SERVE_REQUEST_PATH, every other request stays on the WebSocket
+ */
+export const HTTP_REQUEST_TYPES: ReadonlySet<string> = new Set([
+  "data.get",
+  "data.query",
+  "data.list",
+  "data.versions",
+  "model.output.data",
+  "model.output.logs",
+  "model.output.search",
+  "model.method.history.get",
+  "model.method.history.logs",
+  "model.method.history.search",
+  "workflow.history.get",
+  "workflow.history.logs",
+  "workflow.history.search",
+  "report.get",
+]);
+
 export interface ModelMethodRunPayload {
   modelIdOrName: string;
   methodName: string;

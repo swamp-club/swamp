@@ -17,8 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert } from "@std/assert";
-import { isFinalFrame, isRpcFrame } from "./follower_forwarder.ts";
+import { assert, assertEquals } from "@std/assert";
+import {
+  FollowerForwarder,
+  isFinalFrame,
+  isRpcFrame,
+} from "./follower_forwarder.ts";
+import type { LeaderLink } from "./leader_link.ts";
 
 Deno.test("isFinalFrame: errors, done frames and plain replies end a request; events and more-to-come replies do not", () => {
   assert(isFinalFrame({ type: "error", id: "1" }, "workflow.run"));
@@ -50,4 +55,61 @@ Deno.test("isRpcFrame: only a worker's rpc.* frames", () => {
   assert(!isRpcFrame(JSON.stringify({ type: "workflow.run", id: "1" })));
   assert(!isRpcFrame(JSON.stringify({ type: "x", note: '"rpc.' })));
   assert(!isRpcFrame("not json"));
+});
+
+Deno.test("FollowerForwarder: a relayed reply over the frame limit reaches the client as frame_too_large", async () => {
+  const toClient: string[] = [];
+  const client = new EventTarget() as EventTarget & {
+    readyState: number;
+    send: (data: string) => void;
+  };
+  client.readyState = WebSocket.OPEN;
+  client.send = (data) => toClient.push(data);
+  const upstream = {
+    readyState: WebSocket.OPEN,
+    binaryType: "blob",
+    send: () => {},
+    close: () => {},
+    onopen: null as (() => void) | null,
+    onmessage: null as ((event: { data: unknown }) => void) | null,
+    onerror: null as (() => void) | null,
+    onclose: null as (() => void) | null,
+  };
+  const link = {
+    openSocket: () => ({ socket: upstream, leader: {} }),
+  } as unknown as LeaderLink;
+  const forwarder = new FollowerForwarder(
+    client as unknown as WebSocket,
+    link,
+    { headers: {}, pathAndQuery: "/" },
+  );
+  const requestId = crypto.randomUUID();
+  const done = Promise.withResolvers<void>();
+
+  forwarder.forward(
+    requestId,
+    "data.get",
+    JSON.stringify({ type: "data.get", id: requestId }),
+    new AbortController().signal,
+    () => done.resolve(),
+  );
+  upstream.onmessage?.({
+    data: JSON.stringify({
+      type: "data.get",
+      id: requestId,
+      payload: { data: { content: "x".repeat(64 * 1024 * 1024) } },
+    }),
+  });
+  await done.promise;
+  upstream.onmessage?.({
+    data: JSON.stringify({ type: "done", id: requestId }),
+  });
+
+  assertEquals(toClient.length, 1);
+  const reply = JSON.parse(toClient[0]);
+  assertEquals([reply.type, reply.id, reply.error.code], [
+    "error",
+    requestId,
+    "frame_too_large",
+  ]);
 });

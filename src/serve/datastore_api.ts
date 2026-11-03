@@ -171,12 +171,11 @@ import {
   serveResolver,
 } from "./commit_read_filter.ts";
 import {
-  checkIpBurst,
-  checkPrincipalRate,
-  checkRateLimit,
-  clearRateLimit,
-  rateLimitKey,
-} from "./rate_limiter.ts";
+  authenticateHttpCaller,
+  type HttpCaller,
+  httpFailure,
+  tooManyRequests,
+} from "./http_caller_auth.ts";
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
 import type { DatastoreRoute } from "./datastore_routes.ts";
@@ -289,9 +288,6 @@ export const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
  */
 export const CHUNK_ACCESS_UNDECIDED_CODE = "chunk_access_undecided";
 
-/** The principal an unauthenticated server (`--auth-mode none`) stamps. */
-export const ANONYMOUS_PRINCIPAL = "@anonymous";
-
 export interface DatastoreApiDeps {
   readonly ctx: ConnectionContext;
   /** Serve's v3 datastore; undefined when the datastore is not v3. */
@@ -327,12 +323,7 @@ export interface DatastoreApiDeps {
   };
 }
 
-/** An authenticated caller of the API. */
-interface ApiCaller {
-  readonly access: AccessCaller;
-  /** The principal stamped on its commits. */
-  readonly principal: string;
-}
+type ApiCaller = HttpCaller;
 
 /** Chunk requests in flight, by principal. */
 const chunkRequestsInFlight = new Map<string, number>();
@@ -360,7 +351,11 @@ export async function handleDatastoreRequest(
   sourceIp: string,
   deps: DatastoreApiDeps,
 ): Promise<Response> {
-  const authenticated = await authenticateCaller(req, sourceIp, deps);
+  const authenticated = await authenticateHttpCaller(req, sourceIp, {
+    authMode: deps.ctx.authConfig.mode,
+    authenticate: deps.authenticate,
+    now: deps.now,
+  });
   if (authenticated instanceof Response) return authenticated;
   // A follower in team mode passes a write on to the leader with the
   // caller's own credentials (swamp-club#4120), and answers reads only
@@ -601,50 +596,6 @@ async function answerDatastoreRequest(
   } catch (error) {
     return datastoreErrorResponse(error);
   }
-}
-
-async function authenticateCaller(
-  req: Request,
-  sourceIp: string,
-  deps: DatastoreApiDeps,
-): Promise<ApiCaller | Response> {
-  const { ctx } = deps;
-  if (ctx.authConfig.mode === "none") {
-    return {
-      access: { principal: null, collectives: [], groups: [], sourceIp },
-      principal: ANONYMOUS_PRINCIPAL,
-    };
-  }
-  const token = bearerToken(req);
-  if (token === null) {
-    // Only callers that fail to authenticate count toward the IP's burst:
-    // an authenticated team's traffic is limited per principal instead.
-    const ipBurst = checkIpBurst(sourceIp);
-    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
-    return failure(401, "unauthorized", "Unauthorized: token required");
-  }
-  const key = rateLimitKey(token, sourceIp);
-  const rateCheck = checkRateLimit(key);
-  if (!rateCheck.allowed) return tooManyRequests(rateCheck.retryAfterSeconds);
-  const auth = await deps.authenticate(token, sourceIp);
-  if (!auth.ok) {
-    const ipBurst = checkIpBurst(sourceIp);
-    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
-    return failure(401, "unauthorized", `Unauthorized: ${auth.reason}`);
-  }
-  clearRateLimit(key);
-  const rate = checkPrincipalRate(auth.principalId, deps.now?.());
-  if (!rate.allowed) return tooManyRequests(rate.retryAfterSeconds);
-  return {
-    access: {
-      principal: parsePrincipal(auth.principalId),
-      collectives: auth.collectives,
-      groups: auth.groups,
-      sourceIp,
-      loginIdentity: auth.oauthIdentity,
-    },
-    principal: auth.principalId,
-  };
 }
 
 /** One request's view of the datastore, as one caller. */
@@ -3361,18 +3312,6 @@ export function datastoreErrorResponse(error: unknown): Response {
   );
 }
 
-const BEARER_PREFIX_LEN = "Bearer ".length;
-
-function bearerToken(req: Request): string | null {
-  const header = req.headers.get("authorization");
-  if (
-    header === null ||
-    header.slice(0, BEARER_PREFIX_LEN).toLowerCase() !== "bearer "
-  ) return null;
-  const token = header.slice(BEARER_PREFIX_LEN);
-  return token.length > 0 ? token : null;
-}
-
 /**
  * A commit naming a chunk it neither carries nor was vouched for: the client
  * sends the commit again with the chunk's bytes.
@@ -3385,9 +3324,7 @@ function chunkNotProvided(hash: string | undefined): Response {
   );
 }
 
-function failure(status: number, code: string, message: string): Response {
-  return Response.json({ code, message }, { status });
-}
+const failure = httpFailure;
 
 function leaseNotFound(): Response {
   return failure(
@@ -3402,13 +3339,6 @@ function uploadQuotaExceeded(): Response {
     429,
     "upload_quota_exceeded",
     "Too many uploaded chunks are not referenced by any commit yet",
-  );
-}
-
-function tooManyRequests(retryAfterSeconds: number): Response {
-  return Response.json(
-    { code: "rate_limited", message: "Too Many Requests" },
-    { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
   );
 }
 

@@ -24,6 +24,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
+import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
 
@@ -42,7 +43,16 @@ function recordingServer(payload: Record<string, unknown>): {
   const requests: Recorded[] = [];
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-    (req) => {
+    async (req) => {
+      if (new URL(req.url).pathname === SERVE_REQUEST_PATH) {
+        const request = await req.json() as Recorded & { id: string };
+        requests.push({ type: request.type, payload: request.payload });
+        return new Response(
+          JSON.stringify({ type: request.type, id: request.id, payload }) +
+            "\n",
+          { headers: { "content-type": "application/x-ndjson" } },
+        );
+      }
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (event) => {
         const request = JSON.parse(event.data as string) as Recorded & {

@@ -21,11 +21,14 @@ import type { Command } from "@cliffy/command";
 import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
-import type {
-  ModelMethodRunPayload,
-  ServerMessage,
-  WorkflowResumePayload,
-  WorkflowRunPayload,
+import {
+  HTTP_REQUEST_TYPES,
+  type ModelMethodRunPayload,
+  SERVE_REQUEST_PATH,
+  type ServerMessage,
+  USE_WEBSOCKET_CODE,
+  type WorkflowResumePayload,
+  type WorkflowRunPayload,
 } from "../serve/protocol.ts";
 import { deserializeEvent } from "../serve/serializer.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
@@ -465,6 +468,7 @@ export interface RequestResponseOptions {
   headers?: Record<string, string>;
   caCerts?: string[];
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
+  fetch?: typeof fetch;
   timeoutMs?: number;
 }
 
@@ -485,11 +489,186 @@ async function gunzipFrame(data: ArrayBuffer): Promise<string> {
   return await new Response(stream).text();
 }
 
-export function requestServerResponse<T>(
+/**
+ * reads whose replies can outgrow a WebSocket frame go over serve's HTTP
+ * route; a serve that predates the route answers 404 and the socket is used
+ */
+export async function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
   writeRemoteIndicator(options.server);
+  if (HTTP_REQUEST_TYPES.has(request.type)) {
+    const outcome = await requestOverHttp<T>(options, request);
+    if (outcome.kind === "payload") return outcome.payload;
+  }
+  return await requestOverSocket<T>(options, request);
+}
+
+type HttpRequestOutcome<T> =
+  | { kind: "payload"; payload: T }
+  | { kind: "route_missing" };
+
+async function requestOverHttp<T>(
+  options: RequestResponseOptions,
+  request: { type: string; id?: string; payload?: unknown },
+): Promise<HttpRequestOutcome<T>> {
+  const baseUrl = toWebSocketUrl(options.server);
+  const headers: Record<string, string> = {
+    ...(options.headers ?? resolveExtraHeaders()),
+    "content-type": "application/json",
+  };
+  if (options.token) headers["Authorization"] = `Bearer ${options.token}`;
+  const requestId = request.id ?? crypto.randomUUID();
+  const timeoutMs = options.timeoutMs ?? resolveRequestTimeoutMs();
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal
+    ? AbortSignal.any([timeout, options.signal])
+    : timeout;
+  const caCerts = options.caCerts ?? getEnvCaCerts();
+  const ownClient = caCerts?.length
+    ? createTlsHttpClient({ caCerts })
+    : undefined;
+  const failure = (err: unknown): Error => {
+    if (timeout.aborted) {
+      return new UserError(
+        `Request timed out after ${timeoutMs}ms — if the server needs more time, set SWAMP_SERVE_TIMEOUT_MS to a higher value`,
+      );
+    }
+    if (options.signal?.aborted) {
+      return new DOMException("Request was aborted", "AbortError");
+    }
+    return err instanceof Error ? err : new Error(String(err));
+  };
+  try {
+    let response: Response;
+    try {
+      response = await (options.fetch ?? fetch)(
+        `${toHttpUrl(baseUrl)}${SERVE_REQUEST_PATH}`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ ...request, id: requestId }),
+          client: ownClient ?? getDefaultHttpClient(),
+          signal,
+          // a redirect would carry the token and pass-through headers elsewhere
+          redirect: "manual",
+        },
+      );
+    } catch (err) {
+      const failed = failure(err);
+      if (failed instanceof UserError || failed instanceof DOMException) {
+        throw failed;
+      }
+      throw new UserError(
+        await classifyConnectionError(
+          baseUrl,
+          `Could not connect to ${baseUrl}: ${failed.message}`,
+          headers,
+          options.caCerts,
+        ),
+      );
+    }
+    if (!response.ok) {
+      const refusal = await readServeRefusal(response);
+      // a serve that predates the route, a proxy that does not pass it, or a
+      // route that sends the request back: the socket answered these before
+      if (
+        response.status === 404 || response.status === 405 ||
+        refusal === undefined || refusal.code === USE_WEBSOCKET_CODE
+      ) {
+        return { kind: "route_missing" };
+      }
+      throw httpRefusal(baseUrl, response.status, refusal);
+    }
+    let body: string;
+    try {
+      body = await response.text();
+    } catch (err) {
+      const failed = failure(err);
+      if (failed instanceof UserError || failed instanceof DOMException) {
+        throw failed;
+      }
+      throw new UserError(
+        `Connection to ${baseUrl} closed before a response was received: ${failed.message}`,
+      );
+    }
+    for (const line of body.split("\n")) {
+      if (line === "") continue;
+      let message: unknown;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        typeof message !== "object" || message === null ||
+        !("id" in message) || message.id !== requestId ||
+        !("type" in message)
+      ) continue;
+      if (message.type === "error" && "error" in message) {
+        throw new ServerResponseError(
+          message.error as { code: string; message: string; details?: unknown },
+        );
+      }
+      if ("payload" in message) {
+        return { kind: "payload", payload: message.payload as T };
+      }
+    }
+    throw new UserError(
+      `Connection to ${baseUrl} closed before a response was received`,
+    );
+  } finally {
+    ownClient?.close();
+  }
+}
+
+interface ServeRefusal {
+  readonly code: string;
+  readonly message: string;
+  readonly leader?: unknown;
+}
+
+async function readServeRefusal(
+  response: Response,
+): Promise<ServeRefusal | undefined> {
+  let body: { code?: unknown; message?: unknown; leader?: unknown };
+  try {
+    body = await response.json();
+  } catch {
+    return undefined;
+  }
+  if (typeof body?.code !== "string" || typeof body.message !== "string") {
+    return undefined;
+  }
+  return { code: body.code, message: body.message, leader: body.leader };
+}
+
+function httpRefusal(
+  baseUrl: string,
+  status: number,
+  refusal: ServeRefusal,
+): Error {
+  if (status === 401 || status === 403) {
+    return new UserError(authFailedMessage(baseUrl));
+  }
+  if (status === 429) {
+    return new UserError(
+      describeHandshakeStatus(baseUrl, 429, "Rate-limited by server"),
+    );
+  }
+  return new ServerResponseError({
+    code: refusal.code,
+    message: refusal.message,
+    ...(refusal.leader !== undefined &&
+      { details: { leader: refusal.leader } }),
+  });
+}
+
+function requestOverSocket<T>(
+  options: RequestResponseOptions,
+  request: { type: string; id?: string; payload?: unknown },
+): Promise<T> {
   const baseUrl = toWebSocketUrl(options.server);
   const extraHeaders = options.headers ?? resolveExtraHeaders();
   const headers: Record<string, string> = { ...extraHeaders };
@@ -539,6 +718,7 @@ export function requestServerResponse<T>(
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
     let connectErrorDetail = "";
+    let opened = false;
     socket.onerror = (event) => {
       if (event instanceof ErrorEvent && event.message) {
         connectErrorDetail = `: ${event.message}`;
@@ -548,7 +728,9 @@ export function requestServerResponse<T>(
         cleanup();
         reject(
           new UserError(
-            `Could not connect to ${baseUrl}${connectErrorDetail}`,
+            opened
+              ? `Connection to ${baseUrl} closed before a response was received${connectErrorDetail}`
+              : `Could not connect to ${baseUrl}${connectErrorDetail}`,
           ),
         );
       }
@@ -561,7 +743,7 @@ export function requestServerResponse<T>(
         const detail = describeServerClose(event);
         reject(
           new UserError(
-            connectErrorDetail
+            connectErrorDetail && !opened
               ? `Could not connect to ${baseUrl}${connectErrorDetail}`
               : `Connection closed before a response was received${detail}`,
           ),
@@ -570,6 +752,7 @@ export function requestServerResponse<T>(
     };
 
     socket.onopen = () => {
+      opened = true;
       socket.send(
         JSON.stringify({ ...request, id: requestId }),
       );
