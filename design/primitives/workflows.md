@@ -2800,7 +2800,10 @@ When serve starts as the leader, after pending runs are replayed, and when a
 follower is promoted, once its role is leader (`onLed` in
 `src/serve/serve_leadership.ts`, after the grant config is applied),
 `catchUpMissedFires` compares each schedule's slots against its stored
-watermark. Any slot strictly after the watermark and at or before now was
+watermark. Serve starts the pass through `startCatchUp`, which runs it detached
+and returns at once, so neither the boot heartbeat nor the leadership tick (and
+with it the lease check) waits on a slow control plane; drain and stop abort the
+pass and wait for it. Any slot strictly after the watermark and at or before now was
 missed because serve was down. Serve records the latest one as the schedule's
 `lastMissed` (`fireTime`, `count`, `reason: serve_down`, `caughtUp`) and emits
 a `schedule_missed` event, audited as `workflow.schedule.missed`. A fire skipped
@@ -2841,9 +2844,17 @@ watermark write failed can be reported missed, though nothing runs. The lookup
 walks the run index latest slot first and reads records only until one the
 scheduler started is found. All schedules share one `RUN_HISTORY_TIMEOUT_MS`
 budget per pass. Once it is spent, the remaining schedules fall back to the
-watermark. A drain or stop ends the pass: it aborts the history read and the
-state read in progress, visits no further schedule, and a stopped service fires
-nothing. Any initiator can set a run tag,
+watermark. The whole pass has one deadline, `CATCH_UP_TIMEOUT_MS` (60s), so a
+catch-up never fires against a stale now. Each schedule's work races it; once it
+is spent, the pass stops waiting, checks no further schedule and logs how many
+it skipped, which keep their watermark until the next start or promotion. Work
+the pass stopped waiting for never queues a run: it fires nothing once the pass
+has ended, and a catch-up whose fire claim succeeds after the deadline records
+the slot as missed (`caughtUp: false`), since the slot is claimed. A claim that
+succeeds during a drain still writes the watermark and records the run for
+replay. Shutdown waits for abandoned work within its settle budget. A drain or
+stop ends the pass: it aborts the history read and the state read in progress,
+visits no further schedule, and a stopped service fires nothing. Any initiator can set a run tag,
 so other runs are no evidence, and a recorded slot after now is ignored. A slot
 that ran but whose watermark write failed is therefore not run again, and a
 replayed run, which records no slot, settles nothing. The watermark also records
@@ -2859,7 +2870,11 @@ window is caught up. A schedule registered while serve runs, or whose cron
 expression changes, has its watermark reset to now, so time spent unscheduled is
 never reported as missed. A schedule's record outlives the schedule, so a
 workflow unscheduled and scheduled again with the same expression while serve
-was down is measured from its old watermark. A follower's health reports the
+was down is measured from its old watermark. Serve loads every schedule's state
+for health in the background at startup, bounded by `SCHEDULE_STATE_TIMEOUT_MS`
+for the listing and for each record, so a hung control plane never delays
+binding the port; until it lands, health shows no `lastMissed`. A follower's
+health reports the
 `lastMissed` it read at startup until it is promoted. Each fire reads and writes
 the record before the run is queued, each step bounded by
 `SCHEDULE_STATE_TIMEOUT_MS`.

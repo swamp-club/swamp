@@ -224,3 +224,67 @@ Deno.test("ControlPlaneScheduleStateRepository: a caller's signal cancels the re
   controller.abort();
   assertEquals(seen?.aborted, true);
 });
+
+Deno.test("ControlPlaneScheduleStateRepository: a list that never settles rejects at the deadline", async () => {
+  const repo = new ControlPlaneScheduleStateRepository(
+    {
+      put: () => Promise.resolve(),
+      get: () => Promise.resolve(null),
+      delete: () => Promise.resolve(),
+      list: () => new Promise(() => {}),
+    },
+    { timeoutMs: 20 },
+  );
+  await assertRejects(() => repo.list(), Error, "timed out");
+});
+
+Deno.test("ControlPlaneScheduleStateRepository: list skips a record whose read times out and keeps the rest", async () => {
+  await withStore(async (store) => {
+    const good = state();
+    const hungId = crypto.randomUUID();
+    const repo = new ControlPlaneScheduleStateRepository({
+      put: (key, data) => store.put(key, data),
+      get: (key) =>
+        key.endsWith(hungId) ? new Promise(() => {}) : store.get(key),
+      delete: (key) => store.delete(key),
+      list: (prefix) => store.list(prefix),
+    }, { timeoutMs: 20 });
+    await repo.save(good);
+    await repo.save(state({ workflowId: hungId }));
+
+    assertEquals(await repo.list(), [good]);
+  });
+});
+
+Deno.test("ControlPlaneScheduleStateRepository: an aborted caller signal ends the listing", async () => {
+  await withStore(async (store) => {
+    const controller = new AbortController();
+    const read: string[] = [];
+    const repo = new ControlPlaneScheduleStateRepository({
+      put: (key, data) => store.put(key, data),
+      get: (key, options) => {
+        read.push(key);
+        controller.abort(new Error("serve is shutting down"));
+        return new Promise((_, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(options.signal?.reason),
+            { once: true },
+          );
+          if (options?.signal?.aborted) reject(options.signal.reason);
+        });
+      },
+      delete: (key) => store.delete(key),
+      list: (prefix) => store.list(prefix),
+    });
+    await repo.save(state());
+    await repo.save(state());
+
+    await assertRejects(
+      () => repo.list({ signal: controller.signal }),
+      Error,
+      "serve is shutting down",
+    );
+    assertEquals(read.length, 1);
+  });
+});

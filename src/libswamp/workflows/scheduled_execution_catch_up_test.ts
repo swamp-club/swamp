@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { Cron } from "croner";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
@@ -1311,4 +1312,319 @@ Deno.test("ScheduledExecutionService: writes requested while one is held fold in
   assertEquals(states.readsDuringSave, 0);
   assertEquals(states.watermark(wf.id), new Date(now).toISOString());
   assertEquals(states.states.get(wf.id)?.cronExpression, "0 9 4 * *");
+});
+
+/** reads that never settle until their signal aborts, as on a hung control plane */
+class HungStateRepo extends MemoryStateRepo {
+  hangList = false;
+  hangGets = false;
+  readonly listSignals: (AbortSignal | undefined)[] = [];
+  readonly gets: string[] = [];
+  readonly getSignals: (AbortSignal | undefined)[] = [];
+
+  override list(
+    options?: { signal?: AbortSignal },
+  ): Promise<ScheduleState[]> {
+    this.listSignals.push(options?.signal);
+    return this.hangList ? untilAborted(options?.signal) : super.list();
+  }
+
+  override get(
+    workflowId: WorkflowId,
+    options?: { signal?: AbortSignal },
+  ): Promise<ScheduleState | null> {
+    this.gets.push(workflowId);
+    this.getSignals.push(options?.signal);
+    return this.hangGets
+      ? untilAborted(options?.signal)
+      : super.get(workflowId);
+  }
+}
+
+function untilAborted<T>(signal: AbortSignal | undefined): Promise<T> {
+  return new Promise<T>((_, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    signal?.addEventListener("abort", () => reject(signal.reason), {
+      once: true,
+    });
+  });
+}
+
+async function capturingWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["scheduled-execution"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+Deno.test("ScheduledExecutionService.start: does not wait for a schedule-state list that never settles, and stop aborts it", async () => {
+  const wf = createWorkflow("hung-list-wf", MONTHLY);
+  const states = new HungStateRepo();
+  states.hangList = true;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+  });
+
+  await service.start();
+  assertEquals(states.listSignals.length, 1);
+  assertEquals(states.listSignals[0]?.aborted, false);
+  await service.stop();
+
+  assertEquals(states.listSignals[0]?.aborted, true);
+});
+
+Deno.test("startCatchUp: returns while a state read hangs, starts no second pass, and drain aborts it", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("hung-get-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new HungStateRepo();
+  seed(states, wf, previous);
+  states.hangGets = true;
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  service.startCatchUp();
+  assertEquals(states.gets, [wf.id]);
+  service.startCatchUp();
+  assertEquals(states.gets, [wf.id]);
+  await service.drain(0);
+  await service.stop();
+
+  assertEquals(states.getSignals[0]?.aborted, true);
+  assertEquals(executor.inputs.length, 0);
+  assertEquals(states.watermark(wf.id), previous.toISOString());
+});
+
+Deno.test("catchUpMissedFires: once its deadline is spent the pass reads no further schedule and says how many it skipped", async () => {
+  const { previous, missed } = slots();
+  const catchUp = { policy: "latest", maxDelay: "6h" } as const;
+  const first = createWorkflow("deadline-a", MONTHLY, catchUp);
+  const second = createWorkflow("deadline-b", MONTHLY, catchUp);
+  const states = new HungStateRepo();
+  seed(states, first, previous);
+  seed(states, second, previous);
+  states.hangGets = true;
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([first, second]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    catchUpTimeoutMs: 20,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  const warnings = await capturingWarnings(() => service.catchUpMissedFires());
+  await service.stop();
+
+  assertEquals(states.gets.length, 1);
+  assertEquals(states.getSignals[0]?.aborted, true);
+  assert(
+    warnings.some((w) => w.includes("2 schedule(s) were not checked")),
+    warnings.join("\n"),
+  );
+  assertEquals(executor.inputs.length, 0);
+});
+
+Deno.test("catchUpMissedFires: a claim that ignores the deadline is abandoned, and a late claim is recorded missed, not run", async () => {
+  const { previous, missed } = slots();
+  const catchUp = { policy: "latest", maxDelay: "6h" } as const;
+  const first = createWorkflow("late-claim-a", MONTHLY, catchUp);
+  const second = createWorkflow("late-claim-b", MONTHLY, catchUp);
+  const states = new HungStateRepo();
+  seed(states, first, previous);
+  seed(states, second, previous);
+  const claim = Promise.withResolvers<boolean>();
+  const claims: string[] = [];
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([first, second]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    cronFireDedup: (id) => {
+      claims.push(id);
+      return claim.promise;
+    },
+    catchUpTimeoutMs: 20,
+    maxConcurrentRuns: 2,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  assertEquals(claims, [first.id]);
+  assertEquals(states.gets, [first.id]);
+
+  claim.resolve(true);
+  await waitFor(
+    () => states.watermark(first.id) === missed.toISOString(),
+    "the late claim's slot settled",
+  );
+  await service.stop();
+
+  assertEquals(executor.inputs.length, 0);
+  const recorded = states.states.get(first.id)?.lastMissed;
+  assertEquals(recorded?.fireTime, missed.toISOString());
+  assertEquals(recorded?.caughtUp, false);
+  const missedEvent = missedEvents(events);
+  assertEquals(missedEvent.length, 1);
+  assertEquals(
+    missedEvent[0].kind === "schedule_missed" && missedEvent[0].caughtUp,
+    false,
+  );
+  assertEquals(states.watermark(second.id), previous.toISOString());
+});
+
+Deno.test("catchUpMissedFires: a deadline spent before the catch-up fire fires nothing", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("deadline-before-fire", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const history = Promise.withResolvers<Date | null>();
+  let lookups = 0;
+  const claims: string[] = [];
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: () => {
+      lookups++;
+      return history.promise;
+    },
+    cronFireDedup: (id) => {
+      claims.push(id);
+      return Promise.resolve(true);
+    },
+    catchUpTimeoutMs: 20,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  await service.catchUpMissedFires();
+  assertEquals(lookups, 1);
+  history.resolve(null);
+  // the abandoned schedule resumes through microtasks alone, so one macrotask
+  // turn runs it to its fire before stop could drop that fire for it
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await service.stop();
+
+  assertEquals(claims, []);
+  assertEquals(executor.inputs.length, 0);
+  assertEquals(states.watermark(wf.id), previous.toISOString());
+});
+
+Deno.test("startCatchUp: a drain that begins while a catch-up's claim is in flight still hands the run to replay", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("drain-claim-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const claim = Promise.withResolvers<boolean>();
+  const claims: string[] = [];
+  const replayed: string[] = [];
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    cronFireDedup: (id) => {
+      claims.push(id);
+      return claim.promise;
+    },
+    pendingRunHook: {
+      enqueue: (entry) => {
+        replayed.push(entry.workflowIdOrName);
+        return Promise.resolve();
+      },
+      delete: () => Promise.resolve(),
+    },
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  service.startCatchUp();
+  await waitFor(() => claims.length === 1, "the catch-up reached its claim");
+  const drain = service.drain(0);
+  claim.resolve(true);
+  await drain;
+  await service.stop();
+
+  assertEquals(replayed, [wf.name]);
+  assertEquals(executor.inputs.length, 0);
+  assertEquals(states.watermark(wf.id), missed.toISOString());
+});
+
+Deno.test("startCatchUp: a tick that begins while the detached pass reads run history is not caught up again", async () => {
+  const wf = createWorkflow("detached-racing-wf", "* * * * * *", {
+    policy: "latest",
+    maxDelay: "1h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, new Date(Math.floor(Date.now() / 1000) * 1000 - 10_000));
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  let lookedUp = false;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: async () => {
+      await waitFor(
+        () => events.some((e) => e.kind === "schedule_fired"),
+        "a tick during the pass",
+      );
+      lookedUp = true;
+      return null;
+    },
+  });
+
+  await service.start((e) => events.push(e));
+  service.startCatchUp();
+  await waitFor(() => lookedUp, "the pass read run history");
+  await service.drain(0);
+  await service.stop();
+
+  assertEquals(
+    executor.inputs.filter((i) => i.runtimeTags?.[CATCH_UP_TAG]).length,
+    0,
+  );
 });
