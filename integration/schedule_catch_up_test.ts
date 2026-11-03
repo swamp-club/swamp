@@ -59,7 +59,6 @@ interface Fixture {
   workflow: Workflow;
   store: FileSystemControlPlaneStore;
   runs: WorkflowRunInput[];
-  /** a serve instance over the shared repo and control plane */
   instance: (
     now: number,
     options?: { canWrite?: () => boolean },

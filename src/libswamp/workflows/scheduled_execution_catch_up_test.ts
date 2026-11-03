@@ -828,3 +828,105 @@ Deno.test("ScheduledExecutionService: every cron-fired run records its slot", as
     [SCHEDULED_FOR_TAG]: fired.fireTime,
   });
 });
+
+Deno.test("catchUpMissedFires: a nickname schedule is measured on the expression as written", async () => {
+  const cron = new Cron("@monthly");
+  const previous = cron.nextRun(new Date("2026-06-15T00:00:00Z"))!;
+  const missed = cron.nextRun(previous)!;
+  const wf = createWorkflow("nickname-wf", "@monthly", {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  await service.catchUpMissedFires();
+  await waitFor(() => executor.inputs.length === 1, "catch-up run");
+  await service.stop();
+
+  assertEquals(
+    executor.inputs[0].runtimeTags?.[SCHEDULED_FOR_TAG],
+    missed.toISOString(),
+  );
+});
+
+Deno.test("catchUpMissedFires: a recorded slot after now settles nothing", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("future-tag-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: () =>
+      Promise.resolve(new Date("2099-01-01T00:00:00Z")),
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  await service.catchUpMissedFires();
+  await waitFor(() => executor.inputs.length === 1, "catch-up run");
+  await service.stop();
+});
+
+Deno.test("catchUpMissedFires: an instance that may not write reports no miss", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("silent-wf", MONTHLY);
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  states.canWrite = false;
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    scheduleState: states,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(missedEvents(events), []);
+});
+
+Deno.test("updateTriggerOverrides: a change to catchUp alone is counted", async () => {
+  const wf = createWorkflow("catch-only-wf", MONTHLY);
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    triggerOverrides: new Map([["catch-only-wf", { schedule: MONTHLY }]]),
+  });
+
+  await service.start();
+  const changed = await service.updateTriggerOverrides(
+    new Map([["catch-only-wf", {
+      schedule: MONTHLY,
+      catchUp: { policy: "latest", maxDelay: "6h" },
+    }]]),
+  );
+  assertEquals(service.scheduleStatus(wf.id).catchUp, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  await service.stop();
+
+  assertEquals(changed, 1);
+});

@@ -111,7 +111,7 @@ Deno.test("parseCatchUpFlags: latest without a max delay names --catch-up-max-de
   assertThrows(
     () => parseCatchUpFlags("latest", "32d"),
     UserError,
-    "Invalid --catch-up-max-delay '32d'",
+    "Invalid --catch-up-max-delay: maxDelay must be at most 31d",
   );
   assertThrows(
     () => parseCatchUpFlags("none", "6h"),

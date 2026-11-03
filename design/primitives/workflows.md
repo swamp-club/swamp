@@ -2815,15 +2815,19 @@ same path as a cron tick: pause check (evaluated at the missed slot), overlap
 check, dedup claim, queue and authorization. The run carries the tags
 `swamp.trigger.catchUp: "true"` and `swamp.trigger.scheduledFor: <slot>`, so a
 workflow can read `run.tags` and decline. A catch-up adds at most one run on
-top of any replayed fire. Every cron-fired run carries `swamp.trigger.scheduledFor: <slot>`. When slots
-look missed, the pass starts from the later of the watermark and the latest slot
-any run of the workflow recorded, so a slot that ran but whose watermark write
-failed is not run again; a replayed run records no slot and settles nothing.
-The watermark also records the cron expression it was measured on, and a
-different expression at startup starts afresh. When this process already
-fired a slot before the pass, only the slots before that one are recorded as
-missed and nothing is caught up. This holds even when that fire's state write
-failed.
+top of any replayed fire.
+
+Every cron-fired run carries `swamp.trigger.scheduledFor: <slot>`, which, like
+any run tag, is also copied onto the data the run writes. When slots look
+missed, the pass starts from the later of the watermark and the latest slot
+recorded by a run the scheduler itself started. Any initiator can set a run tag,
+so other runs are no evidence, and a recorded slot after now is ignored. A slot
+that ran but whose watermark write failed is therefore not run again, and a
+replayed run, which records no slot, settles nothing. The watermark also records
+the cron expression it was measured on, and a different expression at startup
+starts afresh. When this process already fired a slot before the pass, only the
+slots before that one are recorded as missed and nothing is caught up, even when
+that fire's state write failed.
 
 Limits: a schedule with no watermark yet, such as on the first start after an
 upgrade, has its watermark seeded at now and nothing is called missed. A pause

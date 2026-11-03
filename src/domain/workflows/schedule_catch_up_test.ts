@@ -20,8 +20,10 @@
 import { assertEquals } from "@std/assert";
 import {
   evaluateMissedFires,
+  latestRecordedSlot,
   MISSED_FIRE_COUNT_CAP,
   ScheduleCatchUpSchema,
+  SCHEDULED_FOR_TAG,
 } from "./schedule_catch_up.ts";
 
 const LATEST_6H = { policy: "latest" as const, maxDelay: "6h" };
@@ -220,4 +222,30 @@ Deno.test("evaluateMissedFires: exactly the cap of slots is not saturated", () =
   assertEquals(result.missedCount, MISSED_FIRE_COUNT_CAP);
   assertEquals(result.saturated, false);
   assertEquals(result.latestMissed, now);
+});
+
+Deno.test("latestRecordedSlot: counts only runs the scheduler started", () => {
+  const scheduler = "service:scheduler";
+  const runs: { initiatedBy: string; tags: Record<string, string> }[] = [
+    {
+      initiatedBy: scheduler,
+      tags: { [SCHEDULED_FOR_TAG]: "2026-10-01T09:00:00.000Z" },
+    },
+    {
+      initiatedBy: scheduler,
+      tags: { [SCHEDULED_FOR_TAG]: "2026-11-01T09:00:00.000Z" },
+    },
+    {
+      initiatedBy: "user:mallory",
+      tags: { [SCHEDULED_FOR_TAG]: "2099-01-01T00:00:00.000Z" },
+    },
+    { initiatedBy: scheduler, tags: {} },
+    { initiatedBy: scheduler, tags: { [SCHEDULED_FOR_TAG]: "not a date" } },
+  ];
+  assertEquals(
+    latestRecordedSlot(runs, scheduler)?.toISOString(),
+    "2026-11-01T09:00:00.000Z",
+  );
+  assertEquals(latestRecordedSlot(runs.slice(2), scheduler), null);
+  assertEquals(latestRecordedSlot([], scheduler), null);
 });

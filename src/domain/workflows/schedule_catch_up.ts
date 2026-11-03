@@ -34,6 +34,28 @@ export const SCHEDULED_FOR_TAG = "swamp.trigger.scheduledFor";
 /** on a run fired at startup for a slot missed while serve was down */
 export const CATCH_UP_TAG = "swamp.trigger.catchUp";
 
+/**
+ * the latest slot recorded by a run the scheduler started; any initiator can
+ * set a run tag, so a run started by anyone else is never evidence
+ */
+export function latestRecordedSlot(
+  runs: Iterable<{
+    readonly initiatedBy?: string;
+    readonly tags: Readonly<Record<string, string>>;
+  }>,
+  scheduler: string,
+): Date | null {
+  let latest: number | null = null;
+  for (const run of runs) {
+    if (run.initiatedBy !== scheduler) continue;
+    const slot = Date.parse(run.tags[SCHEDULED_FOR_TAG] ?? "");
+    if (!Number.isNaN(slot) && (latest === null || slot > latest)) {
+      latest = slot;
+    }
+  }
+  return latest === null ? null : new Date(latest);
+}
+
 /** the count is advisory, so a dense schedule after a long outage saturates */
 export const MISSED_FIRE_COUNT_CAP = 1000;
 
@@ -42,7 +64,7 @@ function maxDelayIssue(value: string): string | undefined {
   try {
     ms = parseDataDuration(value);
   } catch {
-    return `Invalid maxDelay '${value}': use a number and a unit (m, h, d or w), e.g. 6h`;
+    return `'${value}' is not a duration: use a number and a unit (m, h, d or w), e.g. 6h`;
   }
   if (ms <= 0) return "maxDelay must be greater than zero";
   if (ms > CATCH_UP_MAX_DELAY_LIMIT_MS) {
@@ -83,7 +105,7 @@ export type ScheduleCatchUp = z.infer<typeof ScheduleCatchUpSchema>;
 
 export interface MissedFires {
   readonly missedCount: number;
-  /** true when missedCount stopped at MISSED_FIRE_COUNT_CAP */
+  /** true when more slots were missed than missedCount shows */
   readonly saturated: boolean;
   readonly oldestMissed: Date | null;
   readonly latestMissed: Date | null;

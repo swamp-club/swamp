@@ -78,7 +78,7 @@ export function parseCatchUpFlags(
       );
     }
     throw new UserError(
-      `Invalid --catch-up-max-delay '${maxDelay}': ${
+      `Invalid --catch-up-max-delay: ${
         parsed.error.issues[0]?.message ?? "invalid"
       }`,
     );
