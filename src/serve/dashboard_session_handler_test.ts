@@ -597,3 +597,25 @@ Deno.test("handleDashboardSession: browser OAuth does not go through the guess l
   );
   assertEquals(response?.status, 204);
 });
+
+Deno.test("handleDashboardSession: logouts with unknown cookies count as guesses, a real logout does not", async () => {
+  const deps = createDeps();
+  const logout = async (cookie: string) => {
+    const response = await handleDashboardSession(
+      new Request("https://serve.test/auth/dashboard/session", {
+        method: "DELETE",
+        headers: { origin: ORIGIN, cookie },
+      }),
+      deps,
+    );
+    await response?.body?.cancel();
+    return response?.status;
+  };
+  for (let i = 0; i < 60; i++) {
+    assertEquals(await logout(await sessionCookie(deps)), 204);
+  }
+  for (let i = 0; i < 50; i++) {
+    assertEquals(await logout(unknownSessionCookie()), 204);
+  }
+  assertEquals(await logout(unknownSessionCookie()), 429);
+});

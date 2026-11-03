@@ -74,7 +74,7 @@ export type DashboardSessionAuthentication =
     ok: false;
     response: Response;
     invalidateSession?: boolean;
-    /** refused by a rate limit before the credential was judged */
+    /** refused by a rate limit, not a verdict on the credential */
     limited?: boolean;
   };
 
@@ -189,7 +189,14 @@ export async function handleDashboardSession(
 
   if (req.method === "DELETE") {
     const sessionId = extractDashboardSessionId(req);
-    if (sessionId !== null) await deps.sessions.delete(sessionId);
+    if (sessionId !== null) {
+      const guarded = await deps.limitGuesses(async () => {
+        const known = await deps.sessions.get(sessionId) !== null;
+        if (known) await deps.sessions.delete(sessionId);
+        return { ok: known };
+      });
+      if (guarded.limited) return tooManyGuesses(guarded.retryAfterSeconds);
+    }
     return new Response(null, {
       status: 204,
       headers: { "set-cookie": expiredCookie(deps.secure) },

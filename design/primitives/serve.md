@@ -227,13 +227,14 @@ Everything below shares the one listener, dispatched in table order
 routes from the same address (a NAT, a proxy without `--trust-proxy`, a page on
 another origin) never refuses a session restore and logs dashboards out. It has
 its own per-IP limit (`limitDashboardSessionGuesses`): 50 failed guesses a
-minute, where a guess is an unknown session cookie or a rejected token
-exchange, with at most 50 in flight. A restore without a cookie, a known
+minute, where a guess is an unknown session cookie (on restore or logout) or a
+rejected token exchange, with at most 50 in flight. A restore without a cookie, a known
 session from another origin, a successful restore or exchange and a store
 error are not guesses, and a success does not clear the count. An authenticated
 restore or exchange is limited instead by the failed-attempt limit on its
 session or token and by the principal's request rate. The dashboard waits out a
-429 on restore (at most twice) rather than treating it as signed out.
+429 on restore and retries at most twice; a restore still refused after that
+signs the dashboard out.
 
 Every WebSocket upgrade, even in mode `none`, has its origin checked against the
 bind host and `--trusted-hosts` (`validateWebSocketOrigin`). A `--trusted-hosts`
