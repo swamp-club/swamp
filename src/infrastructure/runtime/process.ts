@@ -37,14 +37,35 @@ export function processHostIdentity(): string {
 
 let cachedHostIdentity: string | undefined;
 
+export function isProcessGone(pid: number): boolean {
+  return processGoneWith(pid, Deno.pid, probeProcessGone);
+}
+
+/**
+ * a waiter polling a lock its own process holds would otherwise pay a probe on
+ * every retry to learn what it already knows: this process is alive
+ */
+export function processGoneWith(
+  pid: number,
+  ownPid: number,
+  probe: (pid: number) => boolean,
+): boolean {
+  if (pid === ownPid) return false;
+  return probe(pid);
+}
+
 /**
  * probes with SIGURG, which unlike SIGCONT does not resume a stopped process;
  * Linux checks /proc/<pid> via libc first; permission denied and unexpected
  * errors read as alive
  */
-export function isProcessGone(pid: number): boolean {
+function probeProcessGone(pid: number): boolean {
   if (Deno.build.os === "windows") {
-    return isProcessDeadWindows(pid);
+    return windowsProcessGone(
+      pid,
+      loadKernel32Liveness(),
+      isProcessDeadWindows,
+    );
   }
   if (Deno.build.os === "linux" && linuxProcEntryExists(pid)) {
     return false;
@@ -236,6 +257,69 @@ export function checkOpenFileLimit(): {
       `Raise it to at least ${MIN_RECOMMENDED_NOFILE} with ` +
       `'ulimit -n ${MIN_RECOMMENDED_NOFILE}' or LimitNOFILE=${MIN_RECOMMENDED_NOFILE} in the systemd unit`,
   };
+}
+
+export interface Kernel32Liveness {
+  OpenProcess(access: number, inherit: number, pid: number): Deno.PointerValue;
+  GetExitCodeProcess(
+    process: Deno.PointerValue,
+    exitCode: BufferSource,
+  ): number;
+  CloseHandle(handle: Deno.PointerValue): number;
+}
+
+const KERNEL32_LIVENESS_SYMBOLS = {
+  OpenProcess: { parameters: ["u32", "i32", "u32"], result: "pointer" },
+  GetExitCodeProcess: { parameters: ["pointer", "buffer"], result: "i32" },
+  CloseHandle: { parameters: ["pointer"], result: "i32" },
+} as const;
+
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const STILL_ACTIVE = 259;
+
+/**
+ * asks the kernel in process, since tasklist's synchronous spawn freezes every
+ * task in swamp; a process that exited with code 259 reads alive, and the
+ * caller's TTL still reclaims it
+ */
+export function windowsProcessGone(
+  pid: number,
+  kernel32: Kernel32Liveness | null,
+  fallback: (pid: number) => boolean,
+): boolean {
+  if (kernel32 === null) return fallback(pid);
+  const process = kernel32.OpenProcess(
+    PROCESS_QUERY_LIMITED_INFORMATION,
+    0,
+    pid,
+  );
+  // No handle means no such process or one this user may not open; GetLastError
+  // does not reliably survive Deno's FFI boundary, so tasklist tells them apart.
+  if (process === null) return fallback(pid);
+  try {
+    const exitCode = new Uint32Array(1);
+    if (kernel32.GetExitCodeProcess(process, exitCode) === 0) return false;
+    return exitCode[0] !== STILL_ACTIVE;
+  } finally {
+    kernel32.CloseHandle(process);
+  }
+}
+
+// null is cached so a refused load (no --allow-ffi) is not retried per probe.
+let kernel32Liveness: Kernel32Liveness | null | undefined;
+
+function loadKernel32Liveness(): Kernel32Liveness | null {
+  if (kernel32Liveness === undefined) {
+    try {
+      kernel32Liveness = Deno.dlopen(
+        "kernel32.dll",
+        KERNEL32_LIVENESS_SYMBOLS,
+      ).symbols;
+    } catch {
+      kernel32Liveness = null;
+    }
+  }
+  return kernel32Liveness;
 }
 
 function isProcessDeadWindows(pid: number): boolean {
