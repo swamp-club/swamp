@@ -895,6 +895,9 @@ Deno.test("ExtensionWorkflowRepository: a file modified inside the racy window i
     await writeWorkflow(join(dir, "settled.yaml"), createWorkflowYaml("old"));
     await settleFiles(dir);
     await writeWorkflow(join(dir, "fresh.yaml"), createWorkflowYaml("fresh"));
+    // stamped ahead, so no delay before the scans can age it out of the window
+    const ahead = new Date(Date.now() + 60_000);
+    await Deno.utime(join(dir, "fresh.yaml"), ahead, ahead);
     const repo = new CountingExtensionWorkflowRepository(dir);
     await repo.findAllListings();
 
