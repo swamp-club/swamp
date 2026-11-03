@@ -126,6 +126,16 @@ export async function authenticateToken(
     };
   }
 
+  const authHeader = req.headers.get("authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return {
+      ok: false,
+      response: new Response("Unauthorized: token required", { status: 401 }),
+    };
+  }
+
   const ipBurst = checkIpBurst(clientAddr);
   if (!ipBurst.allowed) {
     return {
@@ -134,16 +144,6 @@ export async function authenticateToken(
         status: 429,
         headers: { "Retry-After": String(ipBurst.retryAfterSeconds) },
       }),
-    };
-  }
-
-  const authHeader = req.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-
-  if (!token) {
-    return {
-      ok: false,
-      response: new Response("Unauthorized: token required", { status: 401 }),
     };
   }
 

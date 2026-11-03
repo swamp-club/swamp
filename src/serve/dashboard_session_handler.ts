@@ -33,6 +33,7 @@ import {
   type DashboardSessionIdentity,
   type DashboardSessionStore,
 } from "./dashboard_session_store.ts";
+import type { FailedAttemptGuard } from "./rate_limiter.ts";
 
 export function normalizeDashboardOrigin(origin: string): string | null {
   try {
@@ -69,7 +70,13 @@ export async function resolveDashboardSessionForOrigin(
 
 export type DashboardSessionAuthentication =
   | ({ ok: true } & DashboardSessionIdentity)
-  | { ok: false; response: Response; invalidateSession?: boolean };
+  | {
+    ok: false;
+    response: Response;
+    invalidateSession?: boolean;
+    /** refused by a rate limit before the credential was judged */
+    limited?: boolean;
+  };
 
 export interface DashboardSessionDeps {
   authenticateToken(token: string): Promise<DashboardSessionAuthentication>;
@@ -81,6 +88,10 @@ export interface DashboardSessionDeps {
   /** Browser-origin requests must be same-origin before changing a session. */
   originAllowed?(req: Request): boolean;
   deviceAuthDeps?: DeviceAuthDeps;
+  /** Counts the attempt toward the IP's guesses only when it is not ok. */
+  limitGuesses<T extends { readonly ok: boolean }>(
+    attempt: () => Promise<T>,
+  ): Promise<FailedAttemptGuard<T>>;
 }
 
 function cookie(value: string, secure: boolean): string {
@@ -93,13 +104,29 @@ function expiredCookie(secure: boolean): string {
   return `${cookie("", secure)}; Max-Age=0`;
 }
 
+function tooManyGuesses(retryAfterSeconds: number): Response {
+  return new Response("Too Many Requests", {
+    status: 429,
+    headers: { "Retry-After": String(retryAfterSeconds) },
+  });
+}
+
+export function dashboardSessionLimited(
+  retryAfterSeconds: number,
+): DashboardSessionAuthentication {
+  return {
+    ok: false,
+    limited: true,
+    response: tooManyGuesses(retryAfterSeconds),
+  };
+}
+
 async function sessionCreatedResponse(
-  token: string,
+  result: DashboardSessionAuthentication,
   origin: string,
   req: Request,
   deps: DashboardSessionDeps,
 ): Promise<Response> {
-  const result = await deps.authenticateToken(token);
   if (!result.ok) return result.response;
   let session: DashboardSession;
   try {
@@ -150,8 +177,13 @@ export async function handleDashboardSession(
     return await handleDeviceAuth(req, deps.deviceAuthDeps, {
       startPath: "/auth/dashboard/device",
       tokenPath: "/auth/dashboard/device/token",
-      onAuthenticated: (token) =>
-        sessionCreatedResponse(token, origin!, req, deps),
+      onAuthenticated: async (token) =>
+        sessionCreatedResponse(
+          await deps.authenticateToken(token),
+          origin!,
+          req,
+          deps,
+        ),
     });
   }
 
@@ -166,14 +198,21 @@ export async function handleDashboardSession(
 
   if (req.method === "GET") {
     const sessionId = extractDashboardSessionId(req);
-    const session = sessionId === null
-      ? null
-      : await resolveDashboardSessionForOrigin(
+    if (sessionId === null) return new Response(null, { status: 401 });
+    const guarded = await deps.limitGuesses(async () => {
+      const session = await resolveDashboardSessionForOrigin(
         sessionId,
         req.headers.get("origin") ??
           req.headers.get("x-swamp-dashboard-origin"),
         deps.sessions,
       );
+      // a known session from another origin presented a real cookie
+      const known = session !== null ||
+        await deps.sessions.get(sessionId) !== null;
+      return { ok: known, session };
+    });
+    if (guarded.limited) return tooManyGuesses(guarded.retryAfterSeconds);
+    const session = guarded.result.session;
     if (session === null) return new Response(null, { status: 401 });
     const result = await deps.authenticateSession(session);
     if (!result.ok) {
@@ -202,5 +241,16 @@ export async function handleDashboardSession(
   if (typeof body.token !== "string" || body.token.length === 0) {
     return new Response("Invalid token", { status: 400 });
   }
-  return await sessionCreatedResponse(body.token, origin!, req, deps);
+  const token = body.token;
+  const guarded = await deps.limitGuesses(async () => {
+    const result = await deps.authenticateToken(token);
+    return { ok: result.ok || result.limited === true, result };
+  });
+  if (guarded.limited) return tooManyGuesses(guarded.retryAfterSeconds);
+  return await sessionCreatedResponse(
+    guarded.result.result,
+    origin!,
+    req,
+    deps,
+  );
 }

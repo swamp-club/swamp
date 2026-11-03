@@ -33,6 +33,7 @@ import type {
 } from "../domain/access/mod.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DashboardSession } from "./dashboard_session_store.ts";
+import { checkIpBurst } from "./rate_limiter.ts";
 
 const DASHBOARD_SESSION: DashboardSession = {
   id: "a".repeat(64),
@@ -325,4 +326,18 @@ Deno.test("createReadAuthorizer: explicit allow and deny win; uncovered resource
   assertEquals(admin.isAdmin(), true);
   assertEquals(admin.canRead(WORKFLOW("uncovered")), true);
   assertEquals(admin.canRead(WORKFLOW("closed")), false);
+});
+
+Deno.test("authenticateToken: a request without a bearer token does not count toward the IP burst", async () => {
+  const clientAddr = freshClientAddr();
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const result = await authenticateToken(
+      new Request("http://localhost/api/v1/health"),
+      clientAddr,
+      makeDeps(),
+    );
+    assertEquals(result.ok, false);
+    if (!result.ok) assertEquals(result.response.status, 401);
+  }
+  assertEquals(checkIpBurst(clientAddr).allowed, true);
 });

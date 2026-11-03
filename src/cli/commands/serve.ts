@@ -136,6 +136,7 @@ import {
   handleDeviceAuth,
 } from "../../serve/device_auth_handler.ts";
 import {
+  dashboardSessionLimited,
   handleDashboardSession,
   normalizeDashboardOrigin,
   resolveDashboardSessionForOrigin,
@@ -166,6 +167,8 @@ import {
 } from "../../serve/known_usernames.ts";
 import {
   checkIpBurst,
+  checkPrincipalRate,
+  limitDashboardSessionGuesses,
   limitFailedAttempts,
   rateLimitKey,
   recordFailedAttempt,
@@ -6758,6 +6761,20 @@ export const serveCommand = new Command()
               handleConnection(socket, connectionCtx, null);
               return response;
             }
+            const dashboardSessionId = extracted === null
+              ? extractDashboardSessionId(req)
+              : null;
+            // an upgrade that presents nothing costs no lookup, so it is
+            // refused before it can spend the IP burst
+            if (extracted === null && dashboardSessionId === null) {
+              logger.warn(
+                "WebSocket auth rejected: no token provided from {ip}",
+                { ip: remoteAddr },
+              );
+              return new Response("Unauthorized: token required", {
+                status: 401,
+              });
+            }
             const ipBurst = checkIpBurst(remoteAddr);
             if (!ipBurst.allowed) {
               logger.warn("WebSocket IP burst rate-limited from {ip}", {
@@ -6771,9 +6788,6 @@ export const serveCommand = new Command()
               });
             }
 
-            const dashboardSessionId = extracted === null
-              ? extractDashboardSessionId(req)
-              : null;
             const dashboardSession = dashboardSessionId === null
               ? null
               : await resolveDashboardSessionForOrigin(
@@ -6807,15 +6821,6 @@ export const serveCommand = new Command()
                   status: 403,
                 },
               );
-            }
-            if (!extracted && dashboardSession === null) {
-              logger.warn(
-                "WebSocket auth rejected: no token provided from {ip}",
-                { ip: remoteAddr },
-              );
-              return new Response("Unauthorized: token required", {
-                status: 401,
-              });
             }
 
             let rateLimitCredential: string;
@@ -7101,15 +7106,6 @@ export const serveCommand = new Command()
           }
           if (cancelMatch || isBulkCancel) {
             if (authConfig.mode !== "none") {
-              const cancelIpBurst = checkIpBurst(cancelRemoteAddr);
-              if (!cancelIpBurst.allowed) {
-                return new Response("Too Many Requests", {
-                  status: 429,
-                  headers: {
-                    "Retry-After": String(cancelIpBurst.retryAfterSeconds),
-                  },
-                });
-              }
               const authHeader = req.headers.get("authorization");
               const token = authHeader?.startsWith("Bearer ")
                 ? authHeader.slice(7)
@@ -7117,6 +7113,15 @@ export const serveCommand = new Command()
               if (!token) {
                 return new Response("Unauthorized: token required", {
                   status: 401,
+                });
+              }
+              const cancelIpBurst = checkIpBurst(cancelRemoteAddr);
+              if (!cancelIpBurst.allowed) {
+                return new Response("Too Many Requests", {
+                  status: 429,
+                  headers: {
+                    "Retry-After": String(cancelIpBurst.retryAfterSeconds),
+                  },
                 });
               }
               const cancelGuarded = await limitFailedAttempts(
@@ -7463,12 +7468,15 @@ export const serveCommand = new Command()
         const authPath = new URL(req.url).pathname;
         const isDeviceAuthRequest = authPath === "/auth/device" ||
           authPath === "/auth/device/token";
-        const isDashboardSessionRequest =
-          authPath === "/auth/dashboard/session" ||
+        const isDashboardDeviceRequest =
           authPath === "/auth/dashboard/device" ||
           authPath === "/auth/dashboard/device/token";
+        const isDashboardSessionRequest =
+          authPath === "/auth/dashboard/session" || isDashboardDeviceRequest;
         const dashboardRemoteAddr = clientAddress();
-        if (isDashboardSessionRequest && authConfig.mode !== "none") {
+        // the session route has its own guess limit, so traffic on other
+        // routes never refuses a restore
+        if (isDashboardDeviceRequest && authConfig.mode !== "none") {
           const dashboardRateCheck = checkIpBurst(dashboardRemoteAddr);
           if (!dashboardRateCheck.allowed) {
             logger.warn("Dashboard session IP burst rate-limited from {ip}", {
@@ -7551,6 +7559,19 @@ export const serveCommand = new Command()
             },
             sessions: dashboardSessions,
             deviceAuthDeps,
+            limitGuesses: async (attempt) => {
+              const guarded = await limitDashboardSessionGuesses(
+                dashboardRemoteAddr,
+                attempt,
+              );
+              if (guarded.limited) {
+                logger.warn(
+                  "Dashboard session guesses rate-limited from {ip}",
+                  { ip: dashboardRemoteAddr },
+                );
+              }
+              return guarded;
+            },
             authenticateToken: async (token) => {
               const guarded = await limitFailedAttempts(
                 rateLimitKey(token, dashboardRemoteAddr),
@@ -7570,15 +7591,7 @@ export const serveCommand = new Command()
                   ),
               );
               if (guarded.limited) {
-                return {
-                  ok: false,
-                  response: new Response("Too Many Requests", {
-                    status: 429,
-                    headers: {
-                      "Retry-After": String(guarded.retryAfterSeconds),
-                    },
-                  }),
-                };
+                return dashboardSessionLimited(guarded.retryAfterSeconds);
               }
               const result = guarded.result;
               if (!result.ok) {
@@ -7589,6 +7602,10 @@ export const serveCommand = new Command()
                   }),
                 };
               }
+              const rate = checkPrincipalRate(result.principalId);
+              if (!rate.allowed) {
+                return dashboardSessionLimited(rate.retryAfterSeconds);
+              }
               return {
                 ok: true,
                 tokenName: result.tokenName,
@@ -7596,18 +7613,29 @@ export const serveCommand = new Command()
               };
             },
             authenticateSession: async (session) => {
-              const result = await authenticateDashboardSession(
-                session,
-                repoContext,
-                {
-                  emitter: connectionCtx.auditEmitter,
-                  instanceId: connectionCtx.instanceId,
-                  sourceIp: dashboardRemoteAddr,
-                  ingress: "dashboard-session",
-                  resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberTokenUsernames,
-                },
+              const guarded = await limitFailedAttempts(
+                rateLimitKey(
+                  `${session.tokenName}.${session.id}`,
+                  dashboardRemoteAddr,
+                ),
+                () =>
+                  authenticateDashboardSession(
+                    session,
+                    repoContext,
+                    {
+                      emitter: connectionCtx.auditEmitter,
+                      instanceId: connectionCtx.instanceId,
+                      sourceIp: dashboardRemoteAddr,
+                      ingress: "dashboard-session",
+                      resolvedUserNames: connectionCtx.resolvedUserNames,
+                      onUsernamesResolved: rememberTokenUsernames,
+                    },
+                  ),
               );
+              if (guarded.limited) {
+                return dashboardSessionLimited(guarded.retryAfterSeconds);
+              }
+              const result = guarded.result;
               if (!result.ok) {
                 return {
                   ok: false,
@@ -7618,6 +7646,10 @@ export const serveCommand = new Command()
                     status: 401,
                   }),
                 };
+              }
+              const rate = checkPrincipalRate(result.principalId);
+              if (!rate.allowed) {
+                return dashboardSessionLimited(rate.retryAfterSeconds);
               }
               return {
                 ok: true,

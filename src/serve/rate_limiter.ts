@@ -162,6 +162,58 @@ export function pendingAttemptCount(): number {
   return pendingAttempts.size;
 }
 
+const MAX_DASHBOARD_SESSION_GUESSES = 50;
+const MAX_PENDING_DASHBOARD_SESSION_GUESSES = 50;
+
+const dashboardSessionGuessBuckets = new Map<string, RateLimitEntry>();
+const pendingDashboardSessionGuesses = new Map<string, number>();
+
+/**
+ * The session endpoint's own per-IP limit, apart from checkIpBurst, so other
+ * routes' traffic never refuses a restore. Only a failed guess counts, and a
+ * success never clears: a valid cookie would otherwise reset an IP's guesses.
+ */
+export async function limitDashboardSessionGuesses<
+  T extends { readonly ok: boolean },
+>(
+  ip: string,
+  attempt: () => Promise<T>,
+): Promise<FailedAttemptGuard<T>> {
+  const now = Date.now();
+  const entry = dashboardSessionGuessBuckets.get(ip);
+  if (
+    entry && now <= entry.resetAt &&
+    entry.count >= MAX_DASHBOARD_SESSION_GUESSES
+  ) {
+    return {
+      limited: true,
+      retryAfterSeconds: Math.ceil((entry.resetAt - now) / 1000),
+    };
+  }
+  const pending = pendingDashboardSessionGuesses.get(ip) ?? 0;
+  if (pending >= MAX_PENDING_DASHBOARD_SESSION_GUESSES) {
+    return { limited: true, retryAfterSeconds: 1 };
+  }
+  pendingDashboardSessionGuesses.set(ip, pending + 1);
+  try {
+    // a throw is a store fault, not a guess, so it records nothing
+    const result = await attempt();
+    if (!result.ok) {
+      checkBucket(
+        dashboardSessionGuessBuckets,
+        ip,
+        MAX_DASHBOARD_SESSION_GUESSES,
+        IP_BURST_WINDOW_MS,
+      );
+    }
+    return { limited: false, result };
+  } finally {
+    const left = (pendingDashboardSessionGuesses.get(ip) ?? 1) - 1;
+    if (left > 0) pendingDashboardSessionGuesses.set(ip, left);
+    else pendingDashboardSessionGuesses.delete(ip);
+  }
+}
+
 export const PRINCIPAL_RATE_PER_MINUTE = 600;
 
 export const PRINCIPAL_RATE_BURST = 200;
@@ -235,5 +287,7 @@ export function resetRateLimitState(): void {
   principalBuckets.clear();
   pendingAttempts.clear();
   ipBurstBuckets.clear();
+  dashboardSessionGuessBuckets.clear();
+  pendingDashboardSessionGuesses.clear();
   principalRateBuckets.clear();
 }

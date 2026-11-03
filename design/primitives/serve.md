@@ -217,11 +217,23 @@ Everything below shares the one listener, dispatched in table order
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
 | HTTP GET | `/internal/runs?limit=&offset=` | admin; 404 unless `--enable-internal-api` | Full run-tracker history |
 | HTTP POST | `/auth/device`, `/auth/device/token` | none (IP burst limit) | OAuth device grant, mode `oauth` only (`src/serve/device_auth_handler.ts`) |
-| HTTP | `/auth/dashboard/session` | same-origin browser session | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
+| HTTP | `/auth/dashboard/session` | same-origin browser session (its own guess limit, not the IP burst) | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
 | HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/` and `/health` answer `{ status: "ok", version: "1" }` in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
+
+`/auth/dashboard/session` does not spend the IP burst, so traffic on other
+routes from the same address (a NAT, a proxy without `--trust-proxy`, a page on
+another origin) never refuses a session restore and logs dashboards out. It has
+its own per-IP limit (`limitDashboardSessionGuesses`): 50 failed guesses a
+minute, where a guess is an unknown session cookie or a rejected token
+exchange, with at most 50 in flight. A restore without a cookie, a known
+session from another origin, a successful restore or exchange and a store
+error are not guesses, and a success does not clear the count. An authenticated
+restore or exchange is limited instead by the failed-attempt limit on its
+session or token and by the principal's request rate. The dashboard waits out a
+429 on restore (at most twice) rather than treating it as signed out.
 
 Every WebSocket upgrade, even in mode `none`, has its origin checked against the
 bind host and `--trusted-hosts` (`validateWebSocketOrigin`). A `--trusted-hosts`
@@ -230,8 +242,9 @@ any port; a `host:port` entry admits only that exact origin, so a public address
 on a port other than 443 is listed as `host:port`, the same form the dashboard
 session check needs. The Host check compares hostnames only, so both forms
 trust the entry's hostname there. Two rate limits
-also apply to every upgrade (`src/serve/rate_limiter.ts`): 50 upgrades per IP
-per minute, and 5 failed auth attempts per minute per token name (per IP if the
+also apply to every upgrade that presents a token or a dashboard cookie
+(`src/serve/rate_limiter.ts`; one that presents neither is refused 401 first):
+50 upgrades per IP per minute, and 5 failed auth attempts per minute per token name (per IP if the
 token is malformed; checked before authenticating, counted only when it fails,
 cleared on success), with at most 200 attempts per token name authenticating at
 once. A connection allows at most
@@ -312,7 +325,8 @@ session cookie, so the route accepts that cookie when the request's own
 (`resolveDashboardSessionForOrigin`, the WebSocket upgrade's check, without the
 `x-swamp-dashboard-origin` stand-in): a missing or other origin is 403, and
 an unknown session 401. Only the unknown session counts toward the IP burst,
-since a known session from the wrong origin presented a real cookie. Only a
+since a known session from the wrong origin presented a real cookie, and a
+request that presents no credential at all costs no lookup and is not counted. Only a
 failed authentication counts toward the token's attempt limit, so a page's
 concurrent reads, which share it, are not refused. The dashboard treats the
 route's 401 as signed out, as it does a logout in another tab; a permission
@@ -1038,7 +1052,7 @@ did has to read the run, which needs `read`.
 
 **Rate limits.** The route shares serve's two limits with WebSocket logins and
 the cancel routes (`src/serve/rate_limiter.ts`): 50 requests per source address
-per minute, counting successful deliveries, and 5 failed attempts per token
+per minute, counting successful deliveries but not a request with no token, and 5 failed attempts per token
 name per minute, checked before the token is authenticated, counted only when
 it fails and cleared when it authenticates, with at most 200 attempts per token
 name authenticating at once. Concurrent signals on one valid token are not refused by

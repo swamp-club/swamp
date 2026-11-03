@@ -168,12 +168,12 @@ export async function handleSignalHttpRequest(
   };
 
   if (ctx.authConfig.mode !== "none") {
-    const ipBurst = checkIpBurst(sourceIp);
-    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     const token = bearerToken(req);
     if (!token) {
       return new Response("Unauthorized: token required", { status: 401 });
     }
+    const ipBurst = checkIpBurst(sourceIp);
+    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     const guarded = await limitFailedAttempts(
       rateLimitKey(token, sourceIp),
       () => deps.authenticate(token, sourceIp),

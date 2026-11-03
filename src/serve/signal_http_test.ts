@@ -26,7 +26,7 @@ import {
   type SignalHttpDeps,
 } from "./signal_http.ts";
 import type { ConnectionContext } from "./handlers/shared.ts";
-import { resetRateLimitState } from "./rate_limiter.ts";
+import { checkIpBurst, resetRateLimitState } from "./rate_limiter.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
@@ -539,4 +539,21 @@ Deno.test("handleSignalHttpRequest: a follower in team mode refuses an authentic
   );
   assertEquals(anonymous.status, 401);
   await anonymous.body?.cancel();
+});
+
+Deno.test("handleSignalHttpRequest: a request without a token does not count toward the IP burst", async () => {
+  resetRateLimitState();
+  const sourceIp = "203.0.113.9";
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const response = await handleSignalHttpRequest(
+      request(),
+      { waitId: WAIT_ID },
+      sourceIp,
+      deps("token", []),
+    );
+    assertEquals(response.status, 401);
+    await response.body?.cancel();
+  }
+  assertEquals(checkIpBurst(sourceIp).allowed, true);
+  resetRateLimitState();
 });

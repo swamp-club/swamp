@@ -22,6 +22,7 @@ import {
   checkFailedAttempts,
   checkIpBurst,
   checkPrincipalRate,
+  limitDashboardSessionGuesses,
   limitFailedAttempts,
   MAX_PENDING_ATTEMPTS,
   MAX_PRINCIPAL_RATE_BUCKETS,
@@ -226,6 +227,142 @@ Deno.test("limitFailedAttempts: an attempt that throws records no failure and re
   }
   assertEquals(checkFailedAttempts(key).allowed, true);
   assertEquals(pendingAttemptCount(), 0);
+});
+
+function guessIp(): string {
+  return `guess-${crypto.randomUUID()}`;
+}
+
+Deno.test("limitDashboardSessionGuesses: successes never count", async () => {
+  const ip = guessIp();
+  for (let i = 0; i < 120; i++) {
+    const guarded = await limitDashboardSessionGuesses(
+      ip,
+      () => Promise.resolve(passed),
+    );
+    assertEquals(guarded.limited, false);
+  }
+});
+
+Deno.test("limitDashboardSessionGuesses: 50 failures lock the IP and a locked IP is not tried", async () => {
+  const ip = guessIp();
+  let calls = 0;
+  const attempt = () => {
+    calls++;
+    return Promise.resolve(failed);
+  };
+  for (let i = 0; i < 50; i++) {
+    assertEquals(
+      (await limitDashboardSessionGuesses(ip, attempt)).limited,
+      false,
+    );
+  }
+  const locked = await limitDashboardSessionGuesses(ip, attempt);
+  assert(locked.limited && locked.retryAfterSeconds > 0);
+  assertEquals(calls, 50);
+  assertEquals(
+    (await limitDashboardSessionGuesses(
+      guessIp(),
+      () => Promise.resolve(passed),
+    )).limited,
+    false,
+  );
+});
+
+Deno.test("limitDashboardSessionGuesses: a success does not clear earlier failures", async () => {
+  const ip = guessIp();
+  for (let i = 0; i < 49; i++) {
+    await limitDashboardSessionGuesses(ip, () => Promise.resolve(failed));
+  }
+  await limitDashboardSessionGuesses(ip, () => Promise.resolve(passed));
+  await limitDashboardSessionGuesses(ip, () => Promise.resolve(failed));
+  assertEquals(
+    (await limitDashboardSessionGuesses(ip, () => Promise.resolve(passed)))
+      .limited,
+    true,
+  );
+});
+
+Deno.test("limitDashboardSessionGuesses: guesses in flight past the cap are refused untried until one settles", async () => {
+  const ip = guessIp();
+  const { opened, open } = gate();
+  const held = Array.from(
+    { length: 50 },
+    () =>
+      limitDashboardSessionGuesses(ip, async () => {
+        await opened;
+        return passed;
+      }),
+  );
+  let tried = false;
+  const refused = await limitDashboardSessionGuesses(ip, () => {
+    tried = true;
+    return Promise.resolve(passed);
+  });
+  assertEquals(refused, { limited: true, retryAfterSeconds: 1 });
+  assertEquals(tried, false);
+  open();
+  await Promise.all(held);
+  assertEquals(
+    (await limitDashboardSessionGuesses(ip, () => Promise.resolve(passed)))
+      .limited,
+    false,
+  );
+});
+
+Deno.test("limitDashboardSessionGuesses: an attempt that throws records no guess and releases its slot", async () => {
+  const ip = guessIp();
+  for (let i = 0; i < 60; i++) {
+    await assertRejects(
+      () =>
+        limitDashboardSessionGuesses(
+          ip,
+          () => Promise.reject(new Error("store down")),
+        ),
+      Error,
+      "store down",
+    );
+  }
+  assertEquals(
+    (await limitDashboardSessionGuesses(ip, () => Promise.resolve(passed)))
+      .limited,
+    false,
+  );
+});
+
+Deno.test("limitDashboardSessionGuesses: shares nothing with checkIpBurst", async () => {
+  const fullBurst = guessIp();
+  for (let i = 0; i < 51; i++) checkIpBurst(fullBurst);
+  assertEquals(checkIpBurst(fullBurst).allowed, false);
+  assertEquals(
+    (await limitDashboardSessionGuesses(
+      fullBurst,
+      () => Promise.resolve(passed),
+    )).limited,
+    false,
+  );
+
+  const fullGuesses = guessIp();
+  for (let i = 0; i < 50; i++) {
+    await limitDashboardSessionGuesses(
+      fullGuesses,
+      () => Promise.resolve(failed),
+    );
+  }
+  assertEquals(checkIpBurst(fullGuesses).allowed, true);
+});
+
+Deno.test("limitDashboardSessionGuesses: is cleared by resetRateLimitState", async () => {
+  const ip = guessIp();
+  for (let i = 0; i < 50; i++) {
+    await limitDashboardSessionGuesses(ip, () => Promise.resolve(failed));
+  }
+  resetRateLimitState();
+  assertEquals(
+    (await limitDashboardSessionGuesses(ip, () => Promise.resolve(passed)))
+      .limited,
+    false,
+  );
 });
 
 Deno.test("checkIpBurst: allows up to 50 requests from one IP", () => {
