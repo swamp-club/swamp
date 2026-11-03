@@ -41,6 +41,7 @@ import { OrphanedNestedRunError } from "../../domain/workflows/orphaned_nested_r
 import { orphanedNestedRunError } from "../../libswamp/workflows/nested_runs.ts";
 import type { SerializedEvent } from "../protocol.ts";
 import type { ConnectionContext } from "./shared.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { CompositeWorkflowRepository } from "../../infrastructure/persistence/composite_workflow_repository.ts";
@@ -592,9 +593,14 @@ Deno.test("nestedRunReadDecider: reads extension workflows afresh for each new w
   class CountingExtensionWorkflowRepository
     extends ExtensionWorkflowRepository {
     walks = 0;
+    fullReads = 0;
     protected override scanListings() {
       this.walks++;
       return super.scanListings();
+    }
+    override findAll(): Promise<Workflow[]> {
+      this.fullReads++;
+      return super.findAll();
     }
   }
   const dir = await Deno.makeTempDir({ prefix: "swamp-nested-decider-" });
@@ -619,6 +625,7 @@ Deno.test("nestedRunReadDecider: reads extension workflows afresh for each new w
 
     assert(afterFirst > 0);
     assert(extension.walks > afterFirst);
+    assertEquals(extension.fullReads, 0);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

@@ -1565,10 +1565,16 @@ function repoCtx(workflowRepo: WorkflowRepository): ConnectionContext {
 
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   walks = 0;
+  fullReads = 0;
 
   protected override scanListings() {
     this.walks++;
     return super.scanListings();
+  }
+
+  override findAll(): Promise<Workflow[]> {
+    this.fullReads++;
+    return super.findAll();
   }
 }
 
@@ -1598,7 +1604,7 @@ async function writeExtensionWorkflow(
   );
 }
 
-Deno.test("CanonicalResources: one extension read serves every workflow in a request", async () => {
+Deno.test("CanonicalResources: one extension scan serves every workflow in a request, each read from its own file", async () => {
   await withTempDir(async (dir) => {
     const workflows = Array.from(
       { length: 25 },
@@ -1622,10 +1628,11 @@ Deno.test("CanonicalResources: one extension read serves every workflow in a req
     }
 
     assertEquals(extension.walks, 1);
+    assertEquals(extension.fullReads, 0);
   });
 });
 
-Deno.test("CanonicalResources: lookups started together share one extension read", async () => {
+Deno.test("CanonicalResources: lookups started together share one extension scan", async () => {
   await withTempDir(async (dir) => {
     const workflows = Array.from(
       { length: 10 },
@@ -1643,6 +1650,7 @@ Deno.test("CanonicalResources: lookups started together share one extension read
     );
 
     assertEquals(extension.walks, 1);
+    assertEquals(extension.fullReads, 0);
   });
 });
 
@@ -1660,10 +1668,11 @@ Deno.test("CanonicalResources: workflows found in the repository's own workflows
     await canonical.workflowOwners(primary.id, "own");
 
     assertEquals(extension.walks, 0);
+    assertEquals(extension.fullReads, 0);
   });
 });
 
-Deno.test("CanonicalResources: the next request reads the extension workflows again", async () => {
+Deno.test("CanonicalResources: the next request scans the extension workflows again", async () => {
   await withTempDir(async (dir) => {
     const extension = new CountingExtensionWorkflowRepository(dir);
     const repo = new CompositeWorkflowRepository(workflowRepo([]), extension);
@@ -1680,6 +1689,7 @@ Deno.test("CanonicalResources: the next request reads the extension workflows ag
       fields: { name: "late", tags: { env: "prod" } },
     }]);
     assertEquals(extension.walks, 2);
+    assertEquals(extension.fullReads, 0);
   });
 });
 

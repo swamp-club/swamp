@@ -1051,6 +1051,37 @@ Deno.test("ExtensionWorkflowRepository: a matched file renamed after the scan is
   });
 });
 
+Deno.test("ExtensionWorkflowRepository: a file found by id and renamed after the scan into a name an earlier dir holds is not returned, as findAll drops it", async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = join(dir, "base");
+    const pulledDir = join(dir, "pulled");
+    await ensureDir(baseDir);
+    await ensureDir(pulledDir);
+    await writeWorkflow(
+      join(baseDir, "taken.yaml"),
+      createWorkflowYaml("taken"),
+    );
+    const pulledPath = join(pulledDir, "mine.yaml");
+    const pulled = createWorkflowYaml("mine");
+    await writeWorkflow(pulledPath, pulled);
+    await settleFiles(dir);
+    const repo = new CountingExtensionWorkflowRepository(baseDir, [pulledDir]);
+    repo.afterScan = async () => {
+      repo.afterScan = undefined;
+      await writeWorkflow(pulledPath, { ...pulled, name: "taken" });
+    };
+
+    const found = await repo.findById(pulled.id as WorkflowId);
+
+    assertEquals(found, null);
+    assertEquals(repo.fullReads, 1);
+    assertEquals(
+      (await repo.findAll()).find((w) => w.id === pulled.id),
+      undefined,
+    );
+  });
+});
+
 Deno.test("ExtensionWorkflowRepository: an unreadable file fails a lookup with the same error as findAll", async () => {
   class UnreadableRepository extends ExtensionWorkflowRepository {
     protected override readWorkflowFile(_path: string): Promise<string> {

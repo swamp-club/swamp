@@ -366,7 +366,10 @@ async function lookUp(
 ): Promise<Workflow | null> {
   const match = scanned.find((l) => l.unshadowed && listed(l.listing));
   if (!match) return null;
-  return await readIf(match.path, wanted) ??
+  // the scan judged shadowing by this name, so a file renamed since is not trusted
+  const stillListed = (workflow: Workflow) =>
+    workflow.name === match.listing.name && wanted(workflow);
+  return await readIf(match.path, stillListed) ??
     (await all()).find(wanted) ?? null;
 }
 
