@@ -810,9 +810,9 @@ What differs by key, in order:
   (`WorkflowRepository.findAllById`): the YAML repository reads every file
   but parses only those whose text holds the ID or a backslash, since without
   an escape sequence a scalar equal to the ID has the ID in the text.
-  Extension workflows are still all parsed, as is every workflow when the one
-  named is an extension workflow. The cost still grows with the number of
-  workflow files, by a read each. The reverse holds too: a caller allowed on the original and denied on
+  Extension workflows are still all parsed. Finding the named workflow parses
+  only its own file, an extension workflow's included. The cost still grows
+  with the number of workflow files, by a read each. The reverse holds too: a caller allowed on the original and denied on
   a copy that shares its ID is refused by key, and signals by wait ID.
 - **A caller who may not signal the workflow, an unknown workflow, a key the
   workflow does not declare and a string that is not in the form of a key get

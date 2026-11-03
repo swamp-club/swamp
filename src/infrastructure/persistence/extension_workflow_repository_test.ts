@@ -589,15 +589,50 @@ Deno.test({
 });
 
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
-  walks = 0;
+  scans = 0;
+  fullReads = 0;
+  reads: string[] = [];
+  afterScan: (() => Promise<void>) | undefined;
+
+  protected override async scanListings() {
+    this.scans++;
+    const scanned = await super.scanListings();
+    await this.afterScan?.();
+    return scanned;
+  }
+
+  protected override readWorkflowFile(path: string): Promise<string> {
+    this.reads.push(path);
+    return super.readWorkflowFile(path);
+  }
 
   override findAll(): Promise<Workflow[]> {
-    this.walks++;
+    this.fullReads++;
     return super.findAll();
+  }
+
+  async readsDuring<T>(fn: () => Promise<T>): Promise<[T, string[]]> {
+    const before = this.reads.length;
+    const result = await fn();
+    return [result, this.reads.slice(before)];
   }
 }
 
-Deno.test("ExtensionWorkflowRepository.memoizedView: reads nothing until a lookup, then walks once for lookups started together", async () => {
+async function settleFiles(dir: string): Promise<void> {
+  const when = new Date(Date.now() - 60_000);
+  for await (const path of extensionWorkflowFiles(dir)) {
+    await Deno.utime(path, when, when);
+  }
+}
+
+async function writeWorkflow(
+  path: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  await Deno.writeTextFile(path, stringifyYaml(data));
+}
+
+Deno.test("ExtensionWorkflowRepository.memoizedView: reads nothing until a lookup, then scans once for lookups started together", async () => {
   await withTempDir(async (dir) => {
     const a = createWorkflowYaml("a");
     const b = createWorkflowYaml("b");
@@ -606,7 +641,8 @@ Deno.test("ExtensionWorkflowRepository.memoizedView: reads nothing until a looku
     const repo = new CountingExtensionWorkflowRepository(dir);
 
     const view = repo.memoizedView();
-    assertEquals(repo.walks, 0);
+    assertEquals(repo.scans, 0);
+    assertEquals(repo.reads.length, 0);
 
     const [byName, byId, missing, all] = await Promise.all([
       view.findByName("a"),
@@ -616,7 +652,8 @@ Deno.test("ExtensionWorkflowRepository.memoizedView: reads nothing until a looku
     ]);
     await view.findByName("b");
 
-    assertEquals(repo.walks, 1);
+    assertEquals(repo.scans, 1);
+    assertEquals(repo.fullReads, 1);
     assertEquals(byName?.id, a.id);
     assertEquals(byId?.name, "b");
     assertEquals(missing, null);
@@ -645,18 +682,20 @@ Deno.test("ExtensionWorkflowRepository.memoizedView: finds what the repository f
       (await repo.findByName("shared"))?.id,
     );
     assertEquals((await view.findByName("shared"))?.id, base.id);
+    assertEquals(await view.findById(shadowed.id as WorkflowId), null);
+    assertEquals(await repo.findById(shadowed.id as WorkflowId), null);
     assertEquals(
-      await view.findById(shadowed.id as WorkflowId),
-      await repo.findById(shadowed.id as WorkflowId),
+      (await view.findAllListings!()).map((l) => l.id),
+      [base.id],
     );
   });
 });
 
-Deno.test("ExtensionWorkflowRepository.memoizedView: a failed walk fails every lookup in the view", async () => {
+Deno.test("ExtensionWorkflowRepository.memoizedView: a failed scan fails every lookup in the view", async () => {
   class FailingRepository extends ExtensionWorkflowRepository {
-    walks = 0;
-    override findAll(): Promise<Workflow[]> {
-      this.walks++;
+    scans = 0;
+    protected override scanListings() {
+      this.scans++;
       return Promise.reject(new UserError("Failed to read extension workflow"));
     }
   }
@@ -668,7 +707,7 @@ Deno.test("ExtensionWorkflowRepository.memoizedView: a failed walk fails every l
     () => view.findById(crypto.randomUUID() as WorkflowId),
     UserError,
   );
-  assertEquals(repo.walks, 1);
+  assertEquals(repo.scans, 1);
 });
 
 Deno.test("ExtensionWorkflowRepository.memoizedView: a new view sees workflows added after an earlier view read", async () => {
@@ -688,6 +727,360 @@ Deno.test("ExtensionWorkflowRepository.memoizedView: a new view sees workflows a
 
     assertEquals(await first.findByName("late"), null);
     assertEquals((await repo.memoizedView().findByName("late"))?.name, "late");
-    assertEquals(repo.walks, 2);
+    assertEquals(repo.scans, 2);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository.memoizedView: a lookup reads only the matched file once the listings are kept", async () => {
+  await withTempDir(async (dir) => {
+    const target = createWorkflowYaml("target");
+    await writeWorkflow(join(dir, "target.yaml"), target);
+    for (let i = 0; i < 5; i++) {
+      await writeWorkflow(
+        join(dir, `noise-${i}.yaml`),
+        createWorkflowYaml(`noise-${i}`),
+      );
+    }
+    await settleFiles(dir);
+    const repo = new CountingExtensionWorkflowRepository(dir);
+    await repo.findAllListings();
+
+    const view = repo.memoizedView();
+    const [found, reads] = await repo.readsDuring(() =>
+      view.findById(target.id as WorkflowId)
+    );
+
+    assertEquals(found?.name, "target");
+    assertPathArrayEquals(reads, [join(dir, "target.yaml")]);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: with listings kept, findByName and findById read only the matched file and findAllListings reads none", async () => {
+  await withTempDir(async (dir) => {
+    const target = createWorkflowYaml("target");
+    await writeWorkflow(join(dir, "target.yaml"), target);
+    for (let i = 0; i < 5; i++) {
+      await writeWorkflow(
+        join(dir, `noise-${i}.yaml`),
+        createWorkflowYaml(`noise-${i}`),
+      );
+    }
+    await settleFiles(dir);
+    const repo = new CountingExtensionWorkflowRepository(dir);
+
+    const [warm, warmReads] = await repo.readsDuring(() =>
+      repo.findAllListings()
+    );
+    assertEquals(warm.length, 6);
+    assertEquals(warmReads.length, 6);
+
+    const [byName, nameReads] = await repo.readsDuring(() =>
+      repo.findByName("target")
+    );
+    assertEquals(byName?.id, target.id);
+    assertPathArrayEquals(nameReads, [join(dir, "target.yaml")]);
+
+    const [byId, idReads] = await repo.readsDuring(() =>
+      repo.findById(target.id as WorkflowId)
+    );
+    assertEquals(byId?.name, "target");
+    assertPathArrayEquals(idReads, [join(dir, "target.yaml")]);
+
+    const [missing, missingReads] = await repo.readsDuring(() =>
+      repo.findByName("absent")
+    );
+    assertEquals(missing, null);
+    assertEquals(missingReads, []);
+
+    const [listings, listingReads] = await repo.readsDuring(() =>
+      repo.findAllListings()
+    );
+    assertEquals(listings.map((l) => l.name), warm.map((l) => l.name));
+    assertEquals(listingReads, []);
+    assertEquals(repo.fullReads, 0);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a lookup never returns the same Workflow instance twice", async () => {
+  await withTempDir(async (dir) => {
+    await writeWorkflow(join(dir, "a.yaml"), createWorkflowYaml("a"));
+    await settleFiles(dir);
+    const repo = new ExtensionWorkflowRepository(dir);
+
+    const first = await repo.findByName("a");
+    const second = await repo.findByName("a");
+
+    assertEquals(first?.id, second?.id);
+    assertEquals(first === second, false);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: an in-place rename is seen by findByName, findById and findAllListings", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "a.yaml");
+    const data = createWorkflowYaml("before");
+    await writeWorkflow(path, data);
+    await settleFiles(dir);
+    const repo = new ExtensionWorkflowRepository(dir);
+    assertEquals((await repo.findByName("before"))?.id, data.id);
+
+    await writeWorkflow(path, { ...data, name: "after-the-rename" });
+
+    assertEquals(await repo.findByName("before"), null);
+    assertEquals((await repo.findByName("after-the-rename"))?.id, data.id);
+    assertEquals(
+      (await repo.findById(data.id as WorkflowId))?.name,
+      "after-the-rename",
+    );
+    assertEquals(
+      (await repo.findAllListings()).map((l) => l.name),
+      ["after-the-rename"],
+    );
+  });
+});
+
+Deno.test({
+  name:
+    "ExtensionWorkflowRepository: an atomic replace that keeps mtime and size is seen",
+  // Windows reports no inode or change time, the limit the primary repository also accepts.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "a.yaml");
+      const id = crypto.randomUUID() as WorkflowId;
+      await writeWorkflow(path, createWorkflowYaml("name-one", id));
+      await settleFiles(dir);
+      const before = await Deno.stat(path);
+      const repo = new ExtensionWorkflowRepository(dir);
+      assertEquals((await repo.findByName("name-one"))?.id, id);
+
+      const staged = join(dir, "staged.tmp");
+      await writeWorkflow(staged, createWorkflowYaml("name-two", id));
+      assertEquals((await Deno.stat(staged)).size, before.size);
+      await Deno.utime(staged, before.atime!, before.mtime!);
+      await Deno.rename(staged, path);
+
+      assertEquals(await repo.findByName("name-one"), null);
+      assertEquals((await repo.findByName("name-two"))?.id, id);
+    });
+  },
+});
+
+Deno.test("ExtensionWorkflowRepository: added and deleted files are seen once listings are kept", async () => {
+  await withTempDir(async (dir) => {
+    const doomed = createWorkflowYaml("doomed");
+    await writeWorkflow(join(dir, "doomed.yaml"), doomed);
+    await settleFiles(dir);
+    const repo = new CountingExtensionWorkflowRepository(dir);
+    assertEquals((await repo.findByName("doomed"))?.id, doomed.id);
+    assertEquals(await repo.findByName("newcomer"), null);
+
+    await Deno.remove(join(dir, "doomed.yaml"));
+    const added = createWorkflowYaml("newcomer");
+    await writeWorkflow(join(dir, "newcomer.yaml"), added);
+
+    assertEquals(await repo.findByName("doomed"), null);
+    assertEquals(await repo.findById(doomed.id as WorkflowId), null);
+    assertEquals((await repo.findByName("newcomer"))?.id, added.id);
+    assertEquals(
+      (await repo.findAllListings()).map((l) => l.name),
+      ["newcomer"],
+    );
+    assertEquals(repo.fullReads, 0);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a file modified inside the racy window is read again on the next lookup", async () => {
+  await withTempDir(async (dir) => {
+    await writeWorkflow(join(dir, "settled.yaml"), createWorkflowYaml("old"));
+    await settleFiles(dir);
+    await writeWorkflow(join(dir, "fresh.yaml"), createWorkflowYaml("fresh"));
+    const repo = new CountingExtensionWorkflowRepository(dir);
+    await repo.findAllListings();
+
+    const [, reads] = await repo.readsDuring(() => repo.findAllListings());
+
+    assertPathArrayEquals(reads, [join(dir, "fresh.yaml")]);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a name shadowed by an earlier dir is not found by its id, and is found once the earlier file is renamed", async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = join(dir, "base");
+    const pulledDir = join(dir, "pulled");
+    await ensureDir(baseDir);
+    await ensureDir(pulledDir);
+    const winner = createWorkflowYaml("shared");
+    const shadowed = createWorkflowYaml("shared");
+    await writeWorkflow(join(baseDir, "s.yaml"), winner);
+    await writeWorkflow(join(pulledDir, "s.yaml"), shadowed);
+    await settleFiles(dir);
+    const repo = new ExtensionWorkflowRepository(baseDir, [pulledDir]);
+
+    assertEquals((await repo.findByName("shared"))?.id, winner.id);
+    assertEquals(await repo.findById(shadowed.id as WorkflowId), null);
+    assertEquals(
+      (await repo.findAllListings()).map((l) => l.id),
+      [winner.id],
+    );
+
+    await writeWorkflow(join(baseDir, "s.yaml"), {
+      ...winner,
+      name: "renamed-away",
+    });
+
+    assertEquals((await repo.findByName("shared"))?.id, shadowed.id);
+    assertEquals(
+      (await repo.findById(shadowed.id as WorkflowId))?.name,
+      "shared",
+    );
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a broken file never claims a name", async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = join(dir, "base");
+    const pulledDir = join(dir, "pulled");
+    await ensureDir(baseDir);
+    await ensureDir(pulledDir);
+    await writeWorkflow(join(baseDir, "s.yaml"), { name: "shared", jobs: [] });
+    const valid = createWorkflowYaml("shared");
+    await writeWorkflow(join(pulledDir, "s.yaml"), valid);
+    await settleFiles(dir);
+    const repo = new ExtensionWorkflowRepository(baseDir, [pulledDir]);
+
+    await captureWarnings(async () => {
+      assertEquals((await repo.findByName("shared"))?.id, valid.id);
+      assertEquals((await repo.findById(valid.id as WorkflowId))?.id, valid.id);
+    });
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: lookups skip broken YAML with one warning and skip non-workflow YAML silently", async () => {
+  await withTempDir(async (dir) => {
+    await writeWorkflow(join(dir, "ok.yaml"), createWorkflowYaml("ok"));
+    await Deno.writeTextFile(join(dir, "broken.yaml"), "jobs: [\n");
+    await writeWorkflow(join(dir, "data.yaml"), { name: "data", items: [1] });
+    await settleFiles(dir);
+    const repo = new ExtensionWorkflowRepository(dir);
+
+    const warnings = await captureWarnings(async () => {
+      assertEquals(
+        (await repo.findAllListings()).map((l) => l.name),
+        ["ok"],
+      );
+      assertEquals(await repo.findByName("data"), null);
+      assertEquals((await repo.findByName("ok"))?.name, "ok");
+      await repo.findAll();
+    });
+
+    assertEquals(warnings.length, 1);
+    assertEquals(warnings[0].includes("broken.yaml"), true);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a broken file is not read again until its stat changes", async () => {
+  await withTempDir(async (dir) => {
+    const brokenPath = join(dir, "broken.yaml");
+    await writeWorkflow(join(dir, "ok.yaml"), createWorkflowYaml("ok"));
+    await Deno.writeTextFile(brokenPath, "jobs: [\n");
+    await settleFiles(dir);
+    const repo = new CountingExtensionWorkflowRepository(dir);
+
+    await captureWarnings(async () => {
+      await repo.findAllListings();
+      const [, unchanged] = await repo.readsDuring(() =>
+        repo.findByName("missing")
+      );
+      assertEquals(unchanged, []);
+
+      await Deno.writeTextFile(brokenPath, "jobs: [[\n");
+      const [, changed] = await repo.readsDuring(() =>
+        repo.findByName("missing")
+      );
+      assertPathArrayEquals(changed, [brokenPath]);
+    });
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: a matched path swapped for a symlink after the scan is not followed, and findAll answers", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (outside) => {
+      const path = join(dir, "target.yaml");
+      const original = createWorkflowYaml("target");
+      await writeWorkflow(path, original);
+      await settleFiles(dir);
+      const escaped = join(outside, "escaped.yaml");
+      await writeWorkflow(escaped, original);
+      const repo = new CountingExtensionWorkflowRepository(dir);
+      repo.afterScan = async () => {
+        repo.afterScan = undefined;
+        await Deno.remove(path);
+        await Deno.symlink(escaped, path, { type: "file" });
+      };
+
+      const found = await repo.findByName("target");
+
+      assertEquals(repo.fullReads, 1);
+      assertEquals(found?.id, (await repo.findAll()).at(0)?.id);
+    });
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: an unreadable file fails a lookup with the same error as findAll", async () => {
+  class UnreadableRepository extends ExtensionWorkflowRepository {
+    protected override readWorkflowFile(_path: string): Promise<string> {
+      return Promise.reject(
+        Object.assign(new Error("Too many open files (os error 24)"), {
+          code: "EMFILE",
+        }),
+      );
+    }
+  }
+  await withTempDir(async (dir) => {
+    await writeWorkflow(join(dir, "a.yaml"), createWorkflowYaml("a"));
+    const repo = new UnreadableRepository(dir);
+
+    const fromFindAll = await assertRejects(() => repo.findAll(), UserError);
+    const fromName = await assertRejects(() => repo.findByName("a"), UserError);
+    const fromId = await assertRejects(
+      () => repo.findById(crypto.randomUUID() as WorkflowId),
+      UserError,
+    );
+    const fromListings = await assertRejects(
+      () => repo.findAllListings(),
+      UserError,
+    );
+
+    assertEquals(fromName.message, fromFindAll.message);
+    assertEquals(fromId.message, fromFindAll.message);
+    assertEquals(fromListings.message, fromFindAll.message);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: updateAdditionalDirs to a new set drops the workflows of removed dirs", async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = join(dir, "base");
+    const oldDir = join(dir, "old");
+    const newDir = join(dir, "new");
+    for (const d of [baseDir, oldDir, newDir]) await ensureDir(d);
+    const gone = createWorkflowYaml("gone");
+    await writeWorkflow(join(oldDir, "gone.yaml"), gone);
+    await writeWorkflow(
+      join(newDir, "arrived.yaml"),
+      createWorkflowYaml("arrived"),
+    );
+    await settleFiles(dir);
+    const repo = new ExtensionWorkflowRepository(baseDir, [oldDir]);
+    assertEquals((await repo.findByName("gone"))?.id, gone.id);
+
+    repo.updateAdditionalDirs([newDir]);
+
+    assertEquals(await repo.findByName("gone"), null);
+    assertEquals(await repo.findById(gone.id as WorkflowId), null);
+    assertEquals(
+      (await repo.findAllListings()).map((l) => l.name),
+      ["arrived"],
+    );
   });
 });

@@ -1566,9 +1566,9 @@ function repoCtx(workflowRepo: WorkflowRepository): ConnectionContext {
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   walks = 0;
 
-  override findAll(): Promise<Workflow[]> {
+  protected override scanListings() {
     this.walks++;
-    return super.findAll();
+    return super.scanListings();
   }
 }
 
@@ -1737,7 +1737,7 @@ Deno.test("CanonicalResources.workflowOwners: resolves extension workflows as th
 
 Deno.test("CanonicalResources.workflowOwners: an extension read failure fails the request", async () => {
   class FailingExtension extends ExtensionWorkflowRepository {
-    override findAll(): Promise<Workflow[]> {
+    protected override scanListings() {
       return Promise.reject(new UserError("Failed to read extension workflow"));
     }
   }
