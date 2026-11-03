@@ -134,10 +134,10 @@ function scheduleLines(entry: ScheduleListEntry): string[] {
       lines.push(`  ${cyan("Paused by:")} ${safe(entry.pausedBy)}`);
     }
     if (entry.pausedAt !== undefined) {
-      lines.push(`  ${cyan("Paused at:")} ${entry.pausedAt}`);
+      lines.push(`  ${cyan("Paused at:")} ${safe(entry.pausedAt)}`);
     }
     if (entry.until !== undefined) {
-      lines.push(`  ${cyan("Until:")} ${entry.until}`);
+      lines.push(`  ${cyan("Until:")} ${safe(entry.until)}`);
     }
   }
   if (entry.orphaned) {
@@ -150,19 +150,22 @@ function scheduleLines(entry: ScheduleListEntry): string[] {
     );
   } else if (entry.nextRun !== null) {
     lines.push(
-      `  ${cyan("Next fire:")} ${entry.nextRun}${
+      `  ${cyan("Next fire:")} ${safe(entry.nextRun)}${
         entry.paused ? ` ${dim("(skipped while paused)")}` : ""
       }`,
     );
   }
   if (entry.lastMissed) {
     const missed = entry.lastMissed;
-    const reason = MISSED_REASON_TEXT[missed.reason];
+    // a newer serve can report a reason this CLI has no text for
+    const reason = Object.hasOwn(MISSED_REASON_TEXT, missed.reason)
+      ? MISSED_REASON_TEXT[missed.reason]
+      : safe(missed.reason);
     const count = `${missed.count}${missed.saturated ? "+" : ""}`;
     lines.push(
       `  ${cyan("Missed:")} ${yellow(`${count} fire(s)`)} ${
         dim(`(${reason})`)
-      }, latest ${missed.fireTime}${
+      }, latest ${safe(missed.fireTime)}${
         missed.caughtUp ? ` ${dim("(caught up)")}` : ""
       }`,
     );

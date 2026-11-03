@@ -2946,7 +2946,11 @@ keeps the file loadable by an older serve, which ignores `catchUp` but refuses
 an override with neither `schedule` nor `inputs`.
 `swamp workflow trigger set` requires `--schedule`, and sets `catchUp` with
 `--catch-up <none|latest>` and `--catch-up-max-delay <duration>`
-(`src/cli/commands/workflow_trigger_set.ts`). Unknown keys in an override entry
+(`src/cli/commands/workflow_trigger_set.ts`). With `--server`, `--catch-up`
+first checks that `server.version` lists the `schedule-catch-up` capability
+(`SERVE_CAPABILITY_SCHEDULE_CATCH_UP`); a serve without it would save the
+override without its catch-up, so the command refuses before sending anything
+and tells the user to upgrade swamp serve. Unknown keys in an override entry
 produce a warning and are ignored (`src/serve/serve_config.ts`).
 
 **Overrides:**

@@ -39,7 +39,10 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { WorkflowTriggerSetResponse } from "../../serve/protocol.ts";
+import {
+  SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
+  type WorkflowTriggerSetResponse,
+} from "../../serve/protocol.ts";
 import {
   type ScheduleCatchUp,
   ScheduleCatchUpSchema,
@@ -175,6 +178,20 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       server,
       options,
     );
+    // an older server drops catchUp and saves the override without it, so the
+    // probe comes first; a catch-up of none is probed too, or it is lost
+    if (catchUp) {
+      const version = await requestServerResponse<
+        { version: string; capabilities?: string[] }
+      >({ server, token }, { type: "server.version" });
+      if (
+        !version.capabilities?.includes(SERVE_CAPABILITY_SCHEDULE_CATCH_UP)
+      ) {
+        throw new UserError(
+          `The server (swamp ${version.version}) does not support --catch-up, so it would save the override without its catch-up. Upgrade swamp serve, or run without --server.`,
+        );
+      }
+    }
     const response = await requestServerResponse<WorkflowTriggerSetResponse>(
       { server, token },
       {

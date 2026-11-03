@@ -21,6 +21,7 @@ import { z } from "zod";
 import {
   SERVE_CAPABILITY_LITERAL_INPUTS,
   SERVE_CAPABILITY_RESUME_FROM_JOB,
+  SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
   type ServerRequest,
 } from "./protocol.ts";
 import {
@@ -2101,6 +2102,7 @@ export function handleMessage(
               capabilities: [
                 SERVE_CAPABILITY_LITERAL_INPUTS,
                 SERVE_CAPABILITY_RESUME_FROM_JOB,
+                SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
               ],
             },
           }),

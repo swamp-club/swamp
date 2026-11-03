@@ -45,6 +45,8 @@ export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
 
 export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
 
+export const SERVE_CAPABILITY_SCHEDULE_CATCH_UP = "schedule-catch-up";
+
 /** the HTTP route for client reads too large for a WebSocket frame */
 export const SERVE_REQUEST_PATH = "/api/v1/request";
 
