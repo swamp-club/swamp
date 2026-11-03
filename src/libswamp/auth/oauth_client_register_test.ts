@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
 import {
@@ -40,6 +41,7 @@ function makeDeps(
     calls,
     deps: {
       resolveApiKey: () => "swamp_org_key",
+      keyServerUrl: () => "https://swamp-club.com",
       registerClient: (provider, apiKey, clientName) => {
         calls.push({ provider, apiKey, clientName });
         return Promise.resolve({
@@ -77,10 +79,34 @@ Deno.test("authOAuthClientRegister: registers on the default provider and return
   });
 });
 
-Deno.test("authOAuthClientRegister: uses the provider serve would use, never another default", async () => {
-  const { deps, calls } = makeDeps();
-  await run(deps, { name: "local", provider: "http://localhost:8000" });
-  assertEquals(calls[0].provider, "http://localhost:8000");
+Deno.test("authOAuthClientRegister: without --oauth-provider registers with the server that issued the key", async () => {
+  const { deps, calls } = makeDeps({
+    keyServerUrl: () => "https://club.corp.example",
+  });
+  await run(deps, { name: "private" });
+  assertEquals(calls[0].provider, "https://club.corp.example");
+});
+
+Deno.test("authOAuthClientRegister: an --oauth-provider matching the key's server is used", async () => {
+  const { deps, calls } = makeDeps({
+    keyServerUrl: () => "http://localhost:8000",
+  });
+  await run(deps, { name: "local", provider: "http://localhost:8000/" });
+  assertEquals(calls[0].provider, "http://localhost:8000/");
+});
+
+Deno.test("authOAuthClientRegister: never sends the key to an --oauth-provider that did not issue it", async () => {
+  const { deps, calls } = makeDeps({
+    keyServerUrl: () => "https://club.corp.example",
+  });
+  const events = await run(deps, {
+    name: "x",
+    provider: "https://swamp-club.com",
+  });
+  assertEquals(calls, []);
+  assertEquals(events.length, 1);
+  const error = events[0].kind === "error" ? events[0].error.message : "";
+  assertEquals(error.includes("set SWAMP_CLUB_URL"), true);
 });
 
 Deno.test("authOAuthClientRegister: refuses a non-HTTPS provider as serve does", async () => {
@@ -104,6 +130,20 @@ Deno.test("authOAuthClientRegister: refuses without a collective API key", async
   assertEquals(
     events[0].kind === "error" &&
       events[0].error.message.includes("oauth:manage"),
+    true,
+  );
+});
+
+Deno.test("authOAuthClientRegister: a broken key source is an error event, not a throw", async () => {
+  const { deps, calls } = makeDeps({
+    resolveApiKey: () => {
+      throw new UserError("SWAMP_API_KEY_FILE file not found: /nope");
+    },
+  });
+  const events = await run(deps, { name: "prod" });
+  assertEquals(calls, []);
+  assertEquals(
+    events[0].kind === "error" && events[0].error.message.includes("not found"),
     true,
   );
 });

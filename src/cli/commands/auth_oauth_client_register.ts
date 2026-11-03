@@ -57,7 +57,8 @@ export const authOAuthClientRegisterCommand = new Command()
   )
   .option(
     "--oauth-provider <url:string>",
-    "OAuth authorization server URL, as passed to swamp serve (default: https://swamp-club.com)",
+    "OAuth authorization server URL, as passed to swamp serve; it must be the server " +
+      "that issued the API key (default: SWAMP_CLUB_URL, else https://swamp-club.com)",
   )
   .example(
     "Register a client and keep the output as a Kubernetes Secret",
