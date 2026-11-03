@@ -318,6 +318,10 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     headers.delete("origin");
     headers.delete(LOCAL_TOKEN_HEADER);
     headers.set(HUB_TOKEN_HEADER, child.token);
+    if (body !== undefined) {
+      headers.delete("content-length");
+      headers.delete("transfer-encoding");
+    }
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     // not the request's signal: a streamed answer ends when the browser cancels
     // the body; the hub's signal ends every forwarded stream at shutdown so an
@@ -474,14 +478,24 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
         return new Response("Not found", { status: 404 });
       }
       const path = match[2] ?? "/";
+      const isUpgrade = req.headers.get("upgrade")?.toLowerCase() ===
+        "websocket";
+      let readBody: string | undefined;
+      if (
+        !isUpgrade && path === SERVE_REQUEST_PATH &&
+        req.method.toUpperCase() === "POST"
+      ) {
+        const read = await forwardableRead(req);
+        if (read instanceof Response) return read;
+        readBody = read;
+      }
       const repoDir = await deps.resolveWorkspace(name);
-      // Shutdown may have begun during the lookup: start nothing after it.
+      // Shutdown may have begun during the body read or the lookup: start
+      // nothing after it.
       if (stopping) return new Response("Stopping", { status: 503 });
       if (repoDir === null) {
         return new Response(`No workspace named ${name}`, { status: 404 });
       }
-      const isUpgrade = req.headers.get("upgrade")?.toLowerCase() ===
-        "websocket";
       if (isUpgrade) {
         // The dashboard has no login, so only this server's own pages may
         // open it: an exact origin, port included, not any localhost page.
@@ -490,12 +504,6 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
         if (origin !== null && origin !== `http://${req.headers.get("host")}`) {
           return new Response("Forbidden origin", { status: 403 });
         }
-      }
-      let readBody: string | undefined;
-      if (!isUpgrade && path === SERVE_REQUEST_PATH && req.method === "POST") {
-        const read = await forwardableRead(req);
-        if (read instanceof Response) return read;
-        readBody = read;
       }
       const entry = entryFor(repoDir);
       let child: HubChild;

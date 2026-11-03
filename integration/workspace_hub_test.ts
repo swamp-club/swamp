@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type ActionRunner,
@@ -906,6 +906,61 @@ Deno.test("workspaceHub: a request whose lookup is still in flight when shutdown
   assertEquals(res?.status, 503);
   await res?.body?.cancel();
   assertEquals(spawned, []);
+});
+
+Deno.test("workspaceHub: a request route body still arriving when shutdown begins starts nothing", async () => {
+  let sendBody!: ReadableStreamDefaultController<Uint8Array>;
+  let reading!: () => void;
+  const bodyRead = new Promise<void>((resolve) => reading = resolve);
+  const body = new ReadableStream<Uint8Array>({
+    start: (controller) => sendBody = controller,
+    pull: () => reading(),
+  }, { highWaterMark: 0 });
+  const spawned: string[] = [];
+  const hub = createWorkspaceHub({
+    token: TOKEN,
+    resolveWorkspace: () => Promise.resolve("/repos/alpha"),
+    listWorkspaces: () => Promise.resolve([]),
+    spawnChild: (repoDir) => {
+      spawned.push(repoDir);
+      return Promise.reject(new Error("must not start"));
+    },
+  });
+  const answer = hub.handle(
+    new Request("http://127.0.0.1:1/w/alpha/api/v1/request", {
+      method: "POST",
+      headers: { "x-swamp-local-token": TOKEN },
+      body,
+    }),
+    () => {},
+  );
+  await bodyRead;
+  await hub.shutdown();
+  sendBody.enqueue(new TextEncoder().encode(read("r1", "data.get")));
+  sendBody.close();
+  const res = await answer;
+  assertEquals(res?.status, 503);
+  await res?.body?.cancel();
+  assertEquals(spawned, []);
+});
+
+Deno.test("workspaceHub: a lowercase method on the request route is filtered like POST", async () => {
+  await withHub(async ({ base, spawned }) => {
+    const [hostname, port] = base.split(":");
+    const conn = await Deno.connect({ hostname, port: Number(port) });
+    const body = read("r1", "data.list");
+    await conn.write(new TextEncoder().encode(
+      `post /w/alpha/api/v1/request HTTP/1.1\r\nHost: ${base}\r\n` +
+        `x-swamp-local-token: ${TOKEN}\r\nContent-Type: application/json\r\n` +
+        `Content-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`,
+    ));
+    const reply = new TextDecoder().decode(
+      await new Response(conn.readable).arrayBuffer(),
+    );
+    assertStringIncludes(reply.split("\r\n")[0], " 404 ");
+    assertStringIncludes(reply, '"use_websocket"');
+    assertEquals(spawned, []);
+  });
 });
 
 Deno.test("workspaceHub: forwards a dashboard read on the HTTP request route to the child", async () => {
