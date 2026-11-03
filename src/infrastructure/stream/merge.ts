@@ -138,7 +138,7 @@ export async function* mergeGated<T>(
 ): AsyncGenerator<T> {
   const users = new Map<string, number>();
   for (const entry of entries) {
-    for (const gate of entry.gates) {
+    for (const gate of new Set(entry.gates)) {
       users.set(gate, (users.get(gate) ?? 0) + 1);
     }
   }
@@ -178,7 +178,7 @@ export async function* mergeGated<T>(
   const drainStream = async (entry: GatedStream<T>) => {
     const held: Semaphore[] = [];
     try {
-      for (const gate of entry.gates) {
+      for (const gate of new Set(entry.gates)) {
         const sem = semaphores.get(gate);
         if (!sem) continue;
         await sem.acquire(signal);

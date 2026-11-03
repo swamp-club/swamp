@@ -637,3 +637,14 @@ Deno.test("mergeGated: a stream aborted while queued on its second gate never st
   assertEquals(items, ["holder:start", "holder:end"]);
   assertEquals([...probe.started], ["holder"]);
 });
+
+Deno.test("mergeGated: a gate a stream names twice is taken once", async () => {
+  const items = await collect(mergeGated(
+    [
+      { stream: fromArray([1]), gates: ["a", "a"] },
+      { stream: fromArray([2]), gates: ["a", "a"] },
+    ],
+    new Map([["a", 1]]),
+  ));
+  assertEquals(items.sort(), [1, 2]);
+});

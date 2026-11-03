@@ -5370,7 +5370,7 @@ export class WorkflowExecutionService {
         }
 
         // When the signal aborts mid-level with parallel steps,
-        // mergeWithConcurrency may exit before step_failed events are
+        // mergeGated may exit before step_failed events are
         // consumed. Derive jobFailed from model state so cleanup kicks in.
         if (!jobFailed && options.signal?.aborted) {
           jobFailed = jobRun.steps.some((s) =>
