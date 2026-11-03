@@ -156,6 +156,28 @@ Deno.test("authenticateHttpCaller: repeated failures with one token are rate-lim
   assertEquals(last.headers.get("Retry-After") !== null, true);
 });
 
+Deno.test("authenticateHttpCaller: concurrent requests on one valid bearer token are all accepted", async () => {
+  const token = `Bearer ${crypto.randomUUID()}.secret`;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => release = resolve);
+  const deps = {
+    authMode: "token",
+    authenticate: async (): Promise<ServerTokenAuthResult> => {
+      await released;
+      return validToken;
+    },
+    limitPrincipalRate: false,
+  };
+  const reads = Array.from(
+    { length: 20 },
+    () => authenticateHttpCaller(request(token), uniqueIp(), deps),
+  );
+  release();
+  for (const result of await Promise.all(reads)) {
+    assertEquals(result instanceof Response, false);
+  }
+});
+
 Deno.test("authenticateHttpCaller: limitPrincipalRate false leaves the per-principal rate unchecked", async () => {
   const principalId = `user:${crypto.randomUUID()}`;
   const authenticate = () =>

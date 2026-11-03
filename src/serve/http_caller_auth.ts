@@ -22,8 +22,7 @@ import type { AccessCaller } from "./handlers/shared.ts";
 import {
   checkIpBurst,
   checkPrincipalRate,
-  checkRateLimit,
-  clearRateLimit,
+  limitFailedAttempts,
   rateLimitKey,
 } from "./rate_limiter.ts";
 import { resolveDashboardSessionForOrigin } from "./dashboard_session_handler.ts";
@@ -113,16 +112,17 @@ export async function authenticateHttpCaller(
     if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     return httpFailure(401, "unauthorized", "Unauthorized: token required");
   }
-  const key = rateLimitKey(token, sourceIp);
-  const rateCheck = checkRateLimit(key);
-  if (!rateCheck.allowed) return tooManyRequests(rateCheck.retryAfterSeconds);
-  const auth = await deps.authenticate(token, sourceIp);
+  const guarded = await limitFailedAttempts(
+    rateLimitKey(token, sourceIp),
+    () => deps.authenticate(token, sourceIp),
+  );
+  if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
+  const auth = guarded.result;
   if (!auth.ok) {
     const ipBurst = checkIpBurst(sourceIp);
     if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     return httpFailure(401, "unauthorized", `Unauthorized: ${auth.reason}`);
   }
-  clearRateLimit(key);
   return authenticatedCaller(auth, sourceIp, deps);
 }
 
@@ -160,20 +160,20 @@ async function authenticateSessionCaller(
       "Unauthorized: dashboard session expired",
     );
   }
-  const key = rateLimitKey(`${session.tokenName}.${session.id}`, sourceIp);
-  const auth = await sessionAuth.authenticate(session, sourceIp);
+  const guarded = await limitFailedAttempts(
+    rateLimitKey(`${session.tokenName}.${session.id}`, sourceIp),
+    () => sessionAuth.authenticate(session, sourceIp),
+  );
+  if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
+  const auth = guarded.result;
   if (!auth.ok) {
     if (shouldInvalidateDashboardSession(auth.reason)) {
       await sessionAuth.sessions.delete(session.id);
     }
-    // only failures count: a page's concurrent reads share the token's bucket
-    const rateCheck = checkRateLimit(key);
-    if (!rateCheck.allowed) return tooManyRequests(rateCheck.retryAfterSeconds);
     const ipBurst = checkIpBurst(sourceIp);
     if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     return httpFailure(401, "unauthorized", `Unauthorized: ${auth.reason}`);
   }
-  clearRateLimit(key);
   return authenticatedCaller(auth, sourceIp, deps);
 }
 

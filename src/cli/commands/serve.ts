@@ -166,9 +166,9 @@ import {
 } from "../../serve/known_usernames.ts";
 import {
   checkIpBurst,
-  checkRateLimit,
-  clearRateLimit,
+  limitFailedAttempts,
   rateLimitKey,
+  recordFailedAttempt,
 } from "../../serve/rate_limiter.ts";
 import {
   handleSignalHttpRequest,
@@ -6723,7 +6723,7 @@ export const serveCommand = new Command()
               ) {
                 const failedBurst = checkIpBurst(remoteAddr);
                 const failedKey = rateLimitKey(extracted.token, remoteAddr);
-                const failedRate = checkRateLimit(failedKey);
+                const failedRate = recordFailedAttempt(failedKey);
                 logger.warn(
                   "WebSocket peer auth rejected from {ip}",
                   { ip: remoteAddr },
@@ -6831,20 +6831,6 @@ export const serveCommand = new Command()
             }
 
             const rlKey = rateLimitKey(rateLimitCredential, remoteAddr);
-            const rateCheck = checkRateLimit(rlKey);
-            if (!rateCheck.allowed) {
-              logger.warn(
-                "WebSocket auth rate-limited for {key} from {ip}",
-                { key: rlKey, ip: remoteAddr },
-              );
-              return new Response("Too Many Requests", {
-                status: 429,
-                headers: {
-                  "Retry-After": String(rateCheck.retryAfterSeconds),
-                },
-              });
-            }
-
             logger.debug(
               "WebSocket token received via {transport} from {ip}",
               { transport, ip: remoteAddr },
@@ -6857,18 +6843,35 @@ export const serveCommand = new Command()
               resolvedUserNames: connectionCtx.resolvedUserNames,
               onUsernamesResolved: rememberTokenUsernames,
             };
-            const result = extracted
-              ? await authenticateServerToken(
-                extracted.token,
-                resolvedRepoDir,
-                repoContext,
-                auditContext,
-              )
-              : await authenticateDashboardSession(
-                dashboardSession!,
-                repoContext,
-                auditContext,
+            const guarded = await limitFailedAttempts(
+              rlKey,
+              () =>
+                extracted
+                  ? authenticateServerToken(
+                    extracted.token,
+                    resolvedRepoDir,
+                    repoContext,
+                    auditContext,
+                  )
+                  : authenticateDashboardSession(
+                    dashboardSession!,
+                    repoContext,
+                    auditContext,
+                  ),
+            );
+            if (guarded.limited) {
+              logger.warn(
+                "WebSocket auth rate-limited for {key} from {ip}",
+                { key: rlKey, ip: remoteAddr },
               );
+              return new Response("Too Many Requests", {
+                status: 429,
+                headers: {
+                  "Retry-After": String(guarded.retryAfterSeconds),
+                },
+              });
+            }
+            const result = guarded.result;
             if (!result.ok) {
               if (
                 dashboardSession !== null &&
@@ -6890,7 +6893,6 @@ export const serveCommand = new Command()
                 { status: 401 },
               );
             }
-            clearRateLimit(rlKey);
             const principal = parsePrincipal(result.principalId);
             const upgradeOpts = transport === "subprotocol"
               ? {
@@ -7117,36 +7119,38 @@ export const serveCommand = new Command()
                   status: 401,
                 });
               }
-              const cancelRlKey = rateLimitKey(token, cancelRemoteAddr);
-              const cancelRateCheck = checkRateLimit(cancelRlKey);
-              if (!cancelRateCheck.allowed) {
+              const cancelGuarded = await limitFailedAttempts(
+                rateLimitKey(token, cancelRemoteAddr),
+                () =>
+                  authenticateServerToken(
+                    token,
+                    resolvedRepoDir,
+                    repoContext,
+                    {
+                      emitter: connectionCtx.auditEmitter,
+                      instanceId: connectionCtx.instanceId,
+                      sourceIp: cancelRemoteAddr,
+                      ingress: "http-cancel",
+                      resolvedUserNames: connectionCtx.resolvedUserNames,
+                      onUsernamesResolved: rememberTokenUsernames,
+                    },
+                  ),
+              );
+              if (cancelGuarded.limited) {
                 return new Response("Too Many Requests", {
                   status: 429,
                   headers: {
-                    "Retry-After": String(cancelRateCheck.retryAfterSeconds),
+                    "Retry-After": String(cancelGuarded.retryAfterSeconds),
                   },
                 });
               }
-              const authResult = await authenticateServerToken(
-                token,
-                resolvedRepoDir,
-                repoContext,
-                {
-                  emitter: connectionCtx.auditEmitter,
-                  instanceId: connectionCtx.instanceId,
-                  sourceIp: cancelRemoteAddr,
-                  ingress: "http-cancel",
-                  resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberTokenUsernames,
-                },
-              );
+              const authResult = cancelGuarded.result;
               if (!authResult.ok) {
                 return new Response(
                   `Unauthorized: ${authResult.reason}`,
                   { status: 401 },
                 );
               }
-              clearRateLimit(cancelRlKey);
 
               const cancelPrincipal = parsePrincipal(authResult.principalId);
               cancelAuditPrincipal = cancelPrincipal;
@@ -7548,32 +7552,35 @@ export const serveCommand = new Command()
             sessions: dashboardSessions,
             deviceAuthDeps,
             authenticateToken: async (token) => {
-              const rlKey = rateLimitKey(token, dashboardRemoteAddr);
-              const rateCheck = checkRateLimit(rlKey);
-              if (!rateCheck.allowed) {
+              const guarded = await limitFailedAttempts(
+                rateLimitKey(token, dashboardRemoteAddr),
+                () =>
+                  authenticateServerToken(
+                    token,
+                    resolvedRepoDir,
+                    repoContext,
+                    {
+                      emitter: connectionCtx.auditEmitter,
+                      instanceId: connectionCtx.instanceId,
+                      sourceIp: dashboardRemoteAddr,
+                      ingress: "dashboard-session",
+                      resolvedUserNames: connectionCtx.resolvedUserNames,
+                      onUsernamesResolved: rememberTokenUsernames,
+                    },
+                  ),
+              );
+              if (guarded.limited) {
                 return {
                   ok: false,
                   response: new Response("Too Many Requests", {
                     status: 429,
                     headers: {
-                      "Retry-After": String(rateCheck.retryAfterSeconds),
+                      "Retry-After": String(guarded.retryAfterSeconds),
                     },
                   }),
                 };
               }
-              const result = await authenticateServerToken(
-                token,
-                resolvedRepoDir,
-                repoContext,
-                {
-                  emitter: connectionCtx.auditEmitter,
-                  instanceId: connectionCtx.instanceId,
-                  sourceIp: dashboardRemoteAddr,
-                  ingress: "dashboard-session",
-                  resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberTokenUsernames,
-                },
-              );
+              const result = guarded.result;
               if (!result.ok) {
                 return {
                   ok: false,
@@ -7582,7 +7589,6 @@ export const serveCommand = new Command()
                   }),
                 };
               }
-              clearRateLimit(rlKey);
               return {
                 ok: true,
                 tokenName: result.tokenName,

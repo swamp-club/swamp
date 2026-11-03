@@ -17,17 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  checkFailedAttempts,
   checkIpBurst,
   checkPrincipalRate,
-  checkRateLimit,
-  clearRateLimit,
+  limitFailedAttempts,
+  MAX_PENDING_ATTEMPTS,
   MAX_PRINCIPAL_RATE_BUCKETS,
+  pendingAttemptCount,
   PRINCIPAL_RATE_BURST,
   PRINCIPAL_RATE_PER_MINUTE,
   principalRateBucketCount,
   rateLimitKey,
+  recordFailedAttempt,
   resetRateLimitState,
 } from "./rate_limiter.ts";
 
@@ -55,80 +58,174 @@ Deno.test("rateLimitKey: returns IP key for token ending with dot", () => {
   assertEquals(rateLimitKey("name.", "10.0.0.1"), "ip:10.0.0.1");
 });
 
-Deno.test("checkRateLimit: allows up to 5 attempts for a key", () => {
+Deno.test("recordFailedAttempt: allows up to 5 failures for a key", () => {
   resetRateLimitState();
   const key = "token:test-allows-five";
   for (let i = 0; i < 5; i++) {
-    const result = checkRateLimit(key);
-    assertEquals(result.allowed, true);
+    assertEquals(recordFailedAttempt(key).allowed, true);
   }
 });
 
-Deno.test("checkRateLimit: blocks on 6th attempt for same key", () => {
+Deno.test("recordFailedAttempt: refuses the 6th failure for same key", () => {
   resetRateLimitState();
   const key = "token:test-blocks-sixth";
   for (let i = 0; i < 5; i++) {
-    checkRateLimit(key);
+    recordFailedAttempt(key);
   }
-  const result = checkRateLimit(key);
+  const result = recordFailedAttempt(key);
   assertEquals(result.allowed, false);
+  assert(!result.allowed && result.retryAfterSeconds > 0);
 });
 
-Deno.test("checkRateLimit: different token names are independent", () => {
+Deno.test("checkFailedAttempts: never counts, however often it is asked", () => {
   resetRateLimitState();
-  const keyA = "token:worker-a";
-  const keyB = "token:worker-b";
+  const key = "token:peek-only";
+  for (let i = 0; i < 100; i++) {
+    assertEquals(checkFailedAttempts(key).allowed, true);
+  }
+  recordFailedAttempt(key);
+  for (let i = 0; i < 100; i++) {
+    assertEquals(checkFailedAttempts(key).allowed, true);
+  }
+});
 
+Deno.test("checkFailedAttempts: refuses a key holding 5 failures", () => {
+  resetRateLimitState();
+  const key = "token:five-failures";
+  for (let i = 0; i < 4; i++) {
+    recordFailedAttempt(key);
+  }
+  assertEquals(checkFailedAttempts(key).allowed, true);
+  recordFailedAttempt(key);
+  const result = checkFailedAttempts(key);
+  assertEquals(result.allowed, false);
+  assert(!result.allowed && result.retryAfterSeconds > 0);
+});
+
+Deno.test("checkFailedAttempts: different token names are independent", () => {
+  resetRateLimitState();
   for (let i = 0; i < 5; i++) {
-    checkRateLimit(keyA);
+    recordFailedAttempt("token:worker-a");
   }
-  const resultA = checkRateLimit(keyA);
-  assertEquals(resultA.allowed, false);
-
-  const resultB = checkRateLimit(keyB);
-  assertEquals(resultB.allowed, true);
+  assertEquals(checkFailedAttempts("token:worker-a").allowed, false);
+  assertEquals(checkFailedAttempts("token:worker-b").allowed, true);
 });
 
-Deno.test("checkRateLimit: rate-limited token does not block different token on same IP", () => {
-  resetRateLimitState();
-  const badToken = "token:bad-worker";
-  const goodToken = "token:good-user";
-
-  for (let i = 0; i < 6; i++) {
-    checkRateLimit(badToken);
-  }
-
-  const result = checkRateLimit(goodToken);
-  assertEquals(result.allowed, true);
-});
-
-Deno.test("checkRateLimit: IP-keyed fallback works like token keys", () => {
+Deno.test("checkFailedAttempts: IP-keyed fallback works like token keys", () => {
   resetRateLimitState();
   const ipKey = "ip:192.168.1.1";
   for (let i = 0; i < 5; i++) {
-    const result = checkRateLimit(ipKey);
-    assertEquals(result.allowed, true);
+    recordFailedAttempt(ipKey);
   }
-  const result = checkRateLimit(ipKey);
-  assertEquals(result.allowed, false);
+  assertEquals(checkFailedAttempts(ipKey).allowed, false);
 });
 
-Deno.test("clearRateLimit: resets count for token-name key", () => {
+function gate(): { opened: Promise<void>; open: () => void } {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => open = resolve);
+  return { opened, open };
+}
+
+const passed = { ok: true } as const;
+const failed = { ok: false } as const;
+
+Deno.test("limitFailedAttempts: concurrent attempts on one valid credential are all accepted", async () => {
   resetRateLimitState();
-  const key = "token:clear-test";
+  const key = `token:${crypto.randomUUID()}`;
+  const { opened, open } = gate();
+  const attempts = Array.from(
+    { length: 20 },
+    () =>
+      limitFailedAttempts(key, async () => {
+        await opened;
+        return passed;
+      }),
+  );
+  open();
+  for (const guarded of await Promise.all(attempts)) {
+    assertEquals(guarded.limited, false);
+  }
+  assertEquals(pendingAttemptCount(), 0);
+});
+
+Deno.test("limitFailedAttempts: 5 failures lock the key and a locked key is not tried", async () => {
+  resetRateLimitState();
+  const key = `token:${crypto.randomUUID()}`;
+  let calls = 0;
+  const attempt = () => {
+    calls++;
+    return Promise.resolve(failed);
+  };
   for (let i = 0; i < 5; i++) {
-    checkRateLimit(key);
+    const guarded = await limitFailedAttempts(key, attempt);
+    assertEquals(guarded.limited, false);
   }
-  assertEquals(checkRateLimit(key).allowed, false);
-
-  clearRateLimit(key);
-
-  assertEquals(checkRateLimit(key).allowed, true);
+  const locked = await limitFailedAttempts(key, attempt);
+  assertEquals(locked.limited, true);
+  assert(locked.limited && locked.retryAfterSeconds > 0);
+  assertEquals(calls, 5);
 });
 
-Deno.test("clearRateLimit: no-op for unknown key", () => {
+Deno.test("limitFailedAttempts: a success clears earlier failures", async () => {
   resetRateLimitState();
-  clearRateLimit("token:nonexistent");
+  const key = `token:${crypto.randomUUID()}`;
+  for (let i = 0; i < 4; i++) {
+    await limitFailedAttempts(key, () => Promise.resolve(failed));
+  }
+  await limitFailedAttempts(key, () => Promise.resolve(passed));
+  for (let i = 0; i < 4; i++) {
+    await limitFailedAttempts(key, () => Promise.resolve(failed));
+  }
+  assertEquals(checkFailedAttempts(key).allowed, true);
+});
+
+Deno.test("limitFailedAttempts: attempts in flight past the cap are refused untried until one settles", async () => {
+  resetRateLimitState();
+  const key = `token:${crypto.randomUUID()}`;
+  const { opened, open } = gate();
+  const held = Array.from(
+    { length: MAX_PENDING_ATTEMPTS },
+    () =>
+      limitFailedAttempts(key, async () => {
+        await opened;
+        return passed;
+      }),
+  );
+  let tried = false;
+  const refused = await limitFailedAttempts(key, () => {
+    tried = true;
+    return Promise.resolve(passed);
+  });
+  assertEquals(refused, { limited: true, retryAfterSeconds: 1 });
+  assertEquals(tried, false);
+  assertEquals(
+    (await limitFailedAttempts(
+      `token:${crypto.randomUUID()}`,
+      () => Promise.resolve(passed),
+    )).limited,
+    false,
+  );
+  open();
+  await Promise.all(held);
+  assertEquals(
+    (await limitFailedAttempts(key, () => Promise.resolve(passed))).limited,
+    false,
+  );
+  assertEquals(pendingAttemptCount(), 0);
+});
+
+Deno.test("limitFailedAttempts: an attempt that throws records no failure and releases its slot", async () => {
+  resetRateLimitState();
+  const key = `token:${crypto.randomUUID()}`;
+  for (let i = 0; i < 10; i++) {
+    await assertRejects(
+      () => limitFailedAttempts(key, () => Promise.reject(new Error("boom"))),
+      Error,
+      "boom",
+    );
+  }
+  assertEquals(checkFailedAttempts(key).allowed, true);
+  assertEquals(pendingAttemptCount(), 0);
 });
 
 Deno.test("checkIpBurst: allows up to 50 requests from one IP", () => {
@@ -245,7 +342,7 @@ Deno.test("checkPrincipalRate: does not touch the auth-failure or IP limiters", 
   for (let i = 0; i <= PRINCIPAL_RATE_BURST; i++) {
     checkPrincipalRate("token:shared", now);
   }
-  assertEquals(checkRateLimit("token:shared").allowed, true);
+  assertEquals(checkFailedAttempts("token:shared").allowed, true);
   assertEquals(checkIpBurst("token:shared").allowed, true);
 });
 

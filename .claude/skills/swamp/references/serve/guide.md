@@ -149,10 +149,11 @@ the workflow. The receipt's `submittedBy` is the token's principal. Once a run's
 last wait is settled, serve resumes it by itself when the workflow's auto-resume
 policy allows (see "Auto-Resume"); otherwise resume it with
 `swamp workflow resume`. A 200 means the wait took the signal, not that the run
-will use it: a cancel at the same moment still ends the run. Many signals at
-once on one token can be answered 429; retry. A step's `key` changed while its
-wait is open strands that wait for a key-only sender (old key 404, new key 409
-with no `lastWait`); someone who may read the workflow signals it by wait ID.
+will use it: a cancel at the same moment still ends the run. More than 50
+signals a minute from one address are answered 429; retry. A step's `key`
+changed while its wait is open strands that wait for a key-only sender (old key
+404, new key 409 with no `lastWait`); someone who may read the workflow signals
+it by wait ID.
 
 Upgrade every host on the datastore before creating a grant that names `signal`
 or `tag`: an older build drops such a grant whole, with every other action in
