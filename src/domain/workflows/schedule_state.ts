@@ -101,7 +101,8 @@ export function advanceScheduleState(
 
 /**
  * lost fires in a row for the same reason add up; the same slot reported again
- * replaces without adding, so racing writers never count it twice
+ * replaces without adding, so racing writers never count it twice, and a slot
+ * once caught up stays caught up whichever writer lands last
  */
 function mergeMissed(
   current: MissedFire | undefined,
@@ -112,6 +113,9 @@ function mergeMissed(
   const currentAt = Date.parse(current.fireTime);
   const givenAt = Date.parse(given.fireTime);
   if (currentAt > givenAt) return current;
+  if (currentAt === givenAt && current.caughtUp && !given.caughtUp) {
+    return current;
+  }
   if (
     currentAt === givenAt || current.reason !== given.reason ||
     current.caughtUp || given.caughtUp

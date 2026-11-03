@@ -2810,7 +2810,8 @@ a `schedule_missed` event, audited as `workflow.schedule.missed`. A fire skipped
 because the schedule was paused or the previous run was still going is recorded
 as `lastMissed` with reason `paused` or `overlap`. Lost fires in a row with the
 same reason add to `count` (capped like a serve-down count, with `saturated`);
-the same slot reported twice counts once. `lastMissed` is current state, not
+the same slot reported twice counts once, and a slot reported caught up stays
+caught up when a later write reports it missed. `lastMissed` is current state, not
 history: the next fire of a later slot that starts a run clears it, and a cron
 expression change drops it. The audit log keeps every miss. `lastMissed` appears
 in `/api/v1/health`, the dashboard and `swamp workflow schedule list`.
@@ -2835,14 +2836,27 @@ check, dedup claim, queue and authorization. The run carries the tags
 workflow can read `run.tags` and decline. A catch-up adds at most one run on
 top of any replayed fire.
 
+When another instance holds the catch-up's fire claim, the pass re-reads the
+state. If the watermark is still before the slot, the claimer stopped before
+recording it, so the slot is reported missed (`caughtUp: false`) and the
+watermark advances to it; if the claimer already recorded it, nothing is
+written. Without v3 leadership a live claimer that has not written yet can be
+reported missed too: its own write marks the slot caught up unless the two
+writes interleave a read and a save, and the `schedule_missed` audit entry
+stays either way.
+
 Every cron-fired run carries `swamp.trigger.scheduledFor: <slot>`, which, like
 any run tag, is also copied onto the data the run writes. When a catch-up would
-fire, the pass starts from the later of the watermark and the latest slot
-recorded by a run the scheduler itself started. A miss nothing will catch up
+fire, the pass reads the latest slot at or before now recorded by a run the
+scheduler itself started. When that slot is after the watermark, the slots
+before it are reported missed and never caught up, only the slots after it go
+through the catch-up policy, and the watermark advances to it in the same
+write, so the next start does not read history for it again. A miss nothing will catch up
 reads no run history and is reported from the watermark alone, so a slot whose
 watermark write failed can be reported missed, though nothing runs. The lookup
 walks the run index latest slot first and reads records only until one the
-scheduler started is found. All schedules share one `RUN_HISTORY_TIMEOUT_MS`
+scheduler started for a slot at or before now is found; a run recorded for a
+later slot, as after clock skew, is passed over. All schedules share one `RUN_HISTORY_TIMEOUT_MS`
 budget per pass. Once it is spent, the remaining schedules fall back to the
 watermark. The whole pass has one deadline, `CATCH_UP_TIMEOUT_MS` (60s), so a
 catch-up never fires against a stale now. Each schedule's work races it; once it

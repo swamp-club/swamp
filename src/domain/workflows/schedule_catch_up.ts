@@ -58,7 +58,8 @@ export function latestRecordedSlot(
 
 /**
  * the slot of the first run the scheduler started, for runs listed latest slot
- * first, so the rest are never read
+ * first, so the rest are never read; a slot after notAfter was never fired, so
+ * the walk passes over it
  */
 export async function firstRecordedSlot(
   runs: AsyncIterable<{
@@ -66,10 +67,11 @@ export async function firstRecordedSlot(
     readonly tags: Readonly<Record<string, string>>;
   }>,
   scheduler: string,
+  notAfter: Date,
 ): Promise<Date | null> {
   for await (const run of runs) {
     const slot = latestRecordedSlot([run], scheduler);
-    if (slot) return slot;
+    if (slot && slot.getTime() <= notAfter.getTime()) return slot;
   }
   return null;
 }
@@ -177,6 +179,34 @@ export function evaluateMissedFires(
     oldestMissed: oldest,
     latestMissed: latest,
     catchUpFireTime: catchUpTime(latest, now, catchUp),
+  };
+}
+
+/**
+ * the misses around a slot a run recorded: those before it were missed and
+ * nothing catches them up, those after it go through the catch-up policy
+ */
+export function missedAroundRecordedSlot(
+  cronExpression: string,
+  lastEvaluatedFireTime: Date,
+  recorded: Date,
+  now: Date,
+  catchUp?: ScheduleCatchUp,
+): MissedFires {
+  // the upper bound is inclusive and slots have second precision
+  const gap = evaluateMissedFires(
+    cronExpression,
+    lastEvaluatedFireTime,
+    new Date(recorded.getTime() - 1),
+  );
+  const after = evaluateMissedFires(cronExpression, recorded, now, catchUp);
+  const sum = gap.missedCount + after.missedCount;
+  return {
+    missedCount: Math.min(sum, MISSED_FIRE_COUNT_CAP),
+    saturated: gap.saturated || after.saturated || sum > MISSED_FIRE_COUNT_CAP,
+    oldestMissed: gap.oldestMissed ?? after.oldestMissed,
+    latestMissed: after.latestMissed ?? gap.latestMissed,
+    catchUpFireTime: after.catchUpFireTime,
   };
 }
 

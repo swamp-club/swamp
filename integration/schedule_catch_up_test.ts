@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { Cron } from "croner";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { collect } from "../src/libswamp/testing.ts";
@@ -139,7 +139,7 @@ async function withCatchUpRepo(
             new TextEncoder().encode("{}"),
           ),
         // the lookup serve wires, over the real run repository
-        latestScheduledSlot: (workflowId, signal) =>
+        latestScheduledSlot: (workflowId, signal, notAfter) =>
           firstRecordedSlot(
             runRepo.findByTimeTagLatestFirst(
               workflowId,
@@ -147,6 +147,7 @@ async function withCatchUpRepo(
               signal,
             ),
             principalToString(SCHEDULER_PRINCIPAL),
+            notAfter,
           ),
         now: () => now,
       });
@@ -220,6 +221,11 @@ Deno.test("schedule catch-up: two instances booting together run the catch-up on
     await Promise.all([a.stop(), b.stop()]);
 
     assertEquals(runs.length, 1);
+    const [state] = await new ControlPlaneScheduleStateRepository(store).list();
+    // without leadership a read and a save can interleave, so caughtUp races
+    assertEquals(state.lastEvaluatedFireTime, missed.toISOString());
+    assertEquals(state.lastMissed?.fireTime, missed.toISOString());
+    assertEquals(state.lastMissed?.count, 1);
   });
 });
 
@@ -380,6 +386,110 @@ Deno.test("schedule catch-up: a run someone else tagged with the slot does not s
       await service.stop();
 
       assertEquals(runs[0].runtimeTags?.[CATCH_UP_TAG], "true");
+    },
+  );
+});
+
+/** the monthly slot before the given one */
+function slotBefore(slot: Date): Date {
+  return new Cron(MONTHLY).nextRun(new Date(slot.getTime() - 40 * 24 * HOUR))!;
+}
+
+Deno.test("schedule catch-up: a slot claimed by an instance that crashed before recording it is reported missed", async () => {
+  await withCatchUpRepo(async ({ workflow, store, runs, instance }) => {
+    const { previous, missed } = slots();
+    const shared = new ControlPlaneScheduleStateRepository(store);
+    await shared.save({
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      lastEvaluatedFireTime: previous.toISOString(),
+      cronExpression: MONTHLY,
+    });
+    assert(
+      await store.putIfAbsent(
+        `fire-records/${workflow.id}/${normalizeFireTime(missed)}`,
+        new TextEncoder().encode("{}"),
+      ),
+    );
+
+    const service = instance(missed.getTime() + HOUR);
+    await service.start();
+    await service.catchUpMissedFires();
+    await service.stop();
+
+    assertEquals(runs.length, 0);
+    const [state] = await shared.list();
+    assertEquals(state.lastEvaluatedFireTime, missed.toISOString());
+    assertEquals(state.lastMissed?.fireTime, missed.toISOString());
+    assertEquals(state.lastMissed?.caughtUp, false);
+  });
+});
+
+Deno.test("schedule catch-up: a slot the scheduler ran mid-way reports the gap before it with the catch-up", async () => {
+  await withCatchUpRepo(
+    async ({ workflow, store, runRepo, runs, instance }) => {
+      const { previous, missed } = slots();
+      const gap = slotBefore(previous);
+      const shared = new ControlPlaneScheduleStateRepository(store);
+      await shared.save({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        lastEvaluatedFireTime: slotBefore(gap).toISOString(),
+        cronExpression: MONTHLY,
+      });
+      await recordRun(
+        runRepo,
+        workflow,
+        previous,
+        principalToString(SCHEDULER_PRINCIPAL),
+      );
+
+      const service = instance(missed.getTime() + HOUR);
+      await service.start();
+      await service.catchUpMissedFires();
+      await waitFor(() => runs.length === 1, "catch-up run");
+      await service.stop();
+
+      assertEquals(
+        runs[0].runtimeTags?.[SCHEDULED_FOR_TAG],
+        missed.toISOString(),
+      );
+      const [state] = await shared.list();
+      assertEquals(state.lastEvaluatedFireTime, missed.toISOString());
+      assertEquals(state.lastMissed?.count, 2);
+      assertEquals(state.lastMissed?.caughtUp, true);
+    },
+  );
+});
+
+Deno.test("schedule catch-up: a scheduler run recorded for a slot after now does not hide the slot it ran before", async () => {
+  await withCatchUpRepo(
+    async ({ workflow, store, runRepo, runs, instance }) => {
+      const { previous, missed } = slots();
+      await new ControlPlaneScheduleStateRepository(store).save({
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        lastEvaluatedFireTime: previous.toISOString(),
+        cronExpression: MONTHLY,
+      });
+      const scheduler = principalToString(SCHEDULER_PRINCIPAL);
+      await recordRun(runRepo, workflow, missed, scheduler);
+      await recordRun(
+        runRepo,
+        workflow,
+        new Date("2099-01-01T00:00:00Z"),
+        scheduler,
+      );
+
+      const service = instance(missed.getTime() + HOUR);
+      await service.start();
+      await service.catchUpMissedFires();
+      await service.stop();
+
+      assertEquals(runs.length, 0);
+      const [state] = await new ControlPlaneScheduleStateRepository(store)
+        .list();
+      assertEquals(state.lastEvaluatedFireTime, missed.toISOString());
     },
   );
 });

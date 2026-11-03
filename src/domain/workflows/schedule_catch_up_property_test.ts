@@ -19,10 +19,12 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
+import { Cron } from "croner";
 import { parseDataDuration } from "../data/duration.ts";
 import {
   evaluateMissedFires,
   MISSED_FIRE_COUNT_CAP,
+  missedAroundRecordedSlot,
   type ScheduleCatchUp,
 } from "./schedule_catch_up.ts";
 
@@ -85,6 +87,65 @@ Deno.test("evaluateMissedFires: a catch-up is the latest missed slot, never afte
         assertEquals(catchUp?.policy, "latest");
         const maxDelayMs = parseDataDuration(catchUp?.maxDelay ?? "0m");
         assert(now.getTime() - fire.getTime() <= maxDelayMs);
+      },
+    ),
+    { numRuns: 100 },
+  );
+});
+
+// dense second-level schedules over long windows would hit the cap
+const arbSparseExpression = fc.constantFrom(
+  "*/15 * * * *",
+  "0 * * * *",
+  "0 9 * * *",
+  "30 2 * * 1",
+);
+
+Deno.test("missedAroundRecordedSlot: the split misses exactly the slots after the watermark except the recorded one, and catches up as from it", () => {
+  fc.assert(
+    fc.property(
+      arbSparseExpression,
+      fc.integer({ min: Date.UTC(2026, 0, 1), max: Date.UTC(2027, 0, 1) }),
+      fc.integer({ min: 1, max: 5 * DAY_MS }),
+      fc.double({ min: 0, max: 1, noNaN: true }),
+      arbCatchUp,
+      (expression, watermarkMs, windowMs, pick, catchUp) => {
+        const watermark = new Date(watermarkMs);
+        const now = new Date(watermarkMs + windowMs);
+        const all = evaluateMissedFires(expression, watermark, now);
+        fc.pre(all.missedCount > 0 && !all.saturated);
+        const slots = new Cron(expression).nextRuns(all.missedCount, watermark);
+        const recorded =
+          slots[Math.min(slots.length - 1, Math.floor(pick * slots.length))];
+
+        const split = missedAroundRecordedSlot(
+          expression,
+          watermark,
+          recorded,
+          now,
+          catchUp,
+        );
+        assertEquals(split.missedCount, all.missedCount - 1);
+        assertEquals(split.saturated, false);
+        assertEquals(
+          split.catchUpFireTime,
+          evaluateMissedFires(expression, recorded, now, catchUp)
+            .catchUpFireTime,
+        );
+        if (split.missedCount > 0) {
+          assertEquals(
+            split.oldestMissed,
+            recorded.getTime() === all.oldestMissed!.getTime()
+              ? slots[1]
+              : all.oldestMissed,
+          );
+          assertEquals(
+            split.latestMissed,
+            recorded.getTime() === all.latestMissed!.getTime()
+              ? slots[slots.length - 2]
+              : all.latestMissed,
+          );
+        }
       },
     ),
     { numRuns: 100 },
