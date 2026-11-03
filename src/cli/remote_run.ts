@@ -97,8 +97,9 @@ export function implicitServeUrl(markerValue?: string): string | undefined {
 }
 
 /**
- * takes only explicit flag values, since env vars carry over; the server URL loses userinfo, query and fragment because serve
- * accepts a token as a query parameter
+ * takes only explicit flag values, since env vars carry over; the server URL
+ * loses userinfo, query and fragment because serve accepts a token as a query
+ * parameter
  */
 export function formatCommandTarget(
   flags: { server?: string; repoDir?: string },

@@ -92,7 +92,6 @@ Deno.test("alignCheckoutView: a reader waiting for the lease reads once the writ
     const repoDir = join(dir, "repo");
     await Deno.mkdir(datastorePath);
     await Deno.mkdir(repoDir);
-    // the writer's command holds the lease from its start to its end
     const releaseLease = await acquireV3WriterLock(datastorePath, {
       maxWaitMs: 0,
     });

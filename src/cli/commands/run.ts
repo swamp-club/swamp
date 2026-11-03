@@ -125,7 +125,7 @@ export async function serveRunHistoryOf(
   }
 }
 
-/** one row per run id, the checkout's own row first, newest first */
+/** one row per run id, the checkout's own row winning, newest first */
 export function mergeRunHistory(
   local: readonly ActiveRun[],
   serve: readonly ActiveRun[],

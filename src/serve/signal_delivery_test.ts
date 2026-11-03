@@ -483,7 +483,6 @@ Deno.test("deliverSignalForCaller: a caller who may not signal the workflow gets
         const unknown = await deliver(ctx, UNKNOWN_WAIT, payload);
 
         if (!maySignal) {
-          // each names only the address its caller sent
           assertEquals(real, notFound(f.waitId));
           assertEquals(unknown, notFound(UNKNOWN_WAIT));
           assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
