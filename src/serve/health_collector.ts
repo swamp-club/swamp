@@ -45,6 +45,21 @@ export interface HealthSnapshotSchedule {
   readonly queued: number;
   readonly oldestQueuedAt: string | null;
   readonly lastQueueDelayMs: number | null;
+  readonly catchUp: HealthScheduleCatchUp | null;
+  readonly lastMissed: HealthScheduleMissedFire | null;
+}
+
+export interface HealthScheduleCatchUp {
+  readonly policy: string;
+  readonly maxDelay?: string;
+}
+
+export interface HealthScheduleMissedFire {
+  readonly fireTime: string;
+  readonly count: number;
+  readonly reason: string;
+  readonly caughtUp: boolean;
+  readonly detectedAt: string;
 }
 
 export interface HealthSnapshotWebhook {
@@ -107,6 +122,10 @@ export interface ScheduleProvider {
     readonly queued: number;
     readonly oldestQueuedAt: string | null;
     readonly lastQueueDelayMs: number | null;
+  };
+  scheduleStatus(workflowId: string): {
+    readonly catchUp: HealthScheduleCatchUp | null;
+    readonly lastMissed: HealthScheduleMissedFire | null;
   };
 }
 
@@ -248,6 +267,7 @@ export class HealthCollector {
         nextRun: s.nextRun?.toISOString() ?? null,
         running: this.#deps.scheduleProvider!.isRunning(String(s.workflowId)),
         ...this.#deps.scheduleProvider!.queueStatus(String(s.workflowId)),
+        ...this.#deps.scheduleProvider!.scheduleStatus(String(s.workflowId)),
       }))
       : [];
 

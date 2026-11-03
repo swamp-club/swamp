@@ -633,9 +633,15 @@ export interface WorkflowTriggerGetPayload {
   workflowName: string;
 }
 
+export interface TriggerCatchUp {
+  readonly policy: "none" | "latest";
+  readonly maxDelay?: string;
+}
+
 export interface EffectiveTrigger {
   readonly schedule: string | null;
   readonly inputs: Record<string, unknown>;
+  readonly catchUp: TriggerCatchUp | null;
 }
 
 export interface WorkflowTriggerGetResult {
@@ -644,6 +650,7 @@ export interface WorkflowTriggerGetResult {
   readonly override: {
     readonly schedule?: string;
     readonly inputs?: Record<string, unknown>;
+    readonly catchUp?: TriggerCatchUp;
   } | null;
   readonly effective: EffectiveTrigger;
 }

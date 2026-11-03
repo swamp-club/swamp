@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { UserError } from "../../domain/errors.ts";
 
 import "../../domain/models/models.ts";
 
@@ -66,4 +67,59 @@ Deno.test("workflowTriggerSetCommand: has correct name and options", async () =>
 
   const inputOpt = options.find((o) => o.name === "input");
   assertEquals(inputOpt !== undefined, true);
+});
+
+Deno.test("parseCatchUpFlags: no flags is no catch-up", async () => {
+  const { parseCatchUpFlags } = await import("./workflow_trigger_set.ts");
+  assertEquals(parseCatchUpFlags(undefined, undefined), undefined);
+});
+
+Deno.test("parseCatchUpFlags: builds a catch-up from policy and max delay", async () => {
+  const { parseCatchUpFlags } = await import("./workflow_trigger_set.ts");
+  assertEquals(parseCatchUpFlags("latest", "6h"), {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  assertEquals(parseCatchUpFlags("none", undefined), { policy: "none" });
+});
+
+Deno.test("parseCatchUpFlags: a max delay without a policy is a user error", async () => {
+  const { parseCatchUpFlags } = await import("./workflow_trigger_set.ts");
+  assertThrows(
+    () => parseCatchUpFlags(undefined, "6h"),
+    UserError,
+    "--catch-up-max-delay requires --catch-up latest",
+  );
+});
+
+Deno.test("parseCatchUpFlags: an unknown policy names --catch-up", async () => {
+  const { parseCatchUpFlags } = await import("./workflow_trigger_set.ts");
+  assertThrows(
+    () => parseCatchUpFlags("sometimes", undefined),
+    UserError,
+    "Invalid --catch-up 'sometimes': expected none or latest",
+  );
+});
+
+Deno.test("parseCatchUpFlags: latest without a max delay names --catch-up-max-delay", async () => {
+  const { parseCatchUpFlags } = await import("./workflow_trigger_set.ts");
+  assertThrows(
+    () => parseCatchUpFlags("latest", undefined),
+    UserError,
+    "Invalid --catch-up-max-delay",
+  );
+  assertThrows(
+    () => parseCatchUpFlags("latest", "32d"),
+    UserError,
+    "Invalid --catch-up-max-delay",
+  );
+});
+
+Deno.test("workflowTriggerSetCommand: has catch-up options", async () => {
+  const { workflowTriggerSetCommand } = await import(
+    "./workflow_trigger_set.ts"
+  );
+  const names = workflowTriggerSetCommand.getOptions().map((o) => o.name);
+  assertEquals(names.includes("catch-up"), true);
+  assertEquals(names.includes("catch-up-max-delay"), true);
 });

@@ -750,6 +750,7 @@ export interface WorkflowTriggerSetPayload {
   workflowName: string;
   schedule: string;
   inputs?: Record<string, unknown>;
+  catchUp?: TriggerCatchUp;
 }
 
 export interface WorkflowTriggerGetPayload {
@@ -772,9 +773,15 @@ export interface WorkflowScheduleResumePayload {
 
 export type WorkflowScheduleListPayload = Record<string, never>;
 
+export interface TriggerCatchUp {
+  readonly policy: "none" | "latest";
+  readonly maxDelay?: string;
+}
+
 export interface EffectiveTrigger {
   readonly schedule: string | null;
   readonly inputs: Record<string, unknown>;
+  readonly catchUp: TriggerCatchUp | null;
 }
 
 export interface WorkflowTriggerGetResult {
@@ -783,6 +790,7 @@ export interface WorkflowTriggerGetResult {
   readonly override: {
     readonly schedule?: string;
     readonly inputs?: Record<string, unknown>;
+    readonly catchUp?: TriggerCatchUp;
   } | null;
   readonly effective: EffectiveTrigger;
 }
@@ -1910,7 +1918,11 @@ export interface WorkflowEvaluateResponse {
 export interface WorkflowTriggerSetResponse {
   data: {
     workflowName: string;
-    entry: { schedule?: string; inputs?: Record<string, unknown> };
+    entry: {
+      schedule?: string;
+      inputs?: Record<string, unknown>;
+      catchUp?: TriggerCatchUp;
+    };
   };
 }
 

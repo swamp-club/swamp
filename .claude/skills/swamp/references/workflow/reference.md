@@ -95,11 +95,34 @@ modifying, or removing a schedule takes effect without restart.
 - Webhook runs have their own limit, `--max-concurrent-webhook-runs <n>`
   (default 1); unlike schedules, deliveries to the same route may overlap. See
   [execution-semantics.md](references/execution-semantics.md#webhook-delivery)
-- No catch-up: missed schedules while serve was down are not fired on startup
+- Missed fires: serve records each schedule's last missed fire (serve was down,
+  paused, or previous run still going) as `lastMissed` in `/api/v1/health`, the
+  dashboard and `swamp workflow schedule list`. It does not fire a missed
+  schedule unless the trigger opts in to catch-up (below)
 - Use `--no-schedule` on `swamp serve` to disable scheduled execution
 - The serve dashboard and `/api/v1/health` (needs a token unless auth mode is
   `none`) report scheduled workflows, next fire times and queue state per
   schedule: `queued`, `oldestQueuedAt`, `lastQueueDelayMs`
+
+### Catch-up
+
+Opt in to firing a schedule missed while serve was down:
+
+```yaml
+trigger:
+  schedule: "0 9 1 * *"
+  catchUp:
+    policy: latest # none (default) | latest
+    maxDelay: 6h # required with latest; at most 31d
+```
+
+On startup serve fires the most recent missed slot once, only if it is at most
+`maxDelay` old; it never replays a backlog, and a paused schedule is not caught
+up. The run is tagged `swamp.trigger.catchUp: "true"` and
+`swamp.trigger.scheduledFor: <slot>`; check `run.tags` to decline. A schedule's
+first start after an upgrade only starts tracking, so nothing is caught up then.
+For an extension workflow, set it as an override:
+`swamp workflow trigger set <name> --schedule "<cron>" --catch-up latest --catch-up-max-delay 6h`.
 
 ### Trigger inputs
 

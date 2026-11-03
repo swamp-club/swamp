@@ -64,6 +64,7 @@ Deno.test("importCheckoutControlPlane: moves lasting records and token secrets, 
     "fire-records/w/2026-10-28T10-00-00Z": "fired",
     "dashboard-sessions/s1": "session",
     "schedule-pauses/nightly.json": "paused",
+    "schedule-states/nightly": "watermark",
     "_audit/default/events/2026-10-28/e1.jsonl": "event",
     "token-secrets/encryption-key": "key",
     "token-secrets/values/t1": "secret",
@@ -72,7 +73,7 @@ Deno.test("importCheckoutControlPlane: moves lasting records and token secrets, 
     "claims/reconcile-instance/x": "claim",
   });
   const shared = memoryStore();
-  assertEquals(await importCheckoutControlPlane(checkout, shared), 7);
+  assertEquals(await importCheckoutControlPlane(checkout, shared), 8);
   assertEquals(
     [...shared.data.keys()].sort(),
     [
@@ -81,6 +82,7 @@ Deno.test("importCheckoutControlPlane: moves lasting records and token secrets, 
       "fire-records/w/2026-10-28T10-00-00Z",
       "pending-runs/p1",
       "schedule-pauses/nightly.json",
+      "schedule-states/nightly",
       "token-secrets/encryption-key",
       "token-secrets/values/t1",
     ],

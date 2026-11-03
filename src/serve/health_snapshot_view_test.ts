@@ -88,6 +88,8 @@ function snapshot(): HealthSnapshot {
           queued: 0,
           oldestQueuedAt: null,
           lastQueueDelayMs: null,
+          catchUp: null,
+          lastMissed: null,
         },
         {
           workflowId: "2",
@@ -98,6 +100,8 @@ function snapshot(): HealthSnapshot {
           queued: 0,
           oldestQueuedAt: null,
           lastQueueDelayMs: null,
+          catchUp: null,
+          lastMissed: null,
         },
       ],
     },

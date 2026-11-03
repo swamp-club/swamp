@@ -123,6 +123,7 @@ Deno.test("HealthCollector: includes schedule entries", async () => {
         oldestQueuedAt: null,
         lastQueueDelayMs: null,
       }),
+      scheduleStatus: () => ({ catchUp: null, lastMissed: null }),
     },
   });
 
@@ -164,6 +165,19 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
             lastQueueDelayMs: 49 * 60_000,
           }
           : { queued: 0, oldestQueuedAt: null, lastQueueDelayMs: null },
+      scheduleStatus: (id) =>
+        id === "wf-1"
+          ? {
+            catchUp: { policy: "latest", maxDelay: "6h" },
+            lastMissed: {
+              fireTime: "2026-01-01T00:00:00.000Z",
+              count: 2,
+              reason: "serve_down",
+              caughtUp: true,
+              detectedAt: "2026-01-01T00:03:00.000Z",
+            },
+          }
+          : { catchUp: null, lastMissed: null },
     },
   });
 
@@ -178,6 +192,14 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
     queued: 3,
     oldestQueuedAt: "2026-01-01T00:00:00.000Z",
     lastQueueDelayMs: 49 * 60_000,
+    catchUp: { policy: "latest", maxDelay: "6h" },
+    lastMissed: {
+      fireTime: "2026-01-01T00:00:00.000Z",
+      count: 2,
+      reason: "serve_down",
+      caughtUp: true,
+      detectedAt: "2026-01-01T00:03:00.000Z",
+    },
   }, {
     workflowId: "wf-2",
     workflowName: "idle",
@@ -187,6 +209,8 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
     queued: 0,
     oldestQueuedAt: null,
     lastQueueDelayMs: null,
+    catchUp: null,
+    lastMissed: null,
   }]);
   assertEquals(Object.keys(snapshot.scheduling).sort(), [
     "enabled",

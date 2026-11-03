@@ -52,7 +52,7 @@ import { describeCron } from "../lib/cron.ts";
 import { fuzzyFilter } from "../lib/fuzzy.ts";
 import { workflowPrefix } from "../lib/workflow_facets.ts";
 import { formatCount } from "../lib/format.ts";
-import { scheduleQueueLabel } from "./schedule_queue.ts";
+import { scheduleMissedLabel, scheduleQueueLabel } from "./schedule_queue.ts";
 import { ScheduleEditDialog } from "./ScheduleEditDialog.tsx";
 import "../styles/triggers.css";
 
@@ -133,6 +133,7 @@ export function Schedules(
       running: s.running,
       runningCount: summary?.running ?? 0,
       queueLabel: scheduleQueueLabel(s, now),
+      missedLabel: scheduleMissedLabel(s),
       recent: summary?.recent ?? [],
     };
   });

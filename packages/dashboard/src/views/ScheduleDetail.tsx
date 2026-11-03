@@ -69,7 +69,7 @@ import {
   formatDuration,
   formatRelativeTime,
 } from "../lib/format.ts";
-import { scheduleQueueLabel } from "./schedule_queue.ts";
+import { scheduleMissedLabel, scheduleQueueLabel } from "./schedule_queue.ts";
 import { ScheduleEditDialog, type TriggerInfo } from "./ScheduleEditDialog.tsx";
 import "../styles/triggers.css";
 
@@ -281,6 +281,27 @@ export function ScheduleDetail(
                         <>
                           <dt>Last start delay</dt>
                           <dd>{formatDuration(entry.lastQueueDelayMs)}</dd>
+                        </>
+                      )}
+                      {entry?.catchUp && (
+                        <>
+                          <dt>Catch-up</dt>
+                          <dd>
+                            {entry.catchUp.maxDelay
+                              ? `${entry.catchUp.policy} · within ${entry.catchUp.maxDelay}`
+                              : entry.catchUp.policy}
+                          </dd>
+                        </>
+                      )}
+                      {entry?.lastMissed && (
+                        <>
+                          <dt>Last missed</dt>
+                          <dd>
+                            {scheduleMissedLabel(entry)}
+                            <span className="trig-sub">
+                              {formatAbsoluteTime(entry.lastMissed.fireTime)}
+                            </span>
+                          </dd>
                         </>
                       )}
                     </dl>

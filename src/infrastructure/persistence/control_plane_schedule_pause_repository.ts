@@ -30,6 +30,7 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import { withDeadline } from "./datastore_format_marker_reader.ts";
+import { workflowIdOfKey, workflowKey } from "./control_plane_workflow_key.ts";
 
 const logger = getLogger(["swamp", "persistence", "schedule-pause"]);
 
@@ -112,29 +113,12 @@ export class ControlPlaneSchedulePauseRepository
   }
 }
 
-/**
- * the id is percent-encoded so none can name a key outside the prefix;
- * characters encodeURIComponent leaves alone are encoded too, as a Windows
- * filesystem control plane can't hold *
- */
 function keyFor(workflowId: WorkflowId): string {
-  const encoded = encodeURIComponent(workflowId).replace(
-    /[!'()*]/g,
-    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-  return `${PAUSE_PREFIX}${encoded}`;
+  return workflowKey(PAUSE_PREFIX, workflowId);
 }
 
 function workflowIdOf(key: string): WorkflowId | null {
-  const at = key.lastIndexOf(PAUSE_PREFIX);
-  if (at === -1) return null;
-  const encoded = key.slice(at + PAUSE_PREFIX.length);
-  if (encoded.length === 0 || encoded.includes("/")) return null;
-  try {
-    return createWorkflowId(decodeURIComponent(encoded));
-  } catch {
-    return null;
-  }
+  return workflowIdOfKey(PAUSE_PREFIX, key);
 }
 
 /**

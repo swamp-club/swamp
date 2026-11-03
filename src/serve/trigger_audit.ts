@@ -141,7 +141,8 @@ export function emitTriggerDenial(
 
 /**
  * an overlap skip is a failure (the fire was lost); a dedup skip (another
- * instance ran it) and a paused skip (on purpose) are successes. Refusals are
+ * instance ran it) and a paused skip (on purpose) are successes. A fire missed
+ * while serve was down is a failure unless it was caught up. Refusals are
  * audited by the authorizer
  */
 export function auditScheduledEvent(
@@ -160,6 +161,23 @@ export function auditScheduledEvent(
           run: event.runId,
           fireTime: event.fireTime,
           replayed: event.replayed || undefined,
+          catchUp: event.catchUp || undefined,
+        },
+      });
+      return;
+    case "schedule_missed":
+      emitTriggerAuditEvent(ctx, {
+        principal: SCHEDULER_PRINCIPAL,
+        action: "workflow.schedule.missed",
+        outcome: event.caughtUp ? "success" : "failure",
+        workflowName: event.workflowName,
+        sourceIp: LOCAL_SOURCE_IP,
+        detail: {
+          fireTime: event.fireTime,
+          oldestFireTime: event.oldestFireTime,
+          missed: event.saturated ? `${event.missedCount}+` : event.missedCount,
+          reason: "serve_down",
+          caughtUp: event.caughtUp,
         },
       });
       return;

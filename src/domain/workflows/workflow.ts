@@ -34,6 +34,10 @@ import {
 import { Cron } from "croner";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
 import { WorkflowSchemaError } from "./workflow_schema_error.ts";
+import {
+  type ScheduleCatchUp,
+  ScheduleCatchUpSchema,
+} from "./schedule_catch_up.ts";
 
 const WORKFLOW_NAME_MAX_LENGTH = 64;
 const WORKFLOW_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -108,7 +112,12 @@ export const WorkflowObjectSchema = z.object({
       { message: "Invalid cron expression" },
     ).optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
-  }).optional(),
+    catchUp: ScheduleCatchUpSchema.optional(),
+  }).refine(
+    (trigger) =>
+      trigger.catchUp === undefined || trigger.schedule !== undefined,
+    { message: "trigger.catchUp requires trigger.schedule", path: ["catchUp"] },
+  ).optional(),
   tags: z.record(z.string(), z.string()).default({}),
   inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
@@ -151,11 +160,17 @@ export type WorkflowData = z.infer<typeof WorkflowObjectSchema>;
 
 export type WorkflowInput = z.input<typeof WorkflowObjectSchema>;
 
+export interface WorkflowTrigger {
+  schedule?: string;
+  inputs?: Record<string, unknown>;
+  catchUp?: ScheduleCatchUp;
+}
+
 export interface CreateWorkflowProps {
   id?: string;
   name: string;
   description?: string;
-  trigger?: { schedule?: string; inputs?: Record<string, unknown> };
+  trigger?: WorkflowTrigger;
   tags?: Record<string, string>;
   inputs?: InputsSchema;
   jobs?: Job[];
@@ -177,9 +192,7 @@ export class Workflow {
     readonly id: WorkflowId,
     readonly name: string,
     readonly description: string | undefined,
-    readonly trigger:
-      | { schedule?: string; inputs?: Record<string, unknown> }
-      | undefined,
+    readonly trigger: WorkflowTrigger | undefined,
     readonly tags: Record<string, string>,
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
@@ -302,6 +315,10 @@ export class Workflow {
 
   get triggerInputs(): Record<string, unknown> | undefined {
     return this.trigger?.inputs;
+  }
+
+  get catchUp(): ScheduleCatchUp | undefined {
+    return this.trigger?.catchUp;
   }
 
   /**

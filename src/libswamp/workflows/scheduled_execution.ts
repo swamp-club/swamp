@@ -29,6 +29,17 @@ import {
   type ScheduleEntry,
   WorkflowScheduler,
 } from "../../domain/workflows/workflow_scheduler.ts";
+import {
+  evaluateMissedFires,
+  type ScheduleCatchUp,
+} from "../../domain/workflows/schedule_catch_up.ts";
+import {
+  advanceScheduleState,
+  type MissedFire,
+  type MissedFireReason,
+  type ScheduleState,
+  type ScheduleStateRepository,
+} from "../../domain/workflows/schedule_state.ts";
 import { WorkflowWatcher } from "./watcher.ts";
 import { workflowsDirFor } from "./broken_workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -83,6 +94,18 @@ export type ScheduledExecutionEvent =
     workflowId: WorkflowId;
     workflowName: string;
     fireTime: string;
+    catchUp?: boolean;
+  }
+  | {
+    kind: "schedule_missed";
+    workflowId: WorkflowId;
+    workflowName: string;
+    /** the most recent slot missed */
+    fireTime: string;
+    oldestFireTime: string;
+    missedCount: number;
+    saturated: boolean;
+    caughtUp: boolean;
   }
   | {
     kind: "schedule_skipped";
@@ -106,6 +129,7 @@ export type ScheduledExecutionEvent =
     fireTime?: string;
     replayed: boolean;
     queueDelayMs?: number;
+    catchUp?: boolean;
   }
   | {
     kind: "schedule_denied";
@@ -197,6 +221,7 @@ export type ScheduledRunAuthorizer = (
 export interface TriggerOverride {
   readonly schedule?: string;
   readonly inputs?: Record<string, unknown>;
+  readonly catchUp?: ScheduleCatchUp;
 }
 
 export interface ScheduledExecutionDeps {
@@ -215,6 +240,11 @@ export interface ScheduledExecutionDeps {
    * schedule is ever paused.
    */
   schedulePauses?: SchedulePauseRepository;
+  /**
+   * Each schedule's watermark and last missed fire. When absent nothing is
+   * recorded and catchUpMissedFires does nothing.
+   */
+  scheduleState?: ScheduleStateRepository;
   /**
    * How many scheduled runs may be in flight at once. Different workflows run
    * together up to this limit; a workflow never overlaps itself. Defaults to
@@ -238,7 +268,23 @@ interface QueuedRun {
   fireTime?: Date;
   enqueuedAt: number;
   replayed: boolean;
+  catchUp?: boolean;
 }
+
+type FireOutcome =
+  | "queued"
+  | "paused"
+  | "overlap"
+  | "claimed_elsewhere"
+  | "dropped";
+
+export interface ScheduleStatus {
+  readonly catchUp: ScheduleCatchUp | null;
+  readonly lastMissed: MissedFire | null;
+}
+
+export const CATCH_UP_TAG = "swamp.trigger.catchUp";
+export const SCHEDULED_FOR_TAG = "swamp.trigger.scheduledFor";
 
 export class ScheduledExecutionService {
   private readonly scheduler: WorkflowScheduler;
@@ -265,6 +311,18 @@ export class ScheduledExecutionService {
    * workflow nor skips an unpaused one.
    */
   private readonly lastPauseRead = new Map<WorkflowId, SchedulePause | null>();
+  private readonly cronExpressions = new Map<WorkflowId, string>();
+  private readonly builtInCatchUp = new Map<WorkflowId, ScheduleCatchUp>();
+  private readonly scheduleStates = new Map<WorkflowId, ScheduleState>();
+  private readonly stateWrites = new Set<Promise<void>>();
+  /**
+   * the watermarks as they stood before the scheduler started, so a fire in
+   * the gap before the first catch-up pass cannot hide the slots missed before
+   * it; null once used, or when they could not be listed
+   */
+  private bootStates: Map<WorkflowId, ScheduleState> | null = null;
+  /** registrations before this are the boot scan, which keeps watermarks */
+  private started = false;
 
   constructor(private readonly deps: ScheduledExecutionDeps) {
     this.triggerOverrides = deps.triggerOverrides ?? new Map();
@@ -274,8 +332,13 @@ export class ScheduledExecutionService {
     this.watcher = new WorkflowWatcher(
       workflowsDirFor(deps.repoDir),
       deps.workflowRepo,
-      (workflowId, schedule, workflowName) =>
-        this.handleScheduleChange(workflowId, schedule, workflowName),
+      (workflowId, schedule, workflowName, catchUp) =>
+        this.handleScheduleChange(
+          workflowId,
+          schedule,
+          workflowName,
+          catchUp,
+        ),
     );
   }
 
@@ -288,13 +351,13 @@ export class ScheduledExecutionService {
 
     await this.applyTriggerOverrides();
 
+    await this.loadScheduleStates();
+    this.started = true;
+
     // Start the scheduler — cron jobs begin firing. WorkflowScheduler arms
     // each job's timer detached, so a fire never joins this caller's trace.
-    this.scheduler.start((workflowId, fireTime) => {
-      const fire: Promise<void> = this.handleFire(workflowId, fireTime)
-        .finally(() => this.inFlightFires.delete(fire));
-      this.inFlightFires.add(fire);
-      return fire;
+    this.scheduler.start(async (workflowId, fireTime) => {
+      await this.trackedFire(workflowId, fireTime);
     });
 
     // Start watching for changes. Detached: serve starts this service inside
@@ -334,7 +397,7 @@ export class ScheduledExecutionService {
     // it to be recorded for replay even when the drain timeout is 0.
     await Promise.all([
       settleWithin(
-        Promise.allSettled([...this.inFlightFires]),
+        Promise.allSettled([...this.inFlightFires, ...this.stateWrites]),
         FIRE_SETTLE_TIMEOUT_MS,
       ),
       timeoutMs > 0
@@ -361,6 +424,10 @@ export class ScheduledExecutionService {
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight]);
     }
+    await settleWithin(
+      Promise.allSettled([...this.stateWrites]),
+      FIRE_SETTLE_TIMEOUT_MS,
+    );
 
     this.running.clear();
     this.workflowNames.clear();
@@ -408,6 +475,14 @@ export class ScheduledExecutionService {
         ? null
         : new Date(oldest).toISOString(),
       lastQueueDelayMs: this.lastQueueDelayMs.get(name) ?? null,
+    };
+  }
+
+  scheduleStatus(workflowId: WorkflowId): ScheduleStatus {
+    const name = this.workflowNames.get(workflowId) ?? workflowId;
+    return {
+      catchUp: this.resolveCatchUp(workflowId, name) ?? null,
+      lastMissed: this.scheduleStates.get(workflowId)?.lastMissed ?? null,
     };
   }
 
@@ -470,15 +545,38 @@ export class ScheduledExecutionService {
     );
   }
 
+  private resolveCatchUp(
+    workflowId: WorkflowId,
+    workflowName: string,
+  ): ScheduleCatchUp | undefined {
+    return this.triggerOverrides.get(workflowName)?.catchUp ??
+      this.builtInCatchUp.get(workflowId);
+  }
+
   private handleScheduleChange(
     workflowId: WorkflowId,
     schedule: string | null,
     workflowName: string,
+    catchUp?: ScheduleCatchUp,
   ): void {
     const effective = this.resolveSchedule(workflowName, schedule);
+    if (catchUp) this.builtInCatchUp.set(workflowId, catchUp);
+    else this.builtInCatchUp.delete(workflowId);
     if (effective) {
+      const previous = this.cronExpressions.get(workflowId);
       this.scheduler.register(workflowId, effective);
       this.workflowNames.set(workflowId, workflowName);
+      this.cronExpressions.set(workflowId, effective);
+      // time spent unscheduled, or on another expression, was never missed
+      if (this.started && previous !== effective) {
+        this.trackStateWrite(
+          this.writeScheduleState(
+            workflowId,
+            workflowName,
+            new Date(this.now()),
+          ),
+        );
+      }
       this.emit({
         kind: "schedule_registered",
         workflowId,
@@ -495,6 +593,7 @@ export class ScheduledExecutionService {
       );
     } else {
       this.scheduler.unregister(workflowId);
+      this.cronExpressions.delete(workflowId);
       const name = this.workflowNames.get(workflowId) ?? workflowName;
       this.workflowNames.delete(workflowId);
       this.lastQueueDelayMs.delete(name);
@@ -535,7 +634,12 @@ export class ScheduledExecutionService {
         continue;
       }
 
-      this.handleScheduleChange(workflow.id, null, workflow.name);
+      this.handleScheduleChange(
+        workflow.id,
+        null,
+        workflow.name,
+        workflow.catchUp,
+      );
     }
   }
 
@@ -556,6 +660,7 @@ export class ScheduledExecutionService {
           workflowId,
           workflow?.schedule ?? null,
           workflowName,
+          workflow?.catchUp,
         );
         changed++;
       }
@@ -579,12 +684,18 @@ export class ScheduledExecutionService {
           workflowId,
           workflow?.schedule ?? null,
           workflowName,
+          workflow?.catchUp,
         );
         changed++;
       } else if (newOverride.schedule) {
         const workflow = await this.deps.workflowRepo.findByName(workflowName);
         if (workflow) {
-          this.handleScheduleChange(workflow.id, null, workflow.name);
+          this.handleScheduleChange(
+            workflow.id,
+            null,
+            workflow.name,
+            workflow.catchUp,
+          );
           changed++;
         } else {
           logger.warn(
@@ -612,11 +723,155 @@ export class ScheduledExecutionService {
     return undefined;
   }
 
+  /**
+   * the catch-up pass reads each schedule's state itself, so a promoted
+   * instance whose cache went stale reports what the leader wrote
+   */
+  async catchUpMissedFires(): Promise<void> {
+    if (!this.deps.scheduleState || this.draining || this.stopped) return;
+    const now = new Date(this.now());
+    const bootStates = this.bootStates;
+    this.bootStates = null;
+    for (const entry of this.scheduler.listSchedules()) {
+      try {
+        await this.catchUpSchedule(
+          entry.workflowId,
+          entry.cronExpression,
+          now,
+          bootStates?.get(entry.workflowId),
+        );
+      } catch (error) {
+        logger.warn(
+          "Cannot check workflow {name} for missed scheduled fires: {error}",
+          {
+            name: this.workflowNames.get(entry.workflowId) ?? entry.workflowId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+    }
+  }
+
+  private async catchUpSchedule(
+    workflowId: WorkflowId,
+    cronExpression: string,
+    now: Date,
+    bootState: ScheduleState | undefined,
+  ): Promise<void> {
+    const repo = this.deps.scheduleState!;
+    const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
+    // a listing skips a record it could not read, so absence is confirmed
+    const stored = await repo.get(workflowId);
+    if (stored) {
+      const cached = this.scheduleStates.get(workflowId);
+      if (
+        !cached ||
+        Date.parse(stored.lastEvaluatedFireTime) >=
+          Date.parse(cached.lastEvaluatedFireTime)
+      ) {
+        this.scheduleStates.set(workflowId, stored);
+      }
+    }
+    const state = bootState ?? stored;
+    if (!state) {
+      // nothing says what was seen before, so nothing can be called missed
+      await this.writeScheduleState(workflowId, workflowName, now);
+      return;
+    }
+
+    const catchUp = this.resolveCatchUp(workflowId, workflowName);
+    const missed = evaluateMissedFires(
+      cronExpression,
+      new Date(state.lastEvaluatedFireTime),
+      now,
+      catchUp,
+    );
+    if (missed.missedCount === 0 || !missed.latestMissed) return;
+    const settled = this.scheduleStates.get(workflowId)?.lastEvaluatedFireTime;
+    // a later slot already fired, so the most recent one was not missed
+    const firedSince = settled !== undefined &&
+      Date.parse(settled) > missed.latestMissed.getTime();
+    const catchUpFireTime = firedSince ? null : missed.catchUpFireTime;
+
+    const lastMissed: MissedFire = {
+      fireTime: missed.latestMissed.toISOString(),
+      count: missed.missedCount,
+      reason: "serve_down",
+      caughtUp: false,
+      detectedAt: now.toISOString(),
+    };
+
+    let caughtUp = false;
+    if (catchUpFireTime) {
+      const outcome = await this.trackedFire(
+        workflowId,
+        catchUpFireTime,
+        lastMissed,
+      );
+      caughtUp = outcome === "queued";
+      if (outcome === "claimed_elsewhere" || outcome === "dropped") {
+        // the claiming instance records it, or the next boot finds it again
+        this.emitMissed(workflowId, workflowName, missed, caughtUp);
+        return;
+      }
+    } else {
+      await this.writeScheduleState(
+        workflowId,
+        workflowName,
+        missed.latestMissed,
+        lastMissed,
+      );
+    }
+    this.emitMissed(workflowId, workflowName, missed, caughtUp);
+    logger.warn(
+      caughtUp
+        ? "Workflow {name} missed {count} scheduled fire(s) while serve was down; catching up the one at {fireTime}"
+        : "Workflow {name} missed {count} scheduled fire(s) while serve was down, the latest at {fireTime}",
+      {
+        name: workflowName,
+        count: missed.saturated ? `${missed.missedCount}+` : missed.missedCount,
+        fireTime: lastMissed.fireTime,
+      },
+    );
+  }
+
+  private emitMissed(
+    workflowId: WorkflowId,
+    workflowName: string,
+    missed: ReturnType<typeof evaluateMissedFires>,
+    caughtUp: boolean,
+  ): void {
+    this.emit({
+      kind: "schedule_missed",
+      workflowId,
+      workflowName,
+      fireTime: missed.latestMissed!.toISOString(),
+      oldestFireTime: missed.oldestMissed!.toISOString(),
+      missedCount: missed.missedCount,
+      saturated: missed.saturated,
+      caughtUp,
+    });
+  }
+
+  /**
+   * a catch-up fire carries the missed fire the startup pass found, which its
+   * settled state records in place of a paused or overlap miss
+   */
   private async handleFire(
     workflowId: WorkflowId,
     fireTime: Date,
-  ): Promise<void> {
+    catchUpOf?: MissedFire,
+  ): Promise<FireOutcome> {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
+    const catchUp = catchUpOf !== undefined;
+    const lostFire = (reason: MissedFireReason): MissedFire =>
+      catchUpOf ?? {
+        fireTime: fireTime.toISOString(),
+        count: 1,
+        reason,
+        caughtUp: false,
+        detectedAt: new Date(this.now()).toISOString(),
+      };
 
     if (this.deps.schedulePauses) {
       const pause = await this.pauseInForce(workflowId, workflowName, fireTime);
@@ -624,7 +879,13 @@ export class ScheduledExecutionService {
         this.emitPausedSkip(workflowId, workflowName, pause, {
           fireTime: fireTime.toISOString(),
         });
-        return;
+        await this.writeScheduleState(
+          workflowId,
+          workflowName,
+          fireTime,
+          lostFire("paused"),
+        );
+        return "paused";
       }
     }
 
@@ -645,12 +906,18 @@ export class ScheduledExecutionService {
         "Skipping scheduled run for {name}: previous run still in progress",
         { name: workflowName },
       );
-      return;
+      await this.writeScheduleState(
+        workflowId,
+        workflowName,
+        fireTime,
+        lostFire("overlap"),
+      );
+      return "overlap";
     }
 
     // A draining service starts no new runs; checked again after the dedup
     // await, which can span the start of a drain.
-    if (this.draining) return;
+    if (this.draining) return "dropped";
 
     if (this.deps.cronFireDedup) {
       try {
@@ -664,7 +931,7 @@ export class ScheduledExecutionService {
             dedupSkip: true,
             fireTime: fireTime.toISOString(),
           });
-          return;
+          return "claimed_elsewhere";
         }
       } catch (err: unknown) {
         logger.warn(
@@ -676,12 +943,20 @@ export class ScheduledExecutionService {
         );
       }
     }
+    // Settled before the drain check below: a slot recorded for replay must
+    // never also be found missed on the next boot, or it would run twice.
+    await this.writeScheduleState(
+      workflowId,
+      workflowName,
+      fireTime,
+      catchUpOf ? { ...catchUpOf, caughtUp: true } : undefined,
+    );
     if (this.draining) {
       // This instance may have claimed the fire slot, so peers skip it.
       // Record the fire for the next boot to replay instead of dropping it
       // cluster-wide.
       await this.recordForReplay(workflowName);
-      return;
+      return "dropped";
     }
 
     this.emit({
@@ -689,10 +964,14 @@ export class ScheduledExecutionService {
       workflowId,
       workflowName,
       fireTime: fireTime.toISOString(),
+      ...(catchUp ? { catchUp: true } : {}),
     });
-    logger.info("Firing scheduled run for workflow {name}", {
-      name: workflowName,
-    });
+    logger.info(
+      catchUp
+        ? "Firing catch-up run for workflow {name}"
+        : "Firing scheduled run for workflow {name}",
+      { name: workflowName },
+    );
 
     // Queue the run. Up to maxConcurrentRuns entries run at once (default
     // 1, one at a time as before); a workflow never overlaps itself. Two
@@ -717,8 +996,78 @@ export class ScheduledExecutionService {
       fireTime,
       enqueuedAt: this.now(),
       replayed: false,
+      ...(catchUp ? { catchUp: true } : {}),
     });
     this.processQueue();
+    return "queued";
+  }
+
+  /** a drain waits for tracked fires, which may be recording a claimed slot */
+  private trackedFire(
+    workflowId: WorkflowId,
+    fireTime: Date,
+    catchUpOf?: MissedFire,
+  ): Promise<FireOutcome> {
+    const fire = this.handleFire(workflowId, fireTime, catchUpOf);
+    const settled: Promise<void> = fire.then(() => {}, () => {}).finally(() =>
+      this.inFlightFires.delete(settled)
+    );
+    this.inFlightFires.add(settled);
+    return fire;
+  }
+
+  private async loadScheduleStates(): Promise<void> {
+    if (!this.deps.scheduleState) return;
+    try {
+      const boot = new Map<WorkflowId, ScheduleState>();
+      for (const state of await this.deps.scheduleState.list()) {
+        boot.set(state.workflowId as WorkflowId, state);
+        this.scheduleStates.set(state.workflowId as WorkflowId, state);
+      }
+      this.bootStates = boot;
+    } catch (error) {
+      logger.warn("Cannot read schedule states: {error}", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * never rejects: a store that fails or hangs past its deadline must not drop
+   * or delay a fire, so the failure is logged and the fire goes ahead
+   */
+  private async writeScheduleState(
+    workflowId: WorkflowId,
+    workflowName: string,
+    fireTime: Date,
+    lastMissed?: MissedFire,
+  ): Promise<void> {
+    const repo = this.deps.scheduleState;
+    if (!repo) return;
+    const next = advanceScheduleState(
+      this.scheduleStates.get(workflowId) ?? null,
+      workflowId,
+      workflowName,
+      fireTime,
+      lastMissed,
+    );
+    try {
+      await repo.save(next);
+      this.scheduleStates.set(workflowId, next);
+    } catch (error) {
+      logger.warn(
+        "Cannot record the schedule state of workflow {name}: {error}",
+        {
+          name: workflowName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+
+  private trackStateWrite(write: Promise<void>): void {
+    const tracked = write.finally(() => this.stateWrites.delete(tracked));
+    this.stateWrites.add(tracked);
   }
 
   /**
@@ -937,6 +1286,14 @@ export class ScheduledExecutionService {
               workflowIdOrName: authorization.workflowIdOrName,
               inputs: override?.inputs,
               initiatedBy: this.deps.initiatedBy,
+              ...(entry.catchUp && fireTime
+                ? {
+                  runtimeTags: {
+                    [CATCH_UP_TAG]: "true",
+                    [SCHEDULED_FOR_TAG]: fireTime,
+                  },
+                }
+                : {}),
             },
             controller.signal,
             (event) => {
@@ -970,6 +1327,7 @@ export class ScheduledExecutionService {
                   fireTime,
                   replayed,
                   queueDelayMs,
+                  ...(entry.catchUp ? { catchUp: true } : {}),
                 });
               }
               if (event.kind === "completed") {

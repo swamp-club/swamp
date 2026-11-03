@@ -30,9 +30,16 @@ Deno.test("renderWorkflowTriggerGet: json mode outputs complete data", () => {
   try {
     renderWorkflowTriggerGet("json", {
       workflowName: "scan-cves",
-      builtIn: { schedule: "0 6 * * *", inputs: {} },
-      override: { schedule: "0 3 * * *" },
-      effective: { schedule: "0 3 * * *", inputs: {} },
+      builtIn: { schedule: "0 6 * * *", inputs: {}, catchUp: null },
+      override: {
+        schedule: "0 3 * * *",
+        catchUp: { policy: "latest", maxDelay: "6h" },
+      },
+      effective: {
+        schedule: "0 3 * * *",
+        inputs: {},
+        catchUp: { policy: "latest", maxDelay: "6h" },
+      },
     });
   } finally {
     console.log = origLog;
@@ -42,6 +49,7 @@ Deno.test("renderWorkflowTriggerGet: json mode outputs complete data", () => {
   assertEquals(parsed.builtIn.schedule, "0 6 * * *");
   assertEquals(parsed.override.schedule, "0 3 * * *");
   assertEquals(parsed.effective.schedule, "0 3 * * *");
+  assertEquals(parsed.effective.catchUp, { policy: "latest", maxDelay: "6h" });
 });
 
 Deno.test("renderWorkflowTriggerGet: json mode with no trigger", () => {
@@ -53,7 +61,7 @@ Deno.test("renderWorkflowTriggerGet: json mode with no trigger", () => {
       workflowName: "nonexistent",
       builtIn: null,
       override: null,
-      effective: { schedule: null, inputs: {} },
+      effective: { schedule: null, inputs: {}, catchUp: null },
     });
   } finally {
     console.log = origLog;

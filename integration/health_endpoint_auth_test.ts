@@ -170,6 +170,8 @@ Deno.test("health endpoint auth: a valid token without grants reads health with 
             queued: 0,
             oldestQueuedAt: null,
             lastQueueDelayMs: null,
+            catchUp: null,
+            lastMissed: null,
           }],
         },
         webhooks: [{

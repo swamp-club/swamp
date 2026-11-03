@@ -20,6 +20,10 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { dirname, join, resolve } from "@std/path";
 import { Cron } from "croner";
+import {
+  type ScheduleCatchUp,
+  ScheduleCatchUpSchema,
+} from "../domain/workflows/schedule_catch_up.ts";
 import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -135,6 +139,7 @@ export interface WebhookConfigEntry {
 export interface TriggerOverrideEntry {
   readonly schedule?: string;
   readonly inputs?: Record<string, unknown>;
+  readonly catchUp?: ScheduleCatchUp;
 }
 
 export interface ServeConfigFile {
@@ -856,7 +861,7 @@ function validateWebhookEntry(
   }
 }
 
-const KNOWN_TRIGGER_OVERRIDE_KEYS = new Set(["schedule", "inputs"]);
+const KNOWN_TRIGGER_OVERRIDE_KEYS = new Set(["schedule", "inputs", "catchUp"]);
 
 export function validateTriggerOverrideEntry(
   entry: unknown,
@@ -866,7 +871,7 @@ export function validateTriggerOverrideEntry(
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
     throw configError(
       path,
-      `Invalid trigger override for '${workflowName}' in ${path}: expected object with optional 'schedule' and 'inputs'`,
+      `Invalid trigger override for '${workflowName}' in ${path}: expected object with optional 'schedule', 'inputs' and 'catchUp'`,
     );
   }
   const obj = entry as Record<string, unknown>;
@@ -907,10 +912,26 @@ export function validateTriggerOverrideEntry(
       );
     }
   }
-  if (obj.schedule === undefined && obj.inputs === undefined) {
+  if (obj.catchUp !== undefined) {
+    const parsed = ScheduleCatchUpSchema.safeParse(obj.catchUp);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const where = issue?.path.length ? `.${issue.path.join(".")}` : "";
+      throw configError(
+        path,
+        `Invalid trigger override for '${workflowName}' in ${path}: catchUp${where}: ${
+          issue?.message ?? "invalid"
+        }`,
+      );
+    }
+  }
+  if (
+    obj.schedule === undefined && obj.inputs === undefined &&
+    obj.catchUp === undefined
+  ) {
     throw configError(
       path,
-      `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule' or 'inputs'`,
+      `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule', 'inputs' or 'catchUp'`,
     );
   }
 }

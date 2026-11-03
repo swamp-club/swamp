@@ -110,6 +110,8 @@ export interface ScheduleRow {
   /** Scheduled runs in progress, when known; at least 1 while running. */
   runningCount: number;
   queueLabel: string | null;
+  /** The last lost fire, when the server reports one. */
+  missedLabel?: string | null;
   recent: RecentRun[];
 }
 
@@ -191,6 +193,11 @@ export function ScheduleTable(
                     : <span className="trig-pill">Idle</span>}
                   {row.queueLabel && (
                     <span className="trig-queue">{row.queueLabel}</span>
+                  )}
+                  {row.missedLabel && (
+                    <span className="trig-pill tone-warning">
+                      {row.missedLabel}
+                    </span>
                   )}
                 </span>
               </td>

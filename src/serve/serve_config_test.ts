@@ -41,6 +41,7 @@ import {
   resolveServeTlsPaths,
   type ServeConfigFile,
   type TriggerOverrideEntry,
+  validateTriggerOverrideEntry,
   type WebhookConfigEntry,
   writeServeConfigFile,
 } from "./serve_config.ts";
@@ -1619,6 +1620,96 @@ Deno.test("loadServeConfig: accepts trigger override with inputs only", () => {
     assertEquals(config.triggers!["my-workflow"].inputs, { count: 5 });
     assertEquals(config.triggers!["my-workflow"].schedule, undefined);
   });
+});
+
+Deno.test("loadServeConfig: accepts trigger override with catchUp only", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      triggers: {
+        "my-workflow": { catchUp: { policy: "latest", maxDelay: "6h" } },
+      },
+    });
+    const config = loadServeConfig(undefined, dir)!;
+    assertEquals(config.triggers!["my-workflow"].catchUp, {
+      policy: "latest",
+      maxDelay: "6h",
+    });
+    assertEquals(config.triggers!["my-workflow"].schedule, undefined);
+  });
+});
+
+Deno.test("validateTriggerOverrideEntry: accepts a catchUp-only override", () => {
+  validateTriggerOverrideEntry(
+    { catchUp: { policy: "none" } },
+    "/repo/.swamp/serve.yaml",
+    "my-workflow",
+  );
+  validateTriggerOverrideEntry(
+    { schedule: "0 9 1 * *", catchUp: { policy: "latest", maxDelay: "6h" } },
+    "/repo/.swamp/serve.yaml",
+    "my-workflow",
+  );
+});
+
+Deno.test("validateTriggerOverrideEntry: an invalid catchUp names catchUp in the error", () => {
+  const cases: [unknown, string][] = [
+    [
+      { policy: "latest" },
+      "catchUp.maxDelay: policy 'latest' requires maxDelay",
+    ],
+    [{ policy: "latest", maxDelay: "32d" }, "catchUp.maxDelay"],
+    [{ policy: "sometimes" }, "catchUp.policy"],
+    [{ policy: "none", extra: 1 }, "catchUp"],
+    ["latest", "catchUp"],
+  ];
+  for (const [catchUp, expected] of cases) {
+    assertThrows(
+      () =>
+        validateTriggerOverrideEntry(
+          { schedule: "0 9 1 * *", catchUp },
+          "/repo/.swamp/serve.yaml",
+          "my-workflow",
+        ),
+      Error,
+      expected,
+    );
+  }
+});
+
+Deno.test("validateTriggerOverrideEntry: catchUp is a known key and does not warn", async () => {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["serve", "config"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  const unknownKeyWarnings = () =>
+    captured.filter((r) =>
+      r.message.map((p) => String(p)).join("").includes("Unknown key")
+    );
+  try {
+    validateTriggerOverrideEntry(
+      { schedule: "0 9 1 * *", catchUp: { policy: "none" } },
+      "/repo/.swamp/serve.yaml",
+      "my-workflow",
+    );
+    assertEquals(unknownKeyWarnings(), []);
+
+    validateTriggerOverrideEntry(
+      { schedule: "0 9 1 * *", catchup: { policy: "none" } },
+      "/repo/.swamp/serve.yaml",
+      "my-workflow",
+    );
+    assertEquals(unknownKeyWarnings().length, 1);
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
 });
 
 Deno.test("mergeServeOptions: triggerOverrides from config", () => {

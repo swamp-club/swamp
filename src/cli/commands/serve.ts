@@ -545,6 +545,7 @@ import {
 import { ServeLeadership } from "../../serve/serve_leadership.ts";
 import { FileSystemControlPlaneStore } from "../../infrastructure/persistence/fs_control_plane_store.ts";
 import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
+import { ControlPlaneScheduleStateRepository } from "../../infrastructure/persistence/control_plane_schedule_state_repository.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
 import {
@@ -5900,6 +5901,11 @@ export const serveCommand = new Command()
     });
 
     let scheduledExecution: ScheduledExecutionService | null = null;
+    // only the leader runs a fire; a follower leaves its slot to it, as does a
+    // leader whose lease was just taken over and has not ticked since
+    const leadsScheduledFires = (): boolean =>
+      !isFollowing() &&
+      (v3Location === undefined || holdsCurrentV3WriterLease(v3Location.path));
     if (enableSchedule) {
       if (triggerOverrides && triggerOverrides.size > 0) {
         logger.info(
@@ -5998,18 +6004,13 @@ export const serveCommand = new Command()
         schedulePauses: new ControlPlaneSchedulePauseRepository(
           controlPlaneStore,
         ),
+        scheduleState: new ControlPlaneScheduleStateRepository(
+          controlPlaneStore,
+          { canWrite: leadsScheduledFires },
+        ),
         cronFireDedup: controlPlaneStore?.putIfAbsent
           ? async (workflowId, fireTime) => {
-            // only the leader runs a fire; a follower leaves its slot to it, as
-            // does a leader whose lease was just taken over and has not ticked
-            // since
-            if (
-              isFollowing() ||
-              (v3Location !== undefined &&
-                !holdsCurrentV3WriterLease(v3Location.path))
-            ) {
-              return false;
-            }
+            if (!leadsScheduledFires()) return false;
             const key = `fire-records/${workflowId}/${
               normalizeFireTime(fireTime)
             }`;
@@ -8118,6 +8119,8 @@ export const serveCommand = new Command()
       if (replayed > 0) {
         logger.info`Replayed ${replayed} pending run(s) from previous process`;
       }
+      // after the replay, so a replayed run queues ahead of a catch-up
+      await scheduledExecution?.catchUpMissedFires();
     };
     if (!v3Follows) await replayPendingAtLead();
 

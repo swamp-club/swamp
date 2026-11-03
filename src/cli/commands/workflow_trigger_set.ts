@@ -40,6 +40,40 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkflowTriggerSetResponse } from "../../serve/protocol.ts";
+import {
+  type ScheduleCatchUp,
+  ScheduleCatchUpSchema,
+} from "../../domain/workflows/schedule_catch_up.ts";
+
+export function parseCatchUpFlags(
+  policy: string | undefined,
+  maxDelay: string | undefined,
+): ScheduleCatchUp | undefined {
+  if (policy === undefined) {
+    if (maxDelay !== undefined) {
+      throw new UserError(
+        "--catch-up-max-delay requires --catch-up latest",
+      );
+    }
+    return undefined;
+  }
+  const parsed = ScheduleCatchUpSchema.safeParse({
+    policy,
+    ...(maxDelay !== undefined ? { maxDelay } : {}),
+  });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const flag = issue?.path[0] === "maxDelay"
+      ? "--catch-up-max-delay"
+      : "--catch-up";
+    throw new UserError(
+      issue?.path[0] === "policy"
+        ? `Invalid ${flag} '${policy}': expected none or latest`
+        : `Invalid ${flag}: ${issue?.message ?? "invalid"}`,
+    );
+  }
+  return parsed.data;
+}
 
 export function parseInputFlag(
   input: string,
@@ -71,6 +105,10 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       "Override schedule with inputs",
       'swamp workflow trigger set @swamp/cve/researcher/scan --schedule "0 12 * * 1" --input channel=#security',
     )
+    .example(
+      "Catch up a fire missed while serve was down",
+      'swamp workflow trigger set monthly-maintenance --schedule "0 9 1 * *" --catch-up latest --catch-up-max-delay 6h',
+    )
     .arguments("<workflow_name:string>")
     .option(
       "--schedule <cron:string>",
@@ -83,6 +121,14 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       {
         collect: true,
       },
+    )
+    .option(
+      "--catch-up <policy:string>",
+      "On startup, fire a schedule missed while serve was down: none or latest",
+    )
+    .option(
+      "--catch-up-max-delay <duration:string>",
+      "With --catch-up latest, the oldest missed fire to catch up (e.g. 6h, 2d)",
     )
     .option(
       "--repo-dir <dir:string>",
@@ -103,6 +149,11 @@ export const workflowTriggerSetCommand = withRemoteOptions(
     }
   }
 
+  const catchUp = parseCatchUpFlags(
+    options.catchUp as string | undefined,
+    options.catchUpMaxDelay as string | undefined,
+  );
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(
@@ -117,6 +168,7 @@ export const workflowTriggerSetCommand = withRemoteOptions(
           workflowName,
           schedule: options.schedule as string,
           ...(Object.keys(inputs).length > 0 ? { inputs } : {}),
+          ...(catchUp ? { catchUp } : {}),
         },
       },
     );
@@ -129,13 +181,11 @@ export const workflowTriggerSetCommand = withRemoteOptions(
 
   const repoDir = resolveRepoDir(options.repoDir);
 
-  const entry: TriggerOverrideEntry = {
+  const entryWithInputs: TriggerOverrideEntry = {
     schedule: options.schedule as string,
+    ...(Object.keys(inputs).length > 0 ? { inputs } : {}),
+    ...(catchUp ? { catchUp } : {}),
   };
-
-  const entryWithInputs: TriggerOverrideEntry = Object.keys(inputs).length > 0
-    ? { ...entry, inputs }
-    : entry;
 
   const configPath = join(repoDir, SERVE_CONFIG_PATH);
   validateTriggerOverrideEntry(entryWithInputs, configPath, workflowName);

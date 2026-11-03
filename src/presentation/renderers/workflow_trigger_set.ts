@@ -43,5 +43,16 @@ export function renderWorkflowTriggerSet(
         )
       }`;
     }
+    if (data.entry.catchUp) {
+      logger.info`  catch-up: ${formatCatchUp(data.entry.catchUp)}`;
+    }
   }
+}
+
+export function formatCatchUp(
+  catchUp: { readonly policy: string; readonly maxDelay?: string },
+): string {
+  return catchUp.maxDelay === undefined
+    ? catchUp.policy
+    : `${catchUp.policy} (max delay ${catchUp.maxDelay})`;
 }
