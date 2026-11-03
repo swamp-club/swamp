@@ -292,9 +292,11 @@ and applies the follower freshness gate. It runs the request through
 authorization, audit and the handler are the socket's own, and streams every
 frame as one NDJSON line with no size cap, gzipped when the client accepts it.
 A type outside the list (404) and a caller already holding as many replies as
-the WebSocket's per-connection request cap (429; a slot is held until its reply
-is read to the end or the client disconnects, and anonymous callers are counted
-per source IP) are refused with `use_websocket`. `requestServerResponse` sends the listed types
+the WebSocket's per-connection request cap (429; the reply goes to the response
+writer in chunks of at most 64 KiB, so a slot is held until the TCP peer has
+taken all but the transport's fixed buffers or has disconnected, and a
+buffering reverse proxy counts as the peer; anonymous callers are counted per
+source IP) are refused with `use_websocket`. `requestServerResponse` sends the listed types
 there and falls back to the socket on `use_websocket`, on 404 or 405 (a serve
 that predates the route, or a proxy that does not pass it), and on any refusal
 that is not a serve `{code, message}` body; serve's own refusals map to the

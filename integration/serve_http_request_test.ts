@@ -17,8 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
-import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
+import {
+  assertEquals,
+  assertGreater,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { MAX_ACTIVE_REQUESTS } from "../src/serve/connection.ts";
+import { type ConnectionContext, send } from "../src/serve/handlers/shared.ts";
 import { handleHttpRequest } from "../src/serve/http_request_route.ts";
 import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
 import type { HttpCallerSessionAuth } from "../src/serve/http_caller_auth.ts";
@@ -268,5 +275,144 @@ Deno.test({
         await server.shutdown();
       }
     });
+  },
+});
+
+async function readHead(
+  conn: Deno.Conn,
+): Promise<{ head: string; bodyBytesRead: number }> {
+  const buf = new Uint8Array(4096);
+  const received: number[] = [];
+  let end = -1;
+  while (end === -1) {
+    const n = await conn.read(buf);
+    if (n === null) throw new Error("connection closed before the headers");
+    received.push(...buf.subarray(0, n));
+    end = new TextDecoder("latin1").decode(new Uint8Array(received)).indexOf(
+      "\r\n\r\n",
+    );
+  }
+  return {
+    head: new TextDecoder().decode(new Uint8Array(received.slice(0, end))),
+    bodyBytesRead: received.length - (end + 4),
+  };
+}
+
+async function drain(conn: Deno.Conn): Promise<number> {
+  const buf = new Uint8Array(1024 * 1024);
+  let total = 0;
+  for (;;) {
+    const n = await conn.read(buf);
+    if (n === null) return total;
+    total += n;
+  }
+}
+
+Deno.test({
+  name:
+    "serve HTTP route: a reply the client has not read keeps its slot over a real socket",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const principalId = `user:${crypto.randomUUID()}`;
+    const token: ServerTokenAuthResult = { ...callerToken, principalId };
+    const content = "x".repeat(32 * 1024 * 1024);
+    const releaseHeld = Promise.withResolvers<void>();
+    const bigSent = Promise.withResolvers<void>();
+    const routeDeps = {
+      ctx: { authConfig: { mode: "token" } } as ConnectionContext,
+      authenticate: () => Promise.resolve(token),
+      dispatch: (
+        socket: WebSocket,
+        _ctx: ConnectionContext,
+        _active: Map<string, AbortController>,
+        event: MessageEvent,
+      ) => {
+        const { id } = JSON.parse(String(event.data));
+        if (String(id).startsWith("hold")) return releaseHeld.promise;
+        if (id === "big") {
+          send(socket, {
+            type: "data.get",
+            id,
+            payload: { data: { content } },
+          });
+          bigSent.resolve();
+        }
+        return Promise.resolve();
+      },
+    };
+    const request = (id: string) =>
+      new Request(`http://serve.test${SERVE_REQUEST_PATH}`, {
+        method: "POST",
+        headers: { authorization: "Bearer integration-token" },
+        body: JSON.stringify({
+          type: "data.get",
+          id,
+          payload: { modelIdOrName: "m", dataName: "d" },
+        }),
+      });
+
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => handleHttpRequest(req, "127.0.0.1", routeDeps),
+    );
+    const held: Response[] = [];
+    let conn: Deno.Conn | undefined;
+    try {
+      for (let i = 0; i < MAX_ACTIVE_REQUESTS - 1; i++) {
+        held.push(
+          await handleHttpRequest(request(`hold${i}`), "127.0.0.1", routeDeps),
+        );
+      }
+
+      conn = await Deno.connect({
+        hostname: "127.0.0.1",
+        port: server.addr.port,
+      });
+      const body = JSON.stringify({
+        type: "data.get",
+        id: "big",
+        payload: { modelIdOrName: "m", dataName: "d" },
+      });
+      await conn.write(
+        new TextEncoder().encode(
+          `POST ${SERVE_REQUEST_PATH} HTTP/1.1\r\n` +
+            `host: 127.0.0.1\r\n` +
+            `authorization: Bearer integration-token\r\n` +
+            `content-type: application/json\r\n` +
+            `connection: close\r\n` +
+            `content-length: ${new TextEncoder().encode(body).byteLength}\r\n` +
+            `\r\n${body}`,
+        ),
+      );
+      await bigSent.promise;
+      const { head, bodyBytesRead } = await readHead(conn);
+      assertStringIncludes(head, "200 OK");
+
+      const refused = await handleHttpRequest(
+        request("over"),
+        "127.0.0.1",
+        routeDeps,
+      );
+      assertEquals(refused.status, 429);
+      assertEquals((await refused.json()).code, "use_websocket");
+
+      assertGreater(bodyBytesRead + await drain(conn), content.length);
+      releaseHeld.resolve();
+      for (const response of held) await response.body?.cancel();
+      await waitFor(async () => {
+        const again = await handleHttpRequest(
+          request("after"),
+          "127.0.0.1",
+          routeDeps,
+        );
+        await again.body?.cancel();
+        return again.status === 200;
+      }, "the read reply released its slot");
+    } finally {
+      releaseHeld.resolve();
+      conn?.close();
+      await server.shutdown();
+    }
   },
 });
