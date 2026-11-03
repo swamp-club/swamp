@@ -86,6 +86,9 @@ class HttpReplySocket extends EventTarget {
 
 const inFlightByPrincipal = new Map<string, number>();
 
+// a reply enqueued whole is taken in one pull and frees its slot before a byte is read
+const REPLY_CHUNK_BYTES = 64 * 1024;
+
 /**
  * Runs one client read through the WebSocket's own request path, so the two
  * transports share one validation, authorization and audit.
@@ -237,36 +240,43 @@ function replyStream(
 }
 
 /**
- * the outermost stream, pulled one chunk per read: its end is seen only after
- * every earlier chunk went to the response writer, and a disconnect cancels it
+ * the outermost stream, handing the response writer one small chunk per pull:
+ * the writer stops pulling while its bounded buffers are full, so the end is
+ * seen only once the client has taken all but those buffers
  */
 function holdingSlotUntilRead(
   inner: ReadableStream<Uint8Array<ArrayBuffer>>,
   release: () => void,
 ): ReadableStream<Uint8Array<ArrayBuffer>> {
   const reader = inner.getReader();
+  let pending: Uint8Array<ArrayBuffer> = new Uint8Array(0);
   let released = false;
   const releaseOnce = () => {
+    pending = new Uint8Array(0);
     if (released) return;
     released = true;
     release();
   };
   return new ReadableStream<Uint8Array<ArrayBuffer>>({
     async pull(controller) {
-      let chunk: ReadableStreamReadResult<Uint8Array<ArrayBuffer>>;
-      try {
-        chunk = await reader.read();
-      } catch (error) {
-        releaseOnce();
-        controller.error(error);
-        return;
+      if (pending.byteLength === 0) {
+        let chunk: ReadableStreamReadResult<Uint8Array<ArrayBuffer>>;
+        try {
+          chunk = await reader.read();
+        } catch (error) {
+          releaseOnce();
+          controller.error(error);
+          return;
+        }
+        if (chunk.done) {
+          releaseOnce();
+          controller.close();
+          return;
+        }
+        pending = chunk.value;
       }
-      if (chunk.done) {
-        releaseOnce();
-        controller.close();
-        return;
-      }
-      controller.enqueue(chunk.value);
+      controller.enqueue(pending.subarray(0, REPLY_CHUNK_BYTES));
+      pending = pending.subarray(REPLY_CHUNK_BYTES);
     },
     async cancel(reason) {
       releaseOnce();

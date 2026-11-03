@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertGreater,
+  assertLessOrEqual,
+  assertStringIncludes,
+} from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
@@ -266,6 +271,131 @@ Deno.test("handleHttpRequest: a client that accepts gzip gets a gzip body", asyn
     response.body!.pipeThrough(new DecompressionStream("gzip")),
   ).text();
   assertEquals(JSON.parse(text.trim()).id, "gz");
+});
+
+async function chunksOf(
+  body: ReadableStream<Uint8Array>,
+): Promise<Uint8Array[]> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of body) chunks.push(chunk);
+  return chunks;
+}
+
+function joined(chunks: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(
+    chunks.reduce((total, chunk) => total + chunk.byteLength, 0),
+  );
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function incompressible(bytes: number): string {
+  const random = new Uint8Array(bytes / 2);
+  for (let i = 0; i < random.length; i += 65536) {
+    crypto.getRandomValues(random.subarray(i, i + 65536));
+  }
+  return Array.from(random, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function replyingWith(content: string): HttpRequestRouteDeps["dispatch"] {
+  return (socket, _ctx, _active, event) => {
+    const { id } = JSON.parse(String(event.data));
+    send(socket, { type: "data.get", id, payload: { data: { content } } });
+    return Promise.resolve();
+  };
+}
+
+Deno.test("handleHttpRequest: a large reply reaches the response writer in chunks of at most 64 KiB", async () => {
+  const content = "x".repeat(1024 * 1024);
+  const response = await handleHttpRequest(
+    post(dataGet("chunked")),
+    uniqueIp(),
+    deps(ctxOf("token"), { dispatch: replyingWith(content) }),
+  );
+
+  const chunks = await chunksOf(response.body!);
+  assertGreater(chunks.length, 1);
+  for (const chunk of chunks) assertLessOrEqual(chunk.byteLength, 64 * 1024);
+  const reply = JSON.parse(new TextDecoder().decode(joined(chunks)).trim());
+  assertEquals(reply.id, "chunked");
+  assertEquals(reply.payload.data.content, content);
+});
+
+Deno.test("handleHttpRequest: a large gzip reply reaches the response writer in chunks of at most 64 KiB", async () => {
+  const content = incompressible(1024 * 1024);
+  const response = await handleHttpRequest(
+    post(dataGet("gz-chunked"), { "accept-encoding": "gzip" }),
+    uniqueIp(),
+    deps(ctxOf("token"), { dispatch: replyingWith(content) }),
+  );
+
+  const chunks = await chunksOf(response.body!);
+  assertGreater(chunks.length, 1);
+  for (const chunk of chunks) assertLessOrEqual(chunk.byteLength, 64 * 1024);
+  const text = await new Response(
+    new Blob([joined(chunks)]).stream().pipeThrough(
+      new DecompressionStream("gzip"),
+    ),
+  ).text();
+  const reply = JSON.parse(text.trim());
+  assertEquals(reply.id, "gz-chunked");
+  assertEquals(reply.payload.data.content, content);
+});
+
+Deno.test("handleHttpRequest: a client that cancels partway through a large reply frees its slot", async () => {
+  const principalId = `user:${crypto.randomUUID()}`;
+  const content = "x".repeat(1024 * 1024);
+  let aborted = 0;
+  const routeDeps = deps(ctxOf("token"), {
+    authenticate: () => Promise.resolve(tokenFor(principalId)),
+    dispatch: (socket, _ctx, activeRequests, event) => {
+      const { id } = JSON.parse(String(event.data));
+      if (id === "after") return Promise.resolve();
+      const controller = new AbortController();
+      activeRequests.set(id, controller);
+      send(socket, { type: "data.get", id, payload: { data: { content } } });
+      return new Promise<void>((resolve) => {
+        controller.signal.addEventListener("abort", () => {
+          aborted++;
+          resolve();
+        });
+      });
+    },
+  });
+  const partial: Response[] = [];
+  for (let i = 0; i < MAX_ACTIVE_REQUESTS; i++) {
+    partial.push(
+      await handleHttpRequest(post(dataGet(`p${i}`)), uniqueIp(), routeDeps),
+    );
+  }
+  const readers = partial.map((response) => response.body!.getReader());
+  for (const reader of readers) {
+    const first = await reader.read();
+    assertEquals(first.done, false);
+  }
+
+  const refused = await handleHttpRequest(
+    post(dataGet("over")),
+    uniqueIp(),
+    routeDeps,
+  );
+  assertEquals(refused.status, 429);
+
+  for (const reader of readers) await reader.cancel();
+  assertEquals(aborted, MAX_ACTIVE_REQUESTS);
+  await waitFor(async () => {
+    const again = await handleHttpRequest(
+      post(dataGet("after")),
+      uniqueIp(),
+      routeDeps,
+    );
+    await again.body?.cancel();
+    return again.status === 200;
+  }, "the cancelled replies released their slots");
 });
 
 Deno.test("handleHttpRequest: concurrent requests are capped per principal", async () => {
