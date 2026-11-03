@@ -1160,10 +1160,9 @@ interface FetchedArchive {
 }
 
 /**
- * the registry checksum is fetched first and addresses the cache, so a hit is
- * the exact bytes the registry names now; a null checksum bypasses the cache.
- * The checksum request is also the registry's access and yank check for a hit,
- * so it must never be skipped, memoized or moved after the cache read.
+ * the registry checksum keys the cache and is the registry's access and yank
+ * check for a hit, so it must never be skipped, memoized or moved after the
+ * cache read; a null checksum bypasses the cache
  */
 async function fetchArchive(
   ref: ExtensionRef,

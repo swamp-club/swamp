@@ -325,6 +325,32 @@ Deno.test("prepareInstall: a caller the registry hides the checksum from never r
   assertEquals(reg.downloads, [name]);
 });
 
+Deno.test("prepareInstall: every cache hit asks the registry for the checksum again", async () => {
+  await using repo = await tempRepo();
+  const name = uniqueName();
+  const reg = await registry({ [name]: await buildArchive(name) });
+  const cache = new RecordingCache();
+  cache.entries.set(reg.checksums[name]!, reg.archives[name]);
+  const base = await context(repo.dir, reg, cache);
+  let checksumRequests = 0;
+  const ctx: InstallContext = {
+    ...base,
+    getChecksum: (...args) => {
+      checksumRequests++;
+      return base.getChecksum(...args);
+    },
+  };
+
+  for (let i = 0; i < 2; i++) {
+    const prepared = await prepareInstall({ name, version: VERSION }, ctx);
+    await prepared.dispose();
+  }
+
+  assertEquals(checksumRequests, 2);
+  assertEquals(cache.gets.length, 2);
+  assertEquals(reg.downloads, []);
+});
+
 Deno.test("installExtension: dependencies share the cache, so a second repo downloads nothing", async () => {
   await using first = await tempRepo();
   await using second = await tempRepo();
