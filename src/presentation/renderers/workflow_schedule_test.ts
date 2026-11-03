@@ -228,6 +228,58 @@ Deno.test("renderWorkflowScheduleList: log mode names each missed-fire reason", 
   }
 });
 
+function missedLineFor(reason: string, fireTime = LAST_MISSED.fireTime) {
+  return missedLine(capture(() =>
+    renderWorkflowScheduleList("log", {
+      schedules: [{
+        ...ACTIVE_ENTRY,
+        // a newer remote serve can send a reason outside the known set
+        lastMissed: {
+          ...LAST_MISSED,
+          count: 1,
+          reason: reason as unknown as typeof LAST_MISSED.reason,
+          fireTime,
+        },
+      }],
+    })
+  ));
+}
+
+Deno.test("renderWorkflowScheduleList: log mode prints an unknown missed-fire reason as sent", () => {
+  assertEquals(
+    missedLineFor("quota_exceeded"),
+    "  Missed: 1 fire(s) (quota_exceeded), latest 2026-10-16T03:00:00.000Z",
+  );
+  assertEquals(
+    missedLineFor("toString"),
+    "  Missed: 1 fire(s) (toString), latest 2026-10-16T03:00:00.000Z",
+  );
+});
+
+Deno.test("renderWorkflowScheduleList: log mode escapes control characters in a missed fire's reason and time", () => {
+  assertEquals(
+    missedLineFor("a\x1b[31mb", "2026\x1b[2J"),
+    "  Missed: 1 fire(s) (a\\x1b[31mb), latest 2026\\x1b[2J",
+  );
+});
+
+Deno.test("renderWorkflowScheduleList: log mode escapes control characters in paused-at, until and next fire", () => {
+  const text = capture(() =>
+    renderWorkflowScheduleList("log", {
+      schedules: [{
+        ...ACTIVE_ENTRY,
+        paused: true,
+        pausedAt: "p\x1b[31mp",
+        until: "u\x1b[31mu",
+        nextRun: "n\x1b[31mn",
+      }],
+    })
+  );
+  assertStringIncludes(text, "Paused at: p\\x1b[31mp");
+  assertStringIncludes(text, "Until: u\\x1b[31mu");
+  assertStringIncludes(text, "Next fire: n\\x1b[31mn");
+});
+
 Deno.test("renderWorkflowScheduleList: log mode prints no Missed line without a last missed fire", () => {
   const text = capture(() =>
     renderWorkflowScheduleList("log", { schedules: [ACTIVE_ENTRY] })
