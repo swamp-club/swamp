@@ -144,7 +144,10 @@ import {
   ControlPlaneDashboardSessionStore,
 } from "../../serve/dashboard_session_store.ts";
 import { traceHttpRequests } from "../../serve/http_request_span.ts";
-import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
+import {
+  resolveOAuthClientCredentials,
+  SECRET_WITHOUT_CLIENT_ID_MESSAGE,
+} from "../../serve/oauth_registration.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
@@ -331,6 +334,10 @@ import {
   SERVE_CONFIG_PATH,
   type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
+import {
+  OAUTH_CLIENT_SECRET_FILE_FLAG,
+  resolveOAuthClientSecret,
+} from "../../serve/oauth_client_secret_source.ts";
 import {
   type ActorIdentity,
   type AuditCategory,
@@ -1255,6 +1262,11 @@ const CLUB_API_KEY_FILE_DESCRIPTION =
   "used for headless OAuth registration, username lookup, instance " +
   "registration and heartbeat; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY";
 
+const OAUTH_CLIENT_SECRET_FILE_DESCRIPTION =
+  "Path to a file containing the secret of the OAuth client named by " +
+  "--oauth-client-id; used for this run only and never stored. Overrides " +
+  "SWAMP_OAUTH_CLIENT_SECRET_FILE and SWAMP_OAUTH_CLIENT_SECRET";
+
 // read on every repo, so an unreadable file is refused where no leader link uses it
 export async function loadServeCaCerts(
   path: string | undefined,
@@ -1347,6 +1359,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
     args.push(
       CLUB_API_KEY_FILE_FLAG,
       resolve(options.clubApiKeyFile as string),
+    );
+  }
+  if (options.oauthClientSecretFile) {
+    args.push(
+      OAUTH_CLIENT_SECRET_FILE_FLAG,
+      resolve(options.oauthClientSecretFile as string),
     );
   }
   if (options.groupsField) {
@@ -1955,10 +1973,17 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID — auto-registered on first start if omitted. " +
-      "Set SWAMP_API_KEY, SWAMP_API_KEY_FILE or --club-api-key-file (a collective " +
-      "API token with oauth:manage scope) for headless registration without " +
-      "browser interaction.",
+    "OAuth client ID (env: SWAMP_OAUTH_CLIENT_ID). When set, serve never " +
+      "registers a client: supply its secret with --oauth-client-secret-file, " +
+      "SWAMP_OAUTH_CLIENT_SECRET_FILE or SWAMP_OAUTH_CLIENT_SECRET, or reuse the " +
+      "secret stored for that same client. When omitted, a client is registered " +
+      "on first start and stored in the datastore; set SWAMP_API_KEY, " +
+      "SWAMP_API_KEY_FILE or --club-api-key-file (a collective API token with " +
+      "oauth:manage scope) to register without browser interaction.",
+  )
+  .option(
+    `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
+    OAUTH_CLIENT_SECRET_FILE_DESCRIPTION,
   )
   .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
@@ -2362,6 +2387,24 @@ function formatGrantFileErrorLines(errors: readonly GrantFileError[]): string {
   }).join("\n");
 }
 
+// reads no store, so a client id whose secret only the store holds still passes
+export function checkOAuthClientSecret(
+  secretFileFlag: string | undefined,
+  clientId: string | undefined,
+): string | undefined {
+  let supplied: string | undefined;
+  try {
+    supplied = resolveOAuthClientSecret(secretFileFlag);
+  } catch (err) {
+    if (err instanceof UserError) return err.message;
+    throw err;
+  }
+  if (supplied !== undefined && !clientId) {
+    return SECRET_WITHOUT_CLIENT_ID_MESSAGE;
+  }
+  return undefined;
+}
+
 const checkConfigCommand = new Command()
   .name("check-config")
   .description(
@@ -2439,6 +2482,11 @@ const checkConfigCommand = new Command()
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
     "Path to a file containing the collective API key used to look up " +
       "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
+  )
+  .option(
+    `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
+    "OAuth client secret file to check, as passed to 'swamp serve' (overrides " +
+      "SWAMP_OAUTH_CLIENT_SECRET_FILE and SWAMP_OAUTH_CLIENT_SECRET)",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -2620,7 +2668,12 @@ const checkConfigCommand = new Command()
       providerUrl,
     );
     const notFound = check.entries.filter((e) => e.status === "not-found");
-    const passed = check.wouldStart && notFound.length === 0 && keyUsable &&
+    const clientSecretRefusal = checkOAuthClientSecret(
+      options.oauthClientSecretFile as string | undefined,
+      authConfig.oauthClientId,
+    );
+    const wouldStart = check.wouldStart && clientSecretRefusal === undefined;
+    const passed = wouldStart && notFound.length === 0 && keyUsable &&
       grantsLoad;
 
     renderServeCheckConfig({
@@ -2629,8 +2682,12 @@ const checkConfigCommand = new Command()
       oauthProvider: providerUrl,
       entries: check.entries,
       allowedCollectives: authConfig.allowedCollectives,
-      wouldStart: check.wouldStart && keyUsable && grantsLoad,
-      ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
+      wouldStart: wouldStart && keyUsable && grantsLoad,
+      ...(check.refusal !== undefined
+        ? { refusal: check.refusal }
+        : clientSecretRefusal !== undefined
+        ? { refusal: clientSecretRefusal }
+        : {}),
       restrictionWarnings,
       ...grantReport,
       ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
@@ -2762,10 +2819,17 @@ export const serveCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID — auto-registered on first start if omitted. " +
-      "Set SWAMP_API_KEY, SWAMP_API_KEY_FILE or --club-api-key-file (a collective " +
-      "API token with oauth:manage scope) for headless registration without " +
-      "browser interaction.",
+    "OAuth client ID (env: SWAMP_OAUTH_CLIENT_ID). When set, serve never " +
+      "registers a client: supply its secret with --oauth-client-secret-file, " +
+      "SWAMP_OAUTH_CLIENT_SECRET_FILE or SWAMP_OAUTH_CLIENT_SECRET, or reuse the " +
+      "secret stored for that same client. When omitted, a client is registered " +
+      "on first start and stored in the datastore; set SWAMP_API_KEY, " +
+      "SWAMP_API_KEY_FILE or --club-api-key-file (a collective API token with " +
+      "oauth:manage scope) to register without browser interaction.",
+  )
+  .option(
+    `${OAUTH_CLIENT_SECRET_FILE_FLAG} <path:string>`,
+    OAUTH_CLIENT_SECRET_FILE_DESCRIPTION,
   )
   .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
@@ -4043,7 +4107,7 @@ export const serveCommand = new Command()
             registerClient: async (providerUrl, signal) => {
               if (clubApiKey) {
                 const { registerClientWithApiKey } = await import(
-                  "../../serve/oauth_registration.ts"
+                  "../../infrastructure/http/oauth_client_registration.ts"
                 );
                 const result = await registerClientWithApiKey(
                   providerUrl,
@@ -4157,6 +4221,9 @@ export const serveCommand = new Command()
           authConfig.oauthProvider,
           TOKEN_SECRETS_VAULT_NAME,
           authConfig.oauthClientId,
+          resolveOAuthClientSecret(
+            options.oauthClientSecretFile as string | undefined,
+          ),
           AbortSignal.timeout(300_000),
         );
       } catch (err) {

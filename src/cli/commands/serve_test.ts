@@ -35,6 +35,7 @@ import {
   type CancelAuthorizationRequest,
   cancelExecution,
   cancelSuccessBody,
+  checkOAuthClientSecret,
   collectServeExtraArgs,
   isUnreachableBindHost,
   legacyHealthBody,
@@ -63,6 +64,7 @@ import {
 import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
 import { RunEventBuffer } from "../../serve/run_event_buffer.ts";
 import { UserError } from "../../domain/errors.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { mergeServeOptions } from "../../serve/serve_config.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import type {
@@ -1005,6 +1007,66 @@ Deno.test("collectServeExtraArgs: forwards --club-api-key-file as an absolute pa
     resolve("secrets/key"),
   ]);
   assert(isAbsolute(args[1]));
+});
+
+Deno.test("collectServeExtraArgs: forwards --oauth-client-secret-file as an absolute path", () => {
+  const args = collectServeExtraArgs({
+    oauthClientSecretFile: "secrets/oauth",
+  });
+  assertEquals(args, [
+    "--oauth-client-secret-file",
+    resolve("secrets/oauth"),
+  ]);
+  assert(isAbsolute(args[1]));
+});
+
+const NO_CLIENT_SECRET_ENV = {
+  SWAMP_OAUTH_CLIENT_SECRET: undefined,
+  SWAMP_OAUTH_CLIENT_SECRET_FILE: undefined,
+};
+
+Deno.test("checkOAuthClientSecret: passes with no secret, or a secret and a client id", () => {
+  withMockedEnv(NO_CLIENT_SECRET_ENV, () => {
+    assertEquals(checkOAuthClientSecret(undefined, undefined), undefined);
+    assertEquals(checkOAuthClientSecret(undefined, "client-id"), undefined);
+  });
+  withMockedEnv({
+    ...NO_CLIENT_SECRET_ENV,
+    SWAMP_OAUTH_CLIENT_SECRET: "secret",
+  }, () => {
+    assertEquals(checkOAuthClientSecret(undefined, "client-id"), undefined);
+  });
+});
+
+Deno.test("checkOAuthClientSecret: reports a secret without a client id", () => {
+  withMockedEnv({
+    ...NO_CLIENT_SECRET_ENV,
+    SWAMP_OAUTH_CLIENT_SECRET: "secret",
+  }, () => {
+    assertStringIncludes(
+      checkOAuthClientSecret(undefined, undefined) ?? "",
+      "supplied without a client id",
+    );
+  });
+});
+
+Deno.test("checkOAuthClientSecret: reports an unreadable file and conflicting env vars", () => {
+  withMockedEnv(NO_CLIENT_SECRET_ENV, () => {
+    assertStringIncludes(
+      checkOAuthClientSecret(join(Deno.cwd(), "no-such-oauth-secret"), "id") ??
+        "",
+      "file not found",
+    );
+  });
+  withMockedEnv({
+    SWAMP_OAUTH_CLIENT_SECRET: "secret",
+    SWAMP_OAUTH_CLIENT_SECRET_FILE: "/run/secrets/oauth",
+  }, () => {
+    assertStringIncludes(
+      checkOAuthClientSecret(undefined, "id") ?? "",
+      "mutually exclusive",
+    );
+  });
 });
 
 Deno.test("collectServeExtraArgs: forwards --dispatch-env-allow names", () => {

@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../domain/errors.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { OAUTH_CLIENT_SECRET_SOURCES } from "./oauth_client_secret_source.ts";
 
 const logger = getSwampLogger(["serve", "oauth-registration"]);
 
@@ -29,6 +31,10 @@ export const OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY = "oauth-bootstrap-access-token";
 // a public bootstrap client ID baked into the binary, as CLI tools do for
 // device grant; security is in the browser approval, not in the ID being secret
 export const BOOTSTRAP_CLIENT_ID = "swamp-serve-bootstrap";
+
+export const SECRET_WITHOUT_CLIENT_ID_MESSAGE =
+  "An OAuth client secret was supplied without a client id. Set --oauth-client-id or " +
+  "SWAMP_OAUTH_CLIENT_ID to the client the secret belongs to.";
 
 export interface OAuthClientCredentials {
   readonly clientId: string;
@@ -62,8 +68,40 @@ export async function resolveOAuthClientCredentials(
   providerUrl: string,
   vaultName: string,
   explicitClientId: string | undefined,
+  suppliedClientSecret: string | undefined,
   signal: AbortSignal,
 ): Promise<OAuthClientCredentials> {
+  if (suppliedClientSecret !== undefined && !explicitClientId) {
+    throw new UserError(SECRET_WITHOUT_CLIENT_ID_MESSAGE);
+  }
+
+  const storedAdminsRaw = await deps.getVaultSecret(
+    vaultName,
+    OAUTH_RESOLVED_ADMINS_KEY,
+  );
+  const resolvedAdmins = storedAdminsRaw
+    ? JSON.parse(storedAdminsRaw) as Record<string, string>
+    : null;
+  const readAccessToken = () =>
+    resolvedAdmins
+      ? Promise.resolve(null)
+      : deps.getVaultSecret(vaultName, OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY);
+
+  // A supplied pair is never stored: writing it would let any operator replace
+  // the stored secret without proving it belongs to the client.
+  if (explicitClientId && suppliedClientSecret !== undefined) {
+    logger.info(
+      "Using OAuth client {clientId} with the supplied client secret",
+      { clientId: explicitClientId },
+    );
+    return {
+      clientId: explicitClientId,
+      clientSecret: suppliedClientSecret,
+      accessToken: await readAccessToken(),
+      resolvedAdmins,
+    };
+  }
+
   const storedClientId = await deps.getVaultSecret(
     vaultName,
     OAUTH_CLIENT_ID_KEY,
@@ -73,25 +111,24 @@ export async function resolveOAuthClientCredentials(
     OAUTH_CLIENT_SECRET_KEY,
   );
 
-  const storedAdminsRaw = await deps.getVaultSecret(
-    vaultName,
-    OAUTH_RESOLVED_ADMINS_KEY,
-  );
-  const resolvedAdmins = storedAdminsRaw
-    ? JSON.parse(storedAdminsRaw) as Record<string, string>
-    : null;
-
-  if (explicitClientId && storedClientSecret) {
-    logger.info("Using explicit --oauth-client-id with stored client secret");
-    const storedAccessToken = resolvedAdmins
-      ? null
-      : await deps.getVaultSecret(vaultName, OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY);
-    return {
-      clientId: explicitClientId,
-      clientSecret: storedClientSecret,
-      accessToken: storedAccessToken,
-      resolvedAdmins,
-    };
+  if (explicitClientId) {
+    if (storedClientId === explicitClientId && storedClientSecret) {
+      logger.info(
+        "Using OAuth client {clientId} with its stored client secret",
+        { clientId: explicitClientId },
+      );
+      return {
+        clientId: explicitClientId,
+        clientSecret: storedClientSecret,
+        accessToken: await readAccessToken(),
+        resolvedAdmins,
+      };
+    }
+    throw new UserError(
+      `No client secret for OAuth client ${explicitClientId}. Supply it with ` +
+        `${OAUTH_CLIENT_SECRET_SOURCES}. serve does not register a new client ` +
+        "when a client id is set.",
+    );
   }
 
   if (storedClientId && storedClientSecret) {
@@ -137,80 +174,6 @@ export async function resolveOAuthClientCredentials(
     clientSecret: result.clientSecret,
     accessToken: result.accessToken,
     resolvedAdmins: null,
-  };
-}
-
-export async function registerClientWithApiKey(
-  providerUrl: string,
-  apiKey: string,
-  clientName: string,
-  signal: AbortSignal,
-): Promise<{ clientId: string; clientSecret: string }> {
-  const verifyResp = await fetch(`${providerUrl}/api/whoami`, {
-    headers: { "authorization": `Bearer ${apiKey}` },
-    signal,
-  });
-  if (!verifyResp.ok) {
-    const body = await verifyResp.text().catch(() => "");
-    throw new Error(
-      `SWAMP_API_KEY validation failed: ${verifyResp.status} ${verifyResp.statusText}${
-        body ? ` — ${body}` : ""
-      }`,
-    );
-  }
-  const whoami = await verifyResp.json() as {
-    scopes?: string[];
-  };
-  const scopes = whoami.scopes ?? [];
-  if (!scopes.includes("oauth:manage")) {
-    throw new Error(
-      `SWAMP_API_KEY is missing the "oauth:manage" scope required for headless OAuth client registration. ` +
-        `Generate a new collective API token that includes "oauth:manage".`,
-    );
-  }
-
-  logger.info(
-    "SWAMP_API_KEY verified with oauth:manage scope — registering OAuth client (headless)",
-  );
-
-  const resp = await fetch(`${providerUrl}/api/auth/oauth2/register`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "authorization": `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      client_name: clientName,
-      redirect_uris: ["http://localhost"],
-      grant_types: ["authorization_code"],
-      scope: "openid profile email collectives",
-    }),
-    signal,
-  });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(
-      `OAuth client registration via API key failed: ${resp.status} ${resp.statusText}${
-        body ? ` — ${body}` : ""
-      }`,
-    );
-  }
-  const data = await resp.json() as Record<string, unknown>;
-  if (
-    typeof data.client_id !== "string" ||
-    typeof data.client_secret !== "string"
-  ) {
-    throw new Error(
-      "OAuth registration response missing client_id or client_secret",
-    );
-  }
-  logger.info(
-    "Registered OAuth client {clientId} via SWAMP_API_KEY (headless)",
-    { clientId: data.client_id },
-  );
-  return {
-    clientId: data.client_id,
-    clientSecret: data.client_secret,
   };
 }
 

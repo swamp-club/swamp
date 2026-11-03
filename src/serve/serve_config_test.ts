@@ -735,6 +735,33 @@ Deno.test("mergeServeOptions: env var wins over config file when CLI not explici
   assertEquals(merged.certFile, "/from/env.crt");
 });
 
+Deno.test("mergeServeOptions: SWAMP_OAUTH_CLIENT_ID sits between the flag and the config file", () => {
+  const config: ServeConfigFile = {
+    auth: { "oauth-client-id": "from-config" },
+  };
+  const envLookup = (name: string) =>
+    name === "SWAMP_OAUTH_CLIENT_ID" ? "from-env" : undefined;
+
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), envLookup).oauthClientId,
+    "from-env",
+  );
+  assertEquals(
+    mergeServeOptions(
+      config,
+      { oauthClientId: "from-flag" },
+      new Set(["oauth-client-id"]),
+      envLookup,
+    ).oauthClientId,
+    "from-flag",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), () => undefined)
+      .oauthClientId,
+    "from-config",
+  );
+});
+
 Deno.test("mergeServeOptions: config file wins over default when neither CLI nor env var set", () => {
   const config: ServeConfigFile = { port: 3000, host: "0.0.0.0" };
   const cliOptions = { port: 9090, host: "127.0.0.1" };

@@ -32,9 +32,7 @@ export type OAuthSecretMigrationVaults = Pick<
   VaultService,
   | "get"
   | "put"
-  | "delete"
   | "list"
-  | "supportsDelete"
   | "getDefaultVaultName"
   | "getVaultNames"
 >;
@@ -100,11 +98,9 @@ export async function migrateOAuthSecrets(
           key,
           "serve:oauth-migration",
         );
+        // The user-vault copy stays: a seeded vault such as AWS Secrets Manager
+        // is how a recreated instance with an empty datastore finds its client.
         await vaultService.put(tokenSecretsVaultName, key, value);
-        if (vaultService.supportsDelete(userVaultForMigration)) {
-          await vaultService.delete(userVaultForMigration, key)
-            .catch(() => {});
-        }
         logger.info(
           "Migrated OAuth secret {key} from vault to control-plane store",
           { key },

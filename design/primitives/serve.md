@@ -74,7 +74,8 @@ without it the default file is optional.
 | `--auth-mode` / `auth.mode` | — | `none` | `none` \| `token` \| `oauth`; `none` logs a deprecation warning |
 | `--admins`, `--allowed-collectives`, `--allowed-users` / `auth.*` | — | unset | See [Identity and access](#identity-and-access) |
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
-| `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id auto-registered on first start if omitted |
+| `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_ID`, `SWAMP_OAUTH_CLIENT_NAME` | unset, `swamp-serve-{repo}-{host}` | Omitted: a client is registered on first start and stored in `_token-secrets`. Set: serve never registers; the secret comes from `--oauth-client-secret-file`, or the stored secret when the stored client is that id, else serve refuses to start (`src/serve/oauth_registration.ts`). `swamp auth oauth-client register` registers one up front with a collective key and prints its id and secret once |
+| `--oauth-client-secret-file` (flag only) | `SWAMP_OAUTH_CLIENT_SECRET_FILE`, `SWAMP_OAUTH_CLIENT_SECRET` | unset | Secret for `--oauth-client-id`, used for that run only and never written to `_token-secrets`, so supplying one cannot replace the stored client's secret; both env vars together is an error; a secret without a client id is refused; `SWAMP_`-prefixed so method subprocesses never inherit it (`src/serve/oauth_client_secret_source.ts`) |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field the collectives are read from |
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted behavior type needs admin to create, run, edit or delete a behavior of it, delete or rename its data, or add or change a workflow step running it. A behavior type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
@@ -597,8 +598,11 @@ half-migrates after the marker exists.
 **OAuth bootstrap secrets.** Older serves stored `oauth-client-id`,
 `oauth-client-secret`, `oauth-bootstrap-access-token` and
 `oauth-resolved-admins` in the default user vault. On start, serve lists that
-vault once, moves any of the four that `_token-secrets` lacks, and deletes them
-from the user vault when it supports deletes. When the listing succeeds and
+vault once and copies any of the four that `_token-secrets` lacks, leaving the
+user-vault copy in place: a vault seeded with a client id and secret, such as
+AWS Secrets Manager, is how an instance recreated with an empty datastore finds
+its client again. The documented route for that case is `--oauth-client-id`
+with a supplied secret; a user-vault seed only matters to a fresh store. When the listing succeeds and
 every key moves, serve records `oauth-secrets-migrated` in `_token-secrets`, and
 the migration never touches the user vault again. A key that is legitimately
 absent, such as the bootstrap access token after an API-key registration,

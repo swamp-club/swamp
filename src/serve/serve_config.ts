@@ -90,6 +90,7 @@ const logger = getSwampLogger(["serve", "config"]);
 export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   certFile: "SWAMP_SERVE_CERT_FILE",
   keyFile: "SWAMP_SERVE_KEY_FILE",
+  oauthClientId: "SWAMP_OAUTH_CLIENT_ID",
   oauthClientName: "SWAMP_OAUTH_CLIENT_NAME",
   grantsFile: "SWAMP_GRANTS_FILE",
   address: "SWAMP_SERVE_ADDRESS",

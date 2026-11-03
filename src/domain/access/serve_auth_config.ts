@@ -158,23 +158,7 @@ export function buildServeAuthConfig(
           "without admission restrictions, any swamp-club user can connect",
       );
     }
-    let providerUrl: URL;
-    try {
-      providerUrl = new URL(oauthProvider);
-    } catch {
-      throw new UserError(
-        `Invalid --oauth-provider URL "${oauthProvider}": expected a valid URL`,
-      );
-    }
-    const isLocalhost = providerUrl.hostname === "localhost" ||
-      providerUrl.hostname === "127.0.0.1" ||
-      providerUrl.hostname === "::1";
-    if (providerUrl.protocol !== "https:" && !isLocalhost) {
-      throw new UserError(
-        `--oauth-provider must use HTTPS (got ${oauthProvider}). ` +
-          "HTTP is only allowed for localhost development.",
-      );
-    }
+    resolveOAuthProviderUrl(oauthProvider);
   }
 
   return {
@@ -191,6 +175,31 @@ export function buildServeAuthConfig(
     signalRequiresExplicitGrant: input.signalRequiresExplicitGrant ?? false,
     tagRequiresExplicitGrant: input.tagRequiresExplicitGrant ?? false,
   };
+}
+
+/** the default and the HTTPS rule serve applies to --oauth-provider */
+export function resolveOAuthProviderUrl(
+  oauthProvider: string | undefined,
+): string {
+  const provider = oauthProvider ?? DEFAULT_OAUTH_PROVIDER;
+  let providerUrl: URL;
+  try {
+    providerUrl = new URL(provider);
+  } catch {
+    throw new UserError(
+      `Invalid --oauth-provider URL "${provider}": expected a valid URL`,
+    );
+  }
+  const isLocalhost = providerUrl.hostname === "localhost" ||
+    providerUrl.hostname === "127.0.0.1" ||
+    providerUrl.hostname === "::1";
+  if (providerUrl.protocol !== "https:" && !isLocalhost) {
+    throw new UserError(
+      `--oauth-provider must use HTTPS (got ${provider}). ` +
+        "HTTP is only allowed for localhost development.",
+    );
+  }
+  return provider;
 }
 
 export interface IneffectiveRestriction {

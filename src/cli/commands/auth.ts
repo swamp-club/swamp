@@ -28,6 +28,7 @@ import { authTokenCreateCommand } from "./auth_token_create.ts";
 import { authTokenListCommand } from "./auth_token_list.ts";
 import { authTokenRevokeCommand } from "./auth_token_revoke.ts";
 import { authTokenDeleteCommand } from "./auth_token_delete.ts";
+import { authOAuthClientRegisterCommand } from "./auth_oauth_client_register.ts";
 
 export const authTokenCommand = new Command()
   .name("token")
@@ -38,6 +39,13 @@ export const authTokenCommand = new Command()
   .command("list", authTokenListCommand)
   .command("revoke", authTokenRevokeCommand)
   .command("delete", authTokenDeleteCommand);
+
+export const authOAuthClientCommand = new Command()
+  .name("oauth-client")
+  .description("Manage OAuth clients for swamp serve")
+  .error(unknownCommandErrorHandler)
+  .action(groupCommandAction)
+  .command("register", authOAuthClientRegisterCommand);
 
 export const authCommand = new Command()
   .name("auth")
@@ -50,4 +58,5 @@ export const authCommand = new Command()
   .command("logout", authLogoutCommand)
   .command("whoami", authWhoamiCommand)
   .command("server-login", authServerLoginCommand)
-  .command("token", authTokenCommand);
+  .command("token", authTokenCommand)
+  .command("oauth-client", authOAuthClientCommand);

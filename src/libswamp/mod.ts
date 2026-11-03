@@ -1634,6 +1634,15 @@ export {
 } from "./auth/token_create.ts";
 
 export {
+  authOAuthClientRegister,
+  type AuthOAuthClientRegisterData,
+  type AuthOAuthClientRegisterDeps,
+  type AuthOAuthClientRegisterEvent,
+  type AuthOAuthClientRegisterInput,
+  createAuthOAuthClientRegisterDeps,
+} from "./auth/oauth_client_register.ts";
+
+export {
   authTokenList,
   type AuthTokenListData,
   type AuthTokenListDeps,
