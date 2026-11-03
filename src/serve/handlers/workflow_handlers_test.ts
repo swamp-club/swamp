@@ -18,11 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
+import type { WorkflowRunSummary } from "../../domain/workflows/workflow_run_summary.ts";
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { ExtensionWorkflowRepository } from "../../infrastructure/persistence/extension_workflow_repository.ts";
+import { CompositeWorkflowRepository } from "../../infrastructure/persistence/composite_workflow_repository.ts";
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import {
   applyTriggerOverrides,
@@ -2520,4 +2523,211 @@ Deno.test("handleWorkflowDelete: where members forward records, deleting a workf
     assertEquals(result.deleted, true, JSON.stringify(allowed));
     assertEquals(result.denials, []);
   }
+});
+
+class CountingExtensionWorkflows extends ExtensionWorkflowRepository {
+  walks = 0;
+  protected override scanListings() {
+    this.walks++;
+    return super.scanListings();
+  }
+  override findAll(): Promise<Workflow[]> {
+    this.walks++;
+    return super.findAll();
+  }
+}
+
+async function writeExtensionWorkflows(
+  dir: string,
+  names: string[],
+): Promise<Workflow[]> {
+  await Deno.mkdir(dir, { recursive: true });
+  const workflows = names.map((name) =>
+    Workflow.create({
+      name,
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "write",
+              task: StepTask.model("writer", "execute"),
+            }),
+          ],
+        }),
+      ],
+    })
+  );
+  for (const workflow of workflows) {
+    await Deno.writeTextFile(
+      join(dir, `${workflow.name}.yaml`),
+      stringifyYaml(JSON.parse(JSON.stringify(workflow.toData()))),
+    );
+  }
+  return workflows;
+}
+
+const PARENT_WORKFLOWS = [
+  "readable-parent",
+  "hidden-0",
+  "hidden-1",
+  "hidden-2",
+  "hidden-3",
+];
+
+async function runSearchOverExtensionParents(
+  dir: string,
+  linkParents: boolean,
+): Promise<{ walks: number; frame: SentFrame }> {
+  const extensionDir = join(dir, crypto.randomUUID());
+  const [child, ...parents] = await writeExtensionWorkflows(extensionDir, [
+    "child-wf",
+    ...PARENT_WORKFLOWS,
+  ]);
+  const extension = new CountingExtensionWorkflows(extensionDir);
+  const grants = [
+    readGrant("child", "child-wf"),
+    readGrant("parent", "readable-parent"),
+  ];
+  const snapshot = new PolicySnapshot(grants, []);
+  const ctx = {
+    authConfig: { ...searchAuthBase, mode: "token" },
+    policySnapshotLoader: {
+      snapshot,
+      decisionService: new GrantBasedAccessDecisionService(snapshot),
+    } as unknown as PolicySnapshotLoader,
+    repoContext: {
+      definitionRepo: {},
+      workflowRepo: new CompositeWorkflowRepository(
+        new YamlWorkflowRepository(join(dir, crypto.randomUUID())),
+        extension,
+      ),
+      workflowRunRepo: {
+        runIndexSnapshot: (workflowId: string) =>
+          Promise.resolve(RunIndexSnapshot.of(
+            workflowId !== child.id ? [] : parents.map((parent, i) => ({
+              id: crypto.randomUUID(),
+              workflowId: child.id,
+              workflowName: child.name,
+              status: "succeeded",
+              startedAt: new Date(Date.UTC(2026, 0, 10, 0, 0, i)),
+              tags: {},
+              inputs: {},
+              ...(linkParents
+                ? {
+                  parentRun: {
+                    workflowId: parent.id,
+                    workflowName: parent.name,
+                    runId: crypto.randomUUID(),
+                    stepName: "call-child",
+                  },
+                }
+                : {}),
+            })) as unknown as WorkflowRunSummary[],
+          )),
+      },
+    },
+  } as unknown as ConnectionContext;
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSearch(
+    socket,
+    ctx,
+    "req-parents",
+    new AbortController(),
+    searchPrincipal,
+    {},
+  );
+  assertEquals(frames.length, 1);
+  return { walks: extension.walks, frame: frames[0] };
+}
+
+Deno.test("handleWorkflowRunSearch: redacting parent links to many extension workflows reads them no more than the search itself does", async () => {
+  await withHistoryRepo(async (dir) => {
+    const unlinked = await runSearchOverExtensionParents(dir, false);
+    const linked = await runSearchOverExtensionParents(dir, true);
+
+    assertEquals(linked.walks, unlinked.walks);
+    const parentNames = (linked.frame.payload?.data.results ?? []).map((r) =>
+      (r.parentRun as { workflowName?: string } | undefined)?.workflowName
+    );
+    assertEquals(parentNames.length, 5);
+    assertEquals(parentNames.filter((name) => name !== undefined), [
+      "readable-parent",
+    ]);
+  });
+});
+
+async function historyGetOverNestedRuns(
+  dir: string,
+  nestedNames: string[],
+): Promise<{ walks: number; frame: HistoryFrame }> {
+  const runDir = join(dir, crypto.randomUUID());
+  const extensionDir = join(dir, crypto.randomUUID());
+  const nested = await writeExtensionWorkflows(
+    extensionDir,
+    [...new Set(nestedNames)],
+  );
+  const workflow = Workflow.create({
+    name: "history-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: nestedNames.map((name, i) =>
+          Step.create({
+            name: `call-${i}`,
+            task: StepTask.workflow(name),
+          })
+        ),
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  for (const [i, name] of nestedNames.entries()) {
+    const step = job.getStep(`call-${i}`)!;
+    step.start();
+    step.waitForNestedRun({
+      workflowId: nested.find((w) => w.name === name)!.id,
+      workflowName: name,
+      runId: crypto.randomUUID(),
+    });
+  }
+  run.endAsCancelled("stop");
+  await new YamlWorkflowRunRepository(runDir).save(workflow.id, run);
+
+  const extension = new CountingExtensionWorkflows(extensionDir);
+  const ctx = makeHistoryCtx(runDir, workflow, [
+    grantFor("wf", "workflow", "history-wf"),
+    grantFor("nested", "workflow", "nested-0"),
+  ]);
+  ctx.repoContext.workflowRepo = new CompositeWorkflowRepository(
+    makeWorkflowRepo(new Map([[workflow.name, workflow]])),
+    extension,
+  );
+  const frame = await historyGet(ctx, searchPrincipal);
+  return { walks: extension.walks, frame };
+}
+
+Deno.test("handleWorkflowHistoryGet: redacting nested runs of many extension workflows reads them once", async () => {
+  await withHistoryRepo(async (dir) => {
+    const distinct = ["nested-0", "nested-1", "nested-2", "nested-3"];
+    const one = await historyGetOverNestedRuns(
+      dir,
+      distinct.map(() => "nested-0"),
+    );
+    const many = await historyGetOverNestedRuns(dir, distinct);
+
+    assertEquals(many.walks, one.walks);
+    const steps = many.frame.payload?.data.jobs[0].steps as Array<
+      { nestedRun?: { workflowName: string } }
+    >;
+    assertEquals(steps.map((s) => s.nestedRun?.workflowName), [
+      "nested-0",
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
 });

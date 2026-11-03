@@ -51,6 +51,8 @@ import {
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { ExtensionWorkflowRepository } from "../../infrastructure/persistence/extension_workflow_repository.ts";
+import { CompositeWorkflowRepository } from "../../infrastructure/persistence/composite_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -4003,5 +4005,174 @@ Deno.test("handleModelOutputSearch: 64 identical limited searches of a model at 
       (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
         readTextFile;
     }
+  });
+});
+
+class CountingExtensionWorkflows extends ExtensionWorkflowRepository {
+  walks = 0;
+  protected override scanListings() {
+    this.walks++;
+    return super.scanListings();
+  }
+  override findAll(): Promise<Workflow[]> {
+    this.walks++;
+    return super.findAll();
+  }
+}
+
+async function linkedExtensionWorkflows(dir: string, names: string[]) {
+  const extensionDir = join(dir, "extension-workflows");
+  await Deno.mkdir(extensionDir, { recursive: true });
+  const workflows = names.map(linkedWorkflow);
+  for (const workflow of workflows) {
+    await Deno.writeTextFile(
+      join(extensionDir, `${workflow.name}.yaml`),
+      stringifyYaml(JSON.parse(JSON.stringify(workflow.toData()))),
+    );
+  }
+  const extension = new CountingExtensionWorkflows(extensionDir);
+  return {
+    extension,
+    workflows,
+    workflowRepo: new CompositeWorkflowRepository(
+      new YamlWorkflowRepository(dir),
+      extension,
+    ),
+  };
+}
+
+const LINKED_EXTENSION_WORKFLOWS = [
+  "readable-wf",
+  "hidden-0",
+  "hidden-1",
+  "hidden-2",
+  "hidden-3",
+];
+
+async function saveExtensionLinkedOutputs(
+  outputRepo: YamlOutputRepository,
+  model: Definition,
+  workflows: Workflow[],
+): Promise<void> {
+  const links = [
+    ...workflows.map((w) => w.id as string),
+    crypto.randomUUID(),
+  ];
+  for (const [i, workflowId] of links.entries()) {
+    await saveUsageOutput(
+      outputRepo,
+      model,
+      "execute",
+      `2026-01-0${i + 1}T00:00:00Z`,
+      "succeeded",
+      {
+        triggeredBy: "workflow",
+        workflowId,
+        workflowRunId: `run-${i}`,
+        stepName: "gate",
+      },
+    );
+  }
+}
+
+function extensionLinkCtx(
+  dir: string,
+  definitionRepo: YamlDefinitionRepository,
+  outputRepo: YamlOutputRepository,
+  workflowRepo: CompositeWorkflowRepository,
+) {
+  return {
+    ...createPolicyEditCtx(dir, definitionRepo, [
+      grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } }),
+      grant({
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "readable-wf" },
+      }),
+    ]),
+    repoContext: {
+      definitionRepo,
+      outputRepo,
+      workflowRepo,
+    } as unknown as ConnectionContext["repoContext"],
+  };
+}
+
+Deno.test("handleModelUsageSummary: names and redacts links to many extension workflows from one walk of them", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "watched");
+    const { extension, workflows, workflowRepo } =
+      await linkedExtensionWorkflows(dir, LINKED_EXTENSION_WORKFLOWS);
+    await saveExtensionLinkedOutputs(outputRepo, model, workflows);
+    const ctx = extensionLinkCtx(dir, definitionRepo, outputRepo, workflowRepo);
+
+    await withEditTestTypeRegistered(() =>
+      withObservedSpans(async (spans) => {
+        const socket = createMockSocket();
+        await handleModelUsageSummary(
+          socket,
+          ctx,
+          "req-1",
+          new AbortController(),
+          EDITOR,
+          { recentLimit: 10 },
+        );
+
+        const recent = frames(socket)[0].payload.data.models[0].recent as {
+          workflowId?: string;
+          workflowName?: string;
+        }[];
+        assertEquals(recent.length, 6);
+        const linked = recent.filter((row) => row.workflowId !== undefined);
+        assertEquals(linked.map((row) => row.workflowName), ["readable-wf"]);
+        assertEquals(extension.walks, 1);
+        assertEquals(
+          findSpan(spans, "swamp.diagnostic.response").attributes[
+            "swamp.diagnostic.extension_workflow_walks"
+          ],
+          0,
+        );
+      })
+    );
+  });
+});
+
+Deno.test("handleModelOutputSearch: names and redacts links to many extension workflows from one walk of them", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const model = await saveEditModel(definitionRepo, "watched");
+    const { extension, workflows, workflowRepo } =
+      await linkedExtensionWorkflows(dir, LINKED_EXTENSION_WORKFLOWS);
+    await saveExtensionLinkedOutputs(outputRepo, model, workflows);
+    const ctx = extensionLinkCtx(dir, definitionRepo, outputRepo, workflowRepo);
+
+    await withObservedSpans(async (spans) => {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        { model: "watched" },
+      );
+
+      const results = frames(socket)[0].payload.data.results as {
+        workflowId?: string;
+        workflowName?: string;
+      }[];
+      assertEquals(results.length, 6);
+      const linked = results.filter((row) => row.workflowId !== undefined);
+      assertEquals(linked.map((row) => row.workflowName), ["readable-wf"]);
+      assertEquals(extension.walks, 1);
+      assertEquals(
+        findSpan(spans, "swamp.diagnostic.response").attributes[
+          "swamp.diagnostic.extension_workflow_walks"
+        ],
+        0,
+      );
+    });
   });
 });

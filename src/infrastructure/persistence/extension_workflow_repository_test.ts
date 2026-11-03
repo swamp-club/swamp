@@ -31,6 +31,10 @@ import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { UserError } from "../../domain/errors.ts";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../logging/logger.ts";
+import {
+  PhaseTally,
+  withDiagnosticTally,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -1139,6 +1143,36 @@ Deno.test("ExtensionWorkflowRepository: updateAdditionalDirs to a new set drops 
     assertEquals(
       (await repo.findAllListings()).map((l) => l.name),
       ["arrived"],
+    );
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository: counts each scan and full read in the current diagnostic tally, and a memoized view's lookups count one", async () => {
+  await withTempDir(async (dir) => {
+    const a = createWorkflowYaml("a");
+    await Deno.writeTextFile(join(dir, "a.yaml"), stringifyYaml(a));
+    const repo = new ExtensionWorkflowRepository(dir);
+
+    const direct = new PhaseTally(true);
+    await withDiagnosticTally("output_search", direct, async () => {
+      await repo.findAll();
+      await repo.findByName("a");
+    });
+    assertEquals(
+      direct.attributes()["swamp.diagnostic.extension_workflow_walks"],
+      2,
+    );
+
+    const viewed = new PhaseTally(true);
+    await withDiagnosticTally("output_search", viewed, async () => {
+      const view = repo.memoizedView();
+      await view.findByName("a");
+      await view.findById(a.id as WorkflowId);
+      await view.findAllListings!();
+    });
+    assertEquals(
+      viewed.attributes()["swamp.diagnostic.extension_workflow_walks"],
+      1,
     );
   });
 });

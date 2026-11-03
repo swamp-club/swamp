@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStrictEquals } from "@std/assert";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
 import {
   type NamedWorkflow,
   nestedGateRefusalForClient,
@@ -46,6 +48,7 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { CompositeWorkflowRepository } from "../../infrastructure/persistence/composite_workflow_repository.ts";
 import { ExtensionWorkflowRepository } from "../../infrastructure/persistence/extension_workflow_repository.ts";
+import { canonicalResources } from "./resource_resolution.ts";
 
 const readable = new Set(["readable-id"]);
 const canRead = (w: NamedWorkflow) =>
@@ -626,6 +629,86 @@ Deno.test("nestedRunReadDecider: reads extension workflows afresh for each new w
     assert(afterFirst > 0);
     assert(extension.walks > afterFirst);
     assertEquals(extension.fullReads, 0);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("nestedRunReadDecider: given a request's resources, resolves every workflow from one walk of the extension workflows", async () => {
+  class CountingExtensionWorkflowRepository
+    extends ExtensionWorkflowRepository {
+    walks = 0;
+    protected override scanListings() {
+      this.walks++;
+      return super.scanListings();
+    }
+    override findAll(): Promise<Workflow[]> {
+      this.walks++;
+      return super.findAll();
+    }
+  }
+  const dir = await Deno.makeTempDir({ prefix: "swamp-nested-decider-" });
+  try {
+    const known = Array.from({ length: 3 }, (_, i) => ({
+      id: crypto.randomUUID(),
+      name: `known-${i}`,
+    }));
+    for (const workflow of known) {
+      await Deno.writeTextFile(
+        join(dir, `${workflow.name}.yaml`),
+        stringifyYaml({
+          id: workflow.id,
+          name: workflow.name,
+          version: 1,
+          jobs: [{
+            name: "job",
+            steps: [{
+              name: "step",
+              task: {
+                type: "model_method",
+                modelIdOrName: "m",
+                methodName: "run",
+              },
+            }],
+          }],
+        }),
+      );
+    }
+    const extension = new CountingExtensionWorkflowRepository(dir);
+    const primary = {
+      findById: () => Promise.resolve(null),
+      findByName: () => Promise.resolve(null),
+    } as unknown as WorkflowRepository;
+    const ctx = {
+      authConfig: { mode: "token", admins: [] },
+      repoContext: {
+        definitionRepo: {} as DefinitionRepository,
+        workflowRepo: new CompositeWorkflowRepository(primary, extension),
+      },
+    } as unknown as ConnectionContext;
+    const decide = nestedRunReadDecider(
+      ctx,
+      {} as WebSocket,
+      null,
+      canonicalResources(ctx),
+    );
+
+    // the unknown ones take the second, by-id lookup a stale link falls to
+    const named: NamedWorkflow[] = [
+      ...known.map((w) => ({ workflowId: w.id, workflowName: w.name })),
+      ...Array.from({ length: 27 }, (_, i) => ({
+        workflowId: crypto.randomUUID(),
+        workflowName: `gone-${i}`,
+      })),
+    ];
+    await Promise.all(named.map(decide));
+    for (const workflow of named) await decide(workflow);
+
+    assertEquals(extension.walks, 1);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});

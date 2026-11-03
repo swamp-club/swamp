@@ -43,6 +43,7 @@ import {
   type RecordFingerprint,
   statRecord,
 } from "./workflow_run_index.ts";
+import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 
 const logger = getLogger(["extension-workflow-repo"]);
 
@@ -170,6 +171,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
    * matches its kept entry is not read again
    */
   protected async scanListings(): Promise<ScannedListing[]> {
+    currentDiagnosticTally().add("extension_workflow_walks");
     const listed: ScannedListing[] = [];
     // only workflows claim a name, as in findAll's dedupe
     const seenNames = new Set<string>();
@@ -252,6 +254,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   }
 
   async findAll(): Promise<Workflow[]> {
+    currentDiagnosticTally().add("extension_workflow_walks");
     const workflows: Workflow[] = [];
     const seenNames = new Set<string>();
 
