@@ -391,3 +391,106 @@ Deno.test("FileSystemControlPlaneStore: putIfAbsent leaves no staging file behin
     }
   }
 });
+
+Deno.test("FileSystemControlPlaneStore: put survives a delete removing the emptied parent between mkdir and write", async () => {
+  await withTempDir(async (dir) => {
+    const parent = join(dir, "_control", "pending-runs");
+    let armed = false;
+    let raced = false;
+    const store: FileSystemControlPlaneStore = new FileSystemControlPlaneStore(
+      dir,
+      async (path, options) => {
+        await Deno.mkdir(path, options);
+        if (armed && !raced && path === parent) {
+          raced = true;
+          await store.delete("pending-runs/old");
+        }
+      },
+    );
+    await store.put("pending-runs/old", encoder.encode("old"));
+    armed = true;
+
+    await store.put("pending-runs/new", encoder.encode("new"));
+
+    assertEquals(raced, true);
+    assertEquals(decoder.decode((await store.get("pending-runs/new"))!), "new");
+    assertEquals(await store.list("pending-runs/"), ["pending-runs/new"]);
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: putIfAbsent survives a delete removing the emptied parent and leaves no staging file", async () => {
+  await withTempDir(async (dir) => {
+    const parent = join(dir, "_control", "claims");
+    let armed = false;
+    let raced = false;
+    const store: FileSystemControlPlaneStore = new FileSystemControlPlaneStore(
+      dir,
+      async (path, options) => {
+        await Deno.mkdir(path, options);
+        if (armed && !raced && path === parent) {
+          raced = true;
+          await store.delete("claims/old");
+        }
+      },
+    );
+    await store.put("claims/old", encoder.encode("old"));
+    armed = true;
+
+    assertEquals(
+      await store.putIfAbsent("claims/new", encoder.encode("new")),
+      true,
+    );
+
+    assertEquals(raced, true);
+    assertEquals(decoder.decode((await store.get("claims/new"))!), "new");
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(parent)) names.push(entry.name);
+    assertEquals(names, ["new"]);
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: put of a nested key survives the mkdir itself losing an intermediate level", async () => {
+  await withTempDir(async (dir) => {
+    let failed = false;
+    const store = new FileSystemControlPlaneStore(
+      dir,
+      async (path, options) => {
+        if (!failed) {
+          failed = true;
+          throw new Deno.errors.NotFound(`mkdir ${path}`);
+        }
+        await Deno.mkdir(path, options);
+      },
+    );
+
+    await store.put("active-runs/inst/run", encoder.encode("run"));
+
+    assertEquals(failed, true);
+    assertEquals(
+      decoder.decode((await store.get("active-runs/inst/run"))!),
+      "run",
+    );
+  });
+});
+
+Deno.test("FileSystemControlPlaneStore: put rejects with NotFound once a parent that keeps vanishing exhausts its attempts", async () => {
+  await withTempDir(async (dir) => {
+    let calls = 0;
+    const store = new FileSystemControlPlaneStore(
+      dir,
+      async (path, options) => {
+        calls++;
+        await Deno.mkdir(path, options);
+        await Deno.remove(path);
+      },
+    );
+
+    await assertRejects(
+      () => store.put("pending-runs/new", encoder.encode("new")),
+      Deno.errors.NotFound,
+    );
+
+    assertEquals(calls > 1, true);
+    assertEquals(await store.get("pending-runs/new"), null);
+  });
+});
