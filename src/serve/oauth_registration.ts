@@ -112,7 +112,12 @@ export async function resolveOAuthClientCredentials(
   );
 
   if (explicitClientId) {
-    if (storedClientId === explicitClientId && storedClientSecret) {
+    // A secret with no recorded id is a seeded one and cannot be checked; only a
+    // different recorded id proves it belongs to another client.
+    if (
+      storedClientSecret &&
+      (!storedClientId || storedClientId === explicitClientId)
+    ) {
       logger.info(
         "Using OAuth client {clientId} with its stored client secret",
         { clientId: explicitClientId },
@@ -123,6 +128,14 @@ export async function resolveOAuthClientCredentials(
         accessToken: await readAccessToken(),
         resolvedAdmins,
       };
+    }
+    if (storedClientSecret) {
+      throw new UserError(
+        `The stored OAuth client is ${storedClientId}, not ${explicitClientId}, ` +
+          `so its secret cannot be used. Supply the secret for ${explicitClientId} with ` +
+          `${OAUTH_CLIENT_SECRET_SOURCES}. serve does not register a new client ` +
+          "when a client id is set.",
+      );
     }
     throw new UserError(
       `No client secret for OAuth client ${explicitClientId}. Supply it with ` +

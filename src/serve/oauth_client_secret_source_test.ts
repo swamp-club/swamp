@@ -22,8 +22,8 @@ import { join } from "@std/path";
 import { UserError } from "../domain/errors.ts";
 import { createSafeMethodEnv } from "../domain/remote/environment_snapshot.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
+import { OAUTH_CLIENT_SECRET_ENV } from "../domain/auth/auth_credentials.ts";
 import {
-  OAUTH_CLIENT_SECRET_ENV,
   OAUTH_CLIENT_SECRET_FILE_ENV,
   resolveOAuthClientSecret,
 } from "./oauth_client_secret_source.ts";

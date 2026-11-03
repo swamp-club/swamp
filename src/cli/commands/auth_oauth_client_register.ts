@@ -76,10 +76,16 @@ export const authOAuthClientRegisterCommand = new Command()
 
     let data: AuthOAuthClientRegisterData | undefined;
     await consumeStream(
-      authOAuthClientRegister(ctx, createAuthOAuthClientRegisterDeps(), {
-        name: options.name as string,
-        provider: options.oauthProvider as string | undefined,
-      }),
+      authOAuthClientRegister(
+        ctx,
+        createAuthOAuthClientRegisterDeps({
+          apiKeyFile: options.clubApiKeyFile as string | undefined,
+        }),
+        {
+          name: options.name as string,
+          provider: options.oauthProvider as string | undefined,
+        },
+      ),
       withDefaults<AuthOAuthClientRegisterEvent>({
         registering: (event) => {
           if (cliCtx.outputMode === "log") {

@@ -305,9 +305,43 @@ Deno.test("resolveOAuthClientCredentials: an explicit id with a different stored
         AbortSignal.timeout(5000),
       ),
     UserError,
-    "No client secret for OAuth client explicit-id",
+    "The stored OAuth client is other-id, not explicit-id",
   );
   assertEquals(writes, []);
+});
+
+Deno.test("resolveOAuthClientCredentials: an explicit id uses a seeded secret that has no recorded client id", async () => {
+  const { deps, writes } = storeWith({
+    [OAUTH_CLIENT_SECRET_KEY]: "seeded-secret",
+  });
+  const result = await resolveOAuthClientCredentials(
+    deps,
+    "https://swamp-club.com",
+    "default",
+    "explicit-id",
+    undefined,
+    AbortSignal.timeout(5000),
+  );
+  assertEquals(result.clientId, "explicit-id");
+  assertEquals(result.clientSecret, "seeded-secret");
+  assertEquals(writes, []);
+});
+
+Deno.test("resolveOAuthClientCredentials: an explicit id with a recorded id but no secret is refused", async () => {
+  const { deps } = storeWith({ [OAUTH_CLIENT_ID_KEY]: "explicit-id" });
+  await assertRejects(
+    () =>
+      resolveOAuthClientCredentials(
+        deps,
+        "https://swamp-club.com",
+        "default",
+        "explicit-id",
+        undefined,
+        AbortSignal.timeout(5000),
+      ),
+    UserError,
+    "No client secret for OAuth client explicit-id",
+  );
 });
 
 Deno.test("resolveOAuthClientCredentials: an explicit id with an empty store is refused, not registered", async () => {

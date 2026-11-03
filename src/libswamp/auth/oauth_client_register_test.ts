@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -179,6 +180,31 @@ Deno.test("authOAuthClientRegister: a failed registration is an error event, not
     events[1].kind === "error" && events[1].error.code,
     "registration_failed",
   );
+});
+
+Deno.test("createAuthOAuthClientRegisterDeps: the parsed key file wins over the env key", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "key");
+    await Deno.writeTextFile(path, "key-from-file\n");
+    withMockedEnv({
+      SWAMP_API_KEY: "key-from-env",
+      SWAMP_API_KEY_FILE: undefined,
+    }, () => {
+      assertEquals(
+        createAuthOAuthClientRegisterDeps({ apiKeyFile: path }).resolveApiKey(),
+        "key-from-file",
+      );
+      assertEquals(
+        createAuthOAuthClientRegisterDeps().resolveApiKey(),
+        "key-from-env",
+      );
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((err) => {
+      if (Deno.build.os !== "windows") throw err;
+    });
+  }
 });
 
 Deno.test("canonicalServerUrl: strips trailing slashes and maps the legacy domain", () => {

@@ -28,7 +28,12 @@ import {
 import { UserError } from "../errors.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { type ExpressionContext, ModelResolver } from "./model_resolver.ts";
+import {
+  buildEnvContext,
+  type ExpressionContext,
+  ModelResolver,
+} from "./model_resolver.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
@@ -3651,5 +3656,20 @@ Deno.test("ModelResolver data namespace: query forwards the view it is handed in
     assertEquals(seen[1]?.select, "name");
     assertEquals(seen[2]?.view, undefined);
     catalog.close();
+  });
+});
+
+Deno.test("buildEnvContext: hides the OAuth client secret from expressions, in any case, and keeps the rest", () => {
+  withMockedEnv({
+    SWAMP_OAUTH_CLIENT_SECRET: "secret",
+    swamp_oauth_client_secret: "secret",
+    SWAMP_OAUTH_CLIENT_ID: "client-id",
+    KEEP_ME: "kept",
+  }, () => {
+    const env = buildEnvContext();
+    assertEquals(env.SWAMP_OAUTH_CLIENT_SECRET, undefined);
+    assertEquals(env.swamp_oauth_client_secret, undefined);
+    assertEquals(env.SWAMP_OAUTH_CLIENT_ID, "client-id");
+    assertEquals(env.KEEP_ME, "kept");
   });
 });

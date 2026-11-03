@@ -25,7 +25,11 @@ import {
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { UserError } from "../../domain/errors.ts";
 import { registerClientWithApiKey } from "../../infrastructure/http/oauth_client_registration.ts";
-import { resolveApiKey } from "../../infrastructure/persistence/api_key_source.ts";
+import {
+  CLUB_API_KEY_FILE_FLAG,
+  readCredentialFile,
+  resolveApiKey,
+} from "../../infrastructure/persistence/api_key_source.ts";
 import type { LibSwampContext } from "../context.ts";
 import { cancelled, type SwampError, validationFailed } from "../errors.ts";
 
@@ -57,9 +61,16 @@ export interface AuthOAuthClientRegisterDeps {
   ) => Promise<{ clientId: string; clientSecret: string }>;
 }
 
-export function createAuthOAuthClientRegisterDeps(): AuthOAuthClientRegisterDeps {
+export function createAuthOAuthClientRegisterDeps(
+  options: { apiKeyFile?: string } = {},
+): AuthOAuthClientRegisterDeps {
+  const { apiKeyFile } = options;
   return {
-    resolveApiKey,
+    // The parsed flag, not only the startup pre-parse, which misses an option
+    // placed between oauth-client and register.
+    resolveApiKey: apiKeyFile === undefined
+      ? resolveApiKey
+      : () => readCredentialFile(apiKeyFile, CLUB_API_KEY_FILE_FLAG),
     keyServerUrl: () =>
       Deno.env.get("SWAMP_CLUB_URL")?.trim() || DEFAULT_SWAMP_CLUB_URL,
     registerClient: registerClientWithApiKey,

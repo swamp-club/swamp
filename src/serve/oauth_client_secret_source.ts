@@ -17,13 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { OAUTH_CLIENT_SECRET_ENV } from "../domain/auth/auth_credentials.ts";
 import { UserError } from "../domain/errors.ts";
 import { readCredentialFile } from "../infrastructure/persistence/api_key_source.ts";
 
 export const OAUTH_CLIENT_SECRET_FILE_FLAG = "--oauth-client-secret-file";
 export const OAUTH_CLIENT_SECRET_FILE_ENV = "SWAMP_OAUTH_CLIENT_SECRET_FILE";
-// SWAMP_-prefixed so createSafeMethodEnv strips it from method subprocesses
-export const OAUTH_CLIENT_SECRET_ENV = "SWAMP_OAUTH_CLIENT_SECRET";
 
 export const OAUTH_CLIENT_SECRET_SOURCES =
   `${OAUTH_CLIENT_SECRET_FILE_FLAG}, ${OAUTH_CLIENT_SECRET_FILE_ENV} or ${OAUTH_CLIENT_SECRET_ENV}`;

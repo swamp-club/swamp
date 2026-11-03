@@ -52,6 +52,7 @@ import {
   type VaultRefreshOptions,
   VaultService,
 } from "../vaults/vault_service.ts";
+import { OAUTH_CLIENT_SECRET_ENV } from "../auth/auth_credentials.ts";
 import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_refresh.ts";
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { attachSensitiveValues } from "./sensitive_context.ts";
@@ -59,12 +60,17 @@ import type { ProbeRedactor } from "../vaults/secret_reference_check.ts";
 import { SecretLoader } from "../vaults/secret_loader.ts";
 
 /**
- * returns the unfiltered process environment; env.* values land in persisted
- * model output, so prefer vault.get for secrets, which is never written to
- * output
+ * returns the process environment minus serve's OAuth client secret, which a
+ * model author must not reach; env.* values land in persisted model output, so
+ * prefer vault.get for secrets, which is never written to output
  */
 export function buildEnvContext(): Record<string, string> {
-  return { ...Deno.env.toObject() };
+  const env = { ...Deno.env.toObject() };
+  // Names compare case-insensitively because Windows env names do.
+  for (const name of Object.keys(env)) {
+    if (name.toUpperCase() === OAUTH_CLIENT_SECRET_ENV) delete env[name];
+  }
+  return env;
 }
 
 // Re-export DataRecord and FileDataRecord from their canonical
