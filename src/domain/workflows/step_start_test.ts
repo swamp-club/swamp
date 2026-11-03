@@ -17,8 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
-import { COMMIT_UNREACHABLE_CODE } from "../datastore_v3/commit_log_unit_of_work.ts";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import {
+  AppendUnrecordedError,
+  COMMIT_UNREACHABLE_CODE,
+} from "../datastore_v3/commit_log_unit_of_work.ts";
+import { CommitRejectedError } from "../datastore_v3/partition.ts";
 import {
   STEP_START_UNRECORDED_CODE,
   StepStart,
@@ -116,4 +125,99 @@ Deno.test("StepStartUnrecordedError: a run whose move into running could not be 
     error.message.includes("swamp workflow run deploy-all again"),
     true,
   );
+});
+
+function serveRefusal(): Error {
+  return Object.assign(
+    new Error("it records an approval decision serve does not hold"),
+    { code: "forbidden" },
+  );
+}
+
+Deno.test("StepStartUnrecordedError: a refused start keeps the refusal's code and message, with no outage advice (swamp-club#4368)", () => {
+  const error = new StepStartUnrecordedError(
+    new AppendUnrecordedError(serveRefusal(), true),
+    {
+      workflowId: DATA.workflowId,
+      workflowName: "deploy-all",
+      runId: DATA.runId,
+      stepName: "deploy",
+      jobName: "main",
+    },
+  );
+  for (const each of [error, error.withEnd(true), error.withEnd(false)]) {
+    assertEquals(each.code, "forbidden");
+    assertEquals(
+      each.message.includes(
+        "The datastore refused the start of step deploy of workflow run " +
+          `${DATA.runId} (it records an approval decision serve does not hold)`,
+      ),
+      true,
+      each.message,
+    );
+    assertEquals(each.message.includes("reachable"), false, each.message);
+    assertEquals(each.message.includes("could not"), false, each.message);
+    assertEquals(each.message.includes("workflow resume"), false);
+  }
+  assertStringIncludes(
+    error.withEnd(true).message,
+    "The run is recorded as failed.",
+  );
+  assertEquals(error.withEnd(true).message.includes("workflow recover"), false);
+  assertStringIncludes(
+    error.withEnd(false).message,
+    `The run is still recorded as running; run swamp workflow recover ` +
+      `deploy-all --run ${DATA.runId} before resuming it.`,
+  );
+});
+
+Deno.test("StepStartUnrecordedError: a refused move into running says no step ran and names the refusal (swamp-club#4368)", () => {
+  const error = new StepStartUnrecordedError(
+    new AppendUnrecordedError(serveRefusal(), true),
+    {
+      workflowId: DATA.workflowId,
+      workflowName: "deploy-all",
+      runId: DATA.runId,
+    },
+  ).withEnd(false);
+  assertEquals(error.code, "forbidden");
+  assertEquals(error.message.includes("No step of it ran"), true);
+  assertEquals(error.message.includes("reachable"), false, error.message);
+  assertStringIncludes(
+    error.message,
+    `run swamp workflow recover deploy-all --run ${DATA.runId}`,
+  );
+});
+
+Deno.test("StepStartUnrecordedError: a refusal with no code of its own takes commit_ and its reason, as serve reports it (swamp-club#4368)", () => {
+  const error = new StepStartUnrecordedError(
+    new AppendUnrecordedError(
+      new CommitRejectedError("expect-failed", "the record moved"),
+      true,
+    ),
+    {
+      workflowId: DATA.workflowId,
+      workflowName: "deploy-all",
+      runId: DATA.runId,
+      stepName: "deploy",
+      jobName: "main",
+    },
+  );
+  assertEquals(error.code, "commit_expect-failed");
+  assertEquals(error.message.includes("the record moved"), true);
+});
+
+Deno.test("StepStartUnrecordedError: an unreachable append keeps the commit-unreachable code and its advice (swamp-club#4368)", () => {
+  const error = new StepStartUnrecordedError(
+    new AppendUnrecordedError(new Error("serve is down"), false),
+    {
+      workflowId: DATA.workflowId,
+      workflowName: "deploy-all",
+      runId: DATA.runId,
+      stepName: "deploy",
+      jobName: "main",
+    },
+  ).withEnd(true);
+  assertEquals(error.code, COMMIT_UNREACHABLE_CODE);
+  assertEquals(error.message.includes("once the datastore is reachable"), true);
 });

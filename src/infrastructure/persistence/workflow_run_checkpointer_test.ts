@@ -718,6 +718,65 @@ Deno.test("WorkflowRunCheckpointer: a run whose move into running could not be c
   });
 });
 
+function forbidden(): AppendUnrecordedError {
+  return new AppendUnrecordedError(
+    Object.assign(new Error("it changes a waiting approval gate's start"), {
+      code: "forbidden",
+    }),
+    true,
+  );
+}
+
+Deno.test("WorkflowRunCheckpointer: a run record the datastore refuses rejects with the refusal's code, not unreachable (swamp-club#4368)", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    const commitLog = journalEngine(() => Promise.reject(forbidden()));
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog, workflowRunRepo },
+      { intervalMs: 60_000, now: () => 0 },
+    );
+    const run = twoStepRun();
+    run.start();
+    await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+    const error = await assertRejects(
+      () => checkpointer.checkpoint(run),
+      StepStartUnrecordedError,
+    );
+    assertEquals(error.code, "forbidden");
+    assertEquals(error.start.stepName, undefined);
+    assertEquals(error.message.includes("reachable"), false, error.message);
+    await checkpointer.close();
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer: a step start the datastore refuses rejects with the refusal's code, not unreachable (swamp-club#4368)", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    const commitLog = journalEngine((change) => {
+      const kind = "put" in change ? change.put.intent.kind : "";
+      return kind === "run-start.save"
+        ? Promise.reject(forbidden())
+        : Promise.resolve("committed");
+    });
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog, workflowRunRepo },
+      { intervalMs: 60_000, now: () => 0 },
+    );
+    const run = twoStepRun();
+    run.start();
+    await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+    await checkpointer.checkpoint(run);
+    run.jobs[0].start();
+    run.jobs[0].steps[0].start();
+    const error = await assertRejects(
+      () => checkpointer.checkpoint(run),
+      StepStartUnrecordedError,
+    );
+    assertEquals(error.code, "forbidden");
+    assertEquals(error.start.stepName, "a");
+    assertEquals(error.message.includes("reachable"), false, error.message);
+    await checkpointer.close();
+  });
+});
+
 Deno.test("WorkflowRunCheckpointer: when serve takes no step starts, a start commits the whole record at once instead", async () => {
   await withRunRepo(async (workflowRunRepo) => {
     const commitLog = journalEngine((change) => {
