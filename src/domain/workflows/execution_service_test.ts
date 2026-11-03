@@ -24597,3 +24597,158 @@ Deno.test("WorkflowExecutionService: a nested run whose step start cannot be com
     }
   });
 });
+
+class HeldPeakExecutor extends CountingStepExecutor {
+  readonly release = Promise.withResolvers<void>();
+  inFlight = 0;
+  peak = 0;
+  readonly active = new Map<string, number>();
+  readonly peakByStep = new Map<string, number>();
+
+  override async execute(
+    _step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    // Iterations are named <template>-<target>.
+    const template = ctx.stepName.split("-")[0];
+    this.inFlight++;
+    this.peak = Math.max(this.peak, this.inFlight);
+    const n = (this.active.get(template) ?? 0) + 1;
+    this.active.set(template, n);
+    this.peakByStep.set(
+      template,
+      Math.max(this.peakByStep.get(template) ?? 0, n),
+    );
+    try {
+      await this.release.promise;
+      return { step: ctx.stepName };
+    } finally {
+      this.inFlight--;
+      this.active.set(template, this.active.get(template)! - 1);
+    }
+  }
+}
+
+const THREE_TARGETS = { targets: ["x", "y", "z"] };
+
+async function runWithFirstWave(
+  tempDir: string,
+  workflow: Workflow,
+  firstWave: number,
+): Promise<{ run: WorkflowRun; executor: HeldPeakExecutor }> {
+  const executor = new HeldPeakExecutor();
+  const { service } = await setupRetry(tempDir, workflow, undefined, executor);
+  const pending = service.execute(workflow.name, { inputs: THREE_TARGETS });
+  try {
+    await waitFor(
+      () => executor.inFlight >= firstWave,
+      `${firstWave} steps running at once`,
+    );
+  } finally {
+    executor.release.resolve();
+  }
+  return { run: await pending, executor };
+}
+
+function levelWorkflow(steps: Step[], jobConcurrency?: number): Workflow {
+  return Workflow.create({
+    name: `level-${crypto.randomUUID()}`,
+    jobs: [Job.create({ name: "main", concurrency: jobConcurrency, steps })],
+  });
+}
+
+Deno.test("run(): two forEach steps in one job each get their own concurrency limit", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: undefined },
+    () =>
+      withTempDir(async (tempDir) => {
+        const workflow = levelWorkflow([
+          modelStep("a", { forEach: EACH_TARGET, concurrency: 1 }),
+          modelStep("b", { forEach: EACH_TARGET, concurrency: 1 }),
+        ]);
+
+        const { run, executor } = await runWithFirstWave(tempDir, workflow, 2);
+
+        assertEquals(run.status, "succeeded");
+        assertEquals(executor.peak, 2);
+        assertEquals(executor.peakByStep.get("a"), 1);
+        assertEquals(executor.peakByStep.get("b"), 1);
+      }),
+  );
+});
+
+Deno.test("run(): a step's concurrency does not throttle a sibling step that sets none", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: undefined },
+    () =>
+      withTempDir(async (tempDir) => {
+        const workflow = levelWorkflow([
+          modelStep("a", { forEach: EACH_TARGET, concurrency: 1 }),
+          modelStep("b", { forEach: EACH_TARGET }),
+        ]);
+
+        const { run, executor } = await runWithFirstWave(tempDir, workflow, 4);
+
+        assertEquals(run.status, "succeeded");
+        assertEquals(executor.peakByStep.get("a"), 1);
+        assertEquals(executor.peakByStep.get("b"), 3);
+      }),
+  );
+});
+
+Deno.test("run(): job concurrency caps the steps without their own limit beside one that has one", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: undefined },
+    () =>
+      withTempDir(async (tempDir) => {
+        const workflow = levelWorkflow([
+          modelStep("a", { forEach: EACH_TARGET, concurrency: 1 }),
+          modelStep("b", { forEach: EACH_TARGET }),
+        ], 2);
+
+        const { run, executor } = await runWithFirstWave(tempDir, workflow, 3);
+
+        assertEquals(run.status, "succeeded");
+        assertEquals(executor.peak, 3);
+        assertEquals(executor.peakByStep.get("a"), 1);
+        assertEquals(executor.peakByStep.get("b"), 2);
+      }),
+  );
+});
+
+Deno.test("run(): a lone forEach step's concurrency still overrides a lower job concurrency", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: undefined },
+    () =>
+      withTempDir(async (tempDir) => {
+        const workflow = levelWorkflow([
+          modelStep("a", { forEach: EACH_TARGET, concurrency: 3 }),
+        ], 2);
+
+        const { run, executor } = await runWithFirstWave(tempDir, workflow, 3);
+
+        assertEquals(run.status, "succeeded");
+        assertEquals(executor.peak, 3);
+      }),
+  );
+});
+
+Deno.test("run(): SWAMP_MAX_CONCURRENT_STEPS caps the level total across steps with their own limits", async () => {
+  await withMockedEnv(
+    { SWAMP_MAX_CONCURRENT_STEPS: "3" },
+    () =>
+      withTempDir(async (tempDir) => {
+        const workflow = levelWorkflow([
+          modelStep("a", { forEach: EACH_TARGET, concurrency: 2 }),
+          modelStep("b", { forEach: EACH_TARGET, concurrency: 2 }),
+        ]);
+
+        const { run, executor } = await runWithFirstWave(tempDir, workflow, 3);
+
+        assertEquals(run.status, "succeeded");
+        assertEquals(executor.peak, 3);
+        assert(executor.peakByStep.get("a")! <= 2);
+        assert(executor.peakByStep.get("b")! <= 2);
+      }),
+  );
+});
