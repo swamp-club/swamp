@@ -59,6 +59,14 @@ export function hasApiKeySource(): boolean {
   return apiKeySourceName() !== undefined;
 }
 
+function isDirectory(path: string): boolean {
+  try {
+    return Deno.statSync(path).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
 /** the file-read rules every credential file follows: trimmed, never empty */
 export function readCredentialFile(path: string, source: string): string {
   let raw: string;
@@ -77,7 +85,8 @@ export function readCredentialFile(path: string, source: string): string {
         [path],
       );
     }
-    if (err instanceof Deno.errors.IsADirectory) {
+    // Windows reports reading a directory as a plain "Incorrect function" error.
+    if (err instanceof Deno.errors.IsADirectory || isDirectory(path)) {
       throw markErrorPaths(
         new UserError(`${source} is a directory, not a file: ${path}`),
         [path],

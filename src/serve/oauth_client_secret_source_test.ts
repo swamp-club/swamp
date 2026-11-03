@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { UserError } from "../domain/errors.ts";
 import { createSafeMethodEnv } from "../domain/remote/environment_snapshot.ts";
@@ -110,15 +110,10 @@ Deno.test("resolveOAuthClientSecret: a missing or empty file is refused without 
         UserError,
         "--oauth-client-secret-file file is empty",
       );
-      // Windows reports reading a directory as access denied, not EISDIR.
-      const dirError = assertThrows(
+      assertThrows(
         () => resolveOAuthClientSecret(dir),
         UserError,
-      );
-      assert(
-        dirError.message.includes("is a directory") ||
-          dirError.message.includes("not readable"),
-        dirError.message,
+        "is a directory",
       );
     });
   });
