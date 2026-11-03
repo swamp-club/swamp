@@ -276,7 +276,11 @@ Deno.test("firstRecordedSlot: passes over runs the scheduler did not start and s
     }
   }
   assertEquals(
-    (await firstRecordedSlot(latestFirst(), scheduler, NOV_1_1000))
+    (await firstRecordedSlot(
+      latestFirst(),
+      scheduler,
+      new Date("2026-11-01T10:00:00.000Z"),
+    ))
       ?.toISOString(),
     "2026-11-01T09:00:00.000Z",
   );
@@ -291,7 +295,11 @@ Deno.test("firstRecordedSlot: with no run the scheduler started gives null", asy
     });
   }
   assertEquals(
-    await firstRecordedSlot(none(), "service:scheduler", NOV_1_1000),
+    await firstRecordedSlot(
+      none(),
+      "service:scheduler",
+      new Date("2026-11-01T10:00:00.000Z"),
+    ),
     null,
   );
 });

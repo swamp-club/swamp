@@ -263,3 +263,24 @@ Deno.test("advanceScheduleState: a slot reported missed is replaced when its cat
   });
   assertEquals(next.lastMissed, caughtUp);
 });
+
+Deno.test("advanceScheduleState: a fire of a slot reported missed clears the report", () => {
+  const current = advanceScheduleState(null, ID, "nightly", EARLY, {
+    lastMissed: missed(),
+  });
+  const next = advanceScheduleState(current, ID, "nightly", EARLY, {
+    fired: true,
+  });
+  assertEquals(next.lastMissed, undefined);
+});
+
+Deno.test("advanceScheduleState: a fire of a slot already caught up keeps it", () => {
+  const caughtUp = missed({ caughtUp: true });
+  const current = advanceScheduleState(null, ID, "nightly", EARLY, {
+    lastMissed: caughtUp,
+  });
+  const next = advanceScheduleState(current, ID, "nightly", EARLY, {
+    fired: true,
+  });
+  assertEquals(next.lastMissed, caughtUp);
+});

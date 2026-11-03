@@ -2810,8 +2810,9 @@ a `schedule_missed` event, audited as `workflow.schedule.missed`. A fire skipped
 because the schedule was paused or the previous run was still going is recorded
 as `lastMissed` with reason `paused` or `overlap`. Lost fires in a row with the
 same reason add to `count` (capped like a serve-down count, with `saturated`);
-the same slot reported twice counts once, and a slot reported caught up stays
-caught up when a later write reports it missed. `lastMissed` is current state, not
+the same slot reported twice counts once, a slot reported caught up stays
+caught up when a later write reports it missed, and a fire of a slot clears a
+report that it was missed. `lastMissed` is current state, not
 history: the next fire of a later slot that starts a run clears it, and a cron
 expression change drops it. The audit log keeps every miss. `lastMissed` appears
 in `/api/v1/health`, the dashboard and `swamp workflow schedule list`.
@@ -2836,13 +2837,14 @@ check, dedup claim, queue and authorization. The run carries the tags
 workflow can read `run.tags` and decline. A catch-up adds at most one run on
 top of any replayed fire.
 
-When another instance holds the catch-up's fire claim, the pass re-reads the
-state. If the watermark is still before the slot, the claimer stopped before
-recording it, so the slot is reported missed (`caughtUp: false`) and the
-watermark advances to it; if the claimer already recorded it, nothing is
-written. Without v3 leadership a live claimer that has not written yet can be
-reported missed too: its own write marks the slot caught up unless the two
-writes interleave a read and a save, and the `schedule_missed` audit entry
+When another instance holds the catch-up's fire claim, the slot is reported
+missed (`caughtUp: false`) and the watermark advances to it, unless the record
+read for that write is already at the slot or past it: a claimer that recorded
+the slot settled it, and one that stopped, or failed to write, before recording
+it left the slot claimed and unrecorded. A claimer's own write of the slot,
+caught up or fired on time, clears a report stored before it. Without v3
+leadership the claimer's read and save can still interleave with the report, so
+a live claimer can be reported missed, and the `schedule_missed` audit entry
 stays either way.
 
 Every cron-fired run carries `swamp.trigger.scheduledFor: <slot>`, which, like

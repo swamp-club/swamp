@@ -1760,7 +1760,6 @@ Deno.test("ScheduledExecutionService.start: a schedule-state list that lands lat
   assertEquals(service.scheduleStatus(wf.id).lastMissed, recorded);
 });
 
-/** the monthly slot before the given one */
 function slotBefore(slot: Date): Date {
   return new Cron(MONTHLY).nextRun(new Date(slot.getTime() - 40 * 24 * HOUR))!;
 }
@@ -1938,4 +1937,40 @@ Deno.test("catchUpMissedFires: a claim refused after the pass deadline records n
   assertEquals(missedEvents(events), []);
   assertEquals(states.watermark(wf.id), previous.toISOString());
   assertEquals(states.states.get(wf.id)?.lastMissed, undefined);
+});
+
+Deno.test("catchUpMissedFires: a slot whose claimer fired it on time and recorded it is not reported missed", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("dedup-tick-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const tickState: ScheduleState = {
+    workflowId: wf.id,
+    workflowName: wf.name,
+    lastEvaluatedFireTime: missed.toISOString(),
+    cronExpression: MONTHLY,
+  };
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: recordingExecutor().executeWorkflow,
+    scheduleState: states,
+    cronFireDedup: () => {
+      states.states.set(wf.id, tickState);
+      return Promise.resolve(false);
+    },
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(missedEvents(events), []);
+  assertEquals(states.saves, 0);
+  assertEquals(states.states.get(wf.id), tickState);
 });

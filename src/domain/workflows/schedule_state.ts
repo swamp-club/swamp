@@ -56,7 +56,10 @@ export type ScheduleState = z.infer<typeof ScheduleStateSchema>;
 export interface ScheduleStateAdvance {
   readonly lastMissed?: MissedFire;
   readonly cronExpression?: string;
-  /** the slot started a run, so an earlier lost fire is no longer current */
+  /**
+   * the slot started a run, so an earlier lost fire, or a report that this one
+   * was missed, is no longer current
+   */
   readonly fired?: boolean;
 }
 
@@ -85,7 +88,12 @@ export function advanceScheduleState(
   ) {
     kept = undefined;
   }
-  if (kept && fired && Date.parse(kept.fireTime) < fireTime.getTime()) {
+  const keptAt = kept ? Date.parse(kept.fireTime) : NaN;
+  if (
+    kept && fired &&
+    (keptAt < fireTime.getTime() ||
+      (keptAt === fireTime.getTime() && !kept.caughtUp))
+  ) {
     kept = undefined;
   }
   const missed = mergeMissed(kept, options.lastMissed);

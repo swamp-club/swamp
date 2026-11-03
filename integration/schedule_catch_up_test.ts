@@ -390,7 +390,6 @@ Deno.test("schedule catch-up: a run someone else tagged with the slot does not s
   );
 });
 
-/** the monthly slot before the given one */
 function slotBefore(slot: Date): Date {
   return new Cron(MONTHLY).nextRun(new Date(slot.getTime() - 40 * 24 * HOUR))!;
 }

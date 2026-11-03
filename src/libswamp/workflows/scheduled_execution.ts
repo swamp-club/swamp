@@ -331,6 +331,8 @@ interface ScheduleStateWriteOptions {
   lastMissed?: MissedFire;
   ownFire?: boolean;
   fired?: boolean;
+  /** skipped when the record read for the write is already at or past the slot */
+  unlessSettled?: boolean;
 }
 
 interface StateWriteRequest {
@@ -1054,14 +1056,10 @@ export class ScheduledExecutionService {
           (!settled || missed.latestMissed.getTime() > settled.getTime())
         ? catchUp
         : undefined;
-      await this.recordMissed(
-        workflowId,
-        workflowName,
-        missed,
-        now,
-        tooLate,
-        settled,
-      );
+      await this.recordMissed(workflowId, workflowName, missed, now, {
+        tooLateFor: tooLate,
+        settledThrough: settled,
+      });
       return;
     }
 
@@ -1083,22 +1081,13 @@ export class ScheduledExecutionService {
     // dropped, the next boot records it
     if (outcome === "dropped") return;
     if (outcome === "claimed_elsewhere") {
-      const current = await this.deps.scheduleState!.get(workflowId, {
-        signal: pass.signal,
-      });
       if (pass.signal.aborted) return;
-      if (!current || current.cronExpression !== cronExpression) return;
-      this.cacheState(current);
-      // a claimer that recorded its slot settled it; one that crashed first
-      // left it claimed and unrecorded. Without v3 leadership a live claimer
-      // not yet recorded is reported too, and its caught-up write still wins
-      if (
-        Date.parse(current.lastEvaluatedFireTime) >=
-          missed.catchUpFireTime.getTime()
-      ) {
-        return;
-      }
-      await this.recordMissed(workflowId, workflowName, missed, now);
+      // a claimer that recorded its slot settled it; one that stopped first
+      // left it claimed and unrecorded. Without v3 leadership a live claimer's
+      // read and save can interleave with this write, so it may be reported too
+      await this.recordMissed(workflowId, workflowName, missed, now, {
+        unlessSettled: true,
+      });
       return;
     }
     const caughtUp = outcome === "queued";
@@ -1126,15 +1115,19 @@ export class ScheduledExecutionService {
     await this.recordMissed(workflowId, workflowName, missed, now);
   }
 
-  /** settledThrough is a slot a run recorded, which the watermark reaches too */
   private async recordMissed(
     workflowId: WorkflowId,
     workflowName: string,
     missed: MissedFires,
     now: Date,
-    tooLateFor?: ScheduleCatchUp,
-    settledThrough?: Date,
+    options: {
+      tooLateFor?: ScheduleCatchUp;
+      /** a slot a run recorded; the watermark reaches it even with no miss */
+      settledThrough?: Date;
+      unlessSettled?: boolean;
+    } = {},
   ): Promise<void> {
+    const { tooLateFor, settledThrough, unlessSettled } = options;
     const toSettled = settledThrough !== undefined &&
       (!missed.latestMissed ||
         settledThrough.getTime() > missed.latestMissed.getTime());
@@ -1149,6 +1142,7 @@ export class ScheduledExecutionService {
       {
         lastMissed: missed.latestMissed ? missedFireOf(missed, now) : undefined,
         fired: toSettled,
+        unlessSettled,
       },
     );
     if (!wrote || !missed.latestMissed) return;
@@ -1493,8 +1487,12 @@ export class ScheduledExecutionService {
     while (queue.pending.length > 0) {
       const batch = queue.pending.splice(0);
       let wrote = false;
+      let skipped: ReadonlySet<StateWriteRequest> = new Set();
       try {
-        wrote = await this.writeScheduleStateNow(workflowId, batch);
+        ({ wrote, skipped } = await this.writeScheduleStateNow(
+          workflowId,
+          batch,
+        ));
       } catch (error) {
         logger.warn(
           "Cannot record the schedule state of workflow {name}: {error}",
@@ -1504,7 +1502,9 @@ export class ScheduledExecutionService {
           },
         );
       }
-      for (const request of batch) request.resolve(wrote);
+      for (const request of batch) {
+        request.resolve(wrote && !skipped.has(request));
+      }
     }
     queue.writing = null;
     this.stateWriteQueues.delete(workflowId);
@@ -1518,9 +1518,10 @@ export class ScheduledExecutionService {
   private async writeScheduleStateNow(
     workflowId: WorkflowId,
     batch: readonly StateWriteRequest[],
-  ): Promise<boolean> {
+  ): Promise<{ wrote: boolean; skipped: ReadonlySet<StateWriteRequest> }> {
+    const skipped = new Set<StateWriteRequest>();
     const repo = this.deps.scheduleState;
-    if (!repo) return false;
+    if (!repo) return { wrote: false, skipped };
     const workflowName = batch[batch.length - 1].workflowName;
     let stored: ScheduleState | null | undefined;
     // a draining fire must reach replay within the settle budget, so it skips
@@ -1537,8 +1538,15 @@ export class ScheduledExecutionService {
     }
     const cronExpression = this.cronExpressions.get(workflowId);
     const next = batch.reduce<ScheduleState | null>(
-      (state, request) =>
-        advanceScheduleState(
+      (state, request) => {
+        if (
+          request.options.unlessSettled && state &&
+          Date.parse(state.lastEvaluatedFireTime) >= request.fireTime.getTime()
+        ) {
+          skipped.add(request);
+          return state;
+        }
+        return advanceScheduleState(
           state,
           workflowId,
           request.workflowName,
@@ -1548,9 +1556,14 @@ export class ScheduledExecutionService {
             cronExpression,
             fired: request.options.fired,
           },
-        ),
+        );
+      },
       this.scheduleStates.get(workflowId) ?? null,
-    )!;
+    );
+    // a skip trusts even a cache the re-read failed to refresh, as it only lags
+    if (!next || skipped.size === batch.length) {
+      return { wrote: false, skipped };
+    }
     let wrote: boolean | "failed";
     try {
       if (readError !== undefined) throw readError;
@@ -1578,7 +1591,7 @@ export class ScheduledExecutionService {
       else own.prior = stored;
     }
     if (wrote === true) this.cacheState(next);
-    return wrote === true;
+    return { wrote: wrote === true, skipped };
   }
 
   private trackStateWrite(write: Promise<unknown>): void {
