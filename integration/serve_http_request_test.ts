@@ -278,16 +278,24 @@ Deno.test({
   },
 });
 
-async function readHead(conn: Deno.Conn): Promise<string> {
-  const decoder = new TextDecoder();
+async function readHead(
+  conn: Deno.Conn,
+): Promise<{ head: string; bodyBytesRead: number }> {
   const buf = new Uint8Array(4096);
-  let head = "";
-  while (!head.includes("\r\n\r\n")) {
+  const received: number[] = [];
+  let end = -1;
+  while (end === -1) {
     const n = await conn.read(buf);
     if (n === null) throw new Error("connection closed before the headers");
-    head += decoder.decode(buf.subarray(0, n), { stream: true });
+    received.push(...buf.subarray(0, n));
+    end = new TextDecoder("latin1").decode(new Uint8Array(received)).indexOf(
+      "\r\n\r\n",
+    );
   }
-  return head;
+  return {
+    head: new TextDecoder().decode(new Uint8Array(received.slice(0, end))),
+    bodyBytesRead: received.length - (end + 4),
+  };
 }
 
 async function drain(conn: Deno.Conn): Promise<number> {
@@ -378,7 +386,8 @@ Deno.test({
         ),
       );
       await bigSent.promise;
-      assertStringIncludes(await readHead(conn), "200 OK");
+      const { head, bodyBytesRead } = await readHead(conn);
+      assertStringIncludes(head, "200 OK");
 
       const refused = await handleHttpRequest(
         request("over"),
@@ -388,7 +397,7 @@ Deno.test({
       assertEquals(refused.status, 429);
       assertEquals((await refused.json()).code, "use_websocket");
 
-      assertGreater(await drain(conn), content.length);
+      assertGreater(bodyBytesRead + await drain(conn), content.length);
       releaseHeld.resolve();
       for (const response of held) await response.body?.cancel();
       await waitFor(async () => {
