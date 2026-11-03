@@ -242,6 +242,8 @@ async function drainResume(
   return completed;
 }
 
+const noStepStarts = () => Promise.resolve([]);
+
 Deno.test("retry: a reloaded failed run resumes without --from and re-runs only what failed", async () => {
   await withRepo(async (repoDir) => {
     const { workflow, tracker, catalogStore, executor, failed } =
@@ -480,6 +482,7 @@ for (const instanceId of [undefined, crypto.randomUUID()]) {
                   reaperSaves++;
                   return Promise.resolve();
                 },
+                noStepStarts,
                 lookup,
                 isProcessGone,
                 instanceId ?? crypto.randomUUID(),

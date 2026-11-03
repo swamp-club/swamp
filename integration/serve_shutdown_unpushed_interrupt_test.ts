@@ -383,6 +383,7 @@ async function bootReap(
       const result = await reapOrphanedWorkflowRuns(
         runningRuns,
         (wid, r) => owner.runs.save(wid, r),
+        (wid, r) => owner.runs.findStepStarts(wid, r.id),
         (runId) => {
           const tracked = owner.tracker.findById(runId);
           return tracked

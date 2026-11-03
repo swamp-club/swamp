@@ -21,10 +21,11 @@ import type { WorkflowRun } from "./workflow_run.ts";
 
 export interface RunCheckpointer {
   /**
-   * never rejects: a failed checkpoint is logged, the run goes on, and the
-   * operation's own commit tries again
+   * a failed progress checkpoint is logged and the run goes on; rejects only
+   * with StepStartUnrecordedError, when a start could not commit
    */
   checkpoint(run: WorkflowRun): Promise<void>;
+  committedLatest?(runId: string): boolean;
 }
 
 export const NO_RUN_CHECKPOINTS: RunCheckpointer = {

@@ -622,6 +622,8 @@ export function sampleIntent(kind: Intent["kind"]): Intent {
     case "run.delete":
     case "run-snapshot.save":
     case "run-snapshot.delete":
+    case "run-start.save":
+    case "run-start.delete":
       return createIntent({
         kind,
         run: { workflowId: SAMPLE_WORKFLOW_ID, runId: SAMPLE_RUN_ID },

@@ -83,8 +83,16 @@ export interface CommitLogUnitOfWork extends UnitOfWork {
    */
   stageOps(changes: readonly TypedChange[]): Promise<void>;
   checkpoint(): Promise<void>;
+  /**
+   * commits changes for one partition as their own commit at once, never
+   * staging them, so the commit waits on nothing the unit has staged
+   */
+  appendNow(changes: readonly TypedChange[]): Promise<DirectAppendOutcome>;
   stagedOps(): readonly TypedChange[];
 }
+
+/** queued: held in the outbox while serve is unreachable, to land later */
+export type DirectAppendOutcome = "committed" | "queued" | "excluded";
 
 export interface PartitionRefusal {
   readonly partition: PartitionKey;
@@ -226,6 +234,21 @@ export class CommitUnreachableError extends UserError {
       ...this.#wording,
       failure,
     });
+  }
+}
+
+/**
+ * a direct append that did not land after its bounded retry; refused when the
+ * datastore refused it rather than being unreachable
+ */
+export class AppendUnrecordedError extends Error {
+  constructor(cause: unknown, readonly refused: boolean) {
+    super(
+      `${refused ? "The datastore refused" : "Swamp could not reach"} a ` +
+        `commit: ${messageOf(cause)}`,
+    );
+    this.name = "AppendUnrecordedError";
+    this.cause = cause;
   }
 }
 

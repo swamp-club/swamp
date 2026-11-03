@@ -30,7 +30,18 @@ import {
   unreadableRecordsUnder,
   warnUnreadableLeftOut,
 } from "./unreadable_records.ts";
-import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
+import {
+  RunChanges,
+  RunStartChanges,
+} from "../../domain/datastore_v3/repository_changes.ts";
+import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
+import { createHash } from "node:crypto";
+import { forwardsToServe, storedVersionOf } from "./repo_unit_of_work.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  STEP_STARTS_DIR,
+  StepStart,
+} from "../../domain/workflows/step_start.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { RunIndexCache, type RunIndexStamp } from "./run_index_cache.ts";
@@ -939,15 +950,228 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     workflowId: string,
     runId: string,
     dir: string,
+    startFiles?: readonly string[],
+    withRecord = true,
   ): Promise<void> {
-    await stageTyped(this.markDirty, () => {
-      const change = unlessUnpartitionable(() =>
-        new RunChanges(workflowId, runId).remove(
-          this.keyOf(join(dir, `workflow-run-${runId}.yaml`)),
-        )
+    const starts = startFiles ??
+      await this.removeStartFiles(dir, runId);
+    if (withRecord) {
+      await stageTyped(this.markDirty, () => {
+        const change = unlessUnpartitionable(() =>
+          new RunChanges(workflowId, runId).remove(
+            this.keyOf(join(dir, `workflow-run-${runId}.yaml`)),
+          )
+        );
+        return change === undefined ? [] : [change];
+      });
+    }
+    // A batch never splits, so a run with more starts than one commit holds
+    // removes them in several.
+    for (let i = 0; i < starts.length; i += MAX_COMMIT_OPS) {
+      const batch = starts.slice(i, i + MAX_COMMIT_OPS);
+      await stageTyped(this.markDirty, () =>
+        batch.flatMap((name) => {
+          const change = unlessUnpartitionable(() =>
+            new RunStartChanges(workflowId, runId).remove(
+              this.keyOf(join(dir, STEP_STARTS_DIR, runId, name)),
+            )
+          );
+          return change === undefined ? [] : [change];
+        }));
+    }
+  }
+
+  private async removeStartFiles(
+    dir: string,
+    runId: string,
+  ): Promise<string[]> {
+    if (!isSinglePathSegment(runId)) return [];
+    const startsDir = join(dir, STEP_STARTS_DIR, runId);
+    const names = await this.listStartFiles(startsDir);
+    try {
+      await Deno.remove(startsDir, { recursive: true });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    await cleanupEmptyParentDirs(join(startsDir, "start.yaml"), dir);
+    return names;
+  }
+
+  private async listStartFiles(startsDir: string): Promise<string[]> {
+    const names: string[] = [];
+    try {
+      for (const entry of await readDirSorted(startsDir)) {
+        if (entry.isFile && entry.name.endsWith(".yaml")) {
+          names.push(entry.name);
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return names;
+  }
+
+  private getStartsDir(workflowId: WorkflowId, runId: WorkflowRunId): string {
+    return join(this.getRunsDir(workflowId), STEP_STARTS_DIR, runId);
+  }
+
+  /**
+   * the run's start journal as the checkout holds it; a start that does not
+   * parse, or names another run, is skipped with a warning
+   */
+  async findStepStarts(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<StepStart[]> {
+    if (!isUuid(runId)) return [];
+    const dir = this.getStartsDir(workflowId, runId);
+    const starts: StepStart[] = [];
+    for (const name of await this.listStartFiles(dir)) {
+      try {
+        const start = StepStart.fromYaml(
+          await Deno.readTextFile(join(dir, name)),
+        );
+        if (
+          start.workflowId.toLowerCase() !== workflowId.toLowerCase() ||
+          start.runId.toLowerCase() !== runId.toLowerCase() ||
+          start.fileName !== name
+        ) {
+          logger
+            .warn`Skipping step start ${name} of run ${runId}: it names another run or step`;
+          continue;
+        }
+        starts.push(start);
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        logger
+          .warn`Skipping unreadable step start ${name} of run ${runId}: ${error}`;
+      }
+    }
+    return starts;
+  }
+
+  /**
+   * writes the start into the checkout and returns its typed change, which the
+   * caller commits on its own rather than staging it into the open unit
+   */
+  async writeStepStart(start: StepStart): Promise<TypedChange> {
+    const workflowId = createWorkflowId(start.workflowId);
+    const runId = createWorkflowRunId(start.runId);
+    if (!isUuid(runId)) {
+      throw new Error(`Run id ${start.runId} is not a run id`);
+    }
+    const dir = this.getStartsDir(workflowId, runId);
+    await assertSafePath(dir, this.baseDir);
+    await ensureDir(dir);
+    const path = join(dir, start.fileName);
+    const content = start.toYaml();
+    await atomicWriteTextFile(path, content);
+    return new RunStartChanges(start.workflowId, start.runId).write(
+      this.keyOf(path),
+      new TextEncoder().encode(content),
+    );
+  }
+
+  /**
+   * the record as the checkout holds it now, for a caller committing it on its
+   * own; undefined when the run has no record
+   */
+  async recordChange(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<TypedChange | undefined> {
+    const path = this.getPath(workflowId, runId);
+    let content: Uint8Array;
+    try {
+      content = await Deno.readFile(path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    }
+    return new RunChanges(workflowId, runId).write(
+      "run.update",
+      this.keyOf(path),
+      content,
+    );
+  }
+
+  /**
+   * only when the committed record is the checkout's and shows the step settled;
+   * a start left behind only makes a later recovery ask once more
+   */
+  async withdrawSettledStepStarts(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+    stepNames: readonly string[],
+  ): Promise<void> {
+    if (stepNames.length === 0 || !typedStagingActive(this.markDirty)) return;
+    // a removal needs write on the workflow, which a member who may recover
+    // the run with run alone need not hold
+    if (forwardsToServe(this.markDirty)) return;
+    const path = this.getPath(workflowId, runId);
+    let content: Uint8Array;
+    try {
+      content = await Deno.readFile(path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    const stored = await storedVersionOf(
+      this.markDirty,
+      new RunChanges(workflowId, runId).partition,
+      this.keyOf(path).toString(),
+    );
+    const digest = createHash("sha256").update(content).digest("hex");
+    if (
+      stored === undefined || stored === "absent" || stored.sha256 !== digest
+    ) {
+      return;
+    }
+    const committed = WorkflowRun.fromData(
+      parseYaml(new TextDecoder().decode(content)) as WorkflowRunData,
+    );
+    const settled = new Set(
+      committed.jobs.flatMap((job) =>
+        job.steps
+          .filter((step) =>
+            step.status !== "pending" && step.status !== "running" &&
+            stepNames.includes(step.stepName)
+          )
+          .map((step) => JSON.stringify([job.jobName, step.stepName]))
+      ),
+    );
+    const starts = (await this.findStepStarts(workflowId, runId)).filter(
+      (start) => settled.has(JSON.stringify([start.jobName, start.stepName])),
+    );
+    await this.withdrawStepStarts(workflowId, runId, starts);
+  }
+
+  private async withdrawStepStarts(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+    starts: readonly StepStart[],
+  ): Promise<void> {
+    if (starts.length === 0) return;
+    const dir = this.getStartsDir(workflowId, runId);
+    for (const start of starts) {
+      try {
+        await Deno.remove(join(dir, start.fileName));
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    for (let i = 0; i < starts.length; i += MAX_COMMIT_OPS) {
+      const batch = starts.slice(i, i + MAX_COMMIT_OPS);
+      await stageTyped(
+        this.markDirty,
+        () =>
+          batch.map((start) =>
+            new RunStartChanges(workflowId, runId).remove(
+              this.keyOf(join(dir, start.fileName)),
+            )
+          ),
       );
-      return change === undefined ? [] : [change];
-    });
+    }
   }
 
   private getLocalIndexDir(workflowId: WorkflowId): string {
@@ -965,7 +1189,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return 0;
     }
 
-    const runIds = await withChangeSignalled(
+    const listed = await withChangeSignalled(
       this.markDirty,
       { kind: "remove", path: dir },
       { typed: true },
@@ -975,6 +1199,22 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         const ids = typedStagingActive(this.markDirty)
           ? await this.listRunIdsInDir(dir)
           : [];
+        const starts = new Map<string, string[]>();
+        // a run's starts can outlive its record, as a recovery puts back starts
+        const runIds = new Set(ids);
+        if (typedStagingActive(this.markDirty)) {
+          for (
+            const entry of await listDirEntries(join(dir, STEP_STARTS_DIR))
+          ) {
+            if (entry.isDirectory && isUuid(entry.name)) runIds.add(entry.name);
+          }
+        }
+        for (const id of runIds) {
+          starts.set(
+            id,
+            await this.listStartFiles(join(dir, STEP_STARTS_DIR, id)),
+          );
+        }
         try {
           await Deno.remove(dir, { recursive: true });
         } catch (error) {
@@ -982,12 +1222,18 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
             throw error;
           }
         }
-        return ids;
+        return { ids, starts };
       },
     );
 
-    for (const runId of runIds) {
-      await this.stageRunRemoval(workflowId, runId, dir);
+    for (const [runId, startFiles] of listed.starts) {
+      await this.stageRunRemoval(
+        workflowId,
+        runId,
+        dir,
+        startFiles,
+        listed.ids.includes(runId),
+      );
     }
 
     const localDir = this.getLocalIndexDir(workflowId);

@@ -1414,6 +1414,26 @@ Deno.test("SqliteCommitStore: a store from schema 11 migrates to a schema a sche
   });
 });
 
+Deno.test("SqliteCommitStore: a store from schema 12 migrates to a schema a schema-12 swamp refuses as newer, since a run's partition may hold step starts (swamp-club#4319)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    await (SqliteCommitStore.open(path)).close();
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("PRAGMA user_version=12");
+    } finally {
+      db.close();
+    }
+    await (SqliteCommitStore.open(path)).close();
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      COMMIT_STORE_SCHEMA_VERSION,
+    );
+    // A swamp at schema 12 would call a commit holding a step start corrupt.
+    assertGreater(COMMIT_STORE_SCHEMA_VERSION, 12);
+  });
+});
+
 Deno.test("SqliteCommitStore: a long-cached partition holds at most a snapshot interval of txnIds and still detects older duplicates", async () => {
   await withStore(async (store) => {
     const key = modelPartition();

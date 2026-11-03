@@ -43,6 +43,7 @@ import {
   type CommitLogUnitOfWork,
   CommitUnreachableError,
   type ContentSource,
+  type DirectAppendOutcome,
   MayLandLaterError,
   type PartitionRefusal,
   PartitionsRefusedError,
@@ -112,6 +113,8 @@ export type CommitSink = Pick<CommitStore, "append" | "head"> & {
    * that dies before the queue's mark still leaves an entry no drop rule takes
    */
   readonly queuesOffline?: (partition: PartitionKey) => Promise<boolean>;
+  /** false when the serve behind this sink cannot take a step start */
+  readonly takesStepStarts?: () => boolean;
 };
 
 /**
@@ -356,6 +359,27 @@ export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
     current = nearestOpenAncestor(state.parent);
   }
   return false;
+}
+
+/**
+ * appends to the root of the unit's open chain; undefined when no ancestor is
+ * open, so nothing can commit
+ */
+export async function appendNowFrom(
+  unit: UnitOfWork,
+  changes: readonly TypedChange[],
+): Promise<DirectAppendOutcome | undefined> {
+  let current: UnitOfWork | undefined = unit;
+  while (current !== undefined) {
+    const state = states.get(current);
+    if (state === undefined) return undefined;
+    if (state.parent === undefined) {
+      if (!state.isOpen()) return undefined;
+      return await (current as CommitLogUnitOfWork).appendNow(changes);
+    }
+    current = nearestOpenAncestor(state.parent);
+  }
+  return undefined;
 }
 
 export function createCommitLogUnitOfWork(
@@ -805,6 +829,68 @@ export function createCommitLogUnitOfWork(
       }
       await flush();
     },
+    async appendNow(
+      changes: readonly TypedChange[],
+    ): Promise<DirectAppendOutcome> {
+      if (ended !== undefined) {
+        throw new Error(`appendNow called after the unit of work ${ended}`);
+      }
+      if (parent !== undefined) {
+        throw new Error(
+          "appendNow called on a child unit of work; its root commits",
+        );
+      }
+      const checked: TypedChange[] = [];
+      for (const change of changes) {
+        const key = keyOfChange(change);
+        if (key !== undefined && options.admits?.(key) === false) continue;
+        checked.push(rebased(await checkChange(change), options));
+      }
+      if (checked.length === 0) return "excluded";
+      requireBatchWithinLimit(checked);
+      const partition = checked[0].partition;
+      for (const change of checked) {
+        requireSamePartition(partition, change.partition);
+      }
+      const group: Group = {
+        partition,
+        txnId: crypto.randomUUID(),
+        formedAt: clock().getTime(),
+        changes: checked,
+        formation: 0,
+      };
+      // Its own outbox record: a failure here never discards what the unit has
+      // prepared, and an entry left prepared lands once, as a retry would.
+      const own: UnitOutbox = {
+        unitId: crypto.randomUUID(),
+        prepared: new Map(),
+        sent: new Map(),
+      };
+      let queued = false;
+      try {
+        await appendGroup(
+          group,
+          options,
+          clock,
+          new WeakMap(),
+          new WeakSet(),
+          own,
+          () => {
+            queued = true;
+          },
+        );
+      } catch (error) {
+        if (error instanceof CommitRejectedError) {
+          await discardEntries(options, own, [group]);
+        }
+        throw error;
+      }
+      if (queued) return "queued";
+      if (!landed.some((other) => other.equals(partition))) {
+        landed.push(partition);
+      }
+      return "committed";
+    },
     acknowledgeRefusals(): void {
       if (parent !== undefined) {
         throw new Error(
@@ -1160,6 +1246,7 @@ async function appendGroup(
   storedOps: WeakMap<PendingPut, PutOp>,
   superseded: WeakSet<PendingPut>,
   unitOutbox: UnitOutbox,
+  onQueued?: () => void,
 ): Promise<boolean> {
   if (clock().getTime() - group.formedAt > OUTBOX_RETRY_BOUND_MS) {
     // The store may have pruned a landed first attempt's txnId: appending
@@ -1292,6 +1379,7 @@ async function appendGroup(
             await outbox.queue([key]);
             unitOutbox.prepared.delete(group.txnId);
             queued = true;
+            onQueued?.();
             return;
           }
           if (

@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { RunCheckpointer } from "./run_checkpointer.ts";
+import { StepStartUnrecordedError } from "./step_start.ts";
+import { COMMIT_UNREACHABLE_CODE } from "../datastore_v3/commit_log_unit_of_work.ts";
+import type { StepStart } from "./step_start.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
 import type { RunWriteFence } from "./run_write_fence.ts";
 import { runProgressSnapshots } from "../remote/run_progress.ts";
@@ -216,6 +220,10 @@ class InMemoryWorkflowRepository implements WorkflowRepository {
 class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
   recordsAreForwarded = false;
   private runs = new Map<string, WorkflowRun[]>();
+
+  findStepStarts(): Promise<StepStart[]> {
+    return Promise.resolve([]);
+  }
 
   findById(
     workflowId: WorkflowId,
@@ -4377,6 +4385,10 @@ class TrackingRunRepository implements WorkflowRunRepository {
   recordsAreForwarded = false;
   private readonly inner = new InMemoryWorkflowRunRepository();
   readonly saves: Array<{ runId: string; status: string }> = [];
+
+  findStepStarts(): Promise<StepStart[]> {
+    return Promise.resolve([]);
+  }
 
   findById(
     workflowId: WorkflowId,
@@ -24327,5 +24339,261 @@ Deno.test("WorkflowExecutionService: without a writeSync its repository syncs in
       catalogStore.close();
     }
     return Promise.resolve();
+  });
+});
+
+/** throws for the first save that shows `stepName` running, as the checkpointer does */
+function failingStartCheckpointer(
+  stepName: string,
+  endLanded: boolean,
+): RunCheckpointer & { readonly failed: () => boolean } {
+  let failed = false;
+  return {
+    checkpoint: (run) => {
+      const job = run.jobs.find((j) =>
+        j.steps.some((s) => s.stepName === stepName && s.status === "running")
+      );
+      if (job === undefined || failed) return Promise.resolve();
+      failed = true;
+      return Promise.reject(
+        new StepStartUnrecordedError(new Error("serve is unreachable"), {
+          workflowId: run.workflowId,
+          workflowName: run.workflowName,
+          runId: run.id,
+          stepName,
+          jobName: job.jobName,
+        }),
+      );
+    },
+    committedLatest: () => endLanded,
+    failed: () => failed,
+  };
+}
+
+async function runUntilThrown(
+  stream: AsyncIterable<WorkflowExecutionEvent>,
+): Promise<{ run: WorkflowRun | undefined; error: unknown }> {
+  let run: WorkflowRun | undefined;
+  try {
+    for await (const event of stream) {
+      if (event.kind === "completed" || event.kind === "cancelled") {
+        run = event.run;
+      }
+    }
+  } catch (error) {
+    return { run, error };
+  }
+  return { run, error: undefined };
+}
+
+Deno.test("WorkflowExecutionService: a step whose start cannot be committed never runs, no later step starts, and the run fails with the coded error naming resume (swamp-club#4319)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "stop-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", {
+              dependsOn: [{
+                step: "a",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+            modelStep("c", {
+              dependsOn: [{
+                step: "b",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        }),
+        Job.create({
+          name: "later",
+          dependsOn: [{ job: "main", condition: TriggerCondition.completed() }],
+          steps: [modelStep("d")],
+        }),
+      ],
+    });
+    const { service, executor } = await setupRetry(tempDir, workflow);
+    const checkpointer = failingStartCheckpointer("b", true);
+    service.runCheckpointer = checkpointer;
+
+    const { run, error } = await runUntilThrown(service.run(workflow.name));
+
+    assert(checkpointer.failed());
+    assert(error instanceof StepStartUnrecordedError);
+    assertEquals(error.code, COMMIT_UNREACHABLE_CODE);
+    assertEquals(error.endLanded, true);
+    assertStringIncludes(error.message, "swamp workflow resume stop-wf");
+    assertEquals(executor.count("main/a"), 1);
+    assertEquals(executor.count("main/b"), 0);
+    assertEquals(executor.count("main/c"), 0);
+    assertEquals(executor.count("later/d"), 0);
+    assert(run !== undefined);
+    assertEquals(run.status, "failed");
+    const main = run.getJob("main")!;
+    assertEquals(main.getStep("a")?.status, "succeeded");
+    assertEquals(main.getStep("b")?.status, "pending");
+    assertEquals(main.getStep("b")?.startedAt, undefined);
+    assertEquals(main.getStep("c")?.status, "pending");
+    assertEquals(run.getJob("later")?.getStep("d")?.status, "pending");
+  });
+});
+
+Deno.test("WorkflowExecutionService: a stopped run whose failed record did not commit names recover, then resume (swamp-club#4319)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "stop-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", {
+              dependsOn: [{
+                step: "a",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service } = await setupRetry(tempDir, workflow);
+    service.runCheckpointer = failingStartCheckpointer("b", false);
+
+    const { error } = await runUntilThrown(service.run(workflow.name));
+
+    assert(error instanceof StepStartUnrecordedError);
+    assertEquals(error.endLanded, false);
+    assertStringIncludes(error.message, "swamp workflow recover stop-wf");
+  });
+});
+
+Deno.test("WorkflowExecutionService: once a step start cannot be committed, a sibling job running alongside finishes its running step but starts no further step (swamp-club#4319)", async () => {
+  // In a level of two or more jobs the merge drives each job eagerly, so b's
+  // method starts while its start commits: it runs and records its outcome.
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "stop-parallel-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", {
+              dependsOn: [{
+                step: "a",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        }),
+        Job.create({
+          name: "side",
+          steps: [
+            modelStep("s1"),
+            modelStep("s2", {
+              dependsOn: [{
+                step: "s1",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    const checkpointer = failingStartCheckpointer("b", true);
+    // s1 runs until b's start has failed, so s2 would start after it
+    class HeldSideExecutor extends CountingStepExecutor {
+      override async execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        if (ctx.jobName === "side" && ctx.stepName === "s1") {
+          await waitFor(() => checkpointer.failed(), "b's failed start");
+        }
+        return await super.execute(step, ctx);
+      }
+    }
+    const executor = new HeldSideExecutor();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    service.runCheckpointer = checkpointer;
+
+    const { run, error } = await runUntilThrown(service.run(workflow.name));
+
+    assert(error instanceof StepStartUnrecordedError);
+    assertEquals(executor.count("side/s1"), 1);
+    assertEquals(executor.count("side/s2"), 0);
+    assertEquals(run?.getJob("side")?.getStep("s1")?.status, "succeeded");
+    assertEquals(run?.getJob("side")?.getStep("s2")?.status, "pending");
+    assertEquals(executor.count("main/b"), 1);
+    assertEquals(run?.getJob("main")?.getStep("b")?.status, "succeeded");
+  });
+});
+
+Deno.test("WorkflowExecutionService: a nested run whose step start cannot be committed stops its parent too, even through an allowed failure, and no job of the parent ends succeeded with a step that never ran (swamp-club#4319)", async () => {
+  await withTempDir(async (tempDir) => {
+    const child = Workflow.create({
+      name: "stop-child",
+      jobs: [Job.create({ name: "inner", steps: [modelStep("c1")] })],
+    });
+    const parent = Workflow.create({
+      name: "stop-parent",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "nested",
+              task: StepTask.workflow("stop-child"),
+              allowFailure: true,
+            }),
+            modelStep("deploy", {
+              dependsOn: [{
+                step: "nested",
+                condition: TriggerCondition.completed(),
+              }],
+            }),
+          ],
+        }),
+        Job.create({
+          name: "later",
+          dependsOn: [{ job: "main", condition: TriggerCondition.completed() }],
+          steps: [modelStep("teardown")],
+        }),
+      ],
+    });
+    const { service, executor, workflowRepo } = await setupRetry(
+      tempDir,
+      parent,
+    );
+    await workflowRepo.save(child);
+    service.runCheckpointer = failingStartCheckpointer("c1", true);
+
+    const { run, error } = await runUntilThrown(service.run(parent.name));
+
+    assert(error instanceof StepStartUnrecordedError, String(error));
+    assertEquals(error.code, COMMIT_UNREACHABLE_CODE);
+    assertEquals(error.start.runId, run?.id);
+    assert(error.start.nestedRunId !== undefined);
+    assertStringIncludes(error.message, "nested run");
+    assertEquals(executor.count("inner/c1"), 0);
+    assertEquals(executor.count("main/deploy"), 0);
+    assertEquals(executor.count("later/teardown"), 0);
+    assert(run !== undefined);
+    assertEquals(run.status, "failed");
+    for (const job of run.jobs) {
+      if (job.steps.some((step) => step.status === "pending")) {
+        assert(job.status !== "succeeded", `${job.jobName} is succeeded`);
+      }
+    }
   });
 });

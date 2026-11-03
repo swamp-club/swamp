@@ -23,7 +23,8 @@
  * it goes last, so a failed recovery reruns
  */
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { ensureDir } from "@std/fs";
 import { getSwampLogger } from "../logging/logger.ts";
 import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
 import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
@@ -39,7 +40,7 @@ import {
 } from "../../domain/datastore_v3/process_liveness.ts";
 import { localProcess } from "./process_identity.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
-import type { V3Datastore } from "./v3_datastore.ts";
+import { v3CacheRoot, type V3Datastore } from "./v3_datastore.ts";
 import {
   tryAcquireV3WriterLock,
   v3WriterLeaseHolder,
@@ -339,6 +340,7 @@ async function recover(
   let removed: string[];
   try {
     removed = await handle.recoverInterruptedWriter(since, signal);
+    await restoreQueuedStepStarts(handle, repoDir);
   } finally {
     // The replay may have rewritten run records before any failure.
     await removeStaleRunIndexes(repoDir);
@@ -362,6 +364,37 @@ async function recover(
   }
   await Deno.remove(writerMarkerPath(repoDir));
   return removed;
+}
+
+/** the replay swept starts still queued offline; put back, never one given up */
+async function restoreQueuedStepStarts(
+  handle: Partial<Pick<V3Datastore, "outbox">>,
+  repoDir: string,
+): Promise<void> {
+  if (handle.outbox === undefined) return;
+  const { entries } = await handle.outbox.entries();
+  for (const entry of entries) {
+    if (entry.state !== "offline" || entry.abandonedAt !== undefined) continue;
+    for (const op of entry.commit.ops) {
+      if (op.kind !== "put" || op.intent.kind !== "run-start.save") continue;
+      if (!("inline" in op.content)) continue;
+      const path = join(
+        v3CacheRoot(repoDir, entry.commit.namespace),
+        ...op.key.toString().split("/"),
+      );
+      try {
+        await Deno.lstat(path);
+        continue;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+      await ensureDir(dirname(path));
+      const binary = atob(op.content.inline);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      await Deno.writeFile(path, bytes);
+    }
+  }
 }
 
 /**

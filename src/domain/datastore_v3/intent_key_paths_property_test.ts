@@ -82,10 +82,14 @@ const runAggregate: fc.Arbitrary<Aggregate> = fc.record({
   intents: [
     createIntent({ kind: "run.update", run }),
     createIntent({ kind: "run-snapshot.save", run }),
+    createIntent({ kind: "run-start.save", run }),
   ],
   keys: [
     `workflow-runs/${run.workflowId}/workflow-run-${run.runId}.yaml`,
     `workflows-evaluated/runs/${run.runId}/evaluated-workflow.yaml`,
+    `workflow-runs/${run.workflowId}/starts/${run.runId}/${
+      "b".repeat(64)
+    }.yaml`,
   ],
   shared: [],
 }));

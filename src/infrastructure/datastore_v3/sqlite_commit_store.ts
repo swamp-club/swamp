@@ -459,6 +459,9 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   // snapshot field as an unknown one and would call the store corrupt, so
   // it must refuse the store as newer instead.
   `SELECT 1;`,
+  // 12 → 13: a run's partition may hold step starts, under intents a swamp at
+  // schema 12 or below does not know and would call corrupt; no table changes.
+  `SELECT 1;`,
 ];
 
 /** The owner row of `db` (swamp-club#4063), undefined when it holds none. */

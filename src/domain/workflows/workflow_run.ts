@@ -37,6 +37,7 @@ import {
   type TriggerEvaluationContext,
 } from "./trigger_condition.ts";
 import type { Workflow } from "./workflow.ts";
+import type { StepStart } from "./step_start.ts";
 import type { RunTriggeringPrincipal } from "../vaults/run_vault_access.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
@@ -503,6 +504,13 @@ export class StepRun {
     this._nestedRun = undefined;
     this._detachedNestedRun = false;
     this._wait = undefined;
+  }
+
+  /** a start that could not be committed never ran: the step is pending */
+  revertUnrecordedStart(): void {
+    if (this._status !== "running") return;
+    this._status = "pending";
+    this._startedAt = undefined;
   }
 
   markResetByResume(): void {
@@ -1482,8 +1490,15 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * so in a running job with no running step every pending step is marked
    * unknown and recovery asks before re-running it
    */
-  interruptOrphaned(reason: string): void {
+  interruptOrphaned(reason: string, starts: readonly StepStart[]): void {
     if (this._status === "running") {
+      for (const { job, stepName } of this.#journalledStarts(starts)) {
+        job.addExpandedStep(stepName);
+        const step = job.getStep(stepName)!;
+        if (step.status === "running") continue;
+        step.markUnknown(`interrupted: ${reason} (start recorded)`);
+        if (job.status !== "running") job.markUnknown();
+      }
       for (const job of this._jobs) {
         if (
           job.status !== "running" ||
@@ -1517,10 +1532,15 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * what workflow recover would ask to be acknowledged for this run as it
    * stands, without changing the run
    */
-  unknownStepsIfOrphaned(): string[] {
+  unknownStepsIfOrphaned(starts: readonly StepStart[]): string[] {
     const ended = this._status === "succeeded" || this._status === "failed" ||
       this._status === "interrupted";
     const result: string[] = [];
+    if (this._status === "running") {
+      for (const { stepName } of this.#journalledStarts(starts)) {
+        result.push(stepName);
+      }
+    }
     for (const job of this._jobs) {
       const startNotRecorded = this._status === "running" &&
         job.status === "running" &&
@@ -1536,7 +1556,39 @@ export class WorkflowRun implements TriggerEvaluationContext {
         }
       }
     }
-    return result;
+    return [...new Set(result)];
+  }
+
+  /** starts whose step the record shows pending, lacks, or holds from an older start */
+  #journalledStarts(
+    starts: readonly StepStart[],
+  ): { readonly job: JobRun; readonly stepName: string }[] {
+    const found: { job: JobRun; stepName: string }[] = [];
+    if (starts.length === 0) return found;
+    const seen = new Set<string>();
+    // indexed once: a run with many steps is saved once per step
+    const steps = new Map<string, Map<string, StepRun>>();
+    for (const job of this._jobs) {
+      steps.set(
+        job.jobName,
+        new Map(job.steps.map((step) => [step.stepName, step])),
+      );
+    }
+    for (const start of starts) {
+      if (start.runId !== this.id) continue;
+      const job = this._jobs.find((other) => other.jobName === start.jobName);
+      if (job === undefined) continue;
+      const step = steps.get(job.jobName)?.get(start.stepName);
+      const recorded = step === undefined ||
+        step.status === "pending" ||
+        (step.startedAt?.getTime() ?? Number.NEGATIVE_INFINITY) <
+          start.startedAt;
+      const key = JSON.stringify([start.jobName, start.stepName]);
+      if (!recorded || seen.has(key)) continue;
+      seen.add(key);
+      found.push({ job, stepName: start.stepName });
+    }
+    return found;
   }
 
   resetUnknownStepsForRecovery(): void {

@@ -1525,7 +1525,7 @@ Deno.test("WorkflowRun.interruptOrphaned: marks pending steps unknown in a runni
   run.jobs[0].steps[0].start();
   run.jobs[0].steps[0].succeed();
 
-  run.interruptOrphaned("owner_process_dead");
+  run.interruptOrphaned("owner_process_dead", []);
 
   assertEquals(run.status, "interrupted");
   assertEquals(run.tags["interrupt_reason"], "owner_process_dead");
@@ -1548,7 +1548,7 @@ Deno.test("WorkflowRun.interruptOrphaned: leaves pending steps alone when a step
   run.jobs[0].start();
   run.jobs[0].steps[0].start();
 
-  run.interruptOrphaned("owner_process_dead");
+  run.interruptOrphaned("owner_process_dead", []);
 
   assertEquals(run.jobs[0].steps[0].status, "unknown");
   assertEquals(
@@ -1568,7 +1568,7 @@ Deno.test("WorkflowRun.interruptOrphaned: no-ops on a run that is not running", 
   run.jobs[0].fail();
   run.complete();
 
-  run.interruptOrphaned("owner_process_dead");
+  run.interruptOrphaned("owner_process_dead", []);
 
   assertEquals(run.status, "failed");
   assertEquals(run.jobs[0].steps[1].status, "pending");
@@ -3540,10 +3540,10 @@ Deno.test("WorkflowRun.unknownStepsIfOrphaned: names what interruptOrphaned then
               };
               const run = WorkflowRun.fromData(data);
               const before = JSON.stringify(run.toData());
-              const named = run.unknownStepsIfOrphaned();
+              const named = run.unknownStepsIfOrphaned([]);
               assertEquals(JSON.stringify(run.toData()), before);
               const orphaned = WorkflowRun.fromData(data);
-              orphaned.interruptOrphaned("owner_process_dead");
+              orphaned.interruptOrphaned("owner_process_dead", []);
               assertEquals(
                 named,
                 orphaned.unknownSteps(),

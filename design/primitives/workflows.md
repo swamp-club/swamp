@@ -4181,6 +4181,18 @@ can still show the in-flight step `pending`. So when a dead owner's run is
 interrupted (`WorkflowRun.interruptOrphaned`), a job left `running` with no step
 recorded `running` has its `pending` steps marked `unknown` too, and recovery
 asks before re-running them.
+On v3 a step's start is not carried by the whole record (swamp-club#4319): each
+start commits a small `StepStart` before the step runs, and the run's start
+journal is read with its record wherever a dead owner's run is interrupted
+(`workflow recover`, `run doctor --fix`, the boot reaper, a dead peer instance).
+A step the journal shows started reads as `unknown` when the record shows it
+`pending`, does not hold it yet (a `forEach` iteration), or holds it from an
+older start. A step whose start cannot be committed never runs: it stays
+`pending`, no further step starts (cleanup steps included), steps already
+running finish, and the run fails with exit 75, naming `workflow resume` or, if
+its failed record did not commit either, `workflow recover`. An offline team
+member's start waits in its outbox; a recovery on that machine puts it back
+before it reads the journal. See decision 6 in `design/enablers/datastores.md`.
 Every save of the run the executor is driving goes through its `saveRun`
 (settling an orphaned nested run on resume saves that child directly), and
 `saveRun` honours a run write fence (`RunWriteFence`, `src/domain/workflows/run_write_fence.ts`): once another

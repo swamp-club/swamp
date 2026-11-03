@@ -23,9 +23,18 @@ import type { RunCheckpointer } from "../../domain/workflows/run_checkpointer.ts
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
+  appendToOpenUnitOfWork,
   checkpointOpenUnitOfWork,
+  commitsThroughCommitLog,
   rootCommittedBeforeThrowing,
 } from "./repo_unit_of_work.ts";
+import {
+  StepStart,
+  StepStartUnrecordedError,
+} from "../../domain/workflows/step_start.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+
+import type { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import type { RepositoryContext } from "./repository_factory.ts";
 
 const logger = getSwampLogger(["workflow", "checkpoint"]);
@@ -37,12 +46,12 @@ const logger = getSwampLogger(["workflow", "checkpoint"]);
 export const RUN_CHECKPOINT_INTERVAL_MS = 2_000;
 
 /**
- * a save checkpoints at once if none started within the interval, a top-level
- * run ends, or a step starts, or ends beside a running sibling; otherwise one
- * trailing checkpoint starts when the interval ends. One in flight at a time.
+ * a save checkpoints at once if none started within the interval or a
+ * top-level run ends; otherwise one trailing checkpoint starts when the
+ * interval ends. One in flight at a time
  */
 export class WorkflowRunCheckpointer implements RunCheckpointer {
-  readonly #repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">;
+  readonly #repoContext: CheckpointerContext;
   #saves = 0;
   #committedThrough = 0;
   readonly #runs = new Map<
@@ -56,6 +65,16 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   >();
   readonly #checkpointedStarts = new Map<string, ReadonlySet<string>>();
   readonly #committedUnknownSteps = new Map<string, readonly string[]>();
+  /** a run first seen already running, in a new process, counts as a move into running */
+  readonly #statuses = new Map<string, string>();
+  /** the starts this process committed, by run, with the save that made each */
+  readonly #journal = new Map<
+    string,
+    { readonly start: StepStart; readonly save: number }[]
+  >();
+  readonly #appending = new Map<string, Promise<void>>();
+  /** serve does not take step starts: starts commit the whole record */
+  #journalRefused = false;
   #current: Promise<void> | undefined;
   #next: Promise<void> | undefined;
   #refused = false;
@@ -68,7 +87,7 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   #warnedFailure = false;
 
   constructor(
-    repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+    repoContext: CheckpointerContext,
     options: { intervalMs?: number; now?: () => number } = {},
   ) {
     this.#repoContext = repoContext;
@@ -83,22 +102,36 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     this.#runs.set(run.id, {
       first: seen?.first ?? save,
       latest: save,
-      unknownSteps: run.unknownStepsIfOrphaned(),
+      unknownSteps: run.unknownStepsIfOrphaned(this.#startsOf(run.id)),
       startedSteps,
     });
+    const before = this.#statuses.get(run.id);
+    this.#statuses.set(run.id, run.status);
     if (this.#refused || this.#closed) return;
     const checkpointed = this.#checkpointedStarts.get(run.id);
     const newStart = startedSteps.some((step) => !checkpointed?.has(step));
+    const journal = this.#usesJournal();
+    if (journal) {
+      if (run.status === "running" && before !== "running") {
+        await this.#appendRecord(run);
+      }
+      if (newStart && !this.#journalRefused) {
+        await this.#serialized(run.id, () => this.#appendStarts(run, save));
+      }
+    }
     // A step that ends while a sibling runs has no next start to carry its
-    // end, so recovery would count it with the sibling as maybe-run.
-    const endedBesideSibling = startedSteps.length > 0 &&
+    // end, so recovery would count it with the sibling as maybe-run; with a
+    // journal that end is paced, and recovery asks about it.
+    const endedBesideSibling = (!journal || this.#journalRefused) &&
+      startedSteps.length > 0 &&
       [...checkpointed ?? []].some((step) => !startedSteps.includes(step));
     // a top-level run's last save commits at once, so whether its final record
     // landed is known before its root ends; a nested child's is covered by its
     // parent's
     const ended = run.status !== "pending" && run.status !== "running" &&
       run.parentRun === undefined;
-    const atOnce = ended || newStart || endedBesideSibling;
+    const atOnce = ended || endedBesideSibling ||
+      (newStart && (!journal || this.#journalRefused));
     if (atOnce && this.#trailingTimer !== undefined) {
       clearTimeout(this.#trailingTimer);
       this.#trailingTimer = undefined;
@@ -115,6 +148,107 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
       this.#trailingTimer = undefined;
       this.#trailing = this.#schedule();
     }, wait);
+  }
+
+  /** a run's appends wait on each other, so parallel steps never append one start twice */
+  async #serialized(runId: string, fn: () => Promise<void>): Promise<void> {
+    const before = this.#appending.get(runId) ?? Promise.resolve();
+    const run = before.then(fn);
+    const tail = run.catch(() => {});
+    this.#appending.set(runId, tail);
+    try {
+      await run;
+    } finally {
+      if (this.#appending.get(runId) === tail) this.#appending.delete(runId);
+    }
+  }
+
+  #usesJournal(): boolean {
+    return this.#repoContext.workflowRunRepo !== undefined &&
+      commitsThroughCommitLog(this.#repoContext);
+  }
+
+  #startsOf(runId: string): StepStart[] {
+    return (this.#journal.get(runId) ?? []).map((entry) => entry.start);
+  }
+
+  /** the run's own record, so its starts never land before it */
+  async #appendRecord(run: WorkflowRun): Promise<void> {
+    const repo = this.#repoContext.workflowRunRepo!;
+    try {
+      const change = await repo.recordChange(
+        createWorkflowId(run.workflowId),
+        run.id,
+      );
+      if (change === undefined) return;
+      const outcome = await appendToOpenUnitOfWork(this.#repoContext, [
+        change,
+      ]);
+      if (outcome === "unsupported") this.#journalRefused = true;
+    } catch (error) {
+      throw new StepStartUnrecordedError(error, {
+        workflowId: run.workflowId,
+        workflowName: run.workflowName,
+        runId: run.id,
+      });
+    }
+  }
+
+  async #appendStarts(run: WorkflowRun, save: number): Promise<void> {
+    const repo = this.#repoContext.workflowRunRepo!;
+    const done = new Set(this.#checkpointedStarts.get(run.id) ?? []);
+    const running = new Set(runningStepsOf(run));
+    for (const job of run.jobs) {
+      for (const step of job.steps) {
+        if (step.status !== "running") continue;
+        const key = startKeyOf(job.jobName, step);
+        if (done.has(key)) continue;
+        const start = StepStart.create({
+          workflowId: run.workflowId,
+          runId: run.id,
+          jobName: job.jobName,
+          stepName: step.stepName,
+          startedAt: step.startedAt?.getTime() ?? this.#now(),
+        });
+        try {
+          const outcome = await appendToOpenUnitOfWork(this.#repoContext, [
+            await repo.writeStepStart(start),
+          ]);
+          if (outcome === "unsupported") {
+            this.#journalRefused = true;
+            return;
+          }
+          // with no open unit nothing commits, a start no more than the rest
+          if (outcome === "no-unit") {
+            done.add(key);
+            continue;
+          }
+        } catch (error) {
+          throw new StepStartUnrecordedError(error, {
+            workflowId: run.workflowId,
+            workflowName: run.workflowName,
+            runId: run.id,
+            stepName: step.stepName,
+            jobName: job.jobName,
+          });
+        }
+        // Only a committed start counts: one that failed is started again.
+        done.add(key);
+        const journal = this.#journal.get(run.id) ?? [];
+        journal.push({ start, save });
+        this.#journal.set(run.id, journal);
+        this.#committedUnknownSteps.set(run.id, [
+          ...new Set([
+            ...this.#committedUnknownSteps.get(run.id) ?? [],
+            step.stepName,
+          ]),
+        ]);
+      }
+    }
+    this.#checkpointedStarts.set(
+      run.id,
+      new Set([...done].filter((key) => running.has(key))),
+    );
   }
 
   async close(): Promise<void> {
@@ -166,6 +300,11 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     return restored;
   }
 
+  committedLatest(runId: string): boolean {
+    const saves = this.#runs.get(runId);
+    return saves !== undefined && saves.latest <= this.#committedThrough;
+  }
+
   /**
    * the steps a recovery would find in flight in the run's last committed
    * record, which it must be told to accept
@@ -195,18 +334,32 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     const unknownSteps = [...this.#runs].map(([runId, saves]) =>
       [runId, saves.unknownSteps] as const
     );
-    for (const [runId, saves] of this.#runs) {
-      this.#checkpointedStarts.set(runId, new Set(saves.startedSteps));
-    }
+    const startedSteps = [...this.#runs].map(([runId, saves]) =>
+      [runId, saves.startedSteps] as const
+    );
+    const wholeRecordStarts = !this.#usesJournal() || this.#journalRefused;
     this.#lastStarted = this.#now();
     const started = (async () => {
       if (this.#refused) return;
       try {
         const outcome = await checkpointOpenUnitOfWork(this.#repoContext);
         if (outcome === "committed") {
+          // only a committed start counts: a failed one checkpoints again
+          if (wholeRecordStarts) {
+            for (const [runId, steps] of startedSteps) {
+              this.#checkpointedStarts.set(runId, new Set(steps));
+            }
+          }
           if (covers > this.#committedThrough) {
             for (const [runId, steps] of unknownSteps) {
-              this.#committedUnknownSteps.set(runId, steps);
+              // starts committed after the save this checkpoint covers are in
+              // flight as far as a recovery reading it can tell
+              const later = (this.#journal.get(runId) ?? [])
+                .filter((entry) => entry.save > covers)
+                .map((entry) => entry.start.stepName);
+              this.#committedUnknownSteps.set(runId, [
+                ...new Set([...steps, ...later]),
+              ]);
             }
           }
           this.#committedThrough = Math.max(this.#committedThrough, covers);
@@ -238,8 +391,22 @@ function runningStepsOf(run: WorkflowRun): string[] {
   return run.jobs.flatMap((job) =>
     job.steps
       .filter((step) => step.status === "running")
-      .map((step) =>
-        `${job.jobName}/${step.stepName}@${step.startedAt?.getTime() ?? ""}`
-      )
+      .map((step) => startKeyOf(job.jobName, step))
   );
 }
+
+function startKeyOf(
+  jobName: string,
+  step: { readonly stepName: string; readonly startedAt?: Date },
+): string {
+  return `${jobName}/${step.stepName}@${step.startedAt?.getTime() ?? ""}`;
+}
+
+type CheckpointerContext =
+  & Pick<RepositoryContext, "markDirty" | "commitLog">
+  & {
+    readonly workflowRunRepo?: Pick<
+      YamlWorkflowRunRepository,
+      "recordChange" | "writeStepStart"
+    >;
+  };

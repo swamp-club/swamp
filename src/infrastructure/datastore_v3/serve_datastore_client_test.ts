@@ -1264,13 +1264,36 @@ Deno.test("ServeDatastoreClient.compactedBase: the log id is checked before the 
   assertEquals(seen, ["log-b"]);
 });
 
-Deno.test("ServeDatastoreClient: every request names the lease ops its copy understands (swamp-club#4121)", async () => {
+Deno.test("ServeDatastoreClient: every request names the lease ops and step starts its copy understands (swamp-club#4121)", async () => {
   const { client, requests } = clientWith(() =>
     Response.json({ head: 0, commits: [] })
   );
   await client.partitionCommits(modelPartition(), 0, signal(), 10);
   assertEquals(
     requests[0].headers.get("x-swamp-datastore-features"),
-    "lease-ops",
+    "lease-ops,step-starts",
   );
+});
+
+Deno.test("ServeDatastoreClient.takesStepStarts: true only once serve's reply names step starts", async () => {
+  let features: string | undefined;
+  const { client } = clientWith(() =>
+    Response.json({ head: 0, commits: [] }, {
+      headers: {
+        "x-swamp-datastore-log": "log-a",
+        ...(features === undefined
+          ? {}
+          : { "x-swamp-datastore-features": features }),
+      },
+    })
+  );
+  assertEquals(client.takesStepStarts(), false);
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.takesStepStarts(), false);
+  features = "step-starts";
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.takesStepStarts(), true);
+  features = undefined;
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.takesStepStarts(), false);
 });

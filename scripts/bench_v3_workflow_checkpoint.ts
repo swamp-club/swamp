@@ -24,8 +24,13 @@ import {
   AutoDefinitionChanges,
   recordKeyOf,
   RunChanges,
+  RunStartChanges,
 } from "../src/domain/datastore_v3/repository_changes.ts";
-import { checkpointFrom } from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  appendNowFrom,
+  checkpointFrom,
+} from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
+import { StepStart } from "../src/domain/workflows/step_start.ts";
 import {
   initializeV3Datastore,
   openV3Datastore,
@@ -88,21 +93,29 @@ async function simulateRun(steps: number, checkpoint: boolean): Promise<void> {
   });
 }
 
-// WorkflowRunCheckpointer's pacing on a simulated clock; `atStart` adds the
-// at-once checkpoint of each step start.
+// WorkflowRunCheckpointer's pacing on a simulated clock; whole-record commits
+// the record at each step start, journal a StepStart instead.
+type StartMode = "paced" | "whole-record" | "journal";
+
 async function simulatePacedRun(
   steps: number,
   stepMs: number,
-  atStart: boolean,
+  mode: StartMode,
 ): Promise<number> {
   const workflowId = crypto.randomUUID();
   const runId = crypto.randomUUID();
   const run = new RunChanges(workflowId, runId);
+  const starts = new RunStartChanges(workflowId, runId);
   const recordKey = recordKeyOf([
     "workflow-runs",
     workflowId,
     `workflow-run-${runId}.yaml`,
   ]);
+  const salted = (size: number) => {
+    const bytes = new Uint8Array(size).fill(size % 251);
+    bytes.set(new TextEncoder().encode(runId).subarray(0, size));
+    return bytes;
+  };
   let checkpoints = 0;
   await engine.runRoot({}, async () => {
     const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
@@ -139,9 +152,36 @@ async function simulatePacedRun(
       };
       let now = 0;
       await save("run.create", RECORD_BASE_BYTES, now, false);
+      if (mode === "journal") {
+        // the run's move into running commits its own record, once
+        await appendNowFrom(unit, [
+          run.write("run.update", recordKey, salted(RECORD_BASE_BYTES)),
+        ]);
+      }
       for (let step = 0; step < steps; step++) {
         const size = RECORD_BASE_BYTES + step * RECORD_BYTES_PER_STEP;
-        await save("run.update", size, now, atStart);
+        await save("run.update", size, now, mode === "whole-record");
+        if (mode === "journal") {
+          const start = StepStart.create({
+            workflowId,
+            runId,
+            jobName: "main",
+            stepName: `step-${step}`,
+            startedAt: now,
+          });
+          await appendNowFrom(unit, [
+            starts.write(
+              recordKeyOf([
+                "workflow-runs",
+                workflowId,
+                "starts",
+                runId,
+                start.fileName,
+              ]),
+              new TextEncoder().encode(start.toYaml()),
+            ),
+          ]);
+        }
         const id = crypto.randomUUID();
         await unit.stageOps([
           new AutoDefinitionChanges(id).write(
@@ -203,17 +243,18 @@ for (const steps of [10, 50, 200]) {
 for (const steps of [10, 50, 200, 1_000]) {
   for (const stepMs of steps === 1_000 ? [0] : [0, 100, 500, 2_000]) {
     const sizes: string[] = [];
-    for (const atStart of [false, true]) {
+    for (const mode of ["paced", "whole-record", "journal"] as const) {
       const before = await stored();
-      const checkpoints = await simulatePacedRun(steps, stepMs, atStart);
+      const checkpoints = await simulatePacedRun(steps, stepMs, mode);
       const after = await stored();
       sizes.push(
-        `${mib(after.chunks - before.chunks)} (${checkpoints} checkpoints)`,
+        `${mib(after.chunks - before.chunks)} of chunks, log ` +
+          `${mib(after.log - before.log)} (${checkpoints} checkpoints)`,
       );
     }
     console.log(
-      `${steps} steps of ${stepMs} ms: paced ${sizes[0]}, ` +
-        `with each step start ${sizes[1]}`,
+      `${steps} steps of ${stepMs} ms: paced ${sizes[0]}; ` +
+        `whole record at each start ${sizes[1]}; journal ${sizes[2]}`,
     );
   }
 }

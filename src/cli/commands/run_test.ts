@@ -132,6 +132,7 @@ function runRepoOf(
     [RENAMED_WORKFLOW_ID, renamed],
   ]);
   const runRepo = {
+    findStepStarts: () => Promise.resolve([]),
     findGlobalByStatus: (status: string) =>
       Promise.resolve(
         scanned.filter((r) => r.status === status).map((run) => ({

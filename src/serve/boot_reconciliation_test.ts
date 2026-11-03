@@ -1309,6 +1309,7 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from st
   const yamlInterrupted: string[] = [];
   const scanWindows: Array<Date | undefined> = [];
   const mockWorkflowRunRepo = {
+    findStepStarts: () => Promise.resolve([]),
     findGlobalByStatus: (_status: string | string[], since?: Date) => {
       scanWindows.push(since);
       return Promise.resolve([{
@@ -1354,6 +1355,7 @@ Deno.test("reconcileRemoteInterruptedRuns: skips YAML runs from non-stale instan
 
   const yamlSaved: string[] = [];
   const mockWorkflowRunRepo = {
+    findStepStarts: () => Promise.resolve([]),
     findGlobalByStatus: (_status: string | string[], _since?: Date) =>
       Promise.resolve([{
         run: {
@@ -1406,6 +1408,7 @@ function yamlRunRepo(
   const interrupted: string[] = [];
   let scans = 0;
   const repo = {
+    findStepStarts: () => Promise.resolve([]),
     findGlobalByStatus: () => {
       scans++;
       return Promise.resolve(runs.map((r) => ({
@@ -2308,6 +2311,7 @@ Deno.test("reconcileRemoteInterruptedRuns: the YAML run saves stage into a root 
   const { marks, reports } = await withHookAndReports(async (markDirty) => {
     h.deps.markDirty = markDirty;
     h.deps.workflowRunRepo = {
+      findStepStarts: () => Promise.resolve([]),
       findGlobalByStatus: () =>
         Promise.resolve([{
           run: {
@@ -2347,6 +2351,7 @@ function refreshableRunRepo(
     return run;
   };
   const repo = {
+    findStepStarts: () => Promise.resolve([]),
     findGlobalByStatus: () =>
       Promise.resolve(
         cached.map((r) => ({ run: fakeRun(r), workflowId: "wf-cached" })),
@@ -2626,6 +2631,7 @@ Deno.test("reconcileRemoteInterruptedRuns: a claimed run the cache already holds
     },
   };
   h.deps.workflowRunRepo = {
+    findStepStarts: () => Promise.resolve([]),
     findGlobalByStatus: () => Promise.resolve([]),
     findById: () => Promise.resolve(cachedRun),
     save: () => {

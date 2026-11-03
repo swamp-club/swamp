@@ -58,18 +58,32 @@ import {
 } from "./forwarded_content_authorization.ts";
 
 /**
- * drops lease ops for a reader that does not understand them: an older swamp
- * judges a lease op's fence against the writer fence. Serve stamps lease ops
- * only beside client ops, so no commit empties
+ * drops lease ops and step starts for a reader that cannot read them; a commit
+ * left with neither client op is skipped whole, as an unreadable one is
  */
 export function commitJSONFor(
   commit: CommitChange["commit"],
-  leaseOps: boolean,
-): unknown {
-  const json = commit.toJSON() as { ops: readonly { kind?: unknown }[] };
-  return leaseOps
-    ? json
-    : { ...json, ops: json.ops.filter((op) => op.kind !== "lease") };
+  features: ReaderFeatures,
+): unknown | undefined {
+  const json = commit.toJSON() as {
+    ops: readonly { kind?: unknown; intent?: { kind?: unknown } }[];
+  };
+  const ops = json.ops.filter((op) =>
+    (features.leaseOps || op.kind !== "lease") &&
+    (features.stepStarts || !isStepStartKind(op.intent?.kind))
+  );
+  if (ops.length === json.ops.length) return json;
+  if (!ops.some((op) => op.kind !== "lease")) return undefined;
+  return { ...json, ops };
+}
+
+export interface ReaderFeatures {
+  readonly leaseOps: boolean;
+  readonly stepStarts: boolean;
+}
+
+function isStepStartKind(kind: unknown): boolean {
+  return kind === "run-start.save" || kind === "run-start.delete";
 }
 
 export async function commitReadAccessOf(

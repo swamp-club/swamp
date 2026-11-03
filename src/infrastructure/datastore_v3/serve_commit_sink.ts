@@ -62,10 +62,12 @@ export const MAX_CARRIED_CHUNKS = 1024;
 export const SERVE_SEQ_GAP_ATTEMPTS = 8;
 
 export interface ServeCommitSinkOptions {
-  readonly client: Pick<
-    ServeDatastoreClient,
-    "hasChunks" | "putChunk" | "postCommit" | "baseUrl"
-  >;
+  readonly client:
+    & Pick<
+      ServeDatastoreClient,
+      "hasChunks" | "putChunk" | "postCommit" | "baseUrl"
+    >
+    & Partial<Pick<ServeDatastoreClient, "takesStepStarts">>;
   readonly commitStore: Pick<
     SqliteCommitStore,
     "head" | "headIdentity" | "dataHighWater" | "landedSeq"
@@ -376,6 +378,7 @@ export function createServeCommitSink(
       },
     },
     seqGapAttempts: SERVE_SEQ_GAP_ATTEMPTS,
+    takesStepStarts: () => client.takesStepStarts?.() ?? false,
     queuesOffline: async (partition) => {
       const offline = options.offline?.();
       return offline !== undefined && await offline.queues(partition) === true;

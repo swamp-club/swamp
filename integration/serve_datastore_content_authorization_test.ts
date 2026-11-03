@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { StepStart } from "../src/domain/workflows/step_start.ts";
 import { NestedRunLink } from "../src/domain/workflows/nested_run_link.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import {
@@ -2223,5 +2224,189 @@ Deno.test({
       undefined,
       MANAGED,
     );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a member's step start lands only for a member-driven run it names, carries nothing else, and is refused once serve drives the run (swamp-club#4319)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const member = [
+      grant({
+        actions: ["read", "write", "run", "approve", "signal"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ];
+    await withServer(
+      member,
+      async (server) => {
+        const runId = crypto.randomUUID();
+        const partition = partitionOf({
+          kind: "run",
+          workflowId: WORKFLOW,
+          runId,
+        });
+        const sendStart = (
+          target: string,
+          content: Record<string, unknown>,
+          fileName: string,
+        ) =>
+          forward(
+            server,
+            partitionOf({ kind: "run", workflowId: WORKFLOW, runId: target }),
+            [put(
+              {
+                kind: "run-start.save",
+                run: { workflowId: WORKFLOW, runId: target },
+              },
+              `workflow-runs/${WORKFLOW}/starts/${target}/${fileName}`,
+              yaml(content),
+            )],
+          );
+        const startOf = (target: string) =>
+          StepStart.create({
+            workflowId: WORKFLOW,
+            runId: target,
+            jobName: "main",
+            stepName: "deploy",
+            startedAt: Date.parse("2026-11-02T10:00:00.000Z"),
+          });
+
+        const orphan = startOf(runId);
+        const noRecord = await sendStart(
+          runId,
+          orphan.toData(),
+          orphan.fileName,
+        );
+        assertEquals(noRecord.status, 403, JSON.stringify(noRecord.json));
+        assertEquals(noRecord.json.reason, "content-refused");
+
+        const landed = await forwardRun(
+          server,
+          runRecord(runId, {
+            jobs: [{
+              jobName: "main",
+              status: "running",
+              steps: [{ stepName: "deploy", status: "pending" }],
+            }],
+          }),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+
+        const start = startOf(runId);
+        const taken = await sendStart(runId, start.toData(), start.fileName);
+        assertEquals(taken.status, 200, JSON.stringify(taken.json));
+
+        const decided = await sendStart(
+          runId,
+          { ...start.toData(), approvalDecision: { approved: true } },
+          start.fileName,
+        );
+        assertEquals(decided.status, 403, JSON.stringify(decided.json));
+        assertEquals(decided.json.reason, "content-refused");
+
+        const misfiled = await sendStart(
+          runId,
+          start.toData(),
+          startOf(crypto.randomUUID()).fileName.replace(/^./, "f"),
+        );
+        assertEquals(misfiled.status, 403, JSON.stringify(misfiled.json));
+
+        const driven = await server.ctx.repoContext.workflowRunRepo.findById(
+          createWorkflowId(WORKFLOW),
+          createWorkflowRunId(runId),
+        );
+        assert(driven !== null);
+        driven.start(1, "other-team-node");
+        await runInRootUnitOfWork(
+          server.ctx.repoContext,
+          { flush: undefined },
+          () =>
+            server.ctx.repoContext.workflowRunRepo.save(
+              createWorkflowId(WORKFLOW),
+              driven,
+            ),
+        );
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const later = StepStart.create({
+          ...start.toData(),
+          startedAt: start.startedAt + 1,
+        });
+        const onDriven = await sendStart(runId, later.toData(), later.fileName);
+        assertEquals(onDriven.status, 403, JSON.stringify(onDriven.json));
+        assertEquals(onDriven.json.reason, "content-refused");
+
+        const head = await server.v3.commitStore.head(
+          server.v3.namespace,
+          partition,
+        );
+        assert(head.seq >= 3);
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a reader that does not name step starts is sent no start commit, and serve's replies name step starts (swamp-club#4319)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([runWorkflows], async (server) => {
+      const runId = crypto.randomUUID();
+      const partition = partitionOf({
+        kind: "run",
+        workflowId: WORKFLOW,
+        runId,
+      });
+      const landed = await forwardRun(server, runRecord(runId));
+      assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      const start = StepStart.create({
+        workflowId: WORKFLOW,
+        runId,
+        jobName: "main",
+        stepName: "deploy",
+        startedAt: 1,
+      });
+      const taken = await forward(server, partition, [put(
+        { kind: "run-start.save", run: { workflowId: WORKFLOW, runId } },
+        `workflow-runs/${WORKFLOW}/starts/${runId}/${start.fileName}`,
+        yaml(start.toData()),
+      )]);
+      assertEquals(taken.status, 200, JSON.stringify(taken.json));
+      const read = async (features: string | undefined) => {
+        const response = await fetch(
+          `${server.url}/partitions/${
+            encodeURIComponent(partition.toString())
+          }/commits?after=0`,
+          {
+            headers: {
+              authorization: "Bearer alice-token",
+              ...(features === undefined
+                ? {}
+                : { "x-swamp-datastore-features": features }),
+            },
+          },
+        );
+        const json = await response.json() as {
+          commits: { ops: { intent?: { kind?: string } }[] }[];
+        };
+        return {
+          replyFeatures: response.headers.get("x-swamp-datastore-features"),
+          kinds: json.commits.flatMap((commit) =>
+            commit.ops.map((op) => op.intent?.kind)
+          ),
+        };
+      };
+      const older = await read("lease-ops");
+      assertEquals(older.kinds, ["run.create"]);
+      assertEquals(older.replyFeatures, "step-starts");
+      const current = await read("lease-ops,step-starts");
+      assertEquals(current.kinds, ["run.create", "run-start.save"]);
+    });
   },
 });

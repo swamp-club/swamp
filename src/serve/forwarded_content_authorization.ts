@@ -89,7 +89,11 @@ import {
   vaultAccessResource,
 } from "./handlers/shared.ts";
 import { authorizeWorkflowEdit } from "./handlers/workflow_step_authorization.ts";
-import { checkRunRecord, checkRunSnapshot } from "./forwarded_run_content.ts";
+import {
+  checkRunRecord,
+  checkRunSnapshot,
+  checkRunStart,
+} from "./forwarded_run_content.ts";
 import { checkDataPut } from "./forwarded_data_content.ts";
 
 export const MAX_CHECKED_CONTENT_BYTES = 16 * 1024 * 1024;
@@ -164,6 +168,8 @@ export class ForwardedContentAuthority implements ContentAuthority {
       case "run.create":
       case "run.update":
         return await checkRunRecord(context, op);
+      case "run-start.save":
+        return await checkRunStart(context, op);
       case "data.save":
       case "data.append":
       case "data.delete":

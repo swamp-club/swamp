@@ -22,6 +22,7 @@ import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import type { Workflow } from "./workflow.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
 import type { RunWriteFence } from "./run_write_fence.ts";
+import type { StepStart } from "./step_start.ts";
 
 export interface WorkflowRepository {
   findById(id: WorkflowId): Promise<Workflow | null>;
@@ -84,6 +85,19 @@ export interface WorkflowRunRepository {
     status: string | string[],
     since?: Date,
   ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
+
+  /** the run's start journal, which recovery reads with its record */
+  findStepStarts(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<StepStart[]>;
+
+  /** before a recovery resets them, withdraws the starts of settled steps */
+  withdrawSettledStepStarts?(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+    stepNames: readonly string[],
+  ): Promise<void>;
 
   /**
    * a member can forward this repository's run records, so what a record says

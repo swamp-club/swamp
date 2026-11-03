@@ -30,6 +30,7 @@ import {
   type WorkflowRunData,
 } from "../workflows/workflow_run.ts";
 import type { Intent } from "./intent.ts";
+import { StepStart, type StepStartData } from "../workflows/step_start.ts";
 
 export interface DeclaredIdentity {
   readonly id: string;
@@ -416,4 +417,47 @@ function same(a: unknown, b: unknown): boolean {
 
 function canonical(value: unknown): string {
   return canonicalJson(value) ?? "undefined";
+}
+
+export interface RunStartContext {
+  readonly workflowId: string;
+  readonly runId: string;
+  readonly fileName: string;
+  readonly content: unknown;
+  readonly record: WorkflowRunData | undefined;
+}
+
+/**
+ * a start is a member's own report of a step it began: it may only make that
+ * step of that member-driven run read as unknown on recovery, so it carries
+ * nothing else, names its own key, and is refused for a run serve drives or a
+ * run with no record
+ */
+export function judgeRunStart(context: RunStartContext): string | undefined {
+  let start: StepStart;
+  try {
+    start = StepStart.create(context.content as StepStartData);
+  } catch {
+    return "its content is not a step start";
+  }
+  if (
+    !sameId(start.workflowId, context.workflowId) ||
+    !sameId(start.runId, context.runId)
+  ) {
+    return "it names another run";
+  }
+  if (start.fileName !== context.fileName) {
+    return "its key is not the start it holds";
+  }
+  if (context.record === undefined) {
+    return "its run has no record";
+  }
+  if (isServeDrivenRun(context.record)) {
+    return "serve drives this run, so it takes no forwarded record: resume it with --server";
+  }
+  return undefined;
+}
+
+function sameId(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }

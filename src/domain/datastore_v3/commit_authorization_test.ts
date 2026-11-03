@@ -469,6 +469,11 @@ function keyFor(intent: Intent): string {
     return `data/${type}/${MODEL_ID}/${name}/${version}`;
   }
   if ("run" in intent) {
+    if (intent.kind.startsWith("run-start.")) {
+      return `workflow-runs/${SAMPLE_WORKFLOW_ID}/starts/${SAMPLE_RUN_ID}/${
+        "a".repeat(64)
+      }.yaml`;
+    }
     return intent.kind.startsWith("run-snapshot.")
       ? `workflows-evaluated/runs/${SAMPLE_RUN_ID}/evaluated-workflow.yaml`
       : `workflow-runs/${SAMPLE_WORKFLOW_ID}/workflow-run-${SAMPLE_RUN_ID}.yaml`;
@@ -948,16 +953,16 @@ Deno.test("partitionWriteAccessOf: an upload needs the least write a partition t
   assertEquals(await decided(modelPartition()), "admin access:*");
 });
 
-Deno.test("authorizeCommit: deleting the record or snapshot of a guarded run needs admin on the workflow; an unguarded run's needs write (swamp-club#4290)", async () => {
+Deno.test("authorizeCommit: deleting the record, snapshot or a step start of a guarded run needs admin on the workflow; an unguarded run's needs write (swamp-club#4290)", async () => {
   const run = partitionOf({
     kind: "run",
     workflowId: SAMPLE_WORKFLOW_ID,
     runId: SAMPLE_RUN_ID,
   });
   const removals = await Promise.all(
-    (["run.delete", "run-snapshot.delete"] as const).map((kind) =>
-      opFor(sampleIntent(kind))
-    ),
+    (["run.delete", "run-snapshot.delete", "run-start.delete"] as const).map((
+      kind,
+    ) => opFor(sampleIntent(kind))),
   );
   const writer = () => new FakeAuthority(["write workflow:deploy"]);
   const admin = () => new FakeAuthority(["admin workflow:deploy"]);

@@ -53,6 +53,7 @@ import {
   unitOptions,
 } from "../src/infrastructure/datastore_v3/commit_log_test_helpers.ts";
 import {
+  appendNowFrom,
   checkpointFrom,
   type CommitSink,
   createCommitLogUnitOfWork,
@@ -589,7 +590,91 @@ Deno.test("v3 run staging: a run stopped as its second step starts, inside the c
       step.status,
     ]);
     assertEquals(steps, [["a", "succeeded"], ["b", "running"]]);
-    assertEquals(run?.unknownStepsIfOrphaned(), ["b"]);
+    assertEquals(run?.unknownStepsIfOrphaned([]), ["b"]);
+  });
+});
+
+const journalEngine: CommitLogEngine = {
+  ...unitEngine,
+  async appendToOpenUnit(changes) {
+    const unit = currentUnitOfWork();
+    if (unit === undefined) return "no-unit";
+    return await appendNowFrom(unit, changes) ?? "no-unit";
+  },
+};
+
+Deno.test("v3 run staging: a run past the inline limit stopped as its second step starts recovers both started steps as unknown from its journal, though no whole record committed at either start (swamp-club#4319)", async () => {
+  await withAuditedV3Env(async (env) => {
+    const type = registerWriter();
+    const definition = Definition.create({ name: "writer" });
+    const after = (name: string) => [{
+      step: name,
+      condition: TriggerCondition.succeeded(),
+    }];
+    // steps that wait behind b put the record past the 8 KiB inline limit
+    const padding = Array.from({ length: 150 }, (_, i) =>
+      Step.create({
+        name: `padding-step-${String(i).padStart(4, "0")}-of-the-run`,
+        task: StepTask.model("writer", "write", { text: "p" }),
+        dependsOn: after("b"),
+      }));
+    const context = await runContext(env, "journal", type, definition, [
+      writeStep("a"),
+      Step.create({
+        name: "b",
+        task: StepTask.model("writer", "write", { text: "b" }),
+        dependsOn: after("a"),
+      }),
+      ...padding,
+    ]);
+    const checkpointer = new WorkflowRunCheckpointer(
+      {
+        commitLog: journalEngine,
+        workflowRunRepo: context.repo.workflowRunRepo,
+      },
+      { intervalMs: 60_000 },
+    );
+    const runId = await runWorkflow(env, context, async (stream) => {
+      for await (const event of stream) {
+        const started = event as { kind: string; stepId?: string };
+        if (started.kind === "step_started" && started.stepId === "b") break;
+      }
+    }, { checkpoints: checkpointer });
+    await checkpointer.close();
+
+    const run = await storedRun(env, context, runId);
+    assert(run !== null);
+    const recordBytes = (await Deno.stat(
+      join(
+        env.cacheRoot(""),
+        "workflow-runs",
+        context.workflowId,
+        `workflow-run-${runId}.yaml`,
+      ),
+    )).size;
+    assert(recordBytes > 8 * 1024, `the record is ${recordBytes} bytes`);
+    assertEquals(run.status, "running");
+    const recorded = new Map(
+      run.jobs[0].steps.map((step) => [step.stepName, step.status]),
+    );
+    assertEquals(recorded.get("b"), "pending");
+
+    const starts = await new YamlWorkflowRunRepository(
+      env.repoDir,
+      undefined,
+      join(env.cacheRoot(""), "workflow-runs"),
+    ).findStepStarts(context.workflowId, createWorkflowRunId(runId));
+    assertEquals(
+      starts.map((start) => start.stepName).sort(),
+      ["a", "b"],
+    );
+    run.interruptOrphaned("owner_process_dead", starts);
+    const recovered = new Map(
+      run.jobs[0].steps.map((step) => [step.stepName, step.status]),
+    );
+    assertEquals(recovered.get("a"), "unknown");
+    assertEquals(recovered.get("b"), "unknown");
+    assertEquals(recovered.get(padding[0].name), "pending");
   });
 });
 

@@ -26,7 +26,10 @@
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
 import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import type { Principal } from "../../domain/access/principal.ts";
-import { LEASE_OPS_FEATURE } from "../../infrastructure/datastore_v3/serve_datastore_client.ts";
+import {
+  LEASE_OPS_FEATURE,
+  STEP_STARTS_FEATURE,
+} from "../../infrastructure/datastore_v3/serve_datastore_client.ts";
 import { commitJSONFor, CommitReadFilter } from "../commit_read_filter.ts";
 import { isPeerSocket } from "../peer_auth.ts";
 import {
@@ -94,7 +97,10 @@ export async function handleCommitsSubscribe(
   // a subscription's features are fixed when it starts, so read once: a
   // subscriber that does not name lease ops (an older follower) is sent commits
   // without them, as GET changes sends them
-  const leaseOps = payload.features?.includes(LEASE_OPS_FEATURE) === true;
+  const features = {
+    leaseOps: payload.features?.includes(LEASE_OPS_FEATURE) === true,
+    stepStarts: payload.features?.includes(STEP_STARTS_FEATURE) === true,
+  };
   let cursor = payload.cursor;
   let wake: (() => void) | undefined;
   const off = feed.onMoved(() => wake?.());
@@ -159,13 +165,13 @@ export async function handleCommitsSubscribe(
           [];
         for (const change of inBound) {
           if (await filter.readable(change)) {
-            changes.push({
-              cursor: change.cursor,
-              commit: commitJSONFor(change.commit, leaseOps) as Record<
-                string,
-                unknown
-              >,
-            });
+            const commit = commitJSONFor(change.commit, features);
+            if (commit !== undefined) {
+              changes.push({
+                cursor: change.cursor,
+                commit: commit as Record<string, unknown>,
+              });
+            }
           }
         }
         // past filtered rows too, and past a gap up to the head

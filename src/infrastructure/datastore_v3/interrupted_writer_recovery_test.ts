@@ -36,6 +36,12 @@ import {
   writeWriterMarker,
 } from "./interrupted_writer_recovery.ts";
 import type { V3Datastore } from "./v3_datastore.ts";
+import { Commit } from "../../domain/datastore_v3/commit.ts";
+import { createIntent } from "../../domain/datastore_v3/intent.ts";
+import { putOp } from "../../domain/datastore_v3/op.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
+import { swampPath } from "../persistence/paths.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-writer-marker-" });
@@ -354,6 +360,79 @@ Deno.test("recoverInterruptedWriter: says it is recovering before the replay sta
       ]);
     } finally {
       setV3RecoveryProgress(undefined);
+    }
+  });
+});
+
+async function queuedStart(
+  workflowId: string,
+  runId: string,
+  fileName: string,
+  extra: { abandonedAt?: number; state?: "offline" | "rejected" } = {},
+) {
+  const intent = createIntent({
+    kind: "run-start.save",
+    run: { workflowId, runId },
+  });
+  const op = await putOp({
+    intent,
+    key: RecordKey.create(
+      `workflow-runs/${workflowId}/starts/${runId}/${fileName}`,
+    ),
+    inline: btoa(`runId: ${runId}\n`),
+  });
+  return {
+    commit: Commit.create({
+      seq: 1,
+      partition: partitionOf({ kind: "run", workflowId, runId }),
+      namespace: "",
+      txnId: crypto.randomUUID(),
+      writer: { host: "h", pid: 1, instance: "i" },
+      at: "2026-11-02T00:00:00.000Z",
+      ops: [op],
+    }),
+    state: extra.state ?? "offline",
+    ...(extra.abandonedAt === undefined
+      ? {}
+      : { abandonedAt: extra.abandonedAt }),
+  };
+}
+
+Deno.test("recoverInterruptedWriter: puts back the step starts a dead writer queued offline, never one it gave up or one not queued offline (swamp-club#4319)", async () => {
+  await withTempDir(async (dir) => {
+    const workflowId = crypto.randomUUID();
+    const runId = crypto.randomUUID();
+    const queued = `${"a".repeat(64)}.yaml`;
+    const abandoned = `${"b".repeat(64)}.yaml`;
+    const rejected = `${"c".repeat(64)}.yaml`;
+    const entries = [
+      await queuedStart(workflowId, runId, queued),
+      await queuedStart(workflowId, runId, abandoned, { abandonedAt: 1 }),
+      await queuedStart(workflowId, runId, rejected, { state: "rejected" }),
+    ];
+    const handle = {
+      datastorePath: dir,
+      recoverInterruptedWriter: () => Promise.resolve([]),
+      outbox: { entries: () => Promise.resolve({ entries, unreadable: [] }) },
+    } as unknown as V3Datastore;
+    await writeRaw(dir, "");
+    await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true });
+    const startsDir = join(
+      swampPath(dir),
+      "workflow-runs",
+      workflowId,
+      "starts",
+      runId,
+    );
+    assertEquals(
+      await Deno.readTextFile(join(startsDir, queued)),
+      `runId: ${runId}\n`,
+    );
+    for (const name of [abandoned, rejected]) {
+      await assertRejects(
+        () => Deno.stat(join(startsDir, name)),
+        Deno.errors.NotFound,
+      );
     }
   });
 });

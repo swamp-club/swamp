@@ -721,6 +721,8 @@ Deno.test({
                 await repoContext.workflowRunRepo.save(workflowId, run);
                 tracker.markSettled(run.id, "server_crash");
               },
+              (workflowId, run) =>
+                repoContext.workflowRunRepo.findStepStarts(workflowId, run.id),
               (runId) => {
                 const tracked = tracker.findById(runId);
                 return tracked ? { status: tracked.status } : null;

@@ -250,7 +250,13 @@ async function recoveryOfCommittedRun(
   );
   assert(run !== null, `the second checkout has no run ${runId}`);
   assertEquals(run.status, "running");
-  run.interruptOrphaned("owner_process_dead");
+  run.interruptOrphaned(
+    "owner_process_dead",
+    await reader.repoContext.workflowRunRepo.findStepStarts(
+      workflow.id,
+      createWorkflowRunId(runId),
+    ),
+  );
   return await assessRecoveryForRun(workflow, run);
 }
 

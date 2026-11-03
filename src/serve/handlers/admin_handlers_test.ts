@@ -1210,6 +1210,7 @@ Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the 
     repoContext: {
       markDirty,
       workflowRunRepo: {
+        findStepStarts: () => Promise.resolve([]),
         findGlobalByStatus: () =>
           Promise.resolve([{
             run: {
@@ -1388,6 +1389,7 @@ async function doctorScan(
     repoContext: {
       markDirty: () => Promise.resolve(),
       workflowRunRepo: {
+        findStepStarts: () => Promise.resolve([]),
         findGlobalByStatus: () =>
           Promise.resolve(
             runs.map((run) => ({ run, workflowId: run.workflowId })),

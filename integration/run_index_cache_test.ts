@@ -181,7 +181,7 @@ Deno.test("run index cache: the reader follows runs another process saves, updat
     assertEquals(before.total, 1);
     assertEquals((await reader.summary()).totals.running, 2);
 
-    first.interruptOrphaned("test");
+    first.interruptOrphaned("test", []);
     await writer.runRepo.save(deploy.id, first);
     assertEquals(
       (await reader.search({ workflow: "deploy" })).data.results[0].status,
