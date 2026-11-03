@@ -61,6 +61,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { ExtensionSearchResponse } from "../../serve/protocol.ts";
+import { createDefaultExtensionArchiveCache } from "../../infrastructure/persistence/extension_archive_cache.ts";
 
 function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
@@ -312,6 +313,7 @@ export const extensionSearchCommand = withRemoteOptions(
       outputMode: ctx.outputMode,
       alreadyPulled: new Set(),
       depth: 0,
+      archiveCache: createDefaultExtensionArchiveCache(),
     };
 
     // made against the datastore's lockfile and published as it lands.

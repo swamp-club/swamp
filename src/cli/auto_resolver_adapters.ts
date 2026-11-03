@@ -41,9 +41,11 @@ import {
 import type {
   AutoResolveOutputPort,
   ExtensionInstallerPort,
+  ExtensionLookupInfo,
   InstallationInspection,
   InstallLockHolder,
 } from "../domain/extensions/extension_auto_resolver.ts";
+import type { ExtensionArchiveCache } from "../domain/extensions/extension_archive_cache.ts";
 import {
   ConflictError,
   type ExtensionRegistryInfo,
@@ -139,6 +141,7 @@ interface InstallerAdapterConfig {
    * the attach retry.
    */
   repository?: ExtensionRepository;
+  archiveCache?: ExtensionArchiveCache;
 }
 
 /**
@@ -178,6 +181,7 @@ export function createAutoResolveInstallerAdapter(
     denoRuntime,
     datastoreResolver,
     repository,
+    archiveCache,
   } = config;
 
   const separateResolvedLockfilePath = (): string | undefined => {
@@ -266,7 +270,7 @@ export function createAutoResolveInstallerAdapter(
       };
     },
 
-    async install(extensionName: string) {
+    async install(extensionName: string, extInfo: ExtensionLookupInfo) {
       // One deadline for the whole install, shared by a forced re-run
       // after a conflict, so retries inside it cannot hold the install
       // lock past EXTENSION_INSTALL_LOCK_MAX_WAIT_MS.
@@ -302,7 +306,11 @@ export function createAutoResolveInstallerAdapter(
           version: pinnedEntry?.version ?? null,
         };
         const installCtx = {
-          getExtension: (name: string) => getExtension(name, deadline),
+          // the resolver already looked the extension up; dependencies still ask
+          getExtension: (name: string) =>
+            name === extensionName
+              ? Promise.resolve(extInfo)
+              : getExtension(name, deadline),
           downloadArchive: (name: string, version: string, channel?: string) =>
             downloadArchive(name, version, channel, deadline),
           getChecksum: (name: string, version: string, channel?: string) =>
@@ -321,6 +329,7 @@ export function createAutoResolveInstallerAdapter(
             ? { expectedChecksum: pinnedEntry.checksum }
             : {}),
           ...(pinnedEntry?.channel ? { channel: pinnedEntry.channel } : {}),
+          ...(archiveCache ? { archiveCache } : {}),
         };
         return repository !== undefined
           ? await new InstallExtensionService({ denoRuntime, repository })

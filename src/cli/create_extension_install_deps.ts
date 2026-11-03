@@ -28,6 +28,7 @@ import type { ExtensionInstallDeps } from "../libswamp/extensions/install.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { resolveServerUrl } from "../libswamp/extensions/pull.ts";
 import { resolveManagedLockfileForWrite } from "./repo_context.ts";
+import { createDefaultExtensionArchiveCache } from "../infrastructure/persistence/extension_archive_cache.ts";
 
 export async function createExtensionInstallDeps(
   repoDir: string,
@@ -68,6 +69,7 @@ export async function createExtensionInstallDeps(
   const identity = await loadIdentity();
   const client = new ExtensionApiClient(serverUrl, identity);
   const apiKey = identity.bearerToken;
+  const archiveCache = createDefaultExtensionArchiveCache();
 
   return {
     lockfilePath,
@@ -77,6 +79,7 @@ export async function createExtensionInstallDeps(
       getExtension: (n) => client.getExtension(n, apiKey),
       downloadArchive: (n, v, ch) => client.downloadArchive(n, v, apiKey, ch),
       getChecksum: (n, v, ch) => client.getChecksum(n, v, apiKey, ch),
+      archiveCache,
       logger,
       lockfileRepository: await LockfileRepository.create(lockfilePath),
       skillsDirs: absoluteSkillsDirs,

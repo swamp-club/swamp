@@ -35,10 +35,22 @@ import { RegistryUnavailableError } from "./registry_unavailable_error.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
+/** the full registry record, so one lookup can be handed on to the install */
 export interface ExtensionLookupInfo {
   name: string;
   description: string;
   latestVersion: string | null;
+  latestRc?: string | null;
+  latestBeta?: string | null;
+  deprecatedAt?: string | null;
+  deprecationReason?: string | null;
+  supersededBy?: string | null;
+}
+
+/** info is the direct lookup's record, or null when a search found the name */
+export interface ExtensionMatch {
+  name: string;
+  info: ExtensionLookupInfo | null;
 }
 
 export interface ExtensionSearchResultEntry {
@@ -82,7 +94,11 @@ export interface ExtensionInstallerPort {
   inspectInstallation(
     extensionName: string,
   ): Promise<InstallationInspection>;
-  install(extensionName: string): Promise<ExtensionInstallResultInfo | null>;
+  /** extInfo is the record the resolver already looked up for extensionName */
+  install(
+    extensionName: string,
+    extInfo: ExtensionLookupInfo,
+  ): Promise<ExtensionInstallResultInfo | null>;
   hotLoadModels(): Promise<number>;
   hotLoadVaults(): Promise<void>;
   hotLoadDatastores(): Promise<void>;
@@ -224,13 +240,13 @@ export class ExtensionAutoResolver {
       return null;
     }
     try {
-      const extensionName = await findExtensionForType(
+      const match = await findExtensionForType(
         normalizedType,
         collective,
         lookup,
       );
-      if (!extensionName) return null;
-      const detail = await lookup.getLatestVersionDetail(extensionName);
+      if (!match) return null;
+      const detail = await lookup.getLatestVersionDetail(match.name);
       return detail?.contentMetadata ?? null;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -308,14 +324,19 @@ export class ExtensionAutoResolver {
     output.searching(normalizedType);
 
     try {
-      const extensionName = await findExtensionForType(
-        normalizedType,
-        collective,
-        this.config.extensionLookup,
+      const match = await withSpan(
+        "swamp.extension.registry_lookup",
+        { "swamp.extension.type": normalizedType },
+        () =>
+          findExtensionForType(
+            normalizedType,
+            collective,
+            this.config.extensionLookup,
+          ),
       );
 
-      if (extensionName) {
-        return await this.installAndLoad(extensionName, normalizedType);
+      if (match) {
+        return await this.installAndLoad(match, normalizedType);
       }
 
       output.notFound(normalizedType);
@@ -333,12 +354,14 @@ export class ExtensionAutoResolver {
   }
 
   private async installAndLoad(
-    extensionName: string,
+    match: ExtensionMatch,
     normalizedType: string,
   ): Promise<boolean> {
     const { extensionLookup, extensionInstaller, output } = this.config;
+    const extensionName = match.name;
 
-    const extInfo = await extensionLookup.getExtension(extensionName);
+    const extInfo = match.info ??
+      await extensionLookup.getExtension(extensionName);
     if (!extInfo) return false;
 
     const version = extInfo.latestVersion;
@@ -449,7 +472,7 @@ export class ExtensionAutoResolver {
 
     let installResult: ExtensionInstallResultInfo | null;
     try {
-      installResult = await extensionInstaller.install(extensionName);
+      installResult = await extensionInstaller.install(extensionName, extInfo);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn`Failed to install extension ${extensionName}: ${message}`;
@@ -497,11 +520,13 @@ export class ExtensionAutoResolver {
 
   private async hotLoadAll(): Promise<number> {
     const { extensionInstaller } = this.config;
-    const newModelsCount = await extensionInstaller.hotLoadModels();
-    await extensionInstaller.hotLoadVaults();
-    await extensionInstaller.hotLoadDatastores();
-    await extensionInstaller.hotLoadWebhooks();
-    return newModelsCount;
+    return await withSpan("swamp.extension.hot_load", {}, async () => {
+      const newModelsCount = await extensionInstaller.hotLoadModels();
+      await extensionInstaller.hotLoadVaults();
+      await extensionInstaller.hotLoadDatastores();
+      await extensionInstaller.hotLoadWebhooks();
+      return newModelsCount;
+    });
   }
 
   private isNetworkError(error: unknown): boolean {
@@ -610,12 +635,12 @@ export async function findExtensionForType(
   normalizedType: string,
   collective: string,
   extensionLookup: ExtensionLookupPort,
-): Promise<string | null> {
+): Promise<ExtensionMatch | null> {
   for (const candidate of extensionCandidateNames(normalizedType)) {
     logger.debug`Trying direct lookup: ${candidate}`;
     const extInfo = await extensionLookup.getExtension(candidate);
     if (extInfo) {
-      return candidate;
+      return { name: candidate, info: extInfo };
     }
   }
 
@@ -638,14 +663,14 @@ export async function findExtensionForType(
   const hits = result.extensions.slice(0, SEARCH_CANDIDATE_LIMIT);
 
   if (!extensionLookup.getLatestVersionDetail) {
-    return hits[0]?.name ?? null;
+    return hits[0] ? { name: hits[0].name, info: null } : null;
   }
 
   for (const hit of hits) {
     const detail = await extensionLookup.getLatestVersionDetail(hit.name);
     const metadata = detail?.contentMetadata;
     if (metadata && contentMetadataProvidesType(metadata, normalizedType)) {
-      return hit.name;
+      return { name: hit.name, info: null };
     }
     logger.debug`Search hit ${hit.name} does not provide ${normalizedType}`;
   }

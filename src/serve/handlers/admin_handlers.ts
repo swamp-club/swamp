@@ -276,6 +276,7 @@ import {
 import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner.ts";
 import type { DatastoreClaimPayload } from "../protocol.ts";
 import { UserError } from "../../domain/errors.ts";
+import { createDefaultExtensionArchiveCache } from "../../infrastructure/persistence/extension_archive_cache.ts";
 
 const MAX_LISTED_ACCEPTED_QUARANTINE = 50;
 
@@ -1216,7 +1217,7 @@ export async function handleExtensionPull(
       lockfilePath,
       skillsDirs,
       repoDir,
-      { identity },
+      { identity, archiveCache: createDefaultExtensionArchiveCache() },
     );
     const repository = new ExtensionRepository({
       catalog,
@@ -1235,6 +1236,7 @@ export async function handleExtensionPull(
       getLatestVersion: deps.getLatestVersion,
       downloadArchive: deps.downloadArchive,
       getChecksum: deps.getChecksum,
+      archiveCache: deps.archiveCache,
       lockfileRepository: deps.lockfileRepository,
       skillsDirs,
       repoDir,
@@ -1489,6 +1491,7 @@ export async function handleExtensionUpdate(
           force: true,
           channel,
           identity,
+          archiveCache: createDefaultExtensionArchiveCache(),
         });
         const repository = new ExtensionRepository({
           catalog: catalog!,

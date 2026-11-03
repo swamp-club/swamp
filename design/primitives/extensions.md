@@ -408,6 +408,47 @@ holds the lock (`installBusy`, JSON reason `install_busy` with `holder`,
 `hostname`, `pid` and `waitedMs`) instead of reporting the type as not
 registered.
 
+An auto-resolve looks the extension up in the registry once: the record the
+type lookup found is handed to the install (`ExtensionInstallerPort.install`),
+and only dependencies are looked up again.
+
+### Archive cache
+
+Every install keeps the archives it verified in a host-wide cache, so a host
+that installs the same version into many repositories downloads it once
+(`src/infrastructure/persistence/extension_archive_cache.ts`). It lives under
+the swamp data dir at `cache/extension-archives/sha256/<checksum>.tar.gz`, so
+`SWAMP_HOME` moves it.
+
+- **Content addressed.** `prepareInstall` fetches the registry checksum first
+  and uses it as the key. A hit skips the download URL and the download; the
+  checksum request is kept, so a hit is always the bytes the registry names
+  now and no name-to-version index is trusted.
+- **Verified on every read.** A cached entry is re-hashed before use; a
+  mismatch removes it and the archive is downloaded again. A symlink, a
+  non-regular file or an entry over the archive size limit is a miss.
+- **Only verified, accepted archives are stored.** An archive the registry
+  gives no checksum for is never read from or written to the cache, and one is
+  stored only after extraction, the bundle safety scan and the audit-record
+  check pass. Every other check (lockfile drift, source completeness) runs on
+  cached bytes exactly as on downloaded ones.
+- **Never fails an install.** A cache read or write error is logged at debug
+  and the install continues as a download.
+- **Pruned on write.** Each store removes entries no install has used for 30
+  days (a hit refreshes the entry's mtime) and orphaned temp files.
+
+The CLI and `swamp serve` choose the cache where they build an install
+(auto-resolve, pull, install, update, search, doctor, the serve admin
+handlers). The libswamp factories `createExtensionPullDeps` and
+`createInstallContext` use none unless one is passed, so tests never write to
+the host's data dir.
+
+Installs are traced in parts: `swamp.extension.archive` (checksum and
+cache-or-download, with `extension.archive.source` set to `cache` or
+`registry`), `swamp.extension.extract`, `swamp.extension.apply` and
+`swamp.extension.index`, plus `swamp.extension.registry_lookup` and
+`swamp.extension.hot_load` under an auto-resolve.
+
 ### Registry retries
 
 Registry reads retry transient failures

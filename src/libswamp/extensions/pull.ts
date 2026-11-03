@@ -118,7 +118,15 @@ import {
   isManagedLockfile,
 } from "./managed_lockfile_transaction.ts";
 import type { SwampError } from "../errors.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+  withSpan,
+} from "../../infrastructure/tracing/mod.ts";
+import {
+  archiveCacheKey,
+  type ExtensionArchiveCache,
+} from "../../domain/extensions/extension_archive_cache.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
@@ -228,6 +236,8 @@ export interface InstallContext {
    * serves, and dependencies never inherit it.
    */
   expectedChecksum?: string;
+  /** host-wide store of verified archives; absent means every install downloads */
+  archiveCache?: ExtensionArchiveCache;
   channel?: string;
   getVersionChannels?: (
     name: string,
@@ -328,6 +338,7 @@ export interface ExtensionPullDeps {
   getVersionChannels?: InstallContext["getVersionChannels"];
   onReplacing?: InstallContext["onReplacing"];
   onUnoptedPrerelease?: InstallContext["onUnoptedPrerelease"];
+  archiveCache?: ExtensionArchiveCache;
   /**
    * when both are set, pull routes through InstallExtensionService (catalog
    * save, rollback on DuplicateTypeError); otherwise the catalog is populated
@@ -846,7 +857,15 @@ async function installLocked<T>(
       () =>
         pulledExtensionsLock.withLock(ctx.repoDir, async () => {
           await ctx.lockfileRepository.refresh();
-          return await withPending(await applyInstall(prepared, ctx));
+          const pending = await withSpan(
+            "swamp.extension.apply",
+            {
+              "extension.name": ref.name,
+              "extension.version": prepared.version,
+            },
+            () => applyInstall(prepared, ctx),
+          );
+          return await withPending(pending);
         }),
     );
   } finally {
@@ -1064,25 +1083,12 @@ export async function prepareInstall(
   );
   const publishedChannel = knownChannels.get(version) ?? null;
 
-  const archiveBytes = await ctx.downloadArchive(
-    ref.name,
-    version,
-    ctx.channel,
+  const archive = await withSpan(
+    "swamp.extension.archive",
+    { "extension.name": ref.name, "extension.version": version },
+    () => fetchArchive(ref, version, ctx),
   );
-  // Checked here as well as in the HTTP client so every download source is
-  // bounded before its bytes reach the temp dir.
-  if (archiveBytes.byteLength > MAX_EXTENSION_ARCHIVE_BYTES) {
-    throw new UserError(
-      `Extension archive ${ref.name}@${version} is ${
-        formatArchiveBytes(archiveBytes.byteLength)
-      }, over the ${
-        formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
-      } archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
-    );
-  }
-
-  const serverChecksum = await ctx.getChecksum(ref.name, version, ctx.channel);
-  const localChecksum = await computeChecksum(archiveBytes);
+  const { bytes: archiveBytes, localChecksum, serverChecksum } = archive;
   let integrityStatus: "verified" | "unverified";
   if (serverChecksum !== null) {
     verifyChecksum(serverChecksum, localChecksum);
@@ -1115,9 +1121,121 @@ export async function prepareInstall(
       .debug`No stored checksum for ${ref.name}@${version}; skipping lockfile-anchored verification`;
   }
 
+  const prepared = await withSpan(
+    "swamp.extension.extract",
+    { "extension.name": ref.name, "extension.version": version },
+    () =>
+      extractArchive({
+        ref,
+        version,
+        extInfo,
+        archiveBytes,
+        localChecksum,
+        integrityStatus,
+        publishedChannel,
+        knownChannels,
+        logger,
+        tempRoot: opts.tempRoot,
+      }),
+  );
+  // stored only once the archive has passed extraction and the safety checks
+  if (archive.storeKey !== null && ctx.archiveCache) {
+    await ctx.archiveCache.put(archive.storeKey, archiveBytes);
+  }
+  return prepared;
+}
+
+interface FetchedArchive {
+  bytes: Uint8Array;
+  localChecksum: string;
+  serverChecksum: string | null;
+  /** set only for registry bytes that a cache may store under this key */
+  storeKey: string | null;
+}
+
+/**
+ * the registry checksum is fetched first and addresses the cache, so a hit is
+ * the exact bytes the registry names now; a null checksum bypasses the cache
+ */
+async function fetchArchive(
+  ref: ExtensionRef,
+  version: string,
+  ctx: InstallContext,
+): Promise<FetchedArchive> {
+  const serverChecksum = await ctx.getChecksum(ref.name, version, ctx.channel);
+  const cacheKey = ctx.archiveCache ? archiveCacheKey(serverChecksum) : null;
+  if (cacheKey !== null && ctx.archiveCache) {
+    const cached = await ctx.archiveCache.get(cacheKey);
+    if (cached !== null) {
+      assertArchiveSize(ref, version, cached);
+      const localChecksum = await computeChecksum(cached);
+      if (localChecksum === cacheKey) {
+        setActiveSpanAttributes({
+          "extension.archive.source": "cache",
+          "extension.archive.bytes": cached.byteLength,
+        });
+        return { bytes: cached, localChecksum, serverChecksum, storeKey: null };
+      }
+    }
+  }
+  const bytes = await ctx.downloadArchive(ref.name, version, ctx.channel);
+  assertArchiveSize(ref, version, bytes);
+  setActiveSpanAttributes({
+    "extension.archive.source": "registry",
+    "extension.archive.bytes": bytes.byteLength,
+  });
+  return {
+    bytes,
+    localChecksum: await computeChecksum(bytes),
+    serverChecksum,
+    storeKey: cacheKey,
+  };
+}
+
+// Checked here as well as in the HTTP client so every archive source is bounded
+// before its bytes reach the temp dir.
+function assertArchiveSize(
+  ref: ExtensionRef,
+  version: string,
+  bytes: Uint8Array,
+): void {
+  if (bytes.byteLength > MAX_EXTENSION_ARCHIVE_BYTES) {
+    throw new UserError(
+      `Extension archive ${ref.name}@${version} is ${
+        formatArchiveBytes(bytes.byteLength)
+      }, over the ${
+        formatArchiveBytes(MAX_EXTENSION_ARCHIVE_BYTES)
+      } archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
+    );
+  }
+}
+
+async function extractArchive(args: {
+  ref: ExtensionRef;
+  version: string;
+  extInfo: ExtensionRegistryInfo;
+  archiveBytes: Uint8Array;
+  localChecksum: string;
+  integrityStatus: "verified" | "unverified";
+  publishedChannel: string | null;
+  knownChannels: Map<string, string>;
+  logger: Logger | undefined;
+  tempRoot: string | undefined;
+}): Promise<PreparedInstall> {
+  const {
+    ref,
+    version,
+    extInfo,
+    archiveBytes,
+    localChecksum,
+    integrityStatus,
+    publishedChannel,
+    knownChannels,
+    logger,
+  } = args;
   const tmpDir = await Deno.makeTempDir({
     prefix: "swamp_pull_",
-    dir: opts.tempRoot,
+    dir: args.tempRoot,
   });
   const readOptions = {
     maxDecompressedBytes: MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
@@ -2566,6 +2684,7 @@ export async function* extensionPull(
         getVersionChannels: deps.getVersionChannels,
         onReplacing: deps.onReplacing,
         onUnoptedPrerelease: deps.onUnoptedPrerelease,
+        archiveCache: deps.archiveCache,
       };
 
       // ConflictError propagates for the CLI's two-phase prompt. Routing: the
@@ -2650,6 +2769,7 @@ export async function createExtensionPullDeps(
     denoRuntime?: DenoRuntime;
     repository?: ExtensionRepository;
     identity?: ClientIdentity;
+    archiveCache?: ExtensionArchiveCache;
   },
 ): Promise<ExtensionPullDeps> {
   const client = new ExtensionApiClient(serverUrl, args?.identity);
@@ -2676,6 +2796,7 @@ export async function createExtensionPullDeps(
     depth: 0,
     denoRuntime: args?.denoRuntime,
     repository: args?.repository,
+    archiveCache: args?.archiveCache,
   };
 }
 
@@ -2690,6 +2811,7 @@ export async function createInstallContext(
     logger?: Logger;
     identity?: ClientIdentity;
     channel?: string;
+    archiveCache?: ExtensionArchiveCache;
   },
 ): Promise<InstallContext> {
   const client = new ExtensionApiClient(serverUrl, opts.identity);
@@ -2709,5 +2831,6 @@ export async function createInstallContext(
     alreadyPulled: new Set(),
     depth: 0,
     channel: opts.channel,
+    archiveCache: opts.archiveCache,
   };
 }

@@ -68,6 +68,7 @@ import {
 } from "../remote_run.ts";
 import { renderServerExtensionChange } from "../../presentation/output/server_extension_change_output.ts";
 import type { ExtensionUpdateResponse } from "../../serve/protocol.ts";
+import { createDefaultExtensionArchiveCache } from "../../infrastructure/persistence/extension_archive_cache.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -216,6 +217,7 @@ export const extensionUpdateCommand = withRemoteOptions(
           force: true,
           identity,
           channel,
+          archiveCache: createDefaultExtensionArchiveCache(),
         });
         // a fresh ExtensionRepository per upgrade so its lockfile snapshot
         // lines up with the InstallContext's; the catalog is shared across the

@@ -46,7 +46,9 @@ export async function datastoreExtensionCandidates(
         collective,
         extensionLookup,
       );
-      if (found && !candidates.includes(found)) candidates.push(found);
+      if (found && !candidates.includes(found.name)) {
+        candidates.push(found.name);
+      }
     } catch {
       // Offline or registry error: the static candidates still apply.
     }

@@ -22,6 +22,7 @@ import {
   type AutoResolveOutputPort,
   ExtensionAutoResolver,
   type ExtensionInstallerPort,
+  type ExtensionLookupInfo,
   type ExtensionLookupPort,
   type InstallationInspection,
   resolveDatastoreType,
@@ -37,6 +38,10 @@ import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { z } from "zod";
 import type { ExtensionContentMetadata } from "./extension_content.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
   const calls: string[] = [];
@@ -1718,10 +1723,10 @@ function createGatedInstaller(): ReturnType<typeof createMockInstaller> & {
   const gate = Promise.withResolvers<void>();
   const started = Promise.withResolvers<void>();
   const install = installer.install;
-  installer.install = async (name: string) => {
+  installer.install = async (name: string, info: ExtensionLookupInfo) => {
     started.resolve();
     await gate.promise;
-    return await install(name);
+    return await install(name, info);
   };
   return Object.assign(installer, {
     release: () => gate.resolve(),
@@ -1779,8 +1784,8 @@ Deno.test("ExtensionAutoResolver - a failed resolution fails its waiting callers
   const installer = createGatedInstaller();
   let installSucceeds = false;
   const install = installer.install;
-  installer.install = async (name: string) => {
-    const result = await install(name);
+  installer.install = async (name: string, info: ExtensionLookupInfo) => {
+    const result = await install(name, info);
     return installSucceeds ? result : null;
   };
   const resolver = new ExtensionAutoResolver({
@@ -1812,9 +1817,9 @@ Deno.test("ExtensionAutoResolver - a recursive call for the type being resolved 
     output: createMockOutput(),
   });
   const install = installer.install;
-  installer.install = async (name: string) => {
+  installer.install = async (name: string, info: ExtensionLookupInfo) => {
     nested = await resolver.resolve("@swamp/aws/ec2/instance");
-    return await install(name);
+    return await install(name, info);
   };
 
   assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
@@ -1860,14 +1865,14 @@ Deno.test("ExtensionAutoResolver - a call from inside a resolution does not wait
   let nested: Promise<boolean> | undefined;
   const aStarted = Promise.withResolvers<void>();
   const install = installer.install;
-  installer.install = async (name: string) => {
+  installer.install = async (name: string, info: ExtensionLookupInfo) => {
     if (name === "@swamp/gcp") {
       lockTaken.resolve();
       await aStarted.promise;
       nested = resolver.resolve("@swamp/aws/ec2/instance");
       await drainMicrotasks();
     }
-    return await install(name);
+    return await install(name, info);
   };
 
   const b = resolver.resolve("@swamp/gcp/compute/instance");
@@ -1966,4 +1971,101 @@ Deno.test("ExtensionAutoResolver - never reports fewer behaviors than its own ho
 
   assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
   assertEquals(output.calls.at(-1), "installed:@swamp/aws@2026.03.16.1:3");
+});
+
+function countingLookup(
+  records: Record<string, ExtensionLookupInfo>,
+  searchHits: string[] = [],
+): ExtensionLookupPort & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    getExtension(name: string) {
+      calls.push(name);
+      return Promise.resolve(records[name] ?? null);
+    },
+    searchExtensions() {
+      return Promise.resolve({
+        extensions: searchHits.map((name) => ({ name })),
+      });
+    },
+  };
+}
+
+function recordingInstaller(): ExtensionInstallerPort & {
+  installCalls: string[];
+  received: ExtensionLookupInfo[];
+} {
+  const installer = createMockInstaller();
+  const received: ExtensionLookupInfo[] = [];
+  const install = installer.install;
+  installer.install = (name: string, info: ExtensionLookupInfo) => {
+    received.push(info);
+    return install(name, info);
+  };
+  return Object.assign(installer, { received });
+}
+
+Deno.test("ExtensionAutoResolver - a direct hit looks the extension up once and hands the record to the install", async () => {
+  const record: ExtensionLookupInfo = {
+    name: "@swamp/aws",
+    description: "AWS models",
+    latestVersion: "2026.03.16.1",
+    latestRc: "2026.04.01.1",
+  };
+  const lookup = countingLookup({ "@swamp/aws": record });
+  const installer = recordingInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: lookup,
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(lookup.calls.filter((n) => n === "@swamp/aws"), ["@swamp/aws"]);
+  assertEquals(installer.received, [record]);
+});
+
+Deno.test("ExtensionAutoResolver - a search hit is looked up once before the install", async () => {
+  const record: ExtensionLookupInfo = {
+    name: "@swamp/aws-toolkit",
+    description: "AWS toolkit",
+    latestVersion: "2026.03.16.1",
+  };
+  const lookup = countingLookup({ "@swamp/aws-toolkit": record }, [
+    "@swamp/aws-toolkit",
+  ]);
+  const installer = recordingInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: lookup,
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(
+    lookup.calls.filter((n) => n === "@swamp/aws-toolkit"),
+    ["@swamp/aws-toolkit"],
+  );
+  assertEquals(installer.received, [record]);
+});
+
+Deno.test("ExtensionAutoResolver - registry lookup and hot-load run in their own spans", async () => {
+  await withCapturedSpans(async (spans) => {
+    const resolver = new ExtensionAutoResolver({
+      allowedCollectives: ["swamp"],
+      extensionLookup: createMockLookup(AWS_LOOKUP),
+      extensionInstaller: createMockInstaller(),
+      output: createMockOutput(),
+    });
+    assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+    const lookupSpan = findSpan(spans, "swamp.extension.registry_lookup");
+    assertEquals(
+      lookupSpan.attributes["swamp.extension.type"],
+      "@swamp/aws/ec2/instance",
+    );
+    findSpan(spans, "swamp.extension.hot_load");
+  });
 });

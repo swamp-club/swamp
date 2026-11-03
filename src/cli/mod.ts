@@ -140,6 +140,7 @@ import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { createDenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
+import { createDefaultExtensionArchiveCache } from "../infrastructure/persistence/extension_archive_cache.ts";
 import { processOwnsConfigDir } from "../infrastructure/persistence/config_dir_ownership.ts";
 import { renderAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 import { ReconcileFromDiskService } from "../libswamp/extensions/reconcile_from_disk_service.ts";
@@ -1036,6 +1037,7 @@ export function configureExtensionAutoResolver(
           ),
         getChecksum: (name, version, channel, signal) =>
           extensionClient.getChecksum(name, version, apiKey, channel, signal),
+        archiveCache: createDefaultExtensionArchiveCache(),
         lockfilePath: effectiveLockfilePath,
         repoDir,
         denoRuntime,
