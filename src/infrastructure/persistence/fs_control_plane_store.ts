@@ -23,35 +23,37 @@ import { atomicWriteFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { assertContainedPath } from "./safe_path.ts";
 
+const PARENT_ATTEMPTS = 5;
+
+export type MakeDirectory = (
+  path: string,
+  options: Deno.MkdirOptions,
+) => Promise<void>;
+
 export class FileSystemControlPlaneStore implements ControlPlaneStore {
   readonly #rootDir: string;
+  readonly #mkdir: MakeDirectory;
 
-  constructor(datastorePath: string) {
+  constructor(datastorePath: string, mkdir: MakeDirectory = Deno.mkdir) {
     this.#rootDir = join(datastorePath, "_control");
+    this.#mkdir = mkdir;
   }
 
   async put(key: string, data: Uint8Array): Promise<void> {
     const path = this.#keyToPath(key);
-    await Deno.mkdir(dirname(path), { recursive: true });
-    await atomicWriteFile(path, data);
+    await this.#writeInParent(path, () => atomicWriteFile(path, data));
   }
 
   async putIfAbsent(key: string, data: Uint8Array): Promise<boolean> {
     const path = this.#keyToPath(key);
-    await Deno.mkdir(dirname(path), { recursive: true });
     // Written in full beside the key, then linked into place: a hard link
     // fails when the key exists, and a reader never sees a record half
     // written. `list` skips the `.tmp` name.
     const staged = `${path}.${crypto.randomUUID()}.tmp`;
-    try {
-      await Deno.writeFile(staged, data, { createNew: true });
-    } catch (error) {
-      // A concurrent delete removed the emptied parent directory between
-      // the mkdir above and this write. Made again, once.
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-      await Deno.mkdir(dirname(path), { recursive: true });
-      await Deno.writeFile(staged, data, { createNew: true });
-    }
+    await this.#writeInParent(
+      path,
+      () => Deno.writeFile(staged, data, { createNew: true }),
+    );
     try {
       await Deno.link(staged, path);
       return true;
@@ -63,6 +65,28 @@ export class FileSystemControlPlaneStore implements ControlPlaneStore {
       try {
         await Deno.remove(staged);
       } catch { /* best-effort cleanup */ }
+    }
+  }
+
+  // A concurrent delete removes a parent it emptied, at any level, between
+  // the mkdir and the write; once the write lands the parent is non-empty.
+  async #writeInParent(
+    path: string,
+    write: () => Promise<void>,
+  ): Promise<void> {
+    for (let attempt = 1;; attempt++) {
+      try {
+        await this.#mkdir(dirname(path), { recursive: true });
+        await write();
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof Deno.errors.NotFound) ||
+          attempt === PARENT_ATTEMPTS
+        ) {
+          throw error;
+        }
+      }
     }
   }
 
