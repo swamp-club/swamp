@@ -19,11 +19,11 @@
 
 export const DEFAULT_SWAMP_CLUB_URL = "https://swamp-club.com";
 
-/** retained so stored credentials carrying the old domain are migrated on load */
 // SWAMP_-prefixed so createSafeMethodEnv strips it from method subprocesses;
 // buildEnvContext hides it from expressions
 export const OAUTH_CLIENT_SECRET_ENV = "SWAMP_OAUTH_CLIENT_SECRET";
 
+/** retained so stored credentials carrying the old domain are migrated on load */
 export const LEGACY_SWAMP_CLUB_URL = "https://swamp.club";
 
 /**

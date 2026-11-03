@@ -52,4 +52,15 @@ Deno.test("renderAuthOAuthClientRegister: log mode shows the id and secret once 
   assertStringIncludes(output, "client-secret");
   assertStringIncludes(output, "--oauth-client-secret-file");
   assertStringIncludes(output, "shown once");
+  assertEquals(output.includes("--oauth-provider"), false);
+});
+
+Deno.test("renderAuthOAuthClientRegister: log mode says to pass a non-default provider to serve", () => {
+  const output = captureLogs(() =>
+    renderAuthOAuthClientRegister(
+      { ...data, provider: "https://club.corp.example" },
+      "log",
+    )
+  );
+  assertStringIncludes(output, "--oauth-provider https://club.corp.example");
 });

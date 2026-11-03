@@ -753,6 +753,24 @@ Deno.test("mergeServeOptions: an empty SWAMP_OAUTH_CLIENT_ID does not erase the 
   );
 });
 
+Deno.test("mergeServeOptions: SWAMP_OAUTH_CLIENT_ID is trimmed, and whitespace alone keeps the configured id", () => {
+  const withEnv = (value: string) => (name: string) =>
+    name === "SWAMP_OAUTH_CLIENT_ID" ? value : undefined;
+  const config: ServeConfigFile = {
+    auth: { "oauth-client-id": "from-config" },
+  };
+  assertEquals(
+    mergeServeOptions(null, {}, new Set<string>(), withEnv("from-env\n"))
+      .oauthClientId,
+    "from-env",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), withEnv(" \n"))
+      .oauthClientId,
+    "from-config",
+  );
+});
+
 Deno.test("mergeServeOptions: keep-oauth-client-in-vault is off by default and read from flag, env and config", () => {
   const none = () => undefined;
   assertEquals(

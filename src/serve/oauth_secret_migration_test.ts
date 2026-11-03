@@ -167,10 +167,7 @@ Deno.test("migrateOAuthSecrets: moves every legacy key out of the user vault and
   );
   assertEquals(tokenSecrets(fake).get(OAUTH_RESOLVED_ADMINS_KEY), "{}");
   assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
-  assertEquals(
-    [...userSecrets(fake).keys()].sort(),
-    ["unrelated"],
-  );
+  assertEquals([...userSecrets(fake).keys()], ["unrelated"]);
 });
 
 Deno.test("migrateOAuthSecrets: a user vault that cannot be listed leaves no marker, and the next boot migrates", async () => {
