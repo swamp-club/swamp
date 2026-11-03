@@ -2528,12 +2528,16 @@ these.
    committed record already shows that step settled, and a run's starts go
    with the run (delete, gc, retention). A start whose append fails is
    retried within the same bound as other v3 commits, on network, unreachable
-   and seq-gap failures. If it still cannot land, or the datastore refuses
-   it, the step goes back to `pending`, which is true, no further step starts
-   (queued steps and cleanup steps included), steps already running finish,
-   and the run fails with the commit-unreachable code (exit 75). The error
-   says `workflow resume` when the failed record committed, and `workflow
-   recover`, then resume, when it did not. On the bench, 1,000 instant steps
+   and seq-gap failures; a refusal is never retried. If it still cannot land,
+   or the datastore refuses it, the step goes back to `pending`, which is
+   true, no further step starts (queued steps and cleanup steps included),
+   and steps already running finish. A start that could not reach serve or
+   storage fails the run with the commit-unreachable code (exit 75), and the
+   error says `workflow resume` when the failed record committed, and
+   `workflow recover`, then resume, when it did not. A start or record the
+   datastore refused fails the run with the refusal's own code (serve's
+   `forbidden`, say) and message, and no outage advice, since retrying meets
+   the same refusal. On the bench, 1,000 instant steps
    store 4.29 MiB of chunks with starts, as paced, against 2,149 MiB when each
    start committed the whole record; each start adds about 1.5 KiB to the
    commit log. A real sequential 1,000-step `forEach` took 324 to 325 ms per

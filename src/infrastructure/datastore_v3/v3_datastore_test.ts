@@ -103,6 +103,7 @@ import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { YamlOutputRepository } from "../persistence/yaml_output_repository.ts";
+import { ServeCommitRefusedError } from "./serve_upstream_errors.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-datastore-" });
@@ -1888,6 +1889,26 @@ Deno.test("openV3Datastore: a step start the network keeps failing gives up with
 Deno.test("openV3Datastore: a step start the datastore refuses is not retried (swamp-club#4319)", async () => {
   const attempts = await appendWithSinkFaults(
     () => new CommitRejectedError("expect-failed", "refused"),
+    async (engine) => {
+      const error = await assertRejects(
+        () => engine.appendToOpenUnit!([stepStartChange()]),
+        AppendUnrecordedError,
+      );
+      assertEquals(error.refused, true);
+    },
+  );
+  assertEquals(attempts, 1);
+});
+
+Deno.test("openV3Datastore: a step start serve refuses is unrecorded as refused and not retried (swamp-club#4368)", async () => {
+  const attempts = await appendWithSinkFaults(
+    () =>
+      new ServeCommitRefusedError(
+        "forbidden",
+        "content-refused",
+        0,
+        "it records an approval decision serve does not hold",
+      ),
     async (engine) => {
       const error = await assertRejects(
         () => engine.appendToOpenUnit!([stepStartChange()]),

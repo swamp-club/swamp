@@ -120,13 +120,19 @@ export class StepStartUnrecordedError extends UserError {
     readonly endLanded?: boolean,
     readonly endFailure?: unknown,
   ) {
+    const refusal = refusalOf(cause);
     const what = start.stepName === undefined
       ? `the start of workflow run ${start.runId}`
       : start.nestedRunId !== undefined
       ? `a step start in nested run ${start.nestedRunId}, under step ` +
         `${start.stepName} of workflow run ${start.runId}`
       : `the start of step ${start.stepName} of workflow run ${start.runId}`;
-    const next = start.stepName === undefined
+    const next = refusal !== undefined
+      ? `${
+        start.stepName === undefined ? "No step of it ran. " : ""
+      }Running it again meets the same refusal while the refused change ` +
+        `stands.`
+      : start.stepName === undefined
       ? `No step of it ran. Once the datastore is reachable, if swamp ` +
         `workflow history shows the run as running, run swamp workflow ` +
         `recover ${start.workflowName} --run ${start.runId}, then resume ` +
@@ -141,8 +147,11 @@ export class StepStartUnrecordedError extends UserError {
     const end = endFailure === undefined
       ? ""
       : ` Committing the run's end also failed: ${messageOf(endFailure)}.`;
+    const failed = refusal !== undefined
+      ? `The datastore refused ${what} (${messageOf(refusal.error)})`
+      : `Swamp could not commit ${what} (${messageOf(cause)})`;
     super(
-      `Swamp could not commit ${what} (${messageOf(cause)}), so the run ` +
+      `${failed}, so the run ` +
         `stopped before ${
           start.stepName === undefined
             ? "its first step"
@@ -151,7 +160,7 @@ export class StepStartUnrecordedError extends UserError {
             : "that step"
         } ran; steps already running finished and no new step started.` +
         `${end} ${next}`,
-      STEP_START_UNRECORDED_CODE,
+      refusal?.code ?? STEP_START_UNRECORDED_CODE,
     );
     this.name = "StepStartUnrecordedError";
     this.cause = cause;
@@ -165,6 +174,23 @@ export class StepStartUnrecordedError extends UserError {
       failure,
     );
   }
+}
+
+/** read structurally, so this domain error never imports the serve adapter */
+function refusalOf(
+  cause: unknown,
+): { readonly error: unknown; readonly code: string } | undefined {
+  const outer = cause as { refused?: unknown; cause?: unknown } | undefined;
+  if (outer?.refused !== true) return undefined;
+  const inner = outer.cause as
+    | { code?: unknown; reason?: unknown }
+    | undefined;
+  const code = typeof inner?.code === "string" && inner.code !== ""
+    ? inner.code
+    : typeof inner?.reason === "string"
+    ? `commit_${inner.reason}`
+    : "commit_refused";
+  return { error: outer.cause, code };
 }
 
 function messageOf(error: unknown): string {

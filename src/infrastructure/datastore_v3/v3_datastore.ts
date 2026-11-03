@@ -97,6 +97,7 @@ import {
   ServeChunkStorage,
 } from "./serve_datastore_storage.ts";
 import {
+  ServeCommitRefusedError,
   ServeNeverReadError,
   ServeUnreachableError,
 } from "./serve_upstream_errors.ts";
@@ -1387,8 +1388,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             try {
               return await appendNowFrom(unit, changes) ?? "no-unit";
             } catch (error) {
-              const refused = error instanceof CommitRejectedError &&
-                error.reason !== "seq-gap";
+              const refused = error instanceof ServeCommitRefusedError ||
+                (error instanceof CommitRejectedError &&
+                  error.reason !== "seq-gap");
               if (
                 !refused && isTransientAppendFailure(error) &&
                 attempt < DIRECT_APPEND_ATTEMPTS

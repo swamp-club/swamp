@@ -19,7 +19,10 @@
 
 import type { RunCheckpointer } from "./run_checkpointer.ts";
 import { StepStartUnrecordedError } from "./step_start.ts";
-import { COMMIT_UNREACHABLE_CODE } from "../datastore_v3/commit_log_unit_of_work.ts";
+import {
+  AppendUnrecordedError,
+  COMMIT_UNREACHABLE_CODE,
+} from "../datastore_v3/commit_log_unit_of_work.ts";
 import type { StepStart } from "./step_start.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
 import type { RunWriteFence } from "./run_write_fence.ts";
@@ -24346,6 +24349,7 @@ Deno.test("WorkflowExecutionService: without a writeSync its repository syncs in
 function failingStartCheckpointer(
   stepName: string,
   endLanded: boolean,
+  cause: unknown = new Error("serve is unreachable"),
 ): RunCheckpointer & { readonly failed: () => boolean } {
   let failed = false;
   return {
@@ -24356,7 +24360,7 @@ function failingStartCheckpointer(
       if (job === undefined || failed) return Promise.resolve();
       failed = true;
       return Promise.reject(
-        new StepStartUnrecordedError(new Error("serve is unreachable"), {
+        new StepStartUnrecordedError(cause, {
           workflowId: run.workflowId,
           workflowName: run.workflowName,
           runId: run.id,
@@ -24770,4 +24774,97 @@ Deno.test("run(): plain steps that set concurrency stay under the job concurrenc
         assertEquals(executor.peak, 1);
       }),
   );
+});
+
+function refusedStart(): AppendUnrecordedError {
+  return new AppendUnrecordedError(
+    Object.assign(
+      new Error("it records an approval decision serve does not hold"),
+      {
+        code: "forbidden",
+      },
+    ),
+    true,
+  );
+}
+
+Deno.test("WorkflowExecutionService: a step start the datastore refuses stops the run as an unreachable one does, but the run fails with the refusal's code and no outage advice (swamp-club#4368)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "refused-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", {
+              dependsOn: [{
+                step: "a",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service, executor } = await setupRetry(tempDir, workflow);
+    service.runCheckpointer = failingStartCheckpointer(
+      "b",
+      true,
+      refusedStart(),
+    );
+
+    const { run, error } = await runUntilThrown(service.run(workflow.name));
+
+    assert(error instanceof StepStartUnrecordedError, String(error));
+    assertEquals(error.endLanded, true);
+    assertEquals(error.code, "forbidden");
+    assertStringIncludes(error.message, "does not hold");
+    assertEquals(error.message.includes("reachable"), false, error.message);
+    assertEquals(executor.count("main/b"), 0);
+    assertEquals(run?.status, "failed");
+    assertEquals(run?.getJob("main")?.getStep("b")?.status, "pending");
+  });
+});
+
+Deno.test("WorkflowExecutionService: a nested run's refused step start reaches the parent with the refusal's code (swamp-club#4368)", async () => {
+  await withTempDir(async (tempDir) => {
+    const child = Workflow.create({
+      name: "refused-child",
+      jobs: [Job.create({ name: "inner", steps: [modelStep("c1")] })],
+    });
+    const parent = Workflow.create({
+      name: "refused-parent",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "nested",
+              task: StepTask.workflow("refused-child"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service, executor, workflowRepo } = await setupRetry(
+      tempDir,
+      parent,
+    );
+    await workflowRepo.save(child);
+    service.runCheckpointer = failingStartCheckpointer(
+      "c1",
+      true,
+      refusedStart(),
+    );
+
+    const { run, error } = await runUntilThrown(service.run(parent.name));
+
+    assert(error instanceof StepStartUnrecordedError, String(error));
+    assertEquals(error.start.runId, run?.id);
+    assert(error.start.nestedRunId !== undefined);
+    assertEquals(error.code, "forbidden");
+    assertEquals(error.message.includes("reachable"), false, error.message);
+    assertEquals(executor.count("inner/c1"), 0);
+  });
 });
