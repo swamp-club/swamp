@@ -103,6 +103,7 @@ class MemoryStateRepo implements ScheduleStateRepository {
   readonly states = new Map<string, ScheduleState>();
   saves = 0;
   failSaves = false;
+  canWrite = true;
 
   get(workflowId: WorkflowId): Promise<ScheduleState | null> {
     return Promise.resolve(this.states.get(workflowId) ?? null);
@@ -112,11 +113,12 @@ class MemoryStateRepo implements ScheduleStateRepository {
     return Promise.resolve([...this.states.values()]);
   }
 
-  save(state: ScheduleState): Promise<void> {
+  save(state: ScheduleState): Promise<boolean> {
     if (this.failSaves) return Promise.reject(new Error("store down"));
+    if (!this.canWrite) return Promise.resolve(false);
     this.saves++;
     this.states.set(state.workflowId, state);
-    return Promise.resolve();
+    return Promise.resolve(true);
   }
 
   watermark(workflowId: string): string | undefined {
@@ -378,6 +380,7 @@ Deno.test("catchUpMissedFires: a slot claimed by another instance is left to it"
   seed(states, wf, previous);
   const executor = recordingExecutor();
   const claims: string[] = [];
+  const events: ScheduledExecutionEvent[] = [];
   const service = new ScheduledExecutionService({
     workflowRepo: createRepo([wf]),
     repoDir: "/tmp/nonexistent-test-repo",
@@ -390,10 +393,11 @@ Deno.test("catchUpMissedFires: a slot claimed by another instance is left to it"
     now: () => missed.getTime() + HOUR,
   });
 
-  await service.start();
+  await service.start((e) => events.push(e));
   await service.catchUpMissedFires();
   await service.stop();
 
+  assertEquals(missedEvents(events), []);
   assertEquals(claims, [missed.toISOString()]);
   assertEquals(executor.inputs.length, 0);
   assertEquals(states.watermark(wf.id), previous.toISOString());
@@ -588,4 +592,126 @@ Deno.test("ScheduledExecutionService: an overlap skip is recorded as a missed fi
     e.kind === "schedule_skipped" &&
     e.reason === "Previous run still in progress"
   ));
+});
+
+Deno.test("catchUpMissedFires: a promoted follower measures from the stored watermark, not the one it booted with", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("promoted-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "1d",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  states.canWrite = false;
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    now: () => missed.getTime() + 5 * HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  // the leader fires the slot after this node booted, then dies
+  seed(states, wf, missed);
+  states.canWrite = true;
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(executor.inputs.length, 0);
+  assertEquals(missedEvents(events), []);
+  assertEquals(states.states.get(wf.id)?.lastMissed, undefined);
+});
+
+Deno.test("catchUpMissedFires: a scheduled run newer than the watermark settles the slot", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("history-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "1d",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    lastScheduledRunStart: () =>
+      Promise.resolve(new Date(missed.getTime() + 2_000)),
+    now: () => missed.getTime() + 5 * HOUR,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(executor.inputs.length, 0);
+  assertEquals(missedEvents(events), []);
+});
+
+Deno.test("catchUpMissedFires: a run-history lookup that fails falls back to the watermark", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("history-down-wf", MONTHLY, {
+    policy: "latest",
+    maxDelay: "6h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, previous);
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    lastScheduledRunStart: () => Promise.reject(new Error("runs unreadable")),
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  await service.catchUpMissedFires();
+  await waitFor(() => executor.inputs.length === 1, "catch-up run");
+  await service.stop();
+});
+
+Deno.test("catchUpMissedFires: a slot fired here before the pass is not missed, only the gap before it, and nothing is caught up", async () => {
+  const wf = createWorkflow("gap-wf", "* * * * * *", {
+    policy: "latest",
+    maxDelay: "1h",
+  });
+  const states = new MemoryStateRepo();
+  const seeded = new Date(Math.floor(Date.now() / 1000) * 1000 - 10_000);
+  seed(states, wf, seeded);
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+  });
+
+  await service.start((e) => events.push(e));
+  await waitFor(
+    () => events.some((e) => e.kind === "schedule_fired"),
+    "a fire before the pass",
+  );
+  const firstFired = events.find((e) => e.kind === "schedule_fired");
+  assert(firstFired?.kind === "schedule_fired");
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(
+    executor.inputs.filter((i) => i.runtimeTags?.[CATCH_UP_TAG]).length,
+    0,
+  );
+  const missed = missedEvents(events);
+  assertEquals(missed.length, 1);
+  assert(missed[0].kind === "schedule_missed");
+  assert(Date.parse(missed[0].fireTime) < Date.parse(firstFired.fireTime));
+  assert(Date.parse(missed[0].oldestFireTime) > seeded.getTime());
+  assertEquals(missed[0].caughtUp, false);
 });

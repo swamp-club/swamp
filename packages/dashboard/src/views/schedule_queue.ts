@@ -45,6 +45,7 @@ export function scheduleQueueLabel(
 export interface ScheduleMissedFields {
   lastMissed?: {
     count: number;
+    saturated?: boolean;
     reason: string;
     caughtUp: boolean;
   } | null;
@@ -53,7 +54,7 @@ export interface ScheduleMissedFields {
 const MISSED_REASONS: Record<string, string> = {
   serve_down: "serve was down",
   paused: "paused",
-  overlap: "previous run still going",
+  overlap: "previous run still in progress",
 };
 
 /**
@@ -67,7 +68,8 @@ export function scheduleMissedLabel(
   if (!missed) return null;
   const reason = MISSED_REASONS[missed.reason] ?? missed.reason;
   const caughtUp = missed.caughtUp ? " · caught up" : "";
-  return `${missed.count} missed · ${reason}${caughtUp}`;
+  const count = `${missed.count}${missed.saturated ? "+" : ""}`;
+  return `${count} missed · ${reason}${caughtUp}`;
 }
 
 /** Fires waiting across the given schedules. */

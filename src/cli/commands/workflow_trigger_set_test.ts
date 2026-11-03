@@ -106,12 +106,17 @@ Deno.test("parseCatchUpFlags: latest without a max delay names --catch-up-max-de
   assertThrows(
     () => parseCatchUpFlags("latest", undefined),
     UserError,
-    "Invalid --catch-up-max-delay",
+    "--catch-up latest requires --catch-up-max-delay",
   );
   assertThrows(
     () => parseCatchUpFlags("latest", "32d"),
     UserError,
-    "Invalid --catch-up-max-delay",
+    "Invalid --catch-up-max-delay '32d'",
+  );
+  assertThrows(
+    () => parseCatchUpFlags("none", "6h"),
+    UserError,
+    "--catch-up-max-delay applies only to --catch-up latest",
   );
 });
 

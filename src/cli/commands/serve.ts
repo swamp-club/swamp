@@ -6008,6 +6008,14 @@ export const serveCommand = new Command()
           controlPlaneStore,
           { canWrite: leadsScheduledFires },
         ),
+        lastScheduledRunStart: async (workflowId) => {
+          const run = await repoContext.workflowRunRepo.findLatestByWorkflowId(
+            workflowId,
+          );
+          return run?.triggerSource === "schedule"
+            ? run.startedAt ?? null
+            : null;
+        },
         cronFireDedup: controlPlaneStore?.putIfAbsent
           ? async (workflowId, fireTime) => {
             if (!leadsScheduledFires()) return false;

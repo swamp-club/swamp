@@ -89,7 +89,7 @@ Deno.test("scheduleMissedLabel: shows the count and why the fires were missed", 
     scheduleMissedLabel({
       lastMissed: { count: 1, reason: "overlap", caughtUp: false },
     }),
-    "1 missed · previous run still going",
+    "1 missed · previous run still in progress",
   );
 });
 

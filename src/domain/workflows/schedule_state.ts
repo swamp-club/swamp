@@ -27,6 +27,8 @@ export type MissedFireReason = typeof MISSED_FIRE_REASONS[number];
 export const MissedFireSchema = z.object({
   fireTime: z.string().datetime(),
   count: z.number().int().positive(),
+  /** count stopped at the cap, so it is a lower bound */
+  saturated: z.boolean().optional(),
   reason: z.enum(MISSED_FIRE_REASONS),
   caughtUp: z.boolean(),
   detectedAt: z.string().datetime(),
@@ -80,5 +82,6 @@ export interface ScheduleStateRepository {
   ): Promise<ScheduleState | null>;
   /** an unreadable record is skipped, so one bad record never hides the rest */
   list(): Promise<ScheduleState[]>;
-  save(state: ScheduleState): Promise<void>;
+  /** false when this instance may not write, so nothing was stored */
+  save(state: ScheduleState): Promise<boolean>;
 }

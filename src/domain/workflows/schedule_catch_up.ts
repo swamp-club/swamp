@@ -153,23 +153,18 @@ function nextAtOrBefore(cron: Cron, after: Date, now: Date): Date | null {
 }
 
 /**
- * widens a window back from now until it holds a slot, so a dense schedule is
- * never walked from the watermark
+ * nextRun is non-decreasing in its argument, so the latest slot at or before
+ * now is found by bisecting for the last instant whose next slot is not past
+ * now; floor must have such a slot after it
  */
 function latestAtOrBefore(cron: Cron, floor: Date, now: Date): Date | null {
-  const PER_WINDOW_LIMIT = 100_000;
-  let windowMs = 1_000;
-  while (true) {
-    const from = new Date(Math.max(floor.getTime(), now.getTime() - windowMs));
-    let last: Date | null = null;
-    let cursor = from;
-    for (let i = 0; i < PER_WINDOW_LIMIT; i++) {
-      const next = cron.nextRun(cursor);
-      if (!next || next.getTime() > now.getTime()) break;
-      last = next;
-      cursor = next;
-    }
-    if (last || from.getTime() === floor.getTime()) return last;
-    windowMs *= 2;
+  let lo = floor.getTime();
+  let hi = now.getTime();
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const next = cron.nextRun(new Date(mid));
+    if (next && next.getTime() <= now.getTime()) lo = mid;
+    else hi = mid;
   }
+  return nextAtOrBefore(cron, new Date(lo), now);
 }

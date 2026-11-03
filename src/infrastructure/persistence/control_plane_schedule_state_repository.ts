@@ -103,12 +103,13 @@ export class ControlPlaneScheduleStateRepository
     return states;
   }
 
-  async save(state: ScheduleState): Promise<void> {
-    if (!this.canWrite()) return;
+  async save(state: ScheduleState): Promise<boolean> {
+    if (!this.canWrite()) return false;
     const valid = ScheduleStateSchema.parse(state);
     const key = workflowKey(STATE_PREFIX, createWorkflowId(valid.workflowId));
     const bytes = encoder.encode(JSON.stringify(valid));
     await withDeadline(() => this.store.put(key, bytes), this.timeoutMs);
+    return true;
   }
 }
 
@@ -129,7 +130,7 @@ function parseState(
       return parsed.data;
     }
   } catch {
-    // Falls through to the warning below.
+    // unparseable JSON reads as absent, like a record that fails the schema
   }
   logger
     .warn`Unreadable schedule state for workflow ${workflowId}; treating it as absent`;

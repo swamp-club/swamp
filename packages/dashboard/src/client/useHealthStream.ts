@@ -70,6 +70,7 @@ export interface ScheduleEntry {
 export interface ScheduleMissedFire {
   fireTime: string;
   count: number;
+  saturated?: boolean;
   reason: string;
   caughtUp: boolean;
   detectedAt: string;

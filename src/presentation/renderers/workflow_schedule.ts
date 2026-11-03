@@ -158,8 +158,9 @@ function scheduleLines(entry: ScheduleListEntry): string[] {
   if (entry.lastMissed) {
     const missed = entry.lastMissed;
     const reason = MISSED_REASON_TEXT[missed.reason];
+    const count = `${missed.count}${missed.saturated ? "+" : ""}`;
     lines.push(
-      `  ${cyan("Last missed:")} ${yellow(`${missed.count} missed`)} ${
+      `  ${cyan("Missed:")} ${yellow(`${count} fire(s)`)} ${
         dim(`(${reason})`)
       }, latest ${missed.fireTime}${
         missed.caughtUp ? ` ${dim("(caught up)")}` : ""

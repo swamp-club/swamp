@@ -62,14 +62,25 @@ export function parseCatchUpFlags(
     ...(maxDelay !== undefined ? { maxDelay } : {}),
   });
   if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const flag = issue?.path[0] === "maxDelay"
-      ? "--catch-up-max-delay"
-      : "--catch-up";
+    if (policy !== "none" && policy !== "latest") {
+      throw new UserError(
+        `Invalid --catch-up '${policy}': expected none or latest`,
+      );
+    }
+    if (policy === "none") {
+      throw new UserError(
+        "--catch-up-max-delay applies only to --catch-up latest",
+      );
+    }
+    if (maxDelay === undefined) {
+      throw new UserError(
+        "--catch-up latest requires --catch-up-max-delay (e.g. 6h)",
+      );
+    }
     throw new UserError(
-      issue?.path[0] === "policy"
-        ? `Invalid ${flag} '${policy}': expected none or latest`
-        : `Invalid ${flag}: ${issue?.message ?? "invalid"}`,
+      `Invalid --catch-up-max-delay '${maxDelay}': ${
+        parsed.error.issues[0]?.message ?? "invalid"
+      }`,
     );
   }
   return parsed.data;

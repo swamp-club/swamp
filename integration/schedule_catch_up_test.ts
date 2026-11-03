@@ -136,7 +136,9 @@ async function withCatchUpRepo(
     await fn({ repoDir, workflowRepo, workflow, store, runs, instance });
   } finally {
     for (const service of services) await service.stop();
-    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    await Deno.remove(repoDir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 }
 
@@ -246,5 +248,36 @@ Deno.test("schedule catch-up: a promoted follower catches up a slot the dead lea
     const [state] = await new ControlPlaneScheduleStateRepository(store)
       .list();
     assertEquals(state.lastEvaluatedFireTime, missed.toISOString());
+  });
+});
+
+Deno.test("schedule catch-up: a follower promoted after the leader fired the slot does not run it again", async () => {
+  await withCatchUpRepo(async ({ workflow, store, runs, instance }) => {
+    const { previous, missed } = slots();
+    const shared = new ControlPlaneScheduleStateRepository(store);
+    await shared.save({
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      lastEvaluatedFireTime: previous.toISOString(),
+    });
+    let leading = false;
+    const follower = instance(missed.getTime() + 5 * HOUR, {
+      canWrite: () => leading,
+    });
+    await follower.start();
+
+    await shared.save({
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      lastEvaluatedFireTime: missed.toISOString(),
+    });
+
+    leading = true;
+    await follower.catchUpMissedFires();
+    await follower.stop();
+
+    assertEquals(runs.length, 0);
+    const [state] = await shared.list();
+    assertEquals(state.lastMissed, undefined);
   });
 });

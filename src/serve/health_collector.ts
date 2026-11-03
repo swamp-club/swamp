@@ -57,6 +57,7 @@ export interface HealthScheduleCatchUp {
 export interface HealthScheduleMissedFire {
   readonly fireTime: string;
   readonly count: number;
+  readonly saturated?: boolean;
   readonly reason: string;
   readonly caughtUp: boolean;
   readonly detectedAt: string;
