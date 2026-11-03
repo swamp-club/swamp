@@ -27,6 +27,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import type { PutExpect } from "../../domain/datastore_v3/op.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { ConfigEditConflictError } from "../../domain/datastore_v3/config_edit_conflict.ts";
 import {
   type DefinitionKind,
@@ -50,12 +51,21 @@ export interface CommitLogEngine {
   openUnit(): UnitOfWork;
   hasOpenUnit(): boolean;
   checkpointOpenUnit(): Promise<OpenUnitCheckpoint>;
+  /**
+   * commits the changes at once as their own commit, leaving what the open
+   * unit has staged; throws when the commit fails or is refused
+   */
+  appendToOpenUnit?(
+    changes: readonly TypedChange[],
+  ): Promise<OpenUnitAppend>;
   committedBeforeThrowing(error: unknown): boolean;
   runRoot<T>(
     options: CommitLogRootRunOptions<T>,
     fn: (root: CommitLogRootView) => Promise<T>,
   ): Promise<T>;
   storedVersion?(partition: PartitionKey, key: string): Promise<PutExpect>;
+  /** true when commits go to serve, which decides each on its sender's grants */
+  readonly forwardsToServe?: boolean;
   configLoaded?(partition: PartitionKey): void;
   staleConfigEdits?(partition: PartitionKey): Promise<StaleConfigRecord[]>;
 }
@@ -67,6 +77,14 @@ export interface StaleConfigRecord {
 }
 
 export type OpenUnitCheckpoint = "committed" | "no-unit" | "refused";
+
+/** excluded: the configured directories leave the key out of the datastore */
+export type OpenUnitAppend =
+  | "committed"
+  | "queued"
+  | "excluded"
+  | "no-unit"
+  | "unsupported";
 
 export interface CommitLogRootView
   extends Pick<UnitOfWork, "stage" | "staged"> {
@@ -395,6 +413,29 @@ export function commitsThroughCommitLog(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): boolean {
   return commitLogOf(repoContext) !== undefined;
+}
+
+export async function appendToOpenUnitOfWork(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  changes: readonly TypedChange[],
+): Promise<OpenUnitAppend> {
+  const engine = commitLogOf(repoContext);
+  if (engine?.appendToOpenUnit === undefined) return "no-unit";
+  return await engine.appendToOpenUnit(changes);
+}
+
+export function forwardsToServe(markDirty: MarkDirtyHook | undefined): boolean {
+  return markDirty !== undefined &&
+    engines.get(markDirty)?.forwardsToServe === true;
+}
+
+export async function storedVersionOf(
+  markDirty: MarkDirtyHook | undefined,
+  partition: PartitionKey,
+  key: string,
+): Promise<PutExpect | undefined> {
+  if (markDirty === undefined) return undefined;
+  return await engines.get(markDirty)?.storedVersion?.(partition, key);
 }
 
 export async function checkpointOpenUnitOfWork(

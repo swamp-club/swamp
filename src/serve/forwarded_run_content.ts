@@ -22,6 +22,7 @@ import type { ContentRefusal } from "../domain/datastore_v3/commit_authorization
 import {
   type HeldChildRun,
   judgeRunRecord,
+  judgeRunStart,
   runIdentityRefusal,
   type RunRecordJudgement,
 } from "../domain/datastore_v3/content_bindings.ts";
@@ -180,6 +181,39 @@ export async function checkRunRecord(
   // append refuses the commit, as it does a handler's save.
   context.recheckUnderLock(async () => (await authorize()) === undefined);
   return undefined;
+}
+
+/** the stored record is read through prior, so the lock re-checks it */
+export async function checkRunStart(
+  context: ContentCheckContext,
+  op: PutOp,
+): Promise<ContentRefusal | undefined> {
+  const intent = op.intent;
+  if (!("run" in intent)) return refused(op, "it is not a run's step start");
+  const bytes = await context.bytesOf(op);
+  if (!(bytes instanceof Uint8Array)) return bytes;
+  const prior = await context.prior(
+    context.deps.partition,
+    runRecordKey(intent.run.workflowId, intent.run.runId),
+  );
+  if (prior.kind === "unreadable") {
+    return refused(op, "its run's record cannot be read");
+  }
+  const record = prior.kind === "present"
+    ? WorkflowRunSchema.safeParse(parseRecord(prior.bytes))
+    : undefined;
+  if (record !== undefined && !record.success) {
+    return refused(op, "its run's record cannot be parsed");
+  }
+  const segments = op.key.toString().split("/");
+  const refusal = judgeRunStart({
+    workflowId: intent.run.workflowId,
+    runId: intent.run.runId,
+    fileName: segments[segments.length - 1],
+    content: parseRecord(bytes),
+    record: record?.data,
+  });
+  return refusal === undefined ? undefined : refused(op, refusal);
 }
 
 function runRecordKey(workflowId: string, runId: string): string {

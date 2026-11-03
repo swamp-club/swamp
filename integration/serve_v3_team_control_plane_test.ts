@@ -130,6 +130,8 @@ async function reapAsNewLeader(
       reapOrphanedWorkflowRuns(
         running,
         (wid, run) => repos.a.repoContext.workflowRunRepo.save(wid, run),
+        (wid, run) =>
+          repos.a.repoContext.workflowRunRepo.findStepStarts(wid, run.id),
         tracker,
         isProcessGone,
         NEW_LEADER,

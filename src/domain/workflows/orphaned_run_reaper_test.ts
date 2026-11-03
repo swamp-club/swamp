@@ -100,6 +100,8 @@ const noOutputs: MethodRunOutputs = {
   save: () => Promise.reject(new Error("unexpected output save")),
 };
 
+const noStepStarts = () => Promise.resolve([]);
+
 Deno.test("reapOrphanedWorkflowRuns: skips run when tracker reports still running", async () => {
   const run = makeRun({ pid: 42 });
   const saved: string[] = [];
@@ -109,6 +111,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips run when tracker reports still runnin
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     trackerRunning,
     unexpectedPidCheck,
   );
@@ -127,6 +130,7 @@ Deno.test("reapOrphanedWorkflowRuns: interrupts run when tracker confirmed stale
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     trackerReaped,
     unexpectedPidCheck,
   );
@@ -155,6 +159,7 @@ Deno.test("reapOrphanedWorkflowRuns: a step whose start was never saved becomes 
   await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
     () => Promise.resolve(),
+    noStepStarts,
     trackerReaped,
     unexpectedPidCheck,
   );
@@ -171,6 +176,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with live PID is skipped", async
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     (_pid) => false,
   );
@@ -189,6 +195,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with dead PID is interrupted", a
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     (_pid) => true,
   );
@@ -207,6 +214,7 @@ Deno.test("reapOrphanedWorkflowRuns: legacy run with no PID is interrupted", asy
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     () => {
       throw new Error("should not be called for undefined pid");
@@ -226,6 +234,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips run in terminal state", async () => {
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     () => true,
   );
@@ -260,6 +269,7 @@ Deno.test("reapOrphanedWorkflowRuns: mixed scenario with tracker and legacy runs
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     (runId) => trackerMap.get(runId) ?? null,
     (pid) => pid === 300,
   );
@@ -282,6 +292,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips run with foreign instanceId when trac
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     () => {
       throw new Error("should not check PID for foreign instance");
@@ -303,6 +314,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with matching instanceId when tra
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     (_pid) => true,
     "local-1",
@@ -322,6 +334,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with no instanceId when tracker m
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     (_pid) => true,
     "local-1",
@@ -341,6 +354,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps foreign run when heartbeat lookup rep
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     () => {
       throw new Error("should not check PID for foreign instance");
@@ -363,6 +377,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips foreign run when heartbeat lookup rep
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     () => {
       throw new Error("should not check PID for foreign instance");
@@ -385,6 +400,7 @@ Deno.test("reapOrphanedWorkflowRuns: in team mode, a running row an earlier inst
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
     () => Promise.resolve(),
+    noStepStarts,
     trackerOld,
     unexpectedPidCheck,
     "new-leader",
@@ -401,6 +417,7 @@ Deno.test("reapOrphanedWorkflowRuns: outside team mode, that row is trusted as b
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
     () => Promise.resolve(),
+    noStepStarts,
     trackerOld,
     unexpectedPidCheck,
     "new-leader",
@@ -416,6 +433,7 @@ Deno.test("reapOrphanedWorkflowRuns: in team mode, a run with no instance id kee
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
     () => Promise.resolve(),
+    noStepStarts,
     noTracker,
     (pid) => pid !== 4242,
     "new-leader",
@@ -435,6 +453,7 @@ Deno.test("reapOrphanedWorkflowRuns: skips foreign run when no heartbeat lookup 
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     noTracker,
     () => {
       throw new Error("should not check PID for foreign instance");
@@ -457,6 +476,7 @@ Deno.test("reapOrphanedWorkflowRuns: reaps run with foreign instanceId when trac
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     trackerReaped,
     () => {
       throw new Error("should not check PID when tracker confirms stale");
@@ -525,6 +545,7 @@ function stubs(stored: WorkflowRun[], rows: ActiveRun[]): {
         recorded.writes.push(`save:${run.status}`);
         return Promise.resolve();
       },
+      findStepStarts: () => Promise.resolve([]),
     } as unknown as WorkflowRunRepository,
     runTracker: {
       findById: (runId: string) => rows.find((r) => r.id === runId) ?? null,
@@ -1469,6 +1490,7 @@ Deno.test("reapOrphanedWorkflowRuns: a run another instance took over is not jud
       saved.push(r.id);
       return Promise.resolve();
     },
+    noStepStarts,
     () => ({ status: "interrupted", instanceId: "previous-instance" }),
     unexpectedPidCheck,
     "restarted-instance",
@@ -1488,6 +1510,7 @@ Deno.test("reapOrphanedWorkflowRuns: a run taken over by an instance that is gon
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
     () => Promise.resolve(),
+    noStepStarts,
     () => ({ status: "running", instanceId: "previous-instance" }),
     unexpectedPidCheck,
     "restarted-instance",
@@ -1502,6 +1525,7 @@ Deno.test("reapOrphanedWorkflowRuns: a row of the instance the record names is s
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
     () => Promise.resolve(),
+    noStepStarts,
     () => ({ status: "interrupted", instanceId: "previous-instance" }),
     unexpectedPidCheck,
     "restarted-instance",
@@ -1517,6 +1541,7 @@ Deno.test("reapOrphanedWorkflowRuns: without heartbeats to judge a taken-over ru
   const result = await reapOrphanedWorkflowRuns(
     [{ run, workflowId: WORKFLOW_ID }],
     () => Promise.resolve(),
+    noStepStarts,
     () => ({ status: "interrupted", instanceId: "previous-instance" }),
     unexpectedPidCheck,
     "restarted-instance",

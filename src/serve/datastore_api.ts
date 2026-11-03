@@ -150,6 +150,7 @@ import {
   SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_FEATURES_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
+  STEP_STARTS_FEATURE,
 } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -166,6 +167,7 @@ import {
   commitJSONFor,
   commitReadAccessOf,
   memoized,
+  type ReaderFeatures,
   serveResolver,
 } from "./commit_read_filter.ts";
 import {
@@ -389,6 +391,7 @@ export async function handleDatastoreRequest(
     : [[SERVE_DATASTORE_ACCESS_HEADER, access]];
   const logId = logIdOf(deps.v3);
   if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
+  headers.push([SERVE_DATASTORE_FEATURES_HEADER, STEP_STARTS_FEATURE]);
   return withHeaders(response, headers);
 }
 
@@ -405,10 +408,14 @@ function adoptionPendingResponse(): Response {
  * Whether the client's copy understands lease ops (swamp-club#4121): it
  * names {@link LEASE_OPS_FEATURE} in {@link SERVE_DATASTORE_FEATURES_HEADER}.
  */
-function readsLeaseOps(req: Request): boolean {
-  return (req.headers.get(SERVE_DATASTORE_FEATURES_HEADER) ?? "")
+function readerFeatures(req: Request): ReaderFeatures {
+  const named = (req.headers.get(SERVE_DATASTORE_FEATURES_HEADER) ?? "")
     .split(",")
-    .some((feature) => feature.trim() === LEASE_OPS_FEATURE);
+    .map((feature) => feature.trim());
+  return {
+    leaseOps: named.includes(LEASE_OPS_FEATURE),
+    stepStarts: named.includes(STEP_STARTS_FEATURE),
+  };
 }
 
 /**
@@ -1125,7 +1132,8 @@ class DatastoreApi {
       if (
         await this.#mayReadCommit(change.commit.partition, change.commit.ops)
       ) {
-        commits.push(commitJSONFor(change.commit, readsLeaseOps(req)));
+        const json = commitJSONFor(change.commit, readerFeatures(req));
+        if (json !== undefined) commits.push(json);
       }
     }
     return Response.json({ head: head.seq, commits });
@@ -1203,11 +1211,11 @@ class DatastoreApi {
             change.commit.ops,
           ))
         ) {
-          kept.push({
-            cursor: change.cursor,
-            commit: commitJSONFor(change.commit, readsLeaseOps(req)),
-          });
-          if (kept.length >= limit) break;
+          const commit = commitJSONFor(change.commit, readerFeatures(req));
+          if (commit !== undefined) {
+            kept.push({ cursor: change.cursor, commit });
+            if (kept.length >= limit) break;
+          }
         }
       }
     }

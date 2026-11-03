@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "../models/active_run.ts";
+import type { StepStart } from "./step_start.ts";
 import type { ModelOutput } from "../models/model_output.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { OutputRepository } from "../models/repositories.ts";
@@ -48,6 +49,10 @@ export interface ReapResult {
 export async function reapOrphanedWorkflowRuns(
   runs: { run: WorkflowRun; workflowId: WorkflowId }[],
   save: (workflowId: WorkflowId, run: WorkflowRun) => Promise<void>,
+  startsOf: (
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+  ) => Promise<readonly StepStart[]>,
   trackerLookup: (
     runId: string,
   ) => { status: string; instanceId?: string } | null,
@@ -95,7 +100,7 @@ export async function reapOrphanedWorkflowRuns(
           reason: "tracker confirmed stale",
         },
       );
-      run.interruptOrphaned("server_crash");
+      run.interruptOrphaned("server_crash", await startsOf(workflowId, run));
       await save(workflowId, run);
       reaped++;
       continue;
@@ -130,7 +135,10 @@ export async function reapOrphanedWorkflowRuns(
             reason: "remote instance dead (no heartbeat)",
           },
         );
-        run.interruptOrphaned("server_crash");
+        run.interruptOrphaned(
+          "server_crash",
+          await startsOf(workflowId, run),
+        );
         await save(workflowId, run);
         reaped++;
         continue;
@@ -164,7 +172,7 @@ export async function reapOrphanedWorkflowRuns(
       "Reaping orphaned workflow run {runId} (workflow: {workflowName}, reason: {reason})",
       { runId: run.id, workflowName: run.workflowName, reason },
     );
-    run.interruptOrphaned("server_crash");
+    run.interruptOrphaned("server_crash", await startsOf(workflowId, run));
     await save(workflowId, run);
     reaped++;
   }
@@ -289,7 +297,10 @@ export async function settleDeadOwnerRun(
     { runId: run.id, workflowName: run.workflowName, pid: run.pid },
   );
   runTracker.complete(run.id, "interrupted");
-  run.interruptOrphaned("owner_process_dead");
+  run.interruptOrphaned(
+    "owner_process_dead",
+    await runRepo.findStepStarts(workflowId, run.id),
+  );
   await runRepo.save(workflowId, run);
   runTracker.markSettled(run.id, "owner_process_dead");
   // The run is settled; its method runs are best-effort, and a row left

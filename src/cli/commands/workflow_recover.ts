@@ -81,7 +81,10 @@ async function findRecoverableRun(
       return await findInterruptedRun(workflow, runRepo, runId);
     }
     for (const run of deadOwnerRuns) {
-      run.interruptOrphaned("owner_process_dead");
+      run.interruptOrphaned(
+        "owner_process_dead",
+        await runRepo.findStepStarts(workflow.id, run.id),
+      );
     }
     const interrupted = await findInterruptedRun(workflow, runRepo, runId);
     const candidates = [
@@ -223,6 +226,11 @@ export const workflowRecoverCommand = new Command()
           );
         }
 
+        await repoContext.workflowRunRepo.withdrawSettledStepStarts(
+          workflow.id,
+          run.id,
+          run.unknownSteps(),
+        );
         run.resetUnknownStepsForRecovery();
         await repoContext.workflowRunRepo.save(workflow.id, run);
 

@@ -126,6 +126,7 @@ const CONTENT_CHECKED_PUTS: ReadonlySet<string> = new Set([
   "evaluated-definition.save",
   "auto-definition.save",
   "run-snapshot.save",
+  "run-start.save",
   "run.create",
   "run.update",
   "data.save",
@@ -355,7 +356,8 @@ export async function writeAccessOf(
   if ("run" in intent) {
     const workflow = await resolver.workflow(intent.run.workflowId);
     const removal = intent.kind === "run.delete" ||
-      intent.kind === "run-snapshot.delete";
+      intent.kind === "run-snapshot.delete" ||
+      intent.kind === "run-start.delete";
     // Deleting a guarded run's record then forwarding a first record under
     // its id would drop the serve-driven marker or a decision.
     const guarded = removal &&

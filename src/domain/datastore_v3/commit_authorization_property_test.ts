@@ -117,6 +117,8 @@ function intentOf(
     case "run.delete":
     case "run-snapshot.save":
     case "run-snapshot.delete":
+    case "run-start.save":
+    case "run-start.delete":
       return createIntent({ kind, run });
     case "definition.create":
     case "definition.edit":
@@ -189,6 +191,7 @@ function candidateKeys(
   }
   keys.push(
     `workflow-runs/${id}/workflow-run-${id}.yaml`,
+    `workflow-runs/${id}/starts/${id}/${"a".repeat(64)}.yaml`,
     `workflows-evaluated/runs/${id}/evaluated-workflow.yaml`,
   );
   return keys;

@@ -153,6 +153,7 @@ function createMockWorkflowRunRepo(
 ): WorkflowRunRepository {
   return {
     recordsAreForwarded: false,
+    findStepStarts: () => Promise.resolve([]),
     findAllGlobal: () => Promise.resolve(items),
     findAllGlobalSince: (cutoff: Date) =>
       Promise.resolve(

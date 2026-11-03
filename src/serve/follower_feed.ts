@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { LEASE_OPS_FEATURE } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
+import {
+  LEASE_OPS_FEATURE,
+  STEP_STARTS_FEATURE,
+} from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
@@ -217,7 +220,10 @@ export class FollowerFeed implements FollowerCopyFeed {
         type: "commits.subscribe",
         id: SUBSCRIBE_ID,
         // this copy applies the leader's lease ops
-        payload: { cursor: this.#applied, features: [LEASE_OPS_FEATURE] },
+        payload: {
+          cursor: this.#applied,
+          features: [LEASE_OPS_FEATURE, STEP_STARTS_FEATURE],
+        },
       }));
     };
     socket.onmessage = (event) => {

@@ -27,6 +27,11 @@ import {
   ReadModelCatchUpUnreachableError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { isNetworkFailure } from "./network_failure.ts";
+import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import {
+  V3_SERVE_UNREACHABLE_CODE,
+  V3_STORAGE_UNREACHABLE_CODE,
+} from "../../domain/datastore_v3/writer_lease.ts";
 import {
   restoreNamespace,
   SOLO_NAMESPACE,
@@ -140,13 +145,19 @@ import type {
 import { currentUnitOfWork } from "../persistence/unit_of_work_scope.ts";
 import {
   appendForwardedCommit,
+  appendNowFrom,
   checkpointFrom,
   commitLogParentFor,
   createCommitLogUnitOfWork,
   type ForwardedCommit,
   type UnitTracker,
 } from "./commit_log_unit_of_work.ts";
-import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  AppendUnrecordedError,
+  MayLandLaterError,
+  PartitionsRefusedError,
+  type TypedChange,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { recoverySince } from "./interrupted_writer_recovery.ts";
 import { runInCommitLogRoot, wasThrownAfterCommit } from "./commit_log_root.ts";
 import {
@@ -1362,6 +1373,35 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             throw error;
           }
         },
+        forwardsToServe: serveSink !== undefined,
+        async appendToOpenUnit(changes) {
+          const unit = commitLogParentFor(markDirty, currentUnitOfWork());
+          if (unit === undefined) return "no-unit";
+          if (
+            sink.takesStepStarts?.() === false &&
+            changes.some(isStepStartChange)
+          ) {
+            return "unsupported";
+          }
+          for (let attempt = 1;; attempt++) {
+            try {
+              return await appendNowFrom(unit, changes) ?? "no-unit";
+            } catch (error) {
+              const refused = error instanceof CommitRejectedError &&
+                error.reason !== "seq-gap";
+              if (
+                !refused && isTransientAppendFailure(error) &&
+                attempt < DIRECT_APPEND_ATTEMPTS
+              ) {
+                await new Promise((resolve) =>
+                  setTimeout(resolve, DIRECT_APPEND_BACKOFF_MS * attempt)
+                );
+                continue;
+              }
+              throw new AppendUnrecordedError(error, refused);
+            }
+          }
+        },
         async storedVersion(partition, key) {
           // The commit store, not the read model, which applies this
           // process's own commits only at its next catch-up.
@@ -1961,4 +2001,29 @@ export async function unreachableAsCatchUpError<T>(
     }
     throw error;
   }
+}
+
+/** the bound other v3 commits retry within; no knob of its own */
+const DIRECT_APPEND_ATTEMPTS = 3;
+const DIRECT_APPEND_BACKOFF_MS = 250;
+
+/** a commit that may have landed is retried too: it lands the same bytes again */
+function isTransientAppendFailure(error: unknown): boolean {
+  if (isNetworkFailure(error) || error instanceof MayLandLaterError) {
+    return true;
+  }
+  if (error instanceof CommitRejectedError) return error.reason === "seq-gap";
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return code === V3_SERVE_UNREACHABLE_CODE ||
+    code === V3_STORAGE_UNREACHABLE_CODE;
+}
+
+function isStepStartChange(change: TypedChange): boolean {
+  const intent = "put" in change
+    ? change.put.intent
+    : "intent" in change.op
+    ? change.op.intent
+    : undefined;
+  return intent?.kind === "run-start.save" ||
+    intent?.kind === "run-start.delete";
 }

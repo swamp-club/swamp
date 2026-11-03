@@ -480,6 +480,34 @@ export class RunChanges {
   }
 }
 
+/** a start is written once under its own key, so neither carries a precondition */
+export class RunStartChanges {
+  readonly partition: PartitionKey;
+  readonly #intentOf: (kind: "run-start.save" | "run-start.delete") => Intent;
+
+  constructor(workflowId: string, runId: string) {
+    this.partition = partitionOf({ kind: "run", workflowId, runId });
+    this.#intentOf = (kind) =>
+      createIntent({ kind, run: { workflowId, runId } });
+  }
+
+  write(key: RecordKey, content: Uint8Array): TypedChange {
+    return putChange(
+      this.partition,
+      this.#intentOf("run-start.save"),
+      key,
+      content,
+    );
+  }
+
+  remove(key: RecordKey): TypedChange {
+    return {
+      partition: this.partition,
+      op: tombstoneOp({ intent: this.#intentOf("run-start.delete"), key }),
+    };
+  }
+}
+
 function putChange(
   partition: PartitionKey,
   intent: Intent,

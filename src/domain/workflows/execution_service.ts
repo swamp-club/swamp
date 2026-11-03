@@ -383,6 +383,7 @@ import {
   observeExecution,
 } from "../remote/observability.ts";
 import { minOf } from "../array_extrema.ts";
+import { StepStartUnrecordedError } from "./step_start.ts";
 import {
   currentVaultAccess,
   runGeneratorWithVaultAccess,
@@ -3133,6 +3134,11 @@ export class WorkflowExecutionService {
   signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
 
   runCheckpointer: RunCheckpointer = NO_RUN_CHECKPOINTS;
+  /**
+   * runs a step start could not be committed for: no further step starts;
+   * shared with nested runs' services, so a stopped child stops its parent
+   */
+  stoppedRuns = new Set<string>();
 
   /**
    * stops this executor saving a run another owner has taken over, such as when
@@ -4085,6 +4091,7 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(workflowRun.id, "failed");
         }
+        settleStoppedJobs(error, workflowRun);
         workflowRun.complete();
         await this.saveRun(
           createWorkflowId(workflowRun.workflowId),
@@ -4096,7 +4103,9 @@ export class WorkflowExecutionService {
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),
       });
-      throw error;
+      throw workflowRun === undefined
+        ? error
+        : this.#stoppedRunError(error, workflowRun);
     } finally {
       if (workflowAffinityKey) {
         getRemoteStepDispatcher()?.releaseAffinity(workflowAffinityKey);
@@ -4981,10 +4990,11 @@ export class WorkflowExecutionService {
       if (this.runTracker) {
         this.runTracker.complete(existingRun.id, "failed");
       }
+      settleStoppedJobs(error, existingRun);
       existingRun.complete();
       await this.saveRun(workflow.id, existingRun);
       yield { kind: "completed" as const, run: existingRun };
-      throw error;
+      throw this.#stoppedRunError(error, existingRun);
     } finally {
       // stop the heartbeat and release the sink in finally: early abandonment
       // via generator.return() skips cleanup placed after a yield
@@ -5820,6 +5830,13 @@ export class WorkflowExecutionService {
       }
     }
 
+    // A run whose step start could not be committed starts no further step;
+    // this one stays pending, which is true, since it never ran.
+    if (this.stoppedRuns.has(run.id)) {
+      stepSpan.end();
+      return;
+    }
+
     // Start step. A re-entered wait keeps its start time.
     if (!reenterWait) stepRun.start();
 
@@ -6535,7 +6552,10 @@ export class WorkflowExecutionService {
         forEachIndex,
       };
     } catch (error) {
-      if (error instanceof WorkflowSuspendedError) {
+      if (
+        error instanceof WorkflowSuspendedError ||
+        error instanceof StepStartUnrecordedError
+      ) {
         stepSpan.end();
         throw error;
       }
@@ -7086,6 +7106,7 @@ export class WorkflowExecutionService {
     childService.signalWaits = this.signalWaits;
     childService.runCheckpointer = this.runCheckpointer;
     childService.runWriteFence = this.runWriteFence;
+    childService.stoppedRuns = this.stoppedRuns;
 
     let childRun: WorkflowRun | undefined;
     // the child's suspended event is the parent step's outcome, as its
@@ -7162,6 +7183,19 @@ export class WorkflowExecutionService {
         ? error.message
         : String(error);
       failInFlightStep(stepRun, errorMessage, options);
+      // A nested run that stopped on an unrecorded start stops this run too,
+      // whatever the step's allowFailure, so no ancestor carries on past it.
+      if (error instanceof StepStartUnrecordedError) {
+        this.stoppedRuns.add(run.id);
+        throw new StepStartUnrecordedError(error.cause, {
+          workflowId: run.workflowId,
+          workflowName: run.workflowName,
+          runId: run.id,
+          stepName,
+          jobName: job.name,
+          nestedRunId: error.start.nestedRunId ?? error.start.runId,
+        });
+      }
       if (allowFailure) {
         stepRun.markAllowedFailure();
       }
@@ -7658,6 +7692,11 @@ export class WorkflowExecutionService {
     // first so a refused recover leaves the run as it was.
     await this.checkNestedWaitsSettled(run);
 
+    await this.runRepo.withdrawSettledStepStarts?.(
+      workflow.id,
+      run.id,
+      run.unknownSteps(),
+    );
     run.resetUnknownStepsForRecovery();
     await this.saveRun(workflow.id, run);
 
@@ -7694,8 +7733,31 @@ export class WorkflowExecutionService {
         // wrote may be the final record of a run the new owner leaves alone,
         // and the owner waits for this checkpoint to land it.
         if (refused) return;
-        await this.runCheckpointer.checkpoint(run);
+        try {
+          await this.runCheckpointer.checkpoint(run);
+        } catch (error) {
+          if (!(error instanceof StepStartUnrecordedError)) throw error;
+          this.stoppedRuns.add(run.id);
+          const parent = run.parentRun;
+          if (parent?.kind === "valid") this.stoppedRuns.add(parent.ref.runId);
+          const { stepName, jobName } = error.start;
+          if (stepName !== undefined && jobName !== undefined) {
+            run.getJob(jobName)?.getStep(stepName)?.revertUnrecordedStart();
+          }
+          throw error;
+        }
       })(),
+    );
+  }
+
+  /**
+   * a stopped run's error, saying whether its failed record committed, which
+   * decides whether a resume or a recovery comes next
+   */
+  #stoppedRunError(error: unknown, run: WorkflowRun): unknown {
+    if (!(error instanceof StepStartUnrecordedError)) return error;
+    return error.withEnd(
+      this.runCheckpointer.committedLatest?.(run.id) ?? false,
     );
   }
 
@@ -8173,4 +8235,22 @@ function resolveEffectiveConcurrency(
   const g = global && global > 0 ? global : undefined;
   if (l && g) return Math.min(l, g);
   return l ?? g;
+}
+
+/**
+ * a stopped run's jobs left running hold steps that never started: unknown,
+ * so a resume walks them again
+ */
+function settleStoppedJobs(error: unknown, run: WorkflowRun): void {
+  if (!(error instanceof StepStartUnrecordedError)) return;
+  for (const job of run.jobs) {
+    job.settleNotResumed();
+    // a job that ran on past the stop holds steps that never started
+    if (
+      job.status === "succeeded" &&
+      job.steps.some((step) => step.status === "pending")
+    ) {
+      job.markUnknown();
+    }
+  }
 }

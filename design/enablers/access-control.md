@@ -1656,6 +1656,16 @@ runner against their will.
 - splitting such a report across commits.
 - `initiatedBy` and `triggerSource`, which are the member's report: the commit
   stamp says who wrote the record.
+- the step starts a member reports for a run they drive (swamp-club#4319). A
+  start is a run's own small record that a step began, read with the run's
+  record on recovery. It holds a job, a step and a start time and nothing else,
+  so it carries no decision. Serve refuses one for a run with no stored record or
+  one serve drives, and one whose key is not its own start. Since there is no
+  per-run ownership, a member with `run` on a workflow can report a start for
+  another member-driven run of it; the most that does is make a step of that run
+  read as `unknown`, or add a step of that name to its recovered record, so its
+  recovery asks before running it again. A recovery through serve withdraws no
+  start, since a removal needs `write`, and a member may recover with `run`.
 
 - what a waiting gate shows its approver beyond one wait: it is frozen while
   the wait is open, but a retry clears the decision and opens a new wait, which
@@ -1681,7 +1691,8 @@ trigger or a schedule.
 stored to compare against, so deleting a guarded run's record needs `admin` on the
 workflow. A run is guarded when its stored record is serve-driven or holds an
 approval decision; a record serve cannot read counts as guarded. This covers a
-forwarded `run.delete` or `run-snapshot.delete` and `workflow delete` through serve,
+forwarded `run.delete`, `run-snapshot.delete` or `run-start.delete` and `workflow
+delete` through serve,
 and the refusal is audited. A member still deletes their own undecided member-driven
 run with `write`. A `run gc` through serve that sets its own cut-off (`--older-than`)
 needs `admin` on every workflow, since it chooses which records go; a dry run does not.

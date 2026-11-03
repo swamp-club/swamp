@@ -182,6 +182,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#3257, the workflow run repository's typed builder: the run
   // record's factory, run only inside stageTyped.
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
+  "src/infrastructure/persistence/yaml_workflow_run_repository.ts -> src/domain/datastore_v3/commit.ts",
+  "src/infrastructure/persistence/yaml_workflow_run_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/repo_unit_of_work.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   // swamp-club#3257, the persistence test helper's typed recording unit: a
   // type-only import of the `TypedChange` batches it records.
   "src/infrastructure/persistence/test_helpers/staged_change_helpers.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
@@ -520,7 +523,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2728",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2731",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

@@ -5161,6 +5161,7 @@ export const serveCommand = new Command()
               await repoContext.workflowRunRepo.save(wid, r);
               runTracker.markSettled(r.id, "server_crash");
             },
+            (wid, r) => repoContext.workflowRunRepo.findStepStarts(wid, r.id),
             (runId) => {
               const tracked = runTracker.findById(runId);
               return tracked

@@ -85,6 +85,8 @@ const OP_KINDS: Readonly<Record<IntentKind, readonly IntentOpKind[]>> = {
   "run.delete": TOMBSTONE,
   "run-snapshot.save": PUT,
   "run-snapshot.delete": TOMBSTONE,
+  "run-start.save": PUT,
+  "run-start.delete": TOMBSTONE,
   "definition.create": BOTH,
   "definition.edit": BOTH,
   "definition.delete": TOMBSTONE,
@@ -102,6 +104,8 @@ export function opKindAllowed(intent: Intent, opKind: IntentOpKind): boolean {
 }
 
 export const LOCKFILE_RECORD_KEY = "config/upstream_extensions.json";
+
+const STEP_START_FILE_PATTERN = /^[0-9a-f]{64}\.yaml$/;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -174,6 +178,14 @@ function bindSegments(
       return segments.length === 3 && segments[0] === "workflow-runs" &&
           segments[1] === intent.run.workflowId &&
           segments[2] === `workflow-run-${intent.run.runId}.yaml`
+        ? { ok: true }
+        : undefined;
+    case "run-start.save":
+    case "run-start.delete":
+      return segments.length === 5 && segments[0] === "workflow-runs" &&
+          segments[1] === intent.run.workflowId && segments[2] === "starts" &&
+          segments[3] === intent.run.runId &&
+          STEP_START_FILE_PATTERN.test(segments[4])
         ? { ok: true }
         : undefined;
     case "run-snapshot.save":

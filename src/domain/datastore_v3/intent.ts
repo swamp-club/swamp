@@ -115,7 +115,9 @@ type RunIntent = {
     | "run.update"
     | "run.delete"
     | "run-snapshot.save"
-    | "run-snapshot.delete";
+    | "run-snapshot.delete"
+    | "run-start.save"
+    | "run-start.delete";
   readonly run: RunRef;
 };
 
@@ -207,6 +209,8 @@ const SHAPES: Readonly<Record<IntentKind, Shape>> = {
   "run.delete": "run",
   "run-snapshot.save": "run",
   "run-snapshot.delete": "run",
+  "run-start.save": "run",
+  "run-start.delete": "run",
   "definition.create": "definition",
   "definition.edit": "definition",
   "definition.delete": "definition",

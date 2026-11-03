@@ -2335,6 +2335,12 @@ model"), all dormant. The opt-in is a later issue.
 - **File access**: what a put records about its file besides the bytes
   (swamp-club#3693): `executable`, `private` or `private-executable`, absent
   for a plain file. See "What a materialised file keeps".
+- **Step start** (`StepStart`, swamp-club#4319): a run's small record that a
+  step began: its job, step and start time, under
+  `workflow-runs/{workflowId}/starts/{runId}/{digest}.yaml`. It commits on its
+  own, before the step runs.
+- **Start journal**: a run's committed step starts. Recovery reads it with the
+  run's record, so a step it shows started never reads as `pending`.
 
 **Partitions are aggregates.** A partition key is built only by
 `partitionOf()` (`partition_key.ts`) from the identity of the aggregate it
@@ -2501,33 +2507,46 @@ these.
    checkpoints at once when none started in the last two seconds
    (`RUN_CHECKPOINT_INTERVAL_MS`), and otherwise one trailing checkpoint
    starts when that interval ends, so the latest save lands within about
-   two seconds and a crash loses at most that much of the run. A save that
-   starts a step, one with a step `running` that no started checkpoint saw
-   running, checkpoints at once too, and the step waits for it
-   (swamp-club#4295): a crash never leaves a step that may have run recorded
-   as `pending`, which `workflow recover` would run again without asking. A
-   step that ends while a sibling still runs checkpoints at once as well, or
-   recovery would ask about it with the sibling; a step that ends alone needs
-   none, as the next step's start carries its end.
-   That costs one commit per step start, each storing the whole record: for
-   200 steps the bench stores 86.5 MiB of chunks against 0.86 MiB paced for
-   instant steps, 5.6 MiB for 100 ms steps and 22.6 MiB for 500 ms steps;
-   steps of 2 s or more already checkpoint about once each, and now commit
-   about twice as often. The bench assumes 4.5 KiB of record per step; real
-   run records hold about 2.3 KiB, about half that. The superseded versions
-   are chunks swept once retention drops their commits. Each step start waits
-   for its commit: an 11-step run took about 12 ms more per step on a
-   filesystem and 13 ms on an emulator S3 bucket (release
-   `20261102.155049.0`, interleaved, an A/A control within 5 ms); a real
-   bucket adds its round trip. The cost grows with the record: a 1,000-step
-   sequential `forEach` stored 4.5 GiB against 110 MiB on a filesystem, at
-   333 against 328 ms per step, and 3.1 GiB against 85 MiB on an emulator S3
-   bucket, at 461 against 338 ms per step, since a record above the inline
-   limit is a chunk uploaded before its commit lands. Two windows stay, as on v1: a
-   reader sees the staged record before it commits, and a step of a parallel
-   level or job, whose stream is drained eagerly, starts its method while its
-   start commits. A failed or refused step-start checkpoint is logged like
-   any other and the step runs; the run's end commit then reports it. One per save
+   two seconds and a crash loses at most that much of the run. A step's
+   start is never left to that pace (swamp-club#4295, swamp-club#4319): a
+   crash must never leave a step that may have run recorded as `pending`,
+   which `workflow recover` would run again without asking. So a run's move
+   into running (its create, a resume, a recovery, a nested child's create)
+   commits that run's own record at once, and then each step start commits a
+   `StepStart` on its own, before the step runs. Both are direct appends of
+   one op (`appendNow`): they never flush what the open unit has staged, so
+   a start costs the same whatever the size of the run's record, and never
+   waits behind a paced upload of it. Recovery reads the start journal with
+   the record: a step the record shows `pending`, does not hold yet (a
+   `forEach` iteration a paced save added), or holds from an older start,
+   reads as `unknown`. A step that ends while a sibling still runs stays
+   paced, so recovery may ask about a parallel step that had already ended;
+   that is the safe direction, and an end marker could not stand in for the
+   record, which holds the step's outputs. Starts are never removed during a
+   run: a removal staged with a record save could land without that save. A
+   recovery's reset withdraws the start of a step it resets only once the
+   committed record already shows that step settled, and a run's starts go
+   with the run (delete, gc, retention). A start whose append fails is
+   retried within the same bound as other v3 commits, on network, unreachable
+   and seq-gap failures. If it still cannot land, or the datastore refuses
+   it, the step goes back to `pending`, which is true, no further step starts
+   (queued steps and cleanup steps included), steps already running finish,
+   and the run fails with the commit-unreachable code (exit 75). The error
+   says `workflow resume` when the failed record committed, and `workflow
+   recover`, then resume, when it did not. On the bench, 1,000 instant steps
+   store 4.29 MiB of chunks with starts, as paced, against 2,149 MiB when each
+   start committed the whole record; each start adds about 1.5 KiB to the
+   commit log. A real sequential 1,000-step `forEach` took 324 to 325 ms per
+   step on a filesystem against 323 to 327 ms paced, storing 105 to 115 MiB
+   against 87 to 106 MiB, and 336 to 339 ms per step on an emulator S3 bucket
+   against 339 to 341 ms, storing 76 to 90 MiB against 77 to 99 MiB. The
+   spread is how many paced whole-record checkpoints happen to land, which the
+   starts do not change. A serve that does not take starts (an older one) names no
+   `step-starts` feature in its replies, and its members commit each start as
+   the whole record, as before. Two windows stay, as on v1: a reader sees the
+   staged record before it commits, and a step of a level with two or more
+   jobs, whose stream is drained eagerly, starts its method while its start
+   commits, so such a step can run though its start never lands. One per save
    would store the whole record each time, and the record grows with every
    step: a 200-step run stored 80 MiB of chunks instead of 0.86 MiB
    (`scripts/bench_v3_workflow_checkpoint.ts`). A checkpoint
@@ -3770,6 +3789,10 @@ The record key is the file's path under the namespace root:
   run GC and `deleteAllByWorkflowId` remove logs where runs write them
   (swamp-club#3266) with no signal.
 - A run's snapshot is #3256's (`run-snapshot.*`, same partition).
+- A run's step starts (`run-start.*`, same partition) live under
+  `workflow-runs/{workflowId}/starts/{runId}/`, where a directory listing of
+  run records, which reads only `workflow-run-*.yaml` files, never meets them.
+  Each is a direct append, never staged; removals of the run tombstone them.
 
 **The `bulk` mapping.** Neither repository stages a `bulk` change on v2.
 `deleteAllByWorkflowId`'s directory removal, the only directory mark,
@@ -6707,13 +6730,14 @@ resource is the same one serve's handlers check for the same write:
 | Any intent on a control-plane behavior (`swamp/grant`, `swamp/group`, `swamp/server-token`, …), and the control-plane intent kinds | `admin`, on its `access:` record | `admin` |
 | Any intent on a `--restricted-model-types` type | `admin` | as its kind |
 | `run.create`, `run.update` | `run` on the workflow | `read` on the workflow |
-| `run.delete`, `run-snapshot.delete` | `write` on the workflow; `admin` on it when the stored run record is serve-driven or holds an approval decision, or cannot be read | `read` on the workflow |
+| `run.delete`, `run-snapshot.delete`, `run-start.delete` | `write` on the workflow; `admin` on it when the stored run record is serve-driven or holds an approval decision, or cannot be read | `read` on the workflow |
 | `definition.delete`, `evaluated-workflow.delete` | `write` on `model:`, `workflow:` or `vault:` by kind | `read` on it |
 | `definition.rename-from` | `write` on both names the rename joins | `read` on it |
 | `definition.create`, `.edit`, `.rename-to` of a behavior, workflow or vault | `write` on the definition, both names for a rename, and its content checks | `read` by kind |
 | `evaluated-definition.save`, `evaluated-workflow.save` | `run` on the behavior or workflow (`admin` for an admin-only type), as saving an evaluation is decided (swamp-club#3940), and its binding | `read` by kind |
 | `auto-definition.save` | `run` on the type and the behavior, and its content checks | `admin` |
 | `run-snapshot.save` | `run` on the workflow, and its binding | `read` on the workflow |
+| `run-start.save` | `run` on the workflow, and its content checks | `read` on the workflow |
 | `definition.delete`, or a move's tombstone, of a vault config | `admin`: serve's API never removes a vault config | `read` on it |
 | `auto-definition.delete` | `write` on the behavior | `read` on it |
 | `lockfile.write` | `admin` | any authenticated caller |
@@ -6795,6 +6819,12 @@ to the same write. The checks the handlers share are one implementation
      inputs, vault references as vault reads, and step outputs must name what
      the step runs and data the caller may read: decided before the lock and
      again under it, so a grant revoked in between refuses the commit.
+  8. A step start (`judgeRunStart`, swamp-club#4319) holds a job, a step and a
+     start time and nothing else, is filed under its own digest, names the
+     run its partition holds, and lands only beside a stored record that serve
+     does not drive, read so the lock re-checks it. A reader that does not name
+     `step-starts` in `x-swamp-datastore-features` is sent no start, and a
+     commit of nothing else is left out of its catch-up whole.
 
 - **Data**: a sensitive field's vault reference is one the caller may read,
   or may write under the key the data writer derives for the behavior's own

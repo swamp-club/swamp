@@ -342,7 +342,7 @@ function hookReferencesOutsideSignalChange(
           );
           const after = source.slice(start + match[0].length);
           if (
-            /\b(?:signalChange|withChangeSignalled|stageTyped|typedStagingActive|versionFloorSource|unitAdmitsKey)\(\s*$/
+            /\b(?:signalChange|withChangeSignalled|stageTyped|typedStagingActive|versionFloorSource|unitAdmitsKey|storedVersionOf|forwardsToServe)\(\s*$/
               .test(
                 before,
               ) &&
@@ -1203,8 +1203,10 @@ Deno.test("datastore write seams: repositories reference their hook only as sign
     "A repository reaches its mark hook only as the first argument of\n" +
       "signalChange(this.<hook>, change), stageTyped(this.<hook>, build) or\n" +
       "typedStagingActive(this.<hook>), or looks up its unit's version floor\n" +
-      "with versionFloorSource(this.<hook>) or its filter with\n" +
-      "unitAdmitsKey(this.<hook>, key), so the unit of work sees every\n" +
+      "with versionFloorSource(this.<hook>), its filter with\n" +
+      "unitAdmitsKey(this.<hook>, key), or reads a key's committed version\n" +
+      "or whether it forwards with storedVersionOf(this.<hook>, …) or\n" +
+      "forwardsToServe(this.<hook>), so the unit of work sees every\n" +
       "change.\n" +
       "Do not call the hook, pass it on, or store it.",
   );
@@ -1227,6 +1229,8 @@ Deno.test("datastore write seams: the hook reference scan catches calls and pass
     "    if (typedStagingActive(this.markDirty)) read();",
     "    const floors = versionFloorSource(this.markDirty);",
     "    const kept = unitAdmitsKey(this.markDirty, key);",
+    "    const stored = await storedVersionOf(this.markDirty, p, key);",
+    "    if (forwardsToServe(this.markDirty)) return;",
     "    await stageTyped(",
     "      this.markDirty,",
     "      () => changes,",

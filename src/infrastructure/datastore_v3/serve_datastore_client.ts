@@ -111,6 +111,9 @@ export const SERVE_DATASTORE_FEATURES_HEADER = "x-swamp-datastore-features";
 
 export const LEASE_OPS_FEATURE = "lease-ops";
 
+/** without it in serve's replies, a member commits each start as the whole record */
+export const STEP_STARTS_FEATURE = "step-starts";
+
 export function serveRequestTimeoutMs(): number {
   const env = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
   if (env !== undefined) {
@@ -238,6 +241,7 @@ export class ServeDatastoreClient {
   readonly #maxRetryDelayMs: number;
   #logCheck: ((logId: string | undefined) => void) | undefined;
   #accessCheck: ((fingerprint: string) => void) | undefined;
+  #takesStepStarts = false;
 
   constructor(options: ServeDatastoreClientOptions) {
     this.baseUrl = normalizeServerUrl(options.baseUrl);
@@ -792,6 +796,10 @@ export class ServeDatastoreClient {
     });
   }
 
+  takesStepStarts(): boolean {
+    return this.#takesStepStarts;
+  }
+
   async #exchange<T>(
     spec: RequestSpec,
     signal: AbortSignal,
@@ -846,6 +854,12 @@ export class ServeDatastoreClient {
           await response.body?.cancel();
           throw error;
         }
+      }
+      if (logId !== undefined) {
+        this.#takesStepStarts =
+          (response.headers.get(SERVE_DATASTORE_FEATURES_HEADER) ?? "")
+            .split(",")
+            .some((feature) => feature.trim() === STEP_STARTS_FEATURE);
       }
       const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
       if (this.#accessCheck !== undefined && access !== null) {
@@ -907,7 +921,10 @@ export class ServeDatastoreClient {
 
   #headers(spec: RequestSpec): Headers {
     const headers = new Headers(this.#extraHeaders);
-    headers.set(SERVE_DATASTORE_FEATURES_HEADER, LEASE_OPS_FEATURE);
+    headers.set(
+      SERVE_DATASTORE_FEATURES_HEADER,
+      `${LEASE_OPS_FEATURE},${STEP_STARTS_FEATURE}`,
+    );
     for (const [name, value] of Object.entries(spec.headers ?? {})) {
       headers.set(name, value);
     }

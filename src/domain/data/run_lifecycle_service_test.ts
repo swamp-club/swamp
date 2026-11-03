@@ -50,6 +50,7 @@ function createMockWorkflowRunRepo(
     nextId: () => "mock-id" as ReturnType<WorkflowRunRepository["nextId"]>,
     getPath: () => "",
     deleteAllByWorkflowId: () => Promise.resolve(0),
+    findStepStarts: () => Promise.resolve([]),
     deleteOlderThan: (cutoff: Date, options?: { dryRun?: boolean }) => {
       mock.lastCutoff = cutoff;
       mock.lastDryRun = options?.dryRun;

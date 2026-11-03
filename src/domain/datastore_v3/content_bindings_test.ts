@@ -26,10 +26,13 @@ import {
   identityRefusal,
   isCanonicalRunLogFile,
   judgeRunRecord,
+  judgeRunStart,
   runIdentityRefusal,
   type RunRecordContext,
+  type RunStartContext,
 } from "./content_bindings.ts";
 import type { Intent } from "./intent.ts";
+import { StepStart, type StepStartData } from "../workflows/step_start.ts";
 
 const ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const OTHER = "11111111-2222-4333-8444-555555555555";
@@ -621,4 +624,77 @@ Deno.test("judgeRunRecord: deferred expressions and workflow artifacts a record 
   assertEquals(judged.refusal, undefined);
   assertEquals(judged.addedDeferred, [{ expression: "e" }]);
   assertEquals(judged.addedOutputs[0].dataArtifacts, [{ name: "a" }]);
+});
+
+function startOf(fields: Partial<StepStartData> = {}): StepStart {
+  return StepStart.create({
+    workflowId: WORKFLOW,
+    runId: RUN,
+    jobName: "main",
+    stepName: "deploy",
+    startedAt: Date.parse(STARTED),
+    ...fields,
+  });
+}
+
+function judgeStart(
+  start: StepStart,
+  record: WorkflowRunData | undefined,
+  extra: Partial<RunStartContext> = {},
+) {
+  return judgeRunStart({
+    workflowId: WORKFLOW,
+    runId: RUN,
+    fileName: start.fileName,
+    content: start.toData(),
+    record,
+    ...extra,
+  });
+}
+
+Deno.test("judgeRunStart: a member's start of its own member-driven run is taken", () => {
+  assertEquals(judgeStart(startOf(), run([step("deploy")])), undefined);
+});
+
+Deno.test("judgeRunStart: a start carrying anything beyond a start, such as a decision, is refused", () => {
+  const start = startOf();
+  assert(
+    judgeStart(start, run([step("deploy")]), {
+      content: { ...start.toData(), approvalDecision: { approved: true } },
+    }) !== undefined,
+  );
+  assert(
+    judgeStart(start, run([step("deploy")]), { content: "deploy" }) !==
+      undefined,
+  );
+});
+
+Deno.test("judgeRunStart: a start naming another run or workflow, or held under another start's key, is refused", () => {
+  const record = run([step("deploy")]);
+  assert(judgeStart(startOf({ runId: OTHER }), record) !== undefined);
+  assert(judgeStart(startOf({ workflowId: OTHER }), record) !== undefined);
+  assert(
+    judgeStart(startOf(), record, {
+      fileName: startOf({ stepName: "other" }).fileName,
+    }) !== undefined,
+  );
+});
+
+Deno.test("judgeRunStart: a run with no stored record, or one serve drives, takes no forwarded start", () => {
+  const principal = {
+    kind: "user",
+    id: "ana",
+    membership: { localGroups: [], idpGroups: [], collectives: [] },
+  } as WorkflowRunData["triggeringPrincipal"];
+  assert(judgeStart(startOf(), undefined) !== undefined);
+  assert(
+    judgeStart(
+      startOf(),
+      run([step("deploy")], { triggeringPrincipal: principal }),
+    ) !== undefined,
+  );
+  assert(
+    judgeStart(startOf(), run([step("deploy")], { instanceId: "leader" })) !==
+      undefined,
+  );
 });

@@ -41,6 +41,7 @@ import {
 } from "./workflow_run_index.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { StepStart } from "../../domain/workflows/step_start.ts";
 import { INDEXED_INPUT_MAX_BYTES } from "../../domain/workflows/workflow_run_summary.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
@@ -61,6 +62,13 @@ import {
 } from "./test_helpers/staged_change_helpers.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
+import { createHash } from "node:crypto";
+import type { PutExpect } from "../../domain/datastore_v3/op.ts";
+import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
+import {
+  bindCommitLogEngine,
+  type CommitLogEngine,
+} from "./repo_unit_of_work.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   captureUnreadableWarnings,
@@ -1555,7 +1563,7 @@ Deno.test("runIndexSnapshot: sees runs another process saves, and an index anoth
       "running",
     );
 
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await writer.save(workflow.id, run);
     assertEquals(
       (await reader.runIndexSnapshot(workflow.id)).get(run.id)?.summary.status,
@@ -2621,7 +2629,7 @@ Deno.test("save: concurrent saves of different runs of one workflow keep every i
     }
 
     await Promise.all(runs.map((run) => {
-      run.interruptOrphaned("test");
+      run.interruptOrphaned("test", []);
       return repo.save(workflow.id, run);
     }));
 
@@ -2655,7 +2663,7 @@ Deno.test("findGlobalById: repairs an index entry that disagrees with the record
     const runningRecord = await Deno.readTextFile(
       repo.getPath(workflow.id, run.id),
     );
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await repo.save(workflow.id, run);
     await replaceRecord(repo, workflow.id, run, runningRecord);
     assertEquals((await repo.findGlobalByStatus("running")).length, 0);
@@ -2677,7 +2685,7 @@ Deno.test("findGlobalByStatus: repairs an entry the index lists under a status i
     await repo.save(workflow.id, run);
     const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
     const staleIndex = await Deno.readTextFile(getIndexPath(indexDir));
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await repo.save(workflow.id, run);
     await Deno.writeTextFile(getIndexPath(indexDir), staleIndex);
 
@@ -2714,7 +2722,7 @@ Deno.test("verifyIndexes: corrects entries of records replaced without a save", 
     const runningRecord = await Deno.readTextFile(
       repo.getPath(workflow.id, run.id),
     );
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await repo.save(workflow.id, run);
     await replaceRecord(repo, workflow.id, run, runningRecord);
 
@@ -2743,7 +2751,7 @@ Deno.test("verifyIndexes: keeps the entry of a run saved while it verifies", asy
       runs.push(run);
     }
 
-    runs[0].interruptOrphaned("test");
+    runs[0].interruptOrphaned("test", []);
     await Promise.all([
       repo.verifyIndexes(),
       repo.save(workflow.id, runs[0]),
@@ -2767,7 +2775,7 @@ Deno.test("findGlobalById: a read racing a save never leaves the index behind th
       run.start();
       await repo.save(workflow.id, run);
 
-      run.interruptOrphaned("test");
+      run.interruptOrphaned("test", []);
       await Promise.all([
         repo.findGlobalById(run.id),
         repo.save(workflow.id, run),
@@ -2797,7 +2805,7 @@ Deno.test("verifyIndexes: a workflow with an unreadable record does not stop the
     const runningRecord = await Deno.readTextFile(
       repo.getPath(otherId, run.id),
     );
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await repo.save(otherId, run);
     await replaceRecord(repo, otherId, run, runningRecord);
 
@@ -3677,7 +3685,7 @@ Deno.test("repairIndex: a writer queued between readers separates their validati
     const indexPath = getIndexPath(indexDir);
     const [finished, added] = await saveRunningRuns(repo, workflow, 2);
     const staleEntry = (await readRunIndex(indexDir))!.entries[finished.id];
-    finished.interruptOrphaned("test");
+    finished.interruptOrphaned("test", []);
     await repo.save(workflow.id, finished);
     await dropIndexEntries(indexDir, [added.id]);
     const release = Promise.withResolvers<void>();
@@ -3896,7 +3904,7 @@ Deno.test("getValidatedIndex: a count mismatch also corrects an entry whose reco
 
     // The record moves on, but the index keeps the entry it had, as when
     // another repository's save replaces a record in a shared datastore.
-    replaced.interruptOrphaned("test");
+    replaced.interruptOrphaned("test", []);
     await repo.save(workflow.id, replaced);
     const result = await readRunIndex(indexDir);
     await writeRunIndex(indexDir, {
@@ -4004,7 +4012,7 @@ Deno.test("getValidatedIndex: a reader that counted before a save's entry landed
     // A save in another process, made from the index as it was before this
     // run moved on, overwrites the run's entry with the one it had: the
     // record and entry counts still agree.
-    finished.interruptOrphaned("test");
+    finished.interruptOrphaned("test", []);
     await repo.save(workflow.id, finished);
     const result = await readRunIndex(indexDir);
     await writeRunIndex(indexDir, {
@@ -5081,7 +5089,7 @@ Deno.test("save: appends the run's line to the index without rewriting it", asyn
     const before = await Deno.readTextFile(indexPath);
     const inode = (await Deno.stat(indexPath)).ino;
 
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await repo.save(workflow.id, run);
 
     const after = await Deno.readTextFile(indexPath);
@@ -5114,7 +5122,7 @@ Deno.test("save: the compaction bound is read from the index, so a fresh reposit
     const compacted = await Deno.readTextFile(indexPath);
     assert(compacted.length > INDEX_COMPACTION_FLOOR_BYTES);
 
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
     assert((await Deno.readTextFile(indexPath)).startsWith(compacted));
 
@@ -5245,7 +5253,7 @@ Deno.test("save: compacting a damaged index past the bound repairs it, so later 
       { append: true },
     );
 
-    run.interruptOrphaned("test");
+    run.interruptOrphaned("test", []);
     await repo.save(workflow.id, run);
 
     const repaired = await readRunIndex(indexDir);
@@ -5255,5 +5263,235 @@ Deno.test("save: compacting a damaged index past the bound repairs it, so later 
       (await Deno.readTextFile(indexPath)).trimEnd().split("\n").length,
       2,
     );
+  });
+});
+
+function startFor(run: WorkflowRun, stepName: string, at = 1): StepStart {
+  return StepStart.create({
+    workflowId: run.workflowId,
+    runId: run.id,
+    jobName: run.jobs[0].jobName,
+    stepName,
+    startedAt: at,
+  });
+}
+
+Deno.test("YamlWorkflowRunRepository.findStepStarts: reads the starts it wrote, under the run's own starts, outside the run records' listing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const change = await repo.writeStepStart(startFor(run, "a"));
+    await repo.writeStepStart(startFor(run, "b", 2));
+
+    assert("put" in change);
+    assertEquals(change.put.intent.kind, "run-start.save");
+    assertEquals(
+      change.put.key.toString(),
+      `workflow-runs/${workflow.id}/starts/${run.id}/${
+        startFor(run, "a").fileName
+      }`,
+    );
+    const starts = await repo.findStepStarts(workflow.id, run.id);
+    assertEquals(starts.map((start) => start.stepName).sort(), ["a", "b"]);
+    assertEquals((await repo.findAllByWorkflowId(workflow.id)).length, 1);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findStepStarts: skips a start filed under another run or another start's name", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    const other = WorkflowRun.create(workflow);
+    await repo.writeStepStart(startFor(run, "a"));
+    const startsDir = join(
+      dirname(repo.getPath(workflow.id, run.id)),
+      "starts",
+      run.id,
+    );
+    const foreign = startFor(other, "q");
+    await Deno.writeTextFile(
+      join(startsDir, foreign.fileName),
+      foreign.toYaml(),
+    );
+    await Deno.writeTextFile(
+      join(startsDir, startFor(run, "z").fileName),
+      startFor(run, "a", 5).toYaml(),
+    );
+    const starts = await repo.findStepStarts(workflow.id, run.id);
+    assertEquals(starts.map((start) => start.stepName), ["a"]);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: removes a run's starts with its record", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    await repo.writeStepStart(startFor(run, "a"));
+    assertEquals(await repo.deleteAllByWorkflowId(workflow.id), 1);
+    assertEquals(await repo.findStepStarts(workflow.id, run.id), []);
+  });
+});
+
+/**
+ * a repository staging typed changes whose engine answers the record's
+ * committed version with `stored`, given the checkout's record bytes
+ */
+function withdrawalRepo(
+  dir: string,
+  stored: (bytes: Uint8Array) => PutExpect,
+  forwards = false,
+) {
+  const { markDirty, uow, batches } = typedRecordingUnitOfWork();
+  const repo = new YamlWorkflowRunRepository(
+    dir,
+    undefined,
+    undefined,
+    markDirty,
+  );
+  // the runs directory: a run's path is <runs>/<workflowId>/<record>
+  const runsDir = dirname(dirname(repo.getPath(
+    createWorkflowId(crypto.randomUUID()),
+    createWorkflowRunId(crypto.randomUUID()),
+  )));
+  bindCommitLogEngine(markDirty, {
+    forwardsToServe: forwards,
+    storedVersion: async (_partition: unknown, key: string) =>
+      stored(await Deno.readFile(join(runsDir, ...key.split("/").slice(1)))),
+  } as unknown as CommitLogEngine);
+  const withdrawn = () =>
+    batches.flat().filter((change) =>
+      "op" in change && change.op.kind === "tombstone" &&
+      change.op.intent.kind === "run-start.delete"
+    ).length;
+  return { repo, uow, withdrawn };
+}
+
+async function settledRunWithStart(
+  repo: YamlWorkflowRunRepository,
+  uow: UnitOfWork,
+  status: "unknown" | "succeeded" | "running" | "pending",
+) {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const step = run.jobs[0].steps[0];
+  if (status !== "pending") step.start();
+  if (status === "succeeded") step.succeed();
+  if (status === "unknown") step.markUnknown("interrupted");
+  await runInUnitOfWork(uow, () => repo.save(workflow.id, run));
+  await repo.writeStepStart(startFor(run, step.stepName));
+  return { workflow, run, stepName: step.stepName };
+}
+
+const digestOf = (bytes: Uint8Array) => ({
+  sha256: createHash("sha256").update(bytes).digest("hex"),
+});
+
+for (const status of ["unknown", "succeeded"] as const) {
+  Deno.test(`YamlWorkflowRunRepository.withdrawSettledStepStarts: withdraws the start of a step the committed record shows ${status}`, async () => {
+    await withTempDir(async (dir) => {
+      const { repo, uow, withdrawn } = withdrawalRepo(dir, digestOf);
+      const { workflow, run, stepName } = await settledRunWithStart(
+        repo,
+        uow,
+        status,
+      );
+      await runInUnitOfWork(
+        uow,
+        () => repo.withdrawSettledStepStarts(workflow.id, run.id, [stepName]),
+      );
+      assertEquals(withdrawn(), 1);
+      assertEquals(await repo.findStepStarts(workflow.id, run.id), []);
+    });
+  });
+}
+
+for (const status of ["running", "pending"] as const) {
+  Deno.test(`YamlWorkflowRunRepository.withdrawSettledStepStarts: keeps the start of a step the committed record shows ${status}`, async () => {
+    await withTempDir(async (dir) => {
+      const { repo, uow, withdrawn } = withdrawalRepo(dir, digestOf);
+      const { workflow, run, stepName } = await settledRunWithStart(
+        repo,
+        uow,
+        status,
+      );
+      await runInUnitOfWork(
+        uow,
+        () => repo.withdrawSettledStepStarts(workflow.id, run.id, [stepName]),
+      );
+      assertEquals(withdrawn(), 0);
+      assertEquals(
+        (await repo.findStepStarts(workflow.id, run.id)).length,
+        1,
+      );
+    });
+  });
+}
+
+Deno.test("YamlWorkflowRunRepository.withdrawSettledStepStarts: keeps the start when the record is not committed, or the committed record is not the checkout's", async () => {
+  for (
+    const stored of [
+      (): PutExpect => "absent",
+      (): PutExpect => ({ sha256: "0".repeat(64) }),
+    ]
+  ) {
+    await withTempDir(async (dir) => {
+      const { repo, uow, withdrawn } = withdrawalRepo(dir, stored);
+      const { workflow, run, stepName } = await settledRunWithStart(
+        repo,
+        uow,
+        "unknown",
+      );
+      await runInUnitOfWork(
+        uow,
+        () => repo.withdrawSettledStepStarts(workflow.id, run.id, [stepName]),
+      );
+      assertEquals(withdrawn(), 0);
+      assertEquals(
+        (await repo.findStepStarts(workflow.id, run.id)).length,
+        1,
+      );
+    });
+  }
+});
+
+Deno.test("YamlWorkflowRunRepository.withdrawSettledStepStarts: off v3 it withdraws nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    run.jobs[0].steps[0].start();
+    run.jobs[0].steps[0].markUnknown("interrupted");
+    await repo.save(workflow.id, run);
+    await repo.writeStepStart(startFor(run, run.jobs[0].steps[0].stepName));
+    await repo.withdrawSettledStepStarts(workflow.id, run.id, [
+      run.jobs[0].steps[0].stepName,
+    ]);
+    assertEquals((await repo.findStepStarts(workflow.id, run.id)).length, 1);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.withdrawSettledStepStarts: through serve it withdraws nothing, so a member who may recover with run alone is not refused", async () => {
+  await withTempDir(async (dir) => {
+    const { repo, uow, withdrawn } = withdrawalRepo(dir, digestOf, true);
+    const { workflow, run, stepName } = await settledRunWithStart(
+      repo,
+      uow,
+      "unknown",
+    );
+    await runInUnitOfWork(
+      uow,
+      () => repo.withdrawSettledStepStarts(workflow.id, run.id, [stepName]),
+    );
+    assertEquals(withdrawn(), 0);
+    assertEquals((await repo.findStepStarts(workflow.id, run.id)).length, 1);
   });
 });

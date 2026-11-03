@@ -17,6 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RunStartChanges } from "../../domain/datastore_v3/repository_changes.ts";
+import {
+  AppendUnrecordedError,
+  type TypedChange,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import {
+  setV3DatastoreFaultsForTesting,
+  type V3Datastore,
+} from "./v3_datastore.ts";
 import {
   assert,
   assertEquals,
@@ -1775,4 +1785,116 @@ Deno.test("initializeV3Datastore: a copy that saw no marker adopts the winner's,
       "already exists",
     );
   });
+});
+
+function stepStartChange(): TypedChange {
+  const workflowId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  return new RunStartChanges(workflowId, runId).write(
+    recordKeyOf([
+      "workflow-runs",
+      workflowId,
+      "starts",
+      runId,
+      `${"d".repeat(64)}.yaml`,
+    ]),
+    new TextEncoder().encode("startedAt: 1\n"),
+  );
+}
+
+async function appendWithSinkFaults(
+  fail: (attempt: number) => Error | undefined,
+  run: (
+    engine: ReturnType<V3Datastore["engineFor"]>,
+  ) => Promise<void>,
+): Promise<number> {
+  let attempts = 0;
+  setV3DatastoreFaultsForTesting({
+    wrapSink: (sink) => ({
+      ...sink,
+      append: (commit) => {
+        const starts = commit.ops.some((op) =>
+          "intent" in op && op.intent.kind === "run-start.save"
+        );
+        if (!starts) return sink.append(commit);
+        const error = fail(++attempts);
+        return error === undefined
+          ? sink.append(commit)
+          : Promise.reject(error);
+      },
+    }),
+  });
+  try {
+    await withTempDir(async (root) => {
+      const dir = join(root, "datastore");
+      await Deno.mkdir(dir);
+      await initializeV3Datastore(dir, "test");
+      const handle = openV3Datastore({
+        repoDir: join(root, "repo"),
+        datastorePath: dir,
+      });
+      try {
+        const engine = handle.engineFor(() => Promise.resolve(), () => {
+          throw new Error("no run repository needed");
+        });
+        await engine.runRoot({}, async () => {
+          const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+          await runInUnitOfWork(unit, () => run(engine));
+          await unit.commit();
+        });
+      } finally {
+        await handle.close();
+      }
+    });
+  } finally {
+    setV3DatastoreFaultsForTesting(undefined);
+  }
+  return attempts;
+}
+
+function connectionRefused(): Error {
+  return Object.assign(new Error("connect ECONNREFUSED"), {
+    code: "ECONNREFUSED",
+  });
+}
+
+Deno.test("openV3Datastore: a step start the network fails once is appended again and commits (swamp-club#4319)", async () => {
+  const attempts = await appendWithSinkFaults(
+    (attempt) => attempt === 1 ? connectionRefused() : undefined,
+    async (engine) => {
+      assertEquals(
+        await engine.appendToOpenUnit!([stepStartChange()]),
+        "committed",
+      );
+    },
+  );
+  assertEquals(attempts, 2);
+});
+
+Deno.test("openV3Datastore: a step start the network keeps failing gives up within the bounded retry as unrecorded (swamp-club#4319)", async () => {
+  const attempts = await appendWithSinkFaults(
+    () => connectionRefused(),
+    async (engine) => {
+      const error = await assertRejects(
+        () => engine.appendToOpenUnit!([stepStartChange()]),
+        AppendUnrecordedError,
+      );
+      assertEquals(error.refused, false);
+    },
+  );
+  assertEquals(attempts, 3);
+});
+
+Deno.test("openV3Datastore: a step start the datastore refuses is not retried (swamp-club#4319)", async () => {
+  const attempts = await appendWithSinkFaults(
+    () => new CommitRejectedError("expect-failed", "refused"),
+    async (engine) => {
+      const error = await assertRejects(
+        () => engine.appendToOpenUnit!([stepStartChange()]),
+        AppendUnrecordedError,
+      );
+      assertEquals(error.refused, true);
+    },
+  );
+  assertEquals(attempts, 1);
 });

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { StepStart } from "../../domain/workflows/step_start.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   extractStepArtifacts,
@@ -93,6 +94,10 @@ class InMemoryWorkflowRepository implements WorkflowRepository {
 class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
   recordsAreForwarded = false;
   private runs = new Map<string, WorkflowRun[]>();
+
+  findStepStarts(): Promise<StepStart[]> {
+    return Promise.resolve([]);
+  }
 
   findById(
     wfId: WorkflowId,

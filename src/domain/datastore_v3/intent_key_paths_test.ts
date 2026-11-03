@@ -132,6 +132,32 @@ Deno.test("bindKey: runs and run snapshots own only their own record", () => {
   );
 });
 
+Deno.test("bindKey: a step start owns only a digest-named file in its own run's starts", () => {
+  const start = intent({
+    kind: "run-start.save",
+    run: { workflowId: WORKFLOW, runId: RUN },
+  });
+  const digest = "c".repeat(64);
+  assert(
+    bound(start, `workflow-runs/${WORKFLOW}/starts/${RUN}/${digest}.yaml`),
+  );
+  assert(
+    !bound(start, `workflow-runs/${WORKFLOW}/starts/${ID}/${digest}.yaml`),
+  );
+  assert(!bound(start, `workflow-runs/${ID}/starts/${RUN}/${digest}.yaml`));
+  assert(!bound(start, `workflow-runs/${WORKFLOW}/starts/${RUN}/x.yaml`));
+  assert(
+    !bound(start, `workflow-runs/${WORKFLOW}/workflow-run-${RUN}.yaml`),
+  );
+  const record = intent({
+    kind: "run.update",
+    run: { workflowId: WORKFLOW, runId: RUN },
+  });
+  assert(
+    !bound(record, `workflow-runs/${WORKFLOW}/starts/${RUN}/${digest}.yaml`),
+  );
+});
+
 Deno.test("bindKey: a behavior definition's key names its type, and a uuid file is returned for an owner check", () => {
   const create = intent({
     kind: "definition.create",

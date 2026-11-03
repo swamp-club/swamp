@@ -2346,7 +2346,13 @@ export async function handleRunDoctor(
 
             orphanedWorkflowRuns++;
             if (payload?.fix) {
-              run.interruptOrphaned("doctor_reap");
+              run.interruptOrphaned(
+                "doctor_reap",
+                await ctx.repoContext.workflowRunRepo.findStepStarts(
+                  workflowId,
+                  run.id,
+                ),
+              );
               await ctx.repoContext.workflowRunRepo.save(workflowId, run);
               runTracker.markSettled(run.id, "doctor_reap");
               orphanedReaped++;

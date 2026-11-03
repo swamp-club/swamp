@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { hostname as osHostname } from "node:os";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { Job } from "../../domain/workflows/job.ts";
@@ -27,8 +27,17 @@ import { Workflow } from "../../domain/workflows/workflow.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type {
   CommitLogEngine,
+  OpenUnitAppend,
   OpenUnitCheckpoint,
 } from "./repo_unit_of_work.ts";
+import {
+  AppendUnrecordedError,
+  COMMIT_UNREACHABLE_CODE,
+  type TypedChange,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { StepStartUnrecordedError } from "../../domain/workflows/step_start.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { WorkflowRunCheckpointer } from "./workflow_run_checkpointer.ts";
 
 const ROOT_FAILED = new Error("the end commit failed");
@@ -536,5 +545,250 @@ Deno.test("WorkflowRunCheckpointer: a step that ends while a sibling runs checkp
   run.jobs[0].steps[1].succeed();
   await checkpointer.checkpoint(run);
   assertEquals(commitLog.calls(), 2);
+  await checkpointer.close();
+});
+
+interface Appended {
+  readonly kind: string;
+  readonly bytes: number;
+}
+
+/** an engine that takes direct appends, recording each attempt's intent and size */
+function journalEngine(
+  answer: (change: TypedChange) => Promise<OpenUnitAppend>,
+): CommitLogEngine & {
+  readonly calls: () => number;
+  readonly appended: Appended[];
+} {
+  const base = engine(() => Promise.resolve("committed"));
+  const appended: Appended[] = [];
+  return {
+    ...base,
+    appendToOpenUnit: async (changes) => {
+      const [change] = changes;
+      const put = "put" in change ? change.put : undefined;
+      appended.push({
+        kind: put?.intent.kind ?? "op",
+        bytes: put?.content instanceof Uint8Array ? put.content.length : -1,
+      });
+      return await answer(change);
+    },
+    appended,
+  };
+}
+
+async function withRunRepo(
+  fn: (repo: YamlWorkflowRunRepository) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-journal-" });
+  try {
+    await fn(new YamlWorkflowRunRepository(dir));
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+function manyStepRun(steps: number): WorkflowRun {
+  return WorkflowRun.create(Workflow.create({
+    name: "flow",
+    jobs: [Job.create({
+      name: "main",
+      steps: Array.from({ length: steps }, (_, i) =>
+        Step.create({
+          name: `step-${i}`,
+          task: StepTask.model("writer", "write", {}),
+        })),
+    })],
+  }));
+}
+
+Deno.test("WorkflowRunCheckpointer: with a journal, a run's move into running appends its record and each step start appends only its StepStart, with no whole-record checkpoint", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    const commitLog = journalEngine(() => Promise.resolve("committed"));
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog, workflowRunRepo },
+      { intervalMs: 60_000, now: () => 0 },
+    );
+    const run = twoStepRun();
+    run.start();
+    await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+    await checkpointer.checkpoint(run);
+    run.jobs[0].start();
+    run.jobs[0].steps[0].start();
+    await checkpointer.checkpoint(run);
+    run.jobs[0].steps[0].succeed();
+    run.jobs[0].steps[1].start();
+    await checkpointer.checkpoint(run);
+    assertEquals(commitLog.appended.map((a) => a.kind), [
+      "run.update",
+      "run-start.save",
+      "run-start.save",
+    ]);
+    // the first save of the run committed nothing else at once
+    assertEquals(commitLog.calls(), 1);
+    assertEquals(
+      new Set(checkpointer.committedUnknownSteps(run.id)),
+      new Set(["a", "b"]),
+    );
+    await checkpointer.close();
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer: a step start appends the same bytes whatever the size of the run's record", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    const sizes: number[] = [];
+    for (const steps of [1, 2_000]) {
+      const commitLog = journalEngine(() => Promise.resolve("committed"));
+      const checkpointer = new WorkflowRunCheckpointer(
+        { commitLog, workflowRunRepo },
+        { intervalMs: 60_000, now: () => 0 },
+      );
+      const run = manyStepRun(steps);
+      run.start();
+      await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+      await checkpointer.checkpoint(run);
+      run.jobs[0].start();
+      run.jobs[0].steps[0].start();
+      await checkpointer.checkpoint(run);
+      const start = commitLog.appended.find((a) => a.kind === "run-start.save");
+      sizes.push(start!.bytes);
+      await checkpointer.close();
+    }
+    assertEquals(sizes[0], sizes[1]);
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer: a start that could not be committed rejects with the coded error and is appended again at the next save", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    let failStarts = true;
+    const commitLog = journalEngine((change) => {
+      const kind = "put" in change ? change.put.intent.kind : "";
+      if (failStarts && kind === "run-start.save") {
+        return Promise.reject(
+          new AppendUnrecordedError(new Error("serve is down"), false),
+        );
+      }
+      return Promise.resolve("committed");
+    });
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog, workflowRunRepo },
+      { intervalMs: 60_000, now: () => 0 },
+    );
+    const run = twoStepRun();
+    run.start();
+    await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+    await checkpointer.checkpoint(run);
+    run.jobs[0].start();
+    run.jobs[0].steps[0].start();
+    const error = await assertRejects(
+      () => checkpointer.checkpoint(run),
+      StepStartUnrecordedError,
+    );
+    assertEquals(error.code, COMMIT_UNREACHABLE_CODE);
+    assertEquals(error.start.stepName, "a");
+    assertEquals(error.start.jobName, "main");
+    failStarts = false;
+    await checkpointer.checkpoint(run);
+    assertEquals(
+      commitLog.appended.filter((a) => a.kind === "run-start.save").length,
+      2,
+    );
+    await checkpointer.close();
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer: a run whose move into running could not be committed rejects before any step starts", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    const commitLog = journalEngine(() =>
+      Promise.reject(new AppendUnrecordedError(new Error("refused"), true))
+    );
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog, workflowRunRepo },
+      { intervalMs: 60_000, now: () => 0 },
+    );
+    const run = twoStepRun();
+    run.start();
+    await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+    const error = await assertRejects(
+      () => checkpointer.checkpoint(run),
+      StepStartUnrecordedError,
+    );
+    assertEquals(error.start.stepName, undefined);
+    await checkpointer.close();
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer: when serve takes no step starts, a start commits the whole record at once instead", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    const commitLog = journalEngine((change) => {
+      const kind = "put" in change ? change.put.intent.kind : "";
+      return Promise.resolve(
+        kind === "run-start.save" ? "unsupported" : "committed",
+      );
+    });
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog, workflowRunRepo },
+      { intervalMs: 60_000, now: () => 0 },
+    );
+    const run = twoStepRun();
+    run.start();
+    await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+    await checkpointer.checkpoint(run);
+    assertEquals(commitLog.calls(), 1);
+    run.jobs[0].start();
+    run.jobs[0].steps[0].start();
+    await checkpointer.checkpoint(run);
+    assertEquals(commitLog.calls(), 2);
+    run.jobs[0].steps[0].succeed();
+    run.jobs[0].steps[1].start();
+    await checkpointer.checkpoint(run);
+    assertEquals(commitLog.calls(), 3);
+    // after serve first answers it takes no starts, no other start is tried
+    assertEquals(
+      commitLog.appended.filter((a) => a.kind === "run-start.save").length,
+      1,
+    );
+    await checkpointer.close();
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer: with a journal, a step that ends while a sibling runs stays paced", async () => {
+  await withRunRepo(async (workflowRunRepo) => {
+    const commitLog = journalEngine(() => Promise.resolve("committed"));
+    const checkpointer = new WorkflowRunCheckpointer(
+      { commitLog, workflowRunRepo },
+      { intervalMs: 60_000, now: () => 0 },
+    );
+    const run = twoStepRun();
+    run.start();
+    await workflowRunRepo.save(createWorkflowId(run.workflowId), run);
+    await checkpointer.checkpoint(run);
+    run.jobs[0].start();
+    run.jobs[0].steps[0].start();
+    run.jobs[0].steps[1].start();
+    await checkpointer.checkpoint(run);
+    const before = commitLog.calls();
+    run.jobs[0].steps[0].succeed();
+    await checkpointer.checkpoint(run);
+    assertEquals(commitLog.calls(), before);
+    await checkpointer.close();
+  });
+});
+
+Deno.test("WorkflowRunCheckpointer.committedLatest: true only once a checkpoint covers the run's latest save", async () => {
+  let fail = false;
+  const commitLog = engine(() =>
+    fail ? Promise.reject(new Error("down")) : Promise.resolve("committed")
+  );
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 0,
+  });
+  const run = newRun();
+  await checkpointer.checkpoint(run);
+  assertEquals(checkpointer.committedLatest(run.id), true);
+  fail = true;
+  run.start();
+  await checkpointer.checkpoint(run);
+  assertEquals(checkpointer.committedLatest(run.id), false);
   await checkpointer.close();
 });

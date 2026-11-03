@@ -961,7 +961,10 @@ export async function reconcileRemoteInterruptedRuns(
             // Read before the interrupt: it hands a resumed run back to the
             // owner it had before the resume.
             const deadInstanceId = run.instanceId;
-            run.interruptOrphaned("remote_instance_dead");
+            run.interruptOrphaned(
+              "remote_instance_dead",
+              await workflowRunRepo.findStepStarts(workflowId, run.id),
+            );
             await workflowRunRepo.save(workflowId, run);
             reaped++;
             yamlReaped++;
