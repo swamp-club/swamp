@@ -24,6 +24,7 @@ import type { AuthTokenListData } from "../../libswamp/auth/token_list.ts";
 import type { AuthTokenRevokeData } from "../../libswamp/auth/token_revoke.ts";
 import {
   renderAuthTokenCreate,
+  renderAuthTokenDelete,
   renderAuthTokenList,
   renderAuthTokenRevoke,
 } from "./auth_token_output.ts";
@@ -52,6 +53,8 @@ const listData: AuthTokenListData = {
       createdAt: "2026-07-23T00:00:00Z",
       lastUsedAt: "2026-08-15T12:00:00Z",
       scopes: ["extensions:push"],
+      mintedByTokenId: null,
+      status: "active",
     },
     {
       id: "tok-2",
@@ -62,8 +65,11 @@ const listData: AuthTokenListData = {
       createdAt: "2026-08-01T00:00:00Z",
       lastUsedAt: null,
       scopes: ["serve:*"],
+      mintedByTokenId: "tok-1",
+      status: "revoked",
     },
   ],
+  moreInactive: false,
 };
 
 const revokeData: AuthTokenRevokeData = {
@@ -94,7 +100,11 @@ Deno.test("renderAuthTokenList: json mode outputs tokens array", () => {
 });
 
 Deno.test("renderAuthTokenList: empty list shows hint", () => {
-  const emptyData: AuthTokenListData = { collective: "myorg", tokens: [] };
+  const emptyData: AuthTokenListData = {
+    collective: "myorg",
+    tokens: [],
+    moreInactive: false,
+  };
   const output = captureLogs(() => renderAuthTokenList(emptyData, "log"));
   assertStringIncludes(output, "No API tokens found");
   assertStringIncludes(output, "swamp auth token create");
@@ -116,7 +126,7 @@ Deno.test("renderAuthTokenList: no FINGERPRINT column when the server sends none
   const output = captureLogs(() => renderAuthTokenList(listData, "log"));
   assertEquals(
     output.split("\n")[0].trim().split(/\s{2,}/),
-    ["NAME", "ID", "PREFIX", "SCOPES", "CREATED", "LAST USED"],
+    ["NAME", "ID", "STATUS", "PREFIX", "SCOPES", "CREATED", "LAST USED"],
   );
 
   const parsed = JSON.parse(
@@ -138,13 +148,14 @@ Deno.test("renderAuthTokenList: FINGERPRINT replaces PREFIX when the server send
   assertEquals(header.split(/\s{2,}/), [
     "NAME",
     "ID",
+    "STATUS",
     "FINGERPRINT",
     "SCOPES",
     "CREATED",
     "LAST USED",
   ]);
-  assertEquals(first.split(/\s{2,}/)[2], "7cba95208c56e033");
-  assertEquals(second.split(/\s{2,}/)[2], "-");
+  assertEquals(first.split(/\s{2,}/)[3], "7cba95208c56e033");
+  assertEquals(second.split(/\s{2,}/)[3], "-");
   assertEquals(output.includes("swamp_org_"), false);
 
   const parsed = JSON.parse(
@@ -161,6 +172,8 @@ const createData: AuthTokenCreateData = {
   name: "ci-deploy",
   collective: "myorg",
   scopes: ["extensions:push"],
+  expiresAt: null,
+  mintedByTokenId: null,
 };
 
 Deno.test("renderAuthTokenCreate: log mode shows the fingerprint beside the secret", () => {
@@ -194,4 +207,66 @@ Deno.test("renderAuthTokenCreate: omits the signin token section without one", (
   const log = captureLogs(() => renderAuthTokenCreate(createData, "log"));
   assertEquals(log.includes("Signin token:"), false);
   assertStringIncludes(log, "This token is shown once");
+});
+
+Deno.test("renderAuthTokenCreate: shows the expiry, and the minting token only when there is one", () => {
+  const plain = captureLogs(() => renderAuthTokenCreate(createData, "log"));
+  assertStringIncludes(plain, "Expires: never");
+  assertEquals(plain.includes("Minted by:"), false);
+
+  const minted = {
+    ...createData,
+    expiresAt: "2026-12-03T00:00:00.000Z",
+    mintedByTokenId: "tok-parent",
+  };
+  const log = captureLogs(() => renderAuthTokenCreate(minted, "log"));
+  assertStringIncludes(log, "Expires: 2026-12-03T00:00:00.000Z");
+  assertStringIncludes(log, "Minted by: tok-parent");
+
+  const parsed = JSON.parse(
+    captureLogs(() => renderAuthTokenCreate(createData, "json")),
+  );
+  assertEquals([parsed.expiresAt, parsed.mintedByTokenId], [null, null]);
+});
+
+Deno.test("renderAuthTokenList: STATUS column, JSON status, and the hidden-inactive note", () => {
+  const output = captureLogs(() => renderAuthTokenList(listData, "log"));
+  const rows = output.split("\n").map((l) => l.trim().split(/\s{2,}/));
+  assertEquals([rows[1][2], rows[2][2]], ["active", "revoked"]);
+  assertEquals(output.includes("Older inactive tokens"), false);
+
+  const more = captureLogs(() =>
+    renderAuthTokenList({ ...listData, moreInactive: true }, "log")
+  );
+  assertStringIncludes(more, "Older inactive tokens are not shown.");
+
+  const parsed = JSON.parse(
+    captureLogs(() =>
+      renderAuthTokenList({ ...listData, moreInactive: true }, "json")
+    ),
+  );
+  assertEquals(Array.isArray(parsed), true);
+  assertEquals(parsed[1].status, "revoked");
+  assertEquals(parsed[1].mintedByTokenId, "tok-1");
+});
+
+Deno.test("renderAuthTokenDelete: log and json output", () => {
+  const data = { id: "tok-1", collective: "myorg" };
+  const log = captureLogs(() => renderAuthTokenDelete(data, "log"));
+  assertStringIncludes(log, "Token tok-1 deleted from collective myorg.");
+  assertEquals(
+    JSON.parse(captureLogs(() => renderAuthTokenDelete(data, "json"))),
+    data,
+  );
+});
+
+Deno.test("renderAuthTokenList: an empty list still says older inactive tokens are hidden", () => {
+  const output = captureLogs(() =>
+    renderAuthTokenList(
+      { collective: "myorg", tokens: [], moreInactive: true },
+      "log",
+    )
+  );
+  assertStringIncludes(output, "No API tokens found");
+  assertStringIncludes(output, "Older inactive tokens are not shown.");
 });

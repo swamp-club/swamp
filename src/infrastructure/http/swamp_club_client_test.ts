@@ -1136,7 +1136,7 @@ Deno.test("SwampClubClient - fetchRecruitLink falls back to raw text when the er
   }
 });
 
-Deno.test("SwampClubClient - revokeCollectiveToken sends DELETE and resolves on {ok:true}", async () => {
+Deno.test("SwampClubClient - revokeCollectiveToken sends PATCH and resolves on {ok:true}", async () => {
   let seen: { method: string; path: string; apiKey: string | null } | null =
     null;
   const mock = startMockServer((req) => {
@@ -1157,7 +1157,7 @@ Deno.test("SwampClubClient - revokeCollectiveToken sends DELETE and resolves on 
     );
     assertEquals(result, undefined);
     assertEquals(seen, {
-      method: "DELETE",
+      method: "PATCH",
       path: "/api/v1/collectives/my%20org/api-tokens/tok%2F1",
       apiKey: "swamp_test_key",
     });
@@ -1295,7 +1295,7 @@ Deno.test("SwampClubClient - revokeCollectiveToken reports an unknown token on a
   }
 });
 
-Deno.test("SwampClubClient - revokeCollectiveToken surfaces any other 422 verbatim", async () => {
+Deno.test("SwampClubClient - revokeCollectiveToken surfaces the server's 422 message as is", async () => {
   const mock = startMockServer(() =>
     Response.json({ error: "Invalid token id" }, { status: 422 })
   );
@@ -1306,9 +1306,167 @@ Deno.test("SwampClubClient - revokeCollectiveToken surfaces any other 422 verbat
       () => client.revokeCollectiveToken("swamp_test_key", "myorg", "tok-1"),
       UserError,
     );
+    assertEquals(err.message, "Invalid token id");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - revokeCollectiveToken surfaces the server's 403 message as is", async () => {
+  const mock = startMockServer(() =>
+    Response.json(
+      { error: "This token requires the tokens:mint scope" },
+      { status: 403 },
+    )
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.revokeCollectiveToken("swamp_org_key", "myorg", "tok-1"),
+      UserError,
+    );
+    assertEquals(err.message, "This token requires the tokens:mint scope");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - deleteCollectiveToken sends DELETE and resolves on {ok:true}", async () => {
+  let seen: { method: string; path: string } | null = null;
+  const mock = startMockServer((req) => {
+    seen = { method: req.method, path: new URL(req.url).pathname };
+    return Response.json({ ok: true });
+  });
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await client.deleteCollectiveToken("swamp_test_key", "myorg", "tok-1", {
+      collectiveKey: false,
+    });
+    assertEquals(seen, {
+      method: "DELETE",
+      path: "/api/v1/collectives/myorg/api-tokens/tok-1",
+    });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - deleteCollectiveToken words a 401 for a collective key as needing a personal login", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ error: "Unauthorized" }, { status: 401 })
+  );
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const collectiveErr = await assertRejects(
+      () =>
+        client.deleteCollectiveToken("swamp_org_key", "myorg", "tok-1", {
+          collectiveKey: true,
+        }),
+      UserError,
+    );
+    assertStringIncludes(collectiveErr.message, "needs a personal login");
+    assertStringIncludes(collectiveErr.message, "swamp auth token revoke");
+
+    const personalErr = await assertRejects(
+      () =>
+        client.deleteCollectiveToken("swamp_test_key", "myorg", "tok-1", {
+          collectiveKey: false,
+        }),
+      UserError,
+    );
     assertEquals(
-      err.message,
-      'Failed to revoke collective token (HTTP 422): {"error":"Invalid token id"}',
+      personalErr.message,
+      "Not authenticated. Sign in with `swamp auth login`.",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - createCollectiveToken sends expiresAt only when given", async () => {
+  const bodies: unknown[] = [];
+  const mock = startMockServer(async (req) => {
+    bodies.push(await req.json());
+    return Response.json({
+      token: {
+        id: "tok-1",
+        name: "n",
+        keyPrefix: "swamp_org_ab",
+        enabled: true,
+        expiresAt: "2026-12-03T00:00:00.000Z",
+        createdAt: "2026-11-03T00:00:00.000Z",
+        lastUsedAt: null,
+        scopes: ["serve:*"],
+        mintedByTokenId: "tok-parent",
+      },
+      key: "swamp_org_abc",
+    });
+  });
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const minted = await client.createCollectiveToken(
+      "swamp_org_key",
+      "myorg",
+      {
+        name: "n",
+        scopes: ["serve:*"],
+        expiresAt: "2026-12-03T00:00:00.000Z",
+      },
+    );
+    await client.createCollectiveToken("swamp_test_key", "myorg", {
+      name: "n",
+      scopes: ["serve:*"],
+    });
+    assertEquals(bodies, [
+      {
+        name: "n",
+        scopes: ["serve:*"],
+        expiresAt: "2026-12-03T00:00:00.000Z",
+      },
+      { name: "n", scopes: ["serve:*"] },
+    ]);
+    assertEquals(minted.token.mintedByTokenId, "tok-parent");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - createCollectiveToken surfaces the server's 403 and 422 messages as is", async () => {
+  const answers = [
+    Response.json(
+      { error: "A minted token may only hold scopes this token holds: x:y" },
+      { status: 403 },
+    ),
+    Response.json(
+      { error: "A minted token may expire at most 90 days from now" },
+      { status: 422 },
+    ),
+    new Response("", { status: 403 }),
+  ];
+  const mock = startMockServer(() => answers.shift()!);
+
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const create = () =>
+      client.createCollectiveToken("swamp_org_key", "myorg", {
+        name: "n",
+        scopes: ["x:y"],
+      });
+    assertEquals(
+      (await assertRejects(create, UserError)).message,
+      "A minted token may only hold scopes this token holds: x:y",
+    );
+    assertEquals(
+      (await assertRejects(create, UserError)).message,
+      "A minted token may expire at most 90 days from now",
+    );
+    assertStringIncludes(
+      (await assertRejects(create, UserError)).message,
+      "You do not have permission to create tokens",
     );
   } finally {
     await mock.shutdown();

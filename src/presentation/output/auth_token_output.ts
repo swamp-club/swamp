@@ -22,6 +22,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuthTokenCreateData } from "../../libswamp/auth/token_create.ts";
 import type { AuthTokenListData } from "../../libswamp/auth/token_list.ts";
 import type { AuthTokenRevokeData } from "../../libswamp/auth/token_revoke.ts";
+import type { AuthTokenDeleteData } from "../../libswamp/auth/token_delete.ts";
 import type { OutputMode } from "./output.ts";
 
 export function renderAuthTokenCreate(
@@ -37,6 +38,10 @@ export function renderAuthTokenCreate(
     `${bold(cyan("Token:"))} ${bold(data.name)}`,
     `${bold(cyan("Collective:"))} ${data.collective}`,
     `${bold(cyan("Scopes:"))} ${data.scopes.join(", ")}`,
+    `${bold(cyan("Expires:"))} ${data.expiresAt ?? "never"}`,
+    ...(data.mintedByTokenId
+      ? [`${bold(cyan("Minted by:"))} ${data.mintedByTokenId}`]
+      : []),
     `${bold(cyan("Fingerprint:"))} ${data.fingerprint}`,
     "",
     `  ${bold(data.key)}`,
@@ -75,6 +80,9 @@ export function renderAuthTokenList(
     writeOutput(
       [
         `No API tokens found for collective ${bold(data.collective)}.`,
+        ...(data.moreInactive
+          ? [dim("Older inactive tokens are not shown.")]
+          : []),
         dim(
           "Create one with: swamp auth token create --collective " +
             data.collective + " --scopes <scopes>",
@@ -90,6 +98,7 @@ export function renderAuthTokenList(
   const headers = [
     "NAME",
     "ID",
+    "STATUS",
     showFingerprint ? "FINGERPRINT" : "PREFIX",
     "SCOPES",
     "CREATED",
@@ -98,6 +107,7 @@ export function renderAuthTokenList(
   const rows = data.tokens.map((token) => [
     token.name,
     token.id,
+    token.status,
     showFingerprint ? token.fingerprint ?? "-" : token.keyPrefix,
     token.scopes.join(", "),
     token.createdAt,
@@ -121,7 +131,11 @@ export function renderAuthTokenList(
       .trimEnd()
   );
 
-  writeOutput([headerLine, ...dataLines].join("\n"));
+  const lines = [headerLine, ...dataLines];
+  if (data.moreInactive) {
+    lines.push("", dim("Older inactive tokens are not shown."));
+  }
+  writeOutput(lines.join("\n"));
 }
 
 const checkmark = "✓";
@@ -140,4 +154,25 @@ export function renderAuthTokenRevoke(
       bold(data.collective)
     }.`,
   );
+}
+
+export function renderAuthTokenDelete(
+  data: AuthTokenDeleteData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+
+  writeOutput(
+    `${green(checkmark)} Token ${bold(data.id)} deleted from collective ${
+      bold(data.collective)
+    }.`,
+  );
+}
+
+export function renderAuthTokenDeleteCancelled(mode: OutputMode): void {
+  if (mode === "json") return;
+  writeOutput("Delete cancelled.");
 }

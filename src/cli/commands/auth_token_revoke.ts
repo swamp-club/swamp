@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { isAuthenticated, isCollectiveToken } from "../auth_context.ts";
+import { isAuthenticated } from "../auth_context.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
   authTokenRevoke,
@@ -38,7 +38,9 @@ type AnyOptions = any;
 
 export const authTokenRevokeCommand = new Command()
   .name("revoke")
-  .description("Revoke an API token for a collective")
+  .description(
+    "Revoke a collective API token: it stops working and stays listed as revoked (use `swamp auth token delete` to remove it). A collective token holding tokens:mint can revoke the tokens it minted.",
+  )
   .option(
     "--collective <collective:string>",
     "Collective slug the token belongs to",
@@ -62,9 +64,8 @@ export const authTokenRevokeCommand = new Command()
 
     if (!isAuthenticated()) {
       throw new UserError(
-        "Revoking collective tokens requires a personal swamp-club.com account.\n\n" +
-          "Sign in with:\n\n" +
-          "  swamp auth login\n",
+        "Revoking collective tokens requires a swamp-club.com login.\n\n" +
+          "Sign in with `swamp auth login`, or set SWAMP_API_KEY to a collective token holding tokens:mint.\n",
         "auth_required",
       );
     }
@@ -74,7 +75,6 @@ export const authTokenRevokeCommand = new Command()
     const deps = createAuthTokenRevokeDeps({
       serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
       identity,
-      isCollectiveToken,
     });
 
     let data: AuthTokenRevokeData | undefined;

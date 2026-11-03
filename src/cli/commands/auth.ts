@@ -27,6 +27,7 @@ import { authServerLoginCommand } from "./auth_server_login.ts";
 import { authTokenCreateCommand } from "./auth_token_create.ts";
 import { authTokenListCommand } from "./auth_token_list.ts";
 import { authTokenRevokeCommand } from "./auth_token_revoke.ts";
+import { authTokenDeleteCommand } from "./auth_token_delete.ts";
 
 export const authTokenCommand = new Command()
   .name("token")
@@ -35,7 +36,8 @@ export const authTokenCommand = new Command()
   .action(groupCommandAction)
   .command("create", authTokenCreateCommand)
   .command("list", authTokenListCommand)
-  .command("revoke", authTokenRevokeCommand);
+  .command("revoke", authTokenRevokeCommand)
+  .command("delete", authTokenDeleteCommand);
 
 export const authCommand = new Command()
   .name("auth")

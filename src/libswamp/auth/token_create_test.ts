@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { CreateCollectiveTokenResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
@@ -58,7 +59,6 @@ function makeDeps(
     createToken: () => Promise.resolve(testTokenResponse),
     getHostname: () => "testhost",
     getTimestamp: () => 1700000000,
-    isCollectiveToken: () => false,
     ...overrides,
   };
 }
@@ -85,6 +85,8 @@ Deno.test("authTokenCreate: yields creating -> completed on success", async () =
         name: "cli-testhost-1700000000",
         collective: "myorg",
         scopes: ["extensions:push"],
+        expiresAt: null,
+        mintedByTokenId: null,
       },
     },
   ]);
@@ -109,9 +111,69 @@ Deno.test("authTokenCreate: uses provided name instead of generating one", async
   });
 });
 
-Deno.test("authTokenCreate: rejects collective tokens", async () => {
+Deno.test("authTokenCreate: a collective-token login reaches the server and its refusal propagates", async () => {
   const ctx = createLibSwampContext();
-  const deps = makeDeps({ isCollectiveToken: () => true });
+  let called = false;
+  const deps = makeDeps({
+    loadCredentials: () =>
+      Promise.resolve({ ...testCredentials, apiKey: "swamp_org_minting" }),
+    createToken: () => {
+      called = true;
+      return Promise.reject(
+        new UserError("This token requires the tokens:mint scope"),
+      );
+    },
+  });
+
+  const err = await assertRejects(
+    () =>
+      collect<AuthTokenCreateEvent>(
+        authTokenCreate(ctx, deps, {
+          collective: "myorg",
+          scopes: ["extensions:push"],
+        }),
+      ),
+    UserError,
+  );
+  assertEquals(called, true);
+  assertEquals(err.message, "This token requires the tokens:mint scope");
+});
+
+Deno.test("authTokenCreate: ttlMs becomes an expiresAt that far from now", async () => {
+  const ctx = createLibSwampContext();
+  let captured: { expiresAt?: string } | undefined;
+  const deps = makeDeps({
+    getTimestamp: () => Date.parse("2026-11-03T00:00:00.000Z"),
+    createToken: (_serverUrl, _apiKey, _collective, input) => {
+      captured = input;
+      return Promise.resolve(testTokenResponse);
+    },
+  });
+
+  await collect<AuthTokenCreateEvent>(
+    authTokenCreate(ctx, deps, {
+      collective: "myorg",
+      scopes: ["serve:*"],
+      ttlMs: 30 * 24 * 60 * 60 * 1000,
+    }),
+  );
+
+  assertEquals(captured?.expiresAt, "2026-12-03T00:00:00.000Z");
+});
+
+Deno.test("authTokenCreate: reports the expiry and minting token the server returned", async () => {
+  const ctx = createLibSwampContext();
+  const deps = makeDeps({
+    createToken: () =>
+      Promise.resolve({
+        ...testTokenResponse,
+        token: {
+          ...testTokenResponse.token,
+          expiresAt: "2026-12-03T00:00:00.000Z",
+          mintedByTokenId: "tok-parent",
+        },
+      }),
+  });
 
   const events = await collect<AuthTokenCreateEvent>(
     authTokenCreate(ctx, deps, {
@@ -120,10 +182,13 @@ Deno.test("authTokenCreate: rejects collective tokens", async () => {
     }),
   );
 
-  assertEquals(events.length, 1);
-  const err = events[0] as Extract<AuthTokenCreateEvent, { kind: "error" }>;
-  assertEquals(err.kind, "error");
-  assertEquals(err.error.code, "validation_failed");
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(
+    completed?.kind === "completed"
+      ? [completed.data.expiresAt, completed.data.mintedByTokenId]
+      : undefined,
+    ["2026-12-03T00:00:00.000Z", "tok-parent"],
+  );
 });
 
 Deno.test("authTokenCreate: rejects empty scopes", async () => {
@@ -229,7 +294,9 @@ Deno.test("authTokenCreate: yields cancelled error on abort", async () => {
 
 Deno.test("authTokenCreate: passes correct input to createToken", async () => {
   const ctx = createLibSwampContext();
-  let capturedInput: { name: string; scopes: string[] } | undefined;
+  let capturedInput:
+    | { name: string; scopes: string[]; expiresAt?: string }
+    | undefined;
   let capturedCollective: string | undefined;
   const deps = makeDeps({
     createToken: (_serverUrl, _apiKey, collective, input, _signal) => {

@@ -416,6 +416,12 @@ Swamp has two token families — picking the wrong one is a common mistake.
 | **Scopes**    | `serve:*`, `oauth:manage`, …                            | principal-based (no scopes)         |
 | **Used by**   | `swamp serve` → swamp-club (features, OAuth client reg) | Clients → a specific serve instance |
 
+A collective token holding `tokens:mint` can create expiring tokens for its own
+collective with `swamp auth token create --ttl 30d` (swamp-club caps the expiry
+at 90 days), and revoke the tokens it minted with `swamp auth token revoke`.
+`revoke` disables a token and keeps it listed; `swamp auth token delete` removes
+it and needs a personal login.
+
 To keep the collective API token out of the process env, put it in a file and
 pass `swamp serve --club-api-key-file <path>` (also accepted by
 `serve check-config` and forwarded by `serve daemon enable`) or set
