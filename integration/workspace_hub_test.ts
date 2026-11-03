@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   type ActionRunner,
@@ -40,7 +40,7 @@ function startFakeChild(): FakeChild {
   const exited = new Promise<void>((resolve) => resolveExited = resolve);
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    (req) => {
+    (req): Response | Promise<Response> => {
       const url = new URL(req.url);
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (req.headers.get("sec-websocket-protocol") !== `bearer.${token}`) {
@@ -87,6 +87,18 @@ function startFakeChild(): FakeChild {
       if (url.pathname === "/local/busy") {
         state.busyAsks++;
         return Response.json({ busy: state.busy });
+      }
+      if (url.pathname === "/api/v1/request") {
+        return req.text().then((body) =>
+          Response.json({ path: url.pathname, body })
+        );
+      }
+      if (url.pathname === "/gzip") {
+        const body = new Blob(["plain text\n"]).stream()
+          .pipeThrough(new CompressionStream("gzip"));
+        return new Response(body, {
+          headers: { "content-encoding": "gzip", "content-type": "text/plain" },
+        });
       }
       return Response.json({ path: url.pathname, search: url.search });
     },
@@ -894,4 +906,106 @@ Deno.test("workspaceHub: a request whose lookup is still in flight when shutdown
   assertEquals(res?.status, 503);
   await res?.body?.cancel();
   assertEquals(spawned, []);
+});
+
+Deno.test("workspaceHub: a request route body still arriving when shutdown begins starts nothing", async () => {
+  let sendBody!: ReadableStreamDefaultController<Uint8Array>;
+  let reading!: () => void;
+  const bodyRead = new Promise<void>((resolve) => reading = resolve);
+  const body = new ReadableStream<Uint8Array>({
+    start: (controller) => sendBody = controller,
+    pull: () => reading(),
+  }, { highWaterMark: 0 });
+  const spawned: string[] = [];
+  const hub = createWorkspaceHub({
+    token: TOKEN,
+    resolveWorkspace: () => Promise.resolve("/repos/alpha"),
+    listWorkspaces: () => Promise.resolve([]),
+    spawnChild: (repoDir) => {
+      spawned.push(repoDir);
+      return Promise.reject(new Error("must not start"));
+    },
+  });
+  const answer = hub.handle(
+    new Request("http://127.0.0.1:1/w/alpha/api/v1/request", {
+      method: "POST",
+      headers: { "x-swamp-local-token": TOKEN },
+      body,
+    }),
+    () => {},
+  );
+  await bodyRead;
+  await hub.shutdown();
+  sendBody.enqueue(new TextEncoder().encode(read("r1", "data.get")));
+  sendBody.close();
+  const res = await answer;
+  assertEquals(res?.status, 503);
+  await res?.body?.cancel();
+  assertEquals(spawned, []);
+});
+
+Deno.test("workspaceHub: a lowercase method on the request route is filtered like POST", async () => {
+  await withHub(async ({ base, spawned }) => {
+    const [hostname, port] = base.split(":");
+    const conn = await Deno.connect({ hostname, port: Number(port) });
+    const body = read("r1", "data.list");
+    await conn.write(new TextEncoder().encode(
+      `post /w/alpha/api/v1/request HTTP/1.1\r\nHost: ${base}\r\n` +
+        `x-swamp-local-token: ${TOKEN}\r\nContent-Type: application/json\r\n` +
+        `Content-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`,
+    ));
+    const reply = new TextDecoder().decode(
+      await new Response(conn.readable).arrayBuffer(),
+    );
+    assertStringIncludes(reply.split("\r\n")[0], " 404 ");
+    assertStringIncludes(reply, '"use_websocket"');
+    assertEquals(spawned, []);
+  });
+});
+
+Deno.test("workspaceHub: forwards a dashboard read on the HTTP request route to the child", async () => {
+  await withHub(async ({ base }) => {
+    const body = read("r1", "data.get");
+    const res = await hubFetch(`http://${base}/w/alpha/api/v1/request`, {
+      method: "POST",
+      body,
+    });
+    assertEquals(await res.json(), { path: "/api/v1/request", body });
+  });
+});
+
+Deno.test("workspaceHub: a request the child is not given goes back to the socket without starting the child", async () => {
+  await withHub(async ({ base, spawned }) => {
+    for (const type of ["data.list", "model.method.run", "vault.put"]) {
+      const res = await hubFetch(`http://${base}/w/alpha/api/v1/request`, {
+        method: "POST",
+        body: read("r1", type),
+      });
+      assertEquals(res.status, 404, type);
+      assertEquals((await res.json()).code, "use_websocket", type);
+    }
+    assertEquals(spawned, []);
+  });
+});
+
+Deno.test("workspaceHub: an HTTP request body over the cap is refused with 413", async () => {
+  await withHub(async ({ base, spawned }) => {
+    const res = await hubFetch(`http://${base}/w/alpha/api/v1/request`, {
+      method: "POST",
+      body: "x".repeat(64 * 1024 + 1),
+    });
+    assertEquals(res.status, 413);
+    await res.body?.cancel();
+    assertEquals(spawned, []);
+  });
+});
+
+Deno.test("workspaceHub: a body fetch already decoded is forwarded without its content-encoding", async () => {
+  await withHub(async ({ base }) => {
+    const res = await hubFetch(`http://${base}/w/alpha/gzip`, {
+      headers: { "accept-encoding": "gzip" },
+    });
+    assertEquals(res.headers.get("content-encoding"), null);
+    assertEquals(await res.text(), "plain text\n");
+  });
 });

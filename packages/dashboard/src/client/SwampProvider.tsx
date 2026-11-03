@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { localSocketProtocols, serverPath } from "./workspace_path.ts";
+import {
+  localSocketProtocols,
+  serverPath,
+  withLocalToken,
+} from "./workspace_path.ts";
 import {
   createContext,
   type ReactNode,
@@ -37,6 +41,12 @@ import {
   type SocketHandlers,
 } from "./connection.ts";
 import { createDashboardSessionClient } from "./dashboard_session.ts";
+import {
+  HTTP_REQUEST_TYPES,
+  HttpReads,
+  requestOverHttp,
+  SERVE_REQUEST_PATH,
+} from "./http_request.ts";
 import {
   detachFrame,
   RequestError,
@@ -126,6 +136,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   const socketRef = useRef<WebSocket | null>(null);
   const sessionGenerationRef = useRef(0);
   const sessionSourceIdRef = useRef(crypto.randomUUID());
+  const httpReadsRef = useRef(new HttpReads());
   const pendingRef = useRef<
     Map<
       string,
@@ -279,6 +290,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       onDisconnect: () => {
         socketRef.current = null;
         setConnected(false);
+        httpReadsRef.current.abortAll();
         for (const [id, p] of pendingRef.current) {
           p.reject(new Error("WebSocket closed"));
           pendingRef.current.delete(id);
@@ -379,11 +391,39 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   );
 
   const request = useCallback(
-    <T = Record<string, unknown>>(
+    async <T = Record<string, unknown>>(
       type: string,
       payload?: Record<string, unknown>,
-    ): Promise<T> => send(type, payload, false) as Promise<T>,
-    [send],
+    ): Promise<T> => {
+      if (HTTP_REQUEST_TYPES.has(type)) {
+        const outcome = await httpReadsRef.current.run(
+          socketRef.current?.readyState === WebSocket.OPEN,
+          (signal) =>
+            requestOverHttp(
+              globalThis.fetch,
+              serverPath(SERVE_REQUEST_PATH),
+              withLocalToken(),
+              {
+                type,
+                id: crypto.randomUUID(),
+                ...(payload !== undefined && { payload }),
+              },
+              signal,
+            ),
+        );
+        if (outcome.kind === "payload") return outcome.value as T;
+        if (outcome.kind === "signed_out") {
+          // as a logout in another tab does: the socket may not notice yet
+          if (authMode !== "none") {
+            connectionRef.current?.stop();
+            clearToken();
+          }
+          throw new Error(outcome.message);
+        }
+      }
+      return await send(type, payload, false) as T;
+    },
+    [authMode, clearToken, send],
   );
 
   const requestDetached = useCallback(

@@ -7043,6 +7043,18 @@ export const serveCommand = new Command()
                 resolvedUserNames: connectionCtx.resolvedUserNames,
                 onUsernamesResolved: rememberTokenUsernames,
               }),
+            dashboardSession: {
+              sessions: dashboardSessions,
+              authenticate: (session, sourceIp) =>
+                authenticateDashboardSession(session, repoContext, {
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp,
+                  ingress: "http-request:cookie",
+                  resolvedUserNames: connectionCtx.resolvedUserNames,
+                  onUsernamesResolved: rememberTokenUsernames,
+                }),
+            },
           });
         }
 

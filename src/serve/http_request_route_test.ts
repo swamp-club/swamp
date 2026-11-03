@@ -23,6 +23,7 @@ import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
+import { parsePrincipal } from "../domain/access/principal.ts";
 import { MAX_ACTIVE_REQUESTS } from "./connection.ts";
 import {
   closeConnectionsForPrincipal,
@@ -34,7 +35,11 @@ import {
   type HttpRequestRouteDeps,
 } from "./http_request_route.ts";
 import { MAX_HTTP_REQUEST_BODY_BYTES } from "./protocol.ts";
-import type { ServerTokenAuthResult } from "./token_auth.ts";
+import type { DashboardSession } from "./dashboard_session_store.ts";
+import {
+  DASHBOARD_SESSION_COOKIE,
+  type ServerTokenAuthResult,
+} from "./token_auth.ts";
 
 function authConfig(mode: "none" | "token"): ServeAuthConfig {
   return {
@@ -492,4 +497,64 @@ Deno.test("handleHttpRequest: a gzip reply also keeps its slot until it is read"
   );
   assertEquals(after.status, 200);
   await after.body?.cancel();
+});
+
+Deno.test("handleHttpRequest: the dashboard's session cookie from its own origin is answered as its token's caller", async () => {
+  const principalId = `user:${crypto.randomUUID()}`;
+  const session: DashboardSession = {
+    id: "a".repeat(64),
+    tokenName: "laptop",
+    tokenCreatedAt: "2026-11-01T00:00:00.000Z",
+    origin: "https://serve.test",
+    createdAt: "2026-11-01T00:00:00.000Z",
+    expiresAt: "2026-11-02T00:00:00.000Z",
+  };
+  let principal: unknown;
+  const routeDeps = deps(ctxOf("token"), {
+    authenticate: () =>
+      Promise.reject(new Error("a cookie caller presents no bearer token")),
+    dashboardSession: {
+      sessions: {
+        create: () => Promise.reject(new Error("not used")),
+        get: (id) => Promise.resolve(id === session.id ? session : null),
+        delete: () => Promise.resolve(),
+      },
+      authenticate: () => Promise.resolve(tokenFor(principalId)),
+    },
+    dispatch: (socket, _ctx, _active, _event, callerPrincipal) => {
+      principal = callerPrincipal;
+      send(socket, {
+        type: "data.get",
+        id: "r1",
+        payload: { data: { name: "d" } },
+      });
+      return Promise.resolve();
+    },
+  });
+  const request = (origin: string) =>
+    new Request("https://serve.test/api/v1/request", {
+      method: "POST",
+      headers: {
+        cookie: `${DASHBOARD_SESSION_COOKIE}=${session.id}`,
+        origin,
+      },
+      body: dataGet("r1"),
+    });
+
+  const answered = await handleHttpRequest(
+    request("https://serve.test"),
+    uniqueIp(),
+    routeDeps,
+  );
+  assertEquals(answered.status, 200);
+  assertEquals((await linesOf(answered))[0].payload, { data: { name: "d" } });
+  assertEquals(principal, parsePrincipal(principalId));
+
+  const crossOrigin = await handleHttpRequest(
+    request("https://evil.test"),
+    uniqueIp(),
+    routeDeps,
+  );
+  assertEquals(crossOrigin.status, 403);
+  await crossOrigin.body?.cancel();
 });

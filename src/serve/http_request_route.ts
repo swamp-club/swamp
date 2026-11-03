@@ -35,6 +35,7 @@ import {
 import {
   authenticateHttpCaller,
   type HttpCaller,
+  type HttpCallerSessionAuth,
   httpFailure,
 } from "./http_caller_auth.ts";
 import {
@@ -52,6 +53,8 @@ export interface HttpRequestRouteDeps {
     sourceIp: string,
   ) => Promise<ServerTokenAuthResult>;
   readonly now?: () => number;
+  /** the dashboard's origin-bound session cookie; absent, bearer only */
+  readonly dashboardSession?: HttpCallerSessionAuth;
   /** handleMessage unless a test stands in for the request path */
   readonly dispatch?: typeof handleMessage;
 }
@@ -102,6 +105,7 @@ export async function handleHttpRequest(
     authMode: deps.ctx.authConfig.mode,
     authenticate: deps.authenticate,
     now: deps.now,
+    dashboardSession: deps.dashboardSession,
     // a read the socket answered had no per-principal rate; the slot cap below
     // bounds the replies a caller holds in memory instead
     limitPrincipalRate: false,
