@@ -120,7 +120,7 @@ function mergeMissed(
   }
   const sum = current.count + given.count;
   const saturated = current.saturated === true || given.saturated === true ||
-    sum >= MISSED_FIRE_COUNT_CAP;
+    sum > MISSED_FIRE_COUNT_CAP;
   return {
     ...given,
     count: Math.min(sum, MISSED_FIRE_COUNT_CAP),

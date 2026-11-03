@@ -1175,3 +1175,107 @@ Deno.test("ScheduledExecutionService: paused fires in a row add up, and the firs
 
   assertEquals(service.scheduleStatus(wf.id).lastMissed, null);
 });
+
+/** holds the next get or save open until release, once */
+class GatedStateRepo extends MemoryStateRepo {
+  readonly gets: string[] = [];
+  held = false;
+  /** reads that began while a save was still in flight */
+  readsDuringSave = 0;
+  #saving = 0;
+  #kind: "get" | "save" | null = null;
+  #gate = Promise.withResolvers<void>();
+
+  holdNext(kind: "get" | "save"): void {
+    this.#kind = kind;
+  }
+
+  release(): void {
+    this.#gate.resolve();
+  }
+
+  override async get(workflowId: WorkflowId): Promise<ScheduleState | null> {
+    this.gets.push(workflowId);
+    if (this.#saving > 0) this.readsDuringSave++;
+    await this.#wait("get");
+    return await super.get(workflowId);
+  }
+
+  override async save(state: ScheduleState): Promise<boolean> {
+    this.#saving++;
+    try {
+      await this.#wait("save");
+      return await super.save(state);
+    } finally {
+      this.#saving--;
+    }
+  }
+
+  async #wait(kind: "get" | "save"): Promise<void> {
+    if (this.#kind !== kind) return;
+    this.#kind = null;
+    this.held = true;
+    await this.#gate.promise;
+  }
+}
+
+Deno.test("ScheduledExecutionService: a state write waits for the one before it, so a late save never moves the watermark back", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("serial-wf", MONTHLY);
+  const states = new GatedStateRepo();
+  seed(states, wf, previous);
+  const now = missed.getTime() + HOUR;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    scheduleState: states,
+    now: () => now,
+  });
+
+  await service.start();
+  states.holdNext("save");
+  const pass = service.catchUpMissedFires();
+  await waitFor(() => states.held, "the missed fire's save to start");
+  // resets the watermark to now while the older save is still held
+  await service.updateTriggerOverrides(
+    new Map([["serial-wf", { schedule: "0 9 2 * *" }]]),
+  );
+  states.release();
+  await pass;
+  await service.stop();
+
+  assertEquals(states.readsDuringSave, 0);
+  assertEquals(states.watermark(wf.id), new Date(now).toISOString());
+  assertEquals(states.states.get(wf.id)?.cronExpression, "0 9 2 * *");
+});
+
+Deno.test("catchUpMissedFires: shutdown ends the pass, so no further schedule is read and nothing is fired", async () => {
+  const { previous, missed } = slots();
+  const catchUp = { policy: "latest", maxDelay: "6h" } as const;
+  const first = createWorkflow("shutdown-a", MONTHLY, catchUp);
+  const second = createWorkflow("shutdown-b", MONTHLY, catchUp);
+  const states = new GatedStateRepo();
+  seed(states, first, previous);
+  seed(states, second, previous);
+  const executor = recordingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([first, second]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    maxConcurrentRuns: 2,
+    now: () => missed.getTime() + HOUR,
+  });
+
+  await service.start();
+  states.holdNext("get");
+  const pass = service.catchUpMissedFires();
+  await waitFor(() => states.held, "the first schedule's state read");
+  const stopping = service.stop();
+  states.release();
+  await Promise.all([pass, stopping]);
+
+  assertEquals(states.gets.length, 1);
+  assertEquals(executor.inputs.length, 0);
+});

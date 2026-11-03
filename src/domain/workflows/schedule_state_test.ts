@@ -228,3 +228,14 @@ Deno.test("advanceScheduleState: another cron expression drops the missed fire",
   assertEquals(changed.lastMissed, undefined);
   assertEquals(changed.cronExpression, "0 10 * * *");
 });
+
+Deno.test("advanceScheduleState: a sum that lands exactly on the cap is an exact count", () => {
+  const current = advanceScheduleState(null, ID, "nightly", EARLY, {
+    lastMissed: missed({ count: MISSED_FIRE_COUNT_CAP - 1 }),
+  });
+  const next = advanceScheduleState(current, ID, "nightly", LATE, {
+    lastMissed: missed({ fireTime: LATE.toISOString(), count: 1 }),
+  });
+  assertEquals(next.lastMissed?.count, MISSED_FIRE_COUNT_CAP);
+  assertEquals(next.lastMissed?.saturated, undefined);
+});

@@ -2784,7 +2784,10 @@ settled, whatever happened to it (it ran, was skipped as paused or overlapping,
 or was handed to replay during a drain). It lives in the control plane under
 `schedule-states/<workflowId>` (`ScheduleState` in
 `src/domain/workflows/schedule_state.ts`), so every instance sharing the
-datastore sees one watermark. It only moves forward. A fire advances it as soon
+datastore sees one watermark. It only moves forward: each write re-reads the
+record and never saves an older slot, and one process writes a workflow's
+record one write at a time. Instances that may all write (no v3 leadership) can
+still interleave a read and a save. A fire advances it as soon
 as the cron-fire dedup claim succeeds, before the drain check, so a slot
 recorded for replay is never also counted as missed.
 
@@ -2832,8 +2835,10 @@ reads no run history and is reported from the watermark alone, so a slot whose
 watermark write failed can be reported missed, though nothing runs. The lookup
 walks the run index latest slot first and reads records only until one the
 scheduler started is found. All schedules share one `RUN_HISTORY_TIMEOUT_MS`
-budget per pass, under an `AbortSignal` that shutdown also aborts. Once it is
-spent, the remaining schedules fall back to the watermark. Any initiator can set a run tag,
+budget per pass. Once it is spent, the remaining schedules fall back to the
+watermark. A drain or stop ends the pass: it aborts the history read and the
+state read in progress, visits no further schedule, and a stopped service fires
+nothing. Any initiator can set a run tag,
 so other runs are no evidence, and a recorded slot after now is ignored. A slot
 that ran but whose watermark write failed is therefore not run again, and a
 replayed run, which records no slot, settles nothing. The watermark also records

@@ -293,8 +293,16 @@ type FireOutcome =
   | "claimed_elsewhere"
   | "dropped";
 
+interface ScheduleStateWriteOptions {
+  lastMissed?: MissedFire;
+  ownFire?: boolean;
+  fired?: boolean;
+}
+
 interface HistoryBudget {
   readonly signal: AbortSignal;
+  /** aborted only by drain and stop: a spent history budget fails no state read */
+  readonly shutdown: AbortSignal;
   /** schedules whose history was not read because the budget ran out */
   skipped: number;
 }
@@ -333,6 +341,7 @@ export class ScheduledExecutionService {
   private readonly builtInCatchUp = new Map<WorkflowId, ScheduleCatchUp>();
   private readonly scheduleStates = new Map<WorkflowId, ScheduleState>();
   private readonly stateWrites = new Set<Promise<void>>();
+  private readonly stateWriteChains = new Map<WorkflowId, Promise<void>>();
   /** history reads a timed-out pass stopped waiting for, awaited at shutdown */
   private readonly historyReads = new Set<Promise<void>>();
   private catchUpPass: AbortController | null = null;
@@ -768,15 +777,21 @@ export class ScheduledExecutionService {
     if (!this.deps.scheduleState || this.draining || this.stopped) return;
     const now = new Date(this.now());
     const timeoutMs = this.deps.runHistoryTimeoutMs ?? RUN_HISTORY_TIMEOUT_MS;
-    const pass = new AbortController();
-    this.catchUpPass = pass;
+    const shutdown = new AbortController();
+    this.catchUpPass = shutdown;
+    const budget = new AbortController();
     const timer = setTimeout(
-      () => pass.abort(new Error(`timed out after ${timeoutMs}ms`)),
+      () => budget.abort(new Error(`timed out after ${timeoutMs}ms`)),
       timeoutMs,
     );
-    const history: HistoryBudget = { signal: pass.signal, skipped: 0 };
+    const history: HistoryBudget = {
+      signal: AbortSignal.any([budget.signal, shutdown.signal]),
+      shutdown: shutdown.signal,
+      skipped: 0,
+    };
     try {
       for (const entry of this.scheduler.listSchedules()) {
+        if (this.draining || this.stopped) break;
         // the expression as registered: croner reports a nickname expanded
         const expression = this.cronExpressions.get(entry.workflowId) ??
           entry.cronExpression;
@@ -800,16 +815,16 @@ export class ScheduledExecutionService {
       }
     } finally {
       clearTimeout(timer);
-      if (this.catchUpPass === pass) this.catchUpPass = null;
+      if (this.catchUpPass === shutdown) this.catchUpPass = null;
     }
     if (history.skipped > 0) {
       logger.warn(
         "Run history was not read for {count} more schedule(s) ({reason}); their catch-up relies on the stored watermark alone",
         {
           count: history.skipped,
-          reason: pass.signal.reason instanceof Error
-            ? pass.signal.reason.message
-            : String(pass.signal.reason),
+          reason: history.signal.reason instanceof Error
+            ? history.signal.reason.message
+            : String(history.signal.reason),
         },
       );
     }
@@ -834,7 +849,9 @@ export class ScheduledExecutionService {
       return;
     }
 
-    const stored = await this.deps.scheduleState!.get(workflowId);
+    const stored = await this.deps.scheduleState!.get(workflowId, {
+      signal: history.shutdown,
+    });
     // with nothing seen before, or measured on another expression, no slot of
     // this one can be called missed
     if (!stored || stored.cronExpression !== cronExpression) {
@@ -1053,6 +1070,8 @@ export class ScheduledExecutionService {
     fireTime: Date,
     catchUpOf?: MissedFire,
   ): Promise<FireOutcome> {
+    // a stopped service queues nothing, so a slot it never claimed stays missed
+    if (this.stopped) return "dropped";
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
     const catchUp = catchUpOf !== undefined;
     // registered before any await, so a catch-up pass running alongside sees it
@@ -1225,16 +1244,39 @@ export class ScheduledExecutionService {
   }
 
   /**
+   * one write per workflow at a time: each re-reads the record before saving,
+   * which keeps the watermark moving forward only if no other write of this
+   * process lands between that read and its save
+   */
+  private writeScheduleState(
+    workflowId: WorkflowId,
+    workflowName: string,
+    fireTime: Date,
+    options: ScheduleStateWriteOptions = {},
+  ): Promise<boolean> {
+    const previous = this.stateWriteChains.get(workflowId) ?? Promise.resolve();
+    const write = previous.then(() =>
+      this.writeScheduleStateNow(workflowId, workflowName, fireTime, options)
+    );
+    const settled: Promise<void> = write.then(() => {}, () => {}).then(() => {
+      if (this.stateWriteChains.get(workflowId) === settled) {
+        this.stateWriteChains.delete(workflowId);
+      }
+    });
+    this.stateWriteChains.set(workflowId, settled);
+    return write;
+  }
+
+  /**
    * never rejects: a store that fails or hangs past its deadline must not drop
    * or delay a fire, so the failure is logged and the fire goes ahead. The
    * stored record is re-read so a stale cache never moves the watermark back
    */
-  private async writeScheduleState(
+  private async writeScheduleStateNow(
     workflowId: WorkflowId,
     workflowName: string,
     fireTime: Date,
-    options: { lastMissed?: MissedFire; ownFire?: boolean; fired?: boolean } =
-      {},
+    options: ScheduleStateWriteOptions,
   ): Promise<boolean> {
     const repo = this.deps.scheduleState;
     if (!repo) return false;
@@ -1283,12 +1325,12 @@ export class ScheduledExecutionService {
       else own.prior = stored;
     }
     if (wrote === false) return false;
-    if (wrote === true) this.scheduleStates.set(workflowId, next);
+    if (wrote === true) this.cacheState(next);
     return wrote === true;
   }
 
   private trackStateWrite(write: Promise<unknown>): void {
-    const tracked: Promise<void> = write.then(() => {}).finally(() =>
+    const tracked: Promise<void> = write.then(() => {}, () => {}).finally(() =>
       this.stateWrites.delete(tracked)
     );
     this.stateWrites.add(tracked);
