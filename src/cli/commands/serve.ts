@@ -8125,10 +8125,12 @@ export const serveCommand = new Command()
       if (replayed > 0) {
         logger.info`Replayed ${replayed} pending run(s) from previous process`;
       }
+    };
+    if (!v3Follows) {
+      await replayPendingAtLead();
       // after the replay, so a replayed run queues ahead of a catch-up
       await scheduledExecution?.catchUpMissedFires();
-    };
-    if (!v3Follows) await replayPendingAtLead();
+    }
 
     if (hasRemoteControlPlane) {
       const scheme = tlsEnabled ? "https" : "http";
@@ -8362,6 +8364,14 @@ export const serveCommand = new Command()
           await leaderStep(
             "applying the grant config",
             applyGrantConfigAtLead,
+          );
+        },
+        // as the leader, so its writes and fire claims are not refused, and
+        // after the grant config, which authorizes the catch-up run
+        onLed: async () => {
+          await leaderStep(
+            "catching up missed scheduled fires",
+            async () => await scheduledExecution?.catchUpMissedFires(),
           );
         },
         // a node that lost the lead stops as a shutdown does, leaving queued

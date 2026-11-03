@@ -57,10 +57,8 @@ import { runDetached, withRootSpan } from "../../infrastructure/tracing/mod.ts";
 const logger = getSwampLogger(["scheduled-execution"]);
 
 /**
- * How long a drain waits for fires still claiming their slot: the claim and
- * the schedule-state write that settles it, each bounded by its store. This
- * bounds shutdown against a hung store without depending on the drain timeout,
- * which may be 0.
+ * how long a drain waits for a fire's claim and the state write that settles
+ * it; fixed, because the drain timeout may be 0
  */
 const FIRE_SETTLE_TIMEOUT_MS = 15_000;
 
@@ -253,9 +251,8 @@ export interface ScheduledExecutionDeps {
    */
   scheduleState?: ScheduleStateRepository;
   /**
-   * The latest slot any run of the workflow records in its
-   * swamp.trigger.scheduledFor tag, so a slot whose watermark write failed is
-   * not caught up again once its dedup record is gone
+   * The latest swamp.trigger.scheduledFor slot recorded by a run the scheduler
+   * started, so a slot whose watermark write failed is not caught up again
    */
   latestScheduledSlot?: (workflowId: WorkflowId) => Promise<Date | null>;
   /**
@@ -333,8 +330,8 @@ export class ScheduledExecutionService {
   private readonly firstOwnFire = new Map<
     WorkflowId,
     {
-      /** undefined when the store could not be read before that fire */
-      readonly prior: ScheduleState | null | undefined;
+      /** undefined until that fire has settled, or when it could not read */
+      prior: ScheduleState | null | undefined;
       readonly slot: Date;
     }
   >();
@@ -776,16 +773,13 @@ export class ScheduledExecutionService {
     now: Date,
   ): Promise<void> {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
-    const own = this.firstOwnFire.get(workflowId);
-    if (own) {
-      // a later slot already fired here, so only the gap before it was missed
-      if (!own.prior || own.prior.cronExpression !== cronExpression) return;
-      const missed = evaluateMissedFires(
+    if (this.firstOwnFire.has(workflowId)) {
+      await this.recordGapBeforeOwnFire(
+        workflowId,
+        workflowName,
         cronExpression,
-        new Date(own.prior.lastEvaluatedFireTime),
-        new Date(own.slot.getTime() - 1),
+        now,
       );
-      await this.recordMissed(workflowId, workflowName, missed, now);
       return;
     }
 
@@ -821,6 +815,16 @@ export class ScheduledExecutionService {
       return;
     }
 
+    // a tick that began during the awaits above owns the latest slot now
+    if (this.firstOwnFire.has(workflowId)) {
+      await this.recordGapBeforeOwnFire(
+        workflowId,
+        workflowName,
+        cronExpression,
+        now,
+      );
+      return;
+    }
     const outcome = await this.trackedFire(
       workflowId,
       missed.catchUpFireTime,
@@ -831,6 +835,26 @@ export class ScheduledExecutionService {
     const caughtUp = outcome === "queued";
     this.emitMissed(workflowId, workflowName, missed, caughtUp);
     this.logMissed(workflowName, missed, caughtUp);
+  }
+
+  /**
+   * a slot already fired here, so only the gap before it was missed and nothing
+   * is caught up; while that fire has not settled, nothing is recorded
+   */
+  private async recordGapBeforeOwnFire(
+    workflowId: WorkflowId,
+    workflowName: string,
+    cronExpression: string,
+    now: Date,
+  ): Promise<void> {
+    const own = this.firstOwnFire.get(workflowId)!;
+    if (!own.prior || own.prior.cronExpression !== cronExpression) return;
+    const missed = evaluateMissedFires(
+      cronExpression,
+      new Date(own.prior.lastEvaluatedFireTime),
+      new Date(Math.min(own.slot.getTime() - 1, now.getTime())),
+    );
+    await this.recordMissed(workflowId, workflowName, missed, now);
   }
 
   private async recordMissed(
@@ -946,6 +970,12 @@ export class ScheduledExecutionService {
   ): Promise<FireOutcome> {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
     const catchUp = catchUpOf !== undefined;
+    // registered before any await, so a catch-up pass running alongside sees it
+    const own = !catchUp && !this.catchUpPassed &&
+        !this.firstOwnFire.has(workflowId)
+      ? { prior: undefined, slot: fireTime }
+      : undefined;
+    if (own) this.firstOwnFire.set(workflowId, own);
     const lostFire = (reason: MissedFireReason): MissedFire =>
       catchUpOf ?? {
         fireTime: fireTime.toISOString(),
@@ -1009,6 +1039,9 @@ export class ScheduledExecutionService {
             dedupSkip: true,
             fireTime: fireTime.toISOString(),
           });
+          if (own && this.firstOwnFire.get(workflowId) === own) {
+            this.firstOwnFire.delete(workflowId);
+          }
           return "claimed_elsewhere";
         }
       } catch (err: unknown) {
@@ -1152,15 +1185,13 @@ export class ScheduledExecutionService {
         },
       );
     }
-    // a non-writer settles nothing; a failed write still fired the slot, so the
-    // catch-up pass must not fire it again
-    if (wrote === false) return false;
-    if (
-      options.ownFire && !this.catchUpPassed &&
-      !this.firstOwnFire.has(workflowId)
-    ) {
-      this.firstOwnFire.set(workflowId, { prior: stored, slot: fireTime });
+    const own = options.ownFire ? this.firstOwnFire.get(workflowId) : undefined;
+    if (own && own.slot.getTime() === fireTime.getTime()) {
+      // a non-writer settled nothing; a failed write still fired the slot
+      if (wrote === false) this.firstOwnFire.delete(workflowId);
+      else own.prior = stored;
     }
+    if (wrote === false) return false;
     if (wrote === true) this.scheduleStates.set(workflowId, next);
     return wrote === true;
   }

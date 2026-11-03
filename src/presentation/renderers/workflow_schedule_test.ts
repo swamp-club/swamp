@@ -156,3 +156,92 @@ Deno.test("renderWorkflowScheduleList: empty list in both modes", () => {
     { schedules: [] },
   );
 });
+
+const ACTIVE_ENTRY = {
+  workflowId: PAUSE.workflowId,
+  workflowName: "nightly-gc",
+  schedule: "0 3 * * *",
+  source: "definition" as const,
+  nextRun: "2026-10-17T03:00:00.000Z",
+  paused: false,
+  orphaned: false,
+};
+
+const LAST_MISSED = {
+  fireTime: "2026-10-16T03:00:00.000Z",
+  count: 4,
+  reason: "serve_down" as const,
+  caughtUp: false,
+  detectedAt: "2026-10-16T09:00:00.000Z",
+};
+
+function missedLine(text: string): string | undefined {
+  return text.split("\n").find((line) => line.includes("Missed:"));
+}
+
+Deno.test("renderWorkflowScheduleList: log mode shows the last missed fire's count, reason and time", () => {
+  const text = capture(() =>
+    renderWorkflowScheduleList("log", {
+      schedules: [{ ...ACTIVE_ENTRY, lastMissed: LAST_MISSED }],
+    })
+  );
+  assertEquals(
+    missedLine(text),
+    "  Missed: 4 fire(s) (serve was down), latest 2026-10-16T03:00:00.000Z",
+  );
+});
+
+Deno.test("renderWorkflowScheduleList: log mode marks a saturated count with + and a caught-up fire", () => {
+  const text = capture(() =>
+    renderWorkflowScheduleList("log", {
+      schedules: [{
+        ...ACTIVE_ENTRY,
+        lastMissed: { ...LAST_MISSED, saturated: true, caughtUp: true },
+      }],
+    })
+  );
+  assertEquals(
+    missedLine(text),
+    "  Missed: 4+ fire(s) (serve was down), latest 2026-10-16T03:00:00.000Z (caught up)",
+  );
+});
+
+Deno.test("renderWorkflowScheduleList: log mode names each missed-fire reason", () => {
+  const cases = [
+    ["serve_down", "(serve was down)"],
+    ["paused", "(paused)"],
+    ["overlap", "(previous run still in progress)"],
+  ] as const;
+  for (const [reason, text] of cases) {
+    const line = missedLine(capture(() =>
+      renderWorkflowScheduleList("log", {
+        schedules: [{
+          ...ACTIVE_ENTRY,
+          lastMissed: { ...LAST_MISSED, count: 1, reason },
+        }],
+      })
+    ));
+    assertEquals(
+      line,
+      `  Missed: 1 fire(s) ${text}, latest 2026-10-16T03:00:00.000Z`,
+    );
+  }
+});
+
+Deno.test("renderWorkflowScheduleList: log mode prints no Missed line without a last missed fire", () => {
+  const text = capture(() =>
+    renderWorkflowScheduleList("log", { schedules: [ACTIVE_ENTRY] })
+  );
+  assertStringIncludes(text, "nightly-gc - active");
+  assertEquals(missedLine(text), undefined);
+});
+
+Deno.test("renderWorkflowScheduleList: json mode carries the last missed fire", () => {
+  const data = {
+    schedules: [{ ...ACTIVE_ENTRY, lastMissed: LAST_MISSED }],
+  };
+  assertEquals(
+    JSON.parse(capture(() => renderWorkflowScheduleList("json", data))),
+    data,
+  );
+});

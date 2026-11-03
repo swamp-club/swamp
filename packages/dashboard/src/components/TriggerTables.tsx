@@ -112,6 +112,8 @@ export interface ScheduleRow {
   queueLabel: string | null;
   /** The last lost fire, when the server reports one. */
   missedLabel?: string | null;
+  /** A caught-up miss is shown as information, not a warning. */
+  missedCaughtUp?: boolean;
   recent: RecentRun[];
 }
 
@@ -195,7 +197,11 @@ export function ScheduleTable(
                     <span className="trig-queue">{row.queueLabel}</span>
                   )}
                   {row.missedLabel && (
-                    <span className="trig-pill tone-warning">
+                    <span
+                      className={`trig-pill ${
+                        row.missedCaughtUp ? "tone-info" : "tone-warning"
+                      }`}
+                    >
                       {row.missedLabel}
                     </span>
                   )}

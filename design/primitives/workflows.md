@@ -2788,16 +2788,19 @@ datastore sees one watermark. It only moves forward. A fire advances it as soon
 as the cron-fire dedup claim succeeds, before the drain check, so a slot
 recorded for replay is never also counted as missed.
 
-When the scheduler starts on the leader, after pending runs are replayed and
-again when a follower is promoted, `catchUpMissedFires` compares each
-schedule's slots against its watermark, as it stood before the scheduler
-started. Any slot strictly after the watermark and at or before now was missed
-because serve was down. Serve records the latest one as the schedule's
+When serve starts as the leader, after pending runs are replayed, and when a
+follower is promoted, once its role is leader (`onLed` in
+`src/serve/serve_leadership.ts`, after the grant config is applied),
+`catchUpMissedFires` compares each schedule's slots against its stored
+watermark. Any slot strictly after the watermark and at or before now was
+missed because serve was down. Serve records the latest one as the schedule's
 `lastMissed` (`fireTime`, `count`, `reason: serve_down`, `caughtUp`) and emits
 a `schedule_missed` event, audited as `workflow.schedule.missed`. A fire skipped
 because the schedule was paused or the previous run was still going is recorded
 as `lastMissed` with reason `paused` or `overlap`. `lastMissed` appears in
-`/api/v1/health`, the dashboard and `swamp workflow schedule list`.
+`/api/v1/health`, the dashboard and `swamp workflow schedule list`. `caughtUp`
+means the catch-up run was queued; like any scheduled run it is still pause
+checked and authorized when it starts.
 
 A trigger can opt in to catching up:
 

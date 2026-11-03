@@ -930,3 +930,36 @@ Deno.test("updateTriggerOverrides: a change to catchUp alone is counted", async 
 
   assertEquals(changed, 1);
 });
+
+Deno.test("catchUpMissedFires: a tick that begins while the pass reads run history is not caught up again", async () => {
+  const wf = createWorkflow("racing-wf", "* * * * * *", {
+    policy: "latest",
+    maxDelay: "1h",
+  });
+  const states = new MemoryStateRepo();
+  seed(states, wf, new Date(Math.floor(Date.now() / 1000) * 1000 - 10_000));
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    latestScheduledSlot: async () => {
+      await waitFor(
+        () => events.some((e) => e.kind === "schedule_fired"),
+        "a tick during the pass",
+      );
+      return null;
+    },
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await service.stop();
+
+  assertEquals(
+    executor.inputs.filter((i) => i.runtimeTags?.[CATCH_UP_TAG]).length,
+    0,
+  );
+});

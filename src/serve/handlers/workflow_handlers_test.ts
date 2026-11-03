@@ -39,6 +39,8 @@ import {
   handleWorkflowRunSearch,
   handleWorkflowRunSummary,
   handleWorkflowSearch,
+  handleWorkflowTriggerGet,
+  handleWorkflowTriggerSet,
   WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
 import "../../domain/models/models.ts";
@@ -81,7 +83,12 @@ import {
   GrantBasedAccessDecisionService,
   type GrantBasedAccessDecisionServiceOptions,
 } from "../../domain/access/grant_based_access_decision_service.ts";
-import type { ServeConfigFile } from "../serve_config.ts";
+import {
+  readServeConfigFile,
+  type ServeConfigFile,
+  type TriggerOverrideEntry,
+  writeServeConfigFile,
+} from "../serve_config.ts";
 import type { TriggerOverride } from "../../libswamp/workflows/scheduled_execution.ts";
 import { type ActiveRun, ActiveRunRegistry } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
@@ -2729,5 +2736,210 @@ Deno.test("handleWorkflowHistoryGet: redacting nested runs of many extension wor
       undefined,
       undefined,
     ]);
+  });
+});
+
+async function saveScheduledWorkflow(
+  repo: YamlWorkflowRepository,
+  name: string,
+  trigger: {
+    schedule: string;
+    catchUp?: { policy: "none" | "latest"; maxDelay?: string };
+  },
+): Promise<Workflow> {
+  const workflow = Workflow.create({
+    name,
+    trigger,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "write",
+            task: StepTask.model("writer", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+  await repo.save(workflow);
+  return workflow;
+}
+
+async function triggerSet(
+  ctx: ConnectionContext,
+  payload: Parameters<typeof handleWorkflowTriggerSet>[3],
+) {
+  const socket = editSocket();
+  await handleWorkflowTriggerSet(
+    socket,
+    ctx,
+    "req-trigger-set",
+    payload,
+    new AbortController(),
+    null,
+  );
+  return sentFrames(socket);
+}
+
+async function triggerGet(ctx: ConnectionContext, workflowName: string) {
+  const socket = editSocket();
+  await handleWorkflowTriggerGet(
+    socket,
+    ctx,
+    "req-trigger-get",
+    { workflowName },
+    new AbortController(),
+    null,
+  );
+  return sentFrames(socket);
+}
+
+Deno.test("handleWorkflowTriggerSet: writes the catch-up policy into serve.yaml and the response", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await saveScheduledWorkflow(repo, "scan-cves", { schedule: "0 6 * * *" });
+    const catchUp = { policy: "latest" as const, maxDelay: "6h" };
+
+    const frames = await triggerSet(workflowEditCtx(dir, repo), {
+      workflowName: "scan-cves",
+      schedule: "0 3 * * *",
+      catchUp,
+    });
+
+    assertEquals(frames.length, 1);
+    assertEquals(frames[0].type, "workflow.trigger.set");
+    assertEquals(frames[0].payload.data, {
+      workflowName: "scan-cves",
+      entry: { schedule: "0 3 * * *", catchUp },
+    });
+    const config = await readServeConfigFile(dir);
+    assertEquals(config?.triggers?.["scan-cves"], {
+      schedule: "0 3 * * *",
+      catchUp,
+    });
+  });
+});
+
+Deno.test("handleWorkflowTriggerSet: an entry without a catch-up policy writes none", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const frames = await triggerSet(workflowEditCtx(dir, repo), {
+      workflowName: "scan-cves",
+      schedule: "0 3 * * *",
+    });
+
+    assertEquals(frames[0].type, "workflow.trigger.set");
+    assertEquals(frames[0].payload.data.entry, { schedule: "0 3 * * *" });
+    const config = await readServeConfigFile(dir);
+    assertEquals(config?.triggers?.["scan-cves"], { schedule: "0 3 * * *" });
+  });
+});
+
+Deno.test("handleWorkflowTriggerSet: refuses an invalid catch-up policy and writes nothing", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const invalid = [
+      { policy: "latest" },
+      { policy: "none", maxDelay: "6h" },
+      { policy: "sometimes", maxDelay: "6h" },
+    ] as unknown as Array<{ policy: "none" | "latest"; maxDelay?: string }>;
+    for (const catchUp of invalid) {
+      const frames = await triggerSet(workflowEditCtx(dir, repo), {
+        workflowName: "scan-cves",
+        schedule: "0 3 * * *",
+        catchUp,
+      });
+
+      assertEquals(frames.length, 1, JSON.stringify(catchUp));
+      assertEquals(frames[0].type, "error");
+      assertEquals(frames[0].error.code, "workflow_trigger_set_failed");
+      assertEquals(await readServeConfigFile(dir), null);
+    }
+  });
+});
+
+Deno.test("handleWorkflowTriggerGet: the override's catch-up policy wins over the built-in one", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await saveScheduledWorkflow(repo, "scan-cves", {
+      schedule: "0 6 * * *",
+      catchUp: { policy: "latest", maxDelay: "2h" },
+    });
+    await writeServeConfigFile(dir, {
+      triggers: {
+        "scan-cves": {
+          schedule: "0 3 * * *",
+          catchUp: { policy: "none" },
+        },
+      },
+    });
+
+    const [frame] = await triggerGet(workflowEditCtx(dir, repo), "scan-cves");
+
+    assertEquals(frame.type, "workflow.trigger.get");
+    assertEquals(frame.payload.data.builtIn.catchUp, {
+      policy: "latest",
+      maxDelay: "2h",
+    });
+    assertEquals(frame.payload.data.override.catchUp, { policy: "none" });
+    assertEquals(frame.payload.data.effective.catchUp, { policy: "none" });
+    assertEquals(frame.payload.data.effective.schedule, "0 3 * * *");
+  });
+});
+
+Deno.test("handleWorkflowTriggerGet: the running scheduler's override catch-up policy wins over the built-in one", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await saveScheduledWorkflow(repo, "scan-cves", {
+      schedule: "0 6 * * *",
+      catchUp: { policy: "none" },
+    });
+    const override: TriggerOverrideEntry = {
+      catchUp: { policy: "latest", maxDelay: "6h" },
+    };
+    const ctx = {
+      ...workflowEditCtx(dir, repo),
+      scheduledExecution: {
+        getTriggerOverride: (name: string) =>
+          name === "scan-cves" ? override : undefined,
+      },
+    } as unknown as ConnectionContext;
+
+    const [frame] = await triggerGet(ctx, "scan-cves");
+
+    assertEquals(frame.payload.data.effective.catchUp, {
+      policy: "latest",
+      maxDelay: "6h",
+    });
+    assertEquals(frame.payload.data.effective.schedule, "0 6 * * *");
+  });
+});
+
+Deno.test("handleWorkflowTriggerGet: the built-in catch-up policy applies when the override sets none", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await saveScheduledWorkflow(repo, "scan-cves", {
+      schedule: "0 6 * * *",
+      catchUp: { policy: "latest", maxDelay: "2h" },
+    });
+    await writeServeConfigFile(dir, {
+      triggers: { "scan-cves": { schedule: "0 3 * * *" } },
+    });
+
+    const [frame] = await triggerGet(workflowEditCtx(dir, repo), "scan-cves");
+
+    assertEquals(frame.payload.data.effective.catchUp, {
+      policy: "latest",
+      maxDelay: "2h",
+    });
+  });
+});
+
+Deno.test("handleWorkflowTriggerGet: effective catch-up is null when neither sets one", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await saveScheduledWorkflow(repo, "scan-cves", { schedule: "0 6 * * *" });
+    await writeServeConfigFile(dir, {
+      triggers: { "scan-cves": { schedule: "0 3 * * *" } },
+    });
+
+    const [frame] = await triggerGet(workflowEditCtx(dir, repo), "scan-cves");
+
+    assertEquals(frame.payload.data.builtIn.catchUp, null);
+    assertEquals(frame.payload.data.effective.catchUp, null);
   });
 });

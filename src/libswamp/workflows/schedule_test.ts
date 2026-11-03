@@ -38,6 +38,11 @@ import type {
   SchedulePauseRepository,
 } from "../../domain/workflows/schedule_pause.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type {
+  MissedFire,
+  ScheduleState,
+  ScheduleStateRepository,
+} from "../../domain/workflows/schedule_state.ts";
 
 const NOW = new Date("2026-10-16T12:00:00.000Z");
 
@@ -425,4 +430,108 @@ Deno.test("workflowScheduleResume: removes a pause that cannot be read, by workf
     wasPaused: true,
   });
   assertEquals(pauses.records.size, 0);
+});
+
+function memoryStates(
+  list: () => Promise<ScheduleState[]>,
+): ScheduleStateRepository {
+  return {
+    get: () => Promise.resolve(null),
+    list,
+    save: () => Promise.resolve(true),
+  };
+}
+
+const MISSED: MissedFire = {
+  fireTime: "2026-10-16T03:00:00.000Z",
+  count: 3,
+  saturated: true,
+  reason: "serve_down",
+  caughtUp: true,
+  detectedAt: "2026-10-16T09:00:00.000Z",
+};
+
+Deno.test("workflowScheduleList: merges each schedule's last missed fire from its state", async () => {
+  const gc = workflow("nightly-gc", "0 3 * * *");
+  const report = workflow("report", "0 8 * * *");
+  const states = memoryStates(() =>
+    Promise.resolve([
+      {
+        workflowId: gc.id,
+        workflowName: gc.name,
+        lastEvaluatedFireTime: MISSED.fireTime,
+        lastMissed: MISSED,
+      },
+      {
+        workflowId: report.id,
+        workflowName: report.name,
+        lastEvaluatedFireTime: "2026-10-16T08:00:00.000Z",
+      },
+    ])
+  );
+  const { deps: d } = deps([gc, report], {}, { states });
+
+  const schedules = await list(d);
+  assertEquals(schedules.map((s) => s.workflowName), ["nightly-gc", "report"]);
+  assertEquals(schedules[0].lastMissed, MISSED);
+  assertEquals(schedules[1].lastMissed, undefined);
+  assertEquals("lastMissed" in schedules[1], false);
+});
+
+Deno.test("workflowScheduleList: a schedule with no recorded state has no last missed fire", async () => {
+  const gc = workflow("nightly-gc", "0 3 * * *");
+  const other = crypto.randomUUID();
+  const states = memoryStates(() =>
+    Promise.resolve([{
+      workflowId: other,
+      workflowName: "deleted-wf",
+      lastEvaluatedFireTime: MISSED.fireTime,
+      lastMissed: MISSED,
+    }])
+  );
+  const { deps: d } = deps([gc], {}, { states });
+
+  const schedules = await list(d);
+  assertEquals(schedules.map((s) => s.workflowName), ["nightly-gc"]);
+  assertEquals("lastMissed" in schedules[0], false);
+});
+
+Deno.test("workflowScheduleList: a state store that cannot be listed still lists the schedules, without missed fires", async () => {
+  const gc = workflow("nightly-gc", "0 3 * * *");
+  let listed = 0;
+  const states = memoryStates(() => {
+    listed++;
+    return Promise.reject(new Error("store unreachable"));
+  });
+  const { deps: d } = deps([gc], {}, { states });
+
+  const schedules = await list(d);
+  assertEquals(listed, 1);
+  assertEquals(schedules.map((s) => s.workflowName), ["nightly-gc"]);
+  assertEquals(schedules[0].paused, false);
+  assertEquals("lastMissed" in schedules[0], false);
+});
+
+Deno.test("workflowScheduleList: merges the last missed fire into a running scheduler's schedule", async () => {
+  const wf = workflow("nightly-gc", "0 3 * * *");
+  const states = memoryStates(() =>
+    Promise.resolve([{
+      workflowId: wf.id,
+      workflowName: wf.name,
+      lastEvaluatedFireTime: MISSED.fireTime,
+      lastMissed: { ...MISSED, saturated: undefined, caughtUp: false },
+    }])
+  );
+  const { deps: d } = deps([wf], {}, {
+    states,
+    liveSchedules: () => [{
+      workflowId: wf.id,
+      workflowName: wf.name,
+      cronExpression: "0 3 * * *",
+      nextRun: null,
+    }],
+  });
+  const [entry] = await list(d);
+  assertEquals(entry.lastMissed?.count, 3);
+  assertEquals(entry.lastMissed?.caughtUp, false);
 });

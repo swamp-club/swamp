@@ -134,6 +134,7 @@ export function Schedules(
       runningCount: summary?.running ?? 0,
       queueLabel: scheduleQueueLabel(s, now),
       missedLabel: scheduleMissedLabel(s),
+      missedCaughtUp: s.lastMissed?.caughtUp ?? false,
       recent: summary?.recent ?? [],
     };
   });
