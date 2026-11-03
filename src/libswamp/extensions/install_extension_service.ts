@@ -66,6 +66,7 @@ import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.t
 import { webhookKindAdapter } from "../../domain/extensions/webhook_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { createDenoInfoModuleGraphReader } from "../../infrastructure/runtime/deno_info_module_graph_reader.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
 
 const KIND_DIRS = [
   "models",
@@ -121,7 +122,12 @@ export class InstallExtensionService {
     // lock section, so catalog save and commit or rollback cannot interleave
     // with another install or removal; deps recurse in apply
     return await this.installExtensionFn(ref, ctx, {
-      underLock: (pending) => this.indexInstalled(ref, pending, ctx),
+      underLock: (pending) =>
+        withSpan(
+          "swamp.extension.index",
+          { "extension.name": ref.name },
+          () => this.indexInstalled(ref, pending, ctx),
+        ),
     });
   }
 

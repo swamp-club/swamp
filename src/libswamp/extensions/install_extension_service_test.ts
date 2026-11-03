@@ -41,6 +41,10 @@ import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_u
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
 import { probeModule } from "../../infrastructure/runtime/bundle_probe.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 // the model loader's test bootstrap needs command/shell registered
 import "../../domain/models/models.ts";
@@ -1220,6 +1224,49 @@ Deno.test(
           "the archive bundle is not left to run",
         );
         assertEquals(repository.loadByName(extName).length, 0);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "InstallExtensionService.execute: indexes the install in its own span",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/svc-span-${crypto.randomUUID().slice(0, 8)}`;
+        const typeId = `@test/svc-span-model-${
+          crypto.randomUUID().slice(0, 8)
+        }`;
+        await stageModel(
+          repoDir,
+          extName,
+          "noop.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension(() =>
+            Promise.resolve(
+              makeStubInstallResult(extName, "1.0.0", [
+                `.swamp/pulled-extensions/${extName}/models/noop.ts`,
+              ]),
+            )
+          ),
+        });
+        await withCapturedSpans(async (spans) => {
+          await service.execute(
+            { name: extName, version: "1.0.0" } as ExtensionRef,
+            makeInstallContext(repoDir, lockfileRepository),
+          );
+          assertEquals(
+            findSpan(spans, "swamp.extension.index").attributes[
+              "extension.name"
+            ],
+            extName,
+          );
+        });
       },
     );
   },

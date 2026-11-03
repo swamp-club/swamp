@@ -88,6 +88,7 @@ export { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 
 import { promptConfirmation } from "../prompt_helpers.ts";
 import { overwritePrompt } from "../../presentation/renderers/extension_pull_prompts.ts";
+import { createDefaultExtensionArchiveCache } from "../../infrastructure/persistence/extension_archive_cache.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -128,6 +129,7 @@ export interface PullContext {
   getVersionChannels?: ExtensionPullDeps["getVersionChannels"];
   confirm?: (question: string, details: string[]) => Promise<boolean>;
   installExtensionFn?: ExtensionPullDeps["installExtensionFn"];
+  archiveCache?: ExtensionPullDeps["archiveCache"];
 }
 
 export async function pullExtension(
@@ -150,6 +152,7 @@ export async function pullExtension(
     repository: ctx.repository,
     getVersionChannels: ctx.getVersionChannels,
     installExtensionFn: ctx.installExtensionFn,
+    archiveCache: ctx.archiveCache,
   };
   const renderer = createExtensionPullRenderer(outputMode);
   // The forced retry after a conflict reaches the same extensions again;
@@ -337,7 +340,7 @@ export const extensionPullCommand = withRemoteOptions(
       lockfilePath,
       skillsDirs,
       repoDir,
-      { identity },
+      { identity, archiveCache: createDefaultExtensionArchiveCache() },
     );
     const repository = new ExtensionRepository({
       catalog,
@@ -369,6 +372,7 @@ export const extensionPullCommand = withRemoteOptions(
           denoRuntime,
           repository,
           getVersionChannels: deps.getVersionChannels,
+          archiveCache: deps.archiveCache,
         }),
     );
   } finally {

@@ -1796,23 +1796,15 @@ Deno.test(
   async () => {
     await withSkillRepo(async (repoDir, lockfile) => {
       const name = uniqueExtName();
-      let checksumFetched = false;
-      const ctx: InstallContext = {
-        ...skillInstallContext(repoDir, lockfile, {
-          [name]: new Uint8Array(MAX_EXTENSION_ARCHIVE_BYTES + 1),
-        }),
-        getChecksum: () => {
-          checksumFetched = true;
-          return Promise.resolve(null);
-        },
-      };
+      const ctx = skillInstallContext(repoDir, lockfile, {
+        [name]: new Uint8Array(MAX_EXTENSION_ARCHIVE_BYTES + 1),
+      });
       const error = await assertRejects(
         () => installExtension({ name, version: null }, ctx),
         UserError,
       );
       assertStringIncludes(error.message, `${name}@${SKILL_VERSION}`);
       assertStringIncludes(error.message, "50 MiB archive size limit");
-      assertEquals(checksumFetched, false);
       assertEquals(lockfile.getEntry(name), null);
       assertEquals(await exists(join(repoDir, ".claude")), false);
     });

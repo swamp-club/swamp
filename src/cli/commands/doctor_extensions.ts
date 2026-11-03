@@ -97,6 +97,7 @@ import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import { ProcessBundleProber } from "../../infrastructure/runtime/process_bundle_prober.ts";
+import { createDefaultExtensionArchiveCache } from "../../infrastructure/persistence/extension_archive_cache.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -479,7 +480,10 @@ export const doctorExtensionsCommand = withRemoteOptions(
                       lockfilePath,
                       absoluteSkillsDirs,
                       repoDir,
-                      { identity },
+                      {
+                        identity,
+                        archiveCache: createDefaultExtensionArchiveCache(),
+                      },
                     );
                     // Repair restores what the lockfile pins, not registry
                     // latest, which would destroy the pin; extensions with no
@@ -494,6 +498,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                           getExtension: deps.getExtension,
                           downloadArchive: deps.downloadArchive,
                           getChecksum: deps.getChecksum,
+                          archiveCache: deps.archiveCache,
                           logger: cliCtx.logger,
                           lockfileRepository: deps.lockfileRepository,
                           skillsDirs: absoluteSkillsDirs,

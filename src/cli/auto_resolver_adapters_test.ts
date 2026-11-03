@@ -29,6 +29,8 @@ import {
   isPulledSkillPath,
 } from "./auto_resolver_adapters.ts";
 import { createTarGz } from "../infrastructure/archive/tar_archive.ts";
+import { computeChecksum } from "../domain/models/checksum.ts";
+import type { ExtensionArchiveCache } from "../domain/extensions/extension_archive_cache.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
@@ -98,6 +100,10 @@ async function seedLockfile(
   }
   await Deno.writeTextFile(lockfilePath, JSON.stringify(map, null, 2));
   return lockfilePath;
+}
+
+function registryRecord(name: string, latestVersion: string | null) {
+  return { name, description: "", latestVersion };
 }
 
 // each extension owns `.swamp/pulled-extensions/<ext-name>/<type>/`, so the
@@ -827,7 +833,11 @@ Deno.test("auto_resolver_adapters: install pins the version and checksum from th
     });
 
     await assertRejects(
-      () => adapter.install("@fake/team-only"),
+      () =>
+        adapter.install(
+          "@fake/team-only",
+          registryRecord("@fake/team-only", "1.5.0"),
+        ),
       Error,
       "Checksum mismatch for @fake/team-only@1.2.0 (stored sha-from-team",
     );
@@ -890,10 +900,14 @@ Deno.test("auto_resolver_adapters: install treats a dependency in the resolved l
       denoRuntime: stubDenoRuntime,
       resolvedLockfilePath: () => resolvedPath,
     });
-    const result = await adapter.install(parent);
+    const result = await adapter.install(
+      parent,
+      registryRecord(parent, version),
+    );
 
     assertEquals(result?.version, version);
-    assertEquals(fetched, [parent]);
+    // the root's record comes from the resolver
+    assertEquals(fetched, []);
     const recorded = await LockfileRepository.create(lockfilePath);
     assertEquals(Object.keys(recorded.getAllEntries()), [parent]);
   } finally {
@@ -972,7 +986,10 @@ Deno.test("auto_resolver_adapters: install shares one registry deadline across a
       repoDir,
       denoRuntime: stubDenoRuntime,
     });
-    const result = await adapter.install(parent);
+    const result = await adapter.install(
+      parent,
+      registryRecord(parent, version),
+    );
 
     assertEquals(result?.version, version);
     assertEquals(new Set(calls.map((c) => c.name)), new Set([parent, dep]));
@@ -985,7 +1002,7 @@ Deno.test("auto_resolver_adapters: install shares one registry deadline across a
     assertEquals(calls.every((c) => c.signal === deadline), true);
 
     const before = calls.length;
-    await adapter.install(dep).catch(() => {});
+    await adapter.install(dep, registryRecord(dep, version)).catch(() => {});
     const later = calls.slice(before);
     assertEquals(later.length > 0, true);
     assertEquals(later.every((c) => c.signal !== deadline), true);
@@ -1029,10 +1046,10 @@ Deno.test("auto_resolver_adapters: a forced re-run after a skill conflict keeps 
       repoDir,
       denoRuntime: stubDenoRuntime,
     });
-    const result = await adapter.install(name);
+    const result = await adapter.install(name, registryRecord(name, version));
 
     assertEquals(result?.version, version);
-    assertEquals(signals.length, 6);
+    assertEquals(signals.length, 4);
     assertEquals(signals.every((s) => s === signals[0]), true);
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
@@ -1413,7 +1430,7 @@ Deno.test("auto_resolver_adapters: install retries past a skill dir another exte
       repoDir,
       denoRuntime: stubDenoRuntime,
     });
-    const result = await adapter.install(name);
+    const result = await adapter.install(name, registryRecord(name, version));
 
     assertEquals(result?.version, version);
     assertEquals(await Deno.readTextFile(join(skillDir, "SKILL.md")), "x");
@@ -1483,7 +1500,10 @@ Deno.test("auto_resolver_adapters: install re-installs a pinned beta entry on it
       repoDir,
       denoRuntime: stubDenoRuntime,
     });
-    const result = await adapter.install(name);
+    const result = await adapter.install(name, {
+      ...registryRecord(name, null),
+      latestBeta: version,
+    });
 
     assertEquals(result?.version, version);
     assertEquals(channels, ["beta", "beta"]);
@@ -1644,7 +1664,10 @@ for (const skillSurvives of [true, false]) {
           repoDir,
           denoRuntime: stubDenoRuntime,
         });
-        const result = await adapter.install(name);
+        const result = await adapter.install(
+          name,
+          registryRecord(name, version),
+        );
 
         assertEquals(result?.version, version);
         assertEquals(
@@ -1705,7 +1728,7 @@ Deno.test("auto_resolver_adapters: install merges into a skill dir the resolved 
       denoRuntime: stubDenoRuntime,
       resolvedLockfilePath: () => resolvedPath,
     });
-    const result = await adapter.install(name);
+    const result = await adapter.install(name, registryRecord(name, version));
 
     assertEquals(result?.version, version);
     assertEquals(
@@ -1745,7 +1768,7 @@ Deno.test("auto_resolver_adapters: install puts a pinned entry without a recorde
       repoDir,
       denoRuntime: stubDenoRuntime,
     });
-    const result = await adapter.install(name);
+    const result = await adapter.install(name, registryRecord(name, version));
 
     assertEquals(result?.version, version);
     assertEquals(
@@ -1803,7 +1826,10 @@ Deno.test("auto_resolver_adapters: install refuses a skill conflict the pinned e
       resolvedLockfilePath: () => resolvedPath,
     });
 
-    assertEquals(await adapter.install(name), null);
+    assertEquals(
+      await adapter.install(name, registryRecord(name, version)),
+      null,
+    );
     assertEquals(
       await Deno.readTextFile(
         join(repoDir, ".claude", "skills", "bar", "SKILL.md"),
@@ -1848,7 +1874,10 @@ Deno.test("auto_resolver_adapters: install keeps a new dependency's skill out of
       repoDir,
       denoRuntime: stubDenoRuntime,
     });
-    const result = await adapter.install(parent);
+    const result = await adapter.install(
+      parent,
+      registryRecord(parent, version),
+    );
 
     assertEquals(result?.version, version);
     assertEquals(await Deno.readTextFile(userSkill), "mine");
@@ -1971,5 +2000,45 @@ Deno.test("auto_resolver_adapters: registeredModelCount finds rows stored under 
     catalog.close();
     await Deno.remove(linkParent, { recursive: true });
     await Deno.remove(realDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: install reads and fills the archive cache", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const name = `@t/cached-${crypto.randomUUID().slice(0, 8)}`;
+    const version = "2026.01.01.1";
+    const lockfilePath = await seedLockfile(repoDir, {});
+    const archive = await packExtension(name, version, []);
+    const checksum = await computeChecksum(archive);
+    const gets: string[] = [];
+    const puts: string[] = [];
+    const archiveCache: ExtensionArchiveCache = {
+      get: (key) => {
+        gets.push(key);
+        return Promise.resolve(null);
+      },
+      put: (key) => {
+        puts.push(key);
+        return Promise.resolve();
+      },
+    };
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: () => Promise.reject(new Error("root already looked up")),
+      downloadArchive: () => Promise.resolve(archive),
+      getChecksum: () => Promise.resolve(checksum),
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+      archiveCache,
+    });
+
+    const result = await adapter.install(name, registryRecord(name, version));
+
+    assertEquals(result?.version, version);
+    assertEquals(gets, [checksum]);
+    assertEquals(puts, [checksum]);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
