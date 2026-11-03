@@ -90,7 +90,7 @@ export class ControlPlaneScheduleStateRepository
     signal?.throwIfAborted();
     // store.list takes no signal, so a hung list is abandoned, not stopped
     const keys = await withDeadline(
-      () => this.store.list(STATE_DIR),
+      () => orAbort(this.store.list(STATE_DIR), signal),
       this.timeoutMs,
     );
     const states: ScheduleState[] = [];
@@ -119,6 +119,25 @@ export class ControlPlaneScheduleStateRepository
     await withDeadline(() => this.store.put(key, bytes), this.timeoutMs);
     return true;
   }
+}
+
+function orAbort<T>(read: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return read;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    read.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**

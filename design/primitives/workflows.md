@@ -2847,10 +2847,13 @@ budget per pass. Once it is spent, the remaining schedules fall back to the
 watermark. The whole pass has one deadline, `CATCH_UP_TIMEOUT_MS` (60s), so a
 catch-up never fires against a stale now. Each schedule's work races it; once it
 is spent, the pass stops waiting, checks no further schedule and logs how many
-it skipped, which keep their watermark until the next start or promotion. Work
-the pass stopped waiting for never queues a run: it fires nothing once the pass
-has ended, and a catch-up whose fire claim succeeds after the deadline records
-the slot as missed (`caughtUp: false`), since the slot is claimed. A claim that
+it skipped. A skipped schedule is treated as one that fired during a pass: its
+first fire afterwards records the slots between its watermark and that fire as
+missed, and nothing is caught up; if it does not fire before serve stops, the
+next start or promotion checks it. Work the pass stopped waiting for writes and
+fires nothing after its next read, and a catch-up whose fire claim succeeds
+after the deadline records the slot as missed (`caughtUp: false`), since the
+slot is claimed. A claim that
 succeeds during a drain still writes the watermark and records the run for
 replay. Shutdown waits for abandoned work within its settle budget. A drain or
 stop ends the pass: it aborts the history read and the state read in progress,

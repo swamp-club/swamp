@@ -1318,6 +1318,7 @@ Deno.test("ScheduledExecutionService: writes requested while one is held fold in
 class HungStateRepo extends MemoryStateRepo {
   hangList = false;
   hangGets = false;
+  readonly hangGetsFor = new Set<string>();
   readonly listSignals: (AbortSignal | undefined)[] = [];
   readonly gets: string[] = [];
   readonly getSignals: (AbortSignal | undefined)[] = [];
@@ -1335,7 +1336,7 @@ class HungStateRepo extends MemoryStateRepo {
   ): Promise<ScheduleState | null> {
     this.gets.push(workflowId);
     this.getSignals.push(options?.signal);
-    return this.hangGets
+    return this.hangGets || this.hangGetsFor.has(workflowId)
       ? untilAborted(options?.signal)
       : super.get(workflowId);
   }
@@ -1623,6 +1624,53 @@ Deno.test("startCatchUp: a tick that begins while the detached pass reads run hi
   await service.drain(0);
   await service.stop();
 
+  assertEquals(
+    executor.inputs.filter((i) => i.runtimeTags?.[CATCH_UP_TAG]).length,
+    0,
+  );
+});
+
+Deno.test("catchUpMissedFires: a schedule the deadline skipped reports the gap before its next fire instead of losing it", async () => {
+  const hung = createWorkflow("skipped-hung", MONTHLY);
+  const ticking = createWorkflow("skipped-ticking", "* * * * * *");
+  const states = new HungStateRepo();
+  const watermark = new Date(Math.floor(Date.now() / 1000) * 1000 - 10_000);
+  seed(states, hung, new Date("2026-01-01T09:00:00Z"));
+  seed(states, ticking, watermark);
+  states.hangGetsFor.add(hung.id);
+  const executor = recordingExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([hung, ticking]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    scheduleState: states,
+    catchUpTimeoutMs: 20,
+    maxConcurrentRuns: 2,
+  });
+
+  await service.start((e) => events.push(e));
+  await service.catchUpMissedFires();
+  await waitFor(
+    () =>
+      missedEvents(events).some((e) =>
+        e.kind === "schedule_missed" && e.workflowId === ticking.id
+      ),
+    "the skipped schedule reported its gap",
+  );
+  await service.stop();
+
+  const missed = missedEvents(events).find((e) =>
+    e.kind === "schedule_missed" && e.workflowId === ticking.id
+  )!;
+  assert(missed.kind === "schedule_missed");
+  assertEquals(missed.caughtUp, false);
+  assert(Date.parse(missed.oldestFireTime) > watermark.getTime());
+  const firstFire = events.find((e) =>
+    e.kind === "schedule_fired" && e.workflowId === ticking.id
+  );
+  assert(firstFire?.kind === "schedule_fired");
+  assert(Date.parse(missed.fireTime) < Date.parse(firstFire.fireTime));
   assertEquals(
     executor.inputs.filter((i) => i.runtimeTags?.[CATCH_UP_TAG]).length,
     0,

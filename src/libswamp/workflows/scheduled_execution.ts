@@ -413,6 +413,11 @@ export class ScheduledExecutionService {
     }
   >();
   private catchUpPassed = false;
+  /**
+   * schedules a pass ran out of time for: their watermark is unchecked, so
+   * their first fire here reports the gap before it, as during a pass
+   */
+  private readonly uncheckedSchedules = new Set<WorkflowId>();
   /** registrations before this are the boot scan, which keeps watermarks */
   private started = false;
 
@@ -892,7 +897,7 @@ export class ScheduledExecutionService {
       signal: AbortSignal.any([deadline.signal, shutdown.signal]),
       deadline: deadline.signal,
     };
-    let unchecked = 0;
+    let unchecked: WorkflowId[] = [];
     try {
       const entries = this.scheduler.listSchedules();
       for (const [index, entry] of entries.entries()) {
@@ -918,7 +923,7 @@ export class ScheduledExecutionService {
         });
         if (work && await settlesBefore(work, pass.signal)) continue;
         if (work) this.trackAbandoned(work);
-        unchecked = entries.length - index;
+        unchecked = entries.slice(index).map((e) => e.workflowId);
         break;
       }
     } finally {
@@ -926,10 +931,11 @@ export class ScheduledExecutionService {
       clearTimeout(passTimer);
       if (this.catchUpPass === shutdown) this.catchUpPass = null;
     }
-    if (unchecked > 0 && deadline.signal.aborted) {
+    if (unchecked.length > 0 && deadline.signal.aborted) {
+      for (const id of unchecked) this.uncheckedSchedules.add(id);
       logger.warn(
-        "Catch-up stopped after {ms}ms; {count} schedule(s) were not checked for missed fires and keep their watermark until the next start or promotion",
-        { ms: passMs, count: unchecked },
+        "Catch-up stopped after {ms}ms; {count} schedule(s) were not checked for missed fires, so each reports the fires it missed at its next fire, or is checked at the next start or promotion",
+        { ms: passMs, count: unchecked.length },
       );
     }
     if (history.skipped > 0) {
@@ -944,7 +950,33 @@ export class ScheduledExecutionService {
       );
     }
     this.catchUpPassed = true;
-    this.firstOwnFire.clear();
+    for (const id of [...this.firstOwnFire.keys()]) {
+      if (!this.uncheckedSchedules.has(id)) this.firstOwnFire.delete(id);
+    }
+    for (const id of [...this.uncheckedSchedules]) {
+      await this.reportUncheckedGap(id);
+    }
+  }
+
+  /** once a fire here has settled, the gap before it is all a pass could report */
+  private async reportUncheckedGap(workflowId: WorkflowId): Promise<void> {
+    if (!this.uncheckedSchedules.has(workflowId)) return;
+    const own = this.firstOwnFire.get(workflowId);
+    const cronExpression = this.cronExpressions.get(workflowId);
+    if (!own || own.prior === undefined || !cronExpression) return;
+    this.uncheckedSchedules.delete(workflowId);
+    try {
+      await this.recordGapBeforeOwnFire(
+        workflowId,
+        this.workflowNames.get(workflowId) ?? workflowId,
+        cronExpression,
+        new Date(this.now()),
+      );
+    } finally {
+      if (this.firstOwnFire.get(workflowId) === own) {
+        this.firstOwnFire.delete(workflowId);
+      }
+    }
   }
 
   private trackAbandoned(work: Promise<void>): void {
@@ -975,6 +1007,9 @@ export class ScheduledExecutionService {
     const stored = await this.deps.scheduleState!.get(workflowId, {
       signal: pass.signal,
     });
+    // work the pass stopped waiting for writes and fires nothing; the schedule
+    // is left to its next fire or the next start
+    if (pass.signal.aborted) return;
     // with nothing seen before, or measured on another expression, no slot of
     // this one can be called missed
     if (!stored || stored.cronExpression !== cronExpression) {
@@ -995,6 +1030,7 @@ export class ScheduledExecutionService {
     // reported from the watermark, even if a failed watermark write overstates it
     if (missed.catchUpFireTime) {
       const recorded = await this.latestScheduledSlot(workflowId, history);
+      if (pass.signal.aborted) return;
       // a run that recorded its slot settles it even if the watermark write
       // failed; a slot after now was never fired, so it settles nothing
       if (
@@ -1026,8 +1062,6 @@ export class ScheduledExecutionService {
       );
       return;
     }
-    // a pass that stopped waiting fires nothing late; the next boot checks it
-    if (pass.signal.aborted) return;
     const outcome = await this.trackedFire(
       workflowId,
       missed.catchUpFireTime,
@@ -1201,7 +1235,8 @@ export class ScheduledExecutionService {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
     const catchUp = catchUpOf !== undefined;
     // registered before any await, so a catch-up pass running alongside sees it
-    const own = !catchUp && !this.catchUpPassed &&
+    const own = !catchUp &&
+        (!this.catchUpPassed || this.uncheckedSchedules.has(workflowId)) &&
         !this.firstOwnFire.has(workflowId)
       ? { prior: undefined, slot: fireTime }
       : undefined;
@@ -1357,7 +1392,14 @@ export class ScheduledExecutionService {
     fireTime: Date,
     catchUpFire?: CatchUpFire,
   ): Promise<FireOutcome> {
-    const fire = this.handleFire(workflowId, fireTime, catchUpFire);
+    const fire = this.handleFire(workflowId, fireTime, catchUpFire).then(
+      async (outcome) => {
+        if (!catchUpFire && this.catchUpPassed) {
+          await this.reportUncheckedGap(workflowId);
+        }
+        return outcome;
+      },
+    );
     const settled: Promise<void> = fire.then(() => {}, () => {}).finally(() =>
       this.inFlightFires.delete(settled)
     );

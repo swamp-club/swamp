@@ -288,3 +288,19 @@ Deno.test("ControlPlaneScheduleStateRepository: an aborted caller signal ends th
     assertEquals(read.length, 1);
   });
 });
+
+Deno.test("ControlPlaneScheduleStateRepository: an abort ends a list that never settles without waiting for the deadline", async () => {
+  const repo = new ControlPlaneScheduleStateRepository(
+    {
+      put: () => Promise.resolve(),
+      get: () => Promise.resolve(null),
+      delete: () => Promise.resolve(),
+      list: () => new Promise(() => {}),
+    },
+    { timeoutMs: 60_000 },
+  );
+  const controller = new AbortController();
+  const listing = repo.list({ signal: controller.signal });
+  controller.abort(new Error("serve is shutting down"));
+  await assertRejects(() => listing, Error, "serve is shutting down");
+});
