@@ -2786,8 +2786,9 @@ or was handed to replay during a drain). It lives in the control plane under
 `src/domain/workflows/schedule_state.ts`), so every instance sharing the
 datastore sees one watermark. It only moves forward: each write re-reads the
 record and never saves an older slot, and one process writes a workflow's
-record one write at a time. Instances that may all write (no v3 leadership) can
-still interleave a read and a save. A fire advances it as soon
+record one write at a time, folding the writes requested meanwhile into one, so
+a fire waits for at most the write in flight and its own. Instances that may all
+write (no v3 leadership) can still interleave a read and a save. A fire advances it as soon
 as the cron-fire dedup claim succeeds, before the drain check, so a slot
 recorded for replay is never also counted as missed.
 

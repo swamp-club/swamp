@@ -1279,3 +1279,36 @@ Deno.test("catchUpMissedFires: shutdown ends the pass, so no further schedule is
   assertEquals(states.gets.length, 1);
   assertEquals(executor.inputs.length, 0);
 });
+
+Deno.test("ScheduledExecutionService: writes requested while one is held fold into a single next write", async () => {
+  const { previous, missed } = slots();
+  const wf = createWorkflow("coalesce-wf", MONTHLY);
+  const states = new GatedStateRepo();
+  seed(states, wf, previous);
+  const now = missed.getTime() + HOUR;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+    scheduleState: states,
+    now: () => now,
+  });
+
+  await service.start();
+  states.holdNext("save");
+  const pass = service.catchUpMissedFires();
+  await waitFor(() => states.held, "the missed fire's save to start");
+  for (const schedule of ["0 9 2 * *", "0 9 3 * *", "0 9 4 * *"]) {
+    await service.updateTriggerOverrides(
+      new Map([["coalesce-wf", { schedule }]]),
+    );
+  }
+  states.release();
+  await pass;
+  await service.stop();
+
+  assertEquals(states.saves, 2);
+  assertEquals(states.readsDuringSave, 0);
+  assertEquals(states.watermark(wf.id), new Date(now).toISOString());
+  assertEquals(states.states.get(wf.id)?.cronExpression, "0 9 4 * *");
+});

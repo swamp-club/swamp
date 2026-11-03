@@ -299,6 +299,19 @@ interface ScheduleStateWriteOptions {
   fired?: boolean;
 }
 
+interface StateWriteRequest {
+  readonly workflowName: string;
+  readonly fireTime: Date;
+  readonly options: ScheduleStateWriteOptions;
+  readonly resolve: (wrote: boolean) => void;
+}
+
+interface StateWriteQueue {
+  readonly pending: StateWriteRequest[];
+  /** the loop writing this queue; requests pushed while it runs join its next pass */
+  writing: Promise<void> | null;
+}
+
 interface HistoryBudget {
   readonly signal: AbortSignal;
   /** aborted only by drain and stop: a spent history budget fails no state read */
@@ -341,7 +354,7 @@ export class ScheduledExecutionService {
   private readonly builtInCatchUp = new Map<WorkflowId, ScheduleCatchUp>();
   private readonly scheduleStates = new Map<WorkflowId, ScheduleState>();
   private readonly stateWrites = new Set<Promise<void>>();
-  private readonly stateWriteChains = new Map<WorkflowId, Promise<void>>();
+  private readonly stateWriteQueues = new Map<WorkflowId, StateWriteQueue>();
   /** history reads a timed-out pass stopped waiting for, awaited at shutdown */
   private readonly historyReads = new Set<Promise<void>>();
   private catchUpPass: AbortController | null = null;
@@ -1244,9 +1257,9 @@ export class ScheduledExecutionService {
   }
 
   /**
-   * one write per workflow at a time: each re-reads the record before saving,
-   * which keeps the watermark moving forward only if no other write of this
-   * process lands between that read and its save
+   * one write per workflow at a time, since each re-reads the record before it
+   * saves; requests that arrive meanwhile fold into a single next write, so a
+   * fire waits for at most the write in flight and its own
    */
   private writeScheduleState(
     workflowId: WorkflowId,
@@ -1254,32 +1267,53 @@ export class ScheduledExecutionService {
     fireTime: Date,
     options: ScheduleStateWriteOptions = {},
   ): Promise<boolean> {
-    const previous = this.stateWriteChains.get(workflowId) ?? Promise.resolve();
-    const write = previous.then(() =>
-      this.writeScheduleStateNow(workflowId, workflowName, fireTime, options)
-    );
-    const settled: Promise<void> = write.then(() => {}, () => {}).then(() => {
-      if (this.stateWriteChains.get(workflowId) === settled) {
-        this.stateWriteChains.delete(workflowId);
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    let queue = this.stateWriteQueues.get(workflowId);
+    if (!queue) {
+      queue = { pending: [], writing: null };
+      this.stateWriteQueues.set(workflowId, queue);
+    }
+    queue.pending.push({ workflowName, fireTime, options, resolve });
+    queue.writing ??= this.writeQueuedStates(workflowId, queue);
+    return promise;
+  }
+
+  private async writeQueuedStates(
+    workflowId: WorkflowId,
+    queue: StateWriteQueue,
+  ): Promise<void> {
+    while (queue.pending.length > 0) {
+      const batch = queue.pending.splice(0);
+      let wrote = false;
+      try {
+        wrote = await this.writeScheduleStateNow(workflowId, batch);
+      } catch (error) {
+        logger.warn(
+          "Cannot record the schedule state of workflow {name}: {error}",
+          {
+            name: batch[batch.length - 1].workflowName,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
       }
-    });
-    this.stateWriteChains.set(workflowId, settled);
-    return write;
+      for (const request of batch) request.resolve(wrote);
+    }
+    queue.writing = null;
+    this.stateWriteQueues.delete(workflowId);
   }
 
   /**
    * never rejects: a store that fails or hangs past its deadline must not drop
-   * or delay a fire, so the failure is logged and the fire goes ahead. The
-   * stored record is re-read so a stale cache never moves the watermark back
+   * a fire, so the failure is logged and the fire goes ahead. The stored record
+   * is re-read so a stale cache never moves the watermark back
    */
   private async writeScheduleStateNow(
     workflowId: WorkflowId,
-    workflowName: string,
-    fireTime: Date,
-    options: ScheduleStateWriteOptions,
+    batch: readonly StateWriteRequest[],
   ): Promise<boolean> {
     const repo = this.deps.scheduleState;
     if (!repo) return false;
+    const workflowName = batch[batch.length - 1].workflowName;
     let stored: ScheduleState | null | undefined;
     // a draining fire must reach replay within the settle budget, so it skips
     // the re-read; otherwise an unread record is never overwritten from the
@@ -1293,17 +1327,22 @@ export class ScheduledExecutionService {
         readError = error;
       }
     }
-    const next = advanceScheduleState(
+    const cronExpression = this.cronExpressions.get(workflowId);
+    const next = batch.reduce<ScheduleState | null>(
+      (state, request) =>
+        advanceScheduleState(
+          state,
+          workflowId,
+          request.workflowName,
+          request.fireTime,
+          {
+            lastMissed: request.options.lastMissed,
+            cronExpression,
+            fired: request.options.fired,
+          },
+        ),
       this.scheduleStates.get(workflowId) ?? null,
-      workflowId,
-      workflowName,
-      fireTime,
-      {
-        lastMissed: options.lastMissed,
-        cronExpression: this.cronExpressions.get(workflowId),
-        fired: options.fired,
-      },
-    );
+    )!;
     let wrote: boolean | "failed";
     try {
       if (readError !== undefined) throw readError;
@@ -1318,13 +1357,18 @@ export class ScheduledExecutionService {
         },
       );
     }
-    const own = options.ownFire ? this.firstOwnFire.get(workflowId) : undefined;
-    if (own && own.slot.getTime() === fireTime.getTime()) {
+    const own = this.firstOwnFire.get(workflowId);
+    if (
+      own &&
+      batch.some((request) =>
+        request.options.ownFire &&
+        request.fireTime.getTime() === own.slot.getTime()
+      )
+    ) {
       // a non-writer settled nothing; a failed write still fired the slot
       if (wrote === false) this.firstOwnFire.delete(workflowId);
       else own.prior = stored;
     }
-    if (wrote === false) return false;
     if (wrote === true) this.cacheState(next);
     return wrote === true;
   }
