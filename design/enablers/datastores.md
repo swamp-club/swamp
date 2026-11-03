@@ -7339,7 +7339,10 @@ view differs or a rebuild did not finish (`alignCheckoutView`):
 
 It runs under the writer lease of the new view's datastore: a writer already
 holds it, and a read-only command takes it, waiting up to the lock timeout,
-since it must never read another view's projection. On a solo datastore that
+since it must never read another view's projection. A writer keeps the lease
+to its command's end, so the waiting reader also looks at the record between
+tries and reads without the lease once it names the new view: the writer
+holding the lease recorded it after its rebuild. On a solo datastore that
 lease is datastore-wide, so the rebuild waits for any checkout's writer. The
 rebuild only reads the commit log; it writes nothing but this checkout's
 files, catalog and read-model state. A checkout with no view recorded keeps

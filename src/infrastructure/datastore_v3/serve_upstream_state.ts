@@ -27,6 +27,7 @@ import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { useWalJournal } from "./sqlite_wal.ts";
 
 export const SERVE_UPSTREAM_STATE_SCHEMA_NEWER_CODE =
   "datastore_v3_serve_state_schema_newer";
@@ -551,10 +552,7 @@ function openStateDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    const mode = db.prepare("PRAGMA journal_mode").get() as
-      | { journal_mode: string }
-      | undefined;
-    if (mode?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
+    useWalJournal(db);
     db.exec("PRAGMA synchronous=FULL");
     migrate(db, path);
     return db;
