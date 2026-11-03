@@ -163,7 +163,11 @@ Deno.test("renderSignalResult: the resume command carries the repository target,
 Deno.test("renderRemoteSignalResult: a reply with only the receipt says a resume is still needed and names no run", () => {
   const data = { waitId: WAIT_ID, signal: signalled().signal };
   const lines = captureStdout(() =>
-    renderRemoteSignalResult(hintTestContext(), data, "http://swamp.test")
+    renderRemoteSignalResult(
+      hintTestContext(),
+      data,
+      " --server http://swamp.test",
+    )
   );
   assertEquals(lines, [
     "If the run is suspended at this wait, the signal takes effect when it is next resumed, by someone who may resume it.",
@@ -173,7 +177,7 @@ Deno.test("renderRemoteSignalResult: a reply with only the receipt says a resume
       renderRemoteSignalResult(
         hintTestContext({ verbosity: "quiet" }),
         data,
-        "http://swamp.test",
+        " --server http://swamp.test",
       )
     ),
     [],
@@ -183,7 +187,7 @@ Deno.test("renderRemoteSignalResult: a reply with only the receipt says a resume
     renderRemoteSignalResult(
       hintTestContext({ outputMode: "json" }),
       data,
-      "http://swamp.test",
+      " --server http://swamp.test",
     )
   );
   assertEquals(JSON.parse(json.join("")), data);
@@ -194,7 +198,7 @@ Deno.test("renderRemoteSignalResult: a full reply prints the resume command with
     renderRemoteSignalResult(
       hintTestContext(),
       signalled(),
-      "http://swamp.test",
+      " --server http://swamp.test",
     )
   );
   assertEquals(lines, [
@@ -205,7 +209,7 @@ Deno.test("renderRemoteSignalResult: a full reply prints the resume command with
     renderRemoteSignalResult(
       hintTestContext({ outputMode: "json" }),
       signalled(),
-      "http://swamp.test",
+      " --server http://swamp.test",
     )
   );
   assertEquals(
@@ -220,7 +224,7 @@ Deno.test("renderRemoteSignalResult: a full reply for a keyed wait names the wai
     renderRemoteSignalResult(
       hintTestContext({ outputMode: "json" }),
       data,
-      "http://swamp.test",
+      " --server http://swamp.test",
     )
   );
   assertEquals(JSON.parse(json.join("")).key, "release-verdict");
@@ -279,10 +283,12 @@ Deno.test("renderSignalResult: json mode carries the key beside the wait ID and 
   assertEquals(printed.signal, result.signal);
 });
 
-Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow and key as given", () => {
+Deno.test("remoteSignalPayload: a wait ID, a workflow and a key are sent as typed, so serve names them as typed (swamp-club#4338)", () => {
   assertEquals(
-    remoteSignalPayload({ waitId: WAIT_ID.toUpperCase() }, { verdict: "ship" }),
-    { waitId: WAIT_ID, payload: { verdict: "ship" } },
+    remoteSignalPayload({ waitId: ` ${WAIT_ID.toUpperCase()} ` }, {
+      verdict: "ship",
+    }),
+    { waitId: ` ${WAIT_ID.toUpperCase()} `, payload: { verdict: "ship" } },
   );
   assertEquals(
     remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
@@ -312,6 +318,7 @@ Deno.test("remoteSignalPayload: an address the server would call malformed is no
       "Signal wait not found",
     );
     assertEquals(error.code, "not_found");
+    assertEquals(buildErrorJson(error).refusal, "unknown");
   }
 });
 
@@ -389,8 +396,8 @@ Deno.test("signalUserError: an already_pending refusal keeps until when the earl
   assert(remote instanceof SignalRefusedUserError);
   assertEquals(buildErrorJson(remote), {
     error:
-      `Server reported workflow_signal_refused: A signal is already pending for that key. The earlier signal is held until ${heldUntil}.`,
-    code: "workflow_signal_refused",
+      `A signal is already pending for that key. The earlier signal is held until ${heldUntil}.`,
+    code: "validation_failed",
     refusal: "already_pending",
     pending: { heldUntil },
   });
@@ -408,7 +415,7 @@ Deno.test("signalUserError: an error that is no refusal stays a plain user error
   assertEquals(buildErrorJson(error), { error: "disk", code: "io_error" });
 });
 
-Deno.test("remoteSignalUserError: a server's refusal keeps its kind and the key's last wait", () => {
+Deno.test("remoteSignalUserError: a server's refusal reads as the local one, with its kind and the key's last wait (swamp-club#4338)", () => {
   const error = remoteSignalUserError(
     new ServerResponseError({
       code: "workflow_signal_refused",
@@ -417,9 +424,8 @@ Deno.test("remoteSignalUserError: a server's refusal keeps its kind and the key'
     }),
   );
   assertEquals(buildErrorJson(error as Error), {
-    error:
-      "Server reported workflow_signal_refused: No open wait holds that key.",
-    code: "workflow_signal_refused",
+    error: "No open wait holds that key.",
+    code: "validation_failed",
     refusal: "no_open_wait",
     lastWait: LAST_WAIT,
   });
@@ -434,11 +440,25 @@ Deno.test("remoteSignalUserError: a last wait that is not in the form of one is 
     }),
   );
   assertEquals(buildErrorJson(malformed as Error), {
-    error: "Server reported workflow_signal_refused: refused",
-    code: "workflow_signal_refused",
+    error: "refused",
+    code: "validation_failed",
     refusal: "no_open_wait",
   });
 
+  const unknown = remoteSignalUserError(
+    new ServerResponseError({
+      code: "not_found",
+      message: `Signal wait not found: ${WAIT_ID}`,
+      details: { refusal: "unknown" },
+    }),
+  );
+  assert(unknown instanceof SignalRefusedUserError);
+  assertEquals(buildErrorJson(unknown), {
+    error: `Signal wait not found: ${WAIT_ID}`,
+    code: "not_found",
+    refusal: "unknown",
+  });
+  // a server from before it named the refusal
   const notFound = new ServerResponseError({
     code: "not_found",
     message: "Signal wait not found",
@@ -623,5 +643,21 @@ Deno.test("remoteSignalPayload: an idempotency key is sent with either address, 
   assertEquals(
     "idempotencyKey" in remoteSignalPayload({ waitId: WAIT_ID }, {}),
     false,
+  );
+});
+
+Deno.test("remoteSignalUserError: serve's waits command placeholder becomes this command's own, with its --server and --repo-dir (swamp-club#4338)", () => {
+  const error = remoteSignalUserError(
+    new ServerResponseError({
+      code: "workflow_signal_refused",
+      message:
+        `Wait ${WAIT_ID} was closed before a signal arrived: its run ended. Run "swamp workflow waits --server <server>" for the waits still open.`,
+      details: { refusal: "closed" },
+    }),
+    " --repo-dir /tmp/repo",
+  );
+  assertEquals(
+    (error as Error).message,
+    `Wait ${WAIT_ID} was closed before a signal arrived: its run ended. Run "swamp workflow waits --repo-dir /tmp/repo" for the waits still open.`,
   );
 });

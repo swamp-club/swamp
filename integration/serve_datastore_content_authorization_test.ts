@@ -1497,6 +1497,76 @@ Deno.test({
 
 Deno.test({
   name:
+    "forwarded content: an authored behavior may take a name only an auto-definition holds, never one an authored behavior holds",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const editor = grant({
+      actions: ["read", "write", "run"],
+      resource: { kind: "model", pattern: "*" },
+    });
+    await withServer(
+      [editor],
+      async (server) => {
+        const type = server.modelType.normalized;
+        const adhoc = Definition.create({
+          name: "same-name",
+          type,
+          globalArguments: {},
+        });
+        const auto = await forward(
+          server,
+          partitionOf({ kind: "definition", id: adhoc.id }),
+          [
+            put(
+              {
+                kind: "auto-definition.save",
+                autoDefinition: { id: adhoc.id },
+              },
+              `auto-definitions/${type}/same-name.yaml`,
+              yaml(adhoc.toData()),
+            ),
+          ],
+        );
+        assertEquals(auto.status, 200, JSON.stringify(auto.json));
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const create = (definition: Definition) =>
+          forward(server, behaviorPartition("same-name"), [
+            put(
+              {
+                kind: "definition.create",
+                definition: { kind: "model", name: "same-name" },
+              },
+              `config/models/${definition.type ?? type}/same-name.yaml`,
+              yaml(definition.toData()),
+            ),
+          ]);
+        const authored = await create(Definition.create({
+          name: "same-name",
+          type,
+          globalArguments: {},
+        }));
+        assertEquals(authored.status, 200, JSON.stringify(authored.json));
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const second = await create(Definition.create({
+          name: "same-name",
+          type: "command/shell",
+          globalArguments: {},
+        }));
+        assertEquals(second.status, 403, JSON.stringify(second.json));
+        assertStringIncludes(
+          JSON.stringify(second.json),
+          "its name is held by another behavior",
+        );
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
     "forwarded content: a sensitive field may name a secret the caller may only write when it is under the behavior's own derived key",
   sanitizeOps: false,
   sanitizeResources: false,

@@ -536,9 +536,13 @@ async function behaviorNameRefusal(
   context: ContentCheckContext,
   declared: DeclaredIdentity,
 ): Promise<string | undefined> {
-  const holder = await context.deps.ctx.repoContext.definitionRepo
-    .findByNameGlobal(declared.name);
+  const definitionRepo = context.deps.ctx.repoContext.definitionRepo;
+  const holder = await definitionRepo.findByNameGlobal(declared.name);
   if (holder === null || holder.definition.id === declared.id) return undefined;
+  // an authored behavior shadows an auto-definition, as on a direct repo
+  if (await definitionRepo.isAutoDefinition(holder.definition, holder.type)) {
+    return undefined;
+  }
   return "its name is held by another behavior";
 }
 

@@ -29,6 +29,7 @@ import {
   renderError,
 } from "../presentation/output/error_output.ts";
 import {
+  commandTargetOf,
   createTlsHttpClient,
   DECIDED_ON_SERVE_OPTION_TEXTS,
   DECIDED_ON_SERVE_SERVER_DESCRIPTION,
@@ -3948,3 +3949,15 @@ for (
     assertEquals(result.data.name, "from-socket");
   });
 }
+
+Deno.test("commandTargetOf: a command's printed commands carry its --repo-dir with its --server, so a hint through serve works from another directory (swamp-club#4338)", () => {
+  assertEquals(
+    commandTargetOf({ server: "http://swamp.test", repoDir: "/tmp/repo" }),
+    " --server http://swamp.test --repo-dir /tmp/repo",
+  );
+  assertEquals(
+    commandTargetOf({ repoDir: "/tmp/repo" }),
+    " --repo-dir /tmp/repo",
+  );
+  assertEquals(commandTargetOf({ server: true, repoDir: 1 }), "");
+});

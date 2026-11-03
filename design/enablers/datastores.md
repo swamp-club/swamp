@@ -6776,7 +6776,8 @@ to the same write. The checks the handlers share are one implementation
   definition or workflow holds, or one that records (a behavior's data, a
   workflow's runs) are still stored under, nor a name another live definition
   holds (of any type, for a behavior), except an auto-definition promoted to
-  its own name.
+  its own name. A name only an auto-definition holds is free to an authored
+  behavior, which shadows it as it does on a direct repo.
   The id checks run again under the lock; two creates of one name share the
   name's config partition, so its head orders them.
 - **Behavior and workflow edits**: `write` on the result, `tag` for a retag

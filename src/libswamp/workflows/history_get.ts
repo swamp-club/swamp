@@ -44,7 +44,7 @@ import type { UnreadableContentLookup } from "../../domain/datastore/datastore_s
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
-import type { WorkflowRunView } from "./workflow_run_view.ts";
+import type { SignalWaitView, WorkflowRunView } from "./workflow_run_view.ts";
 import {
   resolveRunStepOutputs,
   type RunStepOutputs,
@@ -146,6 +146,66 @@ export async function showAcceptedSignals(
   }
 }
 
+export type AcceptedReceipts = ReadonlyMap<
+  string,
+  NonNullable<SignalWaitView["receipt"]>
+>;
+
+/**
+ * receipts another copy of the run shows, keyed by wait id, go only onto a
+ * step still waiting on that wait here; a failed read leaves the view as is
+ */
+export async function showReceiptsFrom(
+  receiptsOf: (runId: string) => Promise<AcceptedReceipts>,
+  view: WorkflowRunView,
+): Promise<void> {
+  if (view.status !== "suspended") return;
+  const waiting = view.jobs.flatMap((job) => job.steps).filter((step) =>
+    step.status === "waiting" && step.wait !== undefined && !step.wait.receipt
+  );
+  if (waiting.length === 0) return;
+  let receipts: AcceptedReceipts;
+  try {
+    receipts = await receiptsOf(view.id);
+  } catch {
+    return;
+  }
+  for (const step of waiting) {
+    const receipt = receipts.get(step.wait!.id);
+    if (receipt !== undefined && receipt.waitId === step.wait!.id) {
+      step.wait!.receipt = { ...receipt };
+    }
+  }
+}
+
+/**
+ * the receipts on steps still waiting in another copy's view of the run,
+ * keyed by wait id; that view is another process's answer, so anything not in
+ * the shape of one is left out
+ */
+export function receiptsOfRunView(
+  view: unknown,
+  runId: string,
+): AcceptedReceipts {
+  const receipts = new Map<string, NonNullable<SignalWaitView["receipt"]>>();
+  const data = view as Partial<WorkflowRunView> | null;
+  if (data?.id !== runId || !Array.isArray(data.jobs)) return receipts;
+  for (const job of data.jobs) {
+    for (const step of Array.isArray(job?.steps) ? job.steps : []) {
+      const receipt = step?.status === "waiting"
+        ? step.wait?.receipt
+        : undefined;
+      if (
+        receipt !== undefined && typeof receipt.id === "string" &&
+        receipt.waitId === step.wait?.id
+      ) {
+        receipts.set(receipt.waitId, receipt);
+      }
+    }
+  }
+  return receipts;
+}
+
 export type WorkflowHistoryGetEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: WorkflowRunView }
@@ -159,6 +219,11 @@ export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
    */
   nestedLink?: NestedRunLinkDeps;
   signalWaits?: SignalWaitSupport;
+  /**
+   * where accepted receipts are read when this checkout cannot read wait
+   * outcomes itself: in team mode, serve's copy of the run
+   */
+  acceptedReceipts?: (runId: string) => Promise<AcceptedReceipts>;
   resolveStepOutputs: (
     run: WorkflowRun,
     signal?: AbortSignal,
@@ -453,6 +518,12 @@ export async function* workflowHistoryGet(
           "swamp.workflow.signal_waits.resolve",
           {},
           () => showAcceptedSignals(signalWaits, data),
+        );
+      } else if (deps.acceptedReceipts && data.status === "suspended") {
+        await withSpan(
+          "swamp.workflow.signal_waits.resolve",
+          {},
+          () => showReceiptsFrom(deps.acceptedReceipts!, data),
         );
       }
 

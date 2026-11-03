@@ -131,16 +131,31 @@ function dataOf(frames: Frame[]): Record<string, unknown> {
   return frame.payload!.data as Record<string, unknown>;
 }
 
+/**
+ * a not-found answer with the address its caller sent left out: two answers
+ * that differ only in what each caller sent tell neither anything more
+ */
+function addressless<T>(answer: T): T {
+  return JSON.parse(
+    JSON.stringify(answer).replace(
+      /Signal wait not found: (?:[^"\\]|\\.)*/g,
+      "Signal wait not found",
+    ),
+  );
+}
+
 function refusalOf(
   frames: Frame[],
 ): { code: string; message: string; details?: Record<string, unknown> } {
   const frame = errorFrame(frames);
   assert(frame?.error, `expected a refusal, got ${JSON.stringify(frames)}`);
-  return frame.error as {
-    code: string;
-    message: string;
-    details?: Record<string, unknown>;
-  };
+  return addressless(
+    frame.error as {
+      code: string;
+      message: string;
+      details?: Record<string, unknown>;
+    },
+  );
 }
 
 async function resume(repo: ServeRepo, w: Waiting): Promise<Frame[]> {
@@ -364,6 +379,32 @@ Deno.test({
       assertEquals(refusal.details?.refusal, "invalid_payload");
       assert((refusal.details?.errors as string[]).length > 0);
       dataOf(await signal(ctx, w.waitId, { verdict: "ship" }));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal: a not-found answer names the address its caller sent, by wait ID and by key, and nothing else (swamp-club#4338)",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await suspendOnWait(repo);
+      const ctx = ctxWith(repo, [workflowGrant(["read"], w.workflow.name)]);
+      const typed = ` ${w.waitId.toUpperCase()} `;
+      const byId = errorFrame(await signal(ctx, typed, { verdict: "ship" }));
+      assertEquals(byId?.error as unknown, {
+        code: "not_found",
+        message: `Signal wait not found: ${typed}`,
+        details: { refusal: "unknown" },
+      });
+      const byKey = errorFrame(
+        await signalByKey(ctx, "no-such-workflow", KEY, { verdict: "ship" }),
+      );
+      assertEquals(
+        byKey?.error?.message,
+        `Signal wait not found: key "${KEY}" of workflow "no-such-workflow"`,
+      );
     });
   },
 });
@@ -770,7 +811,7 @@ async function post(
   );
   const text = await response.text();
   try {
-    return { status: response.status, body: JSON.parse(text) };
+    return { status: response.status, body: addressless(JSON.parse(text)) };
   } catch {
     return { status: response.status, body: text };
   }
@@ -1130,7 +1171,11 @@ Deno.test({
 });
 
 const KEY = "verdict";
-const BY_KEY_REFUSAL = { code: "not_found", message: "Signal wait not found" };
+const BY_KEY_REFUSAL = {
+  code: "not_found",
+  message: "Signal wait not found",
+  details: { refusal: "unknown" },
+};
 
 function keyed(repo: ServeRepo, name?: string, tags = {}): Promise<Waiting> {
   return suspendOnWait(repo, name, tags, { key: KEY });
@@ -1184,7 +1229,7 @@ async function postByKey(
   );
   const text = await response.text();
   try {
-    return { status: response.status, body: JSON.parse(text) };
+    return { status: response.status, body: addressless(JSON.parse(text)) };
   } catch {
     return { status: response.status, body: text };
   }

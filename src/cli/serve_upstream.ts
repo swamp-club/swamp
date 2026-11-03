@@ -85,12 +85,13 @@ export const SERVE_UPSTREAM_LOCAL_FAMILIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `datastore status` runs locally: it reports the checkout's own copy and
- * offline-saved work serve cannot see, and adds serve's section when serve
- * answers; an explicit `--server` still sends it to serve
+ * `datastore status` and `run history` run locally: they report the checkout's
+ * own copy and runs, which serve cannot see, and add serve's when serve
+ * answers; an explicit `--server` still sends them to serve
  */
 export const SERVE_UPSTREAM_LOCAL_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "datastore status",
+  "run history",
 ]);
 
 export function serveUpstreamRunsLocally(

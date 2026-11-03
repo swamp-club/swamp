@@ -286,6 +286,11 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
 
 All support `--server` for a remote `swamp serve` instance and `--json`.
 
+In a team member's checkout, `run history` runs locally: it lists the
+checkout's own tracked runs and adds serve's when serve answers. If serve is
+unreachable or refuses (its `run.history` needs `admin`), it warns and lists
+the checkout's runs alone. Only an explicit `--server` sends it to serve.
+
 ### Unhandled Rejection Guard
 
 `swamp serve` installs global `unhandledrejection` and `error` event handlers at

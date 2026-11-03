@@ -45,8 +45,8 @@ import {
 } from "../../domain/workflows/signal_refused_user_error.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import {
+  commandTargetOf,
   DECIDED_ON_SERVE_OPTION_TEXTS,
-  formatCommandTarget,
   requestNewerServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -60,6 +60,7 @@ import type {
   WorkflowSignalResponse,
   WorkflowSignalResponseData,
 } from "../../serve/protocol.ts";
+import { SERVER_WAITS_COMMAND } from "../../serve/protocol.ts";
 import {
   IDEMPOTENCY_KEY_FORM,
   isIdempotencyKey,
@@ -227,6 +228,8 @@ export function renderPendingSignalResult(
   }
 }
 
+const SIGNAL_WAIT_ID_MAX_LENGTH = 64;
+
 /**
  * the server accepts only a UUID wait ID and a bounded workflow and key, and
  * answers anything else as malformed, which reads as needing an upgrade; such
@@ -239,14 +242,23 @@ export function remoteSignalPayload(
 ): WorkflowSignalPayload {
   const keyed = idempotencyKey !== undefined ? { idempotencyKey } : {};
   if ("waitId" in address) {
+    // sent as typed, so serve's refusals name it as the local ones do; serve
+    // finds the wait by its normalized form and takes at most 64 characters
     const id = normalizeWaitId(address.waitId);
     if (id === undefined) {
-      throw new UserError(
+      throw new SignalRefusedUserError(
         `Signal wait not found: ${address.waitId}`,
         "not_found",
+        "unknown",
       );
     }
-    return { waitId: id, payload, ...keyed };
+    return {
+      waitId: address.waitId.length <= SIGNAL_WAIT_ID_MAX_LENGTH
+        ? address.waitId
+        : id,
+      payload,
+      ...keyed,
+    };
   }
   if (
     address.workflow.length === 0 ||
@@ -258,7 +270,7 @@ export function remoteSignalPayload(
     const shown = (text: string) =>
       // deno-lint-ignore no-control-regex
       text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
-    throw new UserError(
+    throw new SignalRefusedUserError(
       `Signal wait not found: key "${shown(address.key)}" of workflow "${
         shown(address.workflow)
       }"` +
@@ -271,6 +283,7 @@ export function remoteSignalPayload(
           ? `. No step can declare that key: a key is ${WAIT_KEY_FORM}.`
           : ""),
       "not_found",
+      "unknown",
     );
   }
   return {
@@ -294,7 +307,7 @@ export function remoteSignalPayload(
 export function renderRemoteSignalResult(
   cliCtx: CommandContext,
   data: WorkflowSignalResponseData,
-  server: string | undefined,
+  commandTarget: string,
 ): void {
   if (
     data.workflowId !== undefined && data.workflowName !== undefined &&
@@ -318,7 +331,7 @@ export function renderRemoteSignalResult(
         ...(data.taken ? { taken: true as const } : {}),
         ...(data.duplicate ? { duplicate: true as const } : {}),
       },
-      formatCommandTarget({ server }),
+      commandTarget,
     );
     return;
   }
@@ -386,20 +399,35 @@ export function signalUserError(error: SwampError): UserError {
   );
 }
 
-export function remoteSignalUserError(error: unknown): unknown {
-  if (
-    !(error instanceof ServerResponseError) ||
-    error.code !== "workflow_signal_refused"
-  ) return error;
+/** a refusal through serve carries the code the same refusal has locally */
+const LOCAL_REFUSAL_CODE: Readonly<Record<string, string>> = {
+  workflow_signal_refused: "validation_failed",
+  not_found: "not_found",
+};
+
+export function remoteSignalUserError(
+  error: unknown,
+  commandTarget = "",
+): unknown {
+  if (!(error instanceof ServerResponseError)) return error;
+  const code = error.code !== undefined &&
+      Object.hasOwn(LOCAL_REFUSAL_CODE, error.code)
+    ? LOCAL_REFUSAL_CODE[error.code]
+    : undefined;
+  if (code === undefined) return error;
   const refusal = signalRefusalFromDetails(error.details);
   if (!refusal) return error;
+  const message = error.serverMessage.replaceAll(
+    SERVER_WAITS_COMMAND,
+    `swamp workflow waits${commandTarget}`,
+  );
   // A caller who may only signal gets a fixed sentence that names no time.
   const until = refusal.pending?.heldUntil;
   return new SignalRefusedUserError(
-    until !== undefined && !error.message.includes(until)
-      ? `${error.message} The earlier signal is held until ${until}.`
-      : error.message,
-    error.code,
+    until !== undefined && !message.includes(until)
+      ? `${message} The earlier signal is held until ${until}.`
+      : message,
+    code,
     refusal.refusal,
     refusal.lastWait,
     refusal.pending,
@@ -479,7 +507,7 @@ export const workflowSignalCommand = withRemoteOptions(
           { type: "workflow.signal", payload: named },
         );
       } catch (error) {
-        throw remoteSignalUserError(error);
+        throw remoteSignalUserError(error, commandTargetOf(options));
       }
       if (response.pending !== undefined) {
         renderPendingSignalResult(cliCtx, response.pending);
@@ -496,11 +524,7 @@ export const workflowSignalCommand = withRemoteOptions(
           "unsupported_by_client",
         );
       }
-      renderRemoteSignalResult(
-        cliCtx,
-        response.data,
-        options.server as string | undefined,
-      );
+      renderRemoteSignalResult(cliCtx, response.data, commandTargetOf(options));
       return;
     }
 
@@ -517,9 +541,7 @@ export const workflowSignalCommand = withRemoteOptions(
       signalWaitsOf(repoContext),
       repoContext.workflowRepo,
     );
-    const commandTarget = formatCommandTarget({
-      repoDir: options.repoDir as string | undefined,
-    });
+    const commandTarget = commandTargetOf({ repoDir: options.repoDir });
 
     await consumeStream(
       workflowSignal(ctx, deps, {

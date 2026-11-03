@@ -26,6 +26,7 @@ import {
 import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
+  serveUpstreamOfRepo,
 } from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -65,6 +66,7 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  ServerResponseError,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type {
@@ -94,6 +96,43 @@ function responseToActiveRuns(response: RunHistoryResponse): ActiveRun[] {
       status: r.status as ActiveRunStatus,
       initiatedBy: r.initiatedBy,
     })
+  );
+}
+
+const SERVE_RUNS_TIMEOUT_MS = 5_000;
+
+export type ServeRunHistory =
+  | { kind: "shown"; runs: ActiveRun[] }
+  | { kind: "absent"; reason: string };
+
+/**
+ * serve not answering, or refusing the caller, leaves its runs out with the
+ * reason; the checkout's own runs are still listed
+ */
+export async function serveRunHistoryOf(
+  request: () => Promise<RunHistoryResponse>,
+): Promise<ServeRunHistory> {
+  try {
+    return { kind: "shown", runs: responseToActiveRuns(await request()) };
+  } catch (error) {
+    if (error instanceof ServerResponseError && error.code === "unauthorized") {
+      return { kind: "absent", reason: "needs admin on serve" };
+    }
+    if (error instanceof ServerResponseError) {
+      return { kind: "absent", reason: `serve refused (${error.code})` };
+    }
+    return { kind: "absent", reason: "serve is unreachable" };
+  }
+}
+
+/** one row per run id, the checkout's own row first, newest first */
+export function mergeRunHistory(
+  local: readonly ActiveRun[],
+  serve: readonly ActiveRun[],
+): ActiveRun[] {
+  const ids = new Set(local.map((run) => run.id));
+  return [...local, ...serve.filter((run) => !ids.has(run.id))].sort((a, b) =>
+    b.startedAt.getTime() - a.startedAt.getTime()
   );
 }
 
@@ -161,17 +200,41 @@ const runHistoryCommand = withRemoteOptions(
       const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
       const output = createModelRunsOutput(ctx.outputMode);
 
+      let runs: ActiveRun[];
       try {
-        const runs = options.active
+        runs = options.active
           ? tracker.findAllRunning()
           : options.all
           ? tracker.findAll()
           : tracker.findRecent();
-
-        output.writeRuns(runs);
       } finally {
         tracker.close();
       }
+      // a team member's checkout runs this here; serve's runs are added when
+      // serve answers
+      const serveUpstream = await serveUpstreamOfRepo(repoDir);
+      if (serveUpstream !== undefined) {
+        const server = serveUpstream.serverUrl;
+        const served = await serveRunHistoryOf(async () =>
+          await requestServerResponse<RunHistoryResponse>(
+            {
+              server,
+              token: await resolveServerTokenFromOptions(server, options),
+              timeoutMs: SERVE_RUNS_TIMEOUT_MS,
+            },
+            {
+              type: "run.history",
+              payload: { active: !!options.active, all: !!options.all },
+            },
+          )
+        );
+        if (served.kind === "shown") {
+          runs = mergeRunHistory(runs, served.runs);
+        } else {
+          ctx.logger.warn`Listing only this checkout's runs: ${served.reason}`;
+        }
+      }
+      output.writeRuns(runs);
     }),
 );
 

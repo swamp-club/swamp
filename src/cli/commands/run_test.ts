@@ -21,7 +21,12 @@ import { join } from "@std/path";
 import { hostname } from "node:os";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import "../../domain/models/models.ts";
-import { diagnoseLocalRuns } from "./run.ts";
+import {
+  diagnoseLocalRuns,
+  mergeRunHistory,
+  serveRunHistoryOf,
+} from "./run.ts";
+import { ServerResponseError } from "../remote_run.ts";
 import {
   localOwnerLiveness,
   RunTrackerStore,
@@ -571,3 +576,50 @@ Deno.test(
     assertEquals(calls, ["verify", "scan"]);
   }),
 );
+
+Deno.test("mergeRunHistory: a member's own runs are listed with serve's, once per id, newest first (swamp-club#4338)", () => {
+  const local = trackerRow(crypto.randomUUID(), Deno.pid, "model_method");
+  const shared = trackerRow(crypto.randomUUID(), Deno.pid);
+  const older = ActiveRun.fromData({
+    ...trackerRow(crypto.randomUUID(), 1).toData(),
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+  const merged = mergeRunHistory([local, shared], [shared, older]);
+  assertEquals(
+    merged.map((r) => r.id).sort(),
+    [local.id, shared.id, older.id].sort(),
+  );
+  assertEquals(merged.at(-1)?.id, older.id);
+  assertEquals(mergeRunHistory([local], []).map((r) => r.id), [local.id]);
+});
+
+Deno.test("serveRunHistoryOf: serve's runs are read, and a refusal or no answer leaves them out with the reason (swamp-club#4338)", async () => {
+  const row = trackerRow(crypto.randomUUID(), 1).toData();
+  const shown = await serveRunHistoryOf(() =>
+    Promise.resolve({ runs: [{ ...row, initiatedBy: null, stale: false }] })
+  );
+  assertEquals(
+    shown.kind === "shown" ? shown.runs.map((r) => r.id) : shown,
+    [row.id],
+  );
+  assertEquals(
+    await serveRunHistoryOf(() =>
+      Promise.reject(
+        new ServerResponseError({ code: "unauthorized", message: "admin" }),
+      )
+    ),
+    { kind: "absent", reason: "needs admin on serve" },
+  );
+  assertEquals(
+    await serveRunHistoryOf(() =>
+      Promise.reject(
+        new ServerResponseError({ code: "rate_limited", message: "later" }),
+      )
+    ),
+    { kind: "absent", reason: "serve refused (rate_limited)" },
+  );
+  assertEquals(
+    await serveRunHistoryOf(() => Promise.reject(new Error("refused"))),
+    { kind: "absent", reason: "serve is unreachable" },
+  );
+});
