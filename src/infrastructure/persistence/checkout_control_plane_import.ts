@@ -33,6 +33,7 @@ export const CHECKOUT_CONTROL_PLANE_IMPORT_PREFIXES: readonly string[] = [
   "pending-runs/",
   "fire-records/",
   "schedule-pauses/",
+  "schedule-states/",
   "dashboard-sessions/",
   "_audit/",
 ];

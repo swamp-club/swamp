@@ -20,6 +20,7 @@
 import type { WorkflowTriggerGetResult } from "../../serve/protocol.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { formatCatchUp } from "./workflow_trigger_set.ts";
 
 export function renderWorkflowTriggerGet(
   mode: OutputMode,
@@ -49,6 +50,9 @@ export function renderWorkflowTriggerGet(
         logger.info`    input ${key}: ${value}`;
       }
     }
+    if (data.builtIn.catchUp) {
+      logger.info`    catch-up: ${formatCatchUp(data.builtIn.catchUp)}`;
+    }
   }
 
   if (data.override) {
@@ -60,6 +64,9 @@ export function renderWorkflowTriggerGet(
       for (const [key, value] of Object.entries(data.override.inputs)) {
         logger.info`    input ${key}: ${value}`;
       }
+    }
+    if (data.override.catchUp) {
+      logger.info`    catch-up: ${formatCatchUp(data.override.catchUp)}`;
     }
   }
 
@@ -77,5 +84,11 @@ export function renderWorkflowTriggerGet(
         : "built-in";
       logger.info`    input ${key}: ${value} (${source})`;
     }
+  }
+  if (data.effective.catchUp) {
+    const source = data.override?.catchUp ? "override" : "built-in";
+    logger.info`    catch-up: ${
+      formatCatchUp(data.effective.catchUp)
+    } (${source})`;
   }
 }

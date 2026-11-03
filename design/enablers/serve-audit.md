@@ -349,8 +349,15 @@ in the `execution` category, alongside API `workflow.run` events, with the
 workflow as the resource:
 
 - `workflow.schedule.fire`: a scheduled run started. Detail carries `run`,
-  `fireTime`, and `replayed=true` for a fire replayed at boot. Source IP is
+  `fireTime`, `replayed=true` for a fire replayed at boot, and `catchUp=true`
+  for a catch-up of a fire missed while serve was down. Source IP is
   `127.0.0.1`.
+- `workflow.schedule.missed`: serve found, at startup or on taking the lead,
+  scheduled fires it missed while it was down (see Catch-up in
+  [workflows](../primitives/workflows.md)). Outcome `failure`, or `success`
+  when the latest one was caught up. Detail carries `fireTime` (the latest
+  missed slot), `oldestFireTime`, `missed` (the count, `N+` when capped),
+  `reason=serve_down` and `caughtUp`.
 - `workflow.schedule.skipped`: a fire did not run. `reason=overlap` (previous run
   still in progress; outcome `failure`), `reason=dedup` (another instance
   claimed the fire; outcome `success`) or `reason=paused` (the schedule is

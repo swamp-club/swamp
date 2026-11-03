@@ -62,6 +62,18 @@ export interface ScheduleEntry {
   queued?: number;
   oldestQueuedAt?: string | null;
   lastQueueDelayMs?: number | null;
+  /** Unset on servers that predate catch-up reporting. */
+  catchUp?: { policy: string; maxDelay?: string } | null;
+  lastMissed?: ScheduleMissedFire | null;
+}
+
+export interface ScheduleMissedFire {
+  fireTime: string;
+  count: number;
+  saturated?: boolean;
+  reason: string;
+  caughtUp: boolean;
+  detectedAt: string;
 }
 
 export interface WebhookEntry {

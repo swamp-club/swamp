@@ -27,6 +27,7 @@ import type {
   WorkflowScheduleResumeData,
 } from "../../libswamp/workflows/schedule.ts";
 import type { OutputMode } from "../output/output.ts";
+import type { MissedFireReason } from "../../domain/workflows/schedule_state.ts";
 
 /** Text from another host or the store, printed without driving the terminal. */
 function safe(value: string): string {
@@ -103,6 +104,12 @@ export function renderWorkflowScheduleList(
   writeOutput(lines.join("\n"));
 }
 
+const MISSED_REASON_TEXT: Record<MissedFireReason, string> = {
+  serve_down: "serve was down",
+  paused: "paused",
+  overlap: "previous run still in progress",
+};
+
 function scheduleLines(entry: ScheduleListEntry): string[] {
   const state = entry.orphaned
     ? yellow("paused (orphaned)")
@@ -145,6 +152,18 @@ function scheduleLines(entry: ScheduleListEntry): string[] {
     lines.push(
       `  ${cyan("Next fire:")} ${entry.nextRun}${
         entry.paused ? ` ${dim("(skipped while paused)")}` : ""
+      }`,
+    );
+  }
+  if (entry.lastMissed) {
+    const missed = entry.lastMissed;
+    const reason = MISSED_REASON_TEXT[missed.reason];
+    const count = `${missed.count}${missed.saturated ? "+" : ""}`;
+    lines.push(
+      `  ${cyan("Missed:")} ${yellow(`${count} fire(s)`)} ${
+        dim(`(${reason})`)
+      }, latest ${missed.fireTime}${
+        missed.caughtUp ? ` ${dim("(caught up)")}` : ""
       }`,
     );
   }

@@ -917,6 +917,58 @@ Deno.test("Workflow.fromData rejects invalid cron expression", () => {
   );
 });
 
+Deno.test("Workflow.fromData parses trigger.catchUp and exposes it as catchUp", () => {
+  const workflow = Workflow.fromData({
+    ...createTestWorkflowData(),
+    inputs: undefined,
+    trigger: {
+      schedule: "0 9 1 * *",
+      catchUp: { policy: "latest", maxDelay: "6h" },
+    },
+  });
+  assertEquals(workflow.catchUp, { policy: "latest", maxDelay: "6h" });
+
+  const restored = Workflow.fromData(workflow.toData());
+  assertEquals(restored.catchUp, { policy: "latest", maxDelay: "6h" });
+});
+
+Deno.test("Workflow.catchUp is undefined without trigger.catchUp", () => {
+  const workflow = Workflow.fromData({
+    ...createTestWorkflowData(),
+    inputs: undefined,
+    trigger: { schedule: "0 9 1 * *" },
+  });
+  assertEquals(workflow.catchUp, undefined);
+});
+
+Deno.test("Workflow.fromData rejects trigger.catchUp without trigger.schedule", () => {
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        ...createTestWorkflowData(),
+        inputs: undefined,
+        trigger: { catchUp: { policy: "latest", maxDelay: "6h" } },
+      }),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "trigger.catchUp requires trigger.schedule",
+  );
+});
+
+Deno.test("Workflow.fromData rejects an invalid trigger.catchUp", () => {
+  assertThrows(
+    () =>
+      Workflow.fromData({
+        ...createTestWorkflowData(),
+        inputs: undefined,
+        trigger: { schedule: "0 9 1 * *", catchUp: { policy: "latest" } },
+      }),
+    Error,
+  );
+});
+
 Deno.test("Workflow.create creates workflow with trigger.inputs", () => {
   const workflow = Workflow.create({
     name: "scheduled-with-inputs",

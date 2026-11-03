@@ -27,6 +27,25 @@
               "type": "string"
             },
             "additionalProperties": {}
+          },
+          "catchUp": {
+            "type": "object",
+            "properties": {
+              "policy": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "latest"
+                ]
+              },
+              "maxDelay": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "policy"
+            ],
+            "additionalProperties": false
           }
         },
         "additionalProperties": false

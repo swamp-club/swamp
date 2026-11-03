@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { scheduleQueueLabel, totalQueued } from "./schedule_queue.ts";
+import {
+  scheduleMissedLabel,
+  scheduleQueueLabel,
+  totalQueued,
+} from "./schedule_queue.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00.000Z");
 
@@ -67,4 +71,42 @@ Deno.test("scheduleQueueLabel: an unreadable fire time still shows the count", (
 Deno.test("totalQueued: sums the visible schedules and treats missing as zero", () => {
   assertEquals(totalQueued([{ queued: 2 }, {}, { queued: 1 }]), 3);
   assertEquals(totalQueued([]), 0);
+});
+
+Deno.test("scheduleMissedLabel: no recorded miss shows nothing", () => {
+  assertEquals(scheduleMissedLabel({}), null);
+  assertEquals(scheduleMissedLabel({ lastMissed: null }), null);
+});
+
+Deno.test("scheduleMissedLabel: shows the count and why the fires were missed", () => {
+  assertEquals(
+    scheduleMissedLabel({
+      lastMissed: { count: 2, reason: "serve_down", caughtUp: false },
+    }),
+    "2 missed · serve was down",
+  );
+  assertEquals(
+    scheduleMissedLabel({
+      lastMissed: { count: 1, reason: "overlap", caughtUp: false },
+    }),
+    "1 missed · previous run still in progress",
+  );
+});
+
+Deno.test("scheduleMissedLabel: a caught-up miss says so", () => {
+  assertEquals(
+    scheduleMissedLabel({
+      lastMissed: { count: 1, reason: "serve_down", caughtUp: true },
+    }),
+    "1 missed · serve was down · caught up",
+  );
+});
+
+Deno.test("scheduleMissedLabel: an unknown reason is shown as sent", () => {
+  assertEquals(
+    scheduleMissedLabel({
+      lastMissed: { count: 4, reason: "maintenance", caughtUp: false },
+    }),
+    "4 missed · maintenance",
+  );
 });

@@ -217,6 +217,61 @@ Deno.test("ServeLeadership: a node takes the follower's gates down only once its
   }
 });
 
+Deno.test("ServeLeadership: onLed runs once the promoted node's role is leader", async () => {
+  const lease = new FakeLease();
+  const roles: string[] = [];
+  const leadership: ServeLeadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => {
+      roles.push(`lead:${leadership.role}`);
+      return Promise.resolve();
+    },
+    onLed: () => {
+      roles.push(`led:${leadership.role}`);
+      return Promise.reject(new Error("led work failed"));
+    },
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  try {
+    lease.free = 2;
+    await leadership.tick();
+    assertEquals(roles, ["lead:follower", "led:leader"]);
+    assertEquals(leadership.role, "leader");
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: onLed is not called for a lead taken at boot", async () => {
+  const lease = new FakeLease();
+  lease.hold = { fence: 8, lost: false };
+  let led = 0;
+  const booted = new ServeLeadership({
+    instanceId: "boot",
+    lease,
+    store: memoryStore(),
+    refreshCopy: () => Promise.resolve(),
+    onLead: () => Promise.resolve(),
+    onLed: () => {
+      led++;
+      return Promise.resolve();
+    },
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await booted.start("writer");
+  try {
+    assertEquals(led, 0);
+  } finally {
+    await booted.stop();
+  }
+});
+
 Deno.test("ServeLeadership: a leader rewrites its record when its fence moves", async () => {
   const { lease, store, leadership } = setup();
   lease.hold = { fence: 8, lost: false };

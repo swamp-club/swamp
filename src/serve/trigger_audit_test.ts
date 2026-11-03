@@ -220,6 +220,68 @@ Deno.test("auditScheduledEvent: a paused skip is a success with the quoted reaso
   ]);
 });
 
+Deno.test("auditScheduledEvent: a caught-up run is flagged", () => {
+  const { events, emitter } = recorder();
+  auditScheduledEvent({ auditEmitter: emitter }, {
+    kind: "schedule_started",
+    workflowId: WF_ID,
+    workflowName: "nightly",
+    runId: "run-9",
+    fireTime: "2026-09-29T00:00:00.000Z",
+    replayed: false,
+    catchUp: true,
+  });
+  assertEquals(events[0].action, "workflow.schedule.fire");
+  assertEquals(
+    events[0].detail,
+    "run=run-9 fireTime=2026-09-29T00:00:00.000Z catchUp=true",
+  );
+});
+
+Deno.test("auditScheduledEvent: a missed fire is a failure unless caught up", () => {
+  const { events, emitter } = recorder();
+  for (const caughtUp of [false, true]) {
+    auditScheduledEvent({ auditEmitter: emitter }, {
+      kind: "schedule_missed",
+      workflowId: WF_ID,
+      workflowName: "nightly",
+      fireTime: "2026-09-29T00:00:00.000Z",
+      oldestFireTime: "2026-09-28T00:00:00.000Z",
+      missedCount: 2,
+      saturated: false,
+      caughtUp,
+    });
+  }
+  assertEquals(events.map((e) => [e.action, e.outcome, e.resourceName]), [
+    ["workflow.schedule.missed", "failure", "nightly"],
+    ["workflow.schedule.missed", "success", "nightly"],
+  ]);
+  assertEquals(events[0].initiatedBy, "service:scheduler");
+  assertEquals(
+    events[0].detail,
+    "fireTime=2026-09-29T00:00:00.000Z oldestFireTime=2026-09-28T00:00:00.000Z missed=2 reason=serve_down caughtUp=false",
+  );
+  assertEquals(
+    events[1].detail,
+    "fireTime=2026-09-29T00:00:00.000Z oldestFireTime=2026-09-28T00:00:00.000Z missed=2 reason=serve_down caughtUp=true",
+  );
+});
+
+Deno.test("auditScheduledEvent: a saturated missed count is reported as a lower bound", () => {
+  const { events, emitter } = recorder();
+  auditScheduledEvent({ auditEmitter: emitter }, {
+    kind: "schedule_missed",
+    workflowId: WF_ID,
+    workflowName: "nightly",
+    fireTime: "2026-09-29T00:00:00.000Z",
+    oldestFireTime: "2026-09-28T00:00:00.000Z",
+    missedCount: 1000,
+    saturated: true,
+    caughtUp: false,
+  });
+  assertEquals(events[0].detail?.includes("missed=1000+"), true);
+});
+
 Deno.test("auditScheduledEvent: other scheduler events are not audited", () => {
   const { events, emitter } = recorder();
   auditScheduledEvent({ auditEmitter: emitter }, {

@@ -119,6 +119,7 @@ import { runGeneratorWithVaultAccess } from "../../domain/vaults/run_vault_acces
 import { withSharedSyncGate } from "../sync_gate.ts";
 import { isWireEvent, serializeEvent } from "../serializer.ts";
 import type {
+  EffectiveTrigger,
   WorkflowApprovePayload,
   WorkflowCancelPayload,
   WorkflowCreatePayload,
@@ -3105,6 +3106,7 @@ export async function handleWorkflowTriggerSet(
       ...(payload.inputs && Object.keys(payload.inputs).length > 0
         ? { inputs: payload.inputs }
         : {}),
+      ...(payload.catchUp ? { catchUp: payload.catchUp } : {}),
     };
 
     const configPath = ctx.serveConfigPath ??
@@ -3176,9 +3178,7 @@ export async function handleWorkflowTriggerGet(
       : (await readServeConfigFile(ctx.repoDir, ctx.serveConfigPath))
         ?.triggers?.[payload.workflowName] ?? null;
 
-    let builtIn:
-      | { schedule: string | null; inputs: Record<string, unknown> }
-      | null = null;
+    let builtIn: EffectiveTrigger | null = null;
     const workflow = await ctx.repoContext.workflowRepo.findByName(
       payload.workflowName,
     );
@@ -3186,15 +3186,17 @@ export async function handleWorkflowTriggerGet(
       builtIn = {
         schedule: workflow.schedule ?? null,
         inputs: workflow.triggerInputs ?? {},
+        catchUp: workflow.catchUp ?? null,
       };
     }
 
-    const effective = {
+    const effective: EffectiveTrigger = {
       schedule: override?.schedule ?? builtIn?.schedule ?? null,
       inputs: {
         ...(builtIn?.inputs ?? {}),
         ...(override?.inputs ?? {}),
       },
+      catchUp: override?.catchUp ?? builtIn?.catchUp ?? null,
     };
 
     send(socket, {

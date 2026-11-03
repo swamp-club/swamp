@@ -125,6 +125,7 @@ Deno.test("health collection cache: readers in one window share one collection a
           oldestQueuedAt: null,
           lastQueueDelayMs: null,
         }),
+        scheduleStatus: () => ({ catchUp: null, lastMissed: null }),
       },
       scheduleEnabled: true,
       webhookProvider: null,

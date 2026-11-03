@@ -21,6 +21,7 @@ import { basename } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { ScheduleCatchUp } from "../../domain/workflows/schedule_catch_up.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["workflow-watcher"]);
@@ -31,6 +32,7 @@ export type ScheduleChangeCallback = (
   workflowId: WorkflowId,
   schedule: string | null,
   workflowName: string,
+  catchUp?: ScheduleCatchUp,
 ) => void;
 
 export class WorkflowWatcher {
@@ -149,7 +151,12 @@ export class WorkflowWatcher {
         return;
       }
 
-      this.onChange(workflowId, workflow.schedule ?? null, workflow.name);
+      this.onChange(
+        workflowId,
+        workflow.schedule ?? null,
+        workflow.name,
+        workflow.catchUp,
+      );
     } catch (error) {
       logger.warn(
         "Failed to read changed workflow at {path}: {error}",
@@ -168,7 +175,12 @@ export class WorkflowWatcher {
       this.filenameToId.set(basename(path), workflow.id);
 
       if (workflow.schedule) {
-        this.onChange(workflow.id, workflow.schedule, workflow.name);
+        this.onChange(
+          workflow.id,
+          workflow.schedule,
+          workflow.name,
+          workflow.catchUp,
+        );
       }
     }
   }

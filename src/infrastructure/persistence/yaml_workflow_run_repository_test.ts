@@ -41,6 +41,7 @@ import {
 } from "./workflow_run_index.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { SCHEDULED_FOR_TAG } from "../../domain/workflows/schedule_catch_up.ts";
 import { StepStart } from "../../domain/workflows/step_start.ts";
 import { INDEXED_INPUT_MAX_BYTES } from "../../domain/workflows/workflow_run_summary.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
@@ -5493,5 +5494,120 @@ Deno.test("YamlWorkflowRunRepository.withdrawSettledStepStarts: through serve it
     );
     assertEquals(withdrawn(), 0);
     assertEquals((await repo.findStepStarts(workflow.id, run.id)).length, 1);
+  });
+});
+
+async function saveSlotRuns(
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+  slots: (string | null)[],
+): Promise<WorkflowRun[]> {
+  const runs: WorkflowRun[] = [];
+  for (const slot of slots) {
+    const run = WorkflowRun.create(
+      workflow,
+      slot === null ? {} : { [SCHEDULED_FOR_TAG]: slot },
+    );
+    run.start();
+    await repo.save(workflow.id, run);
+    runs.push(run);
+  }
+  return runs;
+}
+
+async function collect<T>(runs: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const run of runs) out.push(run);
+  return out;
+}
+
+const SLOTS = [
+  "2026-10-01T09:00:00.000Z",
+  "2026-12-01T09:00:00.000Z",
+  null,
+  "2026-11-01T09:00:00.000Z",
+];
+
+Deno.test("findByTimeTagLatestFirst: lists only tagged runs, latest tag first", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSlotRuns(repo, workflow, SLOTS);
+
+    const found = await collect(
+      repo.findByTimeTagLatestFirst(
+        workflow.id,
+        SCHEDULED_FOR_TAG,
+        new AbortController().signal,
+      ),
+    );
+
+    assertEquals(found.map((r) => r.id), [runs[1].id, runs[3].id, runs[0].id]);
+  });
+});
+
+Deno.test("findByTimeTagLatestFirst: a caller that stops at the first run reads one record", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSlotRuns(repo, workflow, SLOTS);
+
+    const [first, reads] = await countingRecordReads(async () => {
+      for await (
+        const run of repo.findByTimeTagLatestFirst(
+          workflow.id,
+          SCHEDULED_FOR_TAG,
+          new AbortController().signal,
+        )
+      ) {
+        return run;
+      }
+      return null;
+    });
+
+    assertEquals(first?.id, runs[1].id);
+    assertEquals(reads, 1);
+  });
+});
+
+Deno.test("findByTimeTagLatestFirst: without an index lists the same runs in the same order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runs = await saveSlotRuns(repo, workflow, SLOTS);
+    await Deno.remove(getIndexPath(localRunsDir(dir, workflow.id)));
+
+    const found = await collect(
+      repo.findByTimeTagLatestFirst(
+        workflow.id,
+        SCHEDULED_FOR_TAG,
+        new AbortController().signal,
+      ),
+    );
+
+    assertEquals(found.map((r) => r.id), [runs[1].id, runs[3].id, runs[0].id]);
+  });
+});
+
+Deno.test("findByTimeTagLatestFirst: an aborted signal rejects with its reason", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    await saveSlotRuns(repo, workflow, SLOTS);
+    const abort = new AbortController();
+    abort.abort(new Error("out of time"));
+
+    await assertRejects(
+      () =>
+        collect(
+          repo.findByTimeTagLatestFirst(
+            workflow.id,
+            SCHEDULED_FOR_TAG,
+            abort.signal,
+          ),
+        ),
+      Error,
+      "out of time",
+    );
   });
 });

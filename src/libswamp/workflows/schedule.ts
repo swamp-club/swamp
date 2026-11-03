@@ -48,11 +48,19 @@ import {
 } from "../../domain/workflows/workflow_scheduler.ts";
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { ControlPlaneSchedulePauseRepository } from "../../infrastructure/persistence/control_plane_schedule_pause_repository.ts";
+import { ControlPlaneScheduleStateRepository } from "../../infrastructure/persistence/control_plane_schedule_state_repository.ts";
+import type {
+  MissedFire,
+  ScheduleStateRepository,
+} from "../../domain/workflows/schedule_state.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
+
+const logger = getSwampLogger(["workflow", "schedule"]);
 
 export type ScheduleSource = "definition" | "override";
 
@@ -67,6 +75,8 @@ export interface WorkflowScheduleDeps {
   workflowRepo: Pick<WorkflowRepository, "findById" | "findByName" | "findAll">;
   overrideSchedules: () => Promise<ReadonlyMap<string, string>>;
   pauses: SchedulePauseRepository;
+  /** when absent, no schedule reports a missed fire */
+  states?: ScheduleStateRepository;
   liveSchedules?: () => ReadonlyArray<LiveSchedule>;
   now: () => Date;
 }
@@ -86,6 +96,7 @@ export function createWorkflowScheduleDeps(options: {
     workflowRepo: options.workflowRepo,
     overrideSchedules: options.overrideSchedules,
     pauses: new ControlPlaneSchedulePauseRepository(options.controlPlaneStore),
+    states: new ControlPlaneScheduleStateRepository(options.controlPlaneStore),
     liveSchedules: options.liveSchedules,
     now: () => new Date(),
   };
@@ -158,6 +169,7 @@ export interface ScheduleListEntry {
   pausedAt?: string;
   until?: string;
   orphaned: boolean;
+  lastMissed?: MissedFire;
 }
 
 export interface WorkflowScheduleListData {
@@ -429,10 +441,13 @@ export async function* workflowScheduleList(
         pauses.set(pause.workflowId, pause);
       }
 
+      const missed = await lastMissedFires(deps.states);
+
       const schedules: ScheduleListEntry[] = [];
       for (const entry of scheduled) {
         const pause = pauses.get(entry.workflowId);
         pauses.delete(entry.workflowId);
+        const lastMissed = missed.get(entry.workflowId);
         schedules.push({
           workflowId: entry.workflowId,
           workflowName: entry.workflowName,
@@ -441,6 +456,7 @@ export async function* workflowScheduleList(
           nextRun: entry.nextRun?.toISOString() ?? null,
           orphaned: false,
           ...pauseFields(pause, now),
+          ...(lastMissed ? { lastMissed } : {}),
         });
       }
       // Pauses that match no schedule. A lapsed one affects nothing and is
@@ -462,6 +478,24 @@ export async function* workflowScheduleList(
       yield { kind: "completed", data: { schedules } };
     })(),
   );
+}
+
+/** missed fires are advisory, so a store that cannot be read only omits them */
+async function lastMissedFires(
+  states: ScheduleStateRepository | undefined,
+): Promise<Map<string, MissedFire>> {
+  const missed = new Map<string, MissedFire>();
+  if (!states) return missed;
+  try {
+    for (const state of await states.list()) {
+      if (state.lastMissed) missed.set(state.workflowId, state.lastMissed);
+    }
+  } catch (error) {
+    logger.warn("Cannot read missed scheduled fires: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return missed;
 }
 
 function pauseFields(

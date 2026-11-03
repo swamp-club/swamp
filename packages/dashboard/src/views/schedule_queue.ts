@@ -42,6 +42,36 @@ export function scheduleQueueLabel(
   return `${queued} queued · waiting ${formatWait(now - oldest)}`;
 }
 
+export interface ScheduleMissedFields {
+  lastMissed?: {
+    count: number;
+    saturated?: boolean;
+    reason: string;
+    caughtUp: boolean;
+  } | null;
+}
+
+const MISSED_REASONS: Record<string, string> = {
+  serve_down: "serve was down",
+  paused: "paused",
+  overlap: "previous run still in progress",
+};
+
+/**
+ * The schedule's most recent lost fire, e.g. "2 missed · serve was down".
+ * Null when none was recorded, or for a server that does not report it.
+ */
+export function scheduleMissedLabel(
+  entry: ScheduleMissedFields,
+): string | null {
+  const missed = entry.lastMissed;
+  if (!missed) return null;
+  const reason = MISSED_REASONS[missed.reason] ?? missed.reason;
+  const caughtUp = missed.caughtUp ? " · caught up" : "";
+  const count = `${missed.count}${missed.saturated ? "+" : ""}`;
+  return `${count} missed · ${reason}${caughtUp}`;
+}
+
 /** Fires waiting across the given schedules. */
 export function totalQueued(entries: readonly ScheduleQueueFields[]): number {
   return entries.reduce(

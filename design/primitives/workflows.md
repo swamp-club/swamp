@@ -2773,12 +2773,96 @@ jobs:
   At the default, scheduled runs go one at a time in fire order. Each
   schedule's queue state (`queued`, `oldestQueuedAt`, `lastQueueDelayMs`) is
   reported in the health snapshot (`/api/v1/health`) and the dashboard.
-- **No catch-up:** serve does not fire schedules it missed while it was down.
-  On startup it waits for the next natural cron tick.
+- **Missed fires and catch-up:** see [Catch-up](#catch-up) below. By default
+  serve does not fire a schedule it missed while it was down; it records the
+  miss and waits for the next natural cron tick.
 - `--no-schedule` on `swamp serve` turns off scheduled execution.
 
 The `ScheduledExecutionService` lives in libswamp, so any consumer (serve, a
 future daemon, or programmatic use) can reuse the same scheduling code.
+
+#### Catch-up
+
+Each scheduled workflow has a **schedule watermark**: the latest fire slot serve
+settled, whatever happened to it (it ran, was skipped as paused or overlapping,
+or was handed to replay during a drain). It lives in the control plane under
+`schedule-states/<workflowId>` (`ScheduleState` in
+`src/domain/workflows/schedule_state.ts`), so every instance sharing the
+datastore sees one watermark. It only moves forward: each write re-reads the
+record and never saves an older slot, and one process writes a workflow's
+record one write at a time, folding the writes requested meanwhile into one, so
+a fire waits for at most the write in flight and its own. Instances that may all
+write (no v3 leadership) can still interleave a read and a save. A fire advances it as soon
+as the cron-fire dedup claim succeeds, before the drain check, so a slot
+recorded for replay is never also counted as missed.
+
+When serve starts as the leader, after pending runs are replayed, and when a
+follower is promoted, once its role is leader (`onLed` in
+`src/serve/serve_leadership.ts`, after the grant config is applied),
+`catchUpMissedFires` compares each schedule's slots against its stored
+watermark. Any slot strictly after the watermark and at or before now was
+missed because serve was down. Serve records the latest one as the schedule's
+`lastMissed` (`fireTime`, `count`, `reason: serve_down`, `caughtUp`) and emits
+a `schedule_missed` event, audited as `workflow.schedule.missed`. A fire skipped
+because the schedule was paused or the previous run was still going is recorded
+as `lastMissed` with reason `paused` or `overlap`. Lost fires in a row with the
+same reason add to `count` (capped like a serve-down count, with `saturated`);
+the same slot reported twice counts once. `lastMissed` is current state, not
+history: the next fire of a later slot that starts a run clears it, and a cron
+expression change drops it. The audit log keeps every miss. `lastMissed` appears
+in `/api/v1/health`, the dashboard and `swamp workflow schedule list`.
+`caughtUp` means the catch-up run was queued; like any scheduled run it is still
+pause checked and authorized when it starts.
+
+A trigger can opt in to catching up:
+
+```yaml
+trigger:
+  schedule: "0 9 1 * *"
+  catchUp:
+    policy: latest # none (default) | latest
+    maxDelay: 6h # required with latest; at most 31d
+```
+
+With `latest`, serve fires the most recent missed slot once, if it is at most
+`maxDelay` old. It never replays a backlog. The catch-up fire goes through the
+same path as a cron tick: pause check (evaluated at the missed slot), overlap
+check, dedup claim, queue and authorization. The run carries the tags
+`swamp.trigger.catchUp: "true"` and `swamp.trigger.scheduledFor: <slot>`, so a
+workflow can read `run.tags` and decline. A catch-up adds at most one run on
+top of any replayed fire.
+
+Every cron-fired run carries `swamp.trigger.scheduledFor: <slot>`, which, like
+any run tag, is also copied onto the data the run writes. When a catch-up would
+fire, the pass starts from the later of the watermark and the latest slot
+recorded by a run the scheduler itself started. A miss nothing will catch up
+reads no run history and is reported from the watermark alone, so a slot whose
+watermark write failed can be reported missed, though nothing runs. The lookup
+walks the run index latest slot first and reads records only until one the
+scheduler started is found. All schedules share one `RUN_HISTORY_TIMEOUT_MS`
+budget per pass. Once it is spent, the remaining schedules fall back to the
+watermark. A drain or stop ends the pass: it aborts the history read and the
+state read in progress, visits no further schedule, and a stopped service fires
+nothing. Any initiator can set a run tag,
+so other runs are no evidence, and a recorded slot after now is ignored. A slot
+that ran but whose watermark write failed is therefore not run again, and a
+replayed run, which records no slot, settles nothing. The watermark also records
+the cron expression it was measured on, and a different expression at startup
+starts afresh. When this process already fired a slot before the pass, only the
+slots before that one are recorded as missed and nothing is caught up, even when
+that fire's state write failed.
+
+Limits: a schedule with no watermark yet, such as on the first start after an
+upgrade, has its watermark seeded at now and nothing is called missed. A pause
+set and lifted entirely while serve was down leaves no record, so a slot in that
+window is caught up. A schedule registered while serve runs, or whose cron
+expression changes, has its watermark reset to now, so time spent unscheduled is
+never reported as missed. A schedule's record outlives the schedule, so a
+workflow unscheduled and scheduled again with the same expression while serve
+was down is measured from its old watermark. A follower's health reports the
+`lastMissed` it read at startup until it is promoted. Each fire reads and writes
+the record before the run is queued, each step bounded by
+`SCHEDULE_STATE_TIMEOUT_MS`.
 
 #### Trigger Overrides
 
@@ -2817,7 +2901,12 @@ override `schedule` **replaces** the workflow's built-in schedule
 (`resolveSchedule` in `src/libswamp/workflows/scheduled_execution.ts`). An
 override `inputs` map is deep-merged over the built-in `trigger.inputs` at fire
 time. A workflow with no built-in trigger block gets one from the override.
-`swamp workflow trigger set` requires `--schedule`
+An override `catchUp` replaces the workflow's built-in `trigger.catchUp`, and,
+as on a workflow trigger, requires `schedule` in the same override. That also
+keeps the file loadable by an older serve, which ignores `catchUp` but refuses
+an override with neither `schedule` nor `inputs`.
+`swamp workflow trigger set` requires `--schedule`, and sets `catchUp` with
+`--catch-up <none|latest>` and `--catch-up-max-delay <duration>`
 (`src/cli/commands/workflow_trigger_set.ts`). Unknown keys in an override entry
 produce a warning and are ignored (`src/serve/serve_config.ts`).
 

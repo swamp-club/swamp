@@ -90,6 +90,11 @@ export interface ServeLeadershipDeps {
   trust?(leader: ServeLeader): Promise<boolean>;
   onLead(): Promise<void>;
   /**
+   * Called after a promoted node's role becomes leader, for work that must run
+   * as the leader rather than while it settles; not called for a boot lead.
+   */
+  onLed?(): Promise<void>;
+  /**
    * Called once, when this node finds it lost the lead: serve shuts down.
    * Ticking has stopped by then.
    */
@@ -272,6 +277,11 @@ export class ServeLeadership {
     await this.#deps.onLead();
     this.#role = "leader";
     logger.info`This serve node leads the datastore`;
+    try {
+      await this.#deps.onLed?.();
+    } catch (error) {
+      logger.warn`Work after taking the lead failed: ${error}`;
+    }
   }
 
   async #writeRecordIfMoved(): Promise<void> {

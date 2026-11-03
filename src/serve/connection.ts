@@ -53,6 +53,7 @@ import {
   SIGNAL_WORKFLOW_MAX_LENGTH,
 } from "../domain/workflows/signal_wait.ts";
 import { SCHEDULE_PAUSE_REASON_MAX_LENGTH } from "../domain/workflows/schedule_pause.ts";
+import { ScheduleCatchUpSchema } from "../domain/workflows/schedule_catch_up.ts";
 import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
@@ -1345,6 +1346,7 @@ const WorkflowTriggerSetRequestSchema = z.object({
     workflowName: z.string().min(1),
     schedule: z.string().min(1),
     inputs: z.record(z.string(), z.unknown()).optional(),
+    catchUp: ScheduleCatchUpSchema.optional(),
   }),
 });
 

@@ -105,6 +105,7 @@ export const workflowTriggerGetCommand = withRemoteOptions(
       builtIn = {
         schedule: workflow.schedule ?? null,
         inputs: workflow.triggerInputs ?? {},
+        catchUp: workflow.catchUp ?? null,
       };
     }
   } catch {
@@ -119,6 +120,7 @@ export const workflowTriggerGetCommand = withRemoteOptions(
       ...(builtIn?.inputs ?? {}),
       ...(override?.inputs ?? {}),
     },
+    catchUp: override?.catchUp ?? builtIn?.catchUp ?? null,
   };
 
   renderWorkflowTriggerGet(cliCtx.outputMode, {
