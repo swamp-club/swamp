@@ -33,6 +33,7 @@ import {
   DASHBOARD_SESSION_COOKIE,
   type ServerTokenAuthResult,
 } from "./token_auth.ts";
+import { checkIpBurst } from "./rate_limiter.ts";
 
 function request(authorization?: string): Request {
   return new Request("http://serve.test/api/v1/request", {
@@ -484,4 +485,18 @@ Deno.test("authenticateHttpCaller: a bearer token wins over a dashboard cookie",
   });
   assertEquals((caller as HttpCaller).principal, "user:adam");
   assertEquals(auth.asked, []);
+});
+
+Deno.test("authenticateHttpCaller: a request that presents no credential does not count toward the IP burst", async () => {
+  const ip = uniqueIp();
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const response = await authenticateHttpCaller(request(), ip, {
+      authMode: "token",
+      authenticate: () => Promise.resolve(validToken),
+    });
+    assertInstanceOf(response, Response);
+    assertEquals(response.status, 401);
+    await response.body?.cancel();
+  }
+  assertEquals(checkIpBurst(ip).allowed, true);
 });

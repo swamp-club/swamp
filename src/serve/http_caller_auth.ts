@@ -79,8 +79,9 @@ export interface HttpCaller {
 }
 
 /**
- * Callers that fail to authenticate count toward the IP's burst; an
- * authenticated caller is limited per principal instead.
+ * Callers whose credential fails count toward the IP's burst; one that
+ * presents none costs no lookup and does not. An authenticated caller is
+ * limited per principal instead.
  */
 export async function authenticateHttpCaller(
   req: Request,
@@ -108,8 +109,6 @@ export async function authenticateHttpCaller(
         sessionAuth,
       );
     }
-    const ipBurst = checkIpBurst(sourceIp);
-    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     return httpFailure(401, "unauthorized", "Unauthorized: token required");
   }
   const guarded = await limitFailedAttempts(

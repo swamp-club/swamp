@@ -91,3 +91,72 @@ Deno.test("createDashboardSessionClient: describes an origin rejection to the lo
     "origin check",
   );
 });
+
+function responses(...statuses: Array<[number, string?]>) {
+  const queue = [...statuses];
+  let calls = 0;
+  return {
+    get calls() {
+      return calls;
+    },
+    fetch: () => {
+      calls++;
+      const [status, retryAfter] = queue.shift() ?? [500];
+      return Promise.resolve(
+        new Response(null, {
+          status,
+          headers: retryAfter === undefined
+            ? {}
+            : { "retry-after": retryAfter },
+        }),
+      );
+    },
+  };
+}
+
+Deno.test("createDashboardSessionClient: a rate-limited restore waits out Retry-After and restores", async () => {
+  const served = responses([429, "7"], [200]);
+  const waits: number[] = [];
+  const client = createDashboardSessionClient(served.fetch, (ms) => {
+    waits.push(ms);
+    return Promise.resolve();
+  });
+  assertEquals(await client.restore(), true);
+  assertEquals(waits, [7_000]);
+  assertEquals(served.calls, 2);
+});
+
+Deno.test("createDashboardSessionClient: Retry-After is clamped to between one second and a minute", async () => {
+  const served = responses([429, "3600"], [429, "junk"], [200]);
+  const waits: number[] = [];
+  const client = createDashboardSessionClient(served.fetch, (ms) => {
+    waits.push(ms);
+    return Promise.resolve();
+  });
+  assertEquals(await client.restore(), true);
+  assertEquals(waits, [60_000, 1_000]);
+});
+
+Deno.test("createDashboardSessionClient: a restore still rate-limited after two retries throws", async () => {
+  const served = responses([429, "1"], [429, "1"], [429, "1"], [200]);
+  const client = createDashboardSessionClient(
+    served.fetch,
+    () => Promise.resolve(),
+  );
+  await assertRejects(
+    () => client.restore(),
+    Error,
+    "Could not restore dashboard session",
+  );
+  assertEquals(served.calls, 3);
+});
+
+Deno.test("createDashboardSessionClient: aborting the restore stops its retries", async () => {
+  const served = responses([429, "30"], [200]);
+  const controller = new AbortController();
+  const client = createDashboardSessionClient(served.fetch);
+  const restoring = client.restore(controller.signal);
+  controller.abort(new Error("unmounted"));
+  await assertRejects(() => restoring, Error, "unmounted");
+  assertEquals(served.calls, 1);
+});

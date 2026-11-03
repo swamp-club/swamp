@@ -20,11 +20,40 @@
 import { localToken, serverPath, withLocalToken } from "./workspace_path.ts";
 export const DASHBOARD_SESSION_PATH = serverPath("/auth/dashboard/session");
 const DASHBOARD_SESSION_TIMEOUT_MS = 5_000;
+const RESTORE_RATE_LIMIT_RETRIES = 2;
+const MAX_RESTORE_RETRY_AFTER_SECONDS = 60;
 
 export type SessionFetch = (
   input: string,
   init?: RequestInit,
 ) => Promise<Response>;
+
+export type SessionSleep = (ms: number, signal?: AbortSignal) => Promise<void>;
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function retryAfterMs(response: Response): number {
+  const seconds = Number(response.headers.get("retry-after"));
+  if (!Number.isFinite(seconds)) return 1_000;
+  return Math.min(Math.max(seconds, 1), MAX_RESTORE_RETRY_AFTER_SECONDS) *
+    1_000;
+}
 
 function dashboardOriginHeader(): Record<string, string> | undefined {
   if (typeof location === "undefined") return undefined;
@@ -43,17 +72,29 @@ function requestSignal(signal?: AbortSignal): AbortSignal {
 }
 
 /** Browser adapter for the cookie-backed dashboard session endpoints. */
-export function createDashboardSessionClient(fetchFn: SessionFetch) {
+export function createDashboardSessionClient(
+  fetchFn: SessionFetch,
+  sleepFn: SessionSleep = sleep,
+) {
   return {
     async restore(signal?: AbortSignal): Promise<boolean> {
-      const response = await fetchFn(DASHBOARD_SESSION_PATH, {
-        headers: withLocalOrigin(),
-        signal: requestSignal(signal),
-      });
-      await response.body?.cancel();
-      if (response.status === 401) return false;
-      if (!response.ok) throw new Error("Could not restore dashboard session");
-      return true;
+      for (let retry = 0;; retry++) {
+        const response = await fetchFn(DASHBOARD_SESSION_PATH, {
+          headers: withLocalOrigin(),
+          signal: requestSignal(signal),
+        });
+        await response.body?.cancel();
+        if (response.status === 401) return false;
+        // a 429 is a rate limit, not a verdict on the session
+        if (response.status === 429 && retry < RESTORE_RATE_LIMIT_RETRIES) {
+          await sleepFn(retryAfterMs(response), signal);
+          continue;
+        }
+        if (!response.ok) {
+          throw new Error("Could not restore dashboard session");
+        }
+        return true;
+      }
     },
 
     async exchange(token: string): Promise<boolean> {
