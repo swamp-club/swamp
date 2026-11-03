@@ -143,29 +143,32 @@ async function authenticateSessionCaller(
     sessionAuth.sessions,
   );
   if (session === null) {
-    const ipBurst = checkIpBurst(sourceIp);
-    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
-    if (await sessionAuth.sessions.get(sessionId) === null) {
+    // a known session from the wrong origin presented a real cookie, not a
+    // guess, so only an unknown session counts toward the IP burst
+    if (await sessionAuth.sessions.get(sessionId) !== null) {
       return httpFailure(
-        401,
-        "unauthorized",
-        "Unauthorized: dashboard session expired",
+        403,
+        "forbidden",
+        "Forbidden: dashboard session origin mismatch",
       );
     }
+    const ipBurst = checkIpBurst(sourceIp);
+    if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     return httpFailure(
-      403,
-      "forbidden",
-      "Forbidden: dashboard session origin mismatch",
+      401,
+      "unauthorized",
+      "Unauthorized: dashboard session expired",
     );
   }
   const key = rateLimitKey(`${session.tokenName}.${session.id}`, sourceIp);
-  const rateCheck = checkRateLimit(key);
-  if (!rateCheck.allowed) return tooManyRequests(rateCheck.retryAfterSeconds);
   const auth = await sessionAuth.authenticate(session, sourceIp);
   if (!auth.ok) {
     if (shouldInvalidateDashboardSession(auth.reason)) {
       await sessionAuth.sessions.delete(session.id);
     }
+    // only failures count: a page's concurrent reads share the token's bucket
+    const rateCheck = checkRateLimit(key);
+    if (!rateCheck.allowed) return tooManyRequests(rateCheck.retryAfterSeconds);
     const ipBurst = checkIpBurst(sourceIp);
     if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     return httpFailure(401, "unauthorized", `Unauthorized: ${auth.reason}`);

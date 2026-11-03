@@ -412,10 +412,18 @@ export function SwampProvider({ children }: { children: ReactNode }) {
             ),
         );
         if (outcome.kind === "payload") return outcome.value as T;
+        if (outcome.kind === "signed_out") {
+          // as a logout in another tab does: the socket may not notice yet
+          if (authMode !== "none") {
+            connectionRef.current?.stop();
+            clearToken();
+          }
+          throw new Error(outcome.message);
+        }
       }
       return await send(type, payload, false) as T;
     },
-    [send],
+    [authMode, clearToken, send],
   );
 
   const requestDetached = useCallback(

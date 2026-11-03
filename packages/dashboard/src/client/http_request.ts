@@ -47,7 +47,8 @@ export const HTTP_REQUEST_TYPES: ReadonlySet<string> = new Set([
 
 export type HttpReadOutcome =
   | { kind: "payload"; value: unknown }
-  | { kind: "route_missing" };
+  | { kind: "route_missing" }
+  | { kind: "signed_out"; message: string };
 
 export interface HttpReadRequest {
   readonly type: string;
@@ -59,7 +60,8 @@ type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 
 /**
  * Sends one read over serve's HTTP route. `route_missing` means the socket
- * should answer it, as the CLI's `requestServerResponse` decides.
+ * should answer it, as the CLI's `requestServerResponse` decides;
+ * `signed_out` means serve no longer accepts the session or its token.
  */
 export async function requestOverHttp(
   fetchFn: Fetch,
@@ -83,6 +85,11 @@ export async function requestOverHttp(
       refusal === undefined || refusal.code === USE_WEBSOCKET_CODE
     ) {
       return { kind: "route_missing" };
+    }
+    // a permission denial arrives as an error frame in a 200 body, so a 401
+    // here can only be the credential itself
+    if (response.status === 401) {
+      return { kind: "signed_out", message: refusal.message };
     }
     throw new RequestError(
       refusal.message,

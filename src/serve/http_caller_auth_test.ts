@@ -197,16 +197,16 @@ const DASHBOARD_ORIGIN = "https://serve.test";
 
 function sessionStore(): DashboardSessionStore & {
   sessions: Map<string, DashboardSession>;
-  add(): DashboardSession;
+  add(tokenName?: string): DashboardSession;
 } {
   const sessions = new Map<string, DashboardSession>();
   return {
     sessions,
-    add() {
+    add(tokenName = "laptop") {
       const id = crypto.randomUUID().replaceAll("-", "").padEnd(64, "0");
       const session: DashboardSession = {
         id,
-        tokenName: "laptop",
+        tokenName,
         tokenCreatedAt: "2026-11-01T00:00:00.000Z",
         origin: DASHBOARD_ORIGIN,
         createdAt: "2026-11-01T00:00:00.000Z",
@@ -351,6 +351,80 @@ Deno.test("authenticateHttpCaller: failed dashboard session attempts count towar
   }
   assertInstanceOf(last, Response);
   assertEquals(last.status, 429);
+});
+
+Deno.test("authenticateHttpCaller: a session from another origin does not count toward the IP burst", async () => {
+  const store = sessionStore();
+  const session = store.add();
+  const sourceIp = uniqueIp();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await authenticateHttpCaller(
+      cookieRequest(session.id, "https://evil.test"),
+      sourceIp,
+      {
+        authMode: "token",
+        authenticate: rejectBearer,
+        dashboardSession: sessionAuth(store),
+      },
+    );
+    assertInstanceOf(response, Response);
+    assertEquals(response.status, 403, `attempt ${attempt}`);
+    await response.body?.cancel();
+  }
+});
+
+Deno.test("authenticateHttpCaller: concurrent reads on one session token are all accepted", async () => {
+  const store = sessionStore();
+  const tokenName = `tab-${crypto.randomUUID()}`;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => release = resolve);
+  const auth: HttpCallerSessionAuth = {
+    sessions: store,
+    authenticate: async () => {
+      await released;
+      return validToken;
+    },
+  };
+  const reads = Array.from({ length: 20 }, () =>
+    authenticateHttpCaller(
+      cookieRequest(store.add(tokenName).id, DASHBOARD_ORIGIN),
+      uniqueIp(),
+      {
+        authMode: "token",
+        authenticate: rejectBearer,
+        dashboardSession: auth,
+        limitPrincipalRate: false,
+      },
+    ));
+  release();
+  for (const result of await Promise.all(reads)) {
+    assertEquals(result instanceof Response, false);
+  }
+});
+
+Deno.test("authenticateHttpCaller: repeated failed session authentications on one token are rate-limited", async () => {
+  const store = sessionStore();
+  const tokenName = `revoked-${crypto.randomUUID()}`;
+  const statuses: number[] = [];
+  for (let attempt = 0; attempt < 7; attempt++) {
+    const response = await authenticateHttpCaller(
+      cookieRequest(store.add(tokenName).id, DASHBOARD_ORIGIN),
+      uniqueIp(),
+      {
+        authMode: "token",
+        authenticate: rejectBearer,
+        dashboardSession: sessionAuth(store, {
+          ok: false,
+          error: "revoked",
+          reason: "revoked",
+        }),
+      },
+    );
+    assertInstanceOf(response, Response);
+    statuses.push(response.status);
+    await response.body?.cancel();
+  }
+  assertEquals(statuses, [401, 401, 401, 401, 401, 429, 429]);
 });
 
 Deno.test("authenticateHttpCaller: without the session dep a dashboard cookie is not a credential", async () => {

@@ -134,19 +134,46 @@ Deno.test("requestOverHttp: falls back to the socket on 404, 405, use_websocket,
   }
 });
 
-Deno.test("requestOverHttp: a serve refusal rejects, a 401 included, instead of falling back", async () => {
+Deno.test("requestOverHttp: a 401 from the route means the session or its token is no longer accepted", async () => {
   const { fetchFn } = replying(
     Response.json({
       code: "unauthorized",
       message: "Unauthorized: dashboard session expired",
     }, { status: 401 }),
   );
+  assertEquals(await requestOverHttp(fetchFn, "/api/v1/request", {}, READ), {
+    kind: "signed_out",
+    message: "Unauthorized: dashboard session expired",
+  });
+});
+
+Deno.test("requestOverHttp: an unauthorized error frame is a permission denial, not a sign-out", async () => {
+  const { fetchFn } = replying(ndjson({
+    type: "error",
+    id: "r1",
+    error: { code: "unauthorized", message: "no read on this model" },
+  }));
   const error = await assertRejects(
     () => requestOverHttp(fetchFn, "/api/v1/request", {}, READ),
     RequestError,
-    "dashboard session expired",
+    "no read on this model",
   );
   assertEquals(error.code, "unauthorized");
+});
+
+Deno.test("requestOverHttp: a serve refusal other than 401 rejects instead of falling back", async () => {
+  const { fetchFn } = replying(
+    Response.json({
+      code: "forbidden",
+      message: "Forbidden: dashboard session origin mismatch",
+    }, { status: 403 }),
+  );
+  const error = await assertRejects(
+    () => requestOverHttp(fetchFn, "/api/v1/request", {}, READ),
+    RequestError,
+    "origin mismatch",
+  );
+  assertEquals(error.code, "forbidden");
 });
 
 Deno.test("requestOverHttp: a not_leader refusal from a stale follower rejects rather than falling back", async () => {

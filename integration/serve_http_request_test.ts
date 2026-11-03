@@ -199,3 +199,74 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "serve HTTP route: a page's concurrent cookie reads are answered or sent back to the socket, never rate-limited",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const origin = "https://dashboard.test";
+      const session: DashboardSession = {
+        id: "d".repeat(64),
+        tokenName: `integration-${crypto.randomUUID()}`,
+        tokenCreatedAt: "2026-11-01T00:00:00.000Z",
+        origin,
+        createdAt: "2026-11-01T00:00:00.000Z",
+        expiresAt: "2026-11-02T00:00:00.000Z",
+      };
+      const READS = 40;
+      let lookups = 0;
+      let allArrived!: () => void;
+      const arrived = new Promise<void>((resolve) => allArrived = resolve);
+      const server = startRoute(
+        createServeCtx(repo, [
+          grant({
+            actions: ["read"],
+            resource: { kind: "workflow", pattern: "*" },
+          }),
+        ]),
+        {
+          sessions: {
+            create: () => Promise.reject(new Error("not used")),
+            get: (id) => {
+              if (++lookups === READS) allArrived();
+              return Promise.resolve(id === session.id ? session : null);
+            },
+            delete: () => Promise.resolve(),
+          },
+          // every read is past its session lookup before any authenticates
+          authenticate: async () => {
+            await arrived;
+            return callerToken;
+          },
+        },
+      );
+      const url = `${server.url.replace("ws:", "http:")}${SERVE_REQUEST_PATH}`;
+      try {
+        const outcomes = await Promise.all(
+          Array.from({ length: READS }, () =>
+            requestOverHttp(
+              fetch,
+              url,
+              {
+                cookie: `${DASHBOARD_SESSION_COOKIE}=${session.id}`,
+                origin,
+              },
+              {
+                type: "workflow.history.search",
+                id: crypto.randomUUID(),
+                payload: {},
+              },
+            )),
+        );
+        const kinds = new Set(outcomes.map((outcome) => outcome.kind));
+        assertEquals(kinds.has("payload"), true);
+        assertEquals(kinds.has("signed_out"), false);
+      } finally {
+        await server.shutdown();
+      }
+    });
+  },
+});

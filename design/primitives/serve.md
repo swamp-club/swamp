@@ -306,8 +306,13 @@ the same rules (`packages/dashboard/src/client/http_request.ts`, whose copy of
 session cookie, so the route accepts that cookie when the request's own
 `Origin` header matches the origin the session was created from
 (`resolveDashboardSessionForOrigin`, the WebSocket upgrade's check, without the
-`x-swamp-dashboard-origin` stand-in): a missing or other origin is 403, an
-unknown session 401, and each failure counts toward the IP burst. This
+`x-swamp-dashboard-origin` stand-in): a missing or other origin is 403, and
+an unknown session 401. Only the unknown session counts toward the IP burst,
+since a known session from the wrong origin presented a real cookie. Only a
+failed authentication counts toward the token's attempt limit, so a page's
+concurrent reads, which share it, are not refused. The dashboard treats the
+route's 401 as signed out, as it does a logout in another tab; a permission
+denial arrives as an error frame in the reply instead. This
 cookie-authenticated POST is safe only because the route runs reads: a test
 pins every `HTTP_REQUEST_TYPES` member to `FOLLOWER_READ_REQUESTS`. The datastore
 API shares `authenticateHttpCaller` but does not pass the session store, so it
