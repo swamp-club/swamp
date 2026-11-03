@@ -8168,7 +8168,7 @@ export const serveCommand = new Command()
     if (!v3Follows) {
       await replayPendingAtLead();
       // after the replay, so a replayed run queues ahead of a catch-up
-      await scheduledExecution?.catchUpMissedFires();
+      scheduledExecution?.startCatchUp();
     }
 
     if (hasRemoteControlPlane) {
@@ -8407,11 +8407,9 @@ export const serveCommand = new Command()
         },
         // as the leader, so its writes and fire claims are not refused, and
         // after the grant config, which authorizes the catch-up run
-        onLed: async () => {
-          await leaderStep(
-            "catching up missed scheduled fires",
-            async () => await scheduledExecution?.catchUpMissedFires(),
-          );
+        onLed: () => {
+          scheduledExecution?.startCatchUp();
+          return Promise.resolve();
         },
         // a node that lost the lead stops as a shutdown does, leaving queued
         // webhook runs pending for the leader and exiting 75 so its supervisor

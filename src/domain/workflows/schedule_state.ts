@@ -133,8 +133,11 @@ export interface ScheduleStateRepository {
     workflowId: WorkflowId,
     options?: { signal?: AbortSignal },
   ): Promise<ScheduleState | null>;
-  /** an unreadable record is skipped, so one bad record never hides the rest */
-  list(): Promise<ScheduleState[]>;
+  /**
+   * an unreadable record is skipped, so one bad record never hides the rest;
+   * a failed or timed-out listing rejects, and an abort rejects with its reason
+   */
+  list(options?: { signal?: AbortSignal }): Promise<ScheduleState[]>;
   /** false when this instance may not write, so nothing was stored */
   save(state: ScheduleState): Promise<boolean>;
 }

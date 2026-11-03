@@ -92,6 +92,7 @@ export interface ServeLeadershipDeps {
   /**
    * Called after a promoted node's role becomes leader, for work that must run
    * as the leader rather than while it settles; not called for a boot lead.
+   * It runs inside the tick, so the lease goes unchecked until it returns.
    */
   onLed?(): Promise<void>;
   /**

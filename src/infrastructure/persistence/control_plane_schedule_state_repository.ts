@@ -85,16 +85,24 @@ export class ControlPlaneScheduleStateRepository
     return parseState(bytes, workflowId);
   }
 
-  async list(): Promise<ScheduleState[]> {
-    const keys = await this.store.list(STATE_DIR);
+  async list(options?: { signal?: AbortSignal }): Promise<ScheduleState[]> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
+    // store.list takes no signal, so a hung list is abandoned, not stopped
+    const keys = await withDeadline(
+      () => orAbort(this.store.list(STATE_DIR), signal),
+      this.timeoutMs,
+    );
     const states: ScheduleState[] = [];
     for (const key of keys) {
+      signal?.throwIfAborted();
       const workflowId = workflowIdOfKey(STATE_PREFIX, key);
       if (workflowId === null) continue;
       try {
-        const state = await this.get(workflowId);
+        const state = await this.get(workflowId, { signal });
         if (state) states.push(state);
       } catch (error) {
+        signal?.throwIfAborted();
         logger.warn`Cannot read the schedule state of workflow ${workflowId}: ${
           error instanceof Error ? error.message : String(error)
         }`;
@@ -111,6 +119,25 @@ export class ControlPlaneScheduleStateRepository
     await withDeadline(() => this.store.put(key, bytes), this.timeoutMs);
     return true;
   }
+}
+
+function orAbort<T>(read: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return read;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    read.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**

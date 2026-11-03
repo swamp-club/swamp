@@ -247,9 +247,12 @@ Deno.test("schedule catch-up: a fire older than maxDelay is recorded for every r
 
     const restarted = instance(missed.getTime() + 3 * 24 * HOUR);
     await restarted.start();
-    assertEquals(
-      restarted.scheduleStatus(workflow.id).lastMissed?.fireTime,
-      missed.toISOString(),
+    // the states load in the background, so start does not wait on the store
+    await waitFor(
+      () =>
+        restarted.scheduleStatus(workflow.id).lastMissed?.fireTime ===
+          missed.toISOString(),
+      "the restarted instance loaded the recorded miss",
     );
     await restarted.stop();
   });
