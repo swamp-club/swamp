@@ -140,10 +140,8 @@ export function emitTriggerDenial(
 }
 
 /**
- * an overlap skip is a failure (the fire was lost); a dedup skip (another
- * instance ran it) and a paused skip (on purpose) are successes. A fire missed
- * while serve was down is a failure unless it was caught up. Refusals are
- * audited by the authorizer
+ * overlap skips and misses not caught up are failures (the fire was lost);
+ * dedup and paused skips are successes; refusals are audited by the authorizer
  */
 export function auditScheduledEvent(
   ctx: TriggerAuditContext,
