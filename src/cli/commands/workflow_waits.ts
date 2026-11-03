@@ -41,8 +41,8 @@ import {
   signalWaitsOf,
 } from "../repo_context.ts";
 import {
+  commandTargetOf,
   DECIDED_ON_SERVE_OPTION_TEXTS,
-  formatCommandTarget,
   requestNewerServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -303,7 +303,7 @@ export const workflowWaitsCommand = withRemoteOptions(
       renderWaits(
         cliCtx,
         data,
-        formatCommandTarget({ server: options.server as string | undefined }),
+        commandTargetOf(options),
         { pendingAsked: includePending },
       );
       return;
@@ -322,7 +322,7 @@ export const workflowWaitsCommand = withRemoteOptions(
     renderWaits(
       cliCtx,
       data,
-      formatCommandTarget({ repoDir: options.repoDir as string | undefined }),
+      commandTargetOf({ repoDir: options.repoDir }),
       { pendingAsked: includePending },
     );
   });

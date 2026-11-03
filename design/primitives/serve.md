@@ -817,7 +817,13 @@ transports to that. What it does, in order:
   wait, the earlier receipt; a caller with `signal` alone gets a fixed sentence
   per refusal. So a signal-only caller that retries after a lost reply learns
   the wait is settled but not by which signal; a retry is idempotent only
-  under an idempotency key (below).
+  under an idempotency key (below). Not found names the address as sent
+  (`Signal wait not found: <wait id>`, or `key "<key>" of workflow
+  "<workflow>"`), with `refusal: unknown`, whether the wait is absent or not
+  the caller's to signal. A reader's refused payload names the wait. Refusals
+  name a wait ID as the caller typed it; it is authorized and delivered by its
+  normalized form. The CLI shows these as the local command does: without the
+  server's code, and with the local code (`validation_failed`, `not_found`).
 - A delivery emits the audit event `workflow.signal.delivered` with the wait
   ID, the receipt ID and the run ID. The payload is never logged or audited.
 

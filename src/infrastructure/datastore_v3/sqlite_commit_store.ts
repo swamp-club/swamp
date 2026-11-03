@@ -109,6 +109,7 @@ import {
   runMigration,
   type SqliteMigration,
 } from "./sqlite_migration.ts";
+import { useWalJournal } from "./sqlite_wal.ts";
 
 /**
  * The schema migrations, in order. Migration `i` takes a database at
@@ -2721,12 +2722,7 @@ export function openCommitsDatabase(
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    // Switching to WAL takes an exclusive lock, and WAL persists in the
-    // file, so switch only a database that is not in WAL yet.
-    const mode = db.prepare("PRAGMA journal_mode").get() as
-      | { journal_mode: string }
-      | undefined;
-    if (mode?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
+    useWalJournal(db);
     db.exec("PRAGMA synchronous=FULL");
     if (options.replicated === true) db.exec("PRAGMA wal_autocheckpoint=0");
     migrate(db);

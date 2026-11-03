@@ -1497,6 +1497,155 @@ Deno.test({
 
 Deno.test({
   name:
+    "forwarded content: an authored behavior may take a name only an auto-definition holds, never one an authored behavior holds",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const editor = grant({
+      actions: ["read", "write", "run"],
+      resource: { kind: "model", pattern: "*" },
+    });
+    await withServer(
+      [editor],
+      async (server) => {
+        const type = server.modelType.normalized;
+        const adhoc = Definition.create({
+          name: "same-name",
+          type,
+          globalArguments: {},
+        });
+        const auto = await forward(
+          server,
+          partitionOf({ kind: "definition", id: adhoc.id }),
+          [
+            put(
+              {
+                kind: "auto-definition.save",
+                autoDefinition: { id: adhoc.id },
+              },
+              `auto-definitions/${type}/same-name.yaml`,
+              yaml(adhoc.toData()),
+            ),
+          ],
+        );
+        assertEquals(auto.status, 200, JSON.stringify(auto.json));
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const create = (definition: Definition) =>
+          forward(server, behaviorPartition("same-name"), [
+            put(
+              {
+                kind: "definition.create",
+                definition: { kind: "model", name: "same-name" },
+              },
+              `config/models/${definition.type ?? type}/same-name.yaml`,
+              yaml(definition.toData()),
+            ),
+          ]);
+        const authored = await create(Definition.create({
+          name: "same-name",
+          type,
+          globalArguments: {},
+        }));
+        assertEquals(authored.status, 200, JSON.stringify(authored.json));
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        const second = await create(Definition.create({
+          name: "same-name",
+          type: "command/shell",
+          globalArguments: {},
+        }));
+        assertEquals(second.status, 403, JSON.stringify(second.json));
+        assertStringIncludes(
+          JSON.stringify(second.json),
+          "its name is held by another behavior",
+        );
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: only a caller who could write an admin-only auto-definition may take its name (swamp-club#4338)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const editor = grant({
+      actions: ["read", "write", "run"],
+      resource: { kind: "model", pattern: "*" },
+    });
+    const admin = grant({
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    });
+    const shadow = async (grants: Grant[]) => {
+      let status = 0;
+      let json: Record<string, unknown> = {};
+      await withServer(
+        grants,
+        async (server) => {
+          const restricted = ModelType.create("command/shell");
+          const held = Definition.create({
+            name: "deploy",
+            type: restricted.normalized,
+            globalArguments: {},
+          });
+          const auto = await forward(
+            server,
+            partitionOf({ kind: "definition", id: held.id }),
+            [
+              put(
+                {
+                  kind: "auto-definition.save",
+                  autoDefinition: { id: held.id },
+                },
+                `auto-definitions/${restricted.normalized}/deploy.yaml`,
+                yaml(held.toData()),
+              ),
+            ],
+          );
+          assertEquals(auto.status, 200, JSON.stringify(auto.json));
+          await server.v3.readModel.catchUp(new AbortController().signal);
+          (server.ctx.authConfig as { restrictedModelTypes: string[] })
+            .restrictedModelTypes = [restricted.normalized];
+          const mine = Definition.create({
+            name: "deploy",
+            type: server.modelType.normalized,
+            globalArguments: {},
+          });
+          const created = await forward(server, behaviorPartition("deploy"), [
+            put(
+              {
+                kind: "definition.create",
+                definition: { kind: "model", name: "deploy" },
+              },
+              `config/models/${server.modelType.normalized}/deploy.yaml`,
+              yaml(mine.toData()),
+            ),
+          ]);
+          status = created.status;
+          json = created.json;
+        },
+        undefined,
+        MANAGED,
+      );
+      return { status, json };
+    };
+
+    const member = await shadow([editor]);
+    assertEquals(member.status, 403, JSON.stringify(member.json));
+    assertStringIncludes(
+      JSON.stringify(member.json),
+      "its name is held by another behavior",
+    );
+    const owner = await shadow([editor, admin]);
+    assertEquals(owner.status, 200, JSON.stringify(owner.json));
+  },
+});
+
+Deno.test({
+  name:
     "forwarded content: a sensitive field may name a secret the caller may only write when it is under the behavior's own derived key",
   sanitizeOps: false,
   sanitizeResources: false,

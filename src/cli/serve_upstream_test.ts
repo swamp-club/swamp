@@ -362,6 +362,12 @@ Deno.test("serveUpstreamRunsLocally: datastore status runs in a serve-mode check
   assertEquals(serveUpstreamRunsLocally(["datastore"]), false);
 });
 
+Deno.test("serveUpstreamRunsLocally: run history runs in a serve-mode checkout, so it lists the member's own runs; run doctor still goes to serve (swamp-club#4338)", () => {
+  assertEquals(serveUpstreamRunsLocally(["run", "history"]), true);
+  assertEquals(serveUpstreamRunsLocally(["run", "doctor"]), false);
+  assertEquals(serveUpstreamRunsLocally(["run"]), false);
+});
+
 Deno.test("serveUpstreamAppliesTo: datastore lock, status and quarantine reach the serve a checkout writes through (swamp-club#4195)", () => {
   assertEquals(serveUpstreamAppliesTo(["datastore", "lock"]), true);
   assertEquals(serveUpstreamAppliesTo(["datastore", "status"]), true);

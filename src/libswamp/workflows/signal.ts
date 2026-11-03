@@ -175,6 +175,11 @@ export type WorkflowSignalInput = WorkflowSignalAddress & {
   authorize?: (wait: SignalWaitSubject) => Promise<boolean>;
   waitsCommand?: string;
   /**
+   * the wait id as its sender typed it, named in refusals in place of the
+   * address; the wait is still found, authorized and stored by the address
+   */
+  typedWaitId?: string;
+  /**
    * false when the caller cannot be told a signal is held: a signal by key that
    * finds no open wait is then refused no_open_wait and nothing is stored,
    * whatever the step declares. Defaults to true.
@@ -543,21 +548,42 @@ async function resolveRegistration(
             : {}),
         }))
       ) return { error: unknownWait(typedId) };
-      if (outcome.record.kind === "accepted") {
-        return {
-          error: alreadySettled(
-            typedId,
-            `run ${outcome.record.runId}`,
-            outcome.record.receipt,
-          ),
-        };
-      }
       if (outcome.record.kind === "timed_out") {
         return { error: expiredAt(typedId, outcome.record.deadline) };
       }
+      if (outcome.record.kind === "cancelled" && stored.kind === "unreadable") {
+        return { error: unreadableRecord(typedId) };
+      }
+      // the one run the outcome names, never a scan, places the step
+      const named = run ??
+        await runOf(deps, outcome.record).catch(() => null);
+      const step = named?.id === outcome.record.runId
+        ? findStepByWaitId(named, waitId)
+        : undefined;
+      if (named && step) {
+        return {
+          error: refusalFor(
+            typedId,
+            {
+              workflowId: named.workflowId,
+              workflowName: named.workflowName,
+              runId: named.id,
+              jobName: step.jobName,
+              stepName: step.step.stepName,
+            },
+            outcome.record,
+            waitsCommand,
+            true,
+          ),
+        };
+      }
       return {
-        error: stored.kind === "unreadable"
-          ? unreadableRecord(typedId)
+        error: outcome.record.kind === "accepted"
+          ? alreadySettled(
+            typedId,
+            `run ${outcome.record.runId}`,
+            outcome.record.receipt,
+          )
           : closedBeforeSignal(typedId, waitsCommand),
       };
     }
@@ -1291,7 +1317,13 @@ export async function* workflowSignal(
           yield { kind: "error", error: unknownWait(input.waitId) };
           return;
         }
-        target = { waitId, typedId: input.waitId };
+        const typed = input.typedWaitId;
+        target = {
+          waitId,
+          typedId: typed !== undefined && normalizeWaitId(typed) === waitId
+            ? typed
+            : input.waitId,
+        };
       } else if (!isWaitKey(input.key)) {
         // A string that is not in the form of a key is one no step declares.
         yield { kind: "error", error: unknownWait(namedByKey(input)) };

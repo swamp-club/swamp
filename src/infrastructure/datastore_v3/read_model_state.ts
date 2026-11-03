@@ -52,6 +52,7 @@ import {
   runMigration,
   type SqliteMigration,
 } from "./sqlite_migration.ts";
+import { useWalJournal } from "./sqlite_wal.ts";
 
 /**
  * migration i takes user_version i to i + 1; append new ones and never edit one
@@ -487,10 +488,7 @@ export class ReadModelState {
     const db = new DatabaseSync(path);
     try {
       db.exec("PRAGMA busy_timeout=5000");
-      const mode = db.prepare("PRAGMA journal_mode").get() as
-        | { journal_mode: string }
-        | undefined;
-      if (mode?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
+      useWalJournal(db);
       db.exec("PRAGMA synchronous=FULL");
       migrate(db);
       return new ReadModelState(db, options.pid ?? Deno.pid);

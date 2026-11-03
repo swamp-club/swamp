@@ -1917,7 +1917,11 @@ run record shows the step waiting until a resume applies it. `workflow history
 get` reads the wait's outcome when it builds the run view and sets
 `wait.receipt` on a step that still waits (`showAcceptedSignals`,
 `src/libswamp/workflows/history_get.ts`); the log output says a resume applies
-it. The record is not written. The run view also carries the wait's `key`,
+it. The record is not written. A team member's checkout cannot read serve's
+wait outcomes, so it takes the receipt from serve's view of the run
+(`acceptedReceipts`, one `workflow.history.get` request) and only onto a step
+waiting on the same wait in its own copy; serve unreachable or refusing leaves
+the step as its copy has it. The run view also carries the wait's `key`,
 which the log output shows as `(key <key>)` on a waiting step, and keeps
 `heldAsPending` on a receipt a pending signal answered, which the log output
 shows as "held as a pending signal until the wait took it"

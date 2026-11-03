@@ -476,6 +476,7 @@ export {
 } from "./workflows/get.ts";
 export {
   createWorkflowHistoryGetDeps,
+  receiptsOfRunView,
   workflowHistoryGet,
   type WorkflowHistoryGetDeps,
   type WorkflowHistoryGetEvent,

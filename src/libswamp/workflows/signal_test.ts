@@ -416,6 +416,54 @@ Deno.test("workflowSignal: the wait of a cancelled run is closed", async () => {
   assertEquals((await outcomeOf(fixture, waitId))?.kind, "cancelled");
 });
 
+Deno.test("workflowSignal: with the scan off, a cancelled run's closed wait names its step and run from the one run its outcome names (swamp-club#4338)", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  await closeRunWaits(fixture.waits, run, IN_TIME);
+  cancelAndSettle(run, workflow, "operator");
+  fixture.stored.set(run.id, run.toData());
+  fixture.deps.scanRunRecords = false;
+
+  const error = errorOf(await send(fixture, waitId, { verdict: "ship" }));
+
+  assertStringIncludes(
+    error.message,
+    `the run of step "review" of workflow "${workflow.name}" (run ${run.id}) ended`,
+  );
+  assertEquals(fixture.calls.includes("findAllGlobal"), false);
+  assertEquals(fixture.calls.includes("findGlobalByStatus"), false);
+
+  fixture.stored.clear();
+  const withoutRun = errorOf(await send(fixture, waitId, { verdict: "ship" }));
+  assertStringIncludes(withoutRun.message, "its run ended, or its step moved");
+});
+
+Deno.test("workflowSignal: with the scan off, a second signal to a wait whose run moved on names its step and run from the one run its outcome names (swamp-club#4338)", async () => {
+  const workflow = makeWorkflow();
+  const { run, waitId } = suspendedAtWait(workflow);
+  const fixture = await fixtureOf([run]);
+  const first = await send(fixture, waitId, { verdict: "ship" });
+  assert(first.kind === "completed");
+  await closeRunWaits(fixture.waits, run, IN_TIME);
+  fixture.deps.scanRunRecords = false;
+
+  const error = errorOf(await send(fixture, waitId, { verdict: "fix" }));
+
+  assertStringIncludes(
+    error.message,
+    `is already settled: step "review" of workflow "${workflow.name}" (run ${run.id}) received signal ${first.data.signal.id}.`,
+  );
+  assertEquals(fixture.calls.includes("findAllGlobal"), false);
+
+  fixture.stored.clear();
+  const withoutRun = errorOf(await send(fixture, waitId, { verdict: "fix" }));
+  assertStringIncludes(
+    withoutRun.message,
+    `is already settled: run ${run.id} received signal`,
+  );
+});
+
 class RacedStore extends InMemorySignalWaitStore {
   constructor(private readonly winner: (outcome: WaitOutcome) => WaitOutcome) {
     super();

@@ -1685,7 +1685,8 @@ record names no signal wait, so nothing a member reports reaches serve's wait
 records. Decided on 2026-11-02: local delivery would need the judge to accept
 outcomes a member wrote, and a wait exists for someone else to signal. Approval gates
 are unaffected: `approve` and `reject` go to serve's handlers. Use `--server`, a
-trigger or a schedule.
+trigger or a schedule. A member's `workflow history get` shows a signal serve accepted
+by reading serve's view of the run, which needs `read` on the workflow there.
 
 **Delete and recreate.** A forwarded record under a deleted run's id has nothing
 stored to compare against, so deleting a guarded run's record needs `admin` on the

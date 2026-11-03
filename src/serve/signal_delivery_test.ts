@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import fc from "fast-check";
 import {
   auditTakenSignals,
@@ -205,10 +205,17 @@ function deliver(
   });
 }
 
-const NOT_FOUND: SignalDeliveryResult = {
-  status: "not_found",
-  message: SIGNAL_WAIT_NOT_FOUND_MESSAGE,
-};
+/** the answer names the address the caller sent, whatever kept it from a wait */
+function notFound(address: string): SignalDeliveryResult {
+  return {
+    status: "not_found",
+    message: `${SIGNAL_WAIT_NOT_FOUND_MESSAGE}: ${address}`,
+  };
+}
+
+function notFoundByKey(workflow: string, key: string): SignalDeliveryResult {
+  return notFound(`key "${key}" of workflow "${workflow}"`);
+}
 
 Deno.test("deliverSignalForCaller: delivers and records the principal as the sender", async () => {
   const f = await fixture();
@@ -220,6 +227,49 @@ Deno.test("deliverSignalForCaller: delivers and records the principal as the sen
   const outcome = await f.waits.findOutcome(f.waitId);
   assert(outcome.kind === "found" && outcome.record.kind === "accepted");
   assertEquals(outcome.record.payload, { verdict: "ship" });
+});
+
+Deno.test("deliverSignalForCaller: a wait ID in another spelling is authorized and delivered by its normalized form, and refusals name it as typed (swamp-club#4338)", async () => {
+  const f = await fixture();
+  const typed = `  ${f.waitId.toUpperCase()} `;
+  const ctx = f.ctxWith([grantOf(["signal", "read"])]);
+  const result = await deliver(ctx, typed);
+  assertEquals(result.status, "delivered");
+  const outcome = await f.waits.findOutcome(f.waitId);
+  assert(outcome.kind === "found" && outcome.record.waitId === f.waitId);
+
+  const again = await deliver(ctx, typed);
+  assert(again.status === "already_settled", again.status);
+  assertStringIncludes(again.message, `Wait ${typed} is already settled`);
+  assertEquals(
+    await deliver(f.ctxWith([grantOf(["read"])]), typed),
+    notFound(typed),
+  );
+});
+
+Deno.test("deliverSignalForCaller: a payload refused for a reader names the wait as typed; a caller who may only signal is not told more (swamp-club#4338)", async () => {
+  const f = await fixture();
+  const typed = f.waitId.toUpperCase();
+  const reader = await deliver(
+    f.ctxWith([grantOf(["signal", "read"])]),
+    typed,
+    { verdict: 7 },
+  );
+  assert(reader.status === "invalid_payload", reader.status);
+  assertStringIncludes(
+    reader.message,
+    `Payload refused for wait ${typed}; the wait stays open:`,
+  );
+  const signaller = await deliver(
+    f.ctxWith([grantOf(["signal"])]),
+    typed,
+    { verdict: 7 },
+  );
+  assert(signaller.status === "invalid_payload", signaller.status);
+  assertStringIncludes(
+    signaller.message,
+    "Payload refused; the wait stays open:",
+  );
 });
 
 Deno.test("deliverSignalForCaller: a wait ID in another spelling reaches the same wait", async () => {
@@ -236,7 +286,7 @@ Deno.test("deliverSignalForCaller: text that is not a wait ID is not found and r
   for (const waitId of ["", "review", "../../waits/x", `${f.waitId}/..`]) {
     assertEquals(
       await deliver(f.ctxWith([grantOf(["signal"])]), waitId),
-      NOT_FOUND,
+      notFound(waitId),
     );
   }
 });
@@ -245,7 +295,7 @@ Deno.test("deliverSignalForCaller: a refused caller stores nothing", async () =>
   const f = await fixture();
   assertEquals(
     await deliver(f.ctxWith([grantOf(["read"])]), f.waitId),
-    NOT_FOUND,
+    notFound(f.waitId),
   );
   assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
 });
@@ -265,7 +315,7 @@ Deno.test("deliverSignalForCaller: a registration whose workflow name was change
   );
   const ctx = f.ctxWith([grantOf(["signal", "read"], "open")]);
 
-  assertEquals(await deliver(ctx, f.waitId), NOT_FOUND);
+  assertEquals(await deliver(ctx, f.waitId), notFound(f.waitId));
   assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
 });
 
@@ -320,7 +370,7 @@ Deno.test("deliverSignalForCaller: a wait with only its outcome left is authoriz
 
   assertEquals(
     await deliver(f.ctxWith([grantOf(["read"])]), f.waitId),
-    NOT_FOUND,
+    notFound(f.waitId),
   );
   const blind = await deliver(f.ctxWith([grantOf(["signal"])]), f.waitId);
   assertEquals(blind, {
@@ -336,7 +386,7 @@ Deno.test("deliverSignalForCaller: a wait with only its outcome left is authoriz
   f.workflows.clear();
   assertEquals(
     await deliver(f.ctxWith([grantOf(["signal", "read"])]), f.waitId),
-    NOT_FOUND,
+    notFound(f.waitId),
   );
 });
 
@@ -354,11 +404,11 @@ Deno.test("deliverSignalForCaller: a renamed workflow's settled wait stays close
   ]);
   const both = f.ctxWith([grantOf(["signal", "read"])]);
 
-  assertEquals(await deliver(denied, f.waitId), NOT_FOUND);
+  assertEquals(await deliver(denied, f.waitId), notFound(f.waitId));
 
   await f.waits.removeRegistration(f.waitId);
 
-  assertEquals(await deliver(denied, f.waitId), NOT_FOUND);
+  assertEquals(await deliver(denied, f.waitId), notFound(f.waitId));
   const seen = await deliver(both, f.waitId);
   assert(seen.status === "already_settled" && seen.receipt !== undefined);
 });
@@ -368,7 +418,7 @@ Deno.test("deliverSignalForCaller: a wait this host cannot place is not found, w
   await f.waits.removeRegistration(f.waitId);
   assertEquals(
     await deliver(f.ctxWith([grantOf(["signal", "read"])]), f.waitId),
-    NOT_FOUND,
+    notFound(f.waitId),
   );
 });
 
@@ -433,7 +483,8 @@ Deno.test("deliverSignalForCaller: a caller who may not signal the workflow gets
         const unknown = await deliver(ctx, UNKNOWN_WAIT, payload);
 
         if (!maySignal) {
-          assertEquals(real, unknown);
+          assertEquals(real, notFound(f.waitId));
+          assertEquals(unknown, notFound(UNKNOWN_WAIT));
           assertEquals((await f.waits.findOutcome(f.waitId)).kind, "absent");
         } else {
           assert(real.status !== "not_found", JSON.stringify(real));
@@ -490,7 +541,7 @@ Deno.test("continueAfterSignal: does nothing for a signal that was not delivered
   const f = await fixture();
   const { ctx, registry } = launching(f.ctxWith([]));
   const result = await deliver(ctx, f.waitId);
-  assertEquals(result, NOT_FOUND);
+  assertEquals(result, notFound(f.waitId));
 
   await continueAfterSignal(ctx, result, SUBJECT);
   assertEquals(registry.get(f.run.id), undefined);
@@ -619,7 +670,10 @@ Deno.test("deliverSignalForCaller: by key, a caller who may not signal the workf
   ) {
     const ctx = withUnreadableWaits(f, grants);
     for (const workflow of [f.workflow.name, f.workflow.id]) {
-      assertEquals(await deliverByKey(ctx, workflow, "verdict"), NOT_FOUND);
+      assertEquals(
+        await deliverByKey(ctx, workflow, "verdict"),
+        notFoundByKey(workflow, "verdict"),
+      );
     }
   }
 });
@@ -638,7 +692,10 @@ Deno.test("deliverSignalForCaller: by key, an unknown workflow, an undeclared ke
       [f.workflow.name, ""],
     ]
   ) {
-    assertEquals(await deliverByKey(ctx, workflow, key), NOT_FOUND);
+    assertEquals(
+      await deliverByKey(ctx, workflow, key),
+      notFoundByKey(workflow, key),
+    );
   }
 });
 
@@ -980,7 +1037,7 @@ Deno.test("deliverSignalForCaller: by key, a caller who may not signal the workf
         workflow.name,
         EARLY_KEY,
       ),
-      NOT_FOUND,
+      notFoundByKey(workflow.name, EARLY_KEY),
     );
   }
   assertEquals(f.waits.pendingRecords.size, 0);
@@ -1042,7 +1099,9 @@ Deno.test("deliverSignalForCaller: by key, an early payload the schema refuses i
   );
   assert(reader.status === "invalid_payload", `got ${reader.status}`);
   assertEquals(
-    reader.message.startsWith("Payload refused; nothing was stored"),
+    reader.message.startsWith(
+      `Payload refused for key "${EARLY_KEY}" of workflow "${workflow.name}"; nothing was stored`,
+    ),
     true,
   );
 

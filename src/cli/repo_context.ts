@@ -775,6 +775,15 @@ export async function serveUpstreamOf(
   });
 }
 
+/** the serve a team member's checkout writes through, from its marker alone */
+export async function serveUpstreamOfRepo(
+  repoDir: string,
+): Promise<ServeUpstreamTarget | undefined> {
+  return await serveUpstreamOf(
+    await new RepoMarkerRepository().read(RepoPath.create(repoDir)),
+  );
+}
+
 /**
  * every resolver of a serve-mode checkout's config passes this, extension
  * loaders included, so none reaches the datastore's extension

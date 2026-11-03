@@ -41,6 +41,7 @@ import { SignalWait } from "../../domain/workflows/signal_wait.ts";
 import {
   createWorkflowHistoryGetDeps,
   nestedWaitView,
+  receiptsOfRunView,
   workflowHistoryGet,
   type WorkflowHistoryGetDeps,
   type WorkflowHistoryGetEvent,
@@ -913,4 +914,92 @@ Deno.test("createWorkflowHistoryGetDeps: the run repository it builds carries th
     ).nestedLink?.runRepo.recordsAreForwarded;
   assertEquals(flagOf(true), true);
   assertEquals(flagOf(), false);
+});
+
+Deno.test("workflowHistoryGet: a checkout that cannot read wait outcomes shows a receipt another copy of the run holds, only on the wait it names (swamp-club#4338)", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  type Receipt = ReturnType<typeof acceptedOutcomeFor>["receipt"];
+  const read = async (
+    receiptsFor: (waitId: string, receipt: Receipt) => Promise<
+      Map<string, Receipt>
+    >,
+  ) => {
+    const run = runWaitingForSignal(opened);
+    const review = run.getJob("main")!.getStep("review")!;
+    const { receipt } = acceptedOutcomeFor(review.signalWait!, { ok: true }, {
+      at: opened,
+      runId: run.id,
+    });
+    const asked: string[] = [];
+    const events = await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({
+          findLatestRun: () => Promise.resolve(run),
+          signalWaits: { supported: false, reason: "team mode" },
+          acceptedReceipts: (runId) => {
+            asked.push(runId);
+            return receiptsFor(review.signalWait!.id, receipt);
+          },
+        }),
+        "my-workflow",
+      ),
+    );
+    const completed = events[1] as Extract<
+      WorkflowHistoryGetEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(asked, [run.id]);
+    return { receipt, review, step: completed.data.jobs[0].steps[0] };
+  };
+
+  const shown = await read((waitId, receipt) =>
+    Promise.resolve(new Map([[waitId, receipt]]))
+  );
+  assertEquals(shown.step.status, "waiting");
+  assertEquals(shown.step.wait?.receipt, shown.receipt);
+  assertEquals(shown.review.signalWait?.receipt, undefined);
+
+  const otherWait = await read((_waitId, receipt) =>
+    Promise.resolve(new Map([[crypto.randomUUID(), receipt]]))
+  );
+  assertEquals(otherWait.step.wait?.receipt, undefined);
+
+  const failed = await read(() => Promise.reject(new Error("serve is down")));
+  assertEquals(failed.step.wait?.receipt, undefined);
+});
+
+Deno.test("receiptsOfRunView: takes the receipts on steps still waiting in the view of that run, keyed by wait id (swamp-club#4338)", () => {
+  const runId = crypto.randomUUID();
+  const waiting = crypto.randomUUID();
+  const moved = crypto.randomUUID();
+  const receipt = {
+    id: crypto.randomUUID(),
+    waitId: waiting,
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    submittedBy: "user:member-1",
+  };
+  const view = {
+    id: runId,
+    status: "suspended",
+    jobs: [{
+      name: "main",
+      steps: [
+        { name: "review", status: "waiting", wait: { id: waiting, receipt } },
+        {
+          name: "done",
+          status: "succeeded",
+          wait: { id: moved, receipt: { ...receipt, waitId: moved } },
+        },
+        { name: "odd", status: "waiting", wait: { id: moved, receipt } },
+      ],
+    }],
+  };
+  assertEquals([...receiptsOfRunView(view, runId).entries()], [[
+    waiting,
+    receipt,
+  ]]);
+  assertEquals(receiptsOfRunView(view, crypto.randomUUID()).size, 0);
+  assertEquals(receiptsOfRunView(null, runId).size, 0);
+  assertEquals(receiptsOfRunView({ id: runId, jobs: "x" }, runId).size, 0);
 });

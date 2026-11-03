@@ -22,6 +22,7 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createWorkflowHistoryGetDeps,
+  receiptsOfRunView,
   workflowHistoryGet,
 } from "../../libswamp/workflows/history_get.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
@@ -33,6 +34,7 @@ import {
 } from "../context.ts";
 import {
   requireInitializedRepoReadOnly,
+  serveUpstreamOfRepo,
   signalWaitsOf,
 } from "../repo_context.ts";
 import {
@@ -45,6 +47,8 @@ import type { WorkflowHistoryGetResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+const SERVE_RECEIPTS_TIMEOUT_MS = 5_000;
 
 export async function workflowHistoryGetAction(
   options: AnyOptions,
@@ -104,6 +108,24 @@ export async function workflowHistoryGetAction(
       repoContext.workflowRunRepo.recordsAreForwarded,
     ),
     retentionWatermarks: repoContext.retentionWatermarks,
+    // asked only when this checkout cannot read wait outcomes itself: serve
+    // holds a team's waits
+    acceptedReceipts: async (runId: string) => {
+      const upstream = await serveUpstreamOfRepo(repoDir);
+      if (upstream === undefined) return new Map();
+      const server = upstream.serverUrl;
+      const response = await requestServerResponse<
+        WorkflowHistoryGetResponse
+      >(
+        {
+          server,
+          token: await resolveServerTokenFromOptions(server, options),
+          timeoutMs: SERVE_RECEIPTS_TIMEOUT_MS,
+        },
+        { type: "workflow.history.get", payload: { workflowIdOrName: runId } },
+      );
+      return receiptsOfRunView(response.data, runId);
+    },
   };
 
   const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);

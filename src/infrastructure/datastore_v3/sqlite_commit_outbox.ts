@@ -50,6 +50,7 @@ import {
   parseProcessIdentity,
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
+import { useWalJournal } from "./sqlite_wal.ts";
 
 export const COMMIT_OUTBOX_SCHEMA_NEWER_CODE =
   "datastore_v3_outbox_schema_newer";
@@ -892,10 +893,7 @@ function openOutboxDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    const mode = db.prepare("PRAGMA journal_mode").get() as
-      | { journal_mode: string }
-      | undefined;
-    if (mode?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
+    useWalJournal(db);
     db.exec("PRAGMA synchronous=FULL");
     migrate(db, path);
     return db;

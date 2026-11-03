@@ -97,9 +97,9 @@ export function implicitServeUrl(markerValue?: string): string | undefined {
 }
 
 /**
- * takes only explicit flag values, since env vars and the repo marker already
- * carry over; the server URL loses userinfo, query and fragment because serve
- * accepts a token as a query parameter
+ * takes only explicit flag values, since env vars carry over; the server URL
+ * loses userinfo, query and fragment because serve accepts a token as a query
+ * parameter
  */
 export function formatCommandTarget(
   flags: { server?: string; repoDir?: string },
@@ -113,6 +113,21 @@ export function formatCommandTarget(
     target += ` --repo-dir ${quoteShellWord(flags.repoDir)}`;
   }
   return target;
+}
+
+/**
+ * a command's own --server and --repo-dir, for the commands it prints: an
+ * address found through --repo-dir needs --repo-dir to be found again
+ */
+export function commandTargetOf(
+  options: { server?: unknown; repoDir?: unknown },
+): string {
+  return formatCommandTarget({
+    ...(typeof options.server === "string" ? { server: options.server } : {}),
+    ...(typeof options.repoDir === "string"
+      ? { repoDir: options.repoDir }
+      : {}),
+  });
 }
 
 function serverWithoutCredentials(server: string): string | undefined {
@@ -175,9 +190,12 @@ function formatServerError(
  */
 export class ServerResponseError extends UserError {
   readonly details: unknown;
+  /** the server's own message, without the code it is prefixed with here */
+  readonly serverMessage: string;
 
   constructor(error: { code: string; message: string; details?: unknown }) {
     super(formatServerError(error), error.code);
+    this.serverMessage = error.message;
     this.name = "UserError";
     this.details = error.details;
   }

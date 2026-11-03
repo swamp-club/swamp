@@ -6780,7 +6780,11 @@ to the same write. The checks the handlers share are one implementation
   definition or workflow holds, or one that records (a behavior's data, a
   workflow's runs) are still stored under, nor a name another live definition
   holds (of any type, for a behavior), except an auto-definition promoted to
-  its own name.
+  its own name. A name only an auto-definition holds is free to an authored
+  behavior, which shadows it as it does on a direct repo, for a caller who
+  could write that auto-definition: `write` on it, or `admin` when its type is
+  admin-only or restricted, so shadowing never routes an admin-only type's
+  runs to another principal's behavior.
   The id checks run again under the lock; two creates of one name share the
   name's config partition, so its head orders them.
 - **Behavior and workflow edits**: `write` on the result, `tag` for a retag
@@ -7342,7 +7346,10 @@ view differs or a rebuild did not finish (`alignCheckoutView`):
 
 It runs under the writer lease of the new view's datastore: a writer already
 holds it, and a read-only command takes it, waiting up to the lock timeout,
-since it must never read another view's projection. On a solo datastore that
+since it must never read another view's projection. A writer keeps the lease
+to its command's end, so the waiting reader also looks at the record between
+tries and reads without the lease once it names the new view: the writer
+holding the lease recorded it after its rebuild. On a solo datastore that
 lease is datastore-wide, so the rebuild waits for any checkout's writer. The
 rebuild only reads the commit log; it writes nothing but this checkout's
 files, catalog and read-model state. A checkout with no view recorded keeps

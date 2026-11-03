@@ -1774,7 +1774,9 @@ export async function handleWorkflowSignal(
       );
       return;
     case "not_found":
-      sendError(socket, requestId, "not_found", result.message);
+      sendError(socket, requestId, "not_found", result.message, {
+        refusal: "unknown",
+      });
       return;
     case "failed":
       sendError(socket, requestId, "workflow_signal_failed", result.message);

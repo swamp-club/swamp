@@ -38,7 +38,7 @@ import {
   v3OutboxPath,
   v3SharedCommitsDbPath,
 } from "./v3_datastore.ts";
-import { acquireV3WriterLock } from "./v3_writer_lock.ts";
+import { acquireV3WriterLock, V3WriterBusyError } from "./v3_writer_lock.ts";
 
 export const CHECKOUT_VIEW_FILE = "checkout_view.json";
 
@@ -195,6 +195,34 @@ function isCurrent(
 }
 
 /**
+ * the writer holding the lease aligns the view as its command starts and holds
+ * the lease to the command's end, so a reader stops waiting once the view is
+ * current
+ */
+async function leaseUnlessAligned(
+  repoDir: string,
+  datastorePath: string,
+  view: CheckoutView,
+): Promise<(() => Promise<void>) | "aligned"> {
+  const deadline = Date.now() + resolveLockTimeoutMs();
+  let retryMs = 250;
+  for (;;) {
+    try {
+      return await acquireV3WriterLock(datastorePath, { maxWaitMs: 0 });
+    } catch (error) {
+      if (!(error instanceof V3WriterBusyError) || Date.now() >= deadline) {
+        throw error;
+      }
+    }
+    if (isCurrent(await readRecordedView(repoDir), view)) return "aligned";
+    await new Promise((done) =>
+      setTimeout(done, Math.min(retryMs, Math.max(0, deadline - Date.now())))
+    );
+    retryMs = Math.min(retryMs * 2, 1_000);
+  }
+}
+
+/**
  * the rebuild runs under the writer lease, which every writer of the checkout
  * holds, so no writer materialises files meanwhile; a read-only command waits
  * too, since it must never read another view's projection
@@ -213,9 +241,8 @@ export async function alignCheckoutView(
   }
   const release = options.holdsWriterLock
     ? undefined
-    : await acquireV3WriterLock(handle.datastorePath, {
-      maxWaitMs: resolveLockTimeoutMs(),
-    });
+    : await leaseUnlessAligned(repoDir, handle.datastorePath, view);
+  if (release === "aligned") return;
   try {
     // Looked at again under the lease: another process may have rebuilt.
     const recorded = await readRecordedView(repoDir);

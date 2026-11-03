@@ -75,6 +75,7 @@ import type {
   WorkflowSignalPendingResponseData,
   WorkflowSignalResponseData,
 } from "./protocol.ts";
+import { SERVER_WAITS_COMMAND } from "./protocol.ts";
 import { continueSettledRun } from "./resume_launcher.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import {
@@ -235,12 +236,6 @@ function genericLastWait(last: SignalLastWait): string {
 }
 
 /**
- * the server does not know the address a client reached it by, so that is left
- * to fill in
- */
-const SERVER_WAITS_COMMAND = "swamp workflow waits --server <server>";
-
-/**
  * the same sentence whether or not a wait is open: it is decided before one is
  * looked for
  */
@@ -393,6 +388,36 @@ export async function deliverSignalForCaller(
   request: SignalDeliveryRequest,
   hooks: SignalDeliveryHooks = {},
 ): Promise<SignalDeliveryResult> {
+  const result = await deliverSignal(ctx, caller, request, hooks);
+  return result.status === "not_found"
+    ? { status: "not_found", message: notFoundMessage(request) }
+    : result;
+}
+
+/**
+ * names the address as the caller sent it, whether the wait is absent or not
+ * theirs to signal, so it tells them nothing they did not send
+ */
+function notFoundMessage(request: SignalDeliveryRequest): string {
+  const address = "waitId" in request
+    ? printable(request.waitId)
+    : `key "${printable(request.key)}" of workflow "${
+      printable(request.workflow)
+    }"`;
+  return `${SIGNAL_WAIT_NOT_FOUND_MESSAGE}: ${address}`;
+}
+
+function printable(text: string): string {
+  // deno-lint-ignore no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
+}
+
+async function deliverSignal(
+  ctx: ConnectionContext,
+  caller: AccessCaller,
+  request: SignalDeliveryRequest,
+  hooks: SignalDeliveryHooks,
+): Promise<SignalDeliveryResult> {
   const waitId = "waitId" in request
     ? normalizeWaitId(request.waitId)
     : undefined;
@@ -539,6 +564,9 @@ export async function deliverSignalForCaller(
           : {}),
         authorize,
         waitsCommand: SERVER_WAITS_COMMAND,
+        ...("waitId" in request && request.waitId !== waitId
+          ? { typedWaitId: request.waitId }
+          : {}),
         // A caller answered with the receipt alone is never refused for
         // want of an open wait: that refusal would say none is open.
         ...(request.holdEarly === false && !receiptOnly
@@ -567,6 +595,15 @@ export async function deliverSignalForCaller(
             result = NOT_FOUND;
           } else if (kind === "invalid_payload") {
             const details = event.error.details as { errors?: unknown };
+            // the sender's own address, named to a reader as the local
+            // command names it
+            const forReader = !readable
+              ? ""
+              : "waitId" in request
+              ? ` for wait ${printable(request.waitId)}`
+              : ` for key "${printable(request.key)}" of workflow "${
+                printable(request.workflow)
+              }"`;
             const errors = Array.isArray(details?.errors)
               ? details.errors.filter((e): e is string => typeof e === "string")
               : [];
@@ -577,8 +614,8 @@ export async function deliverSignalForCaller(
               message: (receiptOnly
                 ? "Payload refused:\n"
                 : (details as { early?: unknown })?.early === true
-                ? "Payload refused; nothing was stored:\n"
-                : "Payload refused; the wait stays open:\n") +
+                ? `Payload refused${forReader}; nothing was stored:\n`
+                : `Payload refused${forReader}; the wait stays open:\n`) +
                 errors.map((error) =>
                   `  - ${error}`
                 ).join("\n"),

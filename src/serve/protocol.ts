@@ -1546,6 +1546,12 @@ export interface WorkflowRejectResponse {
 }
 
 /**
+ * the waits command a signal refusal names: serve does not know the address a
+ * client reached it by, so a client puts its own in place of this one
+ */
+export const SERVER_WAITS_COMMAND = "swamp workflow waits --server <server>";
+
+/**
  * A delivered signal. The fields after `signal` are present only for a
  * caller who may also read the wait's workflow.
  */
