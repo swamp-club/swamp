@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertMatch, assertNotEquals } from "@std/assert";
 import { coerceToSuffix } from "./data_suffix.ts";
 
 Deno.test("coerceToSuffix: returns string for primitive values", () => {
@@ -43,16 +43,29 @@ Deno.test("coerceToSuffix: uses id property from object without key or name", ()
   assertEquals(coerceToSuffix({ id: "abc-123", other: "data" }), "abc-123");
 });
 
-Deno.test("coerceToSuffix: falls back to JSON.stringify for object without known properties", () => {
-  const val = { foo: "bar", baz: 1 };
-  assertEquals(coerceToSuffix(val), JSON.stringify(val));
+Deno.test("coerceToSuffix: hashes an object without key, name or id", () => {
+  assertMatch(coerceToSuffix({ foo: "bar", baz: 1 }), /^[0-9a-f]{16}$/);
 });
 
-Deno.test("coerceToSuffix: truncates long JSON.stringify output", () => {
-  const val = { data: "x".repeat(100) };
-  const result = coerceToSuffix(val);
-  assertEquals(result.length, 64);
-  assertEquals(result, JSON.stringify(val).slice(0, 64));
+Deno.test("coerceToSuffix: hash ignores object key order", () => {
+  assertEquals(
+    coerceToSuffix({ category: "Other", articles: [{ title: "t", n: 1 }] }),
+    coerceToSuffix({ articles: [{ n: 1, title: "t" }], category: "Other" }),
+  );
+});
+
+Deno.test("coerceToSuffix: objects sharing a long JSON prefix get distinct suffixes", () => {
+  const title = "x".repeat(80);
+  const policy = coerceToSuffix({ articles: [{ title }], category: "Policy" });
+  const other = coerceToSuffix({ articles: [{ title }], category: "Other" });
+  assertMatch(policy, /^[0-9a-f]{16}$/);
+  assertMatch(other, /^[0-9a-f]{16}$/);
+  assertNotEquals(policy, other);
+});
+
+Deno.test("coerceToSuffix: hashes an array", () => {
+  assertMatch(coerceToSuffix(["a", { b: 1 }]), /^[0-9a-f]{16}$/);
+  assertNotEquals(coerceToSuffix(["a"]), coerceToSuffix(["b"]));
 });
 
 Deno.test("coerceToSuffix: prefers key over name and id", () => {
@@ -118,7 +131,8 @@ Deno.test("coerceToSuffix: null bytes between dots do not reassemble into double
   assertEquals(coerceToSuffix(".\0./secret"), "----secret");
 });
 
-Deno.test("coerceToSuffix: sanitizes unsafe characters in JSON stringify fallback", () => {
-  const val = { path: "a/b" };
-  assertEquals(coerceToSuffix(val), '{"path":"a--b"}');
+Deno.test("coerceToSuffix: hash fallback holds no item content", () => {
+  const suffix = coerceToSuffix({ path: "../a/b" });
+  assertMatch(suffix, /^[0-9a-f]{16}$/);
+  assertEquals(suffix.includes("path"), false);
 });
