@@ -24940,3 +24940,14 @@ Deno.test("resume: a run whose workflow gained a fan-out job is refused without 
     );
   });
 });
+
+Deno.test("run: with --last-evaluated, a fan-out job in the cached workflow is refused before any step runs", async () => {
+  const workflow = createRetryWorkflow();
+  const { error, executedSteps } = await runReservedTagWorkflow(workflow, {
+    lastEvaluated: withFanOutJob(workflow, "deploy"),
+  });
+
+  assertEquals(executedSteps, []);
+  assertStringIncludes((error as Error).message, FAN_OUT_REFUSAL);
+  assertStringIncludes((error as Error).message, "fan-out job 'deploy'");
+});

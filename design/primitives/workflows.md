@@ -3124,7 +3124,9 @@ not available in this version. One check (`refuseFanOutJobs` in
 `src/domain/workflows/fan_out_job.ts`) covers every entry. It runs at run
 start, before any run record exists, so CLI, serve, schedule, webhook and
 nested runs all hit it. It also runs at the top of a resume, so a workflow
-edited to add `fanOut` after a run began cannot run the job as an ordinary job.
+edited to add `fanOut` after a run began cannot run the job as an ordinary job,
+and again on the cached workflow a `--last-evaluated` run swaps in, since those
+steps run rather than the file's.
 
 `fanOut` takes the short form `all` or an object parsed by
 `FanOutPolicySchema` (`src/domain/remote/fan_out.ts`): `offline`
@@ -3176,8 +3178,8 @@ fanOutPlan:
       steps: [{ stepName: apply, status: pending }]
 ```
 
-The key is `fanOutPlan`, not `fanOut`. A binary from before this change reads
-an unknown job-run key and drops it on its next save, so a run that an older
+A binary from before this change reads an unknown job-run key and drops it on
+its next save, so a run that an older
 swamp resumes, cancels or approves loses its plan. `fanOutPlanMissing(job,
 jobRun)` reports a started fan-out job run that holds no plan, so a resume can
 refuse it rather than re-plan. An older swamp reading a workflow file with

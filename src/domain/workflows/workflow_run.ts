@@ -235,7 +235,6 @@ export const JobRunSchema = z.object({
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   steps: z.array(StepRunSchema),
-  // not "fanOut": older binaries treat that job-run key as unknown and drop it
   fanOutPlan: FanOutPlanRecordSchema.optional(),
 });
 

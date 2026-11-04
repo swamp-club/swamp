@@ -3530,6 +3530,7 @@ export class WorkflowExecutionService {
             provenance: lastEvaluated.provenance,
           }, sensitiveValues);
           workflow = restored.workflow;
+          refuseFanOutJobs(workflow);
           // the cached steps run, not the source's, so their reserved tags are
           // refused before any of them runs too
           const cachedReservedTag = await reservedWorkflowRunTag(
