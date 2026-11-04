@@ -1021,6 +1021,12 @@ returned in `{ flush, synced }` and checked at every call site in `src/cli` and
 `src/serve` (21 at last count) to trigger `catalogStore.invalidate()`. It must
 never be skipped or moved.
 
+This is a v2 mechanism. On a v3 datastore an invalidate makes the read model
+replay every commit (see "Rebuilds"), so a v3 path never invalidates: the read
+model's catch-up writes the catalog rows. Every invalidate on serve's paths is
+pinned with the reason it cannot run on v3
+(`integration/serve_catalog_invalidate_rules_test.ts`, swamp-club#4387).
+
 A pull that resolves to `0` changed nothing in the local cache, so the catalog
 is still accurate. Skipping the invalidation then avoids a full catalog
 backfill, which on a large repo would otherwise run while the per-behavior lock
@@ -4726,6 +4732,18 @@ it) or the catalog is not marked populated. The second check catches a
 `_catalog_v3.db` that was deleted and created afresh: a new file always
 starts at generation 1, the same as the one the state may have recorded.
 
+The read model's own resets never trip the warning below: a recovery records
+the generation it clears, and a restore that moved the commits under the read
+model (`V3Datastore.replayEveryCommit`) marks a replay pending in the state
+before it awaits anything, since the restore does not run again once its copy
+state is written; the next lock section then resets and replays. Any other
+reset the check makes against a recorded generation was caused from outside
+the read model. It still replays, since an invalidate cannot be told from a
+rebuild that deleted rows, but it logs a warning and marks the catch-up span
+`swamp.datastore.v3.readmodel.outside_reset`. On v3 the only expected cause is
+a catalog schema upgrade, once; any other means a defect has just cost a full
+replay (swamp-club#4387).
+
 A reset keeps **removal candidates** (swamp-club#3617): every key the state
 shows present is copied into `load_touched_keys`, and so are the unsynced
 keys when their list was written in another boot or the current one cannot
@@ -6670,8 +6688,10 @@ and every intent must belong to it.
    `CommitWriter` (host, pid, instance), because serve is the process that
    appends.
 8. Catch serve's checkout up (one catch-up at a time, shared by the commits
-   that wait for it), invalidate the query catalog, and reload the policy
-   snapshot when the partition is a control-plane behavior's. A revoked grant
+   that wait for it), which writes the query catalog's rows, and reload the
+   policy snapshot when the partition is a control-plane behavior's. It does
+   not invalidate the catalog: that would make the next catch-up replay
+   every commit (swamp-club#4387). A revoked grant
    or token is therefore refused on the next request, whatever
    `--grant-reload` says. A failed catch-up is reported as a `warning` on a
    success, since the commit has landed.
@@ -8319,7 +8339,7 @@ so a revoked grant stops allowing reads on a follower within that bound.
 A follower's access policy follows its copy (swamp-club#4207). On a bucket
 the leader's commits land in the follower's own `commits.db` before its read
 model catches up, so `ServeCommitEffects` applies a commit's effects (the
-catalog rebuild, the policy reload) only after the read model holds it. A
+policy reload, the config check) only after the read model holds it. A
 policy reloaded earlier would miss the grants those commits carry. Three
 further rules keep a read from being filtered under a policy older than the
 commits it pages:
@@ -8590,13 +8610,16 @@ next.
 
 **Commit effects replace the pollers.** `ServeCommitEffects`
 (`src/serve/serve_commit_effects.ts`) watches every commit landing in a
-node's copy and classifies it by partition (`commitEffectOf`): a
-definition or runtime record rebuilds the catalog; a grant, group, token or
-worker reloads the access policy; the config or the extension lockfile runs
-the config check (`ConfigPoller.pollNow`). A copy replaced behind what was
-read refreshes everything. Before this, a follower loaded its policy once,
-at boot, so a grant revoked on the leader went on allowing access on a
-follower.
+node's copy and classifies it by partition (`commitEffectOf`): a grant,
+group, token or worker reloads the access policy; the config or the extension
+lockfile runs the config check (`ConfigPoller.pollNow`). A definition or
+runtime record needs nothing: the read model's catch-up, which runs before
+the pass, has already written its catalog rows, and a copy replaced behind
+what was read was rebuilt by its restore. Invalidating the catalog here made
+every follower refresh replay the whole history (swamp-club#4387). A copy
+replaced behind what was read reloads the policy and runs the config check.
+Before this, a follower loaded its policy once, at boot, so a grant revoked on
+the leader went on allowing access on a follower.
 
 **Serve-mode checkouts.** `workflow run` and `model method run` on a
 serve-mode checkout watch serve's feed while they run (`watchV3ServeFeeds`,

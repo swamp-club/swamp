@@ -71,6 +71,7 @@ import {
 import { DurableWriteBatch } from "../src/infrastructure/datastore_v3/atomic_stream_write.ts";
 import { assertV3CheckoutJoinable } from "../src/infrastructure/datastore_v3/v3_checkout_join.ts";
 import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
+import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import {
   type ReadModelCatalog,
   V3Catalog,
@@ -2446,5 +2447,98 @@ Deno.test("read model: an index another process left incomplete is still caught 
       await reader.close();
     }
     assertEquals(await Deno.readTextFile(latest), "2");
+  });
+});
+
+const OUTSIDE_RESET = "outside the read model";
+
+function outsideResetWarnings(
+  logs: readonly { level: string; text: string }[],
+): string[] {
+  return logs
+    .filter((log) =>
+      log.level === "warning" && log.text.includes(OUTSIDE_RESET)
+    )
+    .map((log) => log.text);
+}
+
+Deno.test("read model: a catalog invalidated outside it is still replayed in full, with a warning and a marked span (swamp-club#4387)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    const commits = await appendScenario(env);
+    const readModel = env.openReadModel();
+    try {
+      assertEquals((await readModel.catchUp(signal())).applied, commits);
+      const outside = new CatalogStore(catalogV3Path(env));
+      outside.invalidate();
+      outside.close();
+      let applied = -1;
+      const logs = await captureLogs(async () => {
+        await withCapturedSpans(async (spans) => {
+          applied = (await readModel.catchUp(signal())).applied;
+          assertEquals(
+            spans.filter((span) =>
+              span.attributes["swamp.datastore.v3.readmodel.outside_reset"] ===
+                1
+            ).length,
+            1,
+          );
+        });
+      });
+      assertEquals(applied, commits);
+      assertEquals(outsideResetWarnings(logs).length, 1);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test("read model: a first open, a recovery and a pending replay reset without the outside-reset warning (swamp-club#4387)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    const commits = await appendScenario(env);
+    const readModel = env.openReadModel();
+    try {
+      const logs = await captureLogs(async () => {
+        assertEquals((await readModel.catchUp(signal())).applied, commits);
+        await readModel.recover("", {
+          since: 0,
+          admits: () => true,
+          signal: signal(),
+        });
+        readModel.markReplayPending();
+        assertEquals((await readModel.catchUp(signal())).applied, commits);
+        assertEquals((await readModel.catchUp(signal())).applied, 0);
+      });
+      assertEquals(outsideResetWarnings(logs), []);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test("read model: a replay marked pending survives a process that stops before its catch-up (swamp-club#4387)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    const commits = await appendScenario(env);
+    const first = env.openReadModel();
+    try {
+      assertEquals((await first.catchUp(signal())).applied, commits);
+      first.markReplayPending();
+    } finally {
+      await first.close();
+    }
+    const next = env.openReadModel();
+    try {
+      const logs = await captureLogs(async () => {
+        assertEquals((await next.catchUp(signal())).applied, commits);
+      });
+      assertEquals(outsideResetWarnings(logs), []);
+    } finally {
+      await next.close();
+    }
+    assertEquals(await observe(env), clean);
   });
 });

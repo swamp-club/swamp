@@ -28,6 +28,10 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
+import { Commit } from "../src/domain/datastore_v3/commit.ts";
+import { dataVersionOp } from "../src/domain/datastore_v3/op.ts";
+import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
+import type { CommitStore } from "../src/domain/datastore_v3/commit_store.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import {
@@ -437,4 +441,63 @@ export async function save(
     token,
     await saveBody(server, version, expectedSeq, options),
   );
+}
+
+/** bypasses serve */
+export async function seedHistory(
+  server: Server,
+  count: number,
+): Promise<void> {
+  const type = server.modelType.normalized;
+  const partition = partitionOf({
+    kind: "model",
+    type: server.modelType,
+    id: server.model.id,
+  });
+  const fence = server.v3.commitStore.writerFence();
+  for (let seq = 1; seq <= count; seq++) {
+    await server.v3.commitStore.append(Commit.create({
+      seq,
+      partition,
+      namespace: server.v3.namespace,
+      txnId: crypto.randomUUID(),
+      writer: { host: "host-a", pid: 4242, instance: "cli-1" },
+      at: "2026-11-04T00:00:00.000Z",
+      ...(fence === undefined ? {} : { fence }),
+      ops: [
+        dataVersionOp({
+          key: RecordKey.create(
+            `data/${type}/${server.model.id}/seeded/${seq}/metadata.yaml`,
+          ),
+          metadata: dataMetadata("seeded", seq),
+        }),
+      ],
+    }));
+  }
+  await server.v3.catchUp();
+}
+
+export interface FeedReads {
+  commits: number;
+  fromStart: number;
+}
+
+export async function countFeedReads(
+  store: CommitStore,
+  fn: () => Promise<void>,
+): Promise<FeedReads> {
+  const reads: FeedReads = { commits: 0, fromStart: 0 };
+  const original = store.changesSince;
+  store.changesSince = async (cursor, limit) => {
+    if (cursor === 0) reads.fromStart++;
+    const page = await original.call(store, cursor, limit);
+    reads.commits += page.length;
+    return page;
+  };
+  try {
+    await fn();
+  } finally {
+    store.changesSince = original;
+  }
+  return reads;
 }

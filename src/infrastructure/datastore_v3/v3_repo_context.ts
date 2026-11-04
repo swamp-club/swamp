@@ -608,8 +608,7 @@ async function ensureV3CopyCurrentNow(
           // files only dropped commits wrote may stay: they go only when the
           // restored store has compacted history, and then possibly by a reader
           // without the writer lease
-          rebuilt.catalogStore.invalidate();
-          await rebuilt.catchUp();
+          await rebuilt.replayEveryCommit();
         }
       } finally {
         // Either way a replay may have put back the records of dropped

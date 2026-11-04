@@ -37,7 +37,6 @@ const PAGE = 1000;
 
 export interface ServeCommitEffectsDeps {
   readonly source: Pick<V3CommitFeedSource, "datastore" | "onMoved">;
-  catalogInvalidate(): void;
   reloadPolicy(): Promise<unknown>;
   checkConfig(): void;
   isFollower(): boolean;
@@ -212,8 +211,8 @@ export class ServeCommitEffects {
       }
       return;
     }
-    if (effects.size === 0) return;
-    this.#deps.catalogInvalidate();
+    // No catalog invalidate: the read model's catch-up before the poke wrote
+    // the rows, and a replaced copy's restore rebuilt them.
     if (effects.has("access")) {
       await this.#deps.reloadPolicy();
       this.#policyKnown = true;
