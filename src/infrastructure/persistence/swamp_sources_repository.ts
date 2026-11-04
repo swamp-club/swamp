@@ -460,6 +460,25 @@ export async function resolveMountedSourceDirs(
   return flattenSourceKindDirs(resolved);
 }
 
+/** each source's own folder, for what lives beside its extension kinds */
+export async function resolveMountedSourceRoots(
+  repoDir: string,
+): Promise<string[]> {
+  const config = await readSwampSources(repoDir);
+  if (!config) return [];
+  const { baseDir, legacyBaseDir } = await resolveSourceBaseDirs(repoDir);
+  const expanded = await expandSourcePaths(
+    config,
+    repoDir,
+    baseDir,
+    legacyBaseDir,
+  );
+  const { resolved } = await resolveSourceExtensionDirs(expanded, {
+    quiet: true,
+  });
+  return resolved.map((source) => source.sourcePath);
+}
+
 /**
  * a glob with no expansions returns [] so add is allowed; sourceList passes
  * legacyBaseDir so a legacy entry lists the kinds it loads with, sourceAdd does

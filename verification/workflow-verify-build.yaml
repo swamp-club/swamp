@@ -156,7 +156,22 @@ jobs:
         condition:
           type: succeeded
     steps:
+      # compile refuses to ship a swamp without the app platform it serves
+      - name: build-app-platform
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: build-app-platform-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: "deno run build-app-platform"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
+
       - name: build
+        dependsOn:
+          - step: build-app-platform
+            condition:
+              type: succeeded
         task:
           type: model_method
           modelType: "command/shell"

@@ -48,6 +48,7 @@ Route to the right guide based on what the user needs.
 | Repository — init, upgrade, datastores, sources                                             | [references/repo/guide.md](references/repo/guide.md)                           |
 | Extensions — create behaviors/vaults/datastores/reports/webhooks, smoke test, quality score | [references/extension/guide.md](references/extension/guide.md)                 |
 | Publishing — push extensions to registry, deprecate                                         | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
+| Swamp apps — React apps, charts, capabilities, approval                                     | [references/app/guide.md](references/app/guide.md)                             |
 | Issues — file bugs, features, security reports                                              | [references/issue/guide.md](references/issue/guide.md)                         |
 | Run tracking — active runs, stale detection, diagnostics                                    | [references/behavior/guide.md](references/behavior/guide.md)                   |
 | Architecture — which primitive to use, design trade-offs                                    | [references/architecture/guide.md](references/architecture/guide.md)           |

@@ -55,6 +55,8 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
   "doctor.workflows",
   "doctor.extensions",
   "serve.reload",
+  "app.approve",
+  "app.revoke",
   "audit.rotate-key",
   "run.attach",
   // a follower can lag a mint or rotate it just forwarded
@@ -107,6 +109,7 @@ export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "audit.unsubscribe",
   "commits.subscribe",
   "commits.head",
+  "data.subscribe",
   "audit.alerts",
   "audit.report",
   "summarise",
@@ -143,6 +146,9 @@ export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([
   "worker.lease.list",
   "datastore.status",
   "extension.list",
+  "app.list",
+  // writes only its launch record, which any instance may, as with sessions
+  "app.launch",
   "extension.search",
   "extension.info",
   "extension.outdated",
@@ -202,6 +208,7 @@ export interface FollowerGate {
 const FEED_REQUESTS: ReadonlySet<string> = new Set([
   "commits.head",
   "commits.subscribe",
+  "data.subscribe",
 ]);
 
 export function followerRefusal(

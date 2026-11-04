@@ -813,6 +813,8 @@ check rejects, since it refuses any tar entry containing `..` or starting with
 - `include`: relative paths to files copied into the archive next to behaviors
   but not bundled, such as helper scripts run as a `Deno.Command` subprocess
   rather than imported. Resolved via `paths.base`.
+- `apps`: folders holding an `app.yaml`, relative to the manifest. See
+  [apps](../surfaces/apps.md).
 - `additionalFiles`: relative paths to non-behavior files (README, config,
   etc.). Always resolved relative to the manifest's own directory.
 - `platforms`: supported platform identifiers (e.g.,

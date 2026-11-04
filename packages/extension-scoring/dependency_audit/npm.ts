@@ -91,6 +91,41 @@ export function parseNpmPackument(
   };
 }
 
+/** The manifest fields {@link factsFor} reads. */
+const AUDITED_MANIFEST_FIELDS = ["license", "deprecated", "maintainers"];
+
+function auditedFields(
+  manifest: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of AUDITED_MANIFEST_FIELDS) {
+    if (!Object.hasOwn(manifest, field)) continue;
+    const value = manifest[field];
+    // only how many maintainers there are is read
+    out[field] = field === "maintainers" && Array.isArray(value)
+      ? value.map(() => ({}))
+      : value;
+  }
+  return out;
+}
+
+/** Every plan and fact the audit draws from this cut-down packument equals the full one's. */
+export function compactNpmPackument(packument: NpmPackument): NpmPackument {
+  const manifests: Record<string, Record<string, unknown>> = {};
+  for (const [version, manifest] of Object.entries(packument.manifests)) {
+    manifests[version] = auditedFields(manifest);
+  }
+  return {
+    latestVersion: packument.latestVersion,
+    publishedVersions: [...packument.publishedVersions],
+    distTags: { ...packument.distTags },
+    manifests,
+    packageLevel: auditedFields(packument.packageLevel),
+    weeklyDownloads: packument.weeklyDownloads,
+    lastPublish: packument.lastPublish,
+  };
+}
+
 /** A manifest's license field as text. */
 export function licenseOf(raw: unknown): string | null {
   if (typeof raw === "string") return raw;

@@ -22,6 +22,7 @@ import {
   actionCommand,
   actionErrorCode,
   attachedReply,
+  FORWARDED_READS,
   isDelegatedAction,
   swampifyHandOffRequest,
   swampifyLaunchRequest,
@@ -263,4 +264,39 @@ Deno.test("swampifyHandOffRequest: needs a brief and an agent that can't read as
       JSON.stringify(payload),
     );
   }
+});
+
+Deno.test("actionCommand: app.approve runs the CLI with what the operator saw", () => {
+  assertEquals(
+    actionCommand("app.approve", { name: "@acme/cost", capabilityKey: "k" }),
+    {
+      kind: "command",
+      args: [
+        "app",
+        "approve",
+        "@acme/cost",
+        "--local",
+        "--capability-key=k",
+        "--json",
+      ],
+      detached: false,
+      runId: "",
+    },
+  );
+});
+
+Deno.test("actionCommand: an app name can never read as a flag", () => {
+  assertEquals(actionCommand("app.revoke", { name: "--help" }).kind, "invalid");
+});
+
+Deno.test("FORWARDED_READS: writes to app approvals never reach the child", () => {
+  assertEquals(FORWARDED_READS.has("app.list"), true);
+  assertEquals(FORWARDED_READS.has("app.approve"), false);
+  assertEquals(FORWARDED_READS.has("app.revoke"), false);
+});
+
+Deno.test("FORWARDED_READS: an app's data.subscribe reaches the child, run.attach does not", () => {
+  assertEquals(FORWARDED_READS.has("data.subscribe"), true);
+  // the child starts no runs, so run.attach there could only answer not_found
+  assertEquals(FORWARDED_READS.has("run.attach"), false);
 });

@@ -111,7 +111,6 @@ export function AppShellSkeleton(
                 letterSpacing: "0.1em",
                 textTransform: "uppercase",
                 color: "var(--sidebar-text)",
-                opacity: 0.5,
                 padding: "0 12px 8px",
               }}
             >

@@ -109,6 +109,18 @@ export interface ExtractedWebhook {
   description: string;
 }
 
+export interface ExtractedApp {
+  /** The app's folder under the archive's `apps/`. */
+  folder: string;
+  name: string;
+  title: string;
+  capabilities: string[];
+  run: string[];
+  methods: { behavior: string; type: string; methods: string[] }[];
+  /** The platform the app needs: a major, or a minimum minor like "1.4". */
+  platform: string;
+}
+
 export interface ExtractedExtension {
   fileName: string;
   extendsType: string;
@@ -133,6 +145,8 @@ export interface ExtensionContentMetadata {
   reports: ExtractedReport[];
   webhooks: ExtractedWebhook[];
   skills: ExtractedSkill[];
+  /** filled by push from each app's descriptor; absent when it ships no apps */
+  apps?: ExtractedApp[];
   /**
    * filled by push at prepare time so the registry can show what the author
    * acknowledged; absent when the extension declares nothing

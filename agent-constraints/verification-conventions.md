@@ -21,6 +21,12 @@ fires regardless of pass/fail.
 All steps use `command/shell` which correctly fails on non-zero exit code —
 lint, test, and compile failures are reported accurately.
 
+The `compile` job first runs `deno run build-app-platform` (it needs `npm` on
+the host's `PATH`): `scripts/compile.ts` refuses to build when
+`packages/app-platform/dist` is missing or older than the platform's source
+minor, since a swamp without it refuses every app. `--no-app-platform` builds
+one anyway.
+
 The `compile` step runs `deno task compile`, which builds the bundled binary —
 the build every release ships — and `binary-size` checks it against the host
 target's limit. It does not build the `--no-bundle` fallback; compare the two

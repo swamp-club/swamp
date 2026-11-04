@@ -206,5 +206,21 @@
   {
     "query": "swamp behavior get is giving me 'Error: ENOENT: no such file or directory'",
     "expected_guide": "troubleshooting"
+  },
+  {
+    "query": "Build a React dashboard app that charts my workflow runs inside swamp",
+    "expected_guide": "app"
+  },
+  {
+    "query": "How do I enable an app someone installed from an extension?",
+    "expected_guide": "app"
+  },
+  {
+    "query": "Make a swamp app where my team can move tickets between columns, saving through a behavior",
+    "expected_guide": "app"
+  },
+  {
+    "query": "My swamp app shows app_capability_denied when it calls data.query",
+    "expected_guide": "app"
   }
 ]

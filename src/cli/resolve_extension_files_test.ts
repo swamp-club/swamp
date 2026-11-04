@@ -794,6 +794,40 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves models from manife
   });
 });
 
+Deno.test("resolveExtensionFiles: apps resolve from extensions/apps beside a manifest in extensions/models", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "foo.ts"),
+      'export const name = "foo";',
+    );
+    await Deno.mkdir(join(dir, "extensions", "apps", "cost"), {
+      recursive: true,
+    });
+    const manifestPath = join(modelsDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/apps",
+        version: "2026.11.12.1",
+        models: ["foo.ts"],
+        apps: ["cost"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+      moduleGraphReader: graphReader,
+    });
+
+    assertEquals(result.appsDir, join(dir, "extensions", "apps"));
+  });
+});
+
 Deno.test("resolveExtensionFiles paths.base=manifest fails clearly when entry not in manifest dir", async () => {
   await withTempRepo(async (dir) => {
     const subdir = join(dir, "extensions", "models", "myext");

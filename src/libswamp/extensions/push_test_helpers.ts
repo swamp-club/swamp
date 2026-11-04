@@ -128,6 +128,7 @@ export function buildPrepareInput(
     allReportFiles: [],
     reportEntryPoints: [],
     webhooksDir: join(repoDir, "webhooks"),
+    appsDir: repoDir,
     allWebhookFiles: [],
     webhookEntryPoints: [],
     workflowFiles: [],

@@ -23,11 +23,13 @@ import {
   assertEquals,
   assertNotEquals,
   assertRejects,
+  assertStringIncludes,
   assertThrows,
 } from "@std/assert";
 import { dirname, fromFileUrl, join, relative, resolve } from "@std/path";
 import {
   type BuildChild,
+  appPlatformDistProblem,
   BuildRunner,
   BUNDLE_DIR,
   bundleArgs,
@@ -45,6 +47,7 @@ import {
   stampBuildInfo,
   VERSION_FILE,
 } from "./compile.ts";
+import { AUTHORING_ARCHIVE } from "../src/domain/apps/app_platform.ts";
 
 const repoRoot = join(dirname(fromFileUrl(import.meta.url)), "..");
 const buildInfoPath = join(repoRoot, VERSION_FILE);
@@ -527,6 +530,10 @@ const UNBUNDLED_ARGS = [
   "--include",
   "resources/deno",
   "--include",
+  "packages/app-sdk",
+  "--include",
+  "packages/client",
+  "--include",
   "packages/dashboard/dist",
   "--exclude",
   "agent-constraints",
@@ -571,7 +578,12 @@ Deno.test("compileArgs: the unbundled build compiles main.ts with the release fl
   assertEquals(
     compileArgs(
       { output: "dist/swamp", target: "x86_64-unknown-linux-gnu" },
-      { entry: "main.ts", dashboardDistExists: true, extraIncludes: [] },
+      {
+        entry: "main.ts",
+        dashboardDistExists: true,
+        appPlatformDistExists: false,
+        extraIncludes: [],
+      },
     ),
     UNBUNDLED_ARGS,
   );
@@ -580,11 +592,32 @@ Deno.test("compileArgs: the unbundled build compiles main.ts with the release fl
 Deno.test("compileArgs: leaves the dashboard out when it was not built, and omits --target", () => {
   const args = compileArgs(
     { output: "swamp" },
-    { entry: "main.ts", dashboardDistExists: false, extraIncludes: [] },
+    {
+      entry: "main.ts",
+      dashboardDistExists: false,
+      appPlatformDistExists: false,
+      extraIncludes: [],
+    },
   );
   assertEquals(args.includes("packages/dashboard/dist"), false);
   assertEquals(args.includes("--target"), false);
   assertEquals(args.slice(-3), ["--output", "swamp", "main.ts"]);
+});
+
+Deno.test("compileArgs: embeds the app platform unless it is left out", () => {
+  const args = (built: boolean) =>
+    compileArgs({ output: "swamp" }, {
+      entry: "main.ts",
+      dashboardDistExists: false,
+      appPlatformDistExists: built,
+      extraIncludes: [],
+    });
+  const included = args(true);
+  assertEquals(
+    included[included.indexOf("packages/app-platform/dist") - 1],
+    "--include",
+  );
+  assertEquals(args(false).includes("packages/app-platform/dist"), false);
 });
 
 Deno.test("compileArgs: the bundled build compiles the bundle entry and includes its maps", () => {
@@ -592,7 +625,12 @@ Deno.test("compileArgs: the bundled build compiles the bundle entry and includes
   const mapInclude = ["--include", join(BUNDLE_DIR, "main.js.map")];
   const args = compileArgs(
     { output: "swamp" },
-    { entry, dashboardDistExists: false, extraIncludes: mapInclude },
+    {
+      entry,
+      dashboardDistExists: false,
+      appPlatformDistExists: false,
+      extraIncludes: mapInclude,
+    },
   );
   assertEquals(args.at(-1), entry);
   const at = args.indexOf(join(BUNDLE_DIR, "main.js.map"));
@@ -611,7 +649,104 @@ Deno.test("parseCompileOptions: no flags builds the bundled binary named swamp",
     target: undefined,
     version: undefined,
     bundle: true,
+    appPlatform: true,
   });
+});
+
+Deno.test("parseCompileOptions: --no-app-platform opts out of the app platform", () => {
+  assertEquals(parseCompileOptions(["--no-app-platform"]).appPlatform, false);
+  assertThrows(
+    () => parseCompileOptions(["--no-app-platfrom"]),
+    Error,
+    "Unknown argument(s): --no-app-platfrom",
+  );
+});
+
+async function platformRoot(
+  source: number,
+  built: number | undefined,
+  builtEntries: readonly string[] = [AUTHORING_ARCHIVE],
+): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix: "swamp-compile-platform-" });
+  const dir = join(root, "packages", "app-platform");
+  await Deno.mkdir(join(dir, "1"), { recursive: true });
+  await Deno.writeTextFile(
+    join(dir, "1", "platform.json"),
+    JSON.stringify({ major: 1, minor: source }),
+  );
+  if (built !== undefined) {
+    await Deno.mkdir(join(dir, "dist", "1"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "dist", "1", "platform.json"),
+      JSON.stringify({ major: 1, minor: built }),
+    );
+    for (const entry of builtEntries) {
+      if (entry.endsWith("/")) {
+        await Deno.mkdir(join(dir, "dist", "1", entry), { recursive: true });
+      } else {
+        await Deno.writeTextFile(join(dir, "dist", "1", entry), "");
+      }
+    }
+  }
+  return root;
+}
+
+Deno.test("appPlatformDistProblem: accepts a build at the source's minor", async () => {
+  const root = await platformRoot(4, 4);
+  try {
+    assertEquals(await appPlatformDistProblem(root), undefined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("appPlatformDistProblem: names a missing build and the opt-out", async () => {
+  const root = await platformRoot(4, undefined);
+  try {
+    const problem = await appPlatformDistProblem(root);
+    assertStringIncludes(problem ?? "", "app platform 1 is not built");
+    assertStringIncludes(problem ?? "", "deno run build-app-platform");
+    assertStringIncludes(problem ?? "", "--no-app-platform");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("appPlatformDistProblem: refuses a build at a stale minor", async () => {
+  const root = await platformRoot(4, 3);
+  try {
+    assertStringIncludes(
+      (await appPlatformDistProblem(root)) ?? "",
+      "is 1.3 but the source is 1.4",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("appPlatformDistProblem: refuses a build without its authoring archive", async () => {
+  const root = await platformRoot(4, 4, []);
+  try {
+    const problem = await appPlatformDistProblem(root);
+    assertStringIncludes(problem ?? "", `has no ${AUTHORING_ARCHIVE}`);
+    assertStringIncludes(problem ?? "", "deno run build-app-platform");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("appPlatformDistProblem: refuses a build whose dev and types were not packed", async () => {
+  for (const raw of ["dev", "types"]) {
+    const root = await platformRoot(4, 4, [AUTHORING_ARCHIVE, `${raw}/`]);
+    try {
+      assertStringIncludes(
+        (await appPlatformDistProblem(root)) ?? "",
+        `still holds ${raw}/, so it was built but not packed`,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
 });
 
 Deno.test("parseCompileOptions: --no-bundle selects the unbundled build", () => {
@@ -628,6 +763,7 @@ Deno.test("parseCompileOptions: passes output, target and version through, long 
     target: "aarch64-apple-darwin",
     version: "20990101.000000.0-sha.abc1234",
     bundle: true,
+    appPlatform: true,
   };
   assertEquals(
     parseCompileOptions([

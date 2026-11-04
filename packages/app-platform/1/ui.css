@@ -1,0 +1,13 @@
+/* The UI kit's styles, served as /app-platform/1/ui.css: Tailwind's base, the
+   theme, the fonts and every utility the kit's components use. */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "../../app-sdk/theme.css";
+@import "@fontsource/plus-jakarta-sans/400.css";
+@import "@fontsource/plus-jakarta-sans/600.css";
+@import "@fontsource/plus-jakarta-sans/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@source "./ui";

@@ -1,0 +1,8 @@
+name: "{{name}}"
+title: {{titleYaml}}
+entry: dist/index.html
+bridge: 1
+platform: "{{platform}}"
+capabilities: [runs:read]
+run: []
+methods: []

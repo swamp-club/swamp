@@ -131,6 +131,7 @@ const ExtensionManifestSchemaV1 = z.object({
   reports: manifestList("reports", safePathString).optional(),
   webhooks: manifestList("webhooks", safePathString).optional(),
   skills: manifestList("skills", safePathString).optional(),
+  apps: manifestList("apps", safePathString).optional(),
   include: manifestList("include", safePathString).optional(),
   additionalFiles: manifestList("additionalFiles", safePathString).optional(),
   binaries: manifestList("binaries", safePathString).optional(),
@@ -155,10 +156,11 @@ const ExtensionManifestSchemaV1 = z.object({
     (data.datastores && data.datastores.length > 0) ||
     (data.reports && data.reports.length > 0) ||
     (data.webhooks && data.webhooks.length > 0) ||
-    (data.skills && data.skills.length > 0),
+    (data.skills && data.skills.length > 0) ||
+    (data.apps && data.apps.length > 0),
   {
     message:
-      "Extension must include at least one behavior, workflow, vault, datastore, report, webhook, or skill",
+      "Extension must include at least one behavior, workflow, vault, datastore, report, webhook, skill, or app",
   },
 );
 
@@ -187,6 +189,8 @@ export interface ExtensionManifest {
   reports: string[];
   webhooks: string[];
   skills: string[];
+  /** Folders holding an `app.yaml`, relative to the manifest. */
+  apps: string[];
   include: string[];
   additionalFiles: string[];
   binaries: string[];
@@ -275,6 +279,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     reports: result.data.reports ?? [],
     webhooks: result.data.webhooks ?? [],
     skills: result.data.skills ?? [],
+    apps: result.data.apps ?? [],
     include: result.data.include ?? [],
     additionalFiles: result.data.additionalFiles ?? [],
     binaries: result.data.binaries ?? [],

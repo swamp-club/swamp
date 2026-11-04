@@ -30,6 +30,7 @@ import {
   type LockedDependencyVersions,
   type Lookup,
   MalformedOsvResponseError,
+  MAX_AUDITED_DEPENDENCIES,
   type NpmLookup,
   npmNameValid,
   type OsvVulnerability,
@@ -228,8 +229,9 @@ export async function checkDependencyTrust(
   signal?: AbortSignal,
   lock?: LockedDependencyVersions,
   now: Date = new Date(),
+  limit: number = MAX_AUDITED_DEPENDENCIES,
 ): Promise<DependencyTrustResult> {
-  const { groups, overLimit } = groupForAudit(specifiers);
+  const { groups, overLimit } = groupForAudit(specifiers, limit);
   const audits: { spec: DependencySpecifier; audit: SpecifierAudit }[] = [];
 
   const CONCURRENCY = 5;
@@ -266,7 +268,7 @@ export async function checkDependencyTrust(
       }
     }
   }
-  for (const [j, audit] of overLimitAudits(overLimit).entries()) {
+  for (const [j, audit] of overLimitAudits(overLimit, limit).entries()) {
     audits.push({ spec: overLimit[j], audit });
   }
   return pushResult(audits);

@@ -49,6 +49,7 @@ export type DetailView =
   | { kind: "schedule"; workflowName: string }
   | { kind: "webhook"; route: string }
   | { kind: "swampifyOption"; optionId: string }
+  | { kind: "app"; appName: string; path: string }
   | null;
 
 export interface RouteState {
@@ -71,6 +72,7 @@ const VIEW_SEGMENTS: Readonly<Record<Exclude<View, "overview">, string>> = {
   activity: "activity",
   swampify: "swampify",
   "agent-sessions": "agent-sessions",
+  apps: "apps",
   data: "data",
   vaults: "vaults",
   extensions: "extensions",
@@ -241,6 +243,15 @@ export function parseRoute(pathname: string): RouteState {
     };
   }
 
+  // An app's name is one segment; what follows is the app's own path.
+  if (first === "apps" && name !== undefined) {
+    const rest = segments.slice(2).map(encodeSegment).join("/");
+    return {
+      view: "apps",
+      detail: { kind: "app", appName: name, path: `/${rest}` },
+    };
+  }
+
   if (firstView !== undefined) {
     return { view: firstView, detail: null };
   }
@@ -286,6 +297,10 @@ function detailPath(detail: NonNullable<DetailView>): string {
       return `${BASE}/webhooks/${encodeSegment(detail.route)}`;
     case "swampifyOption":
       return `${BASE}/swampify/options/${encodeSegment(detail.optionId)}`;
+    case "app": {
+      const base = `${BASE}/apps/${encodeSegment(detail.appName)}`;
+      return detail.path === "/" ? base : `${base}${detail.path}`;
+    }
   }
 }
 
@@ -312,6 +327,8 @@ export function viewForDetail(detail: NonNullable<DetailView>): View {
       return "webhooks";
     case "swampifyOption":
       return "swampify";
+    case "app":
+      return "apps";
   }
 }
 

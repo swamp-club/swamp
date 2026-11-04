@@ -229,6 +229,7 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
   config: { applies: true, reason: NO_REPO },
   dashboard: { applies: true, reason: APPLIES },
   data: { applies: true, reason: APPLIES },
+  app: { applies: true, reason: APPLIES },
   extension: {
     applies: true,
     reason:

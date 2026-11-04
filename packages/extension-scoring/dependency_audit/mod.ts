@@ -53,6 +53,7 @@ export {
   canonicalShippedSpecifierIssue,
 } from "./canonical.ts";
 export {
+  type AppNotAudited,
   DEFAULT_TRUST_THRESHOLDS,
   type DependencyAuditSummary,
   dependencyTrustBlockerCount,
@@ -91,6 +92,17 @@ export {
 } from "./evaluate.ts";
 export { MAX_LOCKFILE_BYTES, parseDenoLockfile } from "./lockfile.ts";
 export {
+  type AppDependencies,
+  appDependencySpecifiers,
+  type AppPackageFiles,
+  BUN_LOCKFILE,
+  OTHER_APP_LOCKFILES,
+  parseBunLockText,
+  PLATFORM_PACKAGES,
+  shippedLockKeys,
+} from "./app_dependencies.ts";
+export {
+  compactNpmPackument,
   deprecationOf,
   factsFor,
   type JsrPackageMeta,

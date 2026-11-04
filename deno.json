@@ -5,6 +5,7 @@
   "exports": "./main.ts",
   "workspace": [
     "packages/client",
+    "packages/app-sdk",
     "packages/testing",
     "packages/dashboard",
     "packages/extension-scoring"
@@ -14,7 +15,7 @@
     "test": "SWAMP_NO_TELEMETRY=1 deno test --node-modules-dir=manual --parallel --unstable-bundle --unstable-net --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys --allow-ffi",
     "test-deps": "deno install --frozen --node-modules-dir=auto",
     "test-shards": "deno run --allow-read --allow-write --allow-env --allow-run=deno scripts/test_shards.ts",
-    "check": "deno check",
+    "check": "deno check --v8-flags=--max-old-space-size=8192",
     "lint": "deno lint",
     "fmt": "deno fmt",
     "compile": "deno run -A scripts/compile.ts",
@@ -35,6 +36,8 @@
     "build-eval-tool": "sh tools/swamp-eval/build.sh",
     "eval-skill-triggers": "sh tools/swamp-eval/build.sh && ./.bin/swamp-eval run",
     "build-dashboard": "npm --prefix packages/dashboard run build",
+    "app-platform-surface": "deno run --allow-read --allow-write=packages/app-platform scripts/app_platform_surface.ts",
+    "build-app-platform": "npm --prefix packages/app-platform/1 ci && npm --prefix packages/app-platform/1 run build && deno run --allow-read --allow-write=packages/app-platform/dist scripts/pack_app_platform.ts 1",
     "litestream-pin": "deno run --allow-net=github.com,objects.githubusercontent.com,release-assets.githubusercontent.com --allow-read --allow-write --allow-run=unzip scripts/refresh_litestream_pin.ts"
   },
   "imports": {
@@ -95,6 +98,8 @@
     "exclude": ["scripts/"]
   },
   "exclude": [
+    "packages/app-sdk/templates/",
+    "packages/app-platform/",
     "design/",
     "contributing/",
     ".github/",

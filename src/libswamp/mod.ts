@@ -2277,3 +2277,35 @@ export {
   hostedWorkspaceFolders,
   readHostedRegistry,
 } from "./workspace/hosted_roster.ts";
+
+export {
+  appApprove,
+  type AppApproveData,
+  type AppApproveEvent,
+  type AppApproveInput,
+  type AppDeps,
+  appLaunch,
+  type AppLaunchData,
+  type AppLaunchEvent,
+  appList,
+  type AppListData,
+  type AppListEvent,
+  type AppMethod,
+  appRevoke,
+  type AppRevokeData,
+  type AppRevokeEvent,
+  type AppSummary,
+} from "./apps/apps.ts";
+export {
+  APP_TEMPLATES,
+  appInit,
+  type AppInitData,
+  type AppInitEvent,
+  type AppInitInput,
+  type AppTemplate,
+} from "./apps/init.ts";
+export {
+  APP_PLATFORM_DIR,
+  type AppPlatformFiles,
+  writeAppPlatform,
+} from "./apps/platform_files.ts";

@@ -108,6 +108,7 @@ const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
   "webhooks",
   "webhook-bundles",
   "skills",
+  "apps",
   "files",
   "drivers",
   "driver-bundles",

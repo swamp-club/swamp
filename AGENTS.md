@@ -95,7 +95,8 @@ tree or retrying.
 
 During development, use these commands for quick feedback:
 
-1. `deno check` - Type checking
+1. `deno run check` - Type checking (the whole project needs more than V8's
+   default heap; the task raises it)
 2. `deno lint` - Linting
 3. `deno fmt` - Formatting
 4. `deno run test` - Tests (or `deno run test src/path/to_test.ts` for a single
@@ -148,6 +149,9 @@ a pre-PR gate — the verification workflows cover all of them.
 - Every command _must_ support both `"log"` and `"json"` output modes
 - Start at `design/README.md` (the six primitives and the index) and
   `design/architecture.md` to understand the design
+
+- Swamp apps run sandboxed and reach serve only through the broker; see
+  `design/surfaces/apps.md` before changing what they can reach
 
 IMPORTANT: `src/libswamp/mod.ts` lists libswamp's public surface — it is not an
 import path. Import each name from the libswamp file that defines it (e.g.

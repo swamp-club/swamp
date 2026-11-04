@@ -34,6 +34,8 @@ function render(
     logoutStep?: LogoutStep;
     agentSessionsVisible?: boolean;
     swampifyVisible?: boolean;
+    appCount?: number;
+    canManageApps?: boolean;
   } = {},
 ): string {
   return renderToStaticMarkup(
@@ -44,6 +46,8 @@ function render(
       approvalCount={0}
       agentSessionsVisible={options.agentSessionsVisible}
       swampifyVisible={options.swampifyVisible}
+      appCount={options.appCount}
+      canManageApps={options.canManageApps}
       local={options.local}
       onLogout={() => {}}
       collapsed
@@ -116,4 +120,14 @@ Deno.test("Sidebar: Swampify comes right after Agent sessions", () => {
 Deno.test("Sidebar: Swampify uses the shared Swampify icon", () => {
   const html = render({ swampifyVisible: true });
   assertStringIncludes(html, NAV_ICONS.swampify);
+});
+
+Deno.test("Sidebar: apps open under /apps; only a manager sees Manage apps", () => {
+  const viewer = render({ appCount: 2 });
+  assert(viewer.includes('href="/apps"'));
+  assert(!viewer.includes("Manage apps"));
+  const manager = render({ canManageApps: true });
+  assert(manager.includes("Manage apps"));
+  assert(!manager.includes('href="/apps"'));
+  assert(!render().includes('href="/apps"'));
 });

@@ -109,6 +109,93 @@ export const SIGN_IN_REFUSED_FOR_PRINCIPAL_CODE =
 export const SIGN_IN_REFUSED_FOR_CREDENTIAL_CODE =
   "sign_in_refused_for_credential";
 
+export interface AppLaunchPayload {
+  name: string;
+}
+
+export interface AppApprovePayload {
+  name: string;
+  /** Refuses the approval if the app now asks for anything else. */
+  capabilityKey?: string;
+}
+
+export interface AppRevokePayload {
+  name: string;
+}
+
+/** A behavior an app may call, and the only methods of it the app may run. */
+export interface AppMethodEntry {
+  behavior: string;
+  type: string;
+  methods: readonly string[];
+}
+
+export interface AppListEntry {
+  name: string;
+  title: string;
+  state: "pending" | "enabled" | "changed";
+  origin: "extension" | "source" | "local";
+  built: boolean;
+  dev: boolean;
+  version?: string;
+  capabilities: readonly string[];
+  run: readonly string[];
+  methods: readonly AppMethodEntry[];
+  capabilityKey: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  platform: string;
+  platformProblem?: string;
+}
+
+export interface AppListData {
+  apps: readonly AppListEntry[];
+  problems: readonly { path: string; message: string }[];
+}
+
+export interface AppLaunchData {
+  name: string;
+  title: string;
+  /** Relative to the server, or a loopback URL for a dev server. */
+  url: string;
+  capabilities: readonly string[];
+  run: readonly string[];
+  methods: readonly AppMethodEntry[];
+}
+
+export interface AppApproveData {
+  name: string;
+  capabilities: readonly string[];
+  run: readonly string[];
+  methods: readonly AppMethodEntry[];
+  capabilityKey: string;
+  approvedBy: string;
+  approvedAt: string;
+}
+
+export interface AppRevokeData {
+  name: string;
+  revoked: boolean;
+}
+
+export interface AppListResponse {
+  data: AppListData;
+  /** Whether this viewer may approve and revoke apps. */
+  canManage: boolean;
+}
+
+export interface AppLaunchResponse {
+  data: AppLaunchData;
+}
+
+export interface AppApproveResponse {
+  data: AppApproveData;
+}
+
+export interface AppRevokeResponse {
+  data: AppRevokeData;
+}
+
 /**
  * reads whose replies grow without bound; the CLI sends these over
  * SERVE_REQUEST_PATH, every other request stays on the WebSocket
@@ -150,6 +237,8 @@ export interface ModelMethodRunPayload {
   runtimeTags?: Record<string, string>;
   typeArg?: string;
   definitionName?: string;
+  /** refuses the run unless the behavior it acts on is of this type */
+  expectedType?: string;
   skipAllReports?: boolean;
   skipReportNames?: string[];
   skipReportLabels?: string[];
@@ -344,6 +433,39 @@ export interface CommitsSubscribeFrame {
   done: false;
   /** sent once, to a subscriber that named leader-stepping-down */
   steppingDown?: true;
+}
+
+export type DataChangeKind = "saved" | "deleted" | "renamed";
+
+export interface DataChange {
+  /** The commit's position; subscribe again from it to resume after it. */
+  cursor: number;
+  /** When the write was committed, as serve's clock saw it. */
+  at: string;
+  behavior: string;
+  type: string;
+  name: string;
+  /** The version saved or removed; absent when a whole name went. */
+  version?: number;
+  change: DataChangeKind;
+  to?: string;
+}
+
+export interface DataSubscribePayload {
+  /** Resume after this cursor; from now when absent. */
+  cursor?: number;
+  /** Behavior names to hear about; any the caller may read when absent. */
+  behaviors?: string[];
+  /** Behavior types to hear about; any when absent. */
+  types?: string[];
+}
+
+export interface DataSubscribeFrame {
+  changes: DataChange[];
+  /** The last position read; subscribe again from it after a disconnect. */
+  cursor: number;
+  head: number;
+  done: false;
 }
 
 export interface CommitsHeadResponse {
@@ -1114,6 +1236,7 @@ export type ServerRequest =
   | { type: "audit.unsubscribe"; id: string }
   | { type: "commits.subscribe"; id: string; payload: CommitsSubscribePayload }
   | { type: "commits.head"; id: string }
+  | { type: "data.subscribe"; id: string; payload: DataSubscribePayload }
   | { type: "audit.export"; id: string; payload: AuditExportPayload }
   | { type: "audit.rotate-key"; id: string }
   | { type: "audit.alerts"; id: string }
@@ -1157,6 +1280,10 @@ export type ServerRequest =
   | { type: "datastore.release"; id: string }
   | { type: "vault.migrate"; id: string; payload: VaultMigratePayload }
   | { type: "extension.list"; id: string; payload?: ExtensionListPayload }
+  | { type: "app.list"; id: string }
+  | { type: "app.launch"; id: string; payload: AppLaunchPayload }
+  | { type: "app.approve"; id: string; payload: AppApprovePayload }
+  | { type: "app.revoke"; id: string; payload: AppRevokePayload }
   | { type: "extension.search"; id: string; payload?: ExtensionSearchPayload }
   | { type: "extension.info"; id: string; payload: ExtensionInfoPayload }
   | { type: "extension.install"; id: string; payload?: ExtensionInstallPayload }
@@ -2454,6 +2581,7 @@ export type ServerMessage =
   | { type: "audit.subscribe"; id: string; payload: AuditSubscribeResponse }
   | { type: "commits.subscribe"; id: string; payload: CommitsSubscribeFrame }
   | { type: "commits.head"; id: string; payload: CommitsHeadResponse }
+  | { type: "data.subscribe"; id: string; payload: DataSubscribeFrame }
   | { type: "audit.unsubscribe"; id: string }
   | { type: "audit.event"; id: string; payload: AuditEventPayload }
   | { type: "audit.export"; id: string; payload: AuditExportResponse }
@@ -2503,6 +2631,10 @@ export type ServerMessage =
   }
   | { type: "vault.migrate"; id: string; payload: VaultMigrateResponse }
   | { type: "extension.list"; id: string; payload: ExtensionListResponse }
+  | { type: "app.list"; id: string; payload: AppListResponse }
+  | { type: "app.launch"; id: string; payload: AppLaunchResponse }
+  | { type: "app.approve"; id: string; payload: AppApproveResponse }
+  | { type: "app.revoke"; id: string; payload: AppRevokeResponse }
   | { type: "extension.search"; id: string; payload: ExtensionSearchResponse }
   | { type: "extension.info"; id: string; payload: ExtensionInfoResponse }
   | { type: "extension.install"; id: string; payload: ExtensionInstallResponse }

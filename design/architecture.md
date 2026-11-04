@@ -151,8 +151,10 @@ no new ones appear → [contributing/libswamp.md](../contributing/libswamp.md).
 
 Two things new engineers tend to learn the hard way:
 
-- Serve instances never talk to each other. HA works only through shared
-  control-plane keys, with no gossip and no leader.
+- On a v2 datastore, serve instances never talk to each other: HA works only
+  through shared control-plane keys, with no gossip and no leader. On a v3
+  datastore in team mode, one leader writes, and the others forward writes to
+  it and follow its commit feed ([datastores](enablers/datastores.md)).
 - Cron scheduling runs inside serve. The launchd/systemd units only keep
   processes alive.
 

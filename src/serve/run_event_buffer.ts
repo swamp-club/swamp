@@ -52,11 +52,14 @@ export interface RunEventBufferOptions {
    * done, never before an error that replaces it
    */
   readonly holdOutcome?: boolean;
+  /** stamps each event's `at`; a test fixes it */
+  readonly now?: () => Date;
 }
 
 export class RunEventBuffer {
   readonly #capacity: number;
   readonly #holdOutcome: boolean;
+  readonly #now: () => Date;
   #heldOutcome: SerializedEvent[] | undefined;
   #events: SequencedEvent[] = [];
   #firstIndex = 0;
@@ -74,6 +77,7 @@ export class RunEventBuffer {
     if (options.firstSeq !== undefined && options.firstSeq > 1) {
       this.#nextSeq = options.firstSeq;
     }
+    this.#now = options.now ?? (() => new Date());
   }
 
   get finished(): boolean {
@@ -102,12 +106,16 @@ export class RunEventBuffer {
     return this.#events[this.#firstIndex].seq;
   }
 
-  push(event: SerializedEvent): number {
+  push(pushed: SerializedEvent): number {
     // the continued run streams from the next process; nothing more goes here
     if (this.#parked && this.#terminal === null) return this.highSeq;
     if (this.#terminal !== null) {
       throw new Error("Cannot push to a finished RunEventBuffer");
     }
+    // stamped once, when emitted, so a replay to a late attach keeps the time
+    const event = pushed.at === undefined
+      ? { ...pushed, at: this.#now().toISOString() }
+      : pushed;
     if (
       this.#holdOutcome &&
       (this.#heldOutcome !== undefined || OUTCOME_EVENT_KINDS.has(event.kind))

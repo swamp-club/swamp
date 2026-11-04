@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@swamp-club/app-sdk": [
+        "./.swamp-platform/app-sdk/mod.ts"
+      ],
+      "@swamp-club/app-sdk/react": [
+        "./.swamp-platform/app-sdk/react.tsx"
+      ],
+      "@swamp-club/ui": [
+        "./.swamp-platform/ui/index.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}

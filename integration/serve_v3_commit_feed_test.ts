@@ -98,6 +98,18 @@ async function subscribe(
   cursor: number,
   features?: string[],
 ): Promise<Subscriber> {
+  return await open(wsUrl, token, {
+    type: "commits.subscribe",
+    id: "feed",
+    payload: features === undefined ? { cursor } : { cursor, features },
+  });
+}
+
+async function open(
+  wsUrl: string,
+  token: string,
+  request: Record<string, unknown>,
+): Promise<Subscriber> {
   const socket = new WebSocket(wsUrl.replace("http", "ws"), {
     headers: { authorization: `Bearer ${token}` },
   } as unknown as string[]);
@@ -105,12 +117,16 @@ async function subscribe(
   socket.onmessage = (event) =>
     subscriber.frames.push(JSON.parse(String(event.data)));
   await new Promise((resolve) => (socket.onopen = resolve));
-  socket.send(JSON.stringify({
-    type: "commits.subscribe",
-    id: "feed",
-    payload: features === undefined ? { cursor } : { cursor, features },
-  }));
+  socket.send(JSON.stringify(request));
   return subscriber;
+}
+
+function subscribeData(
+  wsUrl: string,
+  token: string,
+  payload: Record<string, unknown> = {},
+): Promise<Subscriber> {
+  return open(wsUrl, token, { type: "data.subscribe", id: "data", payload });
 }
 
 async function land(server: Server): Promise<void> {
@@ -525,6 +541,128 @@ Deno.test({
         } finally {
           current.socket.close();
           older.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "data feed: a save reaches a subscriber as the behavior, item and version; a caller who may not read it hears nothing",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withFeedSocket(server, async (wsUrl) => {
+        const alice = await subscribeData(wsUrl, "alice-token");
+        const bob = await subscribeData(wsUrl, "bob-token");
+        try {
+          await waitFor(
+            () => alice.frames.length > 0 && bob.frames.length > 0,
+            "the first frames",
+          );
+          await land(server);
+          const head = server.v3.commitStore.highWaterMark().cursor;
+          await waitFor(() => changesOf(alice).length > 0, "alice's change");
+          const [change] = changesOf(alice) as Record<string, unknown>[];
+          assertEquals(
+            [change!.behavior, change!.type, change!.name, change!.change],
+            ["web", server.modelType.normalized, "vpc", "saved"],
+          );
+          assertEquals(change!.cursor, head);
+          await waitFor(() => lastCursor(bob) === head, "bob's cursor moved");
+          assertEquals(changesOf(bob), []);
+        } finally {
+          alice.socket.close();
+          bob.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "data feed: a subscriber resumes from its cursor, and a filter keeps only the behaviors it names",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withFeedSocket(server, async (wsUrl) => {
+        const start = server.v3.commitStore.highWaterMark().cursor;
+        await land(server);
+        const resumed = await subscribeData(wsUrl, "alice-token", {
+          cursor: start,
+        });
+        const other = await subscribeData(wsUrl, "alice-token", {
+          cursor: start,
+          behaviors: ["board"],
+        });
+        try {
+          await waitFor(() => changesOf(resumed).length > 0, "the missed save");
+          const head = server.v3.commitStore.highWaterMark().cursor;
+          await waitFor(() => lastCursor(other) === head, "other caught up");
+          assertEquals(changesOf(other), []);
+        } finally {
+          resumed.socket.close();
+          other.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "data feed: a follower answers from its own copy, and ends the stream once that copy is stale",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      let stale = false;
+      (server.ctx as ConnectionContext).followerGate = {
+        role: "follower",
+        leader: () => undefined,
+        isStale: () => stale,
+      };
+      await withFeedSocket(server, async (wsUrl) => {
+        const sub = await subscribeData(wsUrl, "alice-token");
+        try {
+          await waitFor(() => sub.frames.length > 0, "the first frame");
+          assertEquals(sub.frames[0]!.type, "data.subscribe");
+          stale = true;
+          await waitFor(
+            () => sub.frames.some((frame) => frame.type === "error"),
+            "the refusal",
+          );
+          assertEquals(
+            sub.frames.find((frame) => frame.type === "error")?.error?.code,
+            "serve_not_leader",
+          );
+        } finally {
+          sub.socket.close();
+        }
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "data feed: a serve without a commit log says so, so the caller polls instead",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withFeedSocket(server, async (wsUrl) => {
+        (server.ctx as ConnectionContext).commitFeed = undefined;
+        const sub = await subscribeData(wsUrl, "alice-token");
+        try {
+          await waitFor(() => sub.frames.length > 0, "the answer");
+          assertEquals(sub.frames[0]!.error?.code, "data_feed_unavailable");
+        } finally {
+          sub.socket.close();
         }
       });
     });

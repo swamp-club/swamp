@@ -28,6 +28,19 @@ export interface SkillInfo {
 
 const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp/SKILL.md", name: "swamp" },
+  { relativePath: "swamp/references/app/guide.md", name: "swamp" },
+  {
+    relativePath: "swamp/references/app/references/patterns.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/app/references/sdk.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/app/references/troubleshooting.md",
+    name: "swamp",
+  },
   { relativePath: "swamp/references/data/guide.md", name: "swamp" },
   { relativePath: "swamp/references/data/reference.md", name: "swamp" },
   {

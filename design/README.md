@@ -109,6 +109,7 @@ Write in plain English:
 | [account-notices](./surfaces/account-notices.md) | Trial ending / ended notices from Swamp Club      |
 | [start](./surfaces/start.md)                     | Get started: workspaces, tasks, launching agents  |
 | [local-dashboard](./surfaces/local-dashboard.md) | The dashboard on local repos, no serve running    |
+| [apps](./surfaces/apps.md)                       | Sandboxed React apps inside the dashboard         |
 | [workspace](./surfaces/workspace.md)             | The workspace registry and `swamp workspace`      |
 | [serve-workspaces](./surfaces/serve-workspaces.md) | Partly built: one host, a serve per workspace   |
 

@@ -28,6 +28,7 @@ import { NavIcon } from "./nav_icons.tsx";
 import { ThemeToggle } from "./ThemeToggle.tsx";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher.tsx";
 import { operationsOff, showsLogout } from "./sidebar_state.ts";
+import type { AuthMode } from "../client/connection.ts";
 import {
   logoutConfirmed,
   type LogoutEvent,
@@ -35,6 +36,7 @@ import {
   nextLogoutStep,
 } from "./logout_confirm.ts";
 import { PAGE_WORKSPACE } from "../client/workspace_path.ts";
+import { APPS_BASE } from "../apps/apps_routes.ts";
 
 export type { View };
 
@@ -228,11 +230,17 @@ interface SidebarProps {
   swampifyVisible?: boolean;
   /** False once serve said it runs without an audit log. */
   auditEnabled?: boolean;
+  /** How many apps the viewer can open, under `/apps`. */
+  appCount?: number;
+  canManageApps?: boolean;
+  /** Apps waiting for approval; only a manager is told. */
+  pendingAppCount?: number;
   /**
    * True on the local dashboard: no serve behind it, so schedules and
    * webhooks are off and there is no login to leave.
    */
   local?: boolean;
+  authMode?: AuthMode | null;
   onLogout: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -248,6 +256,9 @@ interface SidebarProps {
 
 export function Sidebar({
   activeView,
+  appCount = 0,
+  canManageApps = false,
+  pendingAppCount = 0,
   onNavigate,
   health,
   approvalCount,
@@ -255,6 +266,7 @@ export function Sidebar({
   swampifyVisible = false,
   auditEnabled = true,
   local = false,
+  authMode = null,
   onLogout,
   collapsed,
   onToggleCollapsed,
@@ -504,6 +516,40 @@ export function Sidebar({
         )}
       </div>
 
+      {(appCount > 0 || canManageApps) && (
+        <div style={{ padding: "0 8px", marginBottom: 24 }}>
+          <SectionLabel text="Apps" />
+          {appCount > 0 && (
+            <a
+              href={APPS_BASE}
+              className="nav-item"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "8px 12px",
+                borderRadius: 6,
+                color: "var(--sidebar-text)",
+                textDecoration: "none",
+                fontSize: "0.85rem",
+              }}
+            >
+              <span className="nav-label">Open apps</span>
+            </a>
+          )}
+          {canManageApps && (
+            <NavItem
+              label="Manage apps"
+              view="apps"
+              active={activeView === "apps"}
+              onClick={onNavigate}
+              badge={pendingAppCount > 0 ? pendingAppCount : undefined}
+              badgeLabel="pending"
+            />
+          )}
+        </div>
+      )}
+
       <div style={{ padding: "0 8px", marginBottom: 24 }}>
         <SectionLabel text="System" />
         <NavItem
@@ -591,7 +637,7 @@ export function Sidebar({
           </>
         )}
         {/* The local dashboard has no login to leave. */}
-        {showsLogout(local) && (
+        {showsLogout(local, authMode) && (
           <button
             ref={logoutButtonRef}
             type="button"
@@ -640,7 +686,7 @@ export function Sidebar({
             <span className="sidebar-logout-text">Logout</span>
           </button>
         )}
-        {showsLogout(local) && logoutStep === "confirming" && (
+        {showsLogout(local, authMode) && logoutStep === "confirming" && (
           <div
             ref={confirmRef}
             className="sidebar-logout-confirm"
@@ -701,7 +747,6 @@ function SectionLabel({ text }: { text: string }) {
         letterSpacing: "0.1em",
         textTransform: "uppercase",
         color: "var(--sidebar-text)",
-        opacity: 0.5,
         padding: "0 12px 8px",
       }}
     >

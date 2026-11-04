@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   consumeStream,
+  endsRequest,
   result,
   SwampClientError,
   withDefaults,
@@ -236,4 +237,32 @@ Deno.test("result - throws SwampClientError suspended when the run stops at a ga
   );
   assertEquals(err.code, "suspended");
   assertEquals(err.details, { kind: "suspended", stepId: "approve" });
+});
+
+Deno.test("endsRequest: a reply, done or error ends it; events and run.attached do not", () => {
+  assertEquals(endsRequest({ type: "error" }), true);
+  assertEquals(endsRequest({ type: "done" }), true);
+  assertEquals(
+    endsRequest({ type: "data.query", payload: { data: {} } }),
+    true,
+  );
+  assertEquals(endsRequest({ type: "event", payload: undefined }), false);
+  assertEquals(
+    endsRequest({ type: "run.attached", payload: { runId: "r" } }),
+    false,
+  );
+  assertEquals(
+    endsRequest({ type: "run.elsewhere", payload: { runId: "r" } }),
+    true,
+  );
+});
+
+Deno.test("endsRequest: a subscription's page keeps it open; only an error ends it", () => {
+  const page = { changes: [], cursor: 4, head: 4, done: false };
+  assertEquals(endsRequest({ type: "data.subscribe", payload: page }), false);
+  assertEquals(
+    endsRequest({ type: "commits.subscribe", payload: page }),
+    false,
+  );
+  assertEquals(endsRequest({ type: "error" }), true);
 });

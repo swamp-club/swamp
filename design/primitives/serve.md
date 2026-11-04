@@ -14,11 +14,13 @@ query, vault read) reaches the libswamp use case the CLI would call in-process.
 (`src/serve/handlers/workflow_handlers.ts`) or `modelMethodRun`
 (`src/serve/handlers/model_handlers.ts`).
 
-Serve is not a scheduler daemon (cron is one trigger of several), a message
-broker (no queue between client and executor) or a cluster (instances never
-connect to each other). When more than one instance runs, they coordinate only
-through small records in the
-datastore's control-plane store (`src/domain/datastore/control_plane_store.ts`).
+Serve is not a scheduler daemon (cron is one trigger of several) or a message
+broker (no queue between client and executor). On a v2 datastore it is not a
+cluster either: instances never connect to each other, and coordinate only
+through small records in the datastore's control-plane store
+(`src/domain/datastore/control_plane_store.ts`). On a v3 datastore in team mode,
+one leader writes and the other instances forward writes to it and follow its
+commit feed ([datastores](../enablers/datastores.md), team mode).
 
 [remote-execution](../enablers/remote-execution.md) covers workers, leases,
 runners and the data plane; [run-tracker](../enablers/run-tracker.md) covers the
@@ -244,6 +246,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP POST | `/auth/exchange` | none (IP burst limit; refused codes counted per address) | A host's workspace given `--root-address`, in mode `token` or `oauth`: trades a root's sign-in code for a server token of its own (`src/serve/auth_exchange_handler.ts`); any other serve answers 404 `exchange_not_offered` |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri?, exchange? }` so clients pick a login flow; `exchange: true` when `/auth/exchange` is offered |
 | HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes (a team follower's included: its copy and commit effects caught up with the leader, with no timeout, see `design/enablers/datastores.md`) and again (`shutting_down`) once shutdown begins; a follower also answers 503 `follower_broken`, with a `reason`, after three local failures in a row to apply the leader's commits (a full disk, a read-model apply error) or once its copy's WAL passes 1 GiB, a team leader answers 503 `lead_lost` from the moment it finds its writer lease gone until it stops (a lost lease starts the leadership check at once, not on the next tick), while failures the leader or the network cause, dropped sockets, staleness and restores never count, since the load balancer drops a node whose `/ready` fails; `/` and `/health` answer 200 `{ status: "ok", version: "1" }`, or `{ status: "draining", version: "1" }` once shutdown begins (still 200, so a liveness probe never ends a drain), in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
+| HTTP GET | `/apps/<launch-id>/*` | the launch id; no credential is read | An enabled app's build, sandboxed by its response headers. See [apps](../surfaces/apps.md) |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 `/auth/dashboard/session` does not spend the IP burst, so traffic on other
@@ -532,6 +535,20 @@ snapshot in the background, so the dashboard's first requests find the cache
 warm (swamp-club#3443; see
 [workflows](workflows.md#run-index-and-run-search)). `failed` includes interrupted runs and `running` pending ones; a
 status in no bucket counts in `runs` only.
+
+### Data changes
+
+`data.subscribe` pushes the data changes a caller may read: each as the
+behavior's name and type, the item's name and version, and whether it was
+saved, deleted or renamed, never its content (`src/serve/data_change_feed.ts`).
+It is a view of the v3 commit feed, run by the same loop as `commits.subscribe`
+(`followCommitFeed`), so it shares its cursor, heartbeat, lag, compaction and
+stale-follower endings. Every change is checked as `data.query` checks its
+item's behavior, and control-plane data never shows. Any instance answers from
+its own copy of the log, so a change made through any node reaches a
+subscriber on every node, and a subscriber that loses its connection resumes
+from its cursor on whichever node it reaches next. A serve without a v3 log
+answers `data_feed_unavailable`, and the caller polls.
 
 ## Identity and access
 

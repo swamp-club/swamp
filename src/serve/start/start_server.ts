@@ -65,6 +65,7 @@ import {
 import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
 import { validateWebSocketOrigin } from "../origin.ts";
 import { serveDashboardRoute } from "../dashboard_assets.ts";
+import { serveAppPlatformRoute } from "../app_platform_assets.ts";
 import type { WorkspaceHub } from "../local/workspace_hub.ts";
 import { TrustedHosts } from "../local/trusted_hosts.ts";
 import { ListenHost, urlHost } from "../local/listen_host.ts";
@@ -1273,6 +1274,8 @@ export function startStartServer(
       }
       const hubAnswer = await options.hub?.handle(req, trackDashboardSocket);
       if (hubAnswer) return hubAnswer;
+      const platform = await serveAppPlatformRoute(req);
+      if (platform) return platform;
       const asset = await serveDashboardRoute(distDir, req);
       if (asset) return asset;
       return new Response("Not found", { status: 404 });

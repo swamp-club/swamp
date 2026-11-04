@@ -17,6 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ControlPlaneAppApprovalRepository } from "../../infrastructure/persistence/control_plane_app_store.ts";
+import { EphemeralAppLaunchKey } from "../../serve/app_launch_key.ts";
+import { readHeldPlatforms } from "../../serve/app_platform_assets.ts";
+import { FilesystemAppCatalog } from "../../infrastructure/persistence/filesystem_app_catalog.ts";
+import { resolveMountedSourceRoots } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import { localAppControlPlane } from "../repo_context.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
@@ -94,6 +100,19 @@ async function runChild(options: AnyOptions): Promise<void> {
     instanceId,
     vaultsDir: repo.vaultsDir,
     defaultVault: repo.marker?.defaultVault,
+  };
+  ctx.appDeps = {
+    catalog: new FilesystemAppCatalog({
+      repoDir: repo.repoDir,
+      sourceDirs: () => resolveMountedSourceRoots(repo.repoDir),
+      followDevServers: true,
+    }),
+    approvals: new ControlPlaneAppApprovalRepository(
+      await localAppControlPlane(repo.repoDir),
+    ),
+    launchKey: new EphemeralAppLaunchKey(),
+    now: () => new Date(),
+    platforms: () => readHeldPlatforms(),
   };
   const healthCollector = new HealthCollector({
     instanceId,

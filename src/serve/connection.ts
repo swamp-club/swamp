@@ -22,6 +22,12 @@ import {
   createWorkflowRunId,
 } from "../domain/workflows/workflow_id.ts";
 import { findParkedRun, parkedRunHandled } from "./serve_handover.ts";
+import {
+  handleAppApprove,
+  handleAppLaunch,
+  handleAppList,
+  handleAppRevoke,
+} from "./handlers/app_handlers.ts";
 import { z } from "zod";
 import { principalToString } from "../domain/access/principal.ts";
 import {
@@ -283,6 +289,7 @@ import { isPeerSocket, PEER_REQUESTS } from "./peer_auth.ts";
 import {
   handleCommitsHead,
   handleCommitsSubscribe,
+  handleDataSubscribe,
 } from "./handlers/commit_feed_handlers.ts";
 import {
   existingForwarder,
@@ -342,6 +349,7 @@ const ModelMethodRunRequestSchema = z.object({
     runtimeTags: boundedRecord(z.string(), z.string()).optional(),
     typeArg: z.string().optional(),
     definitionName: z.string().optional(),
+    expectedType: z.string().min(1).optional(),
     skipAllReports: z.boolean().optional(),
     skipReportNames: z.array(z.string()).optional(),
     skipReportLabels: z.array(z.string()).optional(),
@@ -407,6 +415,32 @@ const AccessCanIRequestSchema = z.object({
 const AccessReloadRequestSchema = z.object({
   type: z.literal("access.reload"),
   id: z.string().min(1).max(256),
+});
+
+const AppListRequestSchema = z.object({
+  type: z.literal("app.list"),
+  id: z.string().min(1).max(256),
+});
+
+const AppLaunchRequestSchema = z.object({
+  type: z.literal("app.launch"),
+  id: z.string().min(1).max(256),
+  payload: z.object({ name: z.string().min(1).max(200) }),
+});
+
+const AppApproveRequestSchema = z.object({
+  type: z.literal("app.approve"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1).max(200),
+    capabilityKey: z.string().max(20_000).optional(),
+  }),
+});
+
+const AppRevokeRequestSchema = z.object({
+  type: z.literal("app.revoke"),
+  id: z.string().min(1).max(256),
+  payload: z.object({ name: z.string().min(1).max(200) }),
 });
 
 const ServeReloadRequestSchema = z.object({
@@ -635,6 +669,16 @@ const CommitsSubscribeRequestSchema = z.object({
   payload: z.object({
     cursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     features: z.array(z.string().max(64)).max(16).optional(),
+  }),
+});
+
+const DataSubscribeRequestSchema = z.object({
+  type: z.literal("data.subscribe"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    cursor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+    behaviors: z.array(z.string().min(1).max(256)).max(64).optional(),
+    types: z.array(z.string().min(1).max(256)).max(64).optional(),
   }),
 });
 
@@ -1689,6 +1733,10 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AccessCanIRequestSchema,
   AccessReloadRequestSchema,
   ServeReloadRequestSchema,
+  AppListRequestSchema,
+  AppLaunchRequestSchema,
+  AppApproveRequestSchema,
+  AppRevokeRequestSchema,
   DataGetRequestSchema,
   DataQueryRequestSchema,
   DataListRequestSchema,
@@ -1709,6 +1757,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AuditUnsubscribeRequestSchema,
   CommitsSubscribeRequestSchema,
   CommitsHeadRequestSchema,
+  DataSubscribeRequestSchema,
   AuditExportRequestSchema,
   AuditRotateKeyRequestSchema,
   AuditAlertsRequestSchema,
@@ -2430,6 +2479,39 @@ export function handleMessage(
         auditOpts("admin", "access", "*"),
       );
       break;
+    case "app.list":
+      task = handleAppList(socket, ctx, request.id, principal);
+      break;
+    case "app.launch":
+      task = audited(
+        handleAppLaunch(socket, ctx, request.id, request.payload, principal),
+        auditOpts("data", "app", request.payload.name),
+      );
+      break;
+    case "app.approve":
+      task = audited(
+        handleAppApprove(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "app", request.payload.name),
+      );
+      break;
+    case "app.revoke":
+      task = audited(
+        handleAppRevoke(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("admin", "app", request.payload.name),
+      );
+      break;
     case "serve.reload":
       task = audited(
         handleServeReload(socket, ctx, request.id, principal),
@@ -2854,6 +2936,18 @@ export function handleMessage(
       break;
     case "commits.head":
       task = handleCommitsHead(socket, ctx, request.id, principal);
+      break;
+    case "data.subscribe":
+      // each change is checked as data.query checks its item's behavior, so
+      // a subscriber hears only of data it could read
+      task = handleDataSubscribe(
+        socket,
+        ctx,
+        request.id,
+        controller.signal,
+        principal,
+        request.payload,
+      );
       break;
     case "audit.subscribe":
       if (

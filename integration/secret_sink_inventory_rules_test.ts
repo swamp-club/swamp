@@ -297,6 +297,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       "Indexes installed extension metadata; no expression is evaluated into it.",
   },
   "spawn": {
+    "src/cli/commands/app.ts: runVite":
+      "Runs the app's own Vite through node with fixed arguments; only NO_COLOR is passed in, never a value derived from an expression.",
     "src/cli/commands/datastore_setup.ts: datastoreSetupCommand":
       CLI_REINVOCATION,
     "src/cli/commands/doctor_audit.ts: makeSwampSpawnFn": CLI_REINVOCATION,
@@ -435,6 +437,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/sync_gate.ts: runGated": VALUE_FREE_STATUS,
   },
   "file-write": {
+    "src/infrastructure/persistence/filesystem_app_catalog.ts: writeDevRegistration":
+      "Writes an app's name, folder and loopback URL, never a value derived from an expression.",
     "src/infrastructure/persistence/pending_publish_store.ts: recordPendingPublish":
       "Writes behavior types and ids, data names, version numbers and data ids, never a data value or a value derived from an expression.",
     "src/infrastructure/datastore_v3/explicit_model_leases.ts: writeExplicitLeases":

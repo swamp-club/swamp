@@ -1,0 +1,4 @@
+@import "tailwindcss";
+@import "@swamp-club/app-sdk/theme.css";
+
+@custom-variant dark (&:is(.dark *));

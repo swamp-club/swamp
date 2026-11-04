@@ -179,3 +179,19 @@ Deno.test("validateNoAuthHttpRequest: admits a proxy authority configured as hos
     { allowed: true },
   );
 });
+
+Deno.test("validateWebSocketOrigin: refuses a sandboxed frame's null origin", () => {
+  assertEquals(
+    validateWebSocketOrigin("null", "127.0.0.1:9090", "127.0.0.1", false)
+      .allowed,
+    false,
+  );
+});
+
+Deno.test("validateNoAuthHttpRequest: refuses a sandboxed frame's null origin", () => {
+  assertEquals(
+    validateNoAuthHttpRequest("null", "127.0.0.1:9090", "127.0.0.1", false)
+      .allowed,
+    false,
+  );
+});

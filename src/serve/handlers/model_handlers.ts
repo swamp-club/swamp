@@ -454,6 +454,28 @@ async function firstIntegrationRegisterLock(
 }
 
 /**
+ * an app's run names the type its grant pinned; a definition of any other type
+ * under that name is refused, so a listed name cannot reach `command/shell`
+ */
+function expectedTypeRefusal(
+  payload: ModelMethodRunPayload,
+  target: MethodRunTarget,
+): string | null {
+  if (payload.expectedType === undefined) return null;
+  const expected = normalizedTypeOrRaw(payload.expectedType);
+  const acting = target.run ? target.run.definition : target.definition;
+  const actual = acting
+    ? acting.type.normalized
+    : payload.typeArg !== undefined
+    ? normalizedTypeOrRaw(payload.typeArg)
+    : null;
+  if (actual === expected) return null;
+  return actual === null
+    ? `${payload.modelIdOrName} is not a ${expected} this run may act on.`
+    : `${payload.modelIdOrName} is a ${actual}, not the ${expected} this run may act on.`;
+}
+
+/**
  * the standard path authorizes the model's canonical name and full fields and
  * runs by id; a direct type execution may create its definition, so it runs by
  * name and authorizes name, type and acted-on definition
@@ -861,6 +883,11 @@ export async function handleModelMethodRun(
       if (
         !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
       ) return;
+      const typeRefusal = expectedTypeRefusal(payload, target);
+      if (typeRefusal !== null) {
+        sendError(socket, requestId, "method_type_mismatch", typeRefusal);
+        return;
+      }
       const dataInputPaths = await runDataInputPaths(payload, target);
       if (
         !await authorizeRunInputs(
@@ -1122,6 +1149,11 @@ export async function handleModelMethodRun(
   if (
     !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
   ) return;
+  const typeRefusal = expectedTypeRefusal(payload, target);
+  if (typeRefusal !== null) {
+    sendError(socket, requestId, "method_type_mismatch", typeRefusal);
+    return;
+  }
   let dataInputPaths: KeyPath[];
   try {
     dataInputPaths = await runDataInputPaths(payload, target);

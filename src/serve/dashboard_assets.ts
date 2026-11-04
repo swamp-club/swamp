@@ -72,38 +72,50 @@ export async function serveDashboardFile(
     const ext = extname(target);
     const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
     const isIndexHtml = basename(target) === "index.html";
-    return new Response(content, {
-      headers: {
-        "content-type": contentType,
-        "cache-control": isIndexHtml
-          ? "no-cache"
-          : "public, max-age=31536000, immutable",
-      },
-    });
+    const headers: Record<string, string> = {
+      "content-type": contentType,
+      "cache-control": isIndexHtml
+        ? "no-cache"
+        : "public, max-age=31536000, immutable",
+    };
+    // a page an app opens, or one that opens the dashboard, gets no handle on it
+    if (ext === ".html") {
+      headers["cross-origin-opener-policy"] = "same-origin";
+    }
+    return new Response(content, { headers });
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return null;
     throw e;
   }
 }
 
+/** The signed-in viewer's apps, as pages of the dashboard bundle. */
+export const APPS_PAGE_PATH = "/apps";
+
 export async function serveDashboardRoute(
   distDir: string,
   req: Request,
 ): Promise<Response | null> {
   const url = new URL(req.url);
+  const apps = url.pathname === APPS_PAGE_PATH ||
+    url.pathname.startsWith(`${APPS_PAGE_PATH}/`);
   if (
-    url.pathname !== "/dashboard" && !url.pathname.startsWith("/dashboard/")
+    !apps && url.pathname !== "/dashboard" &&
+    !url.pathname.startsWith("/dashboard/")
   ) {
     return null;
   }
   if (req.method !== "GET" && req.method !== "HEAD") {
     return new Response("Method not allowed", { status: 405 });
   }
-  const subPath = url.pathname === "/dashboard"
-    ? "index.html"
-    : url.pathname.slice("/dashboard/".length) || "index.html";
-  const fileResponse = await serveDashboardFile(distDir, subPath);
-  if (fileResponse) return fileResponse;
+  // `/apps` is a page of the same bundle, whose assets load from `/dashboard/`
+  if (!apps) {
+    const subPath = url.pathname === "/dashboard"
+      ? "index.html"
+      : url.pathname.slice("/dashboard/".length) || "index.html";
+    const fileResponse = await serveDashboardFile(distDir, subPath);
+    if (fileResponse) return fileResponse;
+  }
   const indexResponse = await serveDashboardFile(distDir, "index.html");
   if (indexResponse) return indexResponse;
   return new Response(

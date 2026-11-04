@@ -397,6 +397,8 @@ async function main(): Promise<void> {
 
   const npmLockfiles = [
     "packages/dashboard/package-lock.json",
+    // what swamp serves to every app, at /app-platform/1/
+    "packages/app-platform/1/package-lock.json",
   ];
   for (const lockPath of npmLockfiles) {
     try {

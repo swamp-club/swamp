@@ -28,6 +28,8 @@ export const DELEGATED_ACTIONS = [
   "workflow.reject",
   "workflow.resume",
   "workflow.cancel",
+  "app.approve",
+  "app.revoke",
 ] as const;
 
 export type DelegatedAction = typeof DELEGATED_ACTIONS[number];
@@ -41,6 +43,8 @@ export function isDelegatedAction(type: unknown): type is DelegatedAction {
  * read-only child only ever reads
  */
 export const FORWARDED_READS: ReadonlySet<string> = new Set([
+  "app.list",
+  "app.launch",
   "audit.query",
   "audit.subscribe",
   "audit.unsubscribe",
@@ -48,6 +52,8 @@ export const FORWARDED_READS: ReadonlySet<string> = new Set([
   "data.get",
   "data.query",
   "data.search",
+  // the child has no commit feed, so it answers data_feed_unavailable and apps poll
+  "data.subscribe",
   "data.versions",
   "datastore.status",
   "extension.list",
@@ -60,11 +66,13 @@ export const FORWARDED_READS: ReadonlySet<string> = new Set([
   "vault.describe",
   "vault.list-keys",
   "vault.search",
+  "server.version",
   "worker.list",
   "workflow.approvals",
   "workflow.get",
   "workflow.history.get",
   "workflow.history.logs",
+  "workflow.history.search",
   "workflow.run.search",
   "workflow.run.summary",
   "workflow.search",
@@ -110,11 +118,33 @@ function argument(value: unknown, what: string): string | { error: string } {
   return value;
 }
 
+function appActionCommand(
+  type: "app.approve" | "app.revoke",
+  p: Record<string, unknown>,
+): ActionCommand {
+  const name = argument(p.name, "app");
+  if (typeof name !== "string") return { kind: "invalid", message: name.error };
+  const verb = type === "app.approve" ? "approve" : "revoke";
+  // one argv element, so the text can never read as another flag
+  const key = type === "app.approve" && typeof p.capabilityKey === "string"
+    ? [`--capability-key=${p.capabilityKey}`]
+    : [];
+  return {
+    kind: "command",
+    args: ["app", verb, name, "--local", ...key, "--json"],
+    detached: false,
+    runId: "",
+  };
+}
+
 export function actionCommand(
   type: DelegatedAction,
   payload: unknown,
 ): ActionCommand {
   const p = (payload ?? {}) as Record<string, unknown>;
+  if (type === "app.approve" || type === "app.revoke") {
+    return appActionCommand(type, p);
+  }
   const workflow = argument(p.workflowIdOrName, "workflow");
   if (typeof workflow !== "string") {
     return { kind: "invalid", message: workflow.error };
