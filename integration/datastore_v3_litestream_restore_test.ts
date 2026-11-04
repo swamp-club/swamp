@@ -424,6 +424,48 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 restore: a reader restored behind another machine's lease replays through its read model, logs no outside reset and leaves its catalog current (swamp-club#4387)",
+  ignore,
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a", { captureWarnings: true });
+      await a.send({ kind: "write", commits: 2, close: true });
+      await a.send({ kind: "lease", ttlMs: 1_500 });
+      await a.send({ kind: "write", commits: 1, close: false });
+      await a.send({ kind: "catchUp" });
+      const paused = a.send({ kind: "pause", ms: STALL_MS });
+      const b = await world.machine("b");
+      await b.send({ kind: "write", commits: 1, close: true });
+      await paused;
+      await assertRejects(() => a.send({ kind: "close" }));
+      const c = await world.machine("c");
+      assertEquals((await read(c)).commits, 3);
+      const acknowledged = await c.send({ kind: "files" }) as string[];
+      await a.send({ kind: "warnings" });
+      // the takeover holds the writer lease, so the zombie's restore cannot
+      // recover under it and replays as a reader
+      await b.send({ kind: "lease", ttlMs: 60_000 });
+      assertEquals((await read(a)).commits, 3);
+      const files = await a.send({ kind: "files" }) as string[];
+      for (const file of acknowledged) {
+        assert(files.includes(file), `${file} is applied after the restore`);
+      }
+      assertEquals(files.length, 4, "the reader leaves the zombie's file");
+      assertEquals(await a.send({ kind: "readModel" }), {
+        cursor: 3,
+        populated: true,
+      });
+      const warnings = await a.send({ kind: "warnings" }) as string[];
+      assertEquals(
+        warnings.filter((w) => w.includes("outside the read model")),
+        [],
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 restore: a writer killed before its first confirmed sync never becomes the current state",
   ignore,
   async fn() {

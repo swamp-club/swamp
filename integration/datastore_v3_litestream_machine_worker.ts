@@ -102,6 +102,7 @@ export type MachineRequest =
   | { readonly kind: "namespaces" }
   | { readonly kind: "fence" }
   | { readonly kind: "count" }
+  | { readonly kind: "readModel" }
   | { readonly kind: "warnings" };
 
 export type MachineResponse =
@@ -229,6 +230,11 @@ async function handle(request: MachineRequest): Promise<unknown> {
           loggers: [
             {
               category: ["datastore"],
+              sinks: ["kept"],
+              lowestLevel: "warning",
+            },
+            {
+              category: ["swamp", "datastore", "read-model"],
               sinks: ["kept"],
               lowestLevel: "warning",
             },
@@ -387,6 +393,17 @@ async function handle(request: MachineRequest): Promise<unknown> {
     case "catchUp":
       await v3DatastoreFor(init!.repoDir, config()).catchUp();
       return undefined;
+    case "readModel":
+      return await inEnv(async () => {
+        await ensureV3CopyCurrent(init!.repoDir, config(), "read");
+        const handle = v3DatastoreFor(init!.repoDir, config());
+        const state = {
+          cursor: handle.readModel.cursor(),
+          populated: handle.catalogStore.isPopulated(),
+        };
+        await closeV3Datastores();
+        return state;
+      });
     case "namespaces":
       return await inEnv(async () => {
         const deps = await createNamespaceListDeps(config(), init!.repoDir);

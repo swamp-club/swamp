@@ -557,6 +557,8 @@ export interface V3Datastore {
   readonly namespace: string;
   readonly writer: CommitWriter;
   catchUp(signal?: AbortSignal): Promise<void>;
+  /** a catch-up that first resets the read model to apply every commit again */
+  replayEveryCommit(signal?: AbortSignal): Promise<void>;
   /**
    * with mayGoOffline, a copy that has read serve's feed puts the checkout
    * offline at the writer hold's catch-up; later catch-ups of the command then
@@ -1215,6 +1217,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ...(offlineFlushPort !== undefined ? { offlineFlushPort } : {}),
     ...(serveState !== undefined ? { serveCopyId: serveState.copyId() } : {}),
     async catchUp(signal) {
+      await catchUpFromServe(signal ?? lifetime.signal, "read");
+      await unreachableAsCatchUpError(() =>
+        readModel.catchUp(signal ?? lifetime.signal)
+      );
+    },
+    async replayEveryCommit(signal) {
+      // Before any await: a restore does not run again once its copy state is written.
+      readModel.markReplayPending();
       await catchUpFromServe(signal ?? lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>
         readModel.catchUp(signal ?? lifetime.signal)

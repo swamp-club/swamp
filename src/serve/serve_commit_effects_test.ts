@@ -102,11 +102,10 @@ function fakeSource() {
 
 function setup(follower = true, slowPolicy = false) {
   const store = fakeSource();
-  const calls = { catalog: 0, policy: 0, config: 0 };
+  const calls = { policy: 0, config: 0 };
   const gate = Promise.withResolvers<void>();
   const effects = new ServeCommitEffects({
     source: store.source,
-    catalogInvalidate: () => calls.catalog++,
     reloadPolicy: () => {
       calls.policy++;
       return slowPolicy ? gate.promise : Promise.resolve();
@@ -114,11 +113,13 @@ function setup(follower = true, slowPolicy = false) {
     checkConfig: () => calls.config++,
     isFollower: () => follower,
   });
+  const passes = { applied: 0 };
+  effects.onApplied(() => passes.applied++);
   effects.start();
-  return { store, calls, effects, release: () => gate.resolve() };
+  return { store, calls, passes, effects, release: () => gate.resolve() };
 }
 
-Deno.test("ServeCommitEffects: a grant commit reloads the policy and the catalog", async () => {
+Deno.test("ServeCommitEffects: a grant commit reloads the policy", async () => {
   const { store, calls, effects } = setup();
   try {
     store.land(
@@ -131,20 +132,20 @@ Deno.test("ServeCommitEffects: a grant commit reloads the policy and the catalog
     effects.poke();
     await waitFor(() => calls.policy === 1, "calls.policy === 1");
     await effects.settled();
-    assertEquals(calls, { catalog: 1, policy: 1, config: 0 });
+    assertEquals(calls, { policy: 1, config: 0 });
   } finally {
     await effects.stop();
   }
 });
 
-Deno.test("ServeCommitEffects: a lockfile or definition commit runs the config check; runtime data only rebuilds the catalog", async () => {
-  const { store, calls, effects } = setup();
+Deno.test("ServeCommitEffects: a lockfile or definition commit runs the config check; runtime data leaves the catalog to the read model", async () => {
+  const { store, calls, passes, effects } = setup();
   try {
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
     effects.poke();
-    await waitFor(() => calls.catalog === 1, "calls.catalog === 1");
+    await waitFor(() => passes.applied === 1, "the pass applied");
     await effects.settled();
-    assertEquals(calls, { catalog: 1, policy: 0, config: 0 });
+    assertEquals(calls, { policy: 0, config: 0 });
     store.land(partitionOf({ kind: "lockfile" }));
     effects.poke();
     await waitFor(() => calls.config === 1, "calls.config === 1");
@@ -158,13 +159,13 @@ Deno.test("ServeCommitEffects: a lockfile or definition commit runs the config c
   }
 });
 
-Deno.test("ServeCommitEffects: a copy replaced behind what was read refreshes everything", async () => {
-  const { store, calls, effects } = setup();
+Deno.test("ServeCommitEffects: a copy replaced behind what was read reloads the policy and runs the config check", async () => {
+  const { store, calls, passes, effects } = setup();
   try {
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
     effects.poke();
-    await waitFor(() => calls.catalog >= 1, "calls.catalog >= 1");
+    await waitFor(() => passes.applied >= 1, "the pass applied");
     await effects.settled();
     store.replace(0);
     effects.poke();
@@ -182,7 +183,7 @@ Deno.test("ServeCommitEffects: stops watching once stopped", async () => {
   await effects.stop();
   store.land(partitionOf({ kind: "lockfile" }));
   await effects.settled();
-  assertEquals(calls, { catalog: 0, policy: 0, config: 0 });
+  assertEquals(calls, { policy: 0, config: 0 });
 });
 
 Deno.test("ServeCommitEffects: on the leader only the config check runs; its own writes keep its catalog and policy current", async () => {
@@ -198,7 +199,7 @@ Deno.test("ServeCommitEffects: on the leader only the config check runs; its own
     store.land(partitionOf({ kind: "lockfile" }));
     await waitFor(() => calls.config === 1, "the config check");
     await effects.settled();
-    assertEquals(calls, { catalog: 0, policy: 0, config: 1 });
+    assertEquals(calls, { policy: 0, config: 1 });
   } finally {
     await effects.stop();
   }
@@ -218,11 +219,11 @@ Deno.test("ServeCommitEffects.poke: finds commits another process landed in a sh
 });
 
 Deno.test("ServeCommitEffects: a replaced copy refreshes everything, even with its head at or past what was read", async () => {
-  const { store, calls, effects } = setup();
+  const { store, calls, passes, effects } = setup();
   try {
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
     effects.poke();
-    await waitFor(() => calls.catalog === 1, "the first pass");
+    await waitFor(() => passes.applied === 1, "the first pass");
     await effects.settled();
     store.restored();
     effects.poke();
@@ -241,7 +242,7 @@ Deno.test("ServeCommitEffects: a follower reloads only once its copy is caught u
     store.restored();
     store.landUnapplied(GRANT);
     await effects.settled();
-    assertEquals(calls, { catalog: 0, policy: 0, config: 0 });
+    assertEquals(calls, { policy: 0, config: 0 });
     store.applied();
     effects.poke();
     await waitFor(() => calls.policy === 1, "the policy reloaded");
@@ -251,12 +252,12 @@ Deno.test("ServeCommitEffects: a follower reloads only once its copy is caught u
 });
 
 Deno.test("ServeCommitEffects: a poke leaves a commit its read model has not applied for the poke after it", async () => {
-  const { store, calls, effects } = setup();
+  const { store, calls, passes, effects } = setup();
   try {
     store.land(partitionOf({ kind: "run", workflowId: ID, runId: ID }));
     store.landUnapplied(GRANT);
     effects.poke();
-    await waitFor(() => calls.catalog === 1, "the first pass");
+    await waitFor(() => passes.applied === 1, "the first pass");
     await effects.settled();
     assertEquals(calls.policy, 0);
     store.applied();
@@ -289,10 +290,9 @@ Deno.test("ServeCommitEffects: a pass queued before a restore does not spend the
 Deno.test("ServeCommitEffects: a follower taking the lead applies what its takeover restored before it leads", async () => {
   let follower = true;
   const store = fakeSource();
-  const calls = { catalog: 0, policy: 0, config: 0 };
+  const calls = { policy: 0, config: 0 };
   const effects = new ServeCommitEffects({
     source: store.source,
-    catalogInvalidate: () => calls.catalog++,
     reloadPolicy: () => {
       calls.policy++;
       return Promise.resolve();
@@ -305,11 +305,11 @@ Deno.test("ServeCommitEffects: a follower taking the lead applies what its takeo
     store.land(GRANT);
     effects.poke();
     await effects.settled();
-    assertEquals(calls, { catalog: 1, policy: 1, config: 0 });
+    assertEquals(calls, { policy: 1, config: 0 });
     follower = false;
     store.land(GRANT);
     await effects.settled();
-    assertEquals(calls, { catalog: 1, policy: 1, config: 0 });
+    assertEquals(calls, { policy: 1, config: 0 });
   } finally {
     await effects.stop();
   }
@@ -323,7 +323,6 @@ function failingSetup(
   let reloads = 0;
   const effects = new ServeCommitEffects({
     source: store.source,
-    catalogInvalidate: () => {},
     reloadPolicy: () => {
       reloads++;
       return fail()
@@ -434,5 +433,5 @@ Deno.test("ServeCommitEffects.stop: a pass in flight ends without reloading the 
   gate.resolve();
   await stopping;
   await effects.settled();
-  assertEquals(calls, { catalog: 0, policy: 0, config: 0 });
+  assertEquals(calls, { policy: 0, config: 0 });
 });

@@ -1508,7 +1508,8 @@ export function requireInitializedRepo(
       { v3 },
     );
 
-    if (needsCatalogInvalidation) {
+    // On v3 the read model writes the catalog: an invalidate only forces a full replay.
+    if (needsCatalogInvalidation && v3 === undefined) {
       repoContext.catalogStore.invalidate();
     }
 

@@ -266,7 +266,6 @@ async function open(leaderOrigin: string | undefined): Promise<Opened> {
     const policyLoader = loader;
     wiring = wireFollowerPolicy({
       source,
-      catalogInvalidate: () => opened.repoContext.catalogStore.invalidate(),
       reloadPolicy: () =>
         failReloads
           ? Promise.reject(new Error("the policy reload failed"))

@@ -90,7 +90,6 @@ function setup(
   const store = fakeSource();
   const wiring = wireFollowerPolicy({
     source: store.source,
-    catalogInvalidate: () => {},
     reloadPolicy: () =>
       fail() ? Promise.reject(new Error("unreadable")) : Promise.resolve(),
     checkConfig: () => {},

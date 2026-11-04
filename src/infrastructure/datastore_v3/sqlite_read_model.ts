@@ -98,6 +98,7 @@ import {
   type LoadKey,
   ReadModelState,
   type RecordContent,
+  REPLAY_PENDING,
   type StoredAtRiskCopy,
   type StoredUnreadableRecord,
   type UnsyncedFile,
@@ -337,6 +338,7 @@ export class SqliteReadModel implements ReadModel {
   #pageInFlight: Promise<void> | undefined;
   #boot: string | undefined;
   #stats: CatchUpStats | undefined;
+  #outsideReset = false;
   #net: NetReplayPlan | undefined;
   /**
    * set while a net catch-up from an empty checkout runs: a compacted base it
@@ -445,8 +447,29 @@ export class SqliteReadModel implements ReadModel {
       } finally {
         this.#stats = undefined;
         span.setAttributes(stats.attributes());
+        if (this.#outsideReset) {
+          span.setAttributes({
+            "swamp.datastore.v3.readmodel.outside_reset": 1,
+          });
+          this.#outsideReset = false;
+        }
       }
     });
+  }
+
+  /**
+   * synchronous, so a process killed before its next catch-up still replays;
+   * catalog rows are kept and the replay rewrites them
+   */
+  markReplayPending(): void {
+    this.#state.markReplayPending();
+  }
+
+  #warnOutsideReset(recorded: number, generation: number): void {
+    this.#outsideReset = true;
+    // On v3 only a catalog schema upgrade should get here, once.
+    logger
+      .warn`The query catalog was invalidated or rebuilt outside the read model (generation ${recorded}, now ${generation}), so every commit is applied again. This is expected once after a swamp upgrade; if it repeats, report it`;
   }
 
   /**
@@ -1021,6 +1044,7 @@ export class SqliteReadModel implements ReadModel {
         this.#state.forgetFoldedKeys();
         this.#guarded.clear();
         this.#replaying = false;
+        this.#outsideReset = false;
         const generation = this.#catalog.generation();
         // first, so a reset below cannot drop the list unchecked
         this.#boot = await this.#bootIdentity();
@@ -1030,10 +1054,11 @@ export class SqliteReadModel implements ReadModel {
         );
         // A catalog rebuilt, invalidated or created afresh holds none of the
         // commits the state says are applied: start over.
-        if (
-          this.#state.catalogGeneration() !== generation ||
-          !this.#catalog.isPopulated()
-        ) {
+        const recorded = this.#state.catalogGeneration();
+        if (recorded !== generation || !this.#catalog.isPopulated()) {
+          if (recorded !== undefined && recorded !== REPLAY_PENDING) {
+            this.#warnOutsideReset(recorded, generation);
+          }
           this.#reset(generation);
           this.#catalog.markPopulated(generation);
         }

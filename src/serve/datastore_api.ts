@@ -2480,17 +2480,12 @@ class DatastoreApi {
     return required;
   }
 
-  /**
-   * Catches serve's checkout up with what landed and reloads what it holds
-   * in memory: the query catalog, and the policy when a control-plane
-   * record changed, so a revoked grant or token is refused on the next
-   * request. A failure is a warning: the commit has landed.
-   */
+  /** A failure is a warning: the commit has landed. */
   async #afterCommit(partition: PartitionKey): Promise<string | undefined> {
     const { ctx } = this.#deps;
     try {
+      // No catalog invalidate: it would make the read model replay every commit.
       await this.#catchUp();
-      ctx.repoContext.catalogStore.invalidate();
       const identity = partition.identity;
       if (
         identity.kind === "model" && isControlPlaneModelType(identity.type)

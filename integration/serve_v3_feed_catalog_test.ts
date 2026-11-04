@@ -27,12 +27,59 @@ import { ServeCommitEffects } from "../src/serve/serve_commit_effects.ts";
 import {
   blobSaveOps,
   commitBody,
+  countFeedReads,
+  type FeedReads,
   partitionPath,
   post,
+  seedHistory,
+  type Server,
   sha256Hex,
   withServer,
   writer,
 } from "./serve_datastore_api_harness.ts";
+
+/** serve's follower wiring over the server's own copy */
+function followerEffects(
+  server: Server,
+  calls: { policy: number },
+): ServeCommitEffects {
+  const store = server.v3.commitStore;
+  return new ServeCommitEffects({
+    source: {
+      datastore: server.v3,
+      onMoved: (listener) => store.onHeadMoved(listener),
+    },
+    reloadPolicy: () => {
+      calls.policy++;
+      return Promise.resolve();
+    },
+    checkConfig: () => {},
+    isFollower: () => true,
+  });
+}
+
+async function refreshAfterLeaderCommit(
+  server: Server,
+  effects: ServeCommitEffects,
+  version: number,
+  expectedSeq: number,
+): Promise<void> {
+  const content = new TextEncoder().encode(`leader output ${version}`);
+  const landed = await post(
+    partitionPath(server),
+    "alice-token",
+    commitBody({
+      expectedSeq,
+      txnId: crypto.randomUUID(),
+      ops: await blobSaveOps(server, "vpc", version, content),
+      chunks: [{ sha256: await sha256Hex(content), size: content.length }],
+    }, [content]),
+  );
+  assertEquals(landed.status, 200, JSON.stringify(landed.json));
+  await server.v3.catchUp();
+  effects.poke();
+  await effects.settled();
+}
 
 Deno.test({
   name:
@@ -42,41 +89,18 @@ Deno.test({
   fn: async () => {
     await withServer(writer(), async (server) => {
       const store = server.v3.commitStore;
-      const calls = { catalog: 0, policy: 0 };
-      const effects = new ServeCommitEffects({
-        source: {
-          datastore: server.v3,
-          onMoved: (listener) => store.onHeadMoved(listener),
-        },
-        catalogInvalidate: () => calls.catalog++,
-        reloadPolicy: () => {
-          calls.policy++;
-          return Promise.resolve();
-        },
-        checkConfig: () => {},
-        isFollower: () => true,
-      });
+      const calls = { policy: 0 };
+      const effects = followerEffects(server, calls);
       effects.start();
       try {
-        const content = new TextEncoder().encode("peer output");
-        const landed = await post(
-          partitionPath(server),
-          "alice-token",
-          commitBody({
-            expectedSeq: 0,
-            txnId: crypto.randomUUID(),
-            ops: await blobSaveOps(server, "vpc", 1, content),
-            chunks: [{
-              sha256: await sha256Hex(content),
-              size: content.length,
-            }],
-          }, [content]),
+        await refreshAfterLeaderCommit(server, effects, 1, 0);
+        assertEquals(
+          server.v3.catalogStore.latestRowCountsByType().get(
+            server.modelType.normalized,
+          ),
+          1,
+          "the follower's catalog holds the peer's write",
         );
-        assertEquals(landed.status, 200, JSON.stringify(landed.json));
-        await server.v3.catchUp();
-        effects.poke();
-        await waitFor(() => calls.catalog >= 1, "the catalog rebuilt");
-        await effects.settled();
         assertEquals(calls.policy, 0);
 
         await store.append(modelCommit(
@@ -100,5 +124,41 @@ Deno.test({
         await effects.stop();
       }
     });
+  },
+});
+
+async function followerReadsForOneLeaderCommitAfter(
+  history: number,
+): Promise<FeedReads> {
+  let reads: FeedReads = { commits: -1, fromStart: -1 };
+  await withServer(writer(), async (server) => {
+    await seedHistory(server, history);
+    const effects = followerEffects(server, { policy: 0 });
+    effects.start();
+    try {
+      // a refresh before the measured one: what its effects pass leaves
+      // behind is what the next refresh pays for
+      await refreshAfterLeaderCommit(server, effects, 1, history);
+      reads = await countFeedReads(server.v3.commitStore, async () => {
+        await refreshAfterLeaderCommit(server, effects, 2, history + 1);
+      });
+    } finally {
+      await effects.stop();
+    }
+  });
+  return reads;
+}
+
+Deno.test({
+  name:
+    "v3 feed catalog: a follower's refresh reads only the leader's new commit, however long the history (swamp-club#4387)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const short = await followerReadsForOneLeaderCommitAfter(10);
+    const long = await followerReadsForOneLeaderCommitAfter(1_000);
+    // the read model and the effects pass each read the new commit once
+    assertEquals(short, { commits: 2, fromStart: 0 });
+    assertEquals(long, short);
   },
 });

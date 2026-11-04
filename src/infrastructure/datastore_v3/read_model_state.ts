@@ -554,6 +554,12 @@ export class ReadModelState {
     return this.#meta("catalog_generation");
   }
 
+  /** the next lock section resets and replays every commit as the read model's own reset */
+  markReplayPending(): void {
+    this.#requireOpen();
+    this.#upsertMeta.run("catalog_generation", REPLAY_PENDING);
+  }
+
   appliedSeq(namespace: string, partition: string): number {
     this.#requireOpen();
     const row = this.#selectApplied.get(namespace, partition) as
@@ -1506,6 +1512,9 @@ export class ReadModelState {
     if (this.#closed) throw new Error("The read model state is closed");
   }
 }
+
+/** never a catalog's generation, which starts at 0 and only grows */
+export const REPLAY_PENDING = -1;
 
 function migrate(db: DatabaseSync): void {
   const read = () =>

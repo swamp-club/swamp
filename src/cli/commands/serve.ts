@@ -8397,12 +8397,11 @@ export const serveCommand = new Command()
         }
       };
       // every commit this node sees, its own and the leader's feed, keeps the
-      // catalog, access policy and extensions current; a follower answers a
-      // commit only once its effects are applied
+      // access policy and extensions current; a follower answers a commit only
+      // once its effects are applied
       const feedSource = v3CommitFeedSource(resolvedRepoDir, location);
       const followerPolicy = wireFollowerPolicy({
         source: feedSource,
-        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
         reloadPolicy: () => policySnapshotLoader.load(),
         checkConfig: () => configPoller?.pollNow(),
         isFollower: () => connectionCtx.followerGate?.role === "follower",
