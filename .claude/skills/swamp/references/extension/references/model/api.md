@@ -707,6 +707,31 @@ once the nested method finishes. When unrelated methods run at the same time,
 such as parallel workflow steps or parallel `runModel` calls, the env falls back
 to the run's inbound context until they have all finished.
 
+### Passing Secrets to Subprocesses
+
+A subprocess has no route to the vault, under `swamp serve` too. Swamp never
+puts vault values in `Deno.env`, so a child reads a secret only if the method
+passes it. Take the secret as an argument the definition fills with
+`vault.get()`, mark it sensitive (see [Resource Specs](#resource-specs) for
+`.meta`), and set it in the child's `env`:
+
+```typescript
+// definition: globalArguments.apiKey: ${{ vault.get(prod, linear-api-key) }}
+const GlobalArgsSchema = z.object({
+  apiKey: z.string().meta({ sensitive: true }),
+});
+
+await new Deno.Command("my-tool", {
+  args,
+  env: { LINEAR_API_KEY: context.globalArgs.apiKey },
+}).output();
+```
+
+Deno merges `env` into the inherited environment, so the child also sees the
+swamp process env, `SWAMP_*` credentials included. Pass `clearEnv: true` to give
+it only what you list. A nested `swamp` command opens its own vault and is not
+held to the run's vault scope.
+
 ### Arguments Holding Another Service's Template Syntax
 
 `swamp behavior validate` (and every workflow step) checks `{{ ... }}` and
