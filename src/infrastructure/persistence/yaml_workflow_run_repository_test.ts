@@ -5611,3 +5611,46 @@ Deno.test("findByTimeTagLatestFirst: an aborted signal rejects with its reason",
     );
   });
 });
+
+Deno.test("YamlWorkflowRunRepository: a job run's fan-out plan round-trips through save and load (swamp-club#4379)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    const job = run.jobs[0];
+    job.recordFanOutPlan(
+      {
+        kind: "planned",
+        members: [
+          { worker: "host-a", instanceUuid: "uuid-a", disposition: "dispatch" },
+          {
+            worker: "host-b",
+            instanceUuid: "uuid-b",
+            disposition: "failed",
+            reason: "unverified",
+          },
+        ],
+        plannedLanes: 1,
+        maxFailures: null,
+      },
+      [["host-a"]],
+      job.steps.map((step) => step.stepName),
+    );
+    await repo.save(workflow.id, run);
+
+    const loaded = await repo.findById(workflow.id, run.id);
+    assertNotEquals(loaded, null);
+    const plan = loaded!.jobs[0].fanOutPlan;
+    assertEquals(plan?.maxFailures, null);
+    assertEquals(plan?.members[1].reason, "unverified");
+    assertEquals(
+      plan?.lanes.map((lane) => lane.name),
+      [`${job.jobName}[host-a]`],
+    );
+    assertEquals(
+      JSON.parse(JSON.stringify(loaded!.jobs[0].toData())),
+      JSON.parse(JSON.stringify(job.toData())),
+    );
+  });
+});

@@ -24868,3 +24868,77 @@ Deno.test("WorkflowExecutionService: a nested run's refused step start reaches t
     assertEquals(executor.count("inner/c1"), 0);
   });
 });
+
+// --- fan-out jobs are refused until the lane engine ---
+
+const FAN_OUT_REFUSAL =
+  "fan-out jobs are not available in this version of swamp";
+
+function withFanOutJob(workflow: Workflow, jobName: string): Workflow {
+  const data = workflow.toData();
+  return Workflow.fromData(
+    {
+      ...data,
+      jobs: data.jobs.map((job) =>
+        job.name !== jobName ? job : {
+          ...job,
+          fanOut: "all",
+          labels: { role: "web" },
+          steps: job.steps.map((step) => ({
+            ...step,
+            task: {
+              type: "model_method",
+              modelType: "test-model",
+              modelName: step.name,
+              methodName: "run",
+            },
+          })),
+        }
+      ),
+    } as Parameters<typeof Workflow.fromData>[0],
+  );
+}
+
+Deno.test("run: a workflow with a fan-out job is refused before any run exists or any step runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(createRetryWorkflow(), "deploy");
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+
+    const error = await assertRejects(
+      () => service.execute(workflow.name),
+      UserError,
+    );
+    assertStringIncludes(error.message, FAN_OUT_REFUSAL);
+    assertStringIncludes(error.message, "fan-out job 'deploy'");
+    assertEquals(executor.calls.size, 0);
+    assertEquals(runRepo.saves, 0);
+  });
+});
+
+Deno.test("resume: a run whose workflow gained a fan-out job is refused without saving or running anything", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const { workflowRepo, runRepo, executor, service } = await setupRetry(
+      tempDir,
+      workflow,
+    );
+    executor.failing.add("compile");
+    const failed = await service.execute(workflow.name);
+    executor.failing.clear();
+    await workflowRepo.save(withFanOutJob(workflow, "deploy"));
+    const saves = runRepo.saves;
+    const calls = [...executor.calls.values()].reduce((a, b) => a + b, 0);
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, failed.id),
+      UserError,
+      FAN_OUT_REFUSAL,
+    );
+
+    assertEquals(runRepo.saves, saves);
+    assertEquals(
+      [...executor.calls.values()].reduce((a, b) => a + b, 0),
+      calls,
+    );
+  });
+});

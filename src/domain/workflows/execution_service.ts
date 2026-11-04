@@ -336,6 +336,7 @@ import {
   type FailedExpressions,
 } from "../expressions/unresolved_expression_guard.ts";
 import { errorPaths, UserError } from "../errors.ts";
+import { refuseFanOutJobs } from "./fan_out_job.ts";
 import {
   isForeignExpression,
   storedTextRefusal,
@@ -3451,6 +3452,7 @@ export class WorkflowExecutionService {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
         workflow = found;
+        refuseFanOutJobs(found);
         // Refused before anything runs: a wait opened where its records
         // cannot be shared would accept a signal nothing ever applies.
         if (holdsSignalWait(found)) await this.openSignalWaits(found.name);
@@ -4490,6 +4492,8 @@ export class WorkflowExecutionService {
     runId: string,
     options?: Parameters<WorkflowExecutionService["resume"]>[2],
   ): AsyncGenerator<WorkflowExecutionEvent> {
+    // an edit may have added fanOut after the run began
+    refuseFanOutJobs(workflow);
     // A resume can reach a wait for the first time. The store is opened
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.

@@ -130,3 +130,33 @@ Deno.test("workflowSchema: the step task schema includes wait_for_signal with it
     true,
   );
 });
+
+Deno.test("workflowSchema: the job schema exposes fanOut as all or a fan-out policy, and steps and the workflow do not (swamp-club#4379)", async () => {
+  const ctx = createLibSwampContext();
+  const events = await collect<WorkflowSchemaEvent>(workflowSchema(ctx));
+  const completed = events[0] as Extract<
+    WorkflowSchemaEvent,
+    { kind: "completed" }
+  >;
+  const asRecord = (value: unknown): Record<string, unknown> => {
+    assert(typeof value === "object" && value !== null);
+    return value as Record<string, unknown>;
+  };
+
+  const fanOut = asRecord(
+    asRecord(asRecord(completed.data.job).properties).fanOut,
+  );
+  const variants = (fanOut.anyOf ?? fanOut.oneOf) as Record<string, unknown>[];
+  assert(variants.some((variant) => variant.const === "all"));
+  const policy = variants.find((variant) => variant.type === "object");
+  assert(policy !== undefined, "fanOut should offer the object form");
+  const policyProperties = asRecord(policy.properties);
+  for (const key of ["offline", "minWorkers", "rollout"]) {
+    assert(key in policyProperties, `fanOut should expose '${key}'`);
+  }
+
+  assert(!("fanOut" in asRecord(asRecord(completed.data.step).properties)));
+  assert(
+    !("fanOut" in asRecord(asRecord(completed.data.workflow).properties)),
+  );
+});

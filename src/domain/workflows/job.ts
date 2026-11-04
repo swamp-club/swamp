@@ -28,6 +28,7 @@ import { addRemovedDriverFieldIssues } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { nodeName } from "./node_name.ts";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
+import { type FanOutPolicy, FanOutPolicySchema } from "../remote/fan_out.ts";
 
 export const JobDependencySchema = z.object({
   job: z.string().min(1),
@@ -38,6 +39,14 @@ export type JobDependencyData = z.infer<typeof JobDependencySchema>;
 
 const JobDependencyFieldSchema = z.array(JobDependencySchema).default([]);
 
+// job-level only: not a placement field, so it never inherits
+export const FanOutFieldSchema = z.union([
+  z.literal("all"),
+  FanOutPolicySchema,
+]);
+
+export type FanOutField = z.infer<typeof FanOutFieldSchema>;
+
 export const JobObjectSchema = z.object({
   name: nodeName("Job"),
   description: z.string().optional(),
@@ -47,6 +56,7 @@ export const JobObjectSchema = z.object({
   concurrency: z.number().int().nonnegative().optional(),
   affinity: z.boolean().optional(),
   writes: z.boolean().optional(),
+  fanOut: FanOutFieldSchema.optional(),
   ...PlacementFieldsSchema.shape,
 });
 
@@ -109,6 +119,7 @@ export interface CreateJobProps {
   concurrency?: number;
   affinity?: boolean;
   writes?: boolean;
+  fanOut?: FanOutField;
   target?: string;
   labels?: Record<string, string>;
   platform?: string;
@@ -125,6 +136,7 @@ export class Job {
     readonly concurrency: number | undefined,
     readonly affinity: boolean | undefined,
     readonly writes: boolean | undefined,
+    readonly fanOut: FanOutField | undefined,
     readonly target: string | undefined,
     readonly labels: Record<string, string> | undefined,
     readonly platform: string | undefined,
@@ -148,6 +160,7 @@ export class Job {
       concurrency: props.concurrency,
       affinity: props.affinity,
       writes: props.writes,
+      fanOut: props.fanOut,
       target: props.target,
       labels: props.labels,
       platform: props.platform,
@@ -174,6 +187,7 @@ export class Job {
       validated.concurrency,
       validated.affinity,
       validated.writes,
+      validated.fanOut,
       validated.target,
       validated.labels,
       validated.platform,
@@ -195,6 +209,11 @@ export class Job {
 
   getStep(name: string): Step | undefined {
     return this._steps.find((s) => s.name === name);
+  }
+
+  get fanOutPolicy(): FanOutPolicy | undefined {
+    if (this.fanOut === undefined) return undefined;
+    return this.fanOut === "all" ? FanOutPolicySchema.parse({}) : this.fanOut;
   }
 
   get placementFields(): PlacementFields {
@@ -219,6 +238,7 @@ export class Job {
       concurrency: this.concurrency,
       affinity: this.affinity,
       writes: this.writes,
+      fanOut: this.fanOut,
       target: this.target,
       labels: this.labels,
       platform: this.platform,

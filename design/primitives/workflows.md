@@ -3114,6 +3114,76 @@ entry is `{ job, condition }`. The condition is `always`, `succeeded`,
 `src/domain/workflows/job.ts`). For example, job C can depend on jobs A and B
 and run only if either failed.
 
+### Fan-out Jobs (`fanOut`)
+
+A fan-out job runs once per matching worker, as a lane pinned to that worker
+(swamp-club#4379). This version accepts, validates and stores the field, but
+**a fan-out job does not run yet**: until the lane engine ships, starting a run
+of a workflow that holds one fails with a `UserError` saying fan-out jobs are
+not available in this version. One check (`refuseFanOutJobs` in
+`src/domain/workflows/fan_out_job.ts`) covers every entry. It runs at run
+start, before any run record exists, so CLI, serve, schedule, webhook and
+nested runs all hit it. It also runs at the top of a resume, so a workflow
+edited to add `fanOut` after a run began cannot run the job as an ordinary job.
+
+`fanOut` takes the short form `all` or an object parsed by
+`FanOutPolicySchema` (`src/domain/remote/fan_out.ts`): `offline`
+(`wait` | `skip` | `fail`, default `wait`), `minWorkers` (default 1, never 0)
+and an optional `rollout` (`batches`, `maxFailures`). `all` is stored as
+written and means the defaults. The rollout half is accepted and stored now;
+it takes effect with rollouts.
+
+The selector is the job's placement after inheritance: `labels` and `platform`
+merged from the workflow and the job. `fanOut` itself is job-level only. It is
+not a placement field and does not inherit, and the workflow and step schemas
+reject it as an unknown key. Label values may be expressions that resolve at
+run time; any label present counts as a selector at validation.
+
+The workflow schema refuses these, each with a one-line message, so every load
+path and `workflow validate` report them:
+
+- `fanOut` with a job-level `target` (a target names one worker).
+- No `labels` or `platform` in effect. An explicit `labels: {}` with no
+  platform counts as none. To reach every worker, give them a label and select
+  it.
+- A step that sets `target`, `labels` or `platform` (a lane runs on one
+  worker). A step's `queueTimeout` is allowed.
+- `affinity: true` on the job. Lanes already stay on their workers. Workflow
+  `affinity: true` is refused too, unless the fan-out job opts out with
+  `affinity: false`: the runtime does not pin a job that opts out.
+- `forEach` on a step.
+- A task naming one definition (`behavior:` / `model:` by name or id, or
+  `modelIdOrName`), since every lane would share it. Use `behaviorType` +
+  `behaviorName` so each worker gets its own instance. `assert` steps are fine.
+- `workflow`, `manual_approval` and `wait_for_signal` steps.
+
+**Stored plan.** A job run may hold a `fanOutPlan` section, which
+`JobRun.recordFanOutPlan` writes once. A resume never re-plans:
+
+```yaml
+fanOutPlan:
+  members: # every member planFanOut considered
+    - { worker: host-a, instanceUuid: …, disposition: dispatch, batch: 0 }
+    - { worker: host-b, instanceUuid: …, disposition: waiting, reason: disconnected, batch: 1 }
+    - { worker: host-c, instanceUuid: …, disposition: skipped, reason: draining }
+  plannedLanes: 2
+  maxFailures: 0 # resolved; null means no budget
+  batches: [[host-a], [host-b]] # from planBatches
+  lanes: # one per member with a lane, in batch order
+    - name: "patch[host-a]" # job[worker]
+      worker: host-a
+      instanceUuid: …
+      steps: [{ stepName: apply, status: pending }]
+```
+
+The key is `fanOutPlan`, not `fanOut`. A binary from before this change reads
+an unknown job-run key and drops it on its next save, so a run that an older
+swamp resumes, cancels or approves loses its plan. `fanOutPlanMissing(job,
+jobRun)` reports a started fan-out job run that holds no plan, so a resume can
+refuse it rather than re-plan. An older swamp reading a workflow file with
+`fanOut` refuses the key as unknown, rather than running the job as a plain
+job.
+
 ## Steps
 
 Each step has a name, a description, and a task: a method to run or a

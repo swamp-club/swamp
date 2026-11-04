@@ -1173,3 +1173,65 @@ Deno.test("createWorkflowValidateDeps: static secret misuse names the file, path
     true,
   );
 });
+
+Deno.test("createWorkflowValidateDeps: a fan-out job with a target fails Schema validation with the refusal on one line (swamp-club#4379)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(workflowsDir, "workflow-fleet.yaml"),
+      stringifyYaml({
+        id: crypto.randomUUID(),
+        name: "fleet",
+        jobs: [{
+          name: "patch",
+          fanOut: "all",
+          labels: { role: "web" },
+          target: "host-a",
+          steps: [{
+            name: "apply",
+            task: {
+              type: "behavior",
+              behaviorType: "command/shell",
+              behaviorName: "patch",
+              methodName: "execute",
+            },
+          }],
+        }],
+      }),
+    );
+    const deps = createWorkflowValidateDeps(
+      new YamlWorkflowRepository(dir),
+      undefined,
+      workflowsDir,
+    );
+
+    const events = await collect<WorkflowValidateEvent>(
+      workflowValidate(createLibSwampContext(), deps, {
+        workflowIdOrName: "fleet",
+      }),
+    );
+
+    const completed = events[1] as Extract<
+      WorkflowValidateEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    const report = completed.data as WorkflowValidateData;
+    assertEquals(report.passed, false);
+    assertEquals(report.validations[0].name, "Schema validation");
+    const error = report.validations[0].error ?? "";
+    assertStringIncludes(
+      error,
+      "jobs[0].target: Fan-out job 'patch' sets target, which names one worker. Remove target and select the workers with labels or platform.",
+    );
+    assertEquals(error.includes("\n"), false);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

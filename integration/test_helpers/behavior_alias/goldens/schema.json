@@ -535,6 +535,76 @@
             "writes": {
               "type": "boolean"
             },
+            "fanOut": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "all"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "offline": {
+                      "default": "wait",
+                      "type": "string",
+                      "enum": [
+                        "wait",
+                        "skip",
+                        "fail"
+                      ]
+                    },
+                    "minWorkers": {
+                      "default": 1,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "rollout": {
+                      "type": "object",
+                      "properties": {
+                        "batches": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        },
+                        "maxFailures": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "batches"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "offline",
+                    "minWorkers"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
             "target": {
               "type": "string"
             },
@@ -1278,6 +1348,76 @@
       },
       "writes": {
         "type": "boolean"
+      },
+      "fanOut": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "all"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "offline": {
+                "default": "wait",
+                "type": "string",
+                "enum": [
+                  "wait",
+                  "skip",
+                  "fail"
+                ]
+              },
+              "minWorkers": {
+                "default": 1,
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "rollout": {
+                "type": "object",
+                "properties": {
+                  "batches": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  },
+                  "maxFailures": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "batches"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "offline",
+              "minWorkers"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "target": {
         "type": "string"

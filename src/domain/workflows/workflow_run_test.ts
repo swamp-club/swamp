@@ -3651,3 +3651,134 @@ Deno.test("isGuardedRunRecord: a run serve drives or one holding a decision is g
     true,
   );
 });
+
+// --- Stored fan-out plan ---
+
+function plannedFanOut() {
+  return {
+    kind: "planned" as const,
+    members: [
+      {
+        worker: "host-b",
+        instanceUuid: "uuid-b",
+        disposition: "waiting" as const,
+        reason: "disconnected" as const,
+      },
+      {
+        worker: "host-a",
+        instanceUuid: "uuid-a",
+        disposition: "dispatch" as const,
+      },
+      {
+        worker: "host-c",
+        instanceUuid: "uuid-c",
+        disposition: "skipped" as const,
+        reason: "draining" as const,
+      },
+    ],
+    plannedLanes: 2,
+    maxFailures: 0,
+  };
+}
+
+Deno.test("JobRun.recordFanOutPlan: records members with their batch and one lane per laned member in batch order", () => {
+  const job = JobRun.pending("patch", ["apply", "verify"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]], [
+    "apply",
+    "verify",
+  ]);
+  const plan = job.fanOutPlan!;
+  assertEquals(plan.plannedLanes, 2);
+  assertEquals(plan.maxFailures, 0);
+  assertEquals(plan.batches, [["host-a"], ["host-b"]]);
+  assertEquals(plan.members, [
+    {
+      worker: "host-b",
+      instanceUuid: "uuid-b",
+      disposition: "waiting",
+      reason: "disconnected",
+      batch: 1,
+    },
+    {
+      worker: "host-a",
+      instanceUuid: "uuid-a",
+      disposition: "dispatch",
+      batch: 0,
+    },
+    {
+      worker: "host-c",
+      instanceUuid: "uuid-c",
+      disposition: "skipped",
+      reason: "draining",
+    },
+  ]);
+  assertEquals(
+    plan.lanes.map((lane) => [
+      lane.name,
+      lane.worker,
+      lane.instanceUuid,
+      lane.steps.map((step) => [step.stepName, step.status]),
+    ]),
+    [
+      ["patch[host-a]", "host-a", "uuid-a", [["apply", "pending"], [
+        "verify",
+        "pending",
+      ]]],
+      ["patch[host-b]", "host-b", "uuid-b", [["apply", "pending"], [
+        "verify",
+        "pending",
+      ]]],
+    ],
+  );
+});
+
+Deno.test("JobRun.recordFanOutPlan: a second plan is refused", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]], ["apply"]);
+  assertThrows(
+    () =>
+      job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]], ["apply"]),
+    Error,
+    "already holds a fan-out plan",
+  );
+});
+
+Deno.test("JobRun.recordFanOutPlan: a laned member missing from every batch is refused", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  assertThrows(
+    () => job.recordFanOutPlan(plannedFanOut(), [["host-a"]], ["apply"]),
+    Error,
+    "has lane 'host-b' in no batch",
+  );
+  assertEquals(job.fanOutPlan, undefined);
+});
+
+Deno.test("JobRun: a recorded fan-out plan round-trips through toData and fromData", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]], ["apply"]);
+  const data = job.toData();
+  const again = JobRun.fromData(JSON.parse(JSON.stringify(data)));
+  assertEquals(
+    JSON.parse(JSON.stringify(again.toData())),
+    JSON.parse(JSON.stringify(data)),
+  );
+  assertEquals(again.fanOutPlan?.lanes[1].steps[0].stepName, "apply");
+});
+
+Deno.test("JobRun: a job run recorded before fan-out plans loads and saves without the key", () => {
+  const stored = {
+    jobName: "plain",
+    status: "succeeded",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    steps: [{ stepName: "apply", status: "succeeded" }],
+  };
+  const job = JobRun.fromData(stored as Parameters<typeof JobRun.fromData>[0]);
+  assertEquals(job.fanOutPlan, undefined);
+  const written = JSON.parse(JSON.stringify(job.toData()));
+  assertEquals("fanOutPlan" in written, false);
+  assertEquals(
+    JSON.parse(JSON.stringify(JobRun.fromData(written).toData())),
+    written,
+  );
+});

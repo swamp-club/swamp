@@ -42,6 +42,7 @@ import type { RunTriggeringPrincipal } from "../vaults/run_vault_access.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import { AssertSeveritySchema } from "./step_task.ts";
+import { type FanOutPlan, hasLane } from "../remote/fan_out.ts";
 import {
   type NestedRunRef,
   type ParentRunRef,
@@ -173,6 +174,52 @@ export const StepRunSchema = z.object({
 
 export type StepRunData = z.infer<typeof StepRunSchema>;
 
+const FanOutMemberRecordSchema = z.object({
+  worker: z.string().min(1),
+  instanceUuid: z.string().min(1),
+  disposition: z.enum(["dispatch", "waiting", "skipped", "failed", "excluded"]),
+  reason: z.enum(["disconnected", "unverified", "draining"]).optional(),
+  // the index into batches; only members with a lane have one
+  batch: z.number().int().nonnegative().optional(),
+});
+
+const FanOutLaneRecordSchema = z.object({
+  name: z.string().min(1),
+  worker: z.string().min(1),
+  instanceUuid: z.string().min(1),
+  steps: z.array(StepRunSchema),
+});
+
+// key is not "fanOut": older binaries' baseline probes store that name as unknown
+export const FanOutPlanRecordSchema = z.object({
+  members: z.array(FanOutMemberRecordSchema),
+  plannedLanes: z.number().int().nonnegative(),
+  maxFailures: z.number().int().nonnegative().nullable(),
+  batches: z.array(z.array(z.string().min(1))),
+  lanes: z.array(FanOutLaneRecordSchema),
+});
+
+export type FanOutPlanRecordData = z.infer<typeof FanOutPlanRecordSchema>;
+
+export interface FanOutLaneRun {
+  readonly name: string;
+  readonly worker: string;
+  readonly instanceUuid: string;
+  readonly steps: readonly StepRun[];
+}
+
+export interface FanOutPlanRecord {
+  readonly members: FanOutPlanRecordData["members"];
+  readonly plannedLanes: number;
+  readonly maxFailures: number | null;
+  readonly batches: readonly (readonly string[])[];
+  readonly lanes: readonly FanOutLaneRun[];
+}
+
+export function fanOutLaneName(jobName: string, worker: string): string {
+  return `${jobName}[${worker}]`;
+}
+
 export const JobRunSchema = z.object({
   jobName: z.string().min(1),
   status: z.enum([
@@ -189,6 +236,7 @@ export const JobRunSchema = z.object({
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   steps: z.array(StepRunSchema),
+  fanOutPlan: FanOutPlanRecordSchema.optional(),
 });
 
 export type JobRunData = z.infer<typeof JobRunSchema>;
@@ -755,6 +803,7 @@ export class JobRun implements TriggerEvaluationContext {
     private _startedAt: Date | undefined,
     private _completedAt: Date | undefined,
     private _steps: StepRun[],
+    private _fanOutPlan: FanOutPlanRecord | undefined = undefined,
   ) {}
 
   static pending(jobName: string, stepNames: string[]): JobRun {
@@ -765,13 +814,82 @@ export class JobRun implements TriggerEvaluationContext {
   static fromData(data: JobRunData): JobRun {
     const validated = JobRunSchema.parse(data);
     const steps = validated.steps.map((s) => StepRun.fromData(s));
+    const plan = validated.fanOutPlan;
     return new JobRun(
       validated.jobName,
       validated.status,
       validated.startedAt ? new Date(validated.startedAt) : undefined,
       validated.completedAt ? new Date(validated.completedAt) : undefined,
       steps,
+      plan && {
+        members: plan.members,
+        plannedLanes: plan.plannedLanes,
+        maxFailures: plan.maxFailures,
+        batches: plan.batches,
+        lanes: plan.lanes.map((lane) => ({
+          name: lane.name,
+          worker: lane.worker,
+          instanceUuid: lane.instanceUuid,
+          steps: lane.steps.map((step) => StepRun.fromData(step)),
+        })),
+      },
     );
+  }
+
+  get fanOutPlan(): FanOutPlanRecord | undefined {
+    return this._fanOutPlan;
+  }
+
+  /**
+   * lanes follow the batch order, one pending step run per template step; a
+   * plan is recorded once, since a resume must never re-plan
+   */
+  recordFanOutPlan(
+    plan: Extract<FanOutPlan, { kind: "planned" }>,
+    batches: readonly (readonly string[])[],
+    stepNames: readonly string[],
+  ): void {
+    if (this._fanOutPlan !== undefined) {
+      throw new Error(`Job '${this.jobName}' already holds a fan-out plan`);
+    }
+    const batchOf = new Map<string, number>();
+    batches.forEach((batch, index) => {
+      for (const worker of batch) batchOf.set(worker, index);
+    });
+    const laned = new Map(
+      plan.members.filter(hasLane).map((member) => [member.worker, member]),
+    );
+    for (const worker of laned.keys()) {
+      if (!batchOf.has(worker)) {
+        throw new Error(
+          `Fan-out plan for job '${this.jobName}' has lane '${worker}' in no batch`,
+        );
+      }
+    }
+    this._fanOutPlan = {
+      members: plan.members.map((member) => ({
+        worker: member.worker,
+        instanceUuid: member.instanceUuid,
+        disposition: member.disposition,
+        ...(member.reason !== undefined ? { reason: member.reason } : {}),
+        ...(batchOf.has(member.worker) && hasLane(member)
+          ? { batch: batchOf.get(member.worker) }
+          : {}),
+      })),
+      plannedLanes: plan.plannedLanes,
+      maxFailures: plan.maxFailures,
+      batches: batches.map((batch) => [...batch]),
+      lanes: batches.flat().flatMap((worker) => {
+        const member = laned.get(worker);
+        if (member === undefined) return [];
+        return [{
+          name: fanOutLaneName(this.jobName, worker),
+          worker,
+          instanceUuid: member.instanceUuid,
+          steps: stepNames.map((name) => StepRun.pending(name)),
+        }];
+      }),
+    };
   }
 
   get status(): RunStatus {
@@ -1002,13 +1120,29 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   toData(): JobRunData {
-    return {
+    const data: JobRunData = {
       jobName: this.jobName,
       status: this._status,
       startedAt: this._startedAt?.toISOString(),
       completedAt: this._completedAt?.toISOString(),
       steps: this._steps.map((s) => s.toData()),
     };
+    const plan = this._fanOutPlan;
+    if (plan !== undefined) {
+      data.fanOutPlan = {
+        members: plan.members.map((member) => ({ ...member })),
+        plannedLanes: plan.plannedLanes,
+        maxFailures: plan.maxFailures,
+        batches: plan.batches.map((batch) => [...batch]),
+        lanes: plan.lanes.map((lane) => ({
+          name: lane.name,
+          worker: lane.worker,
+          instanceUuid: lane.instanceUuid,
+          steps: lane.steps.map((step) => step.toData()),
+        })),
+      };
+    }
+    return data;
   }
 }
 
