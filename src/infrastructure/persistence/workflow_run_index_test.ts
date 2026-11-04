@@ -396,6 +396,20 @@ Deno.test("withIndexQueue: runs the function unlocked, without a warning, where 
   });
 });
 
+Deno.test("withIndexQueue: runs the function unlocked, without a warning, where the runs directory is a file", async () => {
+  await withTempDir(async (dir) => {
+    const file = join(dir, "runs");
+    await Deno.writeTextFile(file, "");
+
+    const { result, warnings } = await withIndexWarnings(() =>
+      withIndexQueue(file, () => Promise.resolve("ran"))
+    );
+
+    assertEquals(result, "ran");
+    assertEquals(warnings, []);
+  });
+});
+
 Deno.test("withIndexQueue: warns when it runs the function unlocked for any other reason", async () => {
   await withTempDir(async (dir) => {
     await Deno.mkdir(join(dir, RUNS_INDEX_LOCK_FILENAME));
