@@ -1600,9 +1600,11 @@ phase of swamp-club#3824. It is all pure domain code apart from one port.
   namespace's `swamp/worker` records that have left the pool while their
   enrollment token still holds. A token holds when
   `enrollmentTokenBindingVerdict` keeps it and its `expiresAt` is still ahead.
-  The worker record keeps no mint, so its `enrolledAt` stands in for it: a
-  token created after the worker enrolled is a re-mint. Pool reads stay inside
-  serve; expressions still cannot see control-plane records.
+  The worker record's `tokenCreatedAt` is the mint serve last enrolled or
+  reconnected it on, taken from serve's token record: a token created after it
+  is a re-mint. Records written before that field have only `enrolledAt`,
+  which stands in for the mint. Pool reads stay inside serve; expressions
+  still cannot see control-plane records.
 - **`planFanOut(selector, policy, pool)`** (`src/domain/remote/scheduler.ts`)
   matches labels and platform exactly as `eligibleWorkers` does and gives every
   match one disposition, in name order: `excluded` for unverified or draining

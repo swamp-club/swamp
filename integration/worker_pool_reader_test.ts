@@ -21,6 +21,10 @@ import { assertEquals } from "@std/assert";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../src/domain/models/worker/enrollment_token_model.ts";
+import {
+  WORKER_MODEL_TYPE,
+  workerDefinitionName,
+} from "../src/domain/models/worker/worker_model.ts";
 import { FanOutPolicySchema } from "../src/domain/remote/fan_out.ts";
 import { planFanOut } from "../src/domain/remote/scheduler.ts";
 import type { PoolWorker } from "../src/domain/remote/worker_pool.ts";
@@ -135,5 +139,48 @@ Deno.test({
     assertEquals(summary(await poolReader(fleet, afterExpiry).readPool()), [
       ["w-up", "idle", true],
     ]);
+  },
+});
+
+async function storedMint(
+  fleet: Fleet,
+  name: string,
+): Promise<string | undefined> {
+  const records = await fleet.repoContext.dataQueryService.query(
+    `modelType == "${WORKER_MODEL_TYPE.normalized}" && ` +
+      `modelName == "${workerDefinitionName(name)}" && name == "state-main"`,
+    { loadAttributes: true },
+  ) as Array<{ attributes?: { tokenCreatedAt?: string } }>;
+  return records[0]?.attributes?.tokenCreatedAt;
+}
+
+Deno.test({
+  name:
+    "WorkerPoolReader: a worker's record keeps the mint it enrolled on through a dispatch, a disconnect and a reconnect",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({ graceWindowMs: 10 * 60 * 1000 });
+    const worker = await fleet.addWorker("w-mint", {
+      labels: { role: "web" },
+    });
+    const mint = (await fleet.gateway.readTokenRecords()).get("w-mint")
+      ?.createdAt;
+    assertEquals(typeof mint, "string");
+    assertEquals(await storedMint(fleet, "w-mint"), mint);
+
+    const definition = await fleet.saveDefinition("mint-step");
+    assertEquals(
+      await fleet.dispatchStep(definition, { labels: { role: "web" } }),
+      "w-mint",
+    );
+    await fleet.waitForRecordStatus("w-mint", "idle");
+    assertEquals(await storedMint(fleet, "w-mint"), mint);
+
+    await worker.disconnect();
+    assertEquals(await storedMint(fleet, "w-mint"), mint);
+
+    await worker.connect();
+    assertEquals(await fleet.recordStatus("w-mint"), "idle");
+    assertEquals(await storedMint(fleet, "w-mint"), mint);
   },
 });

@@ -1918,6 +1918,45 @@ Deno.test("WorkerGateway: without verifyOnEnroll — a reconnect records the wor
   );
 });
 
+Deno.test("WorkerGateway: enrolment records the mint it redeemed on the worker's record", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  const enrolled = h.transitions.find((t) => t.methodName === "enroll");
+  assertEquals(enrolled?.inputs.tokenCreatedAt, BASE_MINT);
+});
+
+Deno.test("WorkerGateway: a reconnect records the mint it redeemed, so a newer mint replaces the one the worker enrolled on", async () => {
+  let mint = BASE_MINT;
+  const h = createHarness({
+    graceWindowMs: 200,
+    readTokenRecord: (name) => Promise.resolve(mintRecord(name, mint)),
+  });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  first.dropSocket();
+  await waitFor(
+    () => setStatusWrites(h).at(-1) === "disconnected",
+    "the disconnect to be recorded",
+  );
+  mint = "2026-01-01T00:05:00.000Z";
+  const writesBefore = h.transitions.length;
+  const second = connectWorkerSocket(h.gateway);
+  await enroll(second.workerChannel);
+  const reconnectWrite = h.transitions
+    .slice(writesBefore)
+    .find((t) => t.methodName === "set_status");
+  assertEquals(reconnectWrite?.inputs, {
+    status: "idle",
+    tokenCreatedAt: mint,
+  });
+  second.dropSocket();
+  await waitFor(
+    () => h.gateway.workers().length === 0,
+    "the grace window to expire",
+  );
+});
+
 Deno.test("WorkerGateway: verifyOnEnroll — a reconnect while a step holds a slot records unverified and keeps the step (swamp-club#3501)", async () => {
   const h = createProbingHarness();
   const first = connectWorkerSocket(h.gateway);
@@ -1968,6 +2007,7 @@ Deno.test("WorkerGateway: verifyOnEnroll — a reconnect while a step holds a sl
   assertEquals(reconnectWrite?.inputs, {
     status: "unverified",
     activeDispatchIds: ["step-1"],
+    tokenCreatedAt: BASE_MINT,
   });
 
   first.dropSocket();

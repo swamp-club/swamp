@@ -40,13 +40,18 @@ export interface ServeWorkerPoolReaderDeps {
   now(): number;
 }
 
-// the record keeps no mint, so enrolledAt stands in: a token created after enrolment is a re-mint
+// enrolledAt stands in for the mint only on records written before tokenCreatedAt
 export function leftPoolTokenHolds(
   record: WorkerState,
   token: EnrollmentToken | null,
   nowMs: number,
 ): boolean {
-  if (!enrollmentTokenBindingVerdict(token, record.enrolledAt).keep) {
+  if (
+    !enrollmentTokenBindingVerdict(
+      token,
+      record.tokenCreatedAt ?? record.enrolledAt,
+    ).keep
+  ) {
     return false;
   }
   return token !== null && token.state !== "expired" &&

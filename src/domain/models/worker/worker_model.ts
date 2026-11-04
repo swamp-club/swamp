@@ -49,6 +49,9 @@ export const WorkerStateSchema = z.object({
   swampVersion: z.string(),
   protocolVersion: z.number().int(),
   enrolledAt: z.string().datetime(),
+  tokenCreatedAt: z.string().datetime().optional().describe(
+    "Mint (createdAt) of the enrollment token this worker is bound to",
+  ),
   lastSeenAt: z.string().datetime(),
   disconnectedAt: z.string().datetime().optional(),
   capacity: z.number().int().min(1).default(1).describe(
@@ -96,6 +99,7 @@ const EnrollArgsSchema = z.object({
   protocolVersion: z.number().int(),
   capacity: z.number().int().min(1).default(1),
   status: z.enum(["idle", "unverified"]).optional(),
+  tokenCreatedAt: z.string().datetime().optional(),
 });
 
 async function enroll(
@@ -114,6 +118,9 @@ async function enroll(
     swampVersion: args.swampVersion,
     protocolVersion: args.protocolVersion,
     enrolledAt: now,
+    ...(args.tokenCreatedAt !== undefined
+      ? { tokenCreatedAt: args.tokenCreatedAt }
+      : {}),
     lastSeenAt: now,
     capacity: args.capacity,
     activeDispatchIds: [],
@@ -131,6 +138,7 @@ export const SetStatusArgsSchema = z.object({
   dispatchId: z.string().optional(),
   activeDispatchIds: z.array(z.string()).optional(),
   verifyFailureReason: z.string().optional(),
+  tokenCreatedAt: z.string().datetime().optional(),
 });
 
 export type SetStatusArgs = z.infer<typeof SetStatusArgsSchema>;
@@ -151,6 +159,9 @@ export function nextWorkerState(
       ? []
       : dispatchIds,
     ...(args.status === "disconnected" ? { disconnectedAt: at } : {}),
+    ...(args.tokenCreatedAt !== undefined
+      ? { tokenCreatedAt: args.tokenCreatedAt }
+      : {}),
     verifyFailureReason: args.status === "unverified"
       ? args.verifyFailureReason
       : undefined,
