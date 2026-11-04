@@ -651,6 +651,23 @@ Deno.test("doctor datastores --repair: log mode prints each stage's line and no 
   });
 });
 
+Deno.test("doctor datastores --repair -y: closes every catalog connection before it returns, so a later stage can remove the file on Windows", async () => {
+  await initializeLogging({});
+  await withV2Repo(undefined, async (repoDir) => {
+    await repair(repoDir, "-y");
+    const dbPath = catalogDbPath(repoDir);
+    const exists = (path: string) =>
+      Deno.stat(path).then(() => true, (error) => {
+        if (error instanceof Deno.errors.NotFound) return false;
+        throw error;
+      });
+    assertEquals(await exists(dbPath), true);
+    // Only an unclosed connection leaves a WAL sidecar; POSIX hides it otherwise.
+    assertEquals(await exists(`${dbPath}-wal`), false);
+    assertEquals(await exists(`${dbPath}-shm`), false);
+  });
+});
+
 Deno.test("doctor datastores --repair --json: a stage that fails still leaves the finished stages as one document (swamp-club#4011)", async () => {
   await initializeLogging({});
   await withV2Repo("team", async (repoDir, datastorePath) => {

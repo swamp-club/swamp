@@ -624,10 +624,21 @@ function createCatalogRepairDeps(repoDir: string): RepairCatalogIndexDeps {
 function createDuplicateLatestRepairDeps(
   repoDir: string,
 ): RepairCatalogDuplicateLatestDeps {
-  const store = createCatalogStore(repoDir);
+  // Closed per call: later stages remove the catalog file, and Windows
+  // refuses to remove a file that is still open.
+  const withStore = <T>(fn: (store: CatalogStore) => T): T => {
+    const store = createCatalogStore(repoDir);
+    try {
+      return fn(store);
+    } finally {
+      store.close();
+    }
+  };
   return {
-    countDuplicateLatest: () => store.countDuplicateLatest(),
-    enforceUniqueLatest: () => store.enforceUniqueLatest(computeLatestFlags),
+    countDuplicateLatest: () =>
+      withStore((store) => store.countDuplicateLatest()),
+    enforceUniqueLatest: () =>
+      withStore((store) => store.enforceUniqueLatest(computeLatestFlags)),
   };
 }
 
