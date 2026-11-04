@@ -115,44 +115,65 @@ async function isSymlink(path: string): Promise<boolean> {
   }
 }
 
-// Windows renames the handle it opened by name, so a refusal is either another
-// clear deleting what it moved, or a file held open inside; asking again by
-// name tells them apart.
-async function movedAside(from: string, to: string): Promise<boolean> {
-  try {
-    await Deno.rename(from, to);
-    return true;
-  } catch (error) {
-    if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
-  }
-  try {
-    await Deno.rename(from, to);
-    return true;
-  } catch (error) {
-    if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
-    logger.debug`Leaving output summaries ${from} for the next clear: ${error}`;
-    return false;
-  }
-}
-
-const MARKER_ATTEMPTS = 5;
-
-// Windows refuses a rename onto the marker while another clear replaces it or
-// a reader has it open; both let go within moments, and the shards must not go
-// until this clear's marker is in.
-async function writeClearedMarker(path: string): Promise<void> {
+async function refusalsRetried(
+  attempts: number,
+  fn: () => Promise<void>,
+): Promise<void> {
   for (let attempt = 1;; attempt++) {
     try {
-      return await atomicWriteTextFile(path, crypto.randomUUID());
+      return await fn();
     } catch (error) {
       if (
-        !(error instanceof Deno.errors.PermissionDenied) ||
-        attempt === MARKER_ATTEMPTS
+        !(error instanceof Deno.errors.PermissionDenied) || attempt === attempts
       ) {
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, attempt * 5));
     }
+  }
+}
+
+// A refused move on Windows is another clear deleting the entry it moved,
+// which the retry by name sees as NotFound, or a file held open inside, which
+// stays refused; elsewhere a refusal is a real one and warns.
+async function movedAside(from: string, to: string): Promise<boolean> {
+  try {
+    await refusalsRetried(2, () => Deno.rename(from, to));
+    return true;
+  } catch (error) {
+    if (
+      !(error instanceof Deno.errors.PermissionDenied) ||
+      Deno.build.os !== "windows"
+    ) {
+      throw error;
+    }
+    logger.debug`Leaving output summaries ${from} for the next clear: ${error}`;
+    return false;
+  }
+}
+
+async function markerText(path: string): Promise<string | undefined> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch {
+    return undefined;
+  }
+}
+
+// The shards must not go until the marker has changed since this clear began.
+// Windows refuses a rename onto it while it is held open, as by a scan of
+// another clear's marker; that marker landing moves the generation as well.
+async function writeClearedMarker(path: string): Promise<void> {
+  const before = await markerText(path);
+  try {
+    await refusalsRetried(
+      5,
+      () => atomicWriteTextFile(path, crypto.randomUUID()),
+    );
+  } catch (error) {
+    if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+    const after = await markerText(path);
+    if (after === undefined || after === before) throw error;
   }
 }
 

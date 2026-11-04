@@ -799,25 +799,49 @@ Deno.test("removeStaleOutputSummaries: an entry refused once is moved by the sec
   });
 });
 
-Deno.test("removeStaleOutputSummaries: an entry refused on every try is left for the next clear, and warns of nothing", async () => {
-  await withTempDir(async (dir) => {
-    await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "held"));
-    await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "other"));
+Deno.test({
+  name:
+    "removeStaleOutputSummaries: off Windows, an entry refused on every try still warns",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "held"));
 
-    const warnings = await warningsOfClearWith(
-      dir,
-      async (from, to, rename) => {
-        if (basename(from) === "held") throw denied();
-        await rename(from, to);
-      },
-    );
+      const warnings = await warningsOfClearWith(dir, () => {
+        throw denied();
+      });
 
-    assertEquals(warnings, []);
-    assertEquals(await entriesOf(dir), ["cleared", "held"]);
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(warnings[0], "os error 5");
+      assertEquals(await entriesOf(dir), ["cleared", "held"]);
+    });
+  },
+});
 
-    await removeStaleOutputSummaries(dir);
-    assertEquals(await entriesOf(dir), ["cleared"]);
-  });
+Deno.test({
+  name:
+    "removeStaleOutputSummaries: on Windows, an entry refused on every try is left for the next clear, and warns of nothing",
+  ignore: Deno.build.os !== "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "held"));
+      await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "other"));
+
+      const warnings = await warningsOfClearWith(
+        dir,
+        async (from, to, rename) => {
+          if (basename(from) === "held") throw denied();
+          await rename(from, to);
+        },
+      );
+
+      assertEquals(warnings, []);
+      assertEquals(await entriesOf(dir), ["cleared", "held"]);
+
+      await removeStaleOutputSummaries(dir);
+      assertEquals(await entriesOf(dir), ["cleared"]);
+    });
+  },
 });
 
 Deno.test("removeStaleOutputSummaries: a move aside failing for another reason still warns", async () => {
@@ -853,13 +877,17 @@ Deno.test("removeStaleOutputSummaries: a shard held open across a clear warns of
 async function warningsOfClearRefusingMarker(
   dir: string,
   refusals: number,
+  whileRefused: (marker: string) => Promise<void> = () => Promise.resolve(),
 ): Promise<string[]> {
   const rename = Deno.rename;
   let refused = 0;
-  (Deno as { rename: typeof Deno.rename }).rename = (from, to) =>
-    basename(String(to)) === "cleared" && refused++ < refusals
-      ? Promise.reject(denied())
-      : rename(from, to);
+  (Deno as { rename: typeof Deno.rename }).rename = async (from, to) => {
+    if (basename(String(to)) !== "cleared" || refused >= refusals) {
+      return await rename(from, to);
+    }
+    if (refused++ === 0) await whileRefused(String(to));
+    throw denied();
+  };
   try {
     return await warningsDuring(() => removeStaleOutputSummaries(dir));
   } finally {
@@ -894,6 +922,38 @@ Deno.test("removeStaleOutputSummaries: a marker refused on every try warns, and 
     assertStringIncludes(warnings[0], "os error 5");
     assertEquals(await entriesOf(dir), ["v1"]);
     assertEquals((await index.read(TYPE, DAY)).size, 1);
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: a marker refused on every try while it stays as it was warns, and moves no shard", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await removeStaleOutputSummaries(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+
+    const warnings = await warningsOfClearRefusingMarker(dir, Infinity);
+
+    assertEquals(warnings.length, 1);
+    assertEquals(await entriesOf(dir), ["cleared", "v1"]);
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: a marker refused on every try while another clear's marker lands is enough, and the shards go", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await removeStaleOutputSummaries(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+    const before = await index.generation();
+
+    const warnings = await warningsOfClearRefusingMarker(
+      dir,
+      Infinity,
+      (marker) => Deno.writeTextFile(marker, crypto.randomUUID()),
+    );
+
+    assertEquals(warnings, []);
+    assertNotEquals(await index.generation(), before);
+    assertEquals(await entriesOf(dir), ["cleared"]);
   });
 });
 
