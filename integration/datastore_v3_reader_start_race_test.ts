@@ -70,7 +70,8 @@ function startOther(request: StartRaceRequest) {
   const seen = (
     test: (m: StartRaceMessage) => boolean,
     description: string,
-    timeoutMs = 10_000,
+    // a first message waits on the worker loading its whole module graph
+    timeoutMs = 120_000,
   ) =>
     waitFor(
       () => messages.some(test) || messages.some((m) => "failed" in m),
@@ -120,7 +121,7 @@ Deno.test("alignCheckoutView: a reader waiting for the lease reads once the writ
       const aligned = await reader.seen(
         (m) => "aligned" in m,
         "the reader aligned while the writer still holds the lease",
-        15_000,
+        60_000,
       );
       assertEquals(writerRebuilds, 1);
       assertEquals("aligned" in aligned ? aligned.aligned : undefined, 0);

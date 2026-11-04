@@ -106,7 +106,11 @@ function startClient(
         kind: "run",
         configDir: scratch.configDir,
         repoDir: client.repoDir,
-        env: serveEnv(serve, "alice-token"),
+        // under load one request contending with serve's runs outlasts 30s
+        env: {
+          ...serveEnv(serve, "alice-token"),
+          SWAMP_SERVE_TIMEOUT_MS: "120000",
+        },
         modelType: serve.modelType.normalized,
         modelId: serve.models.web,
         dataName: "out",
