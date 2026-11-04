@@ -212,7 +212,12 @@ steps:
    workflow. With `--approve-requires-explicit-grant`, serve stops counting
    `run` grants, so only a grant naming `approve` can decide a gate (see
    "Actions" in `design/enablers/access-control.md`). `--run` is optional when
-   only one run is suspended.
+   only one run is suspended. A refusal through serve (a step not awaiting
+   approval, say) reads as the local one: serve's error carries the local
+   code in its details (`refusalCode`), and the CLI shows serve's message
+   with that code and no `Server reported` prefix. An authorization denial,
+   or a serve that sends no `refusalCode`, keeps the prefixed form. `reject`
+   does the same.
 3. `swamp workflow resume <workflow> --run <id>` re-enters the executor, skips
    completed steps, and runs the pending ones. The dashboard's Resume action
    on an approved run sends the same `workflow.resume` request, with no new
@@ -3634,10 +3639,11 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
-**Cancel on a v3 datastore.** A run's owner holds a directly bound v3
-datastore's writer for the whole run, so a cancel that took the writer first
-would wait for the run to end. Cancel therefore finds its runs through a
-read-only open, stops their owners (`stopLocalRunOwners`), and only then takes
+**Cancel on a v3 datastore.** A run's owner holds a v3 datastore's writer for
+the whole run, bound directly or as a team member's checkout of serve's
+datastore, so a cancel that took the writer first would wait for the run to
+end (swamp-club#4377 for the member's checkout). Cancel therefore finds its
+runs through a read-only open, stops their owners (`stopLocalRunOwners`), and only then takes
 the writer to settle the records, with the stopped owners passed on so none is
 stopped twice. An owner that stopped on SIGTERM saved its own outcome and
 released the writer; one killed after its grace left a lease the writer's open

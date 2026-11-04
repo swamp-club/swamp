@@ -201,6 +201,37 @@ export class ServerResponseError extends UserError {
   }
 }
 
+/** the codes an approve or reject refusal has locally; details are untrusted */
+const LOCAL_GATE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "validation_failed",
+  "not_found",
+]);
+
+/**
+ * serve's refusal of an approve or reject (`failedCode`) in the local wording
+ * and code, when serve named a code the same refusal has locally
+ */
+export function remoteGateRefusalUserError(
+  error: unknown,
+  failedCode: "workflow_approve_failed" | "workflow_reject_failed",
+): unknown {
+  if (!(error instanceof ServerResponseError) || error.code !== failedCode) {
+    return error;
+  }
+  const details = error.details;
+  const refusalCode = details !== null && typeof details === "object" &&
+      "refusalCode" in details
+    ? (details as { refusalCode: unknown }).refusalCode
+    : undefined;
+  if (
+    typeof refusalCode !== "string" ||
+    !LOCAL_GATE_REFUSAL_CODES.has(refusalCode)
+  ) {
+    return error;
+  }
+  return new UserError(error.serverMessage, refusalCode);
+}
+
 const CANCEL_DRAIN_MS = 10_000;
 
 const CONNECT_TIMEOUT_MS = 15_000;

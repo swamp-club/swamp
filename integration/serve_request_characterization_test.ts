@@ -195,7 +195,14 @@ for (const missing of [MISSING_NAME, MISSING_ID]) {
         assertEquals(frames.length, 1, type);
         assertEquals(
           errorFrame(frames)?.error,
-          { code, message: workflowNotFound(missing) },
+          {
+            code,
+            message: workflowNotFound(missing),
+            // the code approve and reject give the same refusal locally
+            ...(type === "workflow.approve" || type === "workflow.reject"
+              ? { details: { refusalCode: "validation_failed" } }
+              : {}),
+          },
           type,
         );
       }

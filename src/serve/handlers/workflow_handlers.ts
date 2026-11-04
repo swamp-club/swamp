@@ -118,6 +118,7 @@ import {
 import { runGeneratorWithVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { withSharedSyncGate } from "../sync_gate.ts";
 import { isWireEvent, serializeEvent } from "../serializer.ts";
+import { UserError } from "../../domain/errors.ts";
 import type {
   EffectiveTrigger,
   WorkflowApprovePayload,
@@ -126,6 +127,7 @@ import type {
   WorkflowDeletePayload,
   WorkflowEditPayload,
   WorkflowEvaluatePayload,
+  WorkflowGateRefusalDetails,
   WorkflowGetPayload,
   WorkflowHistoryGetPayload,
   WorkflowHistoryLogsPayload,
@@ -1511,6 +1513,24 @@ export async function handleWorkflowSchema(
   }
 }
 
+/** a libswamp refusal of an approve or reject, keeping the code it has locally */
+class GateRefusalError extends Error {
+  constructor(message: string, readonly refusalCode: string) {
+    super(message);
+    this.name = "GateRefusalError";
+  }
+}
+
+/** none when the message was withheld, so a withheld one is never local */
+function gateRefusalDetails(
+  error: unknown,
+  sentMessage: string,
+): WorkflowGateRefusalDetails | undefined {
+  return error instanceof GateRefusalError && error.message === sentMessage
+    ? { refusalCode: error.refusalCode }
+    : undefined;
+}
+
 export async function handleWorkflowApprove(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1599,11 +1619,12 @@ export async function handleWorkflowApprove(
             error: async (e) => {
               // a nested step's refusal names the nested run only to a reader
               // of its workflow
-              throw new Error(
+              throw new GateRefusalError(
                 await nestedGateRefusalForClient(
                   e.error,
                   nestedRunReadDecider(ctx, socket, principal),
                 ) ?? e.error.message,
+                e.error.code,
               );
             },
           },
@@ -1626,7 +1647,13 @@ export async function handleWorkflowApprove(
         return approved;
       } catch (error) {
         const message = sanitizeErrorForClient(error);
-        sendError(socket, requestId, "workflow_approve_failed", message);
+        sendError(
+          socket,
+          requestId,
+          "workflow_approve_failed",
+          message,
+          gateRefusalDetails(error, message),
+        );
         return undefined;
       } finally {
         // Released before the auto-resume below, which registers the run.
@@ -2022,11 +2049,12 @@ export async function handleWorkflowReject(
             error: async (e) => {
               // a nested step's refusal names the nested run only to a reader
               // of its workflow
-              throw new Error(
+              throw new GateRefusalError(
                 await nestedGateRefusalForClient(
                   e.error,
                   nestedRunReadDecider(ctx, socket, principal),
                 ) ?? e.error.message,
+                e.error.code,
               );
             },
           },
@@ -2067,7 +2095,13 @@ export async function handleWorkflowReject(
         });
       } catch (error) {
         const message = sanitizeErrorForClient(error);
-        sendError(socket, requestId, "workflow_reject_failed", message);
+        sendError(
+          socket,
+          requestId,
+          "workflow_reject_failed",
+          message,
+          gateRefusalDetails(error, message),
+        );
       } finally {
         release?.();
       }
@@ -2113,7 +2147,12 @@ async function reserveSuspendedRun(
     workflow.idOrName,
     runId,
     { byId: workflow.byId, expectedName: workflow.expectedName },
-  );
+  ).catch((error: unknown) => {
+    // the code approve and reject give the same refusal locally
+    throw error instanceof UserError
+      ? new GateRefusalError(error.message, "validation_failed")
+      : error;
+  });
   const registry = ctx.activeRunRegistry;
   if (!registry) return { ok: true, runId: run.id, release: undefined };
   const release = registry.reserve(run.id);

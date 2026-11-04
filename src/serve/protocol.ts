@@ -1554,6 +1554,14 @@ export interface WorkflowRejectResponse {
 export const SERVER_WAITS_COMMAND = "swamp workflow waits --server <server>";
 
 /**
+ * the details of an approve or reject refused as it would be locally: the code
+ * the same refusal has there
+ */
+export interface WorkflowGateRefusalDetails {
+  refusalCode: string;
+}
+
+/**
  * A delivered signal. The fields after `signal` are present only for a
  * caller who may also read the wait's workflow.
  */

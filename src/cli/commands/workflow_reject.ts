@@ -46,6 +46,7 @@ import {
 import { localNestedCascade } from "../local_nested_cascade.ts";
 import {
   DECIDED_ON_SERVE_OPTION_TEXTS,
+  remoteGateRefusalUserError,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -112,7 +113,9 @@ export const workflowRejectCommand = withRemoteOptions(
             runId: options.run as string | undefined,
           },
         },
-      );
+      ).catch((error: unknown) => {
+        throw remoteGateRefusalUserError(error, "workflow_reject_failed");
+      });
       await consumeStream<WorkflowRejectEvent>(
         (async function* () {
           yield {
