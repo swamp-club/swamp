@@ -190,7 +190,6 @@ const FanOutLaneRecordSchema = z.object({
   steps: z.array(StepRunSchema),
 });
 
-// key is not "fanOut": older binaries' baseline probes store that name as unknown
 export const FanOutPlanRecordSchema = z.object({
   members: z.array(FanOutMemberRecordSchema),
   plannedLanes: z.number().int().nonnegative(),
@@ -236,6 +235,7 @@ export const JobRunSchema = z.object({
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   steps: z.array(StepRunSchema),
+  // not "fanOut": older binaries treat that job-run key as unknown and drop it
   fanOutPlan: FanOutPlanRecordSchema.optional(),
 });
 
@@ -840,10 +840,6 @@ export class JobRun implements TriggerEvaluationContext {
     return this._fanOutPlan;
   }
 
-  /**
-   * lanes follow the batch order, one pending step run per template step; a
-   * plan is recorded once, since a resume must never re-plan
-   */
   recordFanOutPlan(
     plan: Extract<FanOutPlan, { kind: "planned" }>,
     batches: readonly (readonly string[])[],
@@ -854,8 +850,24 @@ export class JobRun implements TriggerEvaluationContext {
     }
     const batchOf = new Map<string, number>();
     batches.forEach((batch, index) => {
-      for (const worker of batch) batchOf.set(worker, index);
+      for (const worker of batch) {
+        if (batchOf.has(worker)) {
+          throw new Error(
+            `Fan-out plan for job '${this.jobName}' lists '${worker}' in more than one batch`,
+          );
+        }
+        batchOf.set(worker, index);
+      }
     });
+    const workers = new Set<string>();
+    for (const member of plan.members) {
+      if (workers.has(member.worker)) {
+        throw new Error(
+          `Fan-out plan for job '${this.jobName}' lists '${member.worker}' more than once`,
+        );
+      }
+      workers.add(member.worker);
+    }
     const laned = new Map(
       plan.members.filter(hasLane).map((member) => [member.worker, member]),
     );

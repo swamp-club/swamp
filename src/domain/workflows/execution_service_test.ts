@@ -24869,8 +24869,6 @@ Deno.test("WorkflowExecutionService: a nested run's refused step start reaches t
   });
 });
 
-// --- fan-out jobs are refused until the lane engine ---
-
 const FAN_OUT_REFUSAL =
   "fan-out jobs are not available in this version of swamp";
 

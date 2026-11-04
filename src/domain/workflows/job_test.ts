@@ -491,8 +491,6 @@ Deno.test("Job.fromData: rejects a persisted job whose name holds a control char
   );
 });
 
-// --- fanOut ---
-
 function fanOutJob(fanOut: unknown): JobInput {
   return {
     name: "patch",

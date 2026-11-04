@@ -3652,8 +3652,6 @@ Deno.test("isGuardedRunRecord: a run serve drives or one holding a decision is g
   );
 });
 
-// --- Stored fan-out plan ---
-
 function plannedFanOut() {
   return {
     kind: "planned" as const,
@@ -3740,6 +3738,32 @@ Deno.test("JobRun.recordFanOutPlan: a second plan is refused", () => {
       job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]], ["apply"]),
     Error,
     "already holds a fan-out plan",
+  );
+});
+
+Deno.test("JobRun.recordFanOutPlan: a worker listed twice, among members or across batches, is refused", () => {
+  const twice = plannedFanOut();
+  const duplicated = {
+    ...twice,
+    members: [...twice.members, { ...twice.members[1] }],
+  };
+  assertThrows(
+    () =>
+      JobRun.pending("patch", ["apply"]).recordFanOutPlan(duplicated, [[
+        "host-a",
+        "host-b",
+      ]], ["apply"]),
+    Error,
+    "lists 'host-a' more than once",
+  );
+  assertThrows(
+    () =>
+      JobRun.pending("patch", ["apply"]).recordFanOutPlan(plannedFanOut(), [
+        ["host-a"],
+        ["host-a", "host-b"],
+      ], ["apply"]),
+    Error,
+    "lists 'host-a' in more than one batch",
   );
 });
 

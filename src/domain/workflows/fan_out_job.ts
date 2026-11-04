@@ -47,15 +47,21 @@ export function fanOutJobRefusals(
     const at = (...rest: (string | number)[]) => ["jobs", jobIndex, ...rest];
     const name = job.name;
 
+    const selector = mergePlacementFields(workflow, job);
     if (job.target !== undefined) {
       refusals.push({
         path: at("target"),
         message:
           `Fan-out job '${name}' sets target, which names one worker. Remove target and select the workers with labels or platform.`,
       });
+    } else if (selector?.target !== undefined) {
+      refusals.push({
+        path: ["target"],
+        message:
+          `The workflow sets target, which fan-out job '${name}' would inherit and which names one worker. Remove target from the workflow, or set it on the jobs that need it.`,
+      });
     }
 
-    const selector = mergePlacementFields(workflow, job);
     const hasLabels = selector?.labels !== undefined &&
       Object.keys(selector.labels).length > 0;
     if (!hasLabels && selector?.platform === undefined) {
@@ -123,6 +129,7 @@ export function fanOutJobRefusals(
 // a resume must never re-plan silently: an older swamp drops the plan on save
 export function fanOutPlanMissing(
   job: { readonly fanOut?: unknown },
+  // status alone does not mean started: a job ended unstarted has a final status
   jobRun: {
     readonly status: string;
     readonly startedAt?: unknown;
@@ -130,12 +137,10 @@ export function fanOutPlanMissing(
   },
 ): boolean {
   if (job.fanOut === undefined) return false;
-  const started = jobRun.startedAt !== undefined ||
-    (jobRun.status !== "pending" && jobRun.status !== "skipped");
-  return started && jobRun.fanOutPlan === undefined;
+  return jobRun.startedAt !== undefined && jobRun.fanOutPlan === undefined;
 }
 
-// removed by the lane engine; until then a fan-out job never runs as a plain job
+// a fan-out job never runs as a plain job
 export function refuseFanOutJobs(
   workflow: {
     readonly name: string;

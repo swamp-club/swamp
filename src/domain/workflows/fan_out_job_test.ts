@@ -72,6 +72,12 @@ Deno.test("validateWorkflow: a fan-out job with a target is refused", () => {
   ]);
 });
 
+Deno.test("validateWorkflow: a workflow-level target a fan-out job inherits is refused", () => {
+  assertEquals(refusalsOf(fanOutWorkflow({}, { target: "host-a" })), [
+    "The workflow sets target, which fan-out job 'patch' would inherit and which names one worker. Remove target from the workflow, or set it on the jobs that need it.",
+  ]);
+});
+
 Deno.test("validateWorkflow: a fan-out job with no labels or platform in effect is refused", () => {
   const message =
     "Fan-out job 'patch' has no labels or platform in effect. Set labels or platform on the job or the workflow; to reach every worker, give them a shared label and select it.";
@@ -254,20 +260,18 @@ Deno.test("fanOutPlanMissing: a started fan-out job run without a plan is report
     true,
   );
   assertEquals(
-    fanOutPlanMissing({ fanOut: "all" }, { status: "failed" }),
+    fanOutPlanMissing({ fanOut: "all" }, {
+      status: "failed",
+      startedAt: new Date(),
+    }),
     true,
   );
 });
 
 Deno.test("fanOutPlanMissing: a fan-out job run that has not started, or holds a plan, is not reported", () => {
-  assertEquals(
-    fanOutPlanMissing({ fanOut: "all" }, { status: "pending" }),
-    false,
-  );
-  assertEquals(
-    fanOutPlanMissing({ fanOut: "all" }, { status: "skipped" }),
-    false,
-  );
+  for (const status of ["pending", "skipped", "failed"]) {
+    assertEquals(fanOutPlanMissing({ fanOut: "all" }, { status }), false);
+  }
   assertEquals(
     fanOutPlanMissing({ fanOut: "all" }, {
       status: "running",
