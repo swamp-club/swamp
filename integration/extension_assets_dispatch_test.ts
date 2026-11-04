@@ -30,6 +30,7 @@ import {
   REMOTE_PROTOCOL_VERSION,
 } from "../src/domain/remote/protocol.ts";
 import type { RemoteStepRequest } from "../src/domain/remote/remote_dispatch.ts";
+import { canonicalizePath } from "../src/infrastructure/persistence/canonicalize_path.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
@@ -212,7 +213,10 @@ Deno.test("serve ships a file newly declared in a local extension's manifest on 
         new Map([["scripts/a.py", await hash("print('a')")]]),
       );
       const shipped = h.bundles.get(after);
-      assertEquals(shipped?.filesRoot, modelsDir);
+      assertEquals(
+        canonicalizePath(shipped?.filesRoot ?? ""),
+        canonicalizePath(modelsDir),
+      );
       assertEquals(shipped?.additionalFiles, ["scripts/a.py", "scripts/b.py"]);
       assertEquals(
         shipped?.assetHashes,
