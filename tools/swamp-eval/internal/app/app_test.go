@@ -202,7 +202,7 @@ func TestRunPreflightFailureStopsBeforeAnyCase(t *testing.T) {
 func TestRunUsageErrors(t *testing.T) {
 	root := newRepo(t)
 	for _, args := range [][]string{
-		{"run"},
+		{"run", "--model", ""},
 		{"run", "--model", "gpt-4"},
 		{"run", "--model", "fable", "--route", "cli"},
 		{"run", "--model", "gpt-6-astra", "--route", "api"},
@@ -246,12 +246,15 @@ func TestReportCommand(t *testing.T) {
 	r := newHarness(t, oracle(), nil)
 	summary := filepath.Join(t.TempDir(), "s.md")
 	code := Main(context.Background(), []string{"report", dir, "--expect", "sonnet,opus", "--github-summary", summary}, r.env)
-	if code != ExitOK {
+	if code != ExitThreshold {
 		t.Fatalf("exit %d: %s", code, r.stderr)
 	}
 	md, _ := os.ReadFile(summary)
 	if !strings.Contains(string(md), "| sonnet | api | ✅ pass |") || !strings.Contains(string(md), "| opus | — | ❌ missing |") {
 		t.Errorf("report = %s", md)
+	}
+	if code := Main(context.Background(), []string{"report", dir, "--expect", "sonnet"}, r.env); code != ExitOK {
+		t.Errorf("every expected model passed: exit %d", code)
 	}
 	if code := Main(context.Background(), []string{"report", dir, "--expect", "nope"}, r.env); code != ExitUsage {
 		t.Errorf("unknown --expect alias: exit %d", code)
@@ -270,5 +273,17 @@ func TestCasesAndListModels(t *testing.T) {
 	l := newHarness(t, oracle(), nil)
 	if code := Main(context.Background(), []string{"list-models"}, l.env); code != ExitOK || !strings.Contains(l.stdout.String(), "gemini-3.1-pro-preview") {
 		t.Errorf("list-models = %s", l.stdout)
+	}
+}
+
+func TestRunDefaultsToOpus(t *testing.T) {
+	root := newRepo(t)
+	h := newHarness(t, oracle(), nil)
+	out := filepath.Join(t.TempDir(), "x.json")
+	if code := Main(context.Background(), []string{"run", "--repo-root", root, "--out", out}, h.env); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, h.stderr)
+	}
+	if a, _ := report.Load(out); a.Model.Alias != "opus" {
+		t.Errorf("model = %s, want opus", a.Model.Alias)
 	}
 }

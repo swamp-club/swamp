@@ -113,12 +113,25 @@ export const CONFIG_TREES: ReadonlyArray<ConfigTree> = [
 export async function treeChecksum(
   files: ReadonlyArray<{ path: string; content: Uint8Array }>,
 ): Promise<string> {
+  // sha256sum escapes a name holding a backslash or newline; refusing them
+  // keeps this manifest byte-identical to the one CI builds
+  const unsafe = files.find((f) => /[\\\n]/.test(f.path));
+  if (unsafe) {
+    throw new Error(`cannot pin ${JSON.stringify(unsafe.path)} in a tree hash`);
+  }
   const lines = await Promise.all(
     [...files]
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
       .map(async (f) => `${await computeChecksum(f.content)}  ${f.path}\n`),
   );
   return await computeChecksum(new TextEncoder().encode(lines.join("")));
+}
+
+export function treeRelativePath(dir: string, path: string): string {
+  if (!path.startsWith(`${dir}/`)) {
+    throw new Error(`${path} is not under ${dir}`);
+  }
+  return path.slice(dir.length + 1);
 }
 
 async function treeAtCommit(
@@ -139,7 +152,7 @@ async function treeAtCommit(
   for (const path of listing.trim().split("\n")) {
     const content = await showAtCommit(commit, path);
     if (!content) return null;
-    files.push({ path: path.slice(dir.length + 1), content });
+    files.push({ path: treeRelativePath(dir, path), content });
   }
   return files;
 }

@@ -173,7 +173,10 @@ func TestCrossModelReport(t *testing.T) {
 	if len(col.Artifacts) != 3 || len(col.Invalid) != 1 {
 		t.Fatalf("loaded %d artifacts, %d invalid", len(col.Artifacts), len(col.Invalid))
 	}
-	md := CrossModelMarkdown(col, models.APIAliases(), 0.9)
+	md, passed := CrossModelMarkdown(col, models.APIAliases(), 0.9)
+	if passed {
+		t.Error("missing and failing models must not pass")
+	}
 	for _, want := range []string{
 		"| fable | api | ✅ pass |",
 		"| [x] shared | opus, sonnet | 2/3 |",

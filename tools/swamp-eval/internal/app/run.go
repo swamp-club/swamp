@@ -38,7 +38,7 @@ const preflightTimeout = 120 * time.Second
 
 func runCommand(ctx context.Context, args []string, env Env) int {
 	fs := newFlagSet("run", env)
-	model := fs.String("model", "", "model alias (required; see list-models)")
+	model := fs.String("model", "opus", "model alias (see list-models)")
 	route := fs.String("route", "", "api or cli (default: cli locally for models with one, api in GitHub Actions)")
 	repoRoot := fs.String("repo-root", "", "repository root (default: nearest parent holding .claude/skills)")
 	suiteFlag := fs.String("suite", "all", "trigger, routing, sufficiency, a comma list, or all")

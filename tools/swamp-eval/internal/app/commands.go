@@ -65,12 +65,15 @@ func reportCommand(args []string, env Env) int {
 	if err != nil && !os.IsNotExist(err) {
 		return errorf(env, "read %s: %v", positional[0], err)
 	}
-	md := report.CrossModelMarkdown(col, expected, *threshold)
+	md, passed := report.CrossModelMarkdown(col, expected, *threshold)
 	fmt.Fprint(env.Stdout, md)
 	if *summary != "" {
 		if err := report.AppendFile(*summary, md); err != nil {
 			return errorf(env, "write summary: %v", err)
 		}
+	}
+	if !passed {
+		return ExitThreshold
 	}
 	return ExitOK
 }

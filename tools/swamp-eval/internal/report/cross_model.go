@@ -67,9 +67,9 @@ type caseFailure struct {
 	models      []string
 }
 
-// CrossModelMarkdown summarizes many runs. A model in expect with no artifact
-// is reported missing, never assumed to have passed.
-func CrossModelMarkdown(col Collection, expect []string, threshold float64) string {
+// CrossModelMarkdown summarizes many runs and reports whether every model
+// passed. A model in expect with no artifact is missing, never assumed passed.
+func CrossModelMarkdown(col Collection, expect []string, threshold float64) (string, bool) {
 	var b strings.Builder
 	b.WriteString("## Cross-Model Skill Eval Analysis\n\n")
 
@@ -168,5 +168,5 @@ func CrossModelMarkdown(col Collection, expect []string, threshold float64) stri
 			fmt.Fprintf(&b, "- %s\n", line)
 		}
 	}
-	return b.String()
+	return b.String(), len(col.Artifacts) > 0 && len(below) == 0
 }
