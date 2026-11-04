@@ -843,8 +843,7 @@ Deno.test("diffNamesArgs: lists names with rename detection off", () => {
   assertEquals(args.slice(-2), ["base", "head"]);
 });
 
-// The digest CI computes for these files with
-// `git ls-files -z | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum`.
+// the digest check_tree_hash in ci.yml produces for these files
 const TREE_DIGEST =
   "7f97a0d50924bb3604a44e30b2d111f0604eabdacc920c590d1c0a7de567d53d";
 

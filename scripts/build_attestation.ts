@@ -96,20 +96,13 @@ export interface ConfigTree {
   jsonPath: string[];
 }
 
-/**
- * Directories pinned as one hash so a file added to them is covered without
- * being listed; CI recomputes the same digest in check_tree_hash.
- */
+// keep in step with check_tree_hash in ci.yml
 export const CONFIG_TREES: ReadonlyArray<ConfigTree> = [
   // the skill trigger evals decide whether skills still route correctly
   { dir: "tools/swamp-eval", jsonPath: ["scripts", "eval-tool"] },
 ];
 
-/**
- * A `sha256sum`-style manifest of every tracked file under `dir` at `commit`,
- * hashed: CI pipes the same manifest into `sha256sum`, so both sides must
- * agree on byte-sorted paths relative to `dir` and the two-space separator.
- */
+// CI hashes the same manifest with sha256sum, so keep byte-sorted paths and the two-space separator
 export async function treeChecksum(
   files: ReadonlyArray<{ path: string; content: Uint8Array }>,
 ): Promise<string> {
