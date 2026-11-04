@@ -91,6 +91,7 @@ Write in plain English:
 | [doctor-vaults](./enablers/doctor-vaults.md)               | vaults                              | To fold into vaults.md operations section                            |
 | [access-control](./enablers/access-control.md)             | serve                               | Principals, grants, subjects, evaluation model, can-i                |
 | [go-serve](./enablers/go-serve.md)                         | serve                               | Experimental Go listener and on-demand local TypeScript engine      |
+| [go-core-migration](./enablers/go-core-migration.md)       | behaviors, data, workflows, vaults, extensions, serve | Plan for a gradual Go core with existing TypeScript extensions |
 | [serve-audit](./enablers/serve-audit.md)                   | serve                               | Chain-hashed audit events, write-ahead log, `audit.query`            |
 | [serve-phase-telemetry](./enablers/serve-phase-telemetry.md) | serve                             | Exported phases of costly serve paths, with APL queries              |
 
