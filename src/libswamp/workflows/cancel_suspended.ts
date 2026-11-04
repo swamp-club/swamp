@@ -103,7 +103,7 @@ export interface CancelTargetWorkflow {
 
 /** structural so the WorkflowRunRepository port does not grow findGlobalById */
 type CancelRunRepository =
-  & Pick<WorkflowRunRepository, "findById" | "save">
+  & Pick<WorkflowRunRepository, "findById" | "save" | "findStepStarts">
   & {
     findGlobalById(
       runId: WorkflowRunId,
@@ -246,6 +246,11 @@ export async function* workflowCancelSuspended(
           return;
         }
 
+        if (previousStatus === "running") {
+          run.applyStepStarts(
+            await deps.runRepo.findStepStarts(workflowId, run.id),
+          );
+        }
         cancelAndSettle(
           run,
           await resolveSettlementWorkflow(

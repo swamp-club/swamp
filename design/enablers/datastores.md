@@ -2341,6 +2341,8 @@ model"), all dormant. The opt-in is a later issue.
   own, before the step runs.
 - **Start journal**: a run's committed step starts. Recovery reads it with the
   run's record, so a step it shows started never reads as `pending`.
+  `workflow history get` and `workflow cancel` read a running run's journal
+  too, and show such a step `running`.
 
 **Partitions are aggregates.** A partition key is built only by
 `partitionOf()` (`partition_key.ts`) from the identity of the aggregate it

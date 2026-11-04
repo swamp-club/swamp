@@ -614,9 +614,9 @@ export class StepRun {
     return true;
   }
 
-  start(): void {
+  start(at: Date = new Date()): void {
     this._status = "running";
-    this._startedAt = new Date();
+    this._startedAt = at;
     this._resetByResume = false;
   }
 
@@ -891,9 +891,9 @@ export class JobRun implements TriggerEvaluationContext {
     this._completedAt = undefined;
   }
 
-  start(): void {
+  start(at: Date = new Date()): void {
     this._status = "running";
-    this._startedAt = new Date();
+    this._startedAt = at;
   }
 
   succeed(): void {
@@ -1514,6 +1514,30 @@ export class WorkflowRun implements TriggerEvaluationContext {
       }
     }
     this.interrupt(reason);
+  }
+
+  /**
+   * the record a reader shows or settles: a step the journal shows started reads
+   * running, as the record did before starts were committed apart from it
+   */
+  applyStepStarts(starts: readonly StepStart[]): void {
+    if (this._status !== "running") return;
+    const latest = new Map<string, StepStart>();
+    for (const start of starts) {
+      const key = JSON.stringify([start.jobName, start.stepName]);
+      const kept = latest.get(key);
+      if (kept === undefined || kept.startedAt < start.startedAt) {
+        latest.set(key, start);
+      }
+    }
+    for (
+      const { job, stepName } of this.#journalledStarts([...latest.values()])
+    ) {
+      const start = latest.get(JSON.stringify([job.jobName, stepName]))!;
+      job.addExpandedStep(stepName);
+      job.getStep(stepName)!.start(new Date(start.startedAt));
+      if (job.status === "pending") job.start(new Date(start.startedAt));
+    }
   }
 
   unknownSteps(): string[] {

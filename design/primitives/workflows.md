@@ -4323,7 +4323,11 @@ journal is read with its record wherever a dead owner's run is interrupted
 (`workflow recover`, `run doctor --fix`, the boot reaper, a dead peer instance).
 A step the journal shows started reads as `unknown` when the record shows it
 `pending`, does not hold it yet (a `forEach` iteration), or holds it from an
-older start. A step whose start cannot be committed never runs: it stays
+older start. `workflow history get` and `workflow cancel` read a running run's
+journal too (`WorkflowRun.applyStepStarts`): there such a step reads `running`,
+as the record showed before starts were committed apart from it, so a cancel of
+a dead owner's run fails it with the owner-stopped error. Only recovery marks it
+`unknown`. A step whose start cannot be committed never runs: it stays
 `pending`, no further step starts (cleanup steps included), steps already
 running finish, and the run fails with exit 75, naming `workflow resume` or, if
 its failed record did not commit either, `workflow recover`. An offline team

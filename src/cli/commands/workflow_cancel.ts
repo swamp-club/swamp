@@ -316,7 +316,7 @@ export const OWNER_STOP_GRACE_MS = CLEANUP_GRACE_TIMEOUT_MS + 10_000;
 const STOP_GRACE_SECONDS = OWNER_STOP_GRACE_MS / 1000;
 
 export interface CancelLocalRunDeps {
-  runRepo: Pick<WorkflowRunRepository, "findById" | "save">;
+  runRepo: Pick<WorkflowRunRepository, "findById" | "save" | "findStepStarts">;
   /** Reads a run's own evaluated workflow snapshot, to settle it against. */
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   /** The tracker rows of the stopped owner, closed once it is gone. */
@@ -655,6 +655,11 @@ async function settleCancelledRun(
           // No process of this checkout's: the record is settled.
           break;
       }
+    }
+    if (current.status === "running") {
+      current.applyStepStarts(
+        await runRepo.findStepStarts(workflowId, current.id),
+      );
     }
     if (current.isCancellable) {
       cancelAndSettle(

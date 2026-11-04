@@ -40,6 +40,7 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { TriggerCondition } from "../../domain/workflows/trigger_condition.ts";
+import { StepStart } from "../../domain/workflows/step_start.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
   buildCancelUrl,
@@ -443,6 +444,47 @@ Deno.test("cancelLocalRun: fails the work a stopped owner left running and cance
       // and the step it never reached is cancelled.
       assertEquals(run?.jobs[0].status, "failed");
       assertEquals(stepSummary(run!), ["build-1:failed", "rollback:failed"]);
+      assertEquals(run?.jobs[0].steps[0].error, OWNER_STOPPED_STEP_ERROR);
+      assertEquals(run?.jobs[0].steps[1].error, "cancelled");
+    }
+  });
+});
+
+Deno.test("cancelLocalRun: a step only the start journal shows started fails as owner-stopped when the owner was killed", async () => {
+  await withTempDir(async (dir) => {
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    const workflowId = createWorkflowId(WORKFLOW_ID);
+    const runId = crypto.randomUUID();
+    const snapshot = WorkflowRun.fromData(snapshotData(runId));
+    await runRepo.save(workflowId, snapshot);
+    // The owner committed the step's start, then was SIGKILLed before the
+    // record caught up, so the record still shows every step pending.
+    await runRepo.writeStepStart(StepStart.create({
+      workflowId: WORKFLOW_ID,
+      runId,
+      jobName: "main",
+      stepName: "build",
+      startedAt: Date.parse("2026-07-20T20:00:01.000Z"),
+    }));
+
+    const result = await cancelLocalRun(
+      snapshot,
+      WORKFLOW,
+      "No longer needed",
+      {
+        runRepo,
+        findEvaluatedWorkflow: noSnapshot,
+        runClaims: unclaimedRuns,
+        ...ownedBy(() => OWNER_PID),
+        killProcess: () => Promise.resolve(true),
+      },
+    );
+
+    const stored = await runRepo.findById(workflowId, snapshot.id);
+    for (const run of [result, stored]) {
+      assertEquals(run?.status, "cancelled");
+      assertEquals(run?.jobs[0].status, "failed");
+      assertEquals(stepSummary(run!), ["build:failed", "rollback:failed"]);
       assertEquals(run?.jobs[0].steps[0].error, OWNER_STOPPED_STEP_ERROR);
       assertEquals(run?.jobs[0].steps[1].error, "cancelled");
     }
