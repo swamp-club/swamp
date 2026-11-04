@@ -1630,6 +1630,48 @@ Deno.test("WorkflowRun.applyStepStarts: a step settled from an older start reads
   assertEquals(run.jobs[0].steps[0].startedAt?.getTime(), 2_000);
 });
 
+Deno.test("WorkflowRun.applyStepStarts: a step re-started from an older settled start keeps nothing of the earlier attempt", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start(new Date(1_000));
+  run.jobs[0].steps[0].fail("boom");
+
+  run.applyStepStarts([journalStart(run, "job1", "step1", 2_000)]);
+
+  const step = run.jobs[0].steps[0];
+  assertEquals(step.status, "running");
+  assertEquals(step.error, undefined);
+  assertEquals(step.completedAt, undefined);
+});
+
+Deno.test("WorkflowRun.applyStepStarts: a start from before the run's resume is the reset attempt's and is left out", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].fail("boom");
+  run.jobs[0].fail();
+  run.complete();
+  run.resetForResumeFrom([{ jobName: "job1", stepName: "step1" }]);
+  run.resumeFromFailed({ pid: 1 });
+  const resumed = WorkflowRun.fromData(run.toData());
+  const before = Date.parse(resumed.toData().resumedAt!) - 1;
+
+  resumed.applyStepStarts([
+    journalStart(resumed, "job1", "step1", before),
+    journalStart(resumed, "job1", "step2", before),
+  ]);
+  assertEquals(resumed.jobs[0].steps[0].status, "pending");
+  assertEquals(resumed.jobs[0].steps[1].status, "pending");
+  assertEquals(resumed.jobs[0].status, "pending");
+
+  resumed.applyStepStarts([
+    journalStart(resumed, "job1", "step1", before + 2),
+  ]);
+  assertEquals(resumed.jobs[0].steps[0].status, "running");
+});
+
 Deno.test("WorkflowRun.applyStepStarts: leaves a step the record settled from the same start, and a running one", () => {
   const run = WorkflowRun.create(createTestWorkflow());
   run.start();

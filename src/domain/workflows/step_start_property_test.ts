@@ -86,7 +86,8 @@ type Action =
   | { readonly kind: "step"; readonly job: number; readonly outcome: Outcome }
   | { readonly kind: "expand"; readonly job: number }
   | { readonly kind: "reset"; readonly job: number; readonly step: number }
-  | { readonly kind: "checkpoint" };
+  | { readonly kind: "checkpoint" }
+  | { readonly kind: "resume" };
 
 type Outcome = "succeed" | "fail" | "crash-mid-step";
 
@@ -103,6 +104,7 @@ const arbAction: fc.Arbitrary<Action> = fc.oneof(
     step: fc.nat({ max: 5 }),
   }),
   fc.record({ kind: fc.constant("checkpoint" as const) }),
+  fc.record({ kind: fc.constant("resume" as const) }),
 );
 
 function workflow(): Workflow {
@@ -123,8 +125,8 @@ interface Simulated {
   readonly committed: WorkflowRunData;
   readonly live: WorkflowRunData;
   readonly journal: StepStart[];
-  /** a step's latest start, and whether a reset followed it */
-  readonly latest: Map<string, { reset: boolean }>;
+  /** a step's latest start, whether a reset followed it, and whether a resume did */
+  readonly latest: Map<string, { reset: boolean; resumed?: boolean }>;
 }
 
 /** runs the actions as an owner would, committing the record only at checkpoints */
@@ -136,12 +138,28 @@ function simulate(actions: readonly Action[]): Simulated {
   const live = structuredClone(created.toData()) as WorkflowRunData;
   let committed = structuredClone(live);
   const journal: StepStart[] = [];
-  // a step's latest start, and whether a reset followed it
-  const latest = new Map<string, { reset: boolean }>();
+  const latest: Simulated["latest"] = new Map();
   let expansions = 0;
 
   for (const action of actions) {
     if (action.kind === "checkpoint") {
+      committed = structuredClone(live);
+      continue;
+    }
+    if (action.kind === "resume") {
+      // resume resets the settled work and commits the record at once
+      for (const job of live.jobs) {
+        job.status = "pending";
+        delete job.startedAt;
+        for (const step of job.steps) {
+          step.status = "pending";
+          delete step.startedAt;
+          delete step.completedAt;
+          const key = JSON.stringify([job.jobName, step.stepName]);
+          if (latest.has(key)) latest.set(key, { reset: true, resumed: true });
+        }
+      }
+      live.resumedAt = iso();
       committed = structuredClone(live);
       continue;
     }
@@ -246,10 +264,21 @@ Deno.test("WorkflowRun.applyStepStarts: a step in flight at the crash reads runn
             assertEquals(viewed.getJob(job.jobName)?.status, "running");
           }
         }
-        for (const [key, { reset }] of latest) {
-          if (reset) continue;
+        for (const [key, { reset, resumed }] of latest) {
           const [jobName, stepName] = JSON.parse(key) as [string, string];
           const step = viewed.getJob(jobName)?.getStep(stepName);
+          if (resumed) {
+            const recorded = committed.jobs
+              .find((job) => job.jobName === jobName)?.steps
+              .find((s) => s.stepName === stepName);
+            assertEquals(
+              step?.status,
+              recorded?.status,
+              `${jobName}/${stepName} reset by a resume reads its old start`,
+            );
+            continue;
+          }
+          if (reset) continue;
           assert(
             step !== undefined && step.status !== "pending",
             `${jobName}/${stepName} started but reads ${step?.status}`,
