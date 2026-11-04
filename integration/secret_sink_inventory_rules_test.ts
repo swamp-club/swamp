@@ -463,7 +463,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/persistence/drain_wait_store.ts: DrainWaitStore":
       CONFIG_WRITE,
-    "src/infrastructure/persistence/output_summary_index.ts: removeStaleOutputSummaries":
+    "src/infrastructure/persistence/output_summary_index.ts: writeClearedMarker":
       "Writes a random marker that says the summaries were cleared.",
     "src/infrastructure/persistence/output_summary_index.ts: OutputSummaryIndex":
       "Writes run identifiers, method and step names, status and timing, and the stat of a run's record, never an error message or argument. A forEach step name can carry an item value, with secrets already scrubbed by nameWithoutSecrets in for_each_expansion_service.ts.",

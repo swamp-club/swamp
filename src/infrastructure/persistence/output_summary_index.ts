@@ -115,9 +115,75 @@ async function isSymlink(path: string): Promise<boolean> {
   }
 }
 
+async function refusalsRetried(
+  attempts: number,
+  fn: () => Promise<void>,
+): Promise<void> {
+  for (let attempt = 1;; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (
+        !(error instanceof Deno.errors.PermissionDenied) || attempt === attempts
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 5));
+    }
+  }
+}
+
+// A refused move on Windows is another clear deleting the entry it moved,
+// which the retry by name sees as NotFound, or a file held open inside, which
+// stays refused; elsewhere a refusal is a real one and warns.
+async function movedAside(from: string, to: string): Promise<boolean> {
+  try {
+    await refusalsRetried(2, () => Deno.rename(from, to));
+    return true;
+  } catch (error) {
+    if (
+      !(error instanceof Deno.errors.PermissionDenied) ||
+      Deno.build.os !== "windows"
+    ) {
+      throw error;
+    }
+    logger.debug`Leaving output summaries ${from} for the next clear: ${error}`;
+    return false;
+  }
+}
+
+/** null when there is no marker; undefined when it could not be read */
+async function markerText(path: string): Promise<string | null | undefined> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound ? null : undefined;
+  }
+}
+
+// The shards must not go until the marker has changed since this clear began.
+// Windows refuses a rename onto it while it is held open, as by a scan of
+// another clear's marker; that marker landing moves the generation as well.
+async function writeClearedMarker(path: string): Promise<void> {
+  const before = await markerText(path);
+  try {
+    await refusalsRetried(
+      5,
+      () => atomicWriteTextFile(path, crypto.randomUUID()),
+    );
+  } catch (error) {
+    if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+    // Without both reads there is no telling the marker moved.
+    if (before === undefined) throw error;
+    const after = await markerText(path);
+    if (after === undefined || after === null || after === before) throw error;
+  }
+}
+
 /**
- * entries are moved aside before removal so a concurrent read adding a file
- * cannot fail it; a leftover goes with the next clear; never fails the caller
+ * entries are moved aside before removal so a read adding a file cannot fail
+ * it; one a reader holds open on Windows is left, and like any leftover goes
+ * with the next clear; never fails the caller
  */
 export async function removeStaleOutputSummaries(
   repoDir: string,
@@ -131,7 +197,7 @@ export async function removeStaleOutputSummaries(
     // Before the shards go, so a read holding records from before this clear
     // cannot add them back to a directory that looks untouched.
     // Replaced rather than written through, should it be a symlink.
-    await atomicWriteTextFile(join(dir, CLEARED_MARKER), crypto.randomUUID());
+    await writeClearedMarker(join(dir, CLEARED_MARKER));
     for (const { name } of await Array.fromAsync(Deno.readDir(dir))) {
       // The temp file of another clear's marker is its to rename.
       if (name === CLEARED_MARKER || name.endsWith(".tmp")) continue;
@@ -141,8 +207,7 @@ export async function removeStaleOutputSummaries(
       }
       const moved = join(dir, `${CLEARED_ASIDE_PREFIX}${crypto.randomUUID()}`);
       try {
-        await Deno.rename(join(dir, name), moved);
-        aside.push(moved);
+        if (await movedAside(join(dir, name), moved)) aside.push(moved);
       } catch (error) {
         // Another clear got to it first, and removes it.
         if (!(error instanceof Deno.errors.NotFound)) throw error;
