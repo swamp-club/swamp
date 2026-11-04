@@ -50,6 +50,7 @@ import {
   ObservedBaseStaging,
   type SqliteCommitStore,
 } from "./sqlite_commit_store.ts";
+import { withSpan } from "../tracing/tracer.ts";
 import { acquireV3WriterLock } from "./v3_writer_lock.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
@@ -204,7 +205,15 @@ export class ServeCatchUp {
    * between the two reads the page again, and its commits are duplicates.
    */
   catchUp(signal: AbortSignal): Promise<ServeCatchUpReport> {
-    this.#feed ??= this.#catchUpFeed(signal).finally(() => {
+    this.#feed ??= withSpan(
+      "swamp.datastore.v3.serve.catchup",
+      {},
+      async (span) => {
+        const report = await this.#catchUpFeed(signal);
+        span.setAttribute("swamp.datastore.v3.commits", report.applied);
+        return report;
+      },
+    ).finally(() => {
       this.#feed = undefined;
     });
     return this.#feed;
@@ -459,7 +468,19 @@ export class ServeCatchUp {
     }
   }
 
-  async catchUpPartition(
+  catchUpPartition(
+    namespace: string,
+    partition: PartitionKey,
+    signal: AbortSignal,
+  ): Promise<number> {
+    return withSpan(
+      "swamp.datastore.v3.serve.catchup_partition",
+      {},
+      () => this.#catchUpPartitionLoading(namespace, partition, signal),
+    );
+  }
+
+  async #catchUpPartitionLoading(
     namespace: string,
     partition: PartitionKey,
     signal: AbortSignal,

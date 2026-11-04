@@ -36,6 +36,7 @@ import {
   V3ReplicationUnavailableError,
 } from "../../../domain/datastore_v3/litestream_replication.ts";
 import { markErrorPaths } from "../../../domain/errors.ts";
+import { withSpan } from "../../tracing/tracer.ts";
 import {
   type LitestreamControl,
   LitestreamControlError,
@@ -746,11 +747,16 @@ class SharedHandle {
   async sync(deadlineMs: number, options: SyncOptions = {}): Promise<string> {
     let response;
     try {
-      response = await this.deps.control.sync(
-        this.paths.socket,
-        this.paths.commitsDb,
-        deadlineMs,
-        options.signal,
+      response = await withSpan(
+        "swamp.datastore.v3.litestream.sync",
+        {},
+        () =>
+          this.deps.control.sync(
+            this.paths.socket,
+            this.paths.commitsDb,
+            deadlineMs,
+            options.signal,
+          ),
       );
     } catch (error) {
       if (options.signal?.aborted === true) {
@@ -781,9 +787,14 @@ class SharedHandle {
       );
     }
     let published = false;
-    if (options.beforeLeaseCheck !== undefined) {
+    const beforeLeaseCheck = options.beforeLeaseCheck;
+    if (beforeLeaseCheck !== undefined) {
       try {
-        await options.beforeLeaseCheck(txid);
+        await withSpan(
+          "swamp.datastore.v3.lineage.publish_head",
+          {},
+          () => beforeLeaseCheck(txid),
+        );
         published = true;
       } catch (error) {
         throw error instanceof V3ReplicationError
@@ -797,7 +808,11 @@ class SharedHandle {
     // The lease could have been taken over while the sync ran: a fenced
     // writer reports nothing as replicated.
     try {
-      await this.assertLeaseCurrent();
+      await withSpan(
+        "swamp.datastore.v3.writer_lease.check",
+        {},
+        () => this.assertLeaseCurrent(),
+      );
     } catch (error) {
       if (!(error instanceof WriterFencedError)) {
         // not a takeover: the lease could not be checked

@@ -1581,6 +1581,68 @@ its round trips, which Phase 4A modelled at 24–283 ms.
 - `integration/serve_write_confirmation_rules_test.ts` pins the dispatch, and
   that only serve, with replication on, sets the confirmation.
 
+## Team mode: a member's round trips (swamp-club#4401)
+
+After swamp-club#4387 a member's write cost a flat ~4 s at 100 ms per storage
+call, against K2a's 500 ms bar. Every request a member sends waits for the one
+before it, so the cost is the sum of those requests and what serve does for
+each.
+
+**The lane.** `scripts/measure_v3_team_round_trips.ts`: fake-gcs behind a proxy
+that delays each storage request by one round trip (two more on a new
+connection), a leader and a follower, three members, the far one through the
+follower. Member and serve export spans to a sink in the script, so each run
+reports requests to serve and serve's storage calls, not only times. K2a here is
+the `swamp.cli` span less bootstrap and the method's execution.
+
+**Where a write's time went** (`command/shell`, near member, median):
+
+| Cost                                                       | Calls | Time   |
+| ---------------------------------------------------------- | ----- | ------ |
+| serve reading the member's token secret, on every request  | 25    | 2.6 s  |
+| chunks of other members' records, read one at a time       | 8     | 0.84 s |
+| the commit's confirm: LTX upload, head, confirmation, LIST | 4     | 0.45 s |
+| member catch-ups: 11 of the 22 requests, 4 back to back    | —     | —      |
+
+A two-step workflow made 13 commits, each paying a full confirm.
+
+**What changed.**
+
+- Serve remembers for a minute that a token's vault secret matched the
+  record's fingerprint, and then checks the presented secret against that
+  fingerprint; it keeps no secret. The record is still read on every request,
+  so revocation, expiry and a re-mint act on the next one; a record with no
+  fingerprint always reads the vault (`src/serve/token_auth.ts`).
+- A lineage's `confirmed.json` is written once per process; a later sync knows
+  it exists (`publishV3Head`).
+- The member catches up from serve once at the writer hold and once under the
+  lock; the repository open and the lock's second pass bring only the read
+  model up (`catchUpReadModel`).
+- A page of new changes fetches its chunks eight at a time into the member's
+  cache before it applies them (`ChunkStore.prefetch`), and stops at the first
+  failure, so a hung serve costs one timeout. A replay does not prefetch, as
+  it skips content a later change replaces.
+
+`integration/serve_team_write_round_trips_test.ts` pins the requests a member
+sends: 8 for a small write (was 12), 9 for a chunked one (13), 31 for a two-step
+workflow (39), 2 for a read.
+
+**After** (100 ms per call, 6 rounds, interleaved with the build before):
+
+| Command, near member | K2a p50 / p95 before | after         |
+| -------------------- | -------------------- | ------------- |
+| write                | 3.95 / 4.08 s        | 0.86 / 1.30 s |
+| two-step workflow    | 13.1 / 13.6 s        | 5.3 / 5.7 s   |
+| `data get`           | 275 / 280 ms         | 44 / 45 ms    |
+
+**What is left.** A write still misses 500 ms. Its commit pays the LTX upload,
+the head and the writer-lease LIST one after another (~0.36 s), the order
+[Phase 4D3](#phase-4d3-serve-confirms-each-write-request-swamp-club3489) and
+the head-then-confirmation decision require; catching up other members' new
+chunks adds ~0.3 s when the team is busy. A workflow pays the floor once per
+commit. Getting under the bar needs fewer replicated commits on the member's
+path (local-first writes or batched confirms), which needs its own design.
+
 ## Phase 4: the replica target (swamp-club#3507)
 
 Live since Phase 4E (swamp-club#3534): a v3 datastore on a bucket replicates

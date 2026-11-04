@@ -605,10 +605,11 @@ export function startProxy(
             ? { body: body as Uint8Array<ArrayBuffer> }
             : {}),
         });
-        return new Response(await response.arrayBuffer(), {
-          status: response.status,
-          headers: response.headers,
-        });
+        const nullBody = [101, 204, 205, 304].includes(response.status);
+        return new Response(
+          nullBody ? null : await response.arrayBuffer(),
+          { status: response.status, headers: response.headers },
+        );
       };
       return await answer(request, forward) ?? await forward();
     },

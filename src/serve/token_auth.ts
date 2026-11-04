@@ -23,6 +23,7 @@ import {
   SERVER_TOKEN_MODEL_TYPE,
   type ServerToken,
   ServerTokenSchema,
+  ServerTokenSecretMismatchError,
   validateServerToken,
   verifyServerTokenSecret,
 } from "../domain/models/access/server_token_model.ts";
@@ -52,6 +53,7 @@ export interface ServerTokenAuthDeps {
     vaultName: string,
     secretKey: string,
   ) => Promise<string>;
+  readonly now?: () => number;
 }
 
 export interface TokenAuthAuditContext {
@@ -117,6 +119,47 @@ export async function createServerTokenAuthDeps(
         "model:server-token-verify",
       ),
   };
+}
+
+// when a record's vault secret last matched its fingerprint; no secret is
+// kept. The record is read every request, so revocation and expiry act at once
+const vaultMatches = new Map<string, number>();
+const MAX_VAULT_MATCHES = 1024;
+// bounds how long a vault secret edited by hand, outside a re-mint, still
+// verifies its old value
+const VAULT_MATCH_TTL_MS = 60_000;
+
+function vaultMatchedRecently(key: string, nowMs: number): boolean {
+  const atMs = vaultMatches.get(key);
+  if (atMs === undefined) return false;
+  if (nowMs - atMs >= VAULT_MATCH_TTL_MS) {
+    vaultMatches.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function vaultMatchKey(
+  repoDir: string,
+  token: ServerToken,
+): string | undefined {
+  if (token.secretFingerprint === undefined) return undefined;
+  return JSON.stringify([
+    repoDir,
+    token.name,
+    token.vaultName,
+    token.secretKey,
+    token.secretFingerprint,
+  ]);
+}
+
+function rememberVaultMatch(key: string, nowMs: number): void {
+  vaultMatches.delete(key);
+  vaultMatches.set(key, nowMs);
+  if (vaultMatches.size > MAX_VAULT_MATCHES) {
+    const oldest = vaultMatches.keys().next().value;
+    if (oldest !== undefined) vaultMatches.delete(oldest);
+  }
 }
 
 export function splitServerToken(
@@ -301,14 +344,27 @@ export async function authenticateServerToken(
     const deps = authDeps ??
       await createServerTokenAuthDeps(repoDir, repoContext);
     const token = await deps.readToken(split.name);
-    const nowMs = Date.now();
+    const nowMs = deps.now?.() ?? Date.now();
     validateServerToken(token, split.name, presented, nowMs);
-    const secret = await deps.readSecret(token.vaultName, token.secretKey);
-    validateServerToken(token, split.name, presented, nowMs, secret);
-    // the presented secret is the vault's; it must also be the one this record
-    // was minted with, or the credential would authenticate as another mint's
-    // principal
-    await verifyServerTokenSecret(token, secret);
+    const matchKey = vaultMatchKey(repoDir, token);
+    if (matchKey !== undefined && vaultMatchedRecently(matchKey, nowMs)) {
+      // the vault's secret matched this fingerprint: the presented one must too,
+      // and a miss is refused as the vault comparison refuses it
+      try {
+        await verifyServerTokenSecret(token, split.secret);
+      } catch (error) {
+        if (!(error instanceof ServerTokenSecretMismatchError)) throw error;
+        throw new Error(`Server token '${split.name}' does not match`);
+      }
+    } else {
+      const secret = await deps.readSecret(token.vaultName, token.secretKey);
+      validateServerToken(token, split.name, presented, nowMs, secret);
+      // the presented secret is the vault's; it must also be the one this
+      // record was minted with, or the credential would authenticate as another
+      // mint's principal
+      await verifyServerTokenSecret(token, secret);
+      if (matchKey !== undefined) rememberVaultMatch(matchKey, nowMs);
+    }
 
     // every caller parses the principal after authentication, so a stored
     // principal that does not parse (hand-edited, or minted before validation)

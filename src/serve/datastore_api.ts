@@ -56,6 +56,10 @@ import {
   principalToString,
 } from "../domain/access/principal.ts";
 import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
+import {
+  setActiveSpanAttributes,
+  withSpan,
+} from "../infrastructure/tracing/tracer.ts";
 import type { BlobRef } from "../domain/datastore_v3/blob_ref.ts";
 import { Commit, MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
 import {
@@ -932,7 +936,13 @@ class DatastoreApi {
     // Authorised again under the datastore's forwarded-commit lock, once the
     // content is in: key ownership cannot change between the check and the
     // append, and a grant revoked during the upload applies.
+    const lockWaitFrom = performance.now();
     const landed = await withForwardedLock(this.#v3, async () => {
+      setActiveSpanAttributes({
+        "swamp.serve.datastore.lock_wait_ms": Math.round(
+          performance.now() - lockWaitFrom,
+        ),
+      });
       await this.#catchUp();
       // A retry of a commit that landed is answered before proof of
       // possession: its chunks may since have left the upload ledger.
@@ -1007,10 +1017,20 @@ class DatastoreApi {
     this.#deps.ledger.release(this.#storageNamespace, referenced);
     // Outside the lock: the next forwarded commit catches up before it
     // authorises anyway, so holding the lock for this one gains nothing.
-    const warning = await this.#afterCommit(partition);
-    if (this.#deps.ctx.confirmReplicated !== undefined) {
+    const warning = await withSpan(
+      "swamp.serve.datastore.after_commit",
+      {},
+      () => this.#afterCommit(partition),
+    );
+    const ctx = this.#deps.ctx;
+    const confirmReplicated = ctx.confirmReplicated?.bind(ctx);
+    if (confirmReplicated !== undefined) {
       try {
-        await this.#deps.ctx.confirmReplicated();
+        await withSpan(
+          "swamp.serve.datastore.confirm_replicated",
+          {},
+          () => confirmReplicated(),
+        );
       } catch (error) {
         // Landed, and not yet replicated: a retry under the same txnId
         // finds it.

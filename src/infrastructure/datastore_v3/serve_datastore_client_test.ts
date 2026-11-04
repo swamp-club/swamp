@@ -56,6 +56,7 @@ import {
   MAX_HAS_HASHES,
   MAX_PUT_OP_REPLY_BYTES,
   MAX_WRITTEN_COMMIT_REPLY_BYTES,
+  routeTemplate,
   SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
   SERVE_ERROR_BODY_MAX_BYTES,
@@ -1296,4 +1297,32 @@ Deno.test("ServeDatastoreClient.takesStepStarts: true only once serve's reply na
   features = undefined;
   await client.partitionCommits(modelPartition(), 0, signal(), 10);
   assertEquals(client.takesStepStarts(), false);
+});
+
+Deno.test("routeTemplate: a span's route names the kind of resource, never its id", () => {
+  const sha = "a".repeat(64);
+  assertEquals(
+    [
+      "changes",
+      "base",
+      "locks",
+      "quarantine",
+      "chunks/has",
+      `chunks/${sha}`,
+      "locks/lease-1",
+      `partitions/${encodeURIComponent("model:aws/vpc:prod")}/commits`,
+      "quarantine/txn-1/accept",
+    ].map(routeTemplate),
+    [
+      "changes",
+      "base",
+      "locks",
+      "quarantine",
+      "chunks/has",
+      "chunks/{sha256}",
+      "locks/{leaseId}",
+      "partitions/{partition}/commits",
+      "quarantine/{txnId}/accept",
+    ],
+  );
 });

@@ -198,6 +198,15 @@ export function storageNamespaceOf(namespace: Namespace): string {
     : namespace;
 }
 
+// prefetch keeps what it fetches; ChunkStore asks only a storage that does
+export interface PrefetchingStorage {
+  prefetch(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<void>;
+}
+
 export class ChunkStore {
   readonly chunkBytes: number;
   readonly #storage: DatastoreStorage;
@@ -391,6 +400,28 @@ export class ChunkStore {
       hashes,
       signal,
     );
+  }
+
+  /**
+   * warms a storage that keeps what it fetches, a few chunks at a time, so the
+   * reads that follow are local; best effort: the reads report any failure
+   */
+  async prefetch(
+    namespace: Namespace,
+    refs: readonly BlobRef[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const storage = this.#storage as Partial<PrefetchingStorage>;
+    if (storage.prefetch === undefined) return;
+    const hashes = [
+      ...new Set(
+        refs.flatMap((ref) =>
+          (ref.parts ?? [{ sha256: ref.sha256 }]).map((part) => part.sha256)
+        ),
+      ),
+    ];
+    if (hashes.length < 2) return;
+    await storage.prefetch(storageNamespaceOf(namespace), hashes, signal);
   }
 
   /**

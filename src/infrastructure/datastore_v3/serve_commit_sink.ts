@@ -50,6 +50,7 @@ import {
   ServeUpstreamDivergedError,
 } from "./serve_upstream_errors.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import { withSpan } from "../tracing/tracer.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
@@ -184,7 +185,17 @@ export function createServeCommitSink(
 
   const leaseOf = options.leaseOf ?? (() => undefined);
 
-  const forward = async (
+  const forward = (
+    commit: Commit,
+    leaseId: string | undefined,
+  ): Promise<CommitStoreAppendResult> =>
+    withSpan(
+      "swamp.datastore.v3.serve.forward",
+      {},
+      () => forwardIn(commit, leaseId),
+    );
+
+  const forwardIn = async (
     commit: Commit,
     leaseId: string | undefined,
   ): Promise<CommitStoreAppendResult> => {

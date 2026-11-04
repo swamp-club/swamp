@@ -1308,6 +1308,28 @@ export class SqliteReadModel implements ReadModel {
     return undefined;
   }
 
+  async #prefetchChunks(
+    page: readonly CommitChange[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const byNamespace = new Map<string, BlobRef[]>();
+    for (const { commit } of page) {
+      for (const op of commit.ops) {
+        if (op.kind !== "put" || !("blob" in op.content)) continue;
+        if (op.content.blob.legacyKey !== undefined) continue;
+        const refs = byNamespace.get(commit.namespace) ?? [];
+        refs.push(op.content.blob);
+        byNamespace.set(commit.namespace, refs);
+      }
+    }
+    if (byNamespace.size === 0) return;
+    await withSpan("swamp.datastore.v3.readmodel.prefetch", {}, async () => {
+      for (const [namespace, refs] of byNamespace) {
+        await this.#chunkStore.prefetch(namespaceOf(namespace), refs, signal);
+      }
+    });
+  }
+
   /**
    * state transactions are held in one batch that commits after the page's
    * barrier; on failure earlier commits are kept, and if the barrier fails too
@@ -1336,6 +1358,9 @@ export class SqliteReadModel implements ReadModel {
     try {
       let applied = 0;
       try {
+        // a replay fetches only what no later change replaces; a page of new
+        // changes reads each, so its chunks are fetched together first
+        if (!this.#replaying) await this.#prefetchChunks(page, signal);
         for (const change of page) {
           signal.throwIfAborted();
           if (await this.#apply(change, advance, signal, batch)) applied++;
