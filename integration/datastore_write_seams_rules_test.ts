@@ -1470,6 +1470,7 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   // run-record artifacts resolve through resolveRunArtifact on v3
   "src/libswamp/data/run_artifact_check.ts: v3RunArtifactCheck",
   "src/libswamp/models/output_data.ts: createModelOutputDataDeps",
+  "src/libswamp/models/output_logs.ts: createModelOutputLogsDeps",
 ];
 
 Deno.test("datastore write seams: reads of the datastore engine are pinned (swamp-club#3279)", () => {

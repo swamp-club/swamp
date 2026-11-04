@@ -25,8 +25,14 @@
 
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
-import { resolveRunArtifact } from "../../domain/datastore_v3/run_artifact_resolution.ts";
+import {
+  type ArtifactProducer,
+  resolveRunArtifact,
+  type RunArtifactRef,
+  type RunArtifactResolution,
+} from "../../domain/datastore_v3/run_artifact_resolution.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import type { ModelType } from "../../domain/models/model_type.ts";
 import type { RunArtifactCheck } from "../../domain/data/workflow_data_service.ts";
 
 export async function sha256Hex(content: Uint8Array): Promise<string> {
@@ -63,5 +69,40 @@ export function v3RunArtifactCheck(
         : { metadata: data.toData(), sha256: await sha256Hex(content) },
     );
     return resolution.kind === "available";
+  };
+}
+
+export type OutputArtifactCheck = (
+  type: ModelType,
+  definitionId: string,
+  ref: RunArtifactRef,
+  producer: ArtifactProducer,
+) => Promise<RunArtifactResolution>;
+
+// the caller chooses the engine; this is wired only on a v3 datastore
+export function outputArtifactCheck(
+  dataRepo: Pick<UnifiedDataRepository, "findByName" | "getContent">,
+): OutputArtifactCheck {
+  return async (type, definitionId, ref, producer) => {
+    const data = await dataRepo.findByName(
+      type,
+      definitionId,
+      ref.name,
+      ref.version,
+    );
+    const content = data === null ? null : await dataRepo.getContent(
+      type,
+      definitionId,
+      ref.name,
+      ref.version,
+    );
+    return resolveRunArtifact(
+      ref,
+      producer,
+      data === null || content === null ? undefined : {
+        metadata: data.toData(),
+        sha256: await sha256Hex(content),
+      },
+    );
   };
 }

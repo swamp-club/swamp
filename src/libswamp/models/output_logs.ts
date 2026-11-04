@@ -30,7 +30,10 @@ import {
   createCatalogStore,
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
-import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import {
+  type DatastorePathResolver,
+  resolverEngine,
+} from "../../domain/datastore/datastore_path_resolver.ts";
 import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
@@ -41,6 +44,11 @@ import {
 } from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  type OutputArtifactCheck,
+  outputArtifactCheck,
+} from "../data/run_artifact_check.ts";
+
 export interface ModelOutputLogsData {
   outputId: string;
   methodName: string;
@@ -71,12 +79,19 @@ export interface ModelOutputLogsDeps
     type: ModelType,
     definitionId: string,
     name: string,
+    version?: number,
   ) => Promise<unknown | null>;
   getContent: (
     type: ModelType,
     definitionId: string,
     name: string,
+    version?: number,
   ) => Promise<Uint8Array | null>;
+  /**
+   * on a v3 datastore, whether the version a log ref names is still the
+   * content that output produced; absent on v2
+   */
+  checkArtifact?: OutputArtifactCheck;
 }
 
 export function createModelOutputLogsDeps(
@@ -137,10 +152,13 @@ export function createModelOutputLogsDeps(
       }
       return { status: "not_found" as const };
     },
-    findDataByName: (type, definitionId, name) =>
-      dataRepo.findByName(type, definitionId, name),
-    getContent: (type, definitionId, name) =>
-      dataRepo.getContent(type, definitionId, name),
+    findDataByName: (type, definitionId, name, version) =>
+      dataRepo.findByName(type, definitionId, name, version),
+    getContent: (type, definitionId, name, version) =>
+      dataRepo.getContent(type, definitionId, name, version),
+    ...(resolverEngine(datastoreResolver) === "v3"
+      ? { checkArtifact: outputArtifactCheck(dataRepo) }
+      : {}),
   };
 }
 
@@ -208,23 +226,49 @@ export async function* modelOutputLogs(
       const allEntries: string[] = [];
 
       for (const artifact of logArtifacts) {
+        if (deps.checkArtifact !== undefined) {
+          const resolution = await deps.checkArtifact(
+            type,
+            output.definitionId,
+            artifact,
+            {
+              ...(output.provenance.workflowRunId !== undefined
+                ? { workflowRunId: output.provenance.workflowRunId }
+                : {}),
+              startedAt: output.startedAt,
+              ...(output.completedAt !== undefined
+                ? { completedAt: output.completedAt }
+                : {}),
+            },
+          );
+          if (resolution.kind === "unavailable") {
+            yield { kind: "error", error: notFound("Log", resolution.reason) };
+            return;
+          }
+        }
+
         const dataResult = await deps.findDataByName(
           type,
           output.definitionId,
           artifact.name,
+          artifact.version,
         );
-        if (dataResult) {
-          const content = await deps.getContent(
-            type,
-            output.definitionId,
-            artifact.name,
-          );
-          if (content) {
-            const text = new TextDecoder().decode(content);
-            const lines = text.split("\n").filter((line) => line.length > 0);
-            for (const line of lines) allEntries.push(line);
-          }
+        const content = dataResult === null ? null : await deps.getContent(
+          type,
+          output.definitionId,
+          artifact.name,
+          artifact.version,
+        );
+        if (content === null) {
+          yield {
+            kind: "error",
+            error: notFound("Log", `${artifact.name}@${artifact.version}`),
+          };
+          return;
         }
+        const text = new TextDecoder().decode(content);
+        const lines = text.split("\n").filter((line) => line.length > 0);
+        for (const line of lines) allEntries.push(line);
       }
 
       const entriesToShow = input.tail

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -252,4 +252,149 @@ Deno.test("modelOutputLogs reports a passed ambiguous reference as today", async
     error.error.message,
     'Ambiguous ID prefix "abc" matches:\n  abc1\n  abc2',
   );
+});
+
+function outputWithLogs(
+  logs: { name: string; version: number }[],
+): ModelOutput {
+  const output = makeOutput({ withLogArtifact: false });
+  for (const log of logs) {
+    output.addDataArtifact({
+      dataId: crypto.randomUUID(),
+      name: log.name,
+      version: log.version,
+      tags: { type: "log" },
+    });
+  }
+  return output;
+}
+
+async function runWith(
+  output: ModelOutput,
+  deps: ModelOutputLogsDeps,
+): Promise<ModelOutputLogsEvent> {
+  const events = await collect<ModelOutputLogsEvent>(
+    modelOutputLogs(createLibSwampContext(), deps, {
+      outputIdArg: "abc",
+      reference: {
+        kind: "output",
+        match: { output, type: ModelType.create("aws/ec2") },
+      },
+    }),
+  );
+  return events[events.length - 1];
+}
+
+Deno.test("modelOutputLogs: reads each log at the version its output recorded", async () => {
+  const reads: string[] = [];
+  const deps = makeDeps({
+    findDataByName: (_type, _id, name, version) => {
+      reads.push(`find ${name}@${version}`);
+      return Promise.resolve({});
+    },
+    getContent: (_type, _id, name, version) => {
+      reads.push(`content ${name}@${version}`);
+      return Promise.resolve(new TextEncoder().encode(`${name} v${version}`));
+    },
+  });
+  const event = await runWith(
+    outputWithLogs([{ name: "a.log", version: 3 }, {
+      name: "b.log",
+      version: 7,
+    }]),
+    deps,
+  );
+
+  assertEquals(reads, [
+    "find a.log@3",
+    "content a.log@3",
+    "find b.log@7",
+    "content b.log@7",
+  ]);
+  const completed = event as Extract<
+    ModelOutputLogsEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.lines, ["a.log v3", "b.log v7"]);
+});
+
+Deno.test("modelOutputLogs: a log version the check finds unavailable fails with its reason and is not read", async () => {
+  let contentReads = 0;
+  const deps = makeDeps({
+    getContent: () => {
+      contentReads++;
+      return Promise.resolve(new TextEncoder().encode("another writer"));
+    },
+    checkArtifact: (_type, _id, ref) =>
+      Promise.resolve({
+        kind: "unavailable" as const,
+        reason: `${ref.name}@${ref.version}: content no longer available`,
+      }),
+  });
+  const event = await runWith(
+    outputWithLogs([{ name: "run.log", version: 2 }]),
+    deps,
+  );
+
+  const error = event as Extract<ModelOutputLogsEvent, { kind: "error" }>;
+  assertEquals(error.kind, "error");
+  assertEquals(error.error.code, "not_found");
+  assertStringIncludes(
+    error.error.message,
+    "run.log@2: content no longer available",
+  );
+  assertEquals(contentReads, 0);
+});
+
+Deno.test("modelOutputLogs: an available check passes the output as producer and reads the version", async () => {
+  const output = outputWithLogs([{ name: "run.log", version: 4 }]);
+  const producers: unknown[] = [];
+  const reads: (number | undefined)[] = [];
+  const deps = makeDeps({
+    getContent: (_type, _id, _name, version) => {
+      reads.push(version);
+      return Promise.resolve(new TextEncoder().encode("mine"));
+    },
+    checkArtifact: (_type, _id, _ref, producer) => {
+      producers.push(producer);
+      return Promise.resolve({
+        kind: "available" as const,
+        metadata: {} as never,
+      });
+    },
+  });
+  const event = await runWith(output, deps);
+
+  assertEquals(event.kind, "completed");
+  assertEquals(reads, [4]);
+  assertEquals(producers, [{
+    startedAt: output.startedAt,
+    completedAt: output.completedAt,
+  }]);
+});
+
+Deno.test("modelOutputLogs: a log version that no longer exists fails naming it", async () => {
+  const deps = makeDeps({ findDataByName: () => Promise.resolve(null) });
+  const event = await runWith(
+    outputWithLogs([{ name: "run.log", version: 5 }]),
+    deps,
+  );
+
+  const error = event as Extract<ModelOutputLogsEvent, { kind: "error" }>;
+  assertEquals(error.kind, "error");
+  assertEquals(error.error.code, "not_found");
+  assertStringIncludes(error.error.message, "run.log@5");
+});
+
+Deno.test("createModelOutputLogsDeps: a v2 repo takes no artifact check", async () => {
+  await withTempDir((dir) => {
+    const injected = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      new CatalogStore(":memory:"),
+    );
+    const deps = createModelOutputLogsDeps(dir, undefined, injected);
+    assertEquals(deps.checkArtifact, undefined);
+    return Promise.resolve();
+  });
 });
