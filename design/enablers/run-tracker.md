@@ -72,8 +72,9 @@ step saves while it runs and which carries the definition id; failing that,
 the behavior's own lock, which a mutating direct run holds, when the row's
 process holds it and runs no other method. A row neither places (a direct run
 of a method that does not mutate takes no lock) is no behavior's, and only
-`swamp behavior cancel --all` stops it. On a v3 datastore bound directly the
-run's owner holds the writer for the whole run, so `behavior cancel` reads
+`swamp behavior cancel --all` stops it. On a v3 datastore, bound directly or
+as a team member's checkout of serve's datastore, the run's owner holds the
+checkout's writer for the whole run, so `behavior cancel` reads
 the rows and records through a read-only open, stops the owners, and takes
 the writer only to settle a method-run record an owner died without saving
 (swamp-club#4295). The

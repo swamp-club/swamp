@@ -19,6 +19,7 @@
 
 import {
   assertEquals,
+  assertInstanceOf,
   assertRejects,
   assertStringIncludes,
   assertThrows,
@@ -40,6 +41,7 @@ import {
   implicitServeUrl,
   probeHandshakeStatus,
   readTokenFile,
+  remoteGateRefusalUserError,
   requestNewerServerResponse,
   requestServerResponse,
   resetImplicitServeRouting,
@@ -3960,4 +3962,73 @@ Deno.test("commandTargetOf: a command's printed commands carry its --repo-dir wi
     " --repo-dir /tmp/repo",
   );
   assertEquals(commandTargetOf({ server: true, repoDir: 1 }), "");
+});
+
+Deno.test("remoteGateRefusalUserError: serve's approve or reject refusal with a local code reads as the local refusal, without the server prefix", () => {
+  for (
+    const failedCode of [
+      "workflow_approve_failed",
+      "workflow_reject_failed",
+    ] as const
+  ) {
+    const mapped = remoteGateRefusalUserError(
+      new ServerResponseError({
+        code: failedCode,
+        message: 'Step "build" is not awaiting approval in the suspended run',
+        details: { refusalCode: "validation_failed" },
+      }),
+      failedCode,
+    );
+    assertInstanceOf(mapped, UserError);
+    assertEquals(
+      mapped.message,
+      'Step "build" is not awaiting approval in the suspended run',
+    );
+    assertEquals(mapped.code, "validation_failed");
+  }
+});
+
+Deno.test("remoteGateRefusalUserError: an error serve sent without a local code, with one outside the allowed codes, or for another request is left as it came", () => {
+  const cases: [ServerResponseError, "workflow_approve_failed"][] = [
+    // an older serve, or an authorization denial
+    [
+      new ServerResponseError({
+        code: "workflow_approve_failed",
+        message: "Permission denied",
+      }),
+      "workflow_approve_failed",
+    ],
+    [
+      new ServerResponseError({
+        code: "workflow_approve_failed",
+        message: "m",
+        details: { refusalCode: "internal_error" },
+      }),
+      "workflow_approve_failed",
+    ],
+    [
+      new ServerResponseError({
+        code: "workflow_approve_failed",
+        message: "m",
+        details: { refusalCode: 7 },
+      }),
+      "workflow_approve_failed",
+    ],
+    [
+      new ServerResponseError({
+        code: "workflow_reject_failed",
+        message: "m",
+        details: { refusalCode: "validation_failed" },
+      }),
+      "workflow_approve_failed",
+    ],
+  ];
+  for (const [error, failedCode] of cases) {
+    assertEquals(remoteGateRefusalUserError(error, failedCode), error);
+  }
+  const plain = new Error("socket closed");
+  assertEquals(
+    remoteGateRefusalUserError(plain, "workflow_approve_failed"),
+    plain,
+  );
 });

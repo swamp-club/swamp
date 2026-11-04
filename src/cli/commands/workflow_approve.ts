@@ -41,6 +41,7 @@ import {
 import {
   DECIDED_ON_SERVE_OPTION_TEXTS,
   formatCommandTarget,
+  remoteGateRefusalUserError,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -164,7 +165,9 @@ export const workflowApproveCommand = withRemoteOptions(
             runId: options.run as string | undefined,
           },
         },
-      );
+      ).catch((error: unknown) => {
+        throw remoteGateRefusalUserError(error, "workflow_approve_failed");
+      });
       await consumeStream<WorkflowApproveEvent>(
         (async function* () {
           yield {

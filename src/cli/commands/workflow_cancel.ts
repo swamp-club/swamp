@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import {
   createWorkflowRunClaims,
+  type DatastoreResolutionResult,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
@@ -743,12 +744,17 @@ export async function stopLocalRunOwners(
 
 /**
  * Whether cancel must stop a run's owner before it takes the datastore's
- * writer: on a v3 datastore bound directly, not through serve, the owner holds
- * the writer for the whole run.
+ * writer: on v3 the owner holds the writer for the whole run, in a team
+ * member's checkout of serve's datastore as on one bound directly.
  */
+export function ownerHoldsWriterOf(
+  resolution: Pick<DatastoreResolutionResult, "engine">,
+): boolean {
+  return resolution.engine === "v3";
+}
+
 export async function ownerHoldsWriter(repoDir: string): Promise<boolean> {
-  const { engine, serveUpstream } = await resolveDatastoreForRepo(repoDir);
-  return engine === "v3" && serveUpstream === undefined;
+  return ownerHoldsWriterOf(await resolveDatastoreForRepo(repoDir));
 }
 
 /**

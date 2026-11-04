@@ -58,7 +58,11 @@ import { maxOf } from "../../domain/array_extrema.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
-import { openCancelWriter, OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
+import {
+  openCancelWriter,
+  OWNER_STOP_GRACE_MS,
+  ownerHoldsWriterOf,
+} from "./workflow_cancel.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   localOwnerLiveness,
@@ -520,10 +524,7 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
         resolveRepoDir(options.repoDir),
       );
       const { datastoreConfig } = resolution;
-      // On a v3 datastore bound directly, the run's owner holds the writer
-      // for the whole run: it is stopped first, through a read-only open.
-      const ownerHoldsWriter = resolution.engine === "v3" &&
-        resolution.serveUpstream === undefined;
+      const ownerHoldsWriter = ownerHoldsWriterOf(resolution);
       const openOptions = {
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,

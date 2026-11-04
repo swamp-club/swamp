@@ -53,6 +53,7 @@ import {
   isServeOwnedRun,
   openCancelWriter,
   OWNER_STOP_GRACE_MS,
+  ownerHoldsWriterOf,
   resolveLocalCancelTarget,
   RunNotCancelledError,
   SERVER_CANCEL_TIMEOUT_MS,
@@ -2730,4 +2731,9 @@ Deno.test("openCancelWriter: answers a busy v3 writer with the cancel's own erro
     await openCancelWriter(() => Promise.resolve(7), () => new UserError("")),
     7,
   );
+});
+
+Deno.test("ownerHoldsWriterOf: on v3 the owner holds the writer, bound directly or as a team member's checkout of serve's datastore", () => {
+  assertEquals(ownerHoldsWriterOf({ engine: "v3" }), true);
+  assertEquals(ownerHoldsWriterOf({ engine: "v2" }), false);
 });

@@ -127,6 +127,7 @@ Deno.test("serve root units: a workflow.approve whose use case fails still pushe
     assertEquals(errorOf(frames), {
       code: "workflow_approve_failed",
       message: `Workflow run not found: ${runId}`,
+      details: { refusalCode: "validation_failed" },
     });
     assertEquals(observation.ops, ["push[0]"]);
     assertRootUnit(
@@ -1359,5 +1360,99 @@ Deno.test("serve root units: a detached resume whose root cannot open still ends
     };
     assertEquals(terminals, [expected]);
     assertEquals(onTerminal, expected);
+  });
+});
+
+Deno.test("serve: an approve or reject of a step not awaiting approval keeps the local message and names the local code in its details", async () => {
+  await withRowRepos({}, async (repos) => {
+    const workflow = await saveGatedWorkflow(repos.serveRepo, "gated", "gate");
+    let runId: string | undefined;
+    await executeWorkflowWithLocks(
+      repos.a.repoDir,
+      repos.a.repoContext,
+      repos.a.datastoreConfig,
+      {
+        workflowIdOrName: workflow.name,
+        inputs: {},
+        instanceId: crypto.randomUUID(),
+      },
+      new AbortController().signal,
+      (event: WorkflowRunEvent) => {
+        if (event.kind === "started") runId = event.runId;
+      },
+      repos.a.syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+    if (runId === undefined) throw new Error("the gated run never started");
+    const ctx = serveCtx(repos, {
+      activeRunRegistry: new ActiveRunRegistry(),
+    });
+    for (
+      const [type, code] of [
+        ["workflow.approve", "workflow_approve_failed"],
+        ["workflow.reject", "workflow_reject_failed"],
+      ] as const
+    ) {
+      const frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type,
+        payload: { workflowIdOrName: workflow.name, runId, stepName: "nope" },
+      });
+      assertEquals(errorOf(frames), {
+        code,
+        message: 'Step "nope" is not awaiting approval in the suspended run',
+        details: { refusalCode: "validation_failed" },
+      }, type);
+      const missing = crypto.randomUUID();
+      assertEquals(
+        errorOf(
+          await sendRequest(ctx, {
+            id: crypto.randomUUID(),
+            type,
+            payload: {
+              workflowIdOrName: workflow.name,
+              runId: missing,
+              stepName: "gate",
+            },
+          }),
+        ),
+        {
+          code,
+          message: `Workflow run not found: ${missing}`,
+          details: { refusalCode: "validation_failed" },
+        },
+        type,
+      );
+    }
+  });
+});
+
+Deno.test("serve: an approve or reject refusal whose message serve withholds names no local code, so it never reads as a local refusal", async () => {
+  await withRowRepos({}, async (repos) => {
+    const ctx = serveCtx(repos, {
+      activeRunRegistry: new ActiveRunRegistry(),
+    });
+    for (
+      const [type, code] of [
+        ["workflow.approve", "workflow_approve_failed"],
+        ["workflow.reject", "workflow_reject_failed"],
+      ] as const
+    ) {
+      const frames = await sendRequest(ctx, {
+        id: crypto.randomUUID(),
+        type,
+        payload: {
+          workflowIdOrName: "/etc/swamp/gated",
+          runId: crypto.randomUUID(),
+          stepName: "gate",
+        },
+      });
+      assertEquals(
+        errorOf(frames),
+        { code, message: "An internal error occurred" },
+        type,
+      );
+    }
   });
 });
