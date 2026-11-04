@@ -192,6 +192,8 @@ export interface ExtensionPushSuccessData {
   skillCount: number;
   channel: string;
   visibility: "public" | "private";
+  /** Set when public was requested explicitly but the extension stayed private. */
+  visibilityWarning?: string;
   registryWarnings?: RegistryWarnings;
 }
 
@@ -2542,6 +2544,10 @@ export async function* extensionPush(
           // Preserve legacy behavior when no private publication was requested.
         }
       }
+      const visibilityWarning =
+        requestedVisibility === "public" && visibility === "private"
+          ? `Public visibility was requested, but ${confirmResult.name} stays private: a push keeps an existing extension's visibility. To make it public, run: swamp extension visibility ${confirmResult.name} --set public`
+          : undefined;
 
       yield {
         kind: "completed" as const,
@@ -2560,6 +2566,7 @@ export async function* extensionPush(
           skillCount: input.counts.skills,
           channel: input.channel ?? "stable",
           visibility,
+          ...(visibilityWarning ? { visibilityWarning } : {}),
           ...(confirmResult.warnings &&
               confirmResult.warnings.messages.length > 0
             ? { registryWarnings: confirmResult.warnings }

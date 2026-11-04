@@ -113,8 +113,9 @@ Use CLI choice > manifest > registry default. Accept `public` or `private` as
 explicit values. `visibility: public` and `--visibility public` select the
 existing registry behavior: new extensions follow the collective's default and
 existing extensions keep their visibility. Use `--visibility public` to override
-a private manifest; it does not convert an already-private extension to public.
-Only private intent is sent to the registry; public omits the request field.
+a private manifest; it does not convert an already-private extension to public
+(the push warns when that happens). Only private intent is sent to the registry;
+public omits the request field.
 
 Preview/dry-run `visibility` is `public`, `private` or `default` (registry
 decides); successful publication reports applied `public` or `private`. With
@@ -131,6 +132,23 @@ during service rollback. The registry supports private extensions in public
 collectives and checks permissions/entitlements. An already-public extension
 returns a conflict; change its visibility through the registry before publishing
 privately. Omitting both field and flag retains existing defaults.
+
+### Changing visibility after publication
+
+To build privately and release publicly, push with `--visibility private`, then
+make the extension public once it is ready:
+
+```bash
+swamp extension visibility @myorg/ext --json                        # read
+swamp extension visibility @myorg/ext --set public --dry-run --json # preview
+swamp extension visibility @myorg/ext --set public --yes --json     # apply
+```
+
+The JSON reports `before`, `after`, `changed` and `dryRun`; `after` is the
+registry's applied value, and `requested` appears only when the registry kept a
+different value. A collective token needs `extensions:push` and can only make an
+extension public; `--set private` needs a signed-in collective owner and
+private-extension entitlement.
 
 ### additionalFiles — directory structure and runtime access
 

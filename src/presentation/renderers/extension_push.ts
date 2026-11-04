@@ -583,6 +583,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
           this.logger
             .warn`This extension is private — only collective members can pull it`;
         }
+        if (e.data.visibilityWarning) {
+          this.textBlock("warn", e.data.visibilityWarning, "");
+        }
         this.logger.info`Extension ID: ${e.data.extensionId}`;
         this.logger.info`Archive size: ${formatBytes(e.data.archiveSize)}`;
         const parts = [
@@ -781,10 +784,14 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
         // Registry warnings join the other families under `warnings`, one
         // object per warning like theirs; the count of any the client left
         // out stays beside the summary.
-        const { registryWarnings, ...data } = e.data;
+        const { registryWarnings, visibilityWarning, ...data } = e.data;
         this.warn(
           "registry",
           (registryWarnings?.messages ?? []).map((message) => ({ message })),
+        );
+        this.warn(
+          "visibility",
+          visibilityWarning ? [{ message: visibilityWarning }] : [],
         );
         this.emit("pushed", {
           ...data,

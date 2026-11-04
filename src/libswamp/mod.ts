@@ -1051,6 +1051,15 @@ export {
   extensionYankPreview,
 } from "./extensions/yank.ts";
 export {
+  createExtensionVisibilityDeps,
+  type ExtensionVisibility,
+  extensionVisibility,
+  type ExtensionVisibilityData,
+  type ExtensionVisibilityDeps,
+  type ExtensionVisibilityEvent,
+  type ExtensionVisibilityInput,
+} from "./extensions/visibility.ts";
+export {
   createExtensionUnyankDeps,
   extensionUnyank,
   type ExtensionUnyankData,

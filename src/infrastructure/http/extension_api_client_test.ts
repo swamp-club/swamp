@@ -2027,3 +2027,112 @@ Deno.test("ExtensionApiClient: download lookups and checksum honour a caller's s
     assertEquals(requests.length - before, 1);
   }
 });
+
+Deno.test("ExtensionApiClient.setExtensionVisibility POSTs to the public endpoint and returns the applied value", async () => {
+  let capturedUrl = "";
+  let capturedMethod = "";
+  let capturedAuth = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    capturedUrl = req.url;
+    capturedMethod = req.method;
+    capturedAuth = req.headers.get("x-api-key") ?? "";
+    return new Response(
+      JSON.stringify({
+        message: "Restored @test/ext to public visibility",
+        isPrivate: false,
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    const result = await client.setExtensionVisibility(
+      "@test/ext",
+      "public",
+      "swamp_fake-key",
+    );
+    assertEquals(capturedMethod, "POST");
+    assertEquals(
+      new URL(capturedUrl).pathname,
+      "/api/v1/extensions/%40test%2Fext/public",
+    );
+    assertEquals(capturedAuth, "swamp_fake-key");
+    assertEquals(result, { isPrivate: false });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.setExtensionVisibility surfaces the registry's 403 reason", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, () =>
+    new Response(
+      JSON.stringify({
+        error:
+          "A collective token cannot make an extension private. A signed-in collective owner must change it in the registry.",
+      }),
+      { status: 403, headers: { "content-type": "application/json" } },
+    ));
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    const error = await assertRejects(
+      () => client.setExtensionVisibility("@test/ext", "private", "k"),
+      UserError,
+    );
+    assertStringIncludes(error.message, "cannot make an extension private");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.setExtensionVisibility refuses a response without isPrivate", async () => {
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    () =>
+      new Response(JSON.stringify({ message: "ok" }), {
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    await assertRejects(
+      () => client.setExtensionVisibility("@test/ext", "public", "k"),
+      UserError,
+      "Registry returned no visibility",
+    );
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.setExtensionVisibility turns a non-JSON 200 into the retry guidance", async () => {
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    () => new Response("ok", { headers: { "content-type": "text/plain" } }),
+  );
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      {},
+      { sleep: noSleep },
+    );
+    await assertRejects(
+      () => client.setExtensionVisibility("@test/ext", "public", "k"),
+      UserError,
+      "The change may have been applied",
+    );
+  } finally {
+    await server.shutdown();
+  }
+});

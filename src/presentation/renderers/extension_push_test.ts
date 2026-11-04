@@ -1366,3 +1366,39 @@ Deno.test("extensionPushRenderer: an entry whose type is unknown says so instead
   );
   assert(!output.includes("undefined"));
 });
+
+const visibilityWarning =
+  "Public visibility was requested, but @swamp/test stays private: a push keeps an existing extension's visibility. To make it public, run: swamp extension visibility @swamp/test --set public";
+
+Deno.test("extensionPushRenderer: log completed summary prints the visibility warning verbatim", async () => {
+  const renderer = createExtensionPushRenderer("log");
+  const logs = await capture(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        ...completedEvent.data,
+        visibility: "private",
+        visibilityWarning,
+      },
+    })
+  );
+  assert(logs.some((l) => l.endsWith(visibilityWarning)));
+});
+
+Deno.test("extensionPushRenderer: JSON push carries the visibility warning as the visibility family, not at the top level", async () => {
+  const renderer = createExtensionPushRenderer("json", PATHS);
+  const logs = await capture(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        ...completedEvent.data,
+        visibility: "private",
+        visibilityWarning,
+      },
+    })
+  );
+  const doc = JSON.parse(logs[0]);
+  assertEquals(doc.warnings.visibility, [{ message: visibilityWarning }]);
+  assertEquals("visibilityWarning" in doc, false);
+  assertEquals(doc.visibility, "private");
+});

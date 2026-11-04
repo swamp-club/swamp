@@ -77,7 +77,15 @@ default. Dry-run does not establish the applied visibility; private intent adds
 the private-entitlement registry check described below. Successful output
 reports the actual `public`/`private` visibility from the confirmation response.
 Explicit private requests require a private confirmation and never fall back to
-a best-effort lookup.
+a best-effort lookup. When public was requested explicitly and the extension
+stays private, the push warns and names the command below.
+
+Visibility is fixed by the first push and kept by later ones.
+`swamp extension visibility <name>` reads it; `--set public|private` changes it
+through the registry's visibility action, the same one the registry UI uses.
+The applied value is the registry's answer, never the request. A collective
+token needs `extensions:push` and may only make an extension public: hiding a
+published extension can break consumers, so it stays with a signed-in owner.
 
 ## Declared License
 

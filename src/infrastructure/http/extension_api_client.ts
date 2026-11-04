@@ -83,6 +83,8 @@ export interface PushMetadata {
   visibility?: "private";
 }
 
+export type ExtensionVisibility = "public" | "private";
+
 export interface ConfirmPushMetadata extends PushMetadata {
   contentMetadata?: ExtensionContentMetadata;
 }
@@ -649,6 +651,27 @@ export class ExtensionApiClient {
     await this.checkResponse(res);
     const data = await res.json();
     return data.checksum ?? null;
+  }
+
+  async setExtensionVisibility(
+    name: string,
+    visibility: ExtensionVisibility,
+    apiKey: string,
+  ): Promise<{ isPrivate: boolean }> {
+    const encodedName = encodeURIComponent(name);
+    const res = await this.fetch(
+      `/api/v1/extensions/${encodedName}/${visibility}`,
+      { method: "POST", headers: this.authHeaders(apiKey) },
+    );
+
+    await this.checkResponse(res);
+    const data = await res.json().catch(() => null);
+    if (typeof data?.isPrivate !== "boolean") {
+      throw new UserError(
+        "Registry returned no visibility. The change may have been applied; read the extension's visibility before retrying.",
+      );
+    }
+    return { isPrivate: data.isPrivate };
   }
 
   async yankExtension(
