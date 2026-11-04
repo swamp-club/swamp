@@ -132,7 +132,11 @@ The skill verification workflow also needs:
 - **`TESSL_TOKEN`** — for `deno task review-skills` (calls `npx tessl`). Add it
   to `verify.env`. If missing, skill review **fails** (exit 1) — an incomplete
   verification is not a valid attestation.
-- **`deno task eval-skill-triggers`** needs no API key on the `cli` route.
+- **`eval-tool-build`** needs `go` on a plain, non-login shell's `PATH`; any
+  version works, since `tools/swamp-eval/build.sh` switches to the exact Go
+  pinned in `.tool-versions`, downloading it once if needed.
+- **`skill-trigger-eval`** runs the binary that build produced and needs no API
+  key on the `cli` route.
   By default it answers every case through `claude -p` on your claude.ai login. Set
   `verify-skills` input `reviewer=codex` to use an authenticated Codex CLI
   with `gpt-6-astra` instead. If the selected CLI is missing or logged out,
@@ -188,14 +192,14 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
 
 The workflow detects changed files and guards both steps behind a skill-path
 filter (`.claude/skills/**`, `CLAUDE.md`, `scripts/review_skills.ts`,
-`scripts/eval_skill_triggers_promptfoo.ts`, `scripts/promptfoo_install.ts`,
-`evals/promptfoo/**`). When no
+`tools/swamp-eval/**`, `.tool-versions`). When no
 skill files changed, both steps are skipped.
 
 | Step | Command | Env Var | Missing Behavior |
 | --- | --- | --- | --- |
 | skill-review | `deno task review-skills` | `TESSL_TOKEN` | **Fails** (exit 1) — must be configured |
-| skill-trigger-eval | `deno task eval-skill-triggers --route cli --model <selected-model>` | none (selected CLI login) | **Fails** (exit 1) if the selected CLI is unusable |
+| eval-tool-build | `sh tools/swamp-eval/build.sh` | none (`go` on `PATH`) | **Fails** on a gofmt, vet, test or build failure |
+| skill-trigger-eval | `./.bin/swamp-eval run --route cli --model <selected-model>` | none (selected CLI login) | **Fails** if the selected CLI is unusable (exit 2) or below the threshold (exit 1) |
 
 `verify-skills` defaults to `reviewer=claude` (`opus`). To use Codex for all
 three eval phases (trigger, routing, sufficiency):
@@ -208,15 +212,13 @@ SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
 This selects `gpt-6-astra` through `codex exec`; skill quality review still uses
 Tessl. Each case runs in a fresh temporary directory with a schema-constrained
 final answer. Missing answers, invalid choices, and failed processes count as
-eval errors. The Codex provider is hash-pinned in the attestation like the
-Claude provider. Choose the reviewer separately for `verify-reviews` and
-`verify-skills`.
+eval errors. The whole of `tools/swamp-eval/` is hash-pinned in the
+attestation as one tree digest (`configIntegrity.scripts.eval-tool`), so a file
+added there is covered without being listed. Choose the reviewer separately for
+`verify-reviews` and `verify-skills`.
 
-Provider unit tests live beside their source in `evals/promptfoo/`. List each
-test file explicitly in the root `deno.json` test includes, alongside the root
-entry and the exclusion override. Deno skips nested npm packages during
-automatic traversal, even when an exclusion override matches their tests.
-Confirm discovery in the full build workflow log after adding a provider test.
+The evaluator is a standard-library-only Go module; its tests run in
+`eval-tool-build`, not under `deno run test`.
 
 ## Running All Three in Parallel
 
@@ -570,8 +572,9 @@ content is `results[0]`.
   explain to the user what was changed and why
 - **Skill review failures**: update the skill content to improve the review
   score, run `deno run review-skills` locally to verify
-- **Skill trigger eval failures**: check trigger config in
-  `evals/promptfoo/`, run `deno run eval-skill-triggers` locally to verify
+- **Skill trigger eval failures**: read the failed-case table it prints (the
+  full record is `eval-results/<model>.json`), fix the skill text or fixture,
+  run `deno run eval-skill-triggers` locally to verify
 
 ### 4. Re-run verification
 

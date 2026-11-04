@@ -36,9 +36,11 @@ jobs:
     steps:
       - name: Check if model is selected
         id: check
+        env:
+          MODELS: ${{ github.event.inputs.models || 'all' }}
+          MODEL: ${{ matrix.model }}
         run: |
-          MODELS="${{ github.event.inputs.models || 'all' }}"
-          if [ "$MODELS" = "all" ] || echo ",$MODELS," | grep -q ",${{ matrix.model }},"; then
+          if [ "$MODELS" = "all" ] || echo ",$MODELS," | grep -q ",$MODEL,"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -48,34 +50,41 @@ jobs:
         if: steps.check.outputs.run == 'true'
         uses: actions/checkout@v6
 
-      - name: Setup Deno
+      - name: Setup Go
         if: steps.check.outputs.run == 'true'
-        uses: denoland/setup-deno@v2
+        uses: actions/setup-go@v6
         with:
-          deno-version-file: .tool-versions
+          go-version-file: .tool-versions
+          cache: false
 
-      - name: Setup Node.js
+      - name: Build the evaluator
         if: steps.check.outputs.run == 'true'
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
+        run: sh tools/swamp-eval/build.sh
 
-      - name: Run skill trigger evals
+      - name: Run skill evals
         if: steps.check.outputs.run == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-        run: deno run eval-skill-triggers --model ${{ matrix.model }} --concurrency ${{ matrix.concurrency }} --route api
+          MODEL: ${{ matrix.model }}
+          CONCURRENCY: ${{ matrix.concurrency }}
+        run: >-
+          ./.bin/swamp-eval run
+          --repo-root "$GITHUB_WORKSPACE"
+          --model "$MODEL"
+          --route api
+          --concurrency "$CONCURRENCY"
+          --out "$GITHUB_WORKSPACE/eval-results/$MODEL.json"
+          --github-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload eval results
         if: steps.check.outputs.run == 'true' && always()
         uses: actions/upload-artifact@v6
         with:
           name: eval-results-${{ matrix.model }}
-          path: |
-            evals/promptfoo/results.json
-            evals/promptfoo/routing_results.json
+          path: eval-results/${{ matrix.model }}.json
+          if-no-files-found: warn
           retention-days: 14
 
   analysis:
@@ -89,10 +98,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
+      - name: Setup Go
+        uses: actions/setup-go@v6
         with:
-          deno-version-file: .tool-versions
+          go-version-file: .tool-versions
+          cache: false
 
       - name: Download all eval results
         uses: actions/download-artifact@v4
@@ -100,7 +110,14 @@ jobs:
           pattern: eval-results-*
           path: eval-artifacts
 
+      - name: Build the evaluator
+        run: sh tools/swamp-eval/build.sh
+
       - name: Run cross-model analysis
-        run: deno run --allow-read --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/analyze_eval_results.ts eval-artifacts
         env:
-          GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
+          MODELS: ${{ github.event.inputs.models || 'all' }}
+        run: >-
+          ./.bin/swamp-eval report
+          "$GITHUB_WORKSPACE/eval-artifacts"
+          --expect "$MODELS"
+          --github-summary "$GITHUB_STEP_SUMMARY"

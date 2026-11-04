@@ -31,11 +31,8 @@ CLAUDE.local.md
 .envrc
 resources/deno/
 /scripts/dist
-evals/promptfoo/results.json
-evals/promptfoo/routing_results.json
-evals/promptfoo/sufficiency_results.json
-evals/promptfoo/promptfooconfig.yaml
-evals/promptfoo/node_modules/
+/eval-results/
+/.bin/
 
 # Dashboard build artifacts
 packages/dashboard/node_modules/

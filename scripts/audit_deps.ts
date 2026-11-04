@@ -396,7 +396,6 @@ async function main(): Promise<void> {
   const { packages, directNames } = parseNpmPackages(lockData);
 
   const npmLockfiles = [
-    "evals/promptfoo/package-lock.json",
     "packages/dashboard/package-lock.json",
   ];
   for (const lockPath of npmLockfiles) {

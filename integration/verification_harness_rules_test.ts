@@ -29,6 +29,7 @@ import {
   checkVerificationProvenance,
   checkWorkflowProvenance,
   CONFIG_FILES,
+  CONFIG_TREES,
   reviewModels,
   type WorkflowDef,
 } from "../scripts/build_attestation.ts";
@@ -340,7 +341,7 @@ const CI_WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml");
 function ciJsonPaths(source: string): string[] {
   return [
     ...source.matchAll(
-      /check_hash\s+"[^"]*"\s+'\.configIntegrity\.([^']+)'/g,
+      /check_(?:tree_)?hash\s+"[^"]*"\s+'\.configIntegrity\.([^']+)'/g,
     ),
   ]
     .map((m) => m[1].replaceAll('"', ""))
@@ -357,7 +358,9 @@ function hashedScriptPaths(): string[] {
 Deno.test("attestation: the generator hashes exactly the files CI re-hashes", async () => {
   const ci = await Deno.readTextFile(CI_WORKFLOW);
 
-  const generated = CONFIG_FILES.map((f) => f.jsonPath.join(".")).sort();
+  const generated = [...CONFIG_FILES, ...CONFIG_TREES]
+    .map((f) => f.jsonPath.join("."))
+    .sort();
   const checked = ciJsonPaths(ci);
 
   // Load-bearing: a regex that quietly stopped matching would turn the
@@ -474,4 +477,46 @@ Deno.test("attestation: the integrity auditor is told to read every hashed scrip
     "These files are hash-pinned in the attestation but the review-integrity " +
       "prompt does not tell the auditor to read them.",
   );
+});
+
+Deno.test("attestation: every hashed directory is reviewed, re-checked and audited", async () => {
+  const ci = await Deno.readTextFile(CI_WORKFLOW);
+  assertEquals(
+    CONFIG_TREES.length > 0,
+    true,
+    "No directories in CONFIG_TREES.",
+  );
+
+  const trustRoot = ci.match(/trust_root:\n([\s\S]*?)\n\n/)?.[1] ?? "";
+  const skipPattern = ci.match(
+    /trust_changes=\$\([\s\S]*?select\(test\("([^"]+)"\)\)/,
+  )?.[1];
+  const audit = ci.match(
+    /## Files to audit\n([\s\S]*?)\n\n\s*For each changed file/,
+  )?.[1] ?? "";
+  if (!trustRoot || !skipPattern || !audit) {
+    throw new Error(
+      "trust_root, trust_changes or the audit list was renamed in " +
+        ".github/workflows/ci.yml, which would make this rule a vacuous pass.",
+    );
+  }
+  const pattern = new RegExp(skipPattern.replaceAll("\\\\", "\\"));
+
+  for (const { dir } of CONFIG_TREES) {
+    assertEquals(
+      trustRoot.includes(`'${dir}/**'`),
+      true,
+      `${dir} is hash-pinned but not in the trust_root path filter.`,
+    );
+    assertEquals(
+      pattern.test(`${dir}/any/new/file.go`),
+      true,
+      `a change under ${dir} after approval would not re-run review integrity.`,
+    );
+    assertEquals(
+      audit.includes(`\`${dir}/\``),
+      true,
+      `the review-integrity prompt does not tell the auditor to read ${dir}.`,
+    );
+  }
 });

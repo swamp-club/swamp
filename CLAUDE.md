@@ -34,8 +34,9 @@ After creating or modifying a skill, verify it before submitting:
   `agent-constraints/verification-conventions.md`). CI enforces that threshold
   for the bundled skills (`swamp`, `swamp-getting-started`) via
   `deno run review-skills`; for other skills it is good hygiene, not a gate.
-- `deno run eval-skill-triggers` — promptfoo trigger-routing evals for the
-  bundled skills (runs through `claude -p` on your claude.ai login; no API key);
-  run when a bundled skill's description or `trigger_evals.json` changed.
+- `deno run eval-skill-triggers` — trigger, routing and sufficiency evals for
+  the bundled skills, run by the Go evaluator in `tools/swamp-eval` (needs `go`
+  on `PATH`; answers through `claude -p` on your claude.ai login, no API key);
+  run when a bundled skill's description or any `evals/*.json` changed.
 
 See `contributing/skills-pipeline.md` for the full skill testing pipeline.
