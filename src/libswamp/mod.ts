@@ -240,6 +240,7 @@ export {
   type WorkflowRunSummaryInput,
 } from "./workflows/run_summary.ts";
 export {
+  type HistorySkippedWorkflow,
   workflowHistorySearch,
   type WorkflowHistorySearchData,
   type WorkflowHistorySearchDeps,

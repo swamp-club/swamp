@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UnreadableRunRecordError } from "../../domain/workflows/unreadable_run_record.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import {
@@ -611,4 +612,49 @@ Deno.test("workflowHistorySearch: a run the caller may not read never has its re
 
   assertEquals(results, []);
   assertEquals(calls, []);
+});
+
+Deno.test("workflowHistorySearch: a workflow with an unreadable record is left out, and the others are still listed", async () => {
+  const deps = makeDeps({
+    findAllWorkflows: () =>
+      Promise.resolve([
+        { id: "wf-1", name: "deploy" },
+        { id: "wf-2", name: "test" },
+      ]),
+    findAllRunsByWorkflowId: (id: string) =>
+      id === "wf-1"
+        ? Promise.reject(
+          new UnreadableRunRecordError("run-1", "/runs/r.yaml", "cut short"),
+        )
+        : Promise.resolve([{
+          id: "run-2",
+          workflowId: "wf-2",
+          workflowName: "test",
+          status: "succeeded",
+          startedAt: new Date(),
+          completedAt: new Date(),
+          tags: {},
+          inputs: {},
+        }]),
+  });
+
+  const events = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, {}),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("not completed");
+  assertEquals(completed.data.results.map((r) => r.runId), ["run-2"]);
+  assertEquals(completed.data.skippedWorkflows, [{
+    workflowId: "wf-1",
+    workflowName: "deploy",
+    runId: "run-1",
+    reason: "cut short",
+  }]);
+
+  const narrowed = await collect<WorkflowHistorySearchEvent>(
+    workflowHistorySearch(createLibSwampContext(), deps, { workflow: "test" }),
+  );
+  const other = narrowed.find((e) => e.kind === "completed");
+  if (other?.kind !== "completed") throw new Error("not completed");
+  assertEquals(other.data.skippedWorkflows, undefined);
 });

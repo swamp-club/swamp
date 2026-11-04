@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { EventBus } from "../events/event_bus.ts";
 import type { RunCheckpointer } from "./run_checkpointer.ts";
 import { StepStartUnrecordedError } from "./step_start.ts";
 import {
@@ -24990,5 +24992,45 @@ Deno.test("recover: a run whose workflow gained a fan-out job is refused and lef
       "unknown",
     );
     assertEquals(executor.calls.size, 0);
+  });
+});
+
+Deno.test("execute: a run whose record is damaged while a step runs still finishes, and its record is repaired", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new YamlWorkflowRunRepository(tempDir, new EventBus());
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const runsDir = join(tempDir, ".swamp", "workflow-runs", workflow.id);
+    let damaged = 0;
+    const executor: StepExecutor = {
+      execute: async () => {
+        for await (const entry of Deno.readDir(runsDir)) {
+          if (!entry.name.endsWith(".yaml")) continue;
+          await Deno.writeTextFile(
+            join(runsDir, entry.name),
+            "initiatedBy: 'user:shelson_xer",
+          );
+          damaged++;
+        }
+        return {};
+      },
+    };
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(damaged, 1);
+    assertEquals(run.status, "succeeded");
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.status, "succeeded");
   });
 });

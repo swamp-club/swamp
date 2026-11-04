@@ -22,6 +22,7 @@
  * and a new one fails until placed
  */
 
+import { dirname, join } from "@std/path";
 import { assert, assertEquals } from "@std/assert";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -318,6 +319,27 @@ Deno.test("serve condition-fields conformance: collections leave out tag-denied 
       );
       assert(open.includes("prod-"), `${label} unfiltered: ${open}`);
     }
+  });
+});
+
+Deno.test("serve condition-fields conformance: workflow.history.search names a workflow it left out only to a principal who may read it", async () => {
+  await withFixtures(async (f) => {
+    const runRepo = f.repo.repoContext.workflowRunRepo;
+    const run = await saveLatestRun(f, f.prodWorkflow);
+    const path = runRepo.getPath(f.prodWorkflow.id, run.id);
+    await Deno.writeTextFile(path, "id: 'unterminated");
+    await Deno.remove(join(dirname(path), ".runs-index.json"));
+
+    const type = "workflow.history.search";
+    const denied = reply(await sendRequest(f.ctx, request(type, {})), type);
+    assert(denied.includes("dev-flow"), denied);
+    assert(!denied.includes("prod-"), denied);
+    assert(!denied.includes("skippedWorkflows"), denied);
+
+    const open = reply(await sendRequest(openCtx(f), request(type, {})), type);
+    assert(open.includes("skippedWorkflows"), open);
+    assert(open.includes("prod-flow"), open);
+    assert(!open.includes(path), open);
   });
 });
 

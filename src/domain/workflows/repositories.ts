@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { UnreadableRun } from "./unreadable_run_record.ts";
 import type { WorkflowListing } from "./workflow_listing.ts";
 import type { WorkflowId, WorkflowRunId } from "./workflow_id.ts";
 import type { Workflow } from "./workflow.ts";
@@ -107,6 +108,15 @@ export interface WorkflowRunRepository {
   recordsAreForwarded: boolean;
 
   verifyIndexes?(): Promise<void>;
+
+  /** runs that may still be running but whose record cannot be parsed */
+  findUnreadableRuns?(): Promise<UnreadableRun[]>;
+
+  /** the record as it is now: false once it is gone, whole or reads as a run */
+  isRunDamaged?(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<boolean>;
 
   save(
     workflowId: WorkflowId,

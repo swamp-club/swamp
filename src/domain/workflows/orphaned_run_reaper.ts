@@ -28,13 +28,17 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import {
+  createWorkflowId,
   createWorkflowRunId,
   type WorkflowId,
   type WorkflowRunId,
 } from "./workflow_id.ts";
-import type { WorkflowRun } from "./workflow_run.ts";
+import type { UnreadableRun } from "./unreadable_run_record.ts";
+import { WorkflowRun } from "./workflow_run.ts";
 
 const logger = getSwampLogger(["workflows", "orphaned-runs"]);
+
+const UNREADABLE_RECORD_PLACEHOLDER = "unreadable-record";
 
 export interface ReapResult {
   readonly reaped: number;
@@ -316,6 +320,75 @@ export async function settleDeadOwnerRun(
       },
     );
   }
+  return true;
+}
+
+/**
+ * replaces the record with one that keeps no step detail, so only for a run whose
+ * owner on this host is dead, and only while the record is still unreadable: the
+ * owner's own save may have repaired it since the scan
+ */
+export async function settleUnreadableRun(
+  runRepo: WorkflowRunRepository,
+  runTracker: RunTrackerRepository,
+  unreadable: UnreadableRun,
+  liveness: OwnerLiveness,
+): Promise<boolean> {
+  if (!unreadable.damaged) return false;
+  const tracked = runTracker.findById(unreadable.runId);
+  if (!tracked || !tracked.isLocalTo(liveness.hostname, liveness.instanceId)) {
+    return false;
+  }
+  // A row reads failed before its owner has run reports and made its last save.
+  const ownerDead = tracked.status === "failed"
+    ? liveness.isDead(tracked.pid)
+    : trackerShowsDeadOwner(tracked, liveness);
+  if (!ownerDead) return false;
+  const stillDamaged = await runRepo.isRunDamaged?.(
+    createWorkflowId(unreadable.workflowId),
+    createWorkflowRunId(unreadable.runId),
+  );
+  if (!stillDamaged) return false;
+
+  logger.warn(
+    "Settling workflow run {runId}, whose record at {path} cannot be read: {reason}",
+    {
+      runId: unreadable.runId,
+      path: unreadable.path,
+      reason: unreadable.reason,
+    },
+  );
+  if (tracked.status === "running") {
+    runTracker.complete(unreadable.runId, "failed");
+  }
+  // Failed, not interrupted: recovery reads a run's steps, and these are gone.
+  const startedAt = tracked.startedAt.toISOString();
+  const completedAt = new Date().toISOString();
+  const error = `The run's record could not be read: ${unreadable.reason}`;
+  const run = WorkflowRun.fromData({
+    id: unreadable.runId,
+    workflowId: unreadable.workflowId,
+    workflowName: tracked.workflowName ?? unreadable.workflowName ?? "unknown",
+    status: "failed",
+    startedAt,
+    completedAt,
+    jobs: [{
+      jobName: UNREADABLE_RECORD_PLACEHOLDER,
+      status: "failed",
+      startedAt,
+      completedAt,
+      steps: [{
+        stepName: UNREADABLE_RECORD_PLACEHOLDER,
+        status: "failed",
+        startedAt,
+        completedAt,
+        error,
+      }],
+    }],
+    tags: {},
+  });
+  await runRepo.save(createWorkflowId(unreadable.workflowId), run);
+  runTracker.markSettled(unreadable.runId, "record_unreadable");
   return true;
 }
 

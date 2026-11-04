@@ -1226,6 +1226,7 @@ export async function handleWorkflowHistorySearch(
 
     const data = (result ?? {}) as {
       results?: Array<{ workflowId: string; workflowName: string }>;
+      skippedWorkflows?: Array<{ workflowId: string; workflowName: string }>;
     };
     if (data.results) {
       data.results = await filterByResources(
@@ -1236,6 +1237,17 @@ export async function handleWorkflowHistorySearch(
         "read",
         ctx,
       );
+    }
+    if (data.skippedWorkflows) {
+      data.skippedWorkflows = await filterByResources(
+        data.skippedWorkflows,
+        (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
+        socket,
+        principal,
+        "read",
+        ctx,
+      );
+      if (data.skippedWorkflows.length === 0) delete data.skippedWorkflows;
     }
 
     send(socket, {

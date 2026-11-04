@@ -57,6 +57,7 @@ found), see [references/version-check.md](references/version-check.md).
 | "This used to work" / suspected regression         | Before you start → version-drift check                           |
 | Extension not loaded / `swamp-warning:` on stderr  | Tier 1 → `swamp doctor extensions`                               |
 | Run stuck in "running" / orphaned after crash      | Tier 1 → `swamp run doctor --fix`, then `swamp workflow recover` |
+| `run_record_unreadable` from any command           | Tier 1 → `swamp run doctor --fix`, if the run had not finished   |
 | "Is anything running right now?"                   | Tier 1 → `swamp run history --active`                            |
 | Every command fails with `auth_gate_blocked`       | Account required → see below                                     |
 | `datastore_format_unsupported` / `_marker_invalid` | Datastore format → see below                                     |

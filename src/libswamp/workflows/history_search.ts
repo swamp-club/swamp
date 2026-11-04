@@ -24,6 +24,7 @@ import { validationFailed } from "../errors.ts";
 
 import { findReapedBefore, type ReapedBefore } from "../retention/reaped.ts";
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
+import { UnreadableRunRecordError } from "../../domain/workflows/unreadable_run_record.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
 import {
@@ -40,6 +41,15 @@ export interface WorkflowHistorySearchData {
    * listing cannot show them
    */
   reapedBefore?: ReapedBefore;
+  /** workflows left out because a run record could not be read */
+  skippedWorkflows?: HistorySkippedWorkflow[];
+}
+
+export interface HistorySkippedWorkflow {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  reason: string;
 }
 
 export type WorkflowHistorySearchEvent =
@@ -140,14 +150,27 @@ export async function* workflowHistorySearch(
       // run summaries are fetched with bounded concurrency so peak memory does
       // not scale with the number of workflows; summaries are lightweight, so
       // holding them all before filtering is cheap
+      const skippedWorkflows: HistorySkippedWorkflow[] = [];
       const allRuns = await collectBounded(
         allWorkflows,
         RUN_FANOUT_CONCURRENCY,
-        async (workflow) =>
-          (await deps.findAllRunsByWorkflowId(workflow.id)).map((run) => ({
-            ...run,
-            ownerId: workflow.id,
-          })),
+        async (workflow) => {
+          try {
+            return (await deps.findAllRunsByWorkflowId(workflow.id)).map(
+              (run) => ({ ...run, ownerId: workflow.id }),
+            );
+          } catch (error) {
+            // One damaged record must not hide every other workflow's history.
+            if (!(error instanceof UnreadableRunRecordError)) throw error;
+            skippedWorkflows.push({
+              workflowId: workflow.id,
+              workflowName: workflow.name,
+              runId: error.runId,
+              reason: error.reason,
+            });
+            return [];
+          }
+        },
       );
       const owners = new Map<WorkflowHistorySearchItem, string>();
 
@@ -252,12 +275,21 @@ export async function* workflowHistorySearch(
         deps.retentionWatermarks,
         "workflowRuns",
       );
+      const listedSkips =
+        (input.workflow
+          ? skippedWorkflows.filter((w) =>
+            w.workflowName.toLowerCase() === input.workflow!.toLowerCase()
+          )
+          : skippedWorkflows).sort((a, b) =>
+            a.workflowName.localeCompare(b.workflowName)
+          );
       yield {
         kind: "completed",
         data: {
           query: input.query ?? "",
           results,
           ...(reaped ? { reapedBefore: reaped } : {}),
+          ...(listedSkips.length > 0 ? { skippedWorkflows: listedSkips } : {}),
         },
       };
     })(),

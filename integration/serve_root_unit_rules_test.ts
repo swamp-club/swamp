@@ -275,7 +275,7 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/boot_reconciliation.ts: sweepStaleRecords",
   "src/serve/capability_service.ts: CapabilityService",
   "src/serve/data_plane.ts: DataPlane",
-  "src/serve/handlers/admin_handlers.ts: handleRunDoctor",
+  "src/serve/handlers/admin_handlers.ts: handleRunDoctor (x2)",
   // step-lease transitions are written directly rather than as method runs, so
   // they are staged into the dispatching run's root, whose push carries them
   "src/serve/step_lease_ledger.ts: StepLeaseLedger",

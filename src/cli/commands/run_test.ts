@@ -27,6 +27,9 @@ import {
   serveRunHistoryOf,
 } from "./run.ts";
 import { ServerResponseError } from "../remote_run.ts";
+import { settleUnreadableRun } from "../../domain/workflows/orphaned_run_reaper.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
   localOwnerLiveness,
   RunTrackerStore,
@@ -623,3 +626,197 @@ Deno.test("serveRunHistoryOf: serve's runs are read, and a refusal or no answer 
     { kind: "absent", reason: "serve is unreachable" },
   );
 });
+
+async function damagedRun(dir: string, pid: number) {
+  const repo = new YamlWorkflowRunRepository(dir);
+  const run = strandedRun(pid);
+  await repo.save(createWorkflowId(run.workflowId), run);
+  const path = repo.getPath(createWorkflowId(run.workflowId), run.id);
+  await Deno.writeTextFile(path, "id: 'unterminated");
+  return { repo, run, path };
+}
+
+Deno.test(
+  "diagnoseLocalRuns: reports an unreadable record without failing, and writes nothing without fix",
+  withTracker(async (tracker, dir) => {
+    const { repo, run, path } = await damagedRun(dir, DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      repo,
+      workflowRepo,
+      noOutputs,
+      localOwnerLiveness(),
+      false,
+    );
+
+    assertEquals(result.unreadable.runs.map((r) => r.runId), [run.id]);
+    assertEquals(result.unreadable.runs[0].path, path);
+    assertEquals(result.unreadable.reaped, 0);
+    assertEquals(await Deno.readTextFile(path), "id: 'unterminated");
+  }),
+);
+
+for (
+  const [name, settleRow, settledRow] of [
+    ["a dead owner", (_tracker: RunTrackerStore, _id: string) => {}, true],
+    [
+      "an owner that recorded its own failure",
+      (tracker: RunTrackerStore, id: string) => tracker.complete(id, "failed"),
+      false,
+    ],
+  ] as const
+) {
+  Deno.test(
+    `diagnoseLocalRuns: fix settles an unreadable record of ${name} as failed, which recovery does not pick up`,
+    withTracker(async (tracker, dir) => {
+      const { repo, run } = await damagedRun(dir, DEAD_PID);
+      tracker.register(trackerRow(run.id, DEAD_PID));
+      settleRow(tracker, run.id);
+
+      const result = await diagnoseLocalRuns(
+        tracker,
+        repo,
+        workflowRepo,
+        noOutputs,
+        localOwnerLiveness(),
+        true,
+      );
+
+      assertEquals(result.unreadable.reaped, 1);
+      const settled = await repo.findById(
+        createWorkflowId(run.workflowId),
+        run.id,
+      );
+      assertEquals(settled?.status, "failed");
+      assertEquals(
+        settled?.toData().failureReason?.includes("could not be read"),
+        true,
+      );
+      assertEquals(tracker.findById(run.id)?.settled, settledRow);
+      assertEquals(tracker.findById(run.id)?.status === "running", false);
+      const after = await repo.findGlobalByStatus("running");
+      assertEquals(after, []);
+    }),
+  );
+}
+
+Deno.test(
+  "diagnoseLocalRuns: fix leaves an unreadable record alone while its owner lives, and when no local row tracks the run",
+  withTracker(async (tracker, dir) => {
+    const live = await damagedRun(dir, Deno.pid);
+    tracker.register(trackerRow(live.run.id, Deno.pid));
+    const untracked = await damagedRun(dir, DEAD_PID);
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      live.repo,
+      workflowRepo,
+      noOutputs,
+      localOwnerLiveness(),
+      true,
+    );
+
+    assertEquals(result.unreadable.runs.length, 2);
+    assertEquals(result.unreadable.reaped, 0);
+    assertEquals(await Deno.readTextFile(live.path), "id: 'unterminated");
+    assertEquals(await Deno.readTextFile(untracked.path), "id: 'unterminated");
+  }),
+);
+
+for (const status of ["completed", "cancelled", "suspended"] as const) {
+  Deno.test(
+    `diagnoseLocalRuns: fix reports an unreadable record of a ${status} row and leaves it as it is`,
+    withTracker(async (tracker, dir) => {
+      const { repo, run, path } = await damagedRun(dir, DEAD_PID);
+      tracker.register(trackerRow(run.id, DEAD_PID));
+      tracker.complete(run.id, status);
+
+      const result = await diagnoseLocalRuns(
+        tracker,
+        repo,
+        workflowRepo,
+        noOutputs,
+        localOwnerLiveness(),
+        true,
+      );
+
+      assertEquals(result.unreadable.runs.map((r) => r.runId), [run.id]);
+      assertEquals(result.unreadable.reaped, 0);
+      assertEquals(await Deno.readTextFile(path), "id: 'unterminated");
+    }),
+  );
+}
+
+Deno.test(
+  "diagnoseLocalRuns: fix leaves an unreadable record of a failed row alone while its owner still lives",
+  withTracker(async (tracker, dir) => {
+    const { repo, run, path } = await damagedRun(dir, Deno.pid);
+    tracker.register(trackerRow(run.id, Deno.pid));
+    tracker.complete(run.id, "failed");
+
+    const result = await diagnoseLocalRuns(
+      tracker,
+      repo,
+      workflowRepo,
+      noOutputs,
+      localOwnerLiveness(),
+      true,
+    );
+
+    assertEquals(result.unreadable.reaped, 0);
+    assertEquals(await Deno.readTextFile(path), "id: 'unterminated");
+  }),
+);
+
+Deno.test(
+  "diagnoseLocalRuns: fix reports a record that is whole but fails the schema and does not replace it",
+  withTracker(async (tracker, dir) => {
+    const { repo, run, path } = await damagedRun(dir, DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    for (
+      const whole of [
+        `id: ${run.id}\nstatus: from-a-newer-swamp\n`,
+        `id: ${run.id}\nlogFile: {path: x}\n`,
+      ]
+    ) {
+      await Deno.writeTextFile(path, whole);
+
+      const result = await diagnoseLocalRuns(
+        tracker,
+        repo,
+        workflowRepo,
+        noOutputs,
+        localOwnerLiveness(),
+        true,
+      );
+
+      assertEquals(result.unreadable.runs.map((r) => r.runId), [run.id]);
+      assertEquals(result.unreadable.reaped, 0);
+      assertEquals(await Deno.readTextFile(path), whole);
+    }
+  }),
+);
+
+Deno.test(
+  "settleUnreadableRun: never overwrites a record repaired since the scan found it",
+  withTracker(async (tracker, dir) => {
+    const { repo, run, path } = await damagedRun(dir, DEAD_PID);
+    tracker.register(trackerRow(run.id, DEAD_PID));
+    const [found] = await repo.findUnreadableRuns();
+    const workflowId = createWorkflowId(run.workflowId);
+    await repo.save(workflowId, run);
+    const repaired = await Deno.readTextFile(path);
+
+    const settled = await settleUnreadableRun(
+      repo,
+      tracker,
+      found,
+      localOwnerLiveness(),
+    );
+
+    assertEquals(settled, false);
+    assertEquals(await Deno.readTextFile(path), repaired);
+  }),
+);
