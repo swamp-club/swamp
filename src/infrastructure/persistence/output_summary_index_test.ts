@@ -957,6 +957,37 @@ Deno.test("removeStaleOutputSummaries: a marker refused on every try while anoth
   });
 });
 
+Deno.test("removeStaleOutputSummaries: a marker that could not be read before its writes were refused is not taken as moved", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await removeStaleOutputSummaries(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+    const before = await index.generation();
+
+    const readTextFile = Deno.readTextFile;
+    let reads = 0;
+    (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = (
+      path,
+      options,
+    ) =>
+      basename(String(path)) === "cleared" && reads++ === 0
+        ? Promise.reject(denied())
+        : readTextFile(path, options);
+    let warnings: string[];
+    try {
+      warnings = await warningsOfClearRefusingMarker(dir, Infinity);
+    } finally {
+      (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile =
+        readTextFile;
+    }
+
+    assertEquals(reads > 0, true);
+    assertEquals(warnings.length, 1);
+    assertEquals(await index.generation(), before);
+    assertEquals(await entriesOf(dir), ["cleared", "v1"]);
+  });
+});
+
 Deno.test("removeStaleOutputSummaries: clears racing each other warn of nothing, and leave no shard", async () => {
   await withTempDir(async (dir) => {
     const index = indexIn(dir);

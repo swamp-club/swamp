@@ -152,11 +152,12 @@ async function movedAside(from: string, to: string): Promise<boolean> {
   }
 }
 
-async function markerText(path: string): Promise<string | undefined> {
+/** null when there is no marker; undefined when it could not be read */
+async function markerText(path: string): Promise<string | null | undefined> {
   try {
     return await Deno.readTextFile(path);
-  } catch {
-    return undefined;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound ? null : undefined;
   }
 }
 
@@ -172,8 +173,10 @@ async function writeClearedMarker(path: string): Promise<void> {
     );
   } catch (error) {
     if (!(error instanceof Deno.errors.PermissionDenied)) throw error;
+    // Without both reads there is no telling the marker moved.
+    if (before === undefined) throw error;
     const after = await markerText(path);
-    if (after === undefined || after === before) throw error;
+    if (after === undefined || after === null || after === before) throw error;
   }
 }
 
