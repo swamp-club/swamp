@@ -29,6 +29,7 @@ import {
   WorkflowRun,
 } from "./workflow_run.ts";
 import { Workflow } from "./workflow.ts";
+import { StepStart } from "./step_start.ts";
 import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -1573,6 +1574,166 @@ Deno.test("WorkflowRun.interruptOrphaned: no-ops on a run that is not running", 
   assertEquals(run.status, "failed");
   assertEquals(run.jobs[0].steps[1].status, "pending");
   assertEquals(run.tags["interrupt_reason"], undefined);
+});
+
+function journalStart(
+  run: WorkflowRun,
+  jobName: string,
+  stepName: string,
+  startedAt: number,
+): StepStart {
+  return StepStart.create({
+    workflowId: run.workflowId,
+    runId: run.id,
+    jobName,
+    stepName,
+    startedAt,
+  });
+}
+
+Deno.test("WorkflowRun.applyStepStarts: a step the record shows pending reads running from the start's own time, and so does its job", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const at = Date.parse("2026-11-04T01:02:03.456Z");
+
+  run.applyStepStarts([journalStart(run, "job1", "step1", at)]);
+
+  assertEquals(run.jobs[0].status, "running");
+  assertEquals(run.jobs[0].steps[0].status, "running");
+  assertEquals(run.jobs[0].steps[0].startedAt?.getTime(), at);
+  assertEquals(run.jobs[0].startedAt?.getTime(), at);
+  assertEquals(run.jobs[0].steps[1].status, "pending");
+  assertEquals(run.jobs[1].status, "pending");
+  assertEquals(run.status, "running");
+});
+
+Deno.test("WorkflowRun.applyStepStarts: a started forEach iteration the record lacks is added running", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+
+  run.applyStepStarts([journalStart(run, "job1", "step1[0]", 1_000)]);
+
+  assertEquals(run.jobs[0].getStep("step1[0]")?.status, "running");
+});
+
+Deno.test("WorkflowRun.applyStepStarts: a step settled from an older start reads running for the newer one", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start(new Date(1_000));
+  run.jobs[0].steps[0].fail("boom");
+
+  run.applyStepStarts([journalStart(run, "job1", "step1", 2_000)]);
+
+  assertEquals(run.jobs[0].steps[0].status, "running");
+  assertEquals(run.jobs[0].steps[0].startedAt?.getTime(), 2_000);
+});
+
+Deno.test("WorkflowRun.applyStepStarts: a step re-started from an older settled start keeps nothing of the earlier attempt", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start(new Date(1_000));
+  run.jobs[0].steps[0].fail("boom");
+
+  run.applyStepStarts([journalStart(run, "job1", "step1", 2_000)]);
+
+  const step = run.jobs[0].steps[0];
+  assertEquals(step.status, "running");
+  assertEquals(step.error, undefined);
+  assertEquals(step.completedAt, undefined);
+});
+
+Deno.test("WorkflowRun.applyStepStarts: a start from before the run's resume is the reset attempt's and is left out", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].fail("boom");
+  run.jobs[0].fail();
+  run.complete();
+  run.resetForResumeFrom([{ jobName: "job1", stepName: "step1" }]);
+  run.resumeFromFailed({ pid: 1 });
+  const resumed = WorkflowRun.fromData(run.toData());
+  const before = Date.parse(resumed.toData().resumedAt!) - 1;
+
+  resumed.applyStepStarts([
+    journalStart(resumed, "job1", "step1", before),
+    journalStart(resumed, "job1", "step2", before),
+  ]);
+  assertEquals(resumed.jobs[0].steps[0].status, "pending");
+  assertEquals(resumed.jobs[0].steps[1].status, "pending");
+  assertEquals(resumed.jobs[0].status, "pending");
+
+  resumed.applyStepStarts([
+    journalStart(resumed, "job1", "step1", before + 2),
+  ]);
+  assertEquals(resumed.jobs[0].steps[0].status, "running");
+});
+
+Deno.test("WorkflowRun.applyStepStarts: leaves a step the record settled from the same start, and a running one", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start(new Date(1_000));
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start(new Date(3_000));
+
+  run.applyStepStarts([
+    journalStart(run, "job1", "step1", 1_000),
+    journalStart(run, "job1", "step2", 2_000),
+  ]);
+
+  assertEquals(run.jobs[0].steps[0].status, "succeeded");
+  assertEquals(run.jobs[0].steps[1].status, "running");
+  assertEquals(run.jobs[0].steps[1].startedAt?.getTime(), 3_000);
+});
+
+Deno.test("WorkflowRun.applyStepStarts: the latest of a step's starts is the one shown", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+
+  run.applyStepStarts([
+    journalStart(run, "job1", "step1", 4_000),
+    journalStart(run, "job1", "step1", 5_000),
+  ]);
+
+  assertEquals(run.jobs[0].steps[0].startedAt?.getTime(), 5_000);
+});
+
+Deno.test("WorkflowRun.applyStepStarts: no-ops on a run that is not running, and ignores another run's start or an unknown job", () => {
+  const ended = WorkflowRun.create(createTestWorkflow());
+  ended.start();
+  ended.complete();
+  ended.applyStepStarts([journalStart(ended, "job1", "step1", 1_000)]);
+  assertEquals(ended.jobs[0].steps[0].status, "pending");
+
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const other = WorkflowRun.create(createTestWorkflow());
+  run.applyStepStarts([
+    journalStart(other, "job1", "step1", 1_000),
+    journalStart(run, "nope", "step1", 1_000),
+  ]);
+  assertEquals(run.jobs[0].steps[0].status, "pending");
+  assertEquals(run.jobs[0].status, "pending");
+});
+
+Deno.test("WorkflowRun.applyStepStarts: a later recovery treats the applied start as the same start", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const start = journalStart(run, "job1", "step1", 1_234);
+  run.applyStepStarts([start]);
+  const saved = WorkflowRun.fromData(run.toData());
+
+  assertEquals(saved.unknownStepsIfOrphaned([start]), ["step1"]);
+  saved.interruptOrphaned("owner_process_dead", [start]);
+  assertEquals(saved.jobs[0].steps[0].status, "unknown");
+  assertEquals(
+    saved.jobs[0].steps[0].error,
+    "interrupted: owner_process_dead",
+  );
 });
 
 Deno.test("WorkflowRun.unknownSteps: returns names of unknown steps", () => {

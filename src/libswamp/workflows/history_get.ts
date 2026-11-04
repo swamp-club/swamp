@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type { StepStart } from "../../domain/workflows/step_start.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -229,6 +230,11 @@ export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
     signal?: AbortSignal,
   ) => Promise<RunStepOutputs>;
   retentionWatermarks?: RetentionWatermarkRepository;
+  /** a running run's start journal, so a step it shows started reads running */
+  findStepStarts?: (
+    workflowId: WorkflowId,
+    runId: WorkflowRun["id"],
+  ) => Promise<StepStart[]>;
 }
 
 export interface WorkflowHistoryGetOptions {
@@ -290,6 +296,8 @@ export function createWorkflowHistoryGetDeps(
       await workflowRepo.findByName(idOrName) ??
         await workflowRepo.findById(createWorkflowId(idOrName)),
     findLatestRun: (workflowId) => runRepo.findLatestByWorkflowId(workflowId),
+    findStepStarts: (workflowId, runId) =>
+      runRepo.findStepStarts(workflowId, runId),
     getRunPath: (workflowId, runId) =>
       runRepo.getPath(workflowId, createWorkflowRunId(runId)),
     resolveStepOutputs: (run, signal) =>
@@ -482,6 +490,11 @@ export async function* workflowHistoryGet(
             return;
           }
           run = reference.latest;
+      }
+      if (run.status === "running" && deps.findStepStarts) {
+        run.applyStepStarts(
+          await deps.findStepStarts(run.workflowId as WorkflowId, run.id),
+        );
       }
 
       setActiveSpanAttributes({

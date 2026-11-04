@@ -272,6 +272,8 @@ export const WorkflowRunSchema = z.object({
   // the steps a recovery reset wait for someone to resume the run, so serve
   // does not continue it
   recovered: z.boolean().optional(),
+  // a step start older than this belongs to an attempt the resume reset
+  resumedAt: z.string().datetime().optional(),
   runPlan: z.object({
     fingerprint: z.string(),
     evaluatedWorkflowId: z.string().optional(),
@@ -614,9 +616,9 @@ export class StepRun {
     return true;
   }
 
-  start(): void {
+  start(at: Date = new Date()): void {
     this._status = "running";
-    this._startedAt = new Date();
+    this._startedAt = at;
     this._resetByResume = false;
   }
 
@@ -891,9 +893,9 @@ export class JobRun implements TriggerEvaluationContext {
     this._completedAt = undefined;
   }
 
-  start(): void {
+  start(at: Date = new Date()): void {
     this._status = "running";
-    this._startedAt = new Date();
+    this._startedAt = at;
   }
 
   succeed(): void {
@@ -1061,6 +1063,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   private _inputsProvenance: ProvenanceMap | undefined;
   private _persistedInputsProvenance: ProvenanceMap | undefined;
   private _replayedEvaluatedCache = false;
+  private _resumedAt: Date | undefined;
 
   private constructor(
     readonly id: WorkflowRunId,
@@ -1249,6 +1252,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.recovered ?? false,
     );
     run._replayedEvaluatedCache = validated.replayedEvaluatedCache === true;
+    if (validated.resumedAt) run._resumedAt = new Date(validated.resumedAt);
     if (validated.inputsProvenance) {
       run._inputsProvenance = ProvenanceMap.fromData(
         validated.inputsProvenance,
@@ -1516,6 +1520,35 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this.interrupt(reason);
   }
 
+  /**
+   * a step the journal shows started in this attempt reads running, whatever
+   * the record holds; only a running job's steps start, so only a pending job
+   * moves
+   */
+  applyStepStarts(starts: readonly StepStart[]): void {
+    if (this._status !== "running") return;
+    const attempt = this._resumedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const latest = new Map<string, StepStart>();
+    for (const start of starts) {
+      if (start.startedAt < attempt) continue;
+      const key = JSON.stringify([start.jobName, start.stepName]);
+      const kept = latest.get(key);
+      if (kept === undefined || kept.startedAt < start.startedAt) {
+        latest.set(key, start);
+      }
+    }
+    for (
+      const { job, stepName } of this.#journalledStarts([...latest.values()])
+    ) {
+      const start = latest.get(JSON.stringify([job.jobName, stepName]))!;
+      job.addExpandedStep(stepName);
+      const step = job.getStep(stepName)!;
+      if (step.status !== "pending") step.resetToPending();
+      step.start(new Date(start.startedAt));
+      if (job.status === "pending") job.start(new Date(start.startedAt));
+    }
+  }
+
   unknownSteps(): string[] {
     const result: string[] = [];
     for (const job of this._jobs) {
@@ -1715,12 +1748,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._status = "running";
     this._completedAt = undefined;
     this._recovered = false;
+    this._resumedAt = new Date();
     this.takeOwnership(owner);
   }
 
   resumeFromFailed(owner: RunOwner): void {
     this._status = "running";
     this._completedAt = undefined;
+    this._resumedAt = new Date();
     this.takeOwnership(owner);
   }
 
@@ -1973,6 +2008,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._replayedEvaluatedCache) {
       data.replayedEvaluatedCache = true;
     }
+    if (this._resumedAt) data.resumedAt = this._resumedAt.toISOString();
     if (this._inputsProvenance) {
       data.inputsProvenance = this._inputsProvenance.toData();
     }

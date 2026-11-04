@@ -31,6 +31,8 @@ import { WorkflowRun as RealWorkflowRun } from "../../domain/workflows/workflow_
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
+import { StepStart } from "../../domain/workflows/step_start.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { collect } from "../testing.ts";
 import {
   FAKE_REAPED_CUTOFF,
@@ -1002,4 +1004,101 @@ Deno.test("receiptsOfRunView: takes the receipts on steps still waiting in the v
   assertEquals(receiptsOfRunView(view, crypto.randomUUID()).size, 0);
   assertEquals(receiptsOfRunView(null, runId).size, 0);
   assertEquals(receiptsOfRunView({ id: runId, jobs: "x" }, runId).size, 0);
+});
+
+function runInFlight(): { run: WorkflowRun; start: StepStart } {
+  const workflow = RealWorkflow.create({
+    name: "my-workflow",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "s", task: StepTask.model("m", "run") }),
+          Step.create({ name: "t", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const run = RealWorkflowRun.create(workflow);
+  run.start();
+  const start = StepStart.create({
+    workflowId: run.workflowId,
+    runId: run.id,
+    jobName: "main",
+    stepName: "s",
+    startedAt: Date.parse("2026-11-04T01:00:00.000Z"),
+  });
+  return { run, start };
+}
+
+function completedView(events: WorkflowHistoryGetEvent[]) {
+  const completed = events.find((event) => event.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  return completed.data;
+}
+
+Deno.test("workflowHistoryGet: a running run's step the start journal shows started reads running, and its job", async () => {
+  const { run, start } = runInFlight();
+  const deps = makeDeps({
+    findLatestRun: () => Promise.resolve(run),
+    findStepStarts: () => Promise.resolve([start]),
+  });
+
+  const view = completedView(
+    await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(createLibSwampContext(), deps, "my-workflow"),
+    ),
+  );
+
+  assertEquals(view.jobs[0].status, "running");
+  assertEquals(
+    view.jobs[0].steps.map((step) => [step.name, step.status]),
+    [["s", "running"], ["t", "pending"]],
+  );
+});
+
+Deno.test("workflowHistoryGet: reads no start journal for a run that is not running", async () => {
+  let read = 0;
+  const deps = makeDeps({
+    findLatestRun: () => Promise.resolve(runWithOneStep()),
+    findStepStarts: () => {
+      read++;
+      return Promise.resolve([]);
+    },
+  });
+  await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "my-workflow"),
+  );
+  assertEquals(read, 0);
+});
+
+Deno.test("createWorkflowHistoryGetDeps: a run recorded with its step pending reads running from the start journal the repository holds", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_history_get_starts_" });
+  try {
+    const { run, start } = runInFlight();
+    const runRepo = new YamlWorkflowRunRepository(dir);
+    await runRepo.save(run.workflowId as WorkflowId, run);
+    await runRepo.writeStepStart(start);
+
+    const view = completedView(
+      await collect<WorkflowHistoryGetEvent>(
+        workflowHistoryGet(
+          createLibSwampContext(),
+          createWorkflowHistoryGetDeps(dir),
+          run.id,
+        ),
+      ),
+    );
+
+    assertEquals(view.status, "running");
+    assertEquals(view.jobs[0].status, "running");
+    assertEquals(view.jobs[0].steps[0].status, "running");
+    assertEquals(view.jobs[0].steps[0].startedAt, "2026-11-04T01:00:00.000Z");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

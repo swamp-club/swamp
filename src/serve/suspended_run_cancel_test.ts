@@ -134,6 +134,7 @@ function harness(
           const run = runs.find((r) => r.id === runId);
           return load(run ? { run, workflowId: run.workflowId } : null);
         },
+        findStepStarts: () => Promise.resolve([]),
         save: (_workflowId: string, run: WorkflowRun) => {
           h.saved.push(run);
           return Promise.resolve();

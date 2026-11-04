@@ -38,6 +38,7 @@ import {
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
+import { StepStart } from "../../domain/workflows/step_start.ts";
 import type { ActiveRunStatus } from "../../domain/models/active_run.ts";
 
 function makeWorkflow(name: string): Workflow {
@@ -80,6 +81,7 @@ function harness(
   workflows: Workflow[],
   runs: WorkflowRun[],
   allow: (wf: CancelTargetWorkflow) => boolean = () => true,
+  starts: StepStart[] = [],
 ): Harness {
   const calls: string[] = [];
   const saved: WorkflowRun[] = [];
@@ -115,6 +117,8 @@ function harness(
           run ? { run, workflowId: run.workflowId } : null,
         );
       },
+      findStepStarts: (_workflowId: string, runId: string) =>
+        Promise.resolve(starts.filter((start) => start.runId === runId)),
       save: (_workflowId: string, run: WorkflowRun) => {
         calls.push("runRepo.save");
         saved.push(run);
@@ -542,6 +546,29 @@ Deno.test("workflowCancelSuspended: cancels a running run whose owner is gone an
   assertEquals(h.tracked, [
     { runId: run.id, status: "cancelled", reason: "stuck" },
   ]);
+});
+
+Deno.test("workflowCancelSuspended: a dead owner's step only the start journal shows started fails as owner-stopped", async () => {
+  const wf = makeWorkflow("deploy");
+  const run = WorkflowRun.create(wf);
+  run.start(Deno.pid, crypto.randomUUID());
+  const start = StepStart.create({
+    workflowId: run.workflowId,
+    runId: run.id,
+    jobName: "main",
+    stepName: "gate",
+    startedAt: Date.now(),
+  });
+  const h = harness([wf], [run], () => true, [start]);
+  h.deps.ownerGone = () => ({ gone: true });
+
+  const event = await cancel(h.deps, { runId: run.id, reason: "stuck" });
+
+  assertEquals(event?.kind, "completed");
+  const gate = run.getJob("main")!.getStep("gate")!;
+  assertEquals(gate.status, "failed");
+  assertEquals(gate.error, OWNER_STOPPED_STEP_ERROR);
+  assertEquals(run.getJob("main")!.status, "failed");
 });
 
 Deno.test("workflowCancelSuspended: refuses a running run whose owner is not shown gone, saying what still holds it", async () => {
