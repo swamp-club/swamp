@@ -4090,6 +4090,7 @@ export const serveCommand = new Command()
     const grantFileUsernames = serveGrantFileUsernames(grantFiles);
 
     let oauthClientSecret = "";
+    let oauthClientSupplied = false;
     const resolvedUserNames: Record<string, string> = {};
     // Names OAuth logins and their tokens give, so a user admitted through a
     // collective or group is named like a configured one.
@@ -4113,12 +4114,17 @@ export const serveCommand = new Command()
       const { createOAuthSecretReader } = await import(
         "../../serve/oauth_secret_migration.ts"
       );
-      const readOAuthSecret = createOAuthSecretReader(
-        oauthVaultService,
-        TOKEN_SECRETS_VAULT_NAME,
-      );
       let credentials;
       try {
+        const suppliedClientSecret = resolveOAuthClientSecret(
+          options.oauthClientSecretFile as string | undefined,
+        );
+        oauthClientSupplied = suppliedClientSecret !== undefined;
+        const readOAuthSecret = createOAuthSecretReader(
+          oauthVaultService,
+          TOKEN_SECRETS_VAULT_NAME,
+          { clientSupplied: oauthClientSupplied },
+        );
         credentials = await resolveOAuthClientCredentials(
           {
             getVaultSecret: (_v, k) => readOAuthSecret(k),
@@ -4241,9 +4247,7 @@ export const serveCommand = new Command()
           authConfig.oauthProvider,
           TOKEN_SECRETS_VAULT_NAME,
           authConfig.oauthClientId,
-          resolveOAuthClientSecret(
-            options.oauthClientSecretFile as string | undefined,
-          ),
+          suppliedClientSecret,
           AbortSignal.timeout(300_000),
         );
       } catch (err) {
@@ -5078,7 +5082,10 @@ export const serveCommand = new Command()
       await migrateOAuthSecrets(
         migrationVaultService,
         TOKEN_SECRETS_VAULT_NAME,
-        { keepClientInUserVault: merged.keepOauthClientInVault },
+        {
+          keepClientInUserVault: merged.keepOauthClientInVault,
+          clientSupplied: oauthClientSupplied,
+        },
       );
     }
 

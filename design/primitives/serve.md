@@ -75,7 +75,7 @@ without it the default file is optional.
 | `--admins`, `--allowed-collectives`, `--allowed-users` / `auth.*` | — | unset | See [Identity and access](#identity-and-access) |
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_ID`, `SWAMP_OAUTH_CLIENT_NAME` | unset, `swamp-serve-{repo}-{host}` | Omitted: a client is registered on first start and stored in `_token-secrets`. Set: serve never registers; the secret comes from `--oauth-client-secret-file`, or the stored secret unless the store records a different client id, else serve refuses to start (`src/serve/oauth_registration.ts`). `swamp auth oauth-client register` registers one up front with a collective key and prints its id and secret once |
-| `--oauth-client-secret-file` (flag only) | `SWAMP_OAUTH_CLIENT_SECRET_FILE`, `SWAMP_OAUTH_CLIENT_SECRET` | unset | Secret for `--oauth-client-id`, used for that run only and never written to `_token-secrets`, so supplying one cannot replace the stored client's secret; both env vars together is an error; a secret without a client id is refused; method subprocesses never inherit `SWAMP_OAUTH_CLIENT_SECRET` and `buildEnvContext` hides it from `env.*` in expressions, neither covers extension code, which runs in-process unsandboxed and can read the environment or the secret file (`src/serve/oauth_client_secret_source.ts`) |
+| `--oauth-client-secret-file` (flag only) | `SWAMP_OAUTH_CLIENT_SECRET_FILE`, `SWAMP_OAUTH_CLIENT_SECRET` | unset | Secret for `--oauth-client-id`, used for that run only and never written to `_token-secrets`, so supplying one cannot replace the stored client's secret; a start with one skips the OAuth secret migration and never reads those keys from the user vault; both env vars together is an error; a secret without a client id is refused; method subprocesses never inherit `SWAMP_OAUTH_CLIENT_SECRET` and `buildEnvContext` hides it from `env.*` in expressions, neither covers extension code, which runs in-process unsandboxed and can read the environment or the secret file (`src/serve/oauth_client_secret_source.ts`) |
 | `--keep-oauth-client-in-vault` / `auth.keep-oauth-client-in-vault` | `SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT` | `false` | Opt-in: the OAuth secret migration leaves `oauth-client-id` and `oauth-client-secret` in the user vault for seeded vaults, which leaves the secret readable there (`src/serve/oauth_secret_migration.ts`) |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field the collectives are read from |
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted behavior type needs admin to create, run, edit or delete a behavior of it, delete or rename its data, or add or change a workflow step running it. A behavior type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
@@ -620,7 +620,20 @@ from the user vault when it supports deletes. With `--keep-oauth-client-in-vault
 a vault seeded with them, such as AWS Secrets Manager, serves an instance
 recreated with an empty datastore; the cost is that anything able to read that
 vault can read the client secret. The documented route for that case is
-`--oauth-client-id` with a supplied secret. When the listing succeeds and
+`--oauth-client-id` with a supplied secret. A start with a supplied secret skips
+this migration and credential resolution's user-vault fallback: it does not
+list, read, move or delete these keys in the user vault and writes no marker,
+because names like these in a vault shared across instances may be another
+instance's, and with no marker to close the fallback, write access to that vault
+would choose admins on every start. It resolves admins afresh instead, which
+needs a collective key or a device grant if `_token-secrets` has no cached map.
+The first start without a supplied secret still moves only the keys
+`_token-secrets` lacks. An `oauth-resolved-admins` cached by a supplied start
+stays in use, so a flat copy stays in the user vault: serve cannot tell whose it
+is, so it does not delete it. This instance does not read it again, but an
+instance with no supplied secret on an empty datastore can adopt it, so an
+operator sharing that vault deletes it by hand. `--keep-oauth-client-in-vault`
+has no effect on a start with a supplied secret. When the listing succeeds and
 every key moves, serve records `oauth-secrets-migrated` in `_token-secrets`, and
 the migration never touches the user vault again. A key that is legitimately
 absent, such as the bootstrap access token after an API-key registration,

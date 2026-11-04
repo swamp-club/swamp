@@ -170,6 +170,87 @@ Deno.test("migrateOAuthSecrets: moves every legacy key out of the user vault and
   assertEquals([...userSecrets(fake).keys()], ["unrelated"]);
 });
 
+Deno.test("migrateOAuthSecrets: with a supplied client, the user vault is never touched and no marker is written", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "other-client-id");
+  userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "other-client-secret");
+  userSecrets(fake).set(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY, "other-token");
+  userSecrets(fake).set(OAUTH_RESOLVED_ADMINS_KEY, "{}");
+
+  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME, {
+    clientSupplied: true,
+  });
+
+  assertEquals(fake.userVaultCalls, []);
+  assertEquals(userSecrets(fake).size, 4);
+  assertEquals(tokenSecrets(fake).size, 0);
+});
+
+Deno.test("migrateOAuthSecrets: a start without the supplied client migrates what a supplied-client start left", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
+  userSecrets(fake).set(OAUTH_CLIENT_SECRET_KEY, "client-secret");
+
+  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME, {
+    clientSupplied: true,
+  });
+  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME);
+
+  assertEquals(tokenSecrets(fake).get(OAUTH_CLIENT_ID_KEY), "client-id");
+  assertEquals(
+    tokenSecrets(fake).get(OAUTH_CLIENT_SECRET_KEY),
+    "client-secret",
+  );
+  assertEquals(tokenSecrets(fake).has(OAUTH_SECRETS_MIGRATED_KEY), true);
+  assertEquals(userSecrets(fake).size, 0);
+});
+
+Deno.test("migrateOAuthSecrets: a supplied client overrides the keep option, leaving every key and no marker", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_CLIENT_ID_KEY, "client-id");
+  userSecrets(fake).set(OAUTH_RESOLVED_ADMINS_KEY, "{}");
+
+  await migrateOAuthSecrets(fake.vaultService, TOKEN_SECRETS_VAULT_NAME, {
+    clientSupplied: true,
+    keepClientInUserVault: true,
+  });
+
+  assertEquals(fake.userVaultCalls, []);
+  assertEquals(userSecrets(fake).size, 2);
+  assertEquals(tokenSecrets(fake).size, 0);
+});
+
+Deno.test("createOAuthSecretReader: with a supplied client, the user vault is never read", async () => {
+  const fake = createFakeVaults();
+  userSecrets(fake).set(OAUTH_RESOLVED_ADMINS_KEY, '{"alice":"other-sub"}');
+  userSecrets(fake).set(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY, "other-token");
+
+  const read = createOAuthSecretReader(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+    { clientSupplied: true },
+  );
+
+  assertEquals(await read(OAUTH_RESOLVED_ADMINS_KEY), null);
+  assertEquals(await read(OAUTH_BOOTSTRAP_ACCESS_TOKEN_KEY), null);
+  assertEquals(fake.userVaultCalls, []);
+});
+
+Deno.test("createOAuthSecretReader: with a supplied client, values in _token-secrets are still returned", async () => {
+  const fake = createFakeVaults();
+  tokenSecrets(fake).set(OAUTH_RESOLVED_ADMINS_KEY, '{"alice":"own-sub"}');
+  userSecrets(fake).set(OAUTH_RESOLVED_ADMINS_KEY, '{"alice":"other-sub"}');
+
+  const read = createOAuthSecretReader(
+    fake.vaultService,
+    TOKEN_SECRETS_VAULT_NAME,
+    { clientSupplied: true },
+  );
+
+  assertEquals(await read(OAUTH_RESOLVED_ADMINS_KEY), '{"alice":"own-sub"}');
+  assertEquals(fake.userVaultCalls, []);
+});
+
 Deno.test("migrateOAuthSecrets: a user vault that cannot be listed leaves no marker, and the next boot migrates", async () => {
   const fake = createFakeVaults();
   seedApiKeyRegisteredServe(fake);
