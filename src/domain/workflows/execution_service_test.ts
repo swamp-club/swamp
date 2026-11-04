@@ -24951,3 +24951,44 @@ Deno.test("run: with --last-evaluated, a fan-out job in the cached workflow is r
   assertStringIncludes((error as Error).message, FAN_OUT_REFUSAL);
   assertStringIncludes((error as Error).message, "fan-out job 'deploy'");
 });
+
+Deno.test("recover: a run whose workflow gained a fan-out job is refused and left as it was", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createRetryWorkflow();
+    const executor = new CountingStepExecutor();
+    const { workflowRepo, runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const run = await storeInterruptedAt(runRepo, workflow, "build", {
+      stepName: "compile",
+    });
+    await workflowRepo.save(withFanOutJob(workflow, "deploy"));
+    const saves = runRepo.saves;
+
+    await assertRejects(
+      async () => {
+        for await (
+          const _ of service.recover(workflow.name, {
+            acknowledgeUnknown: true,
+          })
+        ) {
+          // drain
+        }
+      },
+      UserError,
+      FAN_OUT_REFUSAL,
+    );
+
+    assertEquals(runRepo.saves, saves);
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.status, "interrupted");
+    assertEquals(
+      stored?.getJob("build")?.getStep("compile")?.status,
+      "unknown",
+    );
+    assertEquals(executor.calls.size, 0);
+  });
+});

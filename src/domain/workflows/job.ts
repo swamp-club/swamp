@@ -28,7 +28,11 @@ import { addRemovedDriverFieldIssues } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { nodeName } from "./node_name.ts";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
-import { type FanOutPolicy, FanOutPolicySchema } from "../remote/fan_out.ts";
+import {
+  type FanOutPolicy,
+  FanOutPolicySchema,
+  RolloutPolicySchema,
+} from "../remote/fan_out.ts";
 
 export const JobDependencySchema = z.object({
   job: z.string().min(1),
@@ -39,10 +43,13 @@ export type JobDependencyData = z.infer<typeof JobDependencySchema>;
 
 const JobDependencyFieldSchema = z.array(JobDependencySchema).default([]);
 
-// job-level only: not a placement field, so it never inherits
+// job-level only: not a placement field, so it never inherits; strict, since
+// a stripped typo would quietly fall back to a default worker policy
 export const FanOutFieldSchema = z.union([
   z.literal("all"),
-  FanOutPolicySchema,
+  FanOutPolicySchema.extend({
+    rollout: RolloutPolicySchema.strict().optional(),
+  }).strict(),
 ]);
 
 export type FanOutField = z.infer<typeof FanOutFieldSchema>;

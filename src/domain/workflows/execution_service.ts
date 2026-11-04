@@ -7698,6 +7698,7 @@ export class WorkflowExecutionService {
     // The resume below refuses while a nested run is unfinished; checked
     // first so a refused recover leaves the run as it was.
     await this.checkNestedWaitsSettled(run);
+    refuseFanOutJobs(workflow);
 
     await this.runRepo.withdrawSettledStepStarts?.(
       workflow.id,

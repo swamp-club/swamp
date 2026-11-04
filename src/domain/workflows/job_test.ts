@@ -562,3 +562,15 @@ Deno.test("JobSchema: an older parser without fanOut refuses it as an unknown ke
   );
   assertStringIncludes(error.message, "Unknown key 'fanOut'");
 });
+
+Deno.test("JobSchema: an unknown key in the fanOut object or its rollout is refused, not dropped", () => {
+  for (
+    const [bad, key] of [
+      [{ ofline: "skip" }, "ofline"],
+      [{ rollout: { batches: ["100%"], maxFailure: 1 } }, "maxFailure"],
+    ] as const
+  ) {
+    const error = assertThrows(() => JobSchema.parse(fanOutJob(bad)), Error);
+    assertStringIncludes(error.message, key);
+  }
+});
