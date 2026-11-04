@@ -1560,3 +1560,52 @@ Deno.test("WorkflowSchema: rejects an empty vault name in vaults", () => {
     .toData();
   assertThrows(() => Workflow.fromData({ ...data, vaults: [""] }));
 });
+
+Deno.test("Workflow.fromData: fanOut on the workflow or on a step is an unknown key (swamp-club#4379)", () => {
+  const job = createTestJob("job1").toData();
+  const onWorkflow = assertThrows(
+    () =>
+      Workflow.fromData({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "test-workflow",
+        fanOut: "all",
+        jobs: [job],
+      } as unknown as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(onWorkflow.message, "Unknown key 'fanOut'");
+  const onStep = assertThrows(
+    () =>
+      Workflow.fromData({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "test-workflow",
+        jobs: [{ ...job, steps: [{ ...job.steps[0], fanOut: "all" }] }],
+      } as unknown as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(onStep.message, "Unknown key 'fanOut'");
+});
+
+Deno.test("Workflow.fromData: a job with fanOut and labels round-trips through toData (swamp-club#4379)", () => {
+  const job = createTestJob("job1").toData();
+  const workflow = Workflow.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    labels: { role: "web" },
+    jobs: [{
+      ...job,
+      fanOut: { offline: "fail", minWorkers: 2 },
+      steps: [{
+        ...job.steps[0],
+        task: {
+          type: "model_method",
+          modelType: "command/shell",
+          modelName: "patch",
+          methodName: "execute",
+        },
+      }],
+    }],
+  } as unknown as WorkflowInput);
+  const again = Workflow.fromData(workflow.toData());
+  assertEquals(again.jobs[0].fanOut, { offline: "fail", minWorkers: 2 });
+});

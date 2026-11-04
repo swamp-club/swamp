@@ -26,6 +26,7 @@ import {
 } from "../definitions/definition.ts";
 import { addRemovedDriverFieldIssues } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
+import { fanOutJobRefusals } from "./fan_out_job.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import {
   type ReportSelection,
@@ -145,7 +146,15 @@ export const WorkflowSchema = z.preprocess(
     rejectUnknownKeys("workflow", Object.keys(WorkflowObjectSchema.shape)),
     WorkflowObjectSchema,
   ),
-);
+).superRefine((workflow, ctx) => {
+  for (const refusal of fanOutJobRefusals(workflow)) {
+    ctx.addIssue({
+      code: "custom",
+      path: refusal.path,
+      message: refusal.message,
+    });
+  }
+});
 
 export function workflowDeclaresInputs(
   inputs: InputsSchema | undefined,

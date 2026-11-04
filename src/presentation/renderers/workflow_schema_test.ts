@@ -19,7 +19,11 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/stream.ts";
-import type { WorkflowSchemaEvent } from "../../libswamp/workflows/schema.ts";
+import {
+  workflowSchema,
+  type WorkflowSchemaEvent,
+} from "../../libswamp/workflows/schema.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
 import { createWorkflowSchemaRenderer } from "./workflow_schema.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -94,3 +98,23 @@ Deno.test("WorkflowSchemaRenderer - error throws UserError", () => {
     "boom",
   );
 });
+
+for (const mode of ["log", "json"] as const) {
+  Deno.test(`createWorkflowSchemaRenderer(${mode}): the job schema printed includes fanOut (swamp-club#4379)`, async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+
+    try {
+      await consumeStream(
+        workflowSchema(createLibSwampContext()),
+        createWorkflowSchemaRenderer(mode).handlers(),
+      );
+      assertEquals(logs.length, 1);
+      const parsed = JSON.parse(logs[0]);
+      assertEquals("fanOut" in parsed.job.properties, true);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+}

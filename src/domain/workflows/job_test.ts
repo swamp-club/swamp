@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { Job, type JobInput, JobSchema } from "./job.ts";
+import { z } from "zod";
+import { Job, type JobInput, JobObjectSchema, JobSchema } from "./job.ts";
+import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
@@ -487,4 +489,88 @@ Deno.test("Job.fromData: rejects a persisted job whose name holds a control char
     String(error),
     "Job name must not contain control characters",
   );
+});
+
+function fanOutJob(fanOut: unknown): JobInput {
+  return {
+    name: "patch",
+    labels: { role: "web" },
+    fanOut,
+    steps: [{
+      name: "apply",
+      task: {
+        type: "model_method",
+        modelType: "command/shell",
+        modelName: "patch",
+        methodName: "execute",
+      },
+    }],
+  } as unknown as JobInput;
+}
+
+Deno.test("Job.fromData: fanOut all parses, round-trips as all, and resolves to the default policy", () => {
+  const job = Job.fromData(fanOutJob("all"));
+  assertEquals(job.fanOut, "all");
+  assertEquals(job.toData().fanOut, "all");
+  assertEquals(job.fanOutPolicy, { offline: "wait", minWorkers: 1 });
+});
+
+Deno.test("Job.fromData: the fanOut object form parses with its defaults and rollout", () => {
+  const job = Job.fromData(fanOutJob({
+    offline: "skip",
+    rollout: { batches: [1, "100%"], maxFailures: "10%" },
+  }));
+  assertEquals(job.fanOutPolicy, {
+    offline: "skip",
+    minWorkers: 1,
+    rollout: { batches: [1, "100%"], maxFailures: "10%" },
+  });
+  assertEquals(Job.fromData(job.toData()).fanOutPolicy, job.fanOutPolicy);
+});
+
+Deno.test("Job.fromData: a job without fanOut has no fan-out policy", () => {
+  const job = Job.fromData(fanOutJob(undefined));
+  assertEquals(job.fanOut, undefined);
+  assertEquals(job.fanOutPolicy, undefined);
+});
+
+Deno.test("JobSchema: fanOut values the fan-out policy schemas refuse are rejected", () => {
+  for (
+    const bad of [
+      "some",
+      { offline: "retry" },
+      { minWorkers: 0 },
+      { rollout: { batches: [] } },
+      { rollout: { batches: [1, 2] } },
+      { rollout: { batches: ["100%", 1] } },
+      { rollout: { batches: ["0%", "100%"] } },
+    ]
+  ) {
+    assertThrows(() => JobSchema.parse(fanOutJob(bad)), Error);
+  }
+});
+
+Deno.test("JobSchema: an older parser without fanOut refuses it as an unknown key", () => {
+  const { fanOut: _fanOut, ...olderShape } = JobObjectSchema.shape;
+  const olderJobSchema = z.preprocess(
+    rejectUnknownKeys("job", Object.keys(olderShape)),
+    z.object(olderShape),
+  );
+  const error = assertThrows(
+    () => olderJobSchema.parse(fanOutJob("all")),
+    Error,
+  );
+  assertStringIncludes(error.message, "Unknown key 'fanOut'");
+});
+
+Deno.test("JobSchema: an unknown key in the fanOut object or its rollout is refused, not dropped", () => {
+  for (
+    const [bad, key] of [
+      [{ ofline: "skip" }, "ofline"],
+      [{ rollout: { batches: ["100%"], maxFailure: 1 } }, "maxFailure"],
+    ] as const
+  ) {
+    const error = assertThrows(() => JobSchema.parse(fanOutJob(bad)), Error);
+    assertStringIncludes(error.message, key);
+  }
 });
