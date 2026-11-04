@@ -1074,7 +1074,11 @@ export class ExtensionLoader {
       if (previous && signature(row) === signature(previous)) continue;
       if (row.state === "Tombstoned") continue;
       if (LOCAL_OVERRIDE_FAILURE_STATES.has(row.state ?? "Indexed")) {
-        if (changes.failed.some((failure) => failure.sourcePath === path)) {
+        if (
+          changes.failed.some((failure) =>
+            canonicalizePath(failure.sourcePath) === path
+          )
+        ) {
           continue;
         }
         changes.failed.push({
