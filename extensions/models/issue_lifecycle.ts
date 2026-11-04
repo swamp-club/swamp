@@ -40,6 +40,8 @@ import {
   PlanSchema,
   PlanStepSchema,
   PR_COOLDOWN_MS,
+  type PrWatchData,
+  PrWatchSchema,
   type PullRequestData,
   PullRequestSchema,
   type StateData,
@@ -64,11 +66,22 @@ import {
 } from "./_lib/lifecycle_recorder.ts";
 import {
   advanceLinked,
+  assertLinkedOutcomes,
   linkPrOnLinked,
   mirrorMilestone,
   readLinkedIssues,
 } from "./_lib/linked_issues.ts";
 import { upstreamStatusForPhase } from "./_lib/issue_status.ts";
+import {
+  assertGitHubPullUrl,
+  classifyPrSnapshot,
+  fetchPrSnapshot,
+  type GhRunner,
+  GhUnavailableError,
+  type PrSnapshot,
+  type PrVerdict,
+  runGh,
+} from "./_lib/github_pr.ts";
 import type { SwampClubClient } from "./_lib/swamp_club.ts";
 
 /** Global args type for the issue-lifecycle model. */
@@ -265,12 +278,298 @@ async function warnIfCarriedElsewhere(
 }
 
 // ---------------------------------------------------------------------------
+// watch_pr
+// ---------------------------------------------------------------------------
+
+const DEFAULT_POLL_INTERVAL_SECONDS = 30;
+const DEFAULT_WATCH_TIMEOUT_MINUTES = 30;
+const DEFAULT_HOLD_LABELS = ["hold"];
+const GH_TIMEOUT_MS = 30_000;
+// A single failed gh call (network blip, rate limit) should not end a long
+// watch; several in a row means gh itself is broken.
+const MAX_CONSECUTIVE_GH_FAILURES = 3;
+
+export interface WatchPrDeps {
+  runGh: GhRunner;
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  now: () => number;
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+const defaultWatchPrDeps: WatchPrDeps = {
+  runGh,
+  sleep: abortableSleep,
+  now: () => Date.now(),
+};
+
+type WatchPrArgs = {
+  originalProblem: string;
+  deliveredOutcome: string;
+  outcomeMet: boolean;
+  linkedOutcomes?: Array<{
+    issueNumber: number;
+    deliveredOutcome: string;
+    outcomeMet: boolean;
+  }>;
+  pollIntervalSeconds?: number;
+  timeoutMinutes?: number;
+  holdLabels?: string[];
+};
+
+type CloseOutStepName = PrWatchData["stepsRun"][number];
+
+export function createWatchPrMethod(deps: WatchPrDeps) {
+  return {
+    description:
+      "Watch the linked PR on GitHub until it merges, fails or the watch " +
+      "times out, then drive the lifecycle on: a merge runs pr_merged, " +
+      "notify and summarize to done; a conflict, failed check, requested " +
+      "changes or closed PR runs pr_failed. A hold label or the time limit " +
+      "ends the watch with no transition. Needs an authenticated gh.",
+    arguments: z.object({
+      originalProblem: z.string().min(1).describe(
+        "Plain-language restatement of the issue, passed to summarize on merge.",
+      ),
+      deliveredOutcome: z.string().min(1).describe(
+        "Plain-language description of what the PR delivers, passed to " +
+          "summarize on merge.",
+      ),
+      outcomeMet: z.boolean().describe(
+        "Whether the delivered outcome addresses the original problem.",
+      ),
+      linkedOutcomes: z.array(LinkedOutcomeSchema).optional().describe(
+        "One outcome per linked issue — required when the lifecycle " +
+          "carries linked issues. Checked before the watch starts.",
+      ),
+      pollIntervalSeconds: z.number().int().min(5).max(600).optional()
+        .describe(
+          `Seconds between GitHub reads. Defaults to ${DEFAULT_POLL_INTERVAL_SECONDS}.`,
+        ),
+      timeoutMinutes: z.number().positive().max(24 * 60).optional().describe(
+        `How long to watch before giving up with no transition. Defaults to ${DEFAULT_WATCH_TIMEOUT_MINUTES}.`,
+      ),
+      holdLabels: z.array(z.string().min(1)).optional().describe(
+        "PR labels that stop auto-merge; one ends the watch with no " +
+          "transition. Defaults to hold.",
+      ),
+    }),
+    execute: async (
+      args: WatchPrArgs,
+      context: {
+        globalArgs: GlobalArgs;
+        logger: {
+          info: (msg: string, props: Record<string, unknown>) => void;
+          warning: (msg: string, props: Record<string, unknown>) => void;
+        };
+        writeResource: (
+          specName: string,
+          instanceName: string,
+          data: Record<string, unknown>,
+        ) => Promise<{ name: string }>;
+        readResource: (
+          instanceName: string,
+          version?: number,
+        ) => Promise<Record<string, unknown> | null>;
+        runModel?: (options: {
+          definition: string;
+          method: string;
+          arguments?: Record<string, unknown>;
+        }) => Promise<
+          | { ok: true }
+          | { ok: false; error: { message: string } }
+        >;
+        definition: { id: string };
+        signal?: AbortSignal;
+      },
+    ) => {
+      const runModel = context.runModel;
+      if (!runModel) {
+        throw new Error(
+          "watch_pr drives other lifecycle methods through runModel, which " +
+            "is not available here (remote workers do not offer it). Run it " +
+            "locally.",
+        );
+      }
+      const pr = await context.readResource("pullRequest-main") as
+        | PullRequestData
+        | null;
+      if (!pr) throw new Error("No pull request linked. Call link_pr first.");
+      assertGitHubPullUrl(pr.url);
+      const linkedOutcomes = args.linkedOutcomes ?? [];
+      // Checked now, not at the end: a watch can run for half an hour, and
+      // summarize refuses outcomes that do not match the linked issues.
+      assertLinkedOutcomes(
+        await readLinkedIssues(context.readResource),
+        linkedOutcomes,
+      );
+
+      const intervalMs = (args.pollIntervalSeconds ??
+        DEFAULT_POLL_INTERVAL_SECONDS) * 1000;
+      const deadline = deps.now() +
+        (args.timeoutMinutes ?? DEFAULT_WATCH_TIMEOUT_MINUTES) * 60_000;
+      const holdLabels = args.holdLabels ?? DEFAULT_HOLD_LABELS;
+      const startedAt = new Date(deps.now()).toISOString();
+      const attempt = pr.attempt ?? 1;
+
+      // pr_merged and pr_failed refuse to run inside the pr-cooldown window.
+      const cooldownEnd = new Date(pr.linkedAt).getTime() + PR_COOLDOWN_MS;
+
+      let polls = 0;
+      let failures = 0;
+      let snapshot: PrSnapshot | undefined;
+      let verdict: PrVerdict = { outcome: "pending" };
+      while (true) {
+        verdict = { outcome: "pending" };
+        try {
+          snapshot = await fetchPrSnapshot(
+            pr.url,
+            deps.runGh,
+            GH_TIMEOUT_MS,
+            context.signal,
+          );
+          failures = 0;
+          polls++;
+          verdict = classifyPrSnapshot(snapshot, holdLabels);
+        } catch (error) {
+          failures++;
+          if (
+            error instanceof GhUnavailableError ||
+            failures >= MAX_CONSECUTIVE_GH_FAILURES
+          ) throw error;
+          context.logger.warning(
+            "Could not read the PR status ({failures} of {max}): {error}",
+            {
+              failures,
+              max: MAX_CONSECUTIVE_GH_FAILURES,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+        if (verdict.outcome !== "pending") {
+          const cooldownLeft = cooldownEnd - deps.now();
+          if (verdict.outcome === "held" || cooldownLeft <= 0) break;
+          // Read again once the window passes: a re-run may have fixed a
+          // failure seen this early.
+          context.logger.warning(
+            "{reason}; waiting {seconds}s for the pr-cooldown window, then " +
+              "reading the PR again",
+            {
+              reason: verdict.reason,
+              seconds: Math.ceil(cooldownLeft / 1000),
+            },
+          );
+          await deps.sleep(cooldownLeft, context.signal);
+          continue;
+        }
+        if (deps.now() + intervalMs > deadline) break;
+        await deps.sleep(intervalMs, context.signal);
+      }
+
+      const outcome: PrWatchData["outcome"] = verdict.outcome === "pending"
+        ? "timed_out"
+        : verdict.outcome;
+      const reason = verdict.outcome === "pending"
+        ? `PR still open after ${polls} status read(s); no transition made`
+        : verdict.reason;
+      const stepsRun: CloseOutStepName[] = [];
+
+      const record = async (
+        failedStep?: CloseOutStepName,
+        failure?: string,
+      ) =>
+        await context.writeResource("prWatch", "prWatch-main", {
+          url: pr.url,
+          attempt,
+          outcome,
+          reason,
+          ...(snapshot ? { snapshot } : {}),
+          polls,
+          startedAt,
+          finishedAt: new Date(deps.now()).toISOString(),
+          stepsRun,
+          ...(failedStep ? { failedStep, failure } : {}),
+        });
+
+      if (outcome === "timed_out" || outcome === "held") {
+        context.logger.warning("Watch ended with no transition: {reason}", {
+          reason,
+        });
+        return { dataHandles: [await record()] };
+      }
+
+      if (outcome === "merged") {
+        context.logger.info("{reason}", { reason });
+      } else {
+        context.logger.warning("PR needs attention: {reason}", { reason });
+      }
+
+      const steps: Array<[CloseOutStepName, Record<string, unknown>]> =
+        outcome === "merged"
+          ? [
+            [
+              "pr_merged",
+              snapshot?.mergedAt ? { mergedAt: snapshot.mergedAt } : {},
+            ],
+            ["notify", {}],
+            ["summarize", {
+              originalProblem: args.originalProblem,
+              deliveredOutcome: args.deliveredOutcome,
+              outcomeMet: args.outcomeMet,
+              ...(linkedOutcomes.length ? { linkedOutcomes } : {}),
+            }],
+          ]
+          : [["pr_failed", { reason }]];
+
+      for (const [method, methodArgs] of steps) {
+        const result = await runModel({
+          definition: context.definition.id,
+          method,
+          arguments: methodArgs,
+        });
+        if (!result.ok) {
+          await record(method, result.error.message);
+          // notify does not roll back, so its re-run could thank twice.
+          const next = method === "notify"
+            ? "Do not re-run notify blindly; follow the notify guidance in " +
+              "the issue-lifecycle skill."
+            : `Fix the cause and run ${method} by hand.`;
+          throw new Error(
+            `watch_pr saw "${reason}" but ${method} failed: ` +
+              `${result.error.message}. ${next}`,
+          );
+        }
+        stepsRun.push(method);
+      }
+
+      return { dataHandles: [await record()] };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Model Definition
 // ---------------------------------------------------------------------------
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.10.21.1",
+  version: "2026.11.04.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -510,6 +809,15 @@ export const model = {
         "complete. No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
+    {
+      toVersion: "2026.11.04.1",
+      description:
+        "New method: watch_pr (from pr_open) reads the linked PR through gh " +
+        "until it merges or fails, then runs pr_merged, notify and " +
+        "summarize, or pr_failed, itself. New resource: prWatch. No " +
+        "globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
   ],
 
   resources: {
@@ -573,6 +881,14 @@ export const model = {
         "overwritten by subsequent link_pr calls so the record always " +
         "reflects the latest link.",
       schema: PullRequestSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
+    },
+    "prWatch": {
+      description:
+        "Outcome of the latest watch_pr run: what GitHub last reported, " +
+        "which lifecycle methods it ran and which one failed, if any.",
+      schema: PrWatchSchema,
       lifetime: "infinite" as const,
       garbageCollection: 5,
     },
@@ -2948,6 +3264,8 @@ export const model = {
       },
     },
 
+    watch_pr: createWatchPrMethod(defaultWatchPrDeps),
+
     complete: {
       rollbackOnFailure: true,
       description: "Mark the issue lifecycle as done",
@@ -3301,38 +3619,11 @@ export const model = {
         const { issueNumber } = context.globalArgs;
         const handles = [];
 
-        // Every issue this lifecycle carried gets its own outcome, so none
-        // can be closed out on the strength of the primary's.
-        const linked = await readLinkedIssues(context.readResource);
         const outcomes = args.linkedOutcomes ?? [];
-        const expected = new Set(linked.map((l) => l.issueNumber));
-        const named = outcomes.map((o) => o.issueNumber);
-        const missing = [...expected].filter((n) => !named.includes(n));
-        const extra = named.filter((n) => !expected.has(n));
-        const repeated = named.filter((n, i) => named.indexOf(n) !== i);
-        if (missing.length || extra.length || repeated.length) {
-          const problems = [
-            missing.length
-              ? `no outcome for linked issue(s) ${
-                missing.map((n) => `#${n}`).join(", ")
-              }`
-              : "",
-            extra.length
-              ? `outcome for issue(s) ${
-                extra.map((n) => `#${n}`).join(", ")
-              } that this lifecycle does not carry`
-              : "",
-            repeated.length
-              ? `more than one outcome for ${
-                [...new Set(repeated)].map((n) => `#${n}`).join(", ")
-              }`
-              : "",
-          ].filter(Boolean);
-          throw new Error(
-            `linkedOutcomes must name each linked issue exactly once: ` +
-              `${problems.join("; ")}.`,
-          );
-        }
+        assertLinkedOutcomes(
+          await readLinkedIssues(context.readResource),
+          outcomes,
+        );
 
         handles.push(
           await context.writeResource("summary", "summary-main", {

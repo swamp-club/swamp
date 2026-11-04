@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { Phase, PullRequestSchema, TRANSITIONS } from "./schemas.ts";
+import {
+  Phase,
+  PrWatchSchema,
+  PullRequestSchema,
+  TRANSITIONS,
+} from "./schemas.ts";
 
 Deno.test("Phase: includes pr_open, pr_failed, releasing, notify, summarizing between implementing and done", () => {
   const phases = Phase.options;
@@ -57,6 +62,36 @@ Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", 
 Deno.test("TRANSITIONS: there is no ship — pr_merged ships and releasing closes out with complete", () => {
   assertEquals(TRANSITIONS.ship, undefined);
   assertEquals(TRANSITIONS.pr_merged, ["pr_open"]);
+});
+
+Deno.test("TRANSITIONS: watch_pr runs only while the PR is open", () => {
+  assertEquals(TRANSITIONS.watch_pr, ["pr_open"]);
+});
+
+Deno.test("PrWatchSchema: accepts a record with and without a failed step", () => {
+  const base = {
+    url: "https://github.com/swamp-club/swamp/pull/1",
+    attempt: 1,
+    outcome: "merged",
+    reason: "PR merged",
+    polls: 2,
+    startedAt: "2026-11-04T10:00:00.000Z",
+    finishedAt: "2026-11-04T10:05:00.000Z",
+    stepsRun: ["pr_merged"],
+  };
+  assertEquals(PrWatchSchema.safeParse(base).success, true);
+  assertEquals(
+    PrWatchSchema.safeParse({
+      ...base,
+      failedStep: "notify",
+      failure: "roster lookup failed",
+    }).success,
+    true,
+  );
+  assertEquals(
+    PrWatchSchema.safeParse({ ...base, outcome: "pending" }).success,
+    false,
+  );
 });
 
 Deno.test("TRANSITIONS: start (resume) includes pr_open, pr_failed, releasing, and notify", () => {
