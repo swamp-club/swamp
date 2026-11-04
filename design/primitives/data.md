@@ -74,7 +74,9 @@ writer emits them; the old log type became `files` with `streaming: true`
 **Vary dimensions.** A definition or workflow step can declare `vary` on an
 output spec (`src/domain/models/data_output_override.ts`). The runtime turns the
 named inputs into a suffix (`src/domain/workflows/data_suffix.ts`
-`coerceToSuffix`), and the writer stores the instance as `{name}-{suffix}`
+`coerceToSuffix`: a primitive's own text, an object's `key`, `name` or `id`,
+otherwise the first 16 hex characters of a SHA-256 of the object's sorted-key
+JSON), and the writer stores the instance as `{name}-{suffix}`
 (`data_writer.ts`, `resolvedVarySuffix`; pure form `composeDataName` in
 `src/domain/data/composite_name.ts`). There is no separate dimension column.
 The suffix is also part of a sensitive field's generated vault key (below).

@@ -383,6 +383,9 @@ produces two:
 `{reportName}` is the report name after `sanitizeReportNameForData`, which
 replaces path-unsafe characters such as `/`. forEach iterations add the vary
 suffix: `report-{reportName}-{suffix}` and `report-{reportName}-{suffix}-json`.
+The suffix comes from the iteration item the way a `vary` suffix does
+([data.md](../primitives/data.md)): an object without `key`, `name` or `id`
+gives a 16-hex hash, never its JSON.
 
 Both artifacts are written with:
 

@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-const MAX_SUFFIX_LENGTH = 64;
+import { createHash } from "node:crypto";
+import { canonicalJson } from "../expressions/expression_references.ts";
+
+const HASH_SUFFIX_LENGTH = 16;
 
 function sanitizeSuffix(raw: string): string {
   return raw
@@ -39,9 +42,9 @@ export function coerceToSuffix(val: unknown): string {
       return sanitizeSuffix(String(obj[prop]));
     }
   }
-  const json = sanitizeSuffix(JSON.stringify(val));
-  if (json.length <= MAX_SUFFIX_LENGTH) {
-    return json;
-  }
-  return json.slice(0, MAX_SUFFIX_LENGTH);
+  // A hash, not the JSON: item content stays out of names and paths.
+  return createHash("sha256").update(canonicalJson(val)).digest("hex").slice(
+    0,
+    HASH_SUFFIX_LENGTH,
+  );
 }

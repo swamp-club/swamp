@@ -375,7 +375,9 @@ inputs:
 
 The `vary` field lists input key names (matching keys in `task.inputs`). Their
 resolved values are appended to the data instance name with hyphens, producing
-names like `result-prod` or `result-dev-us-east-1`.
+names like `result-prod` or `result-dev-us-east-1`. An object value uses its
+`key`, `name` or `id` field; an object with none of them becomes a 16-character
+hex hash.
 
 ## Guard Expressions for Idempotent Data Chaining
 
