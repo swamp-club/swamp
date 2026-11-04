@@ -22,6 +22,7 @@ import {
   authenticateDashboardSession,
   authenticateServerToken,
   classifyRedeemError,
+  createServerTokenAuthDeps,
   DASHBOARD_SESSION_COOKIE,
   extractDashboardSessionId,
   extractWebSocketToken,
@@ -36,6 +37,7 @@ import {
   serverTokenSecretFingerprint,
 } from "../domain/models/access/server_token_model.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
+import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 
 Deno.test("splitServerToken: splits valid name.secret", () => {
   const result = splitServerToken("adam-token.abc123def456");
@@ -295,6 +297,7 @@ function authenticateWithDeps(
   token: string,
   deps: ServerTokenAuthDeps,
   events?: AuditEvent[],
+  signal?: AbortSignal,
 ) {
   return authenticateServerToken(
     token,
@@ -310,8 +313,87 @@ function authenticateWithDeps(
       }
       : undefined,
     deps,
+    signal,
   );
 }
+
+Deno.test("authenticateServerToken: cancellation prevents further secret reads and success audit", async () => {
+  for (const stage of ["before", "record", "secret", "secret-error"]) {
+    const controller = new AbortController();
+    const events: AuditEvent[] = [];
+    const reads: string[] = [];
+    if (stage === "before") controller.abort();
+    const deps = makeAuthDeps({
+      readToken: () => {
+        reads.push("record");
+        if (stage === "record") controller.abort();
+        return Promise.resolve(activeToken());
+      },
+      readSecret: () => {
+        reads.push("secret");
+        controller.abort();
+        return stage === "secret-error"
+          ? Promise.reject(new Error("provider-private-canary"))
+          : Promise.resolve("secret-value");
+      },
+    });
+    const error = await assertRejects(() =>
+      authenticateWithDeps(
+        "test-token.secret-value",
+        deps,
+        events,
+        controller.signal,
+      )
+    );
+    assertEquals(error, controller.signal.reason);
+    assertEquals(events, []);
+    assertEquals(
+      reads,
+      stage === "before"
+        ? []
+        : stage === "record"
+        ? ["record"]
+        : ["record", "secret"],
+    );
+  }
+});
+
+Deno.test("createServerTokenAuthDeps: nonexistent and inactive tokens never initialize vault providers", async () => {
+  let loads = 0;
+  vaultTypeRegistry.resetLoadedFlag();
+  vaultTypeRegistry.setLoader(() => {
+    loads++;
+    return Promise.reject(new Error("vault loader reached"));
+  });
+  try {
+    for (const token of [null, activeToken({ state: "revoked" })]) {
+      const context = fakeTokenRepoContext(
+        token ? { id: "token-id" } : null,
+        token ? new TextEncoder().encode(JSON.stringify(token)) : null,
+      );
+      const result = await authenticateServerToken(
+        "test-token.secret-value",
+        "/unused-repository",
+        context,
+      );
+      assertEquals(result.ok, false);
+      assertEquals(loads, 0);
+    }
+    const deps = await createServerTokenAuthDeps(
+      "/unused-repository",
+      unusedRepoContext,
+    );
+    assertEquals(loads, 0);
+    await assertRejects(
+      () => deps.readSecret("token-vault", "key"),
+      Error,
+      "vault loader reached",
+    );
+    assertEquals(loads, 1);
+  } finally {
+    vaultTypeRegistry.clearLoadersForTesting();
+  }
+});
 
 Deno.test("authenticateServerToken: reads and validates a token without a model run", async () => {
   const result = await authenticateWithDeps(
@@ -355,6 +437,33 @@ function fakeTokenRepoContext(
     unifiedDataRepo: { getContent: () => Promise.resolve(content) },
   } as unknown as RepositoryContext;
 }
+
+Deno.test("readServerTokenRecord: cancellation after lookup prevents a later content read", async () => {
+  const controller = new AbortController();
+  let contentReads = 0;
+  const context = {
+    definitionRepo: {
+      findByName: () => {
+        controller.abort();
+        return Promise.resolve({ id: "token-id" });
+      },
+    },
+    unifiedDataRepo: {
+      getContent: () => {
+        contentReads++;
+        return Promise.resolve(null);
+      },
+    },
+  } as unknown as RepositoryContext;
+  const deps = await createServerTokenAuthDeps(
+    "/unused-repository",
+    context,
+    controller.signal,
+  );
+  const error = await assertRejects(() => deps.readToken("test-token"));
+  assertEquals(error, controller.signal.reason);
+  assertEquals(contentReads, 0);
+});
 
 Deno.test("readServerTokenRecord: parses the stored token record", async () => {
   const token = activeToken();

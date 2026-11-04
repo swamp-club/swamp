@@ -132,9 +132,12 @@ export class VaultService {
       vaultsDir?: string;
       refreshOptions?: VaultRefreshOptions;
       defaultVaultName?: string;
+      signal?: AbortSignal;
     },
   ): Promise<VaultService> {
+    options?.signal?.throwIfAborted();
     await vaultTypeRegistry.ensureLoaded();
+    options?.signal?.throwIfAborted();
     const vaultService = new VaultService(
       options?.refreshOptions,
       options?.defaultVaultName,
@@ -151,7 +154,9 @@ export class VaultService {
         options?.vaultsDir,
       );
       vaultConfigs = await vaultRepo.findAll();
+      options?.signal?.throwIfAborted();
     } catch (error) {
+      options?.signal?.throwIfAborted();
       getLogger("vaults").debug`Failed to load vault configs: ${error}`;
       vaultService.ensureDefaultVaults();
       return vaultService;
@@ -167,10 +172,12 @@ export class VaultService {
         }
 
         await vaultTypeRegistry.ensureTypeLoaded(vaultType);
+        options?.signal?.throwIfAborted();
         if (
           !vaultTypeRegistry.has(vaultType) && vaultType.startsWith("@")
         ) {
           await resolveVaultType(vaultType, getAutoResolver());
+          options?.signal?.throwIfAborted();
         }
 
         vaultService.registerVault({
@@ -180,6 +187,7 @@ export class VaultService {
           auditReads: vaultConfig.auditReads,
         });
       } catch (error) {
+        options?.signal?.throwIfAborted();
         if (
           error instanceof Error &&
           error.message.includes("Unsupported vault type")
@@ -217,19 +225,25 @@ export class VaultService {
     }
   }
 
+  /** cancellation cannot interrupt a provider call; providers take no signal */
   async get(
     vaultName: string,
     secretKey: string,
     callerContext?: string,
+    options?: { signal?: AbortSignal },
   ): Promise<string> {
+    options?.signal?.throwIfAborted();
     await authorizeVaultAction(vaultName, "read", "get", secretKey);
+    options?.signal?.throwIfAborted();
     const provider = this.requireProvider(vaultName);
 
     if (this.refreshOptions && isVaultRefreshHookProvider(provider)) {
       const hook = await provider.getRefreshHook(secretKey);
+      options?.signal?.throwIfAborted();
       if (hook && hook.isStale()) {
         try {
           const result = await this.refreshOptions.runCommand(hook.command);
+          options?.signal?.throwIfAborted();
           if (result.success) {
             const freshValue = result.stdout.trimEnd();
             if (freshValue.length === 0) {
@@ -237,10 +251,12 @@ export class VaultService {
                 .warn`Refresh command for ${secretKey} in vault ${vaultName} succeeded but produced empty output. Returning stale value.`;
             } else {
               await provider.put(secretKey, freshValue);
+              options?.signal?.throwIfAborted();
               await provider.putRefreshHook(
                 secretKey,
                 hook.withRefreshedAt(new Date()),
               );
+              options?.signal?.throwIfAborted();
               getLogger("vaults")
                 .info`Refreshed secret ${secretKey} in vault ${vaultName}`;
               await this.recordAuditEntry(
@@ -249,6 +265,7 @@ export class VaultService {
                 secretKey,
                 callerContext,
               );
+              options?.signal?.throwIfAborted();
               return freshValue;
             }
           } else {
@@ -258,6 +275,7 @@ export class VaultService {
               .warn`Refresh command failed for ${secretKey} in vault ${vaultName}. Returning stale value; run the refresh command by hand to see its output.`;
           }
         } catch {
+          options?.signal?.throwIfAborted();
           getLogger("vaults")
             .warn`Refresh command error for ${secretKey} in vault ${vaultName}. Returning stale value; run the refresh command by hand to see why it failed.`;
         }
@@ -265,12 +283,14 @@ export class VaultService {
     }
 
     const value = await provider.get(secretKey);
+    options?.signal?.throwIfAborted();
     await this.recordAuditEntry(
       "get",
       vaultName,
       secretKey,
       callerContext,
     );
+    options?.signal?.throwIfAborted();
     return value;
   }
 

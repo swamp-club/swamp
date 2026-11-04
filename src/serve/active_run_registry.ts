@@ -229,6 +229,11 @@ export class ActiveRunRegistry {
     return this.#runs.size;
   }
 
+  /** Admissions still holding a slot must prevent engine quiescence. */
+  get reservedCount(): number {
+    return this.#reserved.size;
+  }
+
   /**
    * stops new registrations so a run started after shutdown began is refused
    * rather than left running on a dead instance

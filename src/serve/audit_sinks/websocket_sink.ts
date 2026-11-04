@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  isSessionOpen,
+  isSessionReply,
+  type ServeSession,
+} from "../session.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type {
   AuditCategory,
@@ -41,7 +46,7 @@ export interface AuditSubscriptionFilter {
 
 export interface AuditSubscription {
   readonly id: string;
-  readonly socket: WebSocket;
+  readonly socket: ServeSession;
   readonly filter: AuditSubscriptionFilter;
 }
 
@@ -129,7 +134,7 @@ export class WebSocketSink implements AuditSink {
     return this.#subscriptions.size;
   }
 
-  subscriptionsForSocket(socket: WebSocket): string[] {
+  subscriptionsForSocket(socket: ServeSession): string[] {
     const ids: string[] = [];
     for (const [id, sub] of this.#subscriptions) {
       if (sub.socket === socket) ids.push(id);
@@ -141,7 +146,7 @@ export class WebSocketSink implements AuditSink {
     if (this.#subscriptions.size === 0) return;
 
     for (const [id, sub] of this.#subscriptions) {
-      if (sub.socket.readyState !== WebSocket.OPEN) {
+      if (!isSessionOpen(sub.socket)) {
         this.#subscriptions.delete(id);
         continue;
       }
@@ -149,11 +154,13 @@ export class WebSocketSink implements AuditSink {
       for (const event of events) {
         if (!matchesFilter(event, sub.filter)) continue;
         try {
-          sub.socket.send(JSON.stringify({
-            type: "audit.event",
+          const message = {
+            type: "audit.event" as const,
             id: sub.id,
-            payload: { event },
-          }));
+            payload: { event: { ...event } },
+          };
+          if (isSessionReply(sub.socket)) sub.socket.send(message);
+          else sub.socket.send(JSON.stringify(message));
         } catch {
           this.#subscriptions.delete(id);
           break;

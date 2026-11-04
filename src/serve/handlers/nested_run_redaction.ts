@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "../session.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
   type NestedRunPendingError,
@@ -46,7 +47,7 @@ export interface NamedWorkflow {
  */
 export function nestedRunReadDecider(
   ctx: ConnectionContext,
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   // a request passes its own, so links resolve from the request's one walk; a
   // run stream keeps the live repository, as a per-request view would keep the
@@ -324,7 +325,7 @@ export async function nestedPendingRefusalForClient(
 
 export function redactingFor(
   ctx: ConnectionContext,
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
 ): ((event: SerializedEvent) => Promise<SerializedEvent>) | undefined {
   if (ctx.authConfig.mode === "none") return undefined;

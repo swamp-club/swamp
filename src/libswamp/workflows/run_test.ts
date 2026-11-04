@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { StepStart } from "../../domain/workflows/step_start.ts";
+import { UserError } from "../../domain/errors.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   extractStepArtifacts,
@@ -585,6 +586,18 @@ Deno.test("workflowExecutionFailed wraps error", () => {
   assertEquals(error.code, "workflow_execution_failed");
   assertEquals(error.message, "Workflow execution failed: boom");
   assertEquals(error.cause?.message, "boom");
+});
+
+Deno.test("workflowExecutionFailed: profile refusal preserves its code without changing existing coded errors", () => {
+  assertEquals(
+    workflowExecutionFailed(new UserError("ordinary", "existing_code")).code,
+    "workflow_execution_failed",
+  );
+  assertEquals(
+    workflowExecutionFailed(new UserError("profile", "unsupported_profile"))
+      .code,
+    "unsupported_profile",
+  );
 });
 
 Deno.test("toRunData converts WorkflowRun to data shape", () => {
@@ -2127,4 +2140,86 @@ Deno.test("toRunData: inputs, a step error and assert text are shown through the
   const plain = WorkflowRun.create(workflow);
   plain.captureInputs({ token: "plain" });
   assertEquals(toRunData(plain).inputs, { token: "plain" });
+});
+
+Deno.test("workflowRun: profile refusal precedes superseding and checks the cached workflow", async () => {
+  const source = createTestWorkflow();
+  const cached = Workflow.create({
+    id: source.id,
+    name: source.name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "wait",
+            task: StepTask.manualApproval("Approve"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const captured: { options?: Record<string, unknown> } = {};
+  const deps = createTestDepsWithCapture(source, [], captured);
+  const checked: Workflow[] = [];
+  let supersedeReads = 0;
+  deps.validateWorkflow = (workflow) => {
+    checked.push(workflow);
+    if (workflow === cached) {
+      throw new UserError("unsupported cached task", "unsupported_profile");
+    }
+  };
+  deps.supersede = {
+    findSuspendedRuns: () => {
+      supersedeReads++;
+      return Promise.resolve([]);
+    },
+    findEvaluatedWorkflow: () => Promise.resolve(null),
+    runClaims: unclaimedRuns,
+    evaluatedCache: () =>
+      Promise.resolve({
+        workflow: cached,
+        authoredExpressions: new Set<string>(),
+        deferredExpressions: [],
+        writtenReferences: [],
+      }),
+  };
+  try {
+    const events = await collect(workflowRun(createLibSwampContext(), deps, {
+      workflowIdOrName: source.name,
+      lastEvaluated: true,
+    }));
+    assertEquals(checked, [source, cached]);
+    assertEquals(supersedeReads, 0);
+    assertEquals(captured.options, undefined);
+    const refusal = events.find((e) => e.kind === "error");
+    assertEquals(
+      refusal?.kind === "error" && refusal.error.code,
+      "unsupported_profile",
+    );
+  } finally {
+    deps.catalogStore.close();
+  }
+});
+
+Deno.test("workflowRun: forwards profile admission for the service's fresh workflow lookup", async () => {
+  const workflow = createTestWorkflow();
+  const captured: { options?: Record<string, unknown> } = {};
+  const deps = createTestDepsWithCapture(workflow, [], captured);
+  const checked: Workflow[] = [];
+  const validateWorkflow = (candidate: Workflow) => {
+    checked.push(candidate);
+  };
+  deps.validateWorkflow = validateWorkflow;
+  try {
+    await collect(
+      workflowRun(createLibSwampContext(), deps, {
+        workflowIdOrName: workflow.name,
+      }),
+    );
+    assertEquals(checked, [workflow]);
+    assertEquals(captured.options?.validateWorkflow, validateWorkflow);
+  } finally {
+    deps.catalogStore.close();
+  }
 });

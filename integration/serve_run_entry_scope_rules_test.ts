@@ -206,14 +206,15 @@ Deno.test("serve run entries: the ambient root context is captured at startup", 
     "ambient_context.ts must take AsyncLocalStorage.snapshot() at top level",
   );
   const staticImport = (source: string, specifier: string) =>
-    new RegExp(`^import [^;]*from "${specifier.replaceAll(".", "\\.")}";`, "m")
+    new RegExp(
+      `^import (?:[^;]*from )?"${specifier.replaceAll(".", "\\.")}";`,
+      "m",
+    )
       .test(source);
   const chain: Array<[string, string]> = [
-    [join(SRC_DIR, "..", "main.ts"), "./src/cli/mod.ts"],
-    [join(SRC_DIR, "cli", "mod.ts"), "./commands/serve.ts"],
     [
-      join(SRC_DIR, "cli", "commands", "serve.ts"),
-      "../../infrastructure/runtime/ambient_context.ts",
+      join(SRC_DIR, "..", "main.ts"),
+      "./src/infrastructure/runtime/ambient_context.ts",
     ],
   ];
   for (const [file, specifier] of chain) {

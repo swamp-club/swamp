@@ -564,7 +564,7 @@ export async function sendAs(
   if (session.token) setConnectionToken(socket, session.token);
   const active = new Map<string, AbortController>();
   try {
-    handleMessage(
+    await handleMessage(
       socket,
       ctx,
       active,

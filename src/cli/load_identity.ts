@@ -17,29 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
-import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
-import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
+import { loadClientIdentity } from "../infrastructure/http/load_client_identity.ts";
 import { VERSION } from "./commands/version.ts";
 
 export const USER_AGENT = `swamp-cli/${VERSION}`;
 
-/**
- * best-effort: any failure (e.g. HOME unset) returns {} so a missing config-dir
- * env never crashes a command; userAgent is always set
- */
-export async function loadIdentity(): Promise<ClientIdentity> {
-  let bearerToken: string | undefined;
-  try {
-    const credentials = await new AuthRepository().load();
-    bearerToken = credentials?.apiKey || undefined;
-  } catch {
-    bearerToken = undefined;
-  }
-  const distinctId = await new UserIdentityRepository().getUserId();
-  return {
-    bearerToken,
-    distinctId: distinctId ?? undefined,
-    userAgent: USER_AGENT,
-  };
+/** Resolve the CLI identity through the shared persistence adapter. */
+export function loadIdentity() {
+  return loadClientIdentity(USER_AGENT);
 }

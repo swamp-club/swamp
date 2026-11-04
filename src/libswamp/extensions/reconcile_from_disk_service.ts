@@ -152,6 +152,10 @@ export class ReconcileFromDiskService {
   private readonly scanOnDiskDatastores: boolean;
   private readonly additionalInstalledNames: ReadonlySet<string>;
   private readonly bundleProber: BundleProber | undefined;
+  private readonly localKindDirs: readonly {
+    kind: KindDir;
+    dir: string;
+  }[];
   private onDiskDatastores = new Map<string, OnDiskDatastoreExtension>();
 
   constructor(args: {
@@ -160,6 +164,8 @@ export class ReconcileFromDiskService {
     lockfileRepository: LockfileRepository;
     repoDir: string;
     localManifestIdentity?: LocalManifestIdentity | null;
+    /** Effective local source directories for configured kinds; omitted kinds retain their defaults. */
+    localDirectories?: Partial<Record<KindDir, readonly string[]>>;
     pulledExtensionsRoot?: string;
     /**
      * walk a lockfile entry's datastore sources at the root the on-disk scan
@@ -184,6 +190,12 @@ export class ReconcileFromDiskService {
     this.repository = args.repository;
     this.lockfileRepository = args.lockfileRepository;
     this.repoDir = resolve(args.repoDir);
+    this.localKindDirs = KIND_DIRS.flatMap((kind) =>
+      (args.localDirectories?.[kind] ?? LOCAL_KIND_DIRS
+        .filter(([, defaultKind]) => defaultKind === kind)
+        .map(([name]) => join("extensions", name)))
+        .map((dir) => ({ kind, dir: resolve(this.repoDir, dir) }))
+    );
     this.localManifestIdentity = args.localManifestIdentity ?? null;
     this.pulledExtensionsRoot = args.pulledExtensionsRoot ??
       resolvePulledExtensionsRoot(this.repoDir);
@@ -428,14 +440,13 @@ export class ReconcileFromDiskService {
       ? topLevelManifest.version
       : "0.0.0";
 
-    // only immediate children are checked; deeper nesting is not an extension
-    // boundary. A top-level manifest claims the entire tree, so
-    // per-subdirectory manifests are then ignored.
+    // only immediate children of each local source directory are checked;
+    // deeper nesting is not an extension boundary. A top-level manifest claims
+    // the entire tree, so per-subdirectory manifests are then ignored.
     const subdirManifests = new Map<string, LocalManifestIdentity>();
     if (!topLevelManifest) {
-      for (const [dirName] of LOCAL_KIND_DIRS) {
-        const kindPath = join(this.repoDir, "extensions", dirName);
-        await discoverSubdirManifests(kindPath, subdirManifests);
+      for (const { dir } of this.localKindDirs) {
+        await discoverSubdirManifests(dir, subdirManifests);
       }
     }
 
@@ -469,8 +480,7 @@ export class ReconcileFromDiskService {
       }
     }
 
-    for (const [dirName, kindDir] of LOCAL_KIND_DIRS) {
-      const dir = join(this.repoDir, "extensions", dirName);
+    for (const { dir, kind } of this.localKindDirs) {
       const files = await collectTsFiles(dir);
       for (const absolutePath of files) {
         const ownerKey = findOwningManifest(
@@ -480,7 +490,7 @@ export class ReconcileFromDiskService {
         );
         const partition = partitions.get(ownerKey);
         if (!partition) continue;
-        partition.sources.set(absolutePath, { kind: kindDir, baseDir: dir });
+        partition.sources.set(absolutePath, { kind, baseDir: dir });
       }
     }
 

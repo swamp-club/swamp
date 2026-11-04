@@ -17,17 +17,4 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
-
-export function resolveWorkflowsDir(marker: RepoMarkerData | null): string {
-  const envWorkflowsDir = Deno.env.get("SWAMP_WORKFLOWS_DIR");
-  if (envWorkflowsDir) {
-    return envWorkflowsDir;
-  }
-
-  if (marker?.workflowsDir) {
-    return marker.workflowsDir;
-  }
-
-  return "extensions/workflows";
-}
+export { resolveWorkflowsDir } from "../infrastructure/persistence/resolve_workflows_dir.ts";

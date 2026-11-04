@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "./session.ts";
 import {
   type Principal,
   principalToString,
@@ -33,7 +34,7 @@ export interface EventLoopLagReader extends DiagnosticLagReader {
 
 export interface WebSocketRequestTrace {
   type: string;
-  socket: WebSocket;
+  socket: ServeSession;
   activeRequests: number;
   principal: Principal | null;
   datastoreType: string;
@@ -41,9 +42,9 @@ export interface WebSocketRequestTrace {
   eventLoopLag?: EventLoopLagReader;
 }
 
-const connectionIds = new WeakMap<WebSocket, string>();
+const connectionIds = new WeakMap<ServeSession, string>();
 
-export function connectionIdOf(socket: WebSocket): string {
+export function connectionIdOf(socket: ServeSession): string {
   let id = connectionIds.get(socket);
   if (!id) {
     id = crypto.randomUUID();

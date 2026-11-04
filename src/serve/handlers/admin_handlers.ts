@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "../session.ts";
 import { runGeneratorWithoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import { runProgressSnapshots } from "../../domain/remote/run_progress.ts";
@@ -393,7 +394,7 @@ function extensionLockfileTransaction(
 }
 
 export async function handleWorkerList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -446,7 +447,7 @@ export async function handleWorkerList(
 }
 
 export async function handleWorkerQueueList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -495,7 +496,7 @@ export async function handleWorkerQueueList(
 }
 
 export async function handleWorkerLeaseList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -551,7 +552,7 @@ export async function handleWorkerLeaseList(
 }
 
 export async function handleWorkerVerify(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkerVerifyPayload | undefined,
@@ -633,7 +634,7 @@ export async function handleWorkerVerify(
 }
 
 export async function handleDatastoreStatus(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -735,7 +736,7 @@ function claimErrorCode(error: unknown, fallback: string): string {
 }
 
 export async function handleDatastoreClaim(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DatastoreClaimPayload,
@@ -803,7 +804,7 @@ export async function handleDatastoreClaim(
 }
 
 export async function handleDatastoreRelease(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -853,7 +854,7 @@ export async function handleDatastoreRelease(
 }
 
 export async function handleExtensionList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -913,7 +914,7 @@ export async function handleExtensionList(
 }
 
 export async function handleExtensionSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1002,7 +1003,7 @@ export async function handleExtensionSearch(
 }
 
 export async function handleExtensionInfo(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ExtensionInfoPayload,
@@ -1106,7 +1107,7 @@ async function reloadAfterExtensionChange(
 }
 
 export async function handleExtensionInstall(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1176,7 +1177,7 @@ export async function handleExtensionInstall(
 }
 
 export async function handleExtensionPull(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ExtensionPullPayload,
@@ -1300,7 +1301,7 @@ export async function handleExtensionPull(
 }
 
 export async function handleExtensionRm(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ExtensionRmPayload,
@@ -1368,7 +1369,7 @@ export async function handleExtensionRm(
 }
 
 export async function handleExtensionOutdated(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1438,7 +1439,7 @@ export async function handleExtensionOutdated(
 }
 
 export async function handleExtensionUpdate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ExtensionUpdatePayload | undefined,
@@ -1582,7 +1583,7 @@ export function serveDatastoreSetupDeps(
 }
 
 export async function handleDatastoreSetupExtension(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DatastoreSetupExtensionPayload,
@@ -1682,7 +1683,7 @@ export async function handleDatastoreSetupExtension(
 }
 
 export async function handleVaultMigrate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultMigratePayload,
@@ -1791,7 +1792,7 @@ export async function handleVaultMigrate(
 }
 
 export async function handleDoctorVaults(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1842,7 +1843,7 @@ export async function handleDoctorVaults(
 }
 
 export async function handleDoctorDatastores(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1961,7 +1962,7 @@ export async function handleDoctorDatastores(
 }
 
 export async function handleDoctorSecrets(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2010,7 +2011,7 @@ export async function handleDoctorSecrets(
 }
 
 export async function handleDoctorWorkflows(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2063,7 +2064,7 @@ export async function handleDoctorWorkflows(
 }
 
 export async function handleDoctorExtensions(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2220,7 +2221,7 @@ export async function handleDoctorExtensions(
 }
 
 export function handleRunHistory(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: { active?: boolean; all?: boolean } | undefined,
@@ -2270,7 +2271,7 @@ export function handleRunHistory(
 }
 
 export async function handleRunDoctor(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: { fix?: boolean } | undefined,
@@ -2471,7 +2472,7 @@ export async function handleRunDoctor(
 }
 
 export async function handleAuditTimeline(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2532,7 +2533,7 @@ export async function handleAuditTimeline(
 let auditReloadInProgress = false;
 
 export async function handleServeReload(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -2654,7 +2655,7 @@ export async function handleServeReload(
 }
 
 export async function handleWorkerTokenCreate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkerTokenCreatePayload,
@@ -2722,7 +2723,7 @@ export async function handleWorkerTokenCreate(
 }
 
 export async function handleWorkerTokenList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2772,7 +2773,7 @@ export async function handleWorkerTokenList(
 }
 
 export async function handleWorkerTokenRevoke(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkerTokenRevokePayload,
@@ -2844,7 +2845,7 @@ export async function handleWorkerTokenRevoke(
 }
 
 export async function handleWorkerPrune(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkerPrunePayload | undefined,
@@ -3007,7 +3008,7 @@ export async function handleWorkerPrune(
 }
 
 export async function handleDatastoreNamespaceList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -3155,7 +3156,7 @@ export async function collectClusterInstances(
 }
 
 export async function handleClusterInstances(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -3231,7 +3232,7 @@ export function redactServeOptions(
 }
 
 export function handleServeConfig(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,

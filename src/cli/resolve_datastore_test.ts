@@ -636,6 +636,41 @@ Deno.test("resolveDatastoreConfig: resolves env expressions in directories array
   });
 });
 
+Deno.test("resolveDatastoreConfig: filesystem routing fields use the shared expression normalizer", async () => {
+  await withMockedEnv({
+    SWAMP_DATASTORE: undefined,
+    SWAMP_TEST_FS_DIR: "data",
+    SWAMP_TEST_FS_EXCLUDE: "data/private/**",
+    SWAMP_TEST_FS_NAMESPACE: "team-a",
+  }, async () => {
+    const repoDir = resolve("filesystem-normalizer-cli");
+    const config = await resolveDatastoreConfig(
+      {
+        swampVersion: "0.1.0",
+        initializedAt: "2026-01-01",
+        datastore: {
+          type: "filesystem",
+          path: "../external-store",
+          directories: ["${{ env.SWAMP_TEST_FS_DIR }}"],
+          exclude: ["${{ env.SWAMP_TEST_FS_EXCLUDE }}"],
+          namespace: "${{ env.SWAMP_TEST_FS_NAMESPACE }}",
+          format: 2,
+        },
+      },
+      undefined,
+      repoDir,
+    );
+    assertEquals(config.type, "filesystem");
+    if (!isCustomDatastoreConfig(config)) {
+      assertPathEquals(config.path, resolve(repoDir, "../external-store"));
+    }
+    assertEquals(config.directories, ["data"]);
+    assertEquals(config.exclude, ["data/private/**"]);
+    assertEquals(config.namespace, "team-a");
+    assertEquals(config.format, 2);
+  });
+});
+
 Deno.test("resolveDatastoreConfig: resolves env expressions in exclude array", async () => {
   ensureTestType("@test/ds-excl-expr");
   await withMockedEnv({

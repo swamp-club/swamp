@@ -27,6 +27,7 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { MAX_ACTIVE_REQUESTS } from "../src/serve/connection.ts";
 import { type ConnectionContext, send } from "../src/serve/handlers/shared.ts";
 import { handleHttpRequest } from "../src/serve/http_request_route.ts";
+import type { ServeSession } from "../src/serve/session.ts";
 import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
 import type { HttpCallerSessionAuth } from "../src/serve/http_caller_auth.ts";
 import type { DashboardSession } from "../src/serve/dashboard_session_store.ts";
@@ -323,7 +324,7 @@ Deno.test({
       ctx: { authConfig: { mode: "token" } } as ConnectionContext,
       authenticate: () => Promise.resolve(token),
       dispatch: (
-        socket: WebSocket,
+        socket: ServeSession,
         _ctx: ConnectionContext,
         _active: Map<string, AbortController>,
         event: MessageEvent,

@@ -215,6 +215,9 @@ const PINNED_DIRECT_PUSH_CHANGED_TO_REMOTE_CALLERS: readonly string[] = [
 ];
 
 const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
+  // Local engine startup owns grant materialization and dead-owner recovery;
+  // its independent grant poller opens the third root outside all requests.
+  "src/serve/local_engine_context.ts: createLocalEngineContext (x3)",
   // Request handlers whose push runs after their work on every outcome.
   "src/serve/handlers/access_handlers.ts: handleAccessTokenMint",
   "src/serve/handlers/access_handlers.ts: handleAccessTokenRevoke",

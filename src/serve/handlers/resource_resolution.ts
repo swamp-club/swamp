@@ -23,6 +23,7 @@
  * authorize the resource, act on the resolved id.
  */
 
+import type { ServeSession } from "../session.ts";
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import {
@@ -368,7 +369,7 @@ export type SettledResolution = Exclude<
  * caller learns nothing more
  */
 export function authorizeResolved(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -879,7 +880,7 @@ export async function resolveRunAccess<T extends { reference: RunReference }>(
  * matches whose owners are all allowed
  */
 export function authorizeReferenceAccess<T>(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -926,7 +927,7 @@ export function authorizeReferenceAccess<T>(
  * so its refusal is replied when no other is readable
  */
 function authorizeAmbiguous<T>(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,

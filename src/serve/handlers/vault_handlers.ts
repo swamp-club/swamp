@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "../session.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createVaultAnnotateDeps,
@@ -128,7 +129,7 @@ export function isReservedVaultName(name: string): boolean {
 }
 
 function rejectReservedVault(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   vaultName: string,
 ): boolean {
@@ -150,7 +151,7 @@ function rejectReservedVault(
  * needs read
  */
 function sendVaultSwampError(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   code: string,
   vaultName: string,
@@ -179,7 +180,7 @@ export { vaultAccessResource };
  * reply, which lists every vault
  */
 async function rejectUnknownVaultForVaultGrant(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   authorized: VaultAuthorizationResult,
@@ -200,7 +201,7 @@ async function rejectUnknownVaultForVaultGrant(
 
 /** authorize by the resolved name so an id cannot sidestep a name-scoped grant */
 async function authorizeVaultByNameOrId(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -257,7 +258,7 @@ function isAuthorizedVault(
 }
 
 export async function handleVaultGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultGetPayload,
@@ -321,7 +322,7 @@ export async function handleVaultGet(
 }
 
 export async function handleVaultPut(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultPutPayload,
@@ -445,7 +446,7 @@ export async function handleVaultPut(
 }
 
 export async function handleVaultDelete(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultDeletePayload,
@@ -587,7 +588,7 @@ export async function handleVaultDelete(
 }
 
 export async function handleVaultDescribe(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultDescribePayload,
@@ -648,7 +649,7 @@ export async function handleVaultDescribe(
 }
 
 export async function handleVaultInspect(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultInspectPayload,
@@ -715,7 +716,7 @@ export async function handleVaultInspect(
 }
 
 export async function handleVaultListKeys(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -782,7 +783,7 @@ export async function handleVaultListKeys(
 }
 
 export async function handleVaultSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -849,7 +850,7 @@ export async function handleVaultSearch(
 }
 
 export async function handleVaultAnnotate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultAnnotatePayload,
@@ -936,7 +937,7 @@ export async function handleVaultAnnotate(
 }
 
 export async function handleVaultCreate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultCreatePayload,
@@ -1018,7 +1019,7 @@ export async function handleVaultCreate(
 }
 
 export async function handleVaultEdit(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultEditPayload,
@@ -1197,7 +1198,7 @@ export async function handleVaultEdit(
 }
 
 export async function handleVaultAuditTrail(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultAuditTrailPayload | undefined,
@@ -1282,7 +1283,7 @@ export async function handleVaultAuditTrail(
 }
 
 export async function handleVaultReadSecret(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultReadSecretPayload,
@@ -1356,7 +1357,7 @@ export async function handleVaultReadSecret(
 }
 
 export async function handleVaultTypeSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,

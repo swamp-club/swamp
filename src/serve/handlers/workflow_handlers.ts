@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isSessionOpen, type ServeSession } from "../session.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -325,7 +326,7 @@ export function workflowAccessFields(
 }
 
 export async function handleWorkflowRun(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowRunPayload,
@@ -346,6 +347,20 @@ export async function handleWorkflowRun(
       "workflow_execution_failed",
     )
   ) return;
+  if (ctx.validateWorkflow && target.status === "found") {
+    try {
+      const found = await findWorkflowById(
+        ctx.repoContext.workflowRepo,
+        target.id,
+        target.name,
+      );
+      if (found) ctx.validateWorkflow(found);
+    } catch (error) {
+      const failure = runFailureForClient(error, "workflow_execution_failed");
+      sendError(socket, requestId, failure.code, failure.message);
+      return;
+    }
+  }
   const workflow = targetArgument(target, payload.workflowIdOrName);
   const resourceName = target.resource.name;
   const resourceId = target.status === "found" ? target.id : undefined;
@@ -405,14 +420,14 @@ export async function handleWorkflowRun(
               controller,
             );
           }
-          if (socket.readyState !== WebSocket.OPEN) return;
+          if (!isSessionOpen(socket)) return;
           if (!isWireEvent(event)) return;
           const serialized = serializeEvent(
             event as { kind: string; [key: string]: unknown },
           );
           sending = sending.then(async () => {
             const visible = redact ? await redact(serialized) : serialized;
-            if (socket.readyState !== WebSocket.OPEN) return;
+            if (!isSessionOpen(socket)) return;
             send(socket, { type: "event", id: requestId, event: visible });
           }).catch((error) => {
             logger.warn("Failed to send a workflow run event: {error}", {
@@ -429,6 +444,7 @@ export async function handleWorkflowRun(
           vaultAccess,
           defaultVault: ctx.defaultVault,
           runWriteFence: ctx.runWriteFence,
+          validateWorkflow: ctx.validateWorkflow,
         },
       );
       await sending;
@@ -576,6 +592,7 @@ export async function handleWorkflowRun(
           vaultAccess,
           defaultVault: ctx.defaultVault,
           runWriteFence: ctx.runWriteFence,
+          validateWorkflow: ctx.validateWorkflow,
         },
       );
       // reported finished only once its commits are replicated
@@ -654,7 +671,7 @@ export async function handleWorkflowRun(
 }
 
 export async function handleWorkflowSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -740,7 +757,7 @@ interface ApprovalsRow {
 }
 
 export async function handleWorkflowApprovals(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -853,7 +870,7 @@ export async function handleWorkflowApprovals(
 }
 
 export async function handleWorkflowGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowGetPayload,
@@ -923,7 +940,7 @@ export async function handleWorkflowGet(
  * resource goes through the same data read decision
  */
 function dataReadPolicy(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   principal: Principal | null,
   signal?: AbortSignal,
@@ -945,7 +962,7 @@ function dataReadPolicy(
 }
 
 export async function handleWorkflowHistoryGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowHistoryGetPayload,
@@ -1064,7 +1081,7 @@ export async function handleWorkflowHistoryGet(
 }
 
 export async function handleWorkflowHistoryLogs(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowHistoryLogsPayload,
@@ -1158,7 +1175,7 @@ export async function handleWorkflowHistoryLogs(
 }
 
 export async function handleWorkflowHistorySearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1267,7 +1284,7 @@ export async function handleWorkflowHistorySearch(
 }
 
 export async function handleWorkflowRunSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1395,7 +1412,7 @@ export async function handleWorkflowRunSearch(
  * never reaches totals or the timeline
  */
 export async function handleWorkflowRunSummary(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1475,7 +1492,7 @@ export async function handleWorkflowRunSummary(
 }
 
 export async function handleWorkflowSchema(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   _payload: WorkflowSchemaPayload,
@@ -1544,7 +1561,7 @@ function gateRefusalDetails(
 }
 
 export async function handleWorkflowApprove(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowApprovePayload,
@@ -1729,7 +1746,7 @@ function idempotencyKeyOf(
 }
 
 export async function handleWorkflowSignal(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowSignalPayload,
@@ -1847,7 +1864,7 @@ export async function handleWorkflowSignal(
  * caller with no workflow read grant is refused
  */
 export async function handleWorkflowWaits(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1963,7 +1980,7 @@ export async function handleWorkflowWaits(
 }
 
 export async function handleWorkflowReject(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowRejectPayload,
@@ -2178,7 +2195,7 @@ async function reserveSuspendedRun(
  * registered run is awaited outside the sync gate
  */
 export async function handleWorkflowCancel(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowCancelPayload,
@@ -2351,7 +2368,7 @@ async function abortActiveWorkflowRun(
 }
 
 export async function handleWorkflowResume(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowResumePayload,
@@ -2474,7 +2491,7 @@ export async function handleWorkflowResume(
           const run_ = async () => {
             try {
               for await (const event of resumeGenerator()) {
-                if (socket.readyState !== WebSocket.OPEN) break;
+                if (!isSessionOpen(socket)) break;
                 if (!isWireEvent(event)) continue;
                 const serialized = await redactStreamEvent(
                   serializeEvent(
@@ -2584,7 +2601,7 @@ export async function handleWorkflowResume(
 }
 
 export async function handleWorkflowCreate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowCreatePayload,
@@ -2675,7 +2692,7 @@ async function holdsGuardedRun(
 }
 
 export async function handleWorkflowDelete(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowDeletePayload,
@@ -2782,7 +2799,7 @@ export async function handleWorkflowDelete(
 }
 
 export async function handleWorkflowEdit(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowEditPayload,
@@ -2931,7 +2948,7 @@ export async function handleWorkflowEdit(
 }
 
 export async function handleWorkflowValidate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowValidatePayload | undefined,
@@ -3023,7 +3040,7 @@ export async function handleWorkflowValidate(
 }
 
 export async function handleWorkflowEvaluate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowEvaluatePayload | undefined,
@@ -3128,7 +3145,7 @@ export async function handleWorkflowEvaluate(
 }
 
 export async function handleWorkflowTriggerSet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowTriggerSetPayload,
@@ -3197,7 +3214,7 @@ export async function handleWorkflowTriggerSet(
 }
 
 export async function handleWorkflowTriggerGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowTriggerGetPayload,
@@ -3271,7 +3288,7 @@ export async function handleWorkflowTriggerGet(
 }
 
 export async function handleWorkflowTriggerRemove(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowTriggerRemovePayload,
@@ -3366,7 +3383,7 @@ function scheduleDeps(ctx: ConnectionContext): WorkflowScheduleDeps | null {
 }
 
 function sendNoPauseStore(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   errorCode: string,
 ): void {
@@ -3379,7 +3396,7 @@ function sendNoPauseStore(
 }
 
 export async function handleWorkflowSchedulePause(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowSchedulePausePayload,
@@ -3448,7 +3465,7 @@ export async function handleWorkflowSchedulePause(
 }
 
 export async function handleWorkflowScheduleResume(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkflowScheduleResumePayload,
@@ -3514,7 +3531,7 @@ export async function handleWorkflowScheduleResume(
 }
 
 export async function handleWorkflowScheduleList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -3582,7 +3599,7 @@ export async function handleWorkflowScheduleList(
  * and cause go to the log
  */
 async function writeTriggerConfig(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   config: ServeConfigFile,

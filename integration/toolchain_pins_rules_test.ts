@@ -29,7 +29,7 @@ const DOCKERFILE = join(ROOT, "Dockerfile");
 const WORKFLOWS_DIR = join(ROOT, ".github", "workflows");
 
 const EXPECTED_SETUP_STEPS: Record<string, number> = {
-  "release.yml": 1,
+  "release.yml": 2,
   "publish-testing.yml": 1,
   "publish-client.yml": 1,
   "publish-extension-scoring.yml": 1,

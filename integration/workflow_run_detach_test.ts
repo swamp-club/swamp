@@ -71,8 +71,9 @@ function serveConnections(ctx: ConnectionContext) {
     (req) => {
       const { socket, response } = Deno.upgradeWebSocket(req);
       const activeRequests = new Map<string, AbortController>();
-      socket.onmessage = (event) =>
+      socket.onmessage = (event) => {
         handleMessage(socket, ctx, activeRequests, event);
+      };
       socket.onclose = createConnectionTeardown({
         ctx,
         activeRequests,

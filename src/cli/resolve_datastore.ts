@@ -30,6 +30,7 @@ import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_r
 import {
   type DatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
+  durableField,
   isCustomDatastoreConfig,
   readDatastoreFormatKey,
 } from "../domain/datastore/datastore_config.ts";
@@ -45,6 +46,7 @@ import {
   type DatastoreExpressionContext,
   resolveDatastoreExpressions,
 } from "./datastore_expression_resolver.ts";
+import { resolveFilesystemDatastoreConfig } from "../libswamp/datastores/resolve_filesystem.ts";
 
 const logger = getLogger(["swamp", "datastore", "resolve"]);
 
@@ -96,20 +98,6 @@ async function resolveDatastoreFields(
 
   const resolved = await resolveDatastoreExpressions(toResolve, ctx);
   return resolved as ResolvedDatastoreFields;
-}
-
-/** absent when the block does not set it; anything but a boolean is refused */
-function durableField(
-  ds: { durable?: unknown },
-): { durable?: boolean } {
-  if (ds.durable === undefined) return {};
-  if (typeof ds.durable !== "boolean") {
-    throw new UserError(
-      `Invalid 'durable' in the datastore block of .swamp.yaml: expected ` +
-        `true or false, got ${JSON.stringify(ds.durable)}.`,
-    );
-  }
-  return { durable: ds.durable };
 }
 
 export function datastoreBasePath(config: DatastoreConfig): string {
@@ -414,28 +402,7 @@ export async function resolveDatastoreConfig(
     }
 
     if (dsType === "filesystem") {
-      if (!ds.path) {
-        throw new Error(
-          "Filesystem datastore config in .swamp.yaml requires a 'path' field.",
-        );
-      }
-      const expanded = expandEnvVars(ds.path);
-      const absPath = isAbsolute(expanded)
-        ? expanded
-        : resolve(repoDir ?? Deno.cwd(), expanded);
-      const fsExprCtx: DatastoreExpressionContext = {
-        repoDir: repoDir ?? Deno.cwd(),
-      };
-      const fsFields = await resolveDatastoreFields(ds, fsExprCtx);
-      return {
-        type: "filesystem",
-        path: absPath,
-        directories: fsFields.directories ?? ds.directories,
-        exclude: fsFields.exclude ?? ds.exclude,
-        namespace: fsFields.namespace ?? ds.namespace,
-        ...durableField(ds),
-        ...(format !== undefined ? { format } : {}),
-      };
+      return await resolveFilesystemDatastoreConfig(ds, repoDir ?? Deno.cwd());
     }
 
     // without this the registry looks empty under lazy loading, so the

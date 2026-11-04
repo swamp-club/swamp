@@ -19,6 +19,7 @@
 
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
+import { isSessionOpen, type ServeSession } from "../session.ts";
 import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -146,7 +147,7 @@ import {
   type ModelLockResult,
   pullModelsUnlocked,
   runUnderModelLocks,
-} from "../../cli/repo_context.ts";
+} from "../../infrastructure/persistence/repo_execution_locks.ts";
 import {
   type MethodRunLockMode,
   methodRunLockMode,
@@ -492,7 +493,7 @@ async function releaseModelLocks(
 }
 
 function authorizeMethodRun(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   payload: ModelMethodRunPayload,
@@ -584,7 +585,7 @@ function authorizeMethodRun(
  * target would be, and as admin for restricted or control-plane types
  */
 function resolvedRunAllowed(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   methodName: string,
@@ -614,7 +615,7 @@ function resolvedRunAllowed(
  * to authorize
  */
 async function authorizeRunInputs(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   payload: ModelMethodRunPayload,
@@ -637,7 +638,7 @@ async function authorizeRunInputs(
 }
 
 export async function handleModelMethodRun(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelMethodRunPayload,
@@ -861,7 +862,7 @@ export async function handleModelMethodRun(
                     }),
                 )
               ) {
-                if (socket.readyState !== WebSocket.OPEN) break;
+                if (!isSessionOpen(socket)) break;
                 const serialized = serializeEvent(
                   event as { kind: string; [key: string]: unknown },
                 );
@@ -1292,7 +1293,7 @@ export async function handleModelMethodRun(
 }
 
 export async function handleModelSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1366,7 +1367,7 @@ export async function handleModelSearch(
 }
 
 export async function handleModelMethodDescribe(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelMethodDescribePayload,
@@ -1449,7 +1450,7 @@ export async function handleModelMethodDescribe(
 }
 
 export async function handleModelGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelGetPayload,
@@ -1518,7 +1519,7 @@ export async function handleModelGet(
 }
 
 export async function handleModelCreate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelCreatePayload,
@@ -1639,7 +1640,7 @@ export async function handleModelCreate(
 }
 
 export async function handleModelDelete(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelDeletePayload,
@@ -1781,7 +1782,7 @@ export async function handleModelDelete(
 }
 
 export async function handleModelOutputGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelOutputGetPayload,
@@ -1866,7 +1867,7 @@ export async function handleModelOutputGet(
 }
 
 export async function handleModelOutputData(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelOutputDataPayload,
@@ -1953,7 +1954,7 @@ export async function handleModelOutputData(
 }
 
 export async function handleModelOutputLogs(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelOutputLogsPayload,
@@ -2037,7 +2038,7 @@ export async function handleModelOutputLogs(
 }
 
 export async function handleModelOutputSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2218,7 +2219,7 @@ export async function handleModelOutputSearch(
 }
 
 export async function handleModelUsageSummary(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2327,7 +2328,7 @@ export async function handleModelUsageSummary(
 }
 
 export async function handleModelMethodHistoryGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelMethodHistoryGetPayload,
@@ -2414,7 +2415,7 @@ export async function handleModelMethodHistoryGet(
 }
 
 export async function handleModelMethodHistoryLogs(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelMethodHistoryLogsPayload,
@@ -2512,7 +2513,7 @@ export async function handleModelMethodHistoryLogs(
 }
 
 export async function handleModelMethodHistorySearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2616,7 +2617,7 @@ export async function handleModelMethodHistorySearch(
 }
 
 export async function handleModelValidate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2718,7 +2719,7 @@ export async function handleModelValidate(
 }
 
 export async function handleModelEvaluate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -2832,7 +2833,7 @@ export async function handleModelEvaluate(
 }
 
 async function readsEveryModel(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   ctx: ConnectionContext,
 ): Promise<boolean> {
@@ -2846,7 +2847,7 @@ async function readsEveryModel(
 }
 
 export async function handleModelEdit(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelEditPayload,
@@ -3065,7 +3066,7 @@ function modelEditResource(target: ModelEditTarget): AccessResource {
 }
 
 export async function handleModelTypeDescribe(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelTypeDescribePayload,
@@ -3119,7 +3120,7 @@ export async function handleModelTypeDescribe(
 }
 
 export async function handleModelTypeSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -3268,7 +3269,7 @@ async function resolveModelNames(
  */
 function outputReadability(
   canonical: CanonicalResources,
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   ctx: ConnectionContext,
 ): (key: OutputReadKey) => Promise<boolean> {
@@ -3347,7 +3348,7 @@ async function workflowNamesOf(
 async function filterOutputItems(
   items: ModelOutputSearchItem[],
   canonical: CanonicalResources,
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   ctx: ConnectionContext,
 ): Promise<ModelOutputSearchItem[]> {

@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { FollowerCatchUp } from "../follower_feed.ts";
+import { isSessionReply, type ServeSession } from "../session.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { GcMutex } from "../gc_mutex.ts";
 import type { EventLoopLagReader } from "../ws_request_span.ts";
 import type { DefinitionOwnerIndex } from "../../domain/definitions/repositories.ts";
@@ -53,7 +55,7 @@ import {
   RunPartlyCommittedError,
   withRunUnknownSteps,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
-import { UserError } from "../../domain/errors.ts";
+import { UserError, userErrorCode } from "../../domain/errors.ts";
 import { secretRefusalCode } from "../../domain/expressions/errors.ts";
 import {
   createLibSwampContext,
@@ -396,6 +398,8 @@ export interface ConnectionContext {
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   controlPlaneStore?: ControlPlaneStore;
   defaultVault?: string;
+  /** delivery-profile admission, checked before a workflow starts */
+  validateWorkflow?: (workflow: Workflow) => void;
   instanceId?: string;
   staleTtlMs?: number;
   grantsFile?: string;
@@ -491,19 +495,22 @@ export function isRestrictedCommand(
   return restrictedCommands.includes(command);
 }
 
-const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
-const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
-const connectionPrincipalId = new WeakMap<WebSocket, string>();
-const connectionSourceIp = new WeakMap<WebSocket, string>();
-const connectionLoginIdentity = new WeakMap<WebSocket, ActorIdentity>();
-const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
-const principalSockets = new Map<string, Set<WebSocket>>();
-const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
-const tokenSockets = new Map<string, Set<WebSocket>>();
+const connectionCollectives = new WeakMap<ServeSession, readonly string[]>();
+const connectionGroups = new WeakMap<ServeSession, readonly string[]>();
+const connectionPrincipalId = new WeakMap<ServeSession, string>();
+const connectionSourceIp = new WeakMap<ServeSession, string>();
+const connectionLoginIdentity = new WeakMap<ServeSession, ActorIdentity>();
+const connectionCompression = new WeakMap<
+  ServeSession,
+  ConnectionCompression
+>();
+const principalSockets = new Map<string, Set<ServeSession>>();
+const connectionTokens = new WeakMap<ServeSession, TokenSessionBinding>();
+const tokenSockets = new Map<string, Set<ServeSession>>();
 const tokenStreams = new Map<string, Set<StreamSession>>();
 
 export function setConnectionCollectives(
-  socket: WebSocket,
+  socket: ServeSession,
   collectives: readonly string[],
   groups: readonly string[],
   principalId?: string,
@@ -521,7 +528,7 @@ export function setConnectionCollectives(
   }
 }
 
-export function removeConnection(socket: WebSocket): void {
+export function removeConnection(socket: ServeSession): void {
   const principalId = connectionPrincipalId.get(socket);
   if (principalId) {
     const sockets = principalSockets.get(principalId);
@@ -584,10 +591,10 @@ export function closeConnectionsForPrincipal(principalId: string): void {
   }
 }
 
-const connectionTeardowns = new WeakMap<WebSocket, () => void>();
+const connectionTeardowns = new WeakMap<ServeSession, () => void>();
 
 export function setConnectionTeardown(
-  socket: WebSocket,
+  socket: ServeSession,
   teardown: () => void,
 ): void {
   connectionTeardowns.set(socket, teardown);
@@ -598,7 +605,7 @@ export function setConnectionTeardown(
  * handshake, which a peer ignoring the close frame could withhold indefinitely
  */
 export function closeSession(
-  socket: WebSocket,
+  socket: ServeSession,
   code: number,
   reason: string,
 ): void {
@@ -730,7 +737,7 @@ function closeStream(session: StreamSession, code: number, reason: string) {
 }
 
 export function setConnectionToken(
-  socket: WebSocket,
+  socket: ServeSession,
   binding: TokenSessionBinding,
 ): void {
   connectionTokens.set(socket, binding);
@@ -868,17 +875,17 @@ function emitSessionTerminated(
 }
 
 export function getConnectionCollectives(
-  socket: WebSocket,
+  socket: ServeSession,
 ): readonly string[] {
   return connectionCollectives.get(socket) ?? [];
 }
 
-export function getConnectionGroups(socket: WebSocket): readonly string[] {
+export function getConnectionGroups(socket: ServeSession): readonly string[] {
   return connectionGroups.get(socket) ?? [];
 }
 
 export function setConnectionSourceIp(
-  socket: WebSocket,
+  socket: ServeSession,
   ip: string,
 ): void {
   connectionSourceIp.set(socket, ip);
@@ -905,31 +912,31 @@ export function resolveConnectionCompression(
 }
 
 export function setConnectionCompression(
-  socket: WebSocket,
+  socket: ServeSession,
   compression: ConnectionCompression | undefined,
 ): void {
   if (compression) connectionCompression.set(socket, compression);
 }
 
-export function getConnectionSourceIp(socket: WebSocket): string {
+export function getConnectionSourceIp(socket: ServeSession): string {
   return connectionSourceIp.get(socket) ?? "unknown";
 }
 
 export function setConnectionLoginIdentity(
-  socket: WebSocket,
+  socket: ServeSession,
   identity: ActorIdentity | undefined,
 ): void {
   if (identity) connectionLoginIdentity.set(socket, identity);
 }
 
 export function getConnectionLoginIdentity(
-  socket: WebSocket,
+  socket: ServeSession,
 ): ActorIdentity | undefined {
   return connectionLoginIdentity.get(socket);
 }
 
 export function connectionActorIdentity(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   ctx: Pick<ConnectionContext, "resolvedUserNames">,
 ): ActorIdentity | undefined {
@@ -967,7 +974,7 @@ export interface AccessCaller {
 type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity">;
 
 export function accessCallerOf(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
 ): AccessCaller {
   return {
@@ -980,7 +987,7 @@ export function accessCallerOf(
 }
 
 function decideAccess(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   action: Action,
   resource: AccessResource,
@@ -1049,7 +1056,7 @@ export interface DecisionSubject {
 }
 
 export function captureDecisionSubject(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
 ): DecisionSubject {
   const token = connectionTokens.get(socket);
@@ -1103,7 +1110,7 @@ export async function decideSubjectAccess(
 }
 
 export function authorizeOrReject(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1127,7 +1134,7 @@ export function authorizeOrReject(
  * stored set fails closed
  */
 export function authorizeRetag(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   retag: Retag,
@@ -1167,7 +1174,7 @@ export function retagResources(retag: Retag): AccessResource[] {
  * operation reaches every resource
  */
 export function authorizeAllOrReject(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1188,7 +1195,7 @@ export function authorizeAllOrReject(
 }
 
 function replyToOutcome(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1287,7 +1294,7 @@ function replyToOutcome(
 }
 
 export function wouldAuthorize(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   action: Action,
   resource: AccessResource,
@@ -1302,7 +1309,7 @@ export function wouldAuthorize(
  * caller was refused
  */
 export function isAuthorized(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1321,7 +1328,7 @@ export function isAuthorized(
 }
 
 export function isAuthorizedForAll(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1383,7 +1390,7 @@ export interface RequestAuthority {
 }
 
 export function socketAuthority(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   ctx: ConnectionContext,
@@ -1410,7 +1417,7 @@ export function callerAuthority(
 }
 
 function auditRefusal(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1500,7 +1507,7 @@ function buildAuditDecision(
 }
 
 function emitDenial(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -1572,7 +1579,7 @@ export function resolveDisplayPrincipal(
 export async function filterByResources<T>(
   items: T[],
   resourcesOf: (item: T) => Promise<AccessResource[]>,
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   action: Action,
   ctx: ConnectionContext,
@@ -1594,7 +1601,7 @@ export async function filterByResources<T>(
 
 export function resourceReadability<A extends unknown[]>(
   resourcesOf: (...args: A) => Promise<AccessResource[]>,
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   action: Action,
   ctx: ConnectionContext,
@@ -1608,7 +1615,7 @@ export function resourceReadability<A extends unknown[]>(
 }
 
 export function resourceDecider(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   action: Action,
   ctx: ConnectionContext,
@@ -1667,7 +1674,7 @@ export function paginate<T>(
 }
 
 export function authorizeAnyOrReject(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1911,7 +1918,7 @@ function decideVaultRequest(
 }
 
 export function authorizeVaultOrReject(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   request: VaultRequest,
@@ -1960,7 +1967,7 @@ export function isCallerVaultAuthorized(
  * vault name is known
  */
 export function admitVaultLookupOrReject(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -1994,7 +2001,7 @@ export interface VaultListingAdmission {
 }
 
 export function admitVaultListingOrReject(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   action: Action,
@@ -2019,7 +2026,7 @@ export function admitVaultListingOrReject(
 }
 
 export function vaultListingDecider(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   action: Action,
   method: VaultMethod,
@@ -2058,7 +2065,7 @@ export function vaultListingDecider(
 }
 
 export function sendTraced(
-  socket: WebSocket,
+  socket: ServeSession,
   message: ServerMessage,
 ): Promise<void> {
   return withSpan("swamp.serve.response.send", {}, () => {
@@ -2067,7 +2074,7 @@ export function sendTraced(
   });
 }
 
-export function send(socket: WebSocket, message: ServerMessage): void {
+export function send(socket: ServeSession, message: ServerMessage): void {
   const held = heldReplies.get(socket)?.get(message.id);
   if (message.type === "event") {
     // a run's outcome, and what follows it, waits for the commit with the
@@ -2098,7 +2105,11 @@ const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
   "suspended",
 ]);
 
-function sendNow(socket: WebSocket, message: ServerMessage): void {
+function sendNow(socket: ServeSession, message: ServerMessage): void {
+  if (isSessionReply(socket)) {
+    if (socket.open) socket.send(message);
+    return;
+  }
   sendSerialized(socket, JSON.stringify(message), {
     type: message.type,
     id: message.id,
@@ -2188,25 +2199,25 @@ function refuseOversizeFrame(
 }
 
 const MAX_ERRORED_REQUESTS = 10_000;
-const erroredRequests = new WeakMap<WebSocket, Set<string>>();
+const erroredRequests = new WeakMap<ServeSession, Set<string>>();
 
 interface HeldReplies {
   readonly replies: ServerMessage[];
   outcome: boolean;
 }
 
-const heldReplies = new WeakMap<WebSocket, Map<string, HeldReplies>>();
+const heldReplies = new WeakMap<ServeSession, Map<string, HeldReplies>>();
 
-const answeredByError = new WeakMap<WebSocket, Set<string>>();
+const answeredByError = new WeakMap<ServeSession, Set<string>>();
 
 export function wasAnsweredByError(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
 ): boolean {
   return answeredByError.get(socket)?.has(requestId) ?? false;
 }
 
-function markAnsweredByError(socket: WebSocket, requestId: string): void {
+function markAnsweredByError(socket: ServeSession, requestId: string): void {
   let answered = answeredByError.get(socket);
   if (answered === undefined) {
     answered = new Set();
@@ -2228,7 +2239,7 @@ export async function confirmRequest(
     ConnectionContext,
     "confirmReplicated" | "replicationMark" | "holdRepliesUntilCommitted"
   >,
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   handler: () => Promise<void>,
 ): Promise<void> {
@@ -2313,7 +2324,9 @@ export function runFailureForClient(
     };
   }
   return {
-    code: secretRefusalCode(error) ?? fallbackCode,
+    code: userErrorCode(error) === "unsupported_profile"
+      ? "unsupported_profile"
+      : secretRefusalCode(error) ?? fallbackCode,
     message: sanitizeErrorForClient(error),
   };
 }
@@ -2363,7 +2376,7 @@ export function replicationErrorForClient(
  * removed by the audit wrapper on every outcome
  */
 const auditedResources = new WeakMap<
-  WebSocket,
+  ServeSession,
   Map<string, { kind: string; name: string }>
 >();
 
@@ -2372,7 +2385,7 @@ const auditedResources = new WeakMap<
  * keeps the run id although it authorized the run's model
  */
 export function recordAuditedResource(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   kind: string,
   name: string,
@@ -2392,7 +2405,7 @@ export function recordAuditedResource(
 }
 
 export function takeAuditedResource(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   kind: string,
 ): string | undefined {
@@ -2416,7 +2429,7 @@ export function isServerFailureCode(code: string): boolean {
 }
 
 export function sendError(
-  socket: WebSocket,
+  socket: ServeSession,
   id: string,
   code: string,
   message: string,
@@ -2455,7 +2468,7 @@ export function sendError(
  * on the server host, so remote edits must send the new YAML
  */
 export function rejectEditWithoutContent(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   content: string | undefined,
 ): boolean {
@@ -2470,14 +2483,14 @@ export function rejectEditWithoutContent(
 }
 
 export function wasRequestErrored(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
 ): boolean {
   return erroredRequests.get(socket)?.has(requestId) ?? false;
 }
 
 export function clearRequestErrored(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
 ): void {
   erroredRequests.get(socket)?.delete(requestId);
@@ -2488,7 +2501,7 @@ export function clearRequestErrored(
  * keep their order
  */
 export function createSocketSubscriber(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   onDetachCallback?: () => void,
   transform?: (event: SerializedEvent) => Promise<SerializedEvent>,
@@ -2543,22 +2556,83 @@ export function createSocketSubscriber(
   };
 }
 
+/**
+ * Observe a run until its terminal, cancellation, or delivery-session closure.
+ * A pull follower that falls behind retention closes its entire session,
+ * including sibling request subscriptions; accepted runs and other sessions
+ * continue independently.
+ */
 export function subscribeUntilDetach(
   buffer: import("../run_event_buffer.ts").RunEventBuffer,
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   controller: AbortController,
   afterSeq = 0,
   transform?: (event: SerializedEvent) => Promise<SerializedEvent>,
 ): Promise<void> {
+  if (controller.signal.aborted) return Promise.resolve();
+  if (isSessionReply(socket)) {
+    return (async () => {
+      for await (const delivery of buffer.follow(afterSeq, controller.signal)) {
+        if (controller.signal.aborted || !socket.open) return;
+        if (delivery.kind === "overflow") {
+          socket.close(1013, "Run replay buffer exceeded; reconnect to attach");
+          return;
+        } else if (delivery.kind === "event") {
+          let event = delivery.event;
+          if (transform) {
+            try {
+              event = await transform(event);
+            } catch {
+              // Match callback subscribers: omit an event that cannot be
+              // redacted, then continue to later events and the terminal.
+              // Transform errors can include sensitive event data.
+              streamLogger.warn(
+                "Failed to transform a run stream event; event omitted",
+              );
+              continue;
+            }
+          }
+          if (controller.signal.aborted || !socket.open) return;
+          send(socket, {
+            type: "event",
+            id: requestId,
+            event: { ...event, seq: delivery.seq },
+          });
+        } else if (delivery.terminal.kind === "done") {
+          send(socket, { type: "done", id: requestId });
+        } else {
+          const terminal = delivery.terminal;
+          sendError(
+            socket,
+            requestId,
+            terminal.code,
+            terminal.message,
+            terminal.details,
+          );
+        }
+        // One delivery at a time: a synchronous replay of the retained ring
+        // cannot exhaust a fast session before its first pipe write completes.
+        await socket.flush();
+      }
+    })();
+  }
   return new Promise<void>((resolve) => {
-    const unsub = buffer.subscribe(
-      createSocketSubscriber(socket, requestId, resolve, transform),
+    let detached = false;
+    const detach = () => unsubscribe();
+    const complete = () => {
+      detached = true;
+      controller.signal.removeEventListener("abort", detach);
+      resolve();
+    };
+    const unsubscribe = buffer.subscribe(
+      createSocketSubscriber(socket, requestId, complete, transform),
       afterSeq,
     );
-    controller.signal.addEventListener("abort", () => {
-      unsub();
-    }, { once: true });
+    if (detached) return;
+    controller.signal.addEventListener("abort", detach, { once: true });
+    // Replay may synchronously close a slow session before subscribe returns.
+    if (controller.signal.aborted) detach();
   });
 }
 

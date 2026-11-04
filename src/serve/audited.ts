@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "./session.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type {
   ActorIdentity,
@@ -44,7 +45,7 @@ export interface AuditedOptions {
   readonly methodName?: string;
   readonly resolvedUserNames?: Record<string, string>;
   readonly actor?: ActorIdentity;
-  readonly socket?: WebSocket;
+  readonly socket?: ServeSession;
 }
 
 export function audited(

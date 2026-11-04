@@ -2556,6 +2556,23 @@ Deno.test("confirmRequest: a handler that answers its commit failure with an err
   assertEquals(sent.map((m) => m.type), ["error"]);
 });
 
+Deno.test("runFailureForClient: profile refusal preserves its code without changing existing coded errors", () => {
+  assertEquals(
+    runFailureForClient(
+      new UserError("ordinary", "existing_code"),
+      "method_execution_failed",
+    ).code,
+    "method_execution_failed",
+  );
+  assertEquals(
+    runFailureForClient(
+      new UserError("profile", "unsupported_profile"),
+      "method_execution_failed",
+    ).code,
+    "unsupported_profile",
+  );
+});
+
 Deno.test("runFailureForClient: a commit that could not reach the storage keeps its code, worded for a run; anything else is the fallback (swamp-club#3759)", () => {
   const unreachable = runFailureForClient(
     new CommitUnreachableError(new Error("connect ECONNREFUSED")),

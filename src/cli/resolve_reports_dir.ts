@@ -17,17 +17,4 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
-
-export function resolveReportsDir(marker: RepoMarkerData | null): string {
-  const envReportsDir = Deno.env.get("SWAMP_REPORTS_DIR");
-  if (envReportsDir) {
-    return envReportsDir;
-  }
-
-  if (marker?.reportsDir) {
-    return marker.reportsDir;
-  }
-
-  return "extensions/reports";
-}
+export { resolveReportsDir } from "../infrastructure/persistence/resolve_reports_dir.ts";

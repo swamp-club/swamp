@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "../session.ts";
 import { join } from "@std/path";
 import { ACCESS_DATA_SUBDIRS } from "../access_data_poller.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -149,7 +150,7 @@ const runVaultLogger = getSwampLogger(["serve", "access", "run-vault"]);
 const listLogger = getSwampLogger(["serve", "access", "list"]);
 
 export async function handleAccessGrantList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -294,7 +295,7 @@ export async function handleAccessGrantList(
 }
 
 export async function handleAccessGroupList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -376,7 +377,7 @@ export async function handleAccessGroupList(
 }
 
 export async function handleAccessGroupListIdp(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -449,7 +450,7 @@ export async function handleAccessGroupListIdp(
 }
 
 export async function handleAccessCheck(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: AccessCheckPayload,
@@ -560,7 +561,7 @@ export async function handleAccessCheck(
 }
 
 export async function handleAccessCanI(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: AccessCanIPayload,
@@ -709,7 +710,7 @@ function formatGrantFileErrors(errors: GrantFileError[]): string[] {
 }
 
 export async function handleAccessReload(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -992,7 +993,7 @@ export async function handleAccessReload(
 }
 
 export async function handleAccessTokenList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1047,7 +1048,7 @@ export async function handleAccessTokenList(
  * no lock, so only an admin can make serve create or wait on one
  */
 export async function withServerTokenWriteLock(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
@@ -1109,7 +1110,7 @@ async function pullBeforeTokenWrite(ctx: ConnectionContext): Promise<void> {
 }
 
 export async function handleAccessTokenRevoke(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: AccessTokenRevokePayload,
@@ -1180,7 +1181,7 @@ export async function handleAccessTokenRevoke(
 }
 
 export async function handleAccessTokenRotate(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: AccessTokenRotatePayload,
@@ -1283,7 +1284,7 @@ async function terminateRotatedSessions(
 }
 
 export async function handleAccessTokenMint(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: AccessTokenMintPayload,

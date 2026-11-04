@@ -1,0 +1,61 @@
+[
+  {
+    "version": 1,
+    "generation": "generation-a",
+    "id": "control-1",
+    "method": "hello",
+    "params": {
+      "profile": "local-v1"
+    }
+  },
+  {
+    "version": 1,
+    "generation": "generation-a",
+    "id": "control-1",
+    "result": {
+      "profile": "local-v1",
+      "version": 1,
+      "callerSessionIds": true,
+      "authenticationDeadlines": true,
+      "operations": [
+        "server.version",
+        "workflow.get",
+        "model.get",
+        "data.query",
+        "workflow.run",
+        "model.method.run",
+        "run.attach",
+        "run.history",
+        "workflow.history.get",
+        "workflow.history.logs",
+        "model.method.history.get",
+        "model.method.history.logs",
+        "cancel"
+      ],
+      "engineVersion": "fixture",
+      "gitSha": "fixture"
+    }
+  },
+  {
+    "version": 1,
+    "generation": "generation-a",
+    "sessionId": "session-a",
+    "message": {
+      "type": "done",
+      "id": "same-public-id"
+    }
+  },
+  {
+    "version": 1,
+    "generation": "generation-a",
+    "sessionId": "session-b",
+    "message": {
+      "type": "error",
+      "id": "same-public-id",
+      "error": {
+        "code": "fixture",
+        "message": "héllo 🌿"
+      }
+    }
+  }
+]

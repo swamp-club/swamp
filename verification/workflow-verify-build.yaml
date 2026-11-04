@@ -124,6 +124,24 @@ jobs:
               rm -rf "$TEST_TMP"
             workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
+  # ── Go Server ──────────────────────────────────────────────
+  - name: go-server
+    description: Check the pinned Go toolchain, formatting, dependencies, vet, race tests and build.
+    dependsOn:
+      - job: setup
+        condition:
+          type: succeeded
+    steps:
+      - name: go-check
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: build-go-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: "deno run --allow-read --allow-write --allow-run --allow-env scripts/serve_go.ts check"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
+
   # ── Dependency Audit ─────────────────────────────────────────
   - name: deps-audit
     description: Scan dependencies for known vulnerabilities.
@@ -199,6 +217,9 @@ jobs:
         condition:
           type: always
       - job: deps-audit
+        condition:
+          type: always
+      - job: go-server
         condition:
           type: always
     steps:

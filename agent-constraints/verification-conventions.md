@@ -8,6 +8,12 @@ at the verified commit in `/tmp/swamp-verify-build-<run-id>`. Each workflow run
 gets its own unique directory (keyed by run ID, not commit SHA) so multiple
 verifications can run in parallel without colliding.
 
+The host needs `deno`, `go`, and `gofmt` on a plain non-login shell's `PATH`.
+Their versions come from `.tool-versions`; Go uses the asdf key `golang`, which
+`actions/setup-go` also reads. The `go-server` job runs
+`scripts/serve_go.ts check` for the module's formatting, dependency checksums,
+vet, tests/race checks and build.
+
 ```
 SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-build \
   --input commit=<SHA> \
@@ -80,8 +86,8 @@ Reviews are guarded by file path — they skip when no relevant files changed:
 | Review | Guard (run when any match) | Default model |
 | --- | --- | --- |
 | code-review | always | claude-opus-5-5 |
-| adversarial-review | `src/cli/`, `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/` | claude-opus-5-5 |
-| ux-review | `src/cli/commands/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/` | claude-opus-5-5 |
+| adversarial-review | `src/cli/`, `src/domain/`, `src/infrastructure/`, `src/libswamp/`, `src/serve/`, `src/worker/`, `src/engine/`, `packages/serve-go/` | claude-opus-5-5 |
+| ux-review | `src/cli/commands/`, `src/presentation/`, `src/domain/errors.ts`, `src/libswamp/`, `packages/serve-go/cmd/` | claude-opus-5-5 |
 | ci-security-review | `.github/workflows/` | claude-opus-5-5 |
 | comment-review | `.ts` and `.tsx` under `src/`, `integration/`, `scripts/`; `AGENTS.md` | claude-sonnet-5-5 |
 

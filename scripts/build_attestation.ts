@@ -183,6 +183,7 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     jsonPath: ["workflows", w.name],
   })),
   { path: "scripts/review_skills.ts", jsonPath: ["scripts", "review-skills"] },
+  { path: "scripts/serve_go.ts", jsonPath: ["scripts", "serve-go"] },
   {
     path: "scripts/check_review_verdict.ts",
     jsonPath: ["scripts", "check-review-verdict"],

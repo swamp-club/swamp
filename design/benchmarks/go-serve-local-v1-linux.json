@@ -1,0 +1,3166 @@
+{
+  "measuredAt": "2026-10-26T18:37:34.533Z",
+  "os": "linux",
+  "arch": "x86_64",
+  "kernel": "7.3.0-2-cachyos",
+  "samples": 20,
+  "workflowSamples": 5,
+  "artifacts": {
+    "engine": {
+      "path": "/tmp/swamp-go-engine-reviewed5",
+      "size": 398469176,
+      "sha256": "f7fab06767b9df4361096e2b7f8a3a59ea4ce3887d3c7e488138ce883a75c74c",
+      "gzipBytes": 126217674,
+      "compression": "gzip -6 -n; each binary compressed separately, no archive overhead"
+    },
+    "gateway": {
+      "path": "/tmp/swamp-serve-reviewed6",
+      "size": 7753991,
+      "sha256": "977fed5b512825d5c35873019ef2d7c4caf7797280a150c4282080a3ac10104a",
+      "gzipBytes": 3227423,
+      "compression": "gzip -6 -n; each binary compressed separately, no archive overhead"
+    }
+  },
+  "artifactPair": {
+    "installedBytes": 406223167,
+    "gzipBytes": 129445097
+  },
+  "source": {
+    "before": {
+      "baseCommit": "f4122a4c1823930555d3dcd98a36658615ba307e",
+      "sha256": "474cde1bdbd46afc9bde981d8a6e8903b705d9910a039dd0aa6502c7d8675c30",
+      "fileCount": 3122,
+      "paths": [
+        "main.ts",
+        "src",
+        "packages/serve-go",
+        "resources",
+        "deno.json",
+        "deno.lock",
+        ".tool-versions"
+      ],
+      "algorithm": "SHA256 of JSON sorted {path,sha256} file manifest; tracked and unignored new files"
+    },
+    "after": {
+      "baseCommit": "f4122a4c1823930555d3dcd98a36658615ba307e",
+      "sha256": "474cde1bdbd46afc9bde981d8a6e8903b705d9910a039dd0aa6502c7d8675c30",
+      "fileCount": 3122,
+      "paths": [
+        "main.ts",
+        "src",
+        "packages/serve-go",
+        "resources",
+        "deno.json",
+        "deno.lock",
+        ".tool-versions"
+      ],
+      "algorithm": "SHA256 of JSON sorted {path,sha256} file manifest; tracked and unignored new files"
+    },
+    "unchanged": true,
+    "uat": {
+      "baseCommit": "e6200fb77011d31ca313e6d3345b0ea0d790c8a4",
+      "sha256": "25ecef709c040309bdc3f3d36e30c142553067dd8b4b3521b70a175442dd2882",
+      "fileCount": 357,
+      "paths": [
+        "scripts/benchmark_go_serve.ts",
+        "src/cli/helpers",
+        "tests/cli/fixtures"
+      ],
+      "algorithm": "SHA256 of JSON sorted {path,sha256} file manifest; tracked and unignored new files"
+    }
+  },
+  "fixtures": {
+    "small-builtins": {
+      "legacyWarmMs": {
+        "samples": [
+          416.6780409999992,
+          419.1332709999988,
+          410.6404559999992,
+          518.799074999999,
+          429.45483499999864,
+          475.5516719999996,
+          420.88473499999964,
+          428.873520000001,
+          457.83186699999897,
+          418.7584960000022,
+          431.9334400000007,
+          520.0512159999998,
+          494.0328230000014,
+          440.8113909999993,
+          433.60341999999946,
+          520.0041679999995,
+          412.5533850000029,
+          426.04454599999735,
+          420.8943739999995,
+          484.5893959999994
+        ],
+        "median": 430.69413749999967,
+        "p95": 520.0041679999995,
+        "min": 410.6404559999992,
+        "max": 520.0512159999998
+      },
+      "legacyIdle": {
+        "before": {
+          "processes": [
+            {
+              "pid": 1739071,
+              "parent": 1738887,
+              "rssKiB": 278252,
+              "pssKiB": 275066,
+              "cpuTicks": 72
+            }
+          ],
+          "count": 1,
+          "rssKiB": 278252,
+          "pssKiB": 275066,
+          "cpuTicks": 72
+        },
+        "after": {
+          "processes": [
+            {
+              "pid": 1739071,
+              "parent": 1738887,
+              "rssKiB": 278256,
+              "pssKiB": 275070,
+              "cpuTicks": 72
+            }
+          ],
+          "count": 1,
+          "rssKiB": 278256,
+          "pssKiB": 275070,
+          "cpuTicks": 72
+        },
+        "observationMs": 5021.814613999999,
+        "cpuTicksDelta": 0
+      },
+      "goWarmMs": {
+        "samples": [
+          426.2210699999996,
+          515.3093469999985,
+          426.21791400000075,
+          427.9971799999985,
+          421.42460500000016,
+          413.9398009999968,
+          421.683814,
+          423.257662,
+          419.90099199999895,
+          504.30510700000013,
+          489.1198919999988,
+          421.7855770000024,
+          425.79617000000144,
+          414.922765000003,
+          408.1075539999947,
+          470.9596059999967,
+          416.9212540000008,
+          422.1860719999968,
+          530.2983840000015,
+          420.67426200000045
+        ],
+        "median": 422.7218669999984,
+        "p95": 515.3093469999985,
+        "min": 408.1075539999947,
+        "max": 530.2983840000015
+      },
+      "goWarmIdle": {
+        "before": {
+          "processes": [
+            {
+              "pid": 1739479,
+              "parent": 1738887,
+              "rssKiB": 20512,
+              "pssKiB": 18468,
+              "cpuTicks": 3
+            },
+            {
+              "pid": 1739487,
+              "parent": 1739479,
+              "rssKiB": 206532,
+              "pssKiB": 203762,
+              "cpuTicks": 53
+            }
+          ],
+          "count": 2,
+          "rssKiB": 227044,
+          "pssKiB": 222230,
+          "cpuTicks": 56
+        },
+        "after": {
+          "processes": [
+            {
+              "pid": 1739479,
+              "parent": 1738887,
+              "rssKiB": 20448,
+              "pssKiB": 18404,
+              "cpuTicks": 4
+            },
+            {
+              "pid": 1739487,
+              "parent": 1739479,
+              "rssKiB": 206740,
+              "pssKiB": 203970,
+              "cpuTicks": 53
+            }
+          ],
+          "count": 2,
+          "rssKiB": 227188,
+          "pssKiB": 222374,
+          "cpuTicks": 57
+        },
+        "observationMs": 5025.411068000001,
+        "cpuTicksDelta": 1
+      },
+      "goColdWarmedCacheMs": {
+        "samples": [
+          926.033580000003,
+          905.3081380000003,
+          880.4354149999999,
+          867.0235050000047,
+          747.9763530000055,
+          753.7674839999963,
+          799.9116910000012,
+          741.228909999998,
+          795.8912710000004,
+          774.8761519999971,
+          728.8861160000015,
+          719.9366609999997,
+          753.1270300000033,
+          858.7754779999959,
+          817.9811199999967,
+          741.422179000001,
+          713.8193179999944,
+          755.6888440000039,
+          729.1639050000085,
+          734.7276569999958
+        ],
+        "median": 754.7281640000001,
+        "p95": 905.3081380000003,
+        "min": 713.8193179999944,
+        "max": 926.033580000003
+      },
+      "goSleeping": {
+        "before": {
+          "processes": [
+            {
+              "pid": 1739778,
+              "parent": 1738887,
+              "rssKiB": 20492,
+              "pssKiB": 18448,
+              "cpuTicks": 33
+            }
+          ],
+          "count": 1,
+          "rssKiB": 20492,
+          "pssKiB": 18448,
+          "cpuTicks": 33
+        },
+        "after": {
+          "processes": [
+            {
+              "pid": 1739778,
+              "parent": 1738887,
+              "rssKiB": 20492,
+              "pssKiB": 18448,
+              "cpuTicks": 33
+            }
+          ],
+          "count": 1,
+          "rssKiB": 20492,
+          "pssKiB": 18448,
+          "cpuTicks": 33
+        },
+        "observationMs": 5021.400326999996,
+        "cpuTicksDelta": 0
+      },
+      "readiness": {
+        "implementation": "go",
+        "profile": "local-v1",
+        "protocolVersion": 1,
+        "state": "stopped",
+        "ready": true,
+        "starts": 21
+      },
+      "workflows": {
+        "legacyWarm": {
+          "elapsedMs": {
+            "samples": [
+              441.99755100000766,
+              491.03693800000474,
+              452.1552559999982,
+              518.9742819999956,
+              460.4128389999969
+            ],
+            "median": 460.4128389999969,
+            "p95": 518.9742819999956,
+            "min": 441.99755100000766,
+            "max": 518.9742819999956
+          },
+          "observedPeakRssKiB": 293176,
+          "observedPeakPssKiB": 280811,
+          "observedMaxProcesses": 1,
+          "nominalSampleIntervalMs": 50,
+          "runs": [
+            {
+              "runId": "2f5f6f2c-4856-4d27-ad18-85f1ddb2404d",
+              "observedPeakRssKiB": 284408,
+              "observedPeakPssKiB": 266700,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 379.8941690000065,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740712,
+                      "parent": 1738887,
+                      "rssKiB": 284408,
+                      "pssKiB": 236140,
+                      "cpuTicks": 81
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 284408,
+                  "pssKiB": 236140,
+                  "cpuTicks": 81
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.009707999997772276,
+                  "rssKiB": 284376,
+                  "pssKiB": 266700,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 77.12381699999969,
+                  "rssKiB": 284376,
+                  "pssKiB": 255842,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 153.91574799999944,
+                  "rssKiB": 284376,
+                  "pssKiB": 247614,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 229.49717699999746,
+                  "rssKiB": 284376,
+                  "pssKiB": 242326,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 303.3548449999944,
+                  "rssKiB": 284376,
+                  "pssKiB": 238058,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 379.8941690000065,
+                  "rssKiB": 284408,
+                  "pssKiB": 236140,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "06ba523f-08cd-4389-abb6-caa244e4c02e",
+              "observedPeakRssKiB": 285060,
+              "observedPeakPssKiB": 275131,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 451.9849660000036,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740712,
+                      "parent": 1738887,
+                      "rssKiB": 285060,
+                      "pssKiB": 236777,
+                      "cpuTicks": 87
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 285060,
+                  "pssKiB": 236777,
+                  "cpuTicks": 87
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.011773000005632639,
+                  "rssKiB": 284928,
+                  "pssKiB": 275131,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 72.25301200000104,
+                  "rssKiB": 284928,
+                  "pssKiB": 257738,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 147.967061000003,
+                  "rssKiB": 284928,
+                  "pssKiB": 249514,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 228.78448299999582,
+                  "rssKiB": 284928,
+                  "pssKiB": 244314,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 304.82168100000126,
+                  "rssKiB": 284928,
+                  "pssKiB": 239674,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 378.23251600000367,
+                  "rssKiB": 284928,
+                  "pssKiB": 238602,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 451.9849660000036,
+                  "rssKiB": 285060,
+                  "pssKiB": 236777,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "d26365d7-92a4-47c6-b786-b46d9828b1d4",
+              "observedPeakRssKiB": 286184,
+              "observedPeakPssKiB": 275203,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 425.0961490000045,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740712,
+                      "parent": 1738887,
+                      "rssKiB": 286184,
+                      "pssKiB": 237734,
+                      "cpuTicks": 91
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 286184,
+                  "pssKiB": 237734,
+                  "cpuTicks": 91
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.0028049999964423478,
+                  "rssKiB": 285068,
+                  "pssKiB": 275203,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 71.21858099999372,
+                  "rssKiB": 285068,
+                  "pssKiB": 258162,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 141.81513899999845,
+                  "rssKiB": 285068,
+                  "pssKiB": 249846,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 213.20212800000445,
+                  "rssKiB": 285068,
+                  "pssKiB": 243370,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 283.8994660000026,
+                  "rssKiB": 285072,
+                  "pssKiB": 239326,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 355.6199239999987,
+                  "rssKiB": 285072,
+                  "pssKiB": 238282,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 425.0961490000045,
+                  "rssKiB": 286184,
+                  "pssKiB": 237734,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "555792b3-f310-4aac-b4eb-f36a73e24050",
+              "observedPeakRssKiB": 291008,
+              "observedPeakPssKiB": 276123,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 487.3167229999963,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740712,
+                      "parent": 1738887,
+                      "rssKiB": 291008,
+                      "pssKiB": 241142,
+                      "cpuTicks": 96
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 291008,
+                  "pssKiB": 241142,
+                  "cpuTicks": 96
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.003045999997993931,
+                  "rssKiB": 286184,
+                  "pssKiB": 276123,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 70.79931100000977,
+                  "rssKiB": 286184,
+                  "pssKiB": 259470,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 142.31230700000015,
+                  "rssKiB": 286184,
+                  "pssKiB": 252570,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 212.06702800000494,
+                  "rssKiB": 286184,
+                  "pssKiB": 246366,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 282.5047670000058,
+                  "rssKiB": 286184,
+                  "pssKiB": 240326,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 351.7021370000002,
+                  "rssKiB": 286184,
+                  "pssKiB": 238530,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 420.3531060000096,
+                  "rssKiB": 286184,
+                  "pssKiB": 238062,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 487.3167229999963,
+                  "rssKiB": 291008,
+                  "pssKiB": 241142,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "2e616296-c412-4276-9ec4-40e2edd848fc",
+              "observedPeakRssKiB": 293176,
+              "observedPeakPssKiB": 280811,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 426.2023760000011,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740712,
+                      "parent": 1738887,
+                      "rssKiB": 293176,
+                      "pssKiB": 242130,
+                      "cpuTicks": 97
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 293176,
+                  "pssKiB": 242130,
+                  "cpuTicks": 97
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.004678999990574084,
+                  "rssKiB": 291008,
+                  "pssKiB": 280811,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 72.52833099999407,
+                  "rssKiB": 291008,
+                  "pssKiB": 263478,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 143.40802299999632,
+                  "rssKiB": 291008,
+                  "pssKiB": 254934,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 213.90817999999854,
+                  "rssKiB": 291008,
+                  "pssKiB": 247574,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 285.72632200000226,
+                  "rssKiB": 291008,
+                  "pssKiB": 243254,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 355.16464599999017,
+                  "rssKiB": 291008,
+                  "pssKiB": 242198,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 426.2023760000011,
+                  "rssKiB": 293176,
+                  "pssKiB": 242130,
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        },
+        "goWarm": {
+          "elapsedMs": {
+            "samples": [
+              464.5166190000018,
+              533.60749699999,
+              460.72269400001096,
+              474.8049089999986,
+              458.75011399999494
+            ],
+            "median": 464.5166190000018,
+            "p95": 533.60749699999,
+            "min": 458.75011399999494,
+            "max": 533.60749699999
+          },
+          "observedPeakRssKiB": 252744,
+          "observedPeakPssKiB": 247766,
+          "observedMaxProcesses": 2,
+          "nominalSampleIntervalMs": 50,
+          "runs": [
+            {
+              "runId": "e3fe00ae-b872-4101-b18d-87bbbbc63d17",
+              "observedPeakRssKiB": 224892,
+              "observedPeakPssKiB": 219914,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 445.1206019999954,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740881,
+                      "parent": 1738887,
+                      "rssKiB": 15432,
+                      "pssKiB": 13388,
+                      "cpuTicks": 0
+                    },
+                    {
+                      "pid": 1740889,
+                      "parent": 1740881,
+                      "rssKiB": 209460,
+                      "pssKiB": 206526,
+                      "cpuTicks": 51
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 224892,
+                  "pssKiB": 219914,
+                  "cpuTicks": 51
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.004488999999011867,
+                  "rssKiB": 224204,
+                  "pssKiB": 206998,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 75.34480299999996,
+                  "rssKiB": 224204,
+                  "pssKiB": 194967,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 147.36771099999896,
+                  "rssKiB": 224204,
+                  "pssKiB": 188759,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 221.85857300000498,
+                  "rssKiB": 224204,
+                  "pssKiB": 186071,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 296.3102409999992,
+                  "rssKiB": 224204,
+                  "pssKiB": 183095,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 372.21744399999443,
+                  "rssKiB": 224204,
+                  "pssKiB": 182797,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 445.1206019999954,
+                  "rssKiB": 224892,
+                  "pssKiB": 219914,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "29c24cba-e5c6-474e-9828-1e8ebbd47229",
+              "observedPeakRssKiB": 227844,
+              "observedPeakPssKiB": 222866,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 517.6364089999988,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740881,
+                      "parent": 1738887,
+                      "rssKiB": 15448,
+                      "pssKiB": 13404,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1740889,
+                      "parent": 1740881,
+                      "rssKiB": 212396,
+                      "pssKiB": 209462,
+                      "cpuTicks": 55
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 227844,
+                  "pssKiB": 222866,
+                  "cpuTicks": 56
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.004738999996334314,
+                  "rssKiB": 224892,
+                  "pssKiB": 211636,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 73.56783099999302,
+                  "rssKiB": 224892,
+                  "pssKiB": 196355,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 148.97011199999542,
+                  "rssKiB": 224892,
+                  "pssKiB": 191491,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 218.17578700000013,
+                  "rssKiB": 224892,
+                  "pssKiB": 188259,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 292.62920899999153,
+                  "rssKiB": 224892,
+                  "pssKiB": 185549,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 367.25586699999985,
+                  "rssKiB": 224892,
+                  "pssKiB": 185451,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 442.58537099999376,
+                  "rssKiB": 224892,
+                  "pssKiB": 184533,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 517.6364089999988,
+                  "rssKiB": 227844,
+                  "pssKiB": 222866,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "4b87bf24-c45f-4f22-a711-cd60c4b4091f",
+              "observedPeakRssKiB": 237304,
+              "observedPeakPssKiB": 216201,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 435.9603380000044,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740881,
+                      "parent": 1738887,
+                      "rssKiB": 15452,
+                      "pssKiB": 13408,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1740889,
+                      "parent": 1740881,
+                      "rssKiB": 221852,
+                      "pssKiB": 183493,
+                      "cpuTicks": 60
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 237304,
+                  "pssKiB": 196901,
+                  "cpuTicks": 61
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.0015629999979864806,
+                  "rssKiB": 227844,
+                  "pssKiB": 216201,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 67.43516700000328,
+                  "rssKiB": 227844,
+                  "pssKiB": 200259,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 141.14672000000428,
+                  "rssKiB": 227844,
+                  "pssKiB": 194359,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 215.34213499999896,
+                  "rssKiB": 227844,
+                  "pssKiB": 191479,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 288.71793400000024,
+                  "rssKiB": 227844,
+                  "pssKiB": 188579,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 363.2102190000005,
+                  "rssKiB": 227844,
+                  "pssKiB": 188201,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 435.9603380000044,
+                  "rssKiB": 237304,
+                  "pssKiB": 196901,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "e0fc1eb0-7400-4040-9469-819916dc24d7",
+              "observedPeakRssKiB": 250168,
+              "observedPeakPssKiB": 245189,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 451.9906970000011,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740881,
+                      "parent": 1738887,
+                      "rssKiB": 20196,
+                      "pssKiB": 18152,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1740889,
+                      "parent": 1740881,
+                      "rssKiB": 229972,
+                      "pssKiB": 227037,
+                      "cpuTicks": 64
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 250168,
+                  "pssKiB": 245189,
+                  "cpuTicks": 65
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.004568000003928319,
+                  "rssKiB": 237304,
+                  "pssKiB": 217547,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 78.33623300000909,
+                  "rssKiB": 237304,
+                  "pssKiB": 207995,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 153.459136999998,
+                  "rssKiB": 237304,
+                  "pssKiB": 202543,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 228.9306690000085,
+                  "rssKiB": 237304,
+                  "pssKiB": 199809,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 304.2149570000038,
+                  "rssKiB": 237380,
+                  "pssKiB": 197433,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 379.4690890000056,
+                  "rssKiB": 237380,
+                  "pssKiB": 197011,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 451.9906970000011,
+                  "rssKiB": 250168,
+                  "pssKiB": 245189,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "0dfca7d1-19d6-4366-a010-2d2c3595344e",
+              "observedPeakRssKiB": 252744,
+              "observedPeakPssKiB": 247766,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 448.29029900000023,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1740881,
+                      "parent": 1738887,
+                      "rssKiB": 20196,
+                      "pssKiB": 18152,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1740889,
+                      "parent": 1740881,
+                      "rssKiB": 232548,
+                      "pssKiB": 229614,
+                      "cpuTicks": 68
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 252744,
+                  "pssKiB": 247766,
+                  "cpuTicks": 69
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.004537999993772246,
+                  "rssKiB": 250168,
+                  "pssKiB": 234243,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 72.88547399999516,
+                  "rssKiB": 250168,
+                  "pssKiB": 222160,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 148.44036300000153,
+                  "rssKiB": 250168,
+                  "pssKiB": 216216,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 224.9287320000003,
+                  "rssKiB": 250168,
+                  "pssKiB": 213512,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 298.9418330000044,
+                  "rssKiB": 250168,
+                  "pssKiB": 210640,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 373.940883999996,
+                  "rssKiB": 250168,
+                  "pssKiB": 210256,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 448.29029900000023,
+                  "rssKiB": 252744,
+                  "pssKiB": 247766,
+                  "count": 2
+                }
+              ]
+            }
+          ]
+        },
+        "goColdWarmedCache": {
+          "elapsedMs": {
+            "samples": [
+              800.0734899999952,
+              797.184294000006,
+              760.1198580000055,
+              887.2817070000019,
+              957.4847050000099
+            ],
+            "median": 800.0734899999952,
+            "p95": 957.4847050000099,
+            "min": 760.1198580000055,
+            "max": 957.4847050000099
+          },
+          "observedPeakRssKiB": 225444,
+          "observedPeakPssKiB": 219254,
+          "observedMaxProcesses": 2,
+          "nominalSampleIntervalMs": 50,
+          "runs": [
+            {
+              "runId": "cd1c03ee-8ac1-4da9-a744-f0e9d7e8123f",
+              "observedPeakRssKiB": 224292,
+              "observedPeakPssKiB": 219254,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 781.7172949999949,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1741087,
+                      "parent": 1738887,
+                      "rssKiB": 17524,
+                      "pssKiB": 15480,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1741178,
+                      "parent": 1741087,
+                      "rssKiB": 206768,
+                      "pssKiB": 203774,
+                      "cpuTicks": 41
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 224292,
+                  "pssKiB": 219254,
+                  "cpuTicks": 42
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.005470000003697351,
+                  "rssKiB": 15452,
+                  "pssKiB": 13408,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 73.06392100000812,
+                  "rssKiB": 15452,
+                  "pssKiB": 13408,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 143.90592200000538,
+                  "rssKiB": 15452,
+                  "pssKiB": 13408,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 215.17472900000575,
+                  "rssKiB": 15452,
+                  "pssKiB": 13408,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 285.7995499999961,
+                  "rssKiB": 15452,
+                  "pssKiB": 13408,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 359.4679219999962,
+                  "rssKiB": 15452,
+                  "pssKiB": 13408,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 429.82276500000444,
+                  "rssKiB": 15452,
+                  "pssKiB": 13408,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 499.84055200000876,
+                  "rssKiB": 93472,
+                  "pssKiB": 68367,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 571.6064250000054,
+                  "rssKiB": 135872,
+                  "pssKiB": 102770,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 639.8748730000079,
+                  "rssKiB": 184876,
+                  "pssKiB": 144575,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 711.9974700000021,
+                  "rssKiB": 217688,
+                  "pssKiB": 176181,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 781.7172949999949,
+                  "rssKiB": 224292,
+                  "pssKiB": 219254,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "29bb368d-d258-4b05-92dd-0671fc802b34",
+              "observedPeakRssKiB": 223336,
+              "observedPeakPssKiB": 218359,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 784.8285230000038,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1741087,
+                      "parent": 1738887,
+                      "rssKiB": 18156,
+                      "pssKiB": 16112,
+                      "cpuTicks": 4
+                    },
+                    {
+                      "pid": 1741211,
+                      "parent": 1741087,
+                      "rssKiB": 205180,
+                      "pssKiB": 202247,
+                      "cpuTicks": 43
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 223336,
+                  "pssKiB": 218359,
+                  "cpuTicks": 47
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.00608200000715442,
+                  "rssKiB": 18140,
+                  "pssKiB": 16096,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 71.40964199999871,
+                  "rssKiB": 18140,
+                  "pssKiB": 16096,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 140.57607399999688,
+                  "rssKiB": 18140,
+                  "pssKiB": 16096,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 211.5797600000078,
+                  "rssKiB": 18140,
+                  "pssKiB": 16096,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 281.9791770000011,
+                  "rssKiB": 18140,
+                  "pssKiB": 16096,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 354.2668649999978,
+                  "rssKiB": 18140,
+                  "pssKiB": 16096,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 425.83786100000725,
+                  "rssKiB": 18140,
+                  "pssKiB": 16096,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 496.0977850000054,
+                  "rssKiB": 109856,
+                  "pssKiB": 82225,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 569.9654420000006,
+                  "rssKiB": 146020,
+                  "pssKiB": 111894,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 639.7649680000031,
+                  "rssKiB": 198592,
+                  "pssKiB": 159506,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 713.3558029999986,
+                  "rssKiB": 221868,
+                  "pssKiB": 181646,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 784.8285230000038,
+                  "rssKiB": 223336,
+                  "pssKiB": 218359,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "c46007a7-73ea-45bb-b6b9-e8b30375771f",
+              "observedPeakRssKiB": 222788,
+              "observedPeakPssKiB": 181122,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 708.7225150000013,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1741087,
+                      "parent": 1738887,
+                      "rssKiB": 18196,
+                      "pssKiB": 16152,
+                      "cpuTicks": 4
+                    },
+                    {
+                      "pid": 1741248,
+                      "parent": 1741087,
+                      "rssKiB": 204592,
+                      "pssKiB": 164970,
+                      "cpuTicks": 39
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 222788,
+                  "pssKiB": 181122,
+                  "cpuTicks": 43
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.005220000006374903,
+                  "rssKiB": 18196,
+                  "pssKiB": 16152,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 69.96237200000905,
+                  "rssKiB": 18196,
+                  "pssKiB": 16152,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 138.67465800000355,
+                  "rssKiB": 18196,
+                  "pssKiB": 16152,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 210.08918900000572,
+                  "rssKiB": 18196,
+                  "pssKiB": 16152,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 279.859810000009,
+                  "rssKiB": 18196,
+                  "pssKiB": 16152,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 350.10194000000774,
+                  "rssKiB": 18196,
+                  "pssKiB": 16152,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 423.28274200001033,
+                  "rssKiB": 18196,
+                  "pssKiB": 16152,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 492.867934000009,
+                  "rssKiB": 120636,
+                  "pssKiB": 92037,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 564.9768540000077,
+                  "rssKiB": 157436,
+                  "pssKiB": 120177,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 635.9524180000008,
+                  "rssKiB": 214328,
+                  "pssKiB": 172882,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 708.7225150000013,
+                  "rssKiB": 222788,
+                  "pssKiB": 181122,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "5647a543-41f4-49fb-99b6-e57ffe03760a",
+              "observedPeakRssKiB": 225444,
+              "observedPeakPssKiB": 184574,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 845.5928419999982,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1741087,
+                      "parent": 1738887,
+                      "rssKiB": 18220,
+                      "pssKiB": 16176,
+                      "cpuTicks": 6
+                    },
+                    {
+                      "pid": 1741276,
+                      "parent": 1741087,
+                      "rssKiB": 207224,
+                      "pssKiB": 168398,
+                      "cpuTicks": 54
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 225444,
+                  "pssKiB": 184574,
+                  "cpuTicks": 60
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.006502000003820285,
+                  "rssKiB": 18212,
+                  "pssKiB": 16168,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 68.12313399999402,
+                  "rssKiB": 18212,
+                  "pssKiB": 16168,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 137.36022899999807,
+                  "rssKiB": 18212,
+                  "pssKiB": 16168,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 208.12548600000446,
+                  "rssKiB": 18212,
+                  "pssKiB": 16168,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 278.5345410000009,
+                  "rssKiB": 18212,
+                  "pssKiB": 16168,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 349.21332500000426,
+                  "rssKiB": 18212,
+                  "pssKiB": 16168,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 420.10050200000114,
+                  "rssKiB": 18216,
+                  "pssKiB": 16172,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 488.8427740000043,
+                  "rssKiB": 103696,
+                  "pssKiB": 77696,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 558.3805259999936,
+                  "rssKiB": 132984,
+                  "pssKiB": 101765,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 628.8910319999995,
+                  "rssKiB": 158140,
+                  "pssKiB": 121145,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 700.9090520000027,
+                  "rssKiB": 209128,
+                  "pssKiB": 169431,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 773.6796499999909,
+                  "rssKiB": 221104,
+                  "pssKiB": 180303,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 845.5928419999982,
+                  "rssKiB": 225444,
+                  "pssKiB": 184574,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "d644f710-0701-4424-97d2-620c80fb75bf",
+              "observedPeakRssKiB": 222140,
+              "observedPeakPssKiB": 180949,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 898.3675130000047,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1741087,
+                      "parent": 1738887,
+                      "rssKiB": 18360,
+                      "pssKiB": 16316,
+                      "cpuTicks": 8
+                    },
+                    {
+                      "pid": 1741310,
+                      "parent": 1741087,
+                      "rssKiB": 203780,
+                      "pssKiB": 164633,
+                      "cpuTicks": 47
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 222140,
+                  "pssKiB": 180949,
+                  "cpuTicks": 55
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.005761000007623807,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 72.47624400000495,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 140.99247900000773,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 210.01376700001128,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 278.8884390000021,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 349.82800500000303,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 418.95571400001063,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 489.53055100000347,
+                  "rssKiB": 18228,
+                  "pssKiB": 16184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 559.7915370000119,
+                  "rssKiB": 48864,
+                  "pssKiB": 37518,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 629.0473280000006,
+                  "rssKiB": 111876,
+                  "pssKiB": 83364,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 697.5069270000095,
+                  "rssKiB": 139764,
+                  "pssKiB": 106780,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 764.4842700000008,
+                  "rssKiB": 165716,
+                  "pssKiB": 128312,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 831.0592860000033,
+                  "rssKiB": 214192,
+                  "pssKiB": 173284,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 898.3675130000047,
+                  "rssKiB": 222140,
+                  "pssKiB": 180949,
+                  "count": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "small-with-benign-extension": {
+      "legacyWarmMs": {
+        "samples": [
+          493.81075299999793,
+          498.4883850000042,
+          485.0435600000055,
+          420.68638799998735,
+          416.16707600001246,
+          462.79967400000896,
+          503.81736400000227,
+          424.178854999991,
+          477.04753199999686,
+          447.1509950000036,
+          468.6660169999959,
+          414.7272909999883,
+          509.6489509999956,
+          495.03290899998683,
+          421.7992879999947,
+          422.31335700000636,
+          498.24772200000007,
+          497.4041409999918,
+          423.3023119999998,
+          500.60224199999357
+        ],
+        "median": 472.8567744999964,
+        "p95": 503.81736400000227,
+        "min": 414.7272909999883,
+        "max": 509.6489509999956
+      },
+      "legacyIdle": {
+        "before": {
+          "processes": [
+            {
+              "pid": 1741452,
+              "parent": 1738887,
+              "rssKiB": 272508,
+              "pssKiB": 269326,
+              "cpuTicks": 73
+            }
+          ],
+          "count": 1,
+          "rssKiB": 272508,
+          "pssKiB": 269326,
+          "cpuTicks": 73
+        },
+        "after": {
+          "processes": [
+            {
+              "pid": 1741452,
+              "parent": 1738887,
+              "rssKiB": 272512,
+              "pssKiB": 269330,
+              "cpuTicks": 74
+            }
+          ],
+          "count": 1,
+          "rssKiB": 272512,
+          "pssKiB": 269330,
+          "cpuTicks": 74
+        },
+        "observationMs": 5024.576946000001,
+        "cpuTicksDelta": 1
+      },
+      "goWarmMs": {
+        "samples": [
+          428.40059699999983,
+          428.1222929999931,
+          428.3471060000011,
+          425.0771900000109,
+          428.91725200001383,
+          410.602704000019,
+          539.6694159999897,
+          464.2417859999987,
+          431.9684149999812,
+          428.23601700001745,
+          422.59137300000293,
+          415.8255449999997,
+          433.72627100002137,
+          434.28454399999464,
+          430.4700709999888,
+          418.98385999997845,
+          436.0143359999929,
+          528.8460459999915,
+          459.31750099998317,
+          493.23616400000174
+        ],
+        "median": 429.6936615000013,
+        "p95": 528.8460459999915,
+        "min": 410.602704000019,
+        "max": 539.6694159999897
+      },
+      "goWarmIdle": {
+        "before": {
+          "processes": [
+            {
+              "pid": 1741797,
+              "parent": 1738887,
+              "rssKiB": 18376,
+              "pssKiB": 16339,
+              "cpuTicks": 2
+            },
+            {
+              "pid": 1741805,
+              "parent": 1741797,
+              "rssKiB": 214536,
+              "pssKiB": 211770,
+              "cpuTicks": 44
+            }
+          ],
+          "count": 2,
+          "rssKiB": 232912,
+          "pssKiB": 228109,
+          "cpuTicks": 46
+        },
+        "after": {
+          "processes": [
+            {
+              "pid": 1741797,
+              "parent": 1738887,
+              "rssKiB": 18376,
+              "pssKiB": 16339,
+              "cpuTicks": 2
+            },
+            {
+              "pid": 1741805,
+              "parent": 1741797,
+              "rssKiB": 214860,
+              "pssKiB": 212094,
+              "cpuTicks": 44
+            }
+          ],
+          "count": 2,
+          "rssKiB": 233236,
+          "pssKiB": 228433,
+          "cpuTicks": 46
+        },
+        "observationMs": 5028.214240000001,
+        "cpuTicksDelta": 0
+      },
+      "goColdWarmedCacheMs": {
+        "samples": [
+          917.7524899999844,
+          742.5083089999971,
+          811.8963090000034,
+          819.9008539999777,
+          760.547126999998,
+          742.3812809999799,
+          775.6076989999856,
+          900.5671760000114,
+          844.2513170000166,
+          787.2461079999921,
+          751.61673899999,
+          824.3725620000041,
+          811.1969260000042,
+          767.4638350000023,
+          703.7770959999762,
+          818.1464330000163,
+          726.4268900000025,
+          730.6437710000027,
+          821.3677789999929,
+          856.4907850000018
+        ],
+        "median": 799.2215169999981,
+        "p95": 900.5671760000114,
+        "min": 703.7770959999762,
+        "max": 917.7524899999844
+      },
+      "goSleeping": {
+        "before": {
+          "processes": [
+            {
+              "pid": 1742316,
+              "parent": 1738887,
+              "rssKiB": 20228,
+              "pssKiB": 18184,
+              "cpuTicks": 26
+            }
+          ],
+          "count": 1,
+          "rssKiB": 20228,
+          "pssKiB": 18184,
+          "cpuTicks": 26
+        },
+        "after": {
+          "processes": [
+            {
+              "pid": 1742316,
+              "parent": 1738887,
+              "rssKiB": 20228,
+              "pssKiB": 18184,
+              "cpuTicks": 26
+            }
+          ],
+          "count": 1,
+          "rssKiB": 20228,
+          "pssKiB": 18184,
+          "cpuTicks": 26
+        },
+        "observationMs": 5017.895908000006,
+        "cpuTicksDelta": 0
+      },
+      "readiness": {
+        "implementation": "go",
+        "profile": "local-v1",
+        "protocolVersion": 1,
+        "state": "stopped",
+        "ready": true,
+        "starts": 21
+      },
+      "workflows": {
+        "legacyWarm": {
+          "elapsedMs": {
+            "samples": [
+              452.7220410000009,
+              496.88294999999925,
+              451.022976999986,
+              460.53999399999157,
+              469.2613710000005
+            ],
+            "median": 460.53999399999157,
+            "p95": 496.88294999999925,
+            "min": 451.022976999986,
+            "max": 496.88294999999925
+          },
+          "observedPeakRssKiB": 289964,
+          "observedPeakPssKiB": 279975,
+          "observedMaxProcesses": 1,
+          "nominalSampleIntervalMs": 50,
+          "runs": [
+            {
+              "runId": "412a0bb5-26d8-40e1-bd47-6b97d0f27284",
+              "observedPeakRssKiB": 274432,
+              "observedPeakPssKiB": 271251,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 433.10437600000296,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744261,
+                      "parent": 1738887,
+                      "rssKiB": 274432,
+                      "pssKiB": 271251,
+                      "cpuTicks": 76
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 274432,
+                  "pssKiB": 271251,
+                  "cpuTicks": 76
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.004087000008439645,
+                  "rssKiB": 274148,
+                  "pssKiB": 259490,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 74.34443800000008,
+                  "rssKiB": 274148,
+                  "pssKiB": 246448,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 148.16651199999615,
+                  "rssKiB": 274148,
+                  "pssKiB": 237960,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 221.5122970000084,
+                  "rssKiB": 274148,
+                  "pssKiB": 231572,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 292.705713000003,
+                  "rssKiB": 274148,
+                  "pssKiB": 227160,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 363.12795500000357,
+                  "rssKiB": 274148,
+                  "pssKiB": 226180,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 433.10437600000296,
+                  "rssKiB": 274432,
+                  "pssKiB": 271251,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "0a0ed49c-b97e-43d9-85f4-79ba54e1346d",
+              "observedPeakRssKiB": 274432,
+              "observedPeakPssKiB": 264302,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 0.0014130000199656934,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744261,
+                      "parent": 1738887,
+                      "rssKiB": 274432,
+                      "pssKiB": 264302,
+                      "cpuTicks": 76
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 274432,
+                  "pssKiB": 264302,
+                  "cpuTicks": 76
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.0014130000199656934,
+                  "rssKiB": 274432,
+                  "pssKiB": 264302,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 66.90765400000964,
+                  "rssKiB": 274432,
+                  "pssKiB": 247658,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 138.95464000001084,
+                  "rssKiB": 274432,
+                  "pssKiB": 243632,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 212.09127100001206,
+                  "rssKiB": 274432,
+                  "pssKiB": 236546,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 287.24142900001607,
+                  "rssKiB": 274432,
+                  "pssKiB": 231148,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 357.8870820000011,
+                  "rssKiB": 274432,
+                  "pssKiB": 226512,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 431.27697000000626,
+                  "rssKiB": 274432,
+                  "pssKiB": 224596,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "c3bedffd-18c6-4a88-b342-b4afe5fd5fb8",
+              "observedPeakRssKiB": 283156,
+              "observedPeakPssKiB": 279975,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 446.5374379999994,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744261,
+                      "parent": 1738887,
+                      "rssKiB": 283156,
+                      "pssKiB": 279975,
+                      "cpuTicks": 82
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 283156,
+                  "pssKiB": 279975,
+                  "cpuTicks": 82
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.0022440000029746443,
+                  "rssKiB": 274576,
+                  "pssKiB": 257523,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 74.93227599997772,
+                  "rssKiB": 274576,
+                  "pssKiB": 245630,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 152.01981800000067,
+                  "rssKiB": 274576,
+                  "pssKiB": 237804,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 224.08921599999303,
+                  "rssKiB": 274576,
+                  "pssKiB": 231702,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 297.22941400000127,
+                  "rssKiB": 274576,
+                  "pssKiB": 226974,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 372.1036909999966,
+                  "rssKiB": 274576,
+                  "pssKiB": 225616,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 446.5374379999994,
+                  "rssKiB": 283156,
+                  "pssKiB": 279975,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "58e66f61-0217-4430-a4ff-6a5d1b448c18",
+              "observedPeakRssKiB": 289876,
+              "observedPeakPssKiB": 273332,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 436.44494600000326,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744261,
+                      "parent": 1738887,
+                      "rssKiB": 289876,
+                      "pssKiB": 241541,
+                      "cpuTicks": 87
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 289876,
+                  "pssKiB": 241541,
+                  "cpuTicks": 87
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.00265499998931773,
+                  "rssKiB": 283156,
+                  "pssKiB": 273332,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 67.04666599998018,
+                  "rssKiB": 283156,
+                  "pssKiB": 256516,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 140.5465419999964,
+                  "rssKiB": 283160,
+                  "pssKiB": 247854,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 215.47784700000193,
+                  "rssKiB": 283160,
+                  "pssKiB": 241600,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 289.2686209999956,
+                  "rssKiB": 283160,
+                  "pssKiB": 237532,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 361.31618899997557,
+                  "rssKiB": 283160,
+                  "pssKiB": 236486,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 436.44494600000326,
+                  "rssKiB": 289876,
+                  "pssKiB": 241541,
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "runId": "c51e0cb2-919f-473c-a855-8f4e89ddf207",
+              "observedPeakRssKiB": 289964,
+              "observedPeakPssKiB": 279905,
+              "observedMaxProcesses": 1,
+              "rssPeakSnapshot": {
+                "elapsedMs": 434.60668000002624,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744261,
+                      "parent": 1738887,
+                      "rssKiB": 289964,
+                      "pssKiB": 240754,
+                      "cpuTicks": 89
+                    }
+                  ],
+                  "count": 1,
+                  "rssKiB": 289964,
+                  "pssKiB": 240754,
+                  "cpuTicks": 89
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.002525000018067658,
+                  "rssKiB": 289876,
+                  "pssKiB": 279905,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 70.04832700002589,
+                  "rssKiB": 289876,
+                  "pssKiB": 263184,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 142.0135490000248,
+                  "rssKiB": 289876,
+                  "pssKiB": 254862,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 216.1344360000221,
+                  "rssKiB": 289876,
+                  "pssKiB": 248058,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 290.33513300001505,
+                  "rssKiB": 289876,
+                  "pssKiB": 243852,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 361.5920290000213,
+                  "rssKiB": 289876,
+                  "pssKiB": 242624,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 434.60668000002624,
+                  "rssKiB": 289964,
+                  "pssKiB": 240754,
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        },
+        "goWarm": {
+          "elapsedMs": {
+            "samples": [
+              563.983699000004,
+              446.0751680000103,
+              455.08842500002356,
+              471.8785069999867,
+              462.6058009999979
+            ],
+            "median": 462.6058009999979,
+            "p95": 563.983699000004,
+            "min": 446.0751680000103,
+            "max": 563.983699000004
+          },
+          "observedPeakRssKiB": 251008,
+          "observedPeakPssKiB": 239379,
+          "observedMaxProcesses": 2,
+          "nominalSampleIntervalMs": 50,
+          "runs": [
+            {
+              "runId": "b66edd50-33bd-438d-9918-0f713481ae5b",
+              "observedPeakRssKiB": 222620,
+              "observedPeakPssKiB": 206902,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 0.0038570000033359975,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744651,
+                      "parent": 1738887,
+                      "rssKiB": 13396,
+                      "pssKiB": 11352,
+                      "cpuTicks": 0
+                    },
+                    {
+                      "pid": 1744659,
+                      "parent": 1744651,
+                      "rssKiB": 209224,
+                      "pssKiB": 195550,
+                      "cpuTicks": 50
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 222620,
+                  "pssKiB": 206902,
+                  "cpuTicks": 50
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.0038570000033359975,
+                  "rssKiB": 222620,
+                  "pssKiB": 206902,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 72.76761399998213,
+                  "rssKiB": 222620,
+                  "pssKiB": 195136,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 147.98692299998947,
+                  "rssKiB": 222620,
+                  "pssKiB": 192410,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 222.28770899999654,
+                  "rssKiB": 222620,
+                  "pssKiB": 186456,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 295.5106229999801,
+                  "rssKiB": 222620,
+                  "pssKiB": 185798,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 366.53318699999363,
+                  "rssKiB": 222620,
+                  "pssKiB": 183326,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 438.2930519999936,
+                  "rssKiB": 222620,
+                  "pssKiB": 183262,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 510.1862679999904,
+                  "rssKiB": 221252,
+                  "pssKiB": 180186,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "1942e4b3-755a-49e1-8342-a4c25b7b0d23",
+              "observedPeakRssKiB": 227404,
+              "observedPeakPssKiB": 222459,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 437.1961939999892,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744651,
+                      "parent": 1738887,
+                      "rssKiB": 13412,
+                      "pssKiB": 11368,
+                      "cpuTicks": 0
+                    },
+                    {
+                      "pid": 1744659,
+                      "parent": 1744651,
+                      "rssKiB": 213992,
+                      "pssKiB": 211091,
+                      "cpuTicks": 58
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 227404,
+                  "pssKiB": 222459,
+                  "cpuTicks": 58
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.0024550000089220703,
+                  "rssKiB": 222928,
+                  "pssKiB": 206965,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 73.2887880000053,
+                  "rssKiB": 222928,
+                  "pssKiB": 195168,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 145.74808200000552,
+                  "rssKiB": 222928,
+                  "pssKiB": 189204,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 218.62606499998947,
+                  "rssKiB": 222928,
+                  "pssKiB": 186540,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 292.0171759999939,
+                  "rssKiB": 222928,
+                  "pssKiB": 183694,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 364.52922900000704,
+                  "rssKiB": 222928,
+                  "pssKiB": 183250,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 437.1961939999892,
+                  "rssKiB": 227404,
+                  "pssKiB": 222459,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "6fcd99ae-2d48-4420-abfd-aa57f5fae0e1",
+              "observedPeakRssKiB": 241348,
+              "observedPeakPssKiB": 236403,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 437.74828500000876,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744651,
+                      "parent": 1738887,
+                      "rssKiB": 18156,
+                      "pssKiB": 16112,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1744659,
+                      "parent": 1744651,
+                      "rssKiB": 223192,
+                      "pssKiB": 220291,
+                      "cpuTicks": 62
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 241348,
+                  "pssKiB": 236403,
+                  "cpuTicks": 63
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.003156000020680949,
+                  "rssKiB": 227404,
+                  "pssKiB": 215803,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 69.82169000001159,
+                  "rssKiB": 227404,
+                  "pssKiB": 199732,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 143.16405900000245,
+                  "rssKiB": 227404,
+                  "pssKiB": 193592,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 216.9261590000242,
+                  "rssKiB": 227404,
+                  "pssKiB": 191016,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 291.8837240000139,
+                  "rssKiB": 227404,
+                  "pssKiB": 188204,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 365.45610700000543,
+                  "rssKiB": 227404,
+                  "pssKiB": 187739,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 437.74828500000876,
+                  "rssKiB": 241348,
+                  "pssKiB": 236403,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "2871ac41-3a1b-4260-bb44-0de2f3cd7535",
+              "observedPeakRssKiB": 245716,
+              "observedPeakPssKiB": 229546,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 429.8401109999977,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744651,
+                      "parent": 1738887,
+                      "rssKiB": 18168,
+                      "pssKiB": 16124,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1744659,
+                      "parent": 1744651,
+                      "rssKiB": 227548,
+                      "pssKiB": 188527,
+                      "cpuTicks": 64
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 245716,
+                  "pssKiB": 204651,
+                  "cpuTicks": 65
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.002634999982547015,
+                  "rssKiB": 241348,
+                  "pssKiB": 229546,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 69.1911099999852,
+                  "rssKiB": 241348,
+                  "pssKiB": 212863,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 142.47113199997693,
+                  "rssKiB": 241348,
+                  "pssKiB": 207639,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 213.84972699999344,
+                  "rssKiB": 241348,
+                  "pssKiB": 204163,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 286.34682199999224,
+                  "rssKiB": 241348,
+                  "pssKiB": 201379,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 359.38108999998076,
+                  "rssKiB": 241348,
+                  "pssKiB": 201343,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 429.8401109999977,
+                  "rssKiB": 245716,
+                  "pssKiB": 204651,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "7aad6dc6-fe4a-49d9-914d-e4a1c54cac9e",
+              "observedPeakRssKiB": 251008,
+              "observedPeakPssKiB": 239379,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 415.1795549999806,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1744651,
+                      "parent": 1738887,
+                      "rssKiB": 18176,
+                      "pssKiB": 16132,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1744659,
+                      "parent": 1744651,
+                      "rssKiB": 232832,
+                      "pssKiB": 194718,
+                      "cpuTicks": 67
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 251008,
+                  "pssKiB": 210850,
+                  "cpuTicks": 68
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.002363999985391274,
+                  "rssKiB": 250976,
+                  "pssKiB": 239379,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 69.93542399999569,
+                  "rssKiB": 250976,
+                  "pssKiB": 223442,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 138.59564299997874,
+                  "rssKiB": 250976,
+                  "pssKiB": 218530,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 206.91888699997799,
+                  "rssKiB": 250976,
+                  "pssKiB": 214706,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 276.082355999999,
+                  "rssKiB": 250976,
+                  "pssKiB": 211970,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 346.7015089999768,
+                  "rssKiB": 250976,
+                  "pssKiB": 211874,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 415.1795549999806,
+                  "rssKiB": 251008,
+                  "pssKiB": 210850,
+                  "count": 2
+                }
+              ]
+            }
+          ]
+        },
+        "goColdWarmedCache": {
+          "elapsedMs": {
+            "samples": [
+              802.1787390000245,
+              807.6815660000138,
+              785.8528119999974,
+              888.5795149999904,
+              954.2684920000029
+            ],
+            "median": 807.6815660000138,
+            "p95": 954.2684920000029,
+            "min": 785.8528119999974,
+            "max": 954.2684920000029
+          },
+          "observedPeakRssKiB": 228860,
+          "observedPeakPssKiB": 223878,
+          "observedMaxProcesses": 2,
+          "nominalSampleIntervalMs": 50,
+          "runs": [
+            {
+              "runId": "bf98fbcc-6757-411a-93ba-20208b7c81a8",
+              "observedPeakRssKiB": 224872,
+              "observedPeakPssKiB": 219957,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 799.3352460000024,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1745036,
+                      "parent": 1738887,
+                      "rssKiB": 17520,
+                      "pssKiB": 15476,
+                      "cpuTicks": 1
+                    },
+                    {
+                      "pid": 1745136,
+                      "parent": 1745036,
+                      "rssKiB": 207352,
+                      "pssKiB": 204481,
+                      "cpuTicks": 43
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 224872,
+                  "pssKiB": 219957,
+                  "cpuTicks": 44
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.003837000025669113,
+                  "rssKiB": 17512,
+                  "pssKiB": 15468,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 64.20852400001604,
+                  "rssKiB": 17512,
+                  "pssKiB": 15468,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 129.51935800001957,
+                  "rssKiB": 17512,
+                  "pssKiB": 15468,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 193.95066200001747,
+                  "rssKiB": 17512,
+                  "pssKiB": 15468,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 260.1784140000236,
+                  "rssKiB": 17512,
+                  "pssKiB": 15468,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 326.83849200000986,
+                  "rssKiB": 17512,
+                  "pssKiB": 15468,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 393.0405160000082,
+                  "rssKiB": 17512,
+                  "pssKiB": 15468,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 458.2322640000202,
+                  "rssKiB": 94748,
+                  "pssKiB": 70579,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 526.3196230000176,
+                  "rssKiB": 136416,
+                  "pssKiB": 104717,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 593.8615040000004,
+                  "rssKiB": 176156,
+                  "pssKiB": 139161,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 661.5927220000012,
+                  "rssKiB": 212960,
+                  "pssKiB": 172638,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 729.952214000019,
+                  "rssKiB": 221484,
+                  "pssKiB": 180906,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 799.3352460000024,
+                  "rssKiB": 224872,
+                  "pssKiB": 219957,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "104ddc29-4151-42da-b687-c3687df753cc",
+              "observedPeakRssKiB": 228860,
+              "observedPeakPssKiB": 223878,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 801.9161740000127,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1745036,
+                      "parent": 1738887,
+                      "rssKiB": 20244,
+                      "pssKiB": 18200,
+                      "cpuTicks": 2
+                    },
+                    {
+                      "pid": 1745208,
+                      "parent": 1745036,
+                      "rssKiB": 208616,
+                      "pssKiB": 205678,
+                      "cpuTicks": 46
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 228860,
+                  "pssKiB": 223878,
+                  "cpuTicks": 48
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.0041480000072624534,
+                  "rssKiB": 17524,
+                  "pssKiB": 15480,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 65.6450429999968,
+                  "rssKiB": 17524,
+                  "pssKiB": 15480,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 131.07295699999668,
+                  "rssKiB": 17524,
+                  "pssKiB": 15480,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 196.34505699999863,
+                  "rssKiB": 17524,
+                  "pssKiB": 15480,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 261.49236199998995,
+                  "rssKiB": 17524,
+                  "pssKiB": 15480,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 325.43939400001545,
+                  "rssKiB": 17524,
+                  "pssKiB": 15480,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 390.2907300000079,
+                  "rssKiB": 17524,
+                  "pssKiB": 15480,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 456.98160599998664,
+                  "rssKiB": 105048,
+                  "pssKiB": 79201,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 525.4410170000046,
+                  "rssKiB": 138540,
+                  "pssKiB": 106714,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 595.9448130000092,
+                  "rssKiB": 173524,
+                  "pssKiB": 136298,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 663.9273939999985,
+                  "rssKiB": 216072,
+                  "pssKiB": 175231,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 732.5566760000074,
+                  "rssKiB": 225036,
+                  "pssKiB": 184019,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 801.9161740000127,
+                  "rssKiB": 228860,
+                  "pssKiB": 223878,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "cc627661-0deb-45ae-8cc1-11c9e448110b",
+              "observedPeakRssKiB": 225556,
+              "observedPeakPssKiB": 182337,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 728.4777339999855,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1745036,
+                      "parent": 1738887,
+                      "rssKiB": 20260,
+                      "pssKiB": 18216,
+                      "cpuTicks": 4
+                    },
+                    {
+                      "pid": 1745278,
+                      "parent": 1745036,
+                      "rssKiB": 205296,
+                      "pssKiB": 164121,
+                      "cpuTicks": 40
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 225556,
+                  "pssKiB": 182337,
+                  "cpuTicks": 44
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.003675999992992729,
+                  "rssKiB": 20256,
+                  "pssKiB": 18212,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 67.8528669999796,
+                  "rssKiB": 20256,
+                  "pssKiB": 18212,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 133.59543399998802,
+                  "rssKiB": 20256,
+                  "pssKiB": 18212,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 198.54410400000052,
+                  "rssKiB": 20256,
+                  "pssKiB": 18212,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 264.0542339999811,
+                  "rssKiB": 20256,
+                  "pssKiB": 18212,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 329.43545900000026,
+                  "rssKiB": 20256,
+                  "pssKiB": 18212,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 394.6855280000018,
+                  "rssKiB": 20256,
+                  "pssKiB": 18212,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 460.6551540000073,
+                  "rssKiB": 106448,
+                  "pssKiB": 80377,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 526.9090649999853,
+                  "rssKiB": 143668,
+                  "pssKiB": 110702,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 593.0388530000055,
+                  "rssKiB": 189012,
+                  "pssKiB": 149551,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 660.5025259999966,
+                  "rssKiB": 216784,
+                  "pssKiB": 176186,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 728.4777339999855,
+                  "rssKiB": 225556,
+                  "pssKiB": 182337,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "80d6da54-ddbb-4c42-9b5d-a5dbd8cb7991",
+              "observedPeakRssKiB": 227764,
+              "observedPeakPssKiB": 186940,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 862.6756250000035,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1745036,
+                      "parent": 1738887,
+                      "rssKiB": 20308,
+                      "pssKiB": 18264,
+                      "cpuTicks": 5
+                    },
+                    {
+                      "pid": 1745445,
+                      "parent": 1745036,
+                      "rssKiB": 207456,
+                      "pssKiB": 168676,
+                      "cpuTicks": 45
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 227764,
+                  "pssKiB": 186940,
+                  "cpuTicks": 50
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.003276000003097579,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 64.6461100000015,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 130.3735389999929,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 194.5711129999836,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 259.43309999999474,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 324.09708300000057,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 388.74398400000064,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 453.4158419999876,
+                  "rssKiB": 20296,
+                  "pssKiB": 18252,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 519.9514049999998,
+                  "rssKiB": 81968,
+                  "pssKiB": 61215,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 591.2174689999956,
+                  "rssKiB": 125132,
+                  "pssKiB": 96427,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 658.1981809999852,
+                  "rssKiB": 161204,
+                  "pssKiB": 124363,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 726.2756119999976,
+                  "rssKiB": 215488,
+                  "pssKiB": 174999,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 794.1789139999892,
+                  "rssKiB": 223836,
+                  "pssKiB": 183107,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 862.6756250000035,
+                  "rssKiB": 227764,
+                  "pssKiB": 186940,
+                  "count": 2
+                }
+              ]
+            },
+            {
+              "runId": "b90a51c9-a50c-41b9-86de-1d8f825c612e",
+              "observedPeakRssKiB": 223120,
+              "observedPeakPssKiB": 182917,
+              "observedMaxProcesses": 2,
+              "rssPeakSnapshot": {
+                "elapsedMs": 896.0718549999874,
+                "tree": {
+                  "processes": [
+                    {
+                      "pid": 1745036,
+                      "parent": 1738887,
+                      "rssKiB": 19688,
+                      "pssKiB": 17644,
+                      "cpuTicks": 5
+                    },
+                    {
+                      "pid": 1745522,
+                      "parent": 1745036,
+                      "rssKiB": 203432,
+                      "pssKiB": 165273,
+                      "cpuTicks": 43
+                    }
+                  ],
+                  "count": 2,
+                  "rssKiB": 223120,
+                  "pssKiB": 182917,
+                  "cpuTicks": 48
+                }
+              },
+              "memorySamples": [
+                {
+                  "elapsedMs": 0.003556999989086762,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 68.20785700000124,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 137.08744000000297,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 214.67022599998745,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 283.30234200000996,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 352.5789539999969,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 421.88098399998853,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 490.5191620000114,
+                  "rssKiB": 20320,
+                  "pssKiB": 18276,
+                  "count": 1
+                },
+                {
+                  "elapsedMs": 558.9640559999971,
+                  "rssKiB": 67408,
+                  "pssKiB": 51880,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 629.072405999992,
+                  "rssKiB": 115564,
+                  "pssKiB": 88044,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 695.6302809999906,
+                  "rssKiB": 149404,
+                  "pssKiB": 115026,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 761.8837120000098,
+                  "rssKiB": 199948,
+                  "pssKiB": 161125,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 828.7219359999872,
+                  "rssKiB": 220912,
+                  "pssKiB": 180976,
+                  "count": 2
+                },
+                {
+                  "elapsedMs": 896.0718549999874,
+                  "rssKiB": 223120,
+                  "pssKiB": 182917,
+                  "count": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "scope": "Same compiled engine for legacy serve and Go. Token auth over HTTP loopback, format-2 local filesystem, schedules/dashboard disabled, detached runs enabled. Sequential CLI data query and single-step command/shell echo hello workflow include CLI startup and wait for terminal success. Each workflow mode uses a fresh fixture, two warmup runs, then measured runs with equivalent growing history. The benign extension is loaded but not invoked. Module/filesystem caches warmed; no disk-cache flush. RSS/PSS include server/gateway and descendants discoverable at each sampling instant, excluding observer and transient CLI client. Read/idle measurements precede workflow writes. Source hashes identify the implementation snapshot, including uncommitted files; binary SHA256 identifies the exact artifacts measured.",
+  "limitations": "Small fixtures and a trivial finite workflow only; shared host load uncontrolled; fixed mode order; Linux only. Memory sampling runs concurrently with workflow requests, scans /proc, and adds observer load. Observed peaks are lower bounds, may miss short-lived children, and are not atomic snapshots. No throughput, streaming/slow-client, cold OS/module-cache, representative vault/report corpus, or production workload claims. Five workflow samples make nearest-rank p95 equal the maximum. CPU is Linux accounting ticks over five-second observations, not normalized percentages. Compressed sizes are independent gzip6 files, not signed release archives. Builds are development artifacts, not release-promoted binaries."
+}

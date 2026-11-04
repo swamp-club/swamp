@@ -202,6 +202,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/control_plane_lease_store.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/infrastructure/persistence/repo_execution_locks.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // a serve-mode checkout's --last-evaluated trusts only serve's and its own
   // member's evaluations, and its signal outcomes are serve's
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
@@ -393,7 +394,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#3985: a serve-mode checkout's per-model and workflow-run
   // locks are serve's own, held through its lock routes, so two machines
   // never allocate the same data version.
-  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
+  "src/infrastructure/persistence/repo_execution_locks.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
   // swamp-club#4063: `datastore claim` and `release` change the claim on a
   // v3 datastore through its commit log, under the writer lease, directly
   // or in serve's handlers; the owner value object normalizes the address
@@ -435,7 +436,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
   "src/cli/commands/datastore_status.ts -> src/domain/datastore_v3/serve_leader.ts",
-  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
+  "src/infrastructure/persistence/repo_execution_locks.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
   "src/cli/commands/model_lease.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
   "src/cli/commands/model_lease.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   // swamp-club#4195: offline work. A method run or workflow step is judged
@@ -443,13 +444,14 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // checkout recorded and serve's clock; the refusals exit 75.
   "src/cli/repo_context.ts -> src/domain/datastore_v3/offline_write_policy.ts",
   "src/cli/repo_context.ts -> src/domain/datastore_v3/partition_key.ts",
-  "src/cli/repo_context.ts -> src/domain/datastore_v3/writer_lease.ts",
+  "src/infrastructure/persistence/repo_execution_locks.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_offline.ts",
+  "src/infrastructure/persistence/repo_execution_locks.ts -> src/infrastructure/datastore_v3/serve_offline.ts",
   // swamp-club#4195: serve's own runs wait, at a gate serve sets, for a
   // lease kept before this leader to be adopted before they take its
   // behavior's lock; a CLI process sets no gate.
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/own_lock_gate.ts",
-  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/own_lock_gate.ts",
+  "src/infrastructure/persistence/repo_execution_locks.ts -> src/infrastructure/datastore_v3/own_lock_gate.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/offline_write_policy.ts",
   // swamp-club#4195: quarantine. Serve keeps a change refused for a grant
   // its author lacks and lands it through the offline flush once an admin

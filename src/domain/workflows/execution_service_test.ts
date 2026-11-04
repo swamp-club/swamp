@@ -48,6 +48,7 @@ import type { WaitRegistration } from "./signal_wait_records.ts";
 import { WAIT_KEY_HELD_STEP_ERROR } from "./signal_wait.ts";
 import { type WaitKeyRecord, waitKeyRecordKey } from "./wait_key_claim.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { stepOutputSourcesOf } from "../expressions/step_output_sources.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { VaultService } from "../vaults/vault_service.ts";
@@ -100,7 +101,10 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import {
+  type EvaluatedWorkflowCache,
+  YamlEvaluatedWorkflowRepository,
+} from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { Definition, type InputsSchema } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -2509,6 +2513,159 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
   });
 });
 
+for (
+  const boundary of ["authored", "evaluated", "cached", "restored"] as const
+) {
+  Deno.test(`WorkflowExecutionService: validateWorkflow refuses the canonical ${boundary} workflow before execution or persistence`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+      const replay = boundary === "cached" || boundary === "restored";
+      const expression = "${{ inputs.mode }}";
+      const reference = "${{ vault.get('admission', 'mode') }}";
+      const makeJobs = (mode: string) => [
+        Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "act",
+            task: StepTask.model("test-model", "run", { mode }),
+          })],
+        }),
+      ];
+      const source = Workflow.create({
+        name: "canonical-admission",
+        jobs: makeJobs(replay ? "source-allowed" : expression),
+      });
+      await workflowRepo.save(source);
+      // An id-shaped name must not replace the workflow already authorized.
+      const decoy = Workflow.create({
+        name: source.id,
+        jobs: makeJobs("decoy-allowed"),
+      });
+      await workflowRepo.save(decoy);
+      const values = new RunSensitiveValues(
+        undefined,
+        new SecretBagRegistry(),
+      );
+      let cached: EvaluatedWorkflowCache | undefined;
+      if (replay) {
+        const evaluatedRepo = new YamlEvaluatedWorkflowRepository(tempDir);
+        await evaluatedRepo.save(
+          Workflow.create({
+            id: source.id,
+            name: source.name,
+            jobs: makeJobs(reference),
+          }),
+          undefined,
+          new Set(),
+          [],
+          [{
+            path: ["jobs", 0, "steps", 0, "task", "inputs", "mode"],
+            occurrence: 0,
+            vaultName: "admission",
+            key: "mode",
+            encoding: "raw",
+            dataOrigin: false,
+          }],
+          { inputs: {} },
+        );
+        cached = await evaluatedRepo.findByNameWithProvenance(source.name) ??
+          undefined;
+        assertExists(cached);
+      }
+      const snapshotFiles = async () => {
+        const root = join(tempDir, ".swamp");
+        return await Promise.all(
+          (await listFiles(root)).map(async (path) => ({
+            path,
+            contents: await Deno.readFile(join(root, path)),
+          })),
+        );
+      };
+      const before = await snapshotFiles();
+      const catalog = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const service = new WorkflowExecutionService(
+          workflowRepo,
+          runRepo,
+          tempDir,
+          executor,
+          undefined,
+          catalog,
+        );
+        const seen: string[] = [];
+        const events: WorkflowExecutionEvent[] = [];
+        const error = await assertRejects(
+          async () => {
+            for await (
+              const event of service.run(source.id, {
+                byId: true,
+                expectedName: source.name,
+                inputs: replay ? {} : { mode: "refused" },
+                lastEvaluated: replay,
+                // Exercise both a repository-loaded cache and the exact cache
+                // supplied by a caller that already checked supersede inputs.
+                evaluatedCache: boundary === "restored" ? cached : undefined,
+                sensitiveValues: values,
+                validateWorkflow(candidate) {
+                  assertEquals(candidate.id, source.id);
+                  assertEquals(candidate.name, source.name);
+                  const task = candidate.jobs[0].steps[0].task.data;
+                  assert(task.type === "model_method");
+                  assert(task.inputs && typeof task.inputs === "object");
+                  const mode = task.inputs.mode;
+                  assert(typeof mode === "string");
+                  seen.push(mode);
+                  const refused = boundary === "authored"
+                    ? mode === expression
+                    : boundary === "evaluated"
+                    ? mode === "refused"
+                    : boundary === "cached"
+                    ? mode === reference
+                    : values.sentinels.issuedEntryOf(mode) !== undefined;
+                  if (refused) {
+                    throw new UserError(
+                      `Refused ${boundary} workflow`,
+                      "unsupported_profile",
+                    );
+                  }
+                },
+              })
+            ) events.push(event);
+          },
+          UserError,
+          `Refused ${boundary} workflow`,
+        );
+        assertEquals(error.code, "unsupported_profile");
+        assertEquals(
+          seen.length,
+          {
+            authored: 1,
+            evaluated: 2,
+            cached: 2,
+            restored: 3,
+          }[boundary],
+        );
+        if (boundary === "restored") {
+          assertEquals(
+            values.sentinels.issuedEntryOf(seen[2])?.reference,
+            { vaultName: "admission", key: "mode" },
+          );
+        } else if (boundary === "cached") {
+          // Refusal happens before replay even restores references.
+          assertEquals(values.sentinels.isEmpty, true);
+        }
+        assertEquals(executor.executedSteps, []);
+        assertEquals(events, []);
+        assertEquals(await runRepo.findAllGlobal(), []);
+        assertEquals(await snapshotFiles(), before);
+      } finally {
+        catalog.close();
+      }
+    });
+  });
+}
 Deno.test("step with allowFailure true fails but job still succeeds", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();

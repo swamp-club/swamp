@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "../session.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   reportDescribe,
@@ -65,7 +66,7 @@ import {
 import { kindResource } from "../../domain/access/access_decision_service.ts";
 
 export async function handleReportGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ReportGetPayload,
@@ -186,7 +187,7 @@ export async function handleReportGet(
 }
 
 export async function handleReportSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -301,7 +302,7 @@ export async function handleReportSearch(
 }
 
 export async function handleReportDescribe(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: ReportDescribePayload,
@@ -366,7 +367,7 @@ export async function handleReportDescribe(
 }
 
 export async function handleReportTypeSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -427,7 +428,7 @@ export async function handleReportTypeSearch(
 }
 
 async function authorizeReportScope(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,

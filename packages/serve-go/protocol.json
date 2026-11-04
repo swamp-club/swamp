@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "profile": "local-v1",
+  "framing": "uint32-be-length-prefixed-utf8-json",
+  "channels": {
+    "requests": "dedicated-inherited-pipe",
+    "replies": "dedicated-inherited-pipe",
+    "extensionOutput": "null"
+  },
+  "limits": {
+    "frameBytes": 8388608,
+    "queuedBytes": 8388608,
+    "sessionFrames": 10000,
+    "sessions": 128,
+    "pendingControls": 128,
+    "coldWaiters": 64,
+    "engineSessionFrames": 64,
+    "engineSessionBytes": 8058880,
+    "engineAuthentications": 64,
+    "engineControlBytes": 65536,
+    "engineCloseFrameBytes": 2048,
+    "maxShutdownDeadlineMs": 2147483647,
+    "commandGuardians": 256
+  },
+  "operations": [
+    "server.version",
+    "workflow.get",
+    "model.get",
+    "data.query",
+    "workflow.run",
+    "model.method.run",
+    "run.attach",
+    "run.history",
+    "workflow.history.get",
+    "workflow.history.logs",
+    "model.method.history.get",
+    "model.method.history.logs",
+    "cancel"
+  ],
+  "controls": [
+    "hello",
+    "session.open",
+    "session.close",
+    "request.dispatch",
+    "engine.status",
+    "engine.quiesce",
+    "engine.shutdown"
+  ]
+}

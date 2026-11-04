@@ -224,7 +224,7 @@ export async function sendRequest(
     close() {},
   } as unknown as WebSocket;
   const active = new Map<string, AbortController>();
-  handleMessage(
+  await handleMessage(
     socket,
     ctx,
     active,

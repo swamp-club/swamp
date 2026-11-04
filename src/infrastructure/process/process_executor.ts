@@ -20,6 +20,7 @@
 import type { Logger } from "@logtape/logtape";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { escapeLogTemplate } from "../logging/logger.ts";
+import { getCommandGuardian } from "./command_guardian_policy.ts";
 import { shouldIsolateProcessGroup } from "./process_group_policy.ts";
 import { isProcessAlive } from "./process_kill.ts";
 import { attachProcessJob, type ProcessJob } from "./windows_job.ts";
@@ -41,7 +42,8 @@ export interface ProcessExecutorOptions {
   /**
    * abort or timeout kills the whole tree: its own process group on POSIX,
    * taskkill /T plus a kill-on-close Job Object on Windows; a command that
-   * exits on its own is never signalled
+   * exits on its own is never signalled. Under the local-v1 engine a guardian
+   * also owns each managed command group, so its descendants end with it
    */
   terminateProcessTree?: boolean;
   killGraceMs?: number;
@@ -150,6 +152,7 @@ type TerminationMode =
 interface Spawned {
   child: Deno.ChildProcess;
   job?: ProcessJob;
+  guardianControl?: WritableStreamDefaultWriter<Uint8Array>;
 }
 
 const liveProcessGroups = new Set<number>();
@@ -189,14 +192,20 @@ interface Terminator {
 }
 
 function createTerminator(
-  { child, job }: Spawned,
+  { child, job, guardianControl }: Spawned,
   mode: TerminationMode,
   graceMs: number,
 ): Terminator {
   let running: Promise<void> | undefined;
   let exited = false;
   return {
-    status: child.status.then((status) => {
+    status: child.status.then(async (status) => {
+      if (guardianControl) {
+        try {
+          await guardianControl.close();
+        } catch { /* guardian already exited */ }
+        guardianControl.releaseLock();
+      }
       exited = true;
       // Exited on its own: what it backgrounded is not the exit sweep's.
       if (!running) {
@@ -209,12 +218,30 @@ function createTerminator(
     }),
     terminate: () => {
       if (exited) return;
-      running ??= terminateProcess(child, mode, graceMs, job);
+      running ??= guardianControl
+        ? terminateGuardedProcess(child, guardianControl)
+        : terminateProcess(child, mode, graceMs, job);
     },
     settled: () => running ?? Promise.resolve(),
   };
 }
 
+/** The guardian owns escalation and reaping; never kill the guardian group. */
+async function terminateGuardedProcess(
+  child: Deno.ChildProcess,
+  control: WritableStreamDefaultWriter<Uint8Array>,
+): Promise<void> {
+  try {
+    await control.write(new Uint8Array([1]));
+  } catch {
+    try {
+      await control.close();
+    } catch { /* closed pipe also ends ownership */ }
+  }
+  try {
+    await child.status;
+  } catch { /* process already reaped */ }
+}
 function onSignalAbort(
   signal: AbortSignal | undefined,
   onAbort: () => void,
@@ -355,7 +382,8 @@ export async function executeProcess(
     commandOptions.clearEnv = true;
   }
 
-  const isolated = options.terminateProcessTree === true &&
+  const guardian = getCommandGuardian();
+  const isolated = !guardian && options.terminateProcessTree === true &&
     shouldIsolateProcessGroup();
   if (isolated) {
     // setsid(): the child leads its own session and process group, so the
@@ -370,7 +398,25 @@ export async function executeProcess(
   const graceMs = options.killGraceMs ?? KILL_GRACE_MS;
   const lineOptions = { normalizeCrlf: options.normalizeCrlf === true };
 
-  const command = new Deno.Command(options.command, commandOptions);
+  if (guardian) {
+    commandOptions.args = [
+      "__command_guardian",
+      "--fence",
+      guardian.fence,
+      "--grace-ms",
+      String(graceMs),
+      "--",
+      options.command,
+      ...(options.args ?? []),
+    ];
+    commandOptions.stdin = "piped";
+    // Survive engine process-group death long enough to kill/reap the target.
+    commandOptions.detached = true;
+  }
+  const command = new Deno.Command(
+    guardian?.executable ?? options.command,
+    commandOptions,
+  );
   const attachJob = options.attachJob ?? attachProcessJob;
   const spawn = (): Spawned => {
     const child = command.spawn();
@@ -378,7 +424,11 @@ export async function executeProcess(
     // Deno cannot spawn suspended, so a process the command starts before
     // this line runs is outside the job; `taskkill /T` still reaches it.
     const job = options.terminateProcessTree ? attachJob(child.pid) : undefined;
-    return { child, job };
+    return {
+      child,
+      job,
+      guardianControl: guardian ? child.stdin.getWriter() : undefined,
+    };
   };
   // waits out any termination, then stops tracking the group; a path ending
   // while the child still runs (a throwing output callback) terminates it

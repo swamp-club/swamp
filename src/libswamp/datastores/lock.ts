@@ -32,31 +32,11 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 
-/**
- * uses / rather than SEPARATOR because lock keys are opaque strings to custom
- * providers, such as S3 object keys
- */
-export function modelLockKey(
-  namespace: string | undefined,
-  modelType: string,
-  modelId: string,
-): string {
-  const base = `data/${modelType}/${modelId}/.lock`;
-  return namespace ? `${namespace}/${base}` : base;
-}
-
-/**
- * sits outside data/ and workflow-runs/ so neither the per-model lock scan nor
- * the run repository sees it, and is named .lock, the one name datastore sync
- * never transfers
- */
-export function workflowRunLockKey(
-  namespace: string | undefined,
-  runId: string,
-): string {
-  const base = `workflow-run-claims/${runId}/.lock`;
-  return namespace ? `${namespace}/${base}` : base;
-}
+import { modelLockKey } from "../../domain/datastore/lock_key.ts";
+export {
+  modelLockKey,
+  workflowRunLockKey,
+} from "../../domain/datastore/lock_key.ts";
 
 /** uses SEPARATOR because the path comes from relative() in @std/path */
 export function stripNamespacePrefix(

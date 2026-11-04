@@ -171,13 +171,11 @@ Deno.test(
 // appear
 const PINNED_SERVE_CLI_EDGES: readonly string[] = [
   "src/serve/connection.ts -> src/cli/commands/version.ts",
-  "src/serve/deps.ts -> src/cli/repo_context.ts",
   "src/serve/extension_reload.ts -> src/cli/resolve_models_dir.ts",
   "src/serve/handlers/admin_handlers.ts -> src/cli/create_extension_install_deps.ts",
   "src/serve/handlers/admin_handlers.ts -> src/cli/load_identity.ts",
   "src/serve/handlers/admin_handlers.ts -> src/cli/resolve_datastore.ts",
   "src/serve/handlers/admin_handlers.ts -> src/cli/resolve_models_dir.ts",
-  "src/serve/handlers/model_handlers.ts -> src/cli/repo_context.ts",
   "src/serve/handlers/vault_handlers.ts -> src/cli/repo_context.ts",
   "src/serve/telemetry.ts -> src/cli/telemetry_integration.ts",
 ];
@@ -256,8 +254,8 @@ Deno.test(
 );
 
 // libswamp mod.ts lists the public surface, not an import path: delivery code
-// takes a name only if mod.ts exports it from that file, and nothing imports
-// mod.ts, so deno info stays honest
+// (cli, presentation, serve, engine) takes a name only if mod.ts exports it
+// from that file, and nothing imports mod.ts, so deno info stays honest
 
 const LIBSWAMP_BARREL = "src/libswamp/mod.ts";
 
@@ -295,12 +293,12 @@ function surfaceViolations(
 }
 
 Deno.test(
-  "libswamp surface: cli, presentation and serve import only what mod.ts exports",
+  "libswamp surface: cli, presentation, serve and engine import only what mod.ts exports",
   async () => {
     const surface = await libswampSurface();
     const violations: string[] = [];
 
-    for (const layer of ["cli", "presentation", "serve"]) {
+    for (const layer of ["cli", "presentation", "serve", "engine"]) {
       for await (
         const entry of walk(join(SRC_DIR, layer), {
           exts: [".ts", ".tsx"],
@@ -316,7 +314,7 @@ Deno.test(
     assertEquals(
       violations.length,
       0,
-      `CLI, presentation and serve code may import from a libswamp file only\n` +
+      `CLI, presentation, serve and engine code may import from a libswamp file only\n` +
         `the names ${LIBSWAMP_BARREL} exports from that file:\n` +
         `${violations.sort().join("\n")}\n\n` +
         `${LIBSWAMP_BARREL} is the list of what libswamp makes public. A name\n` +

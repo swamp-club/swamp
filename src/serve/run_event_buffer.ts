@@ -34,6 +34,10 @@ interface SequencedEvent {
   event: SerializedEvent;
 }
 
+export type RunEventDelivery =
+  | { kind: "event"; seq: number; event: SerializedEvent }
+  | { kind: "terminal"; terminal: BufferTerminal }
+  | { kind: "overflow" };
 const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
   "completed",
   "cancelled",
@@ -58,6 +62,7 @@ export class RunEventBuffer {
   #nextSeq = 1;
   #terminal: BufferTerminal | null = null;
   readonly #subscribers = new Set<RunEventSubscriber>();
+  readonly #changed = new Set<() => void>();
 
   constructor(capacity: number, options: RunEventBufferOptions = {}) {
     if (capacity < 1) {
@@ -119,6 +124,7 @@ export class RunEventBuffer {
         // Subscriber errors must not break delivery to other subscribers
       }
     }
+    for (const changed of [...this.#changed]) changed();
 
     return seq;
   }
@@ -134,6 +140,7 @@ export class RunEventBuffer {
       for (const event of held) this.#deliver(event);
     }
     this.#terminal = terminal;
+    for (const changed of [...this.#changed]) changed();
 
     for (const sub of this.#subscribers) {
       try {
@@ -175,5 +182,44 @@ export class RunEventBuffer {
       this.#subscribers.delete(subscriber);
       subscriber.onDetach();
     };
+  }
+
+  /**
+   * Pull delivery for a bounded transport. The consumer controls the pace;
+   * retained events stay in the existing ring instead of a second promise
+   * queue. As with subscribe, a cursor older than the ring starts at its head.
+   */
+  async *follow(
+    afterSeq: number,
+    signal: AbortSignal,
+  ): AsyncGenerator<RunEventDelivery> {
+    let nextSeq = Math.max(afterSeq + 1, this.firstSeq);
+    while (!signal.aborted) {
+      if (nextSeq < this.firstSeq) {
+        yield { kind: "overflow" };
+        return;
+      }
+      const index = this.#firstIndex + Math.max(0, nextSeq - this.firstSeq);
+      const entry = this.#events[index];
+      if (entry) {
+        nextSeq = entry.seq + 1;
+        yield { kind: "event", ...entry };
+        continue;
+      }
+      if (this.#terminal) {
+        yield { kind: "terminal", terminal: this.#terminal };
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const changed = () => {
+          this.#changed.delete(changed);
+          signal.removeEventListener("abort", changed);
+          resolve();
+        };
+        this.#changed.add(changed);
+        signal.addEventListener("abort", changed, { once: true });
+        if (signal.aborted) changed();
+      });
+    }
   }
 }

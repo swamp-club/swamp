@@ -22,7 +22,8 @@
 // heavy dependency (AWS SDK, OpenTelemetry, …) can trigger at import time —
 // before main()'s body runs. See tls_trust_bootstrap.ts for the full rationale.
 import "./src/infrastructure/runtime/tls_trust_bootstrap.ts";
-import { runCli } from "./src/cli/mod.ts";
+// Capture the empty async context before either delivery adapter is imported.
+import "./src/infrastructure/runtime/ambient_context.ts";
 import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
 import {
   exitCodeForError,
@@ -36,7 +37,7 @@ import {
   shutdownLogs,
   shutdownTracing,
 } from "./src/infrastructure/tracing/mod.ts";
-import { VERSION } from "./src/cli/commands/version.ts";
+import { GIT_SHA, VERSION } from "./src/cli/commands/version.ts";
 import {
   initExecutionMetrics,
   shutdownExecutionMetrics,
@@ -56,6 +57,19 @@ import {
 } from "./src/infrastructure/runtime/bundle_probe_host.ts";
 
 if (import.meta.main) {
+  // The private engine enters before the interactive CLI and telemetry tree.
+  // Requests and replies use private inherited pipes, separate from child stdio.
+  if (Deno.args[0] === "engine") {
+    redirectConsoleToStderr();
+    await initializeLogging({ stderrOnly: true });
+    const { runEngineMain } = await import("./src/engine/entry.ts");
+    Deno.exit(
+      await runEngineMain(Deno.args.slice(1), {
+        version: VERSION,
+        gitSha: GIT_SHA,
+      }),
+    );
+  }
   // A v3 writer's Litestream supervisor (swamp-club#3416) runs none of the
   // CLI: no environment, tracing, auth gate or telemetry.
   if (isSupervisorInvocation(Deno.args)) {
@@ -78,6 +92,7 @@ if (import.meta.main) {
   // cut off by Deno.exit.
   let errorExitCode: number | undefined;
   try {
+    const { runCli } = await import("./src/cli/mod.ts");
     await runWithParentTrace(parentCtx, () => runCli(Deno.args));
   } catch (error) {
     // Release datastore lock if still held (safety net for uncaught errors)

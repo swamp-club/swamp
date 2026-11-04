@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ServeSession } from "../session.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createDataDeleteDeps,
@@ -150,7 +151,7 @@ export function resolveRunGcInput(
 }
 
 export async function handleDataGet(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataGetPayload,
@@ -277,7 +278,7 @@ export async function handleDataGet(
  * producer the caller could not list
  */
 function ownerReadCheck(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   principal: Principal | null,
 ): (owner: DataOwnerInfo) => Promise<boolean> {
@@ -296,7 +297,7 @@ function ownerReadCheck(
  * history; then data read on every owner of the returned item
  */
 async function authorizeWorkflowData(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataGetPayload,
@@ -377,7 +378,7 @@ async function authorizeWorkflowData(
  * and all failures are one not-found naming only the argument
  */
 function servedLatestRunResolver(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   ctx: ConnectionContext,
@@ -418,7 +419,7 @@ function servedLatestRunResolver(
  * the error says nothing about what the caller may not read
  */
 function servedModelResolver(
-  socket: WebSocket,
+  socket: ServeSession,
   requestId: string,
   principal: Principal | null,
   ctx: ConnectionContext,
@@ -452,7 +453,7 @@ function servedModelResolver(
 }
 
 export async function handleDataQuery(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataQueryPayload,
@@ -555,7 +556,7 @@ export async function handleDataQuery(
 }
 
 export async function handleDataList(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataListPayload,
@@ -734,7 +735,7 @@ export async function handleDataList(
 }
 
 export async function handleDataSearch(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -828,7 +829,7 @@ export async function handleDataSearch(
 }
 
 export async function handleDataVersions(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataVersionsPayload,
@@ -911,7 +912,7 @@ export async function handleDataVersions(
 }
 
 export async function handleDataDelete(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataDeletePayload,
@@ -1001,7 +1002,7 @@ export async function handleDataDelete(
 }
 
 export async function handleDataRename(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataRenamePayload,
@@ -1096,7 +1097,7 @@ export async function handleDataRename(
 }
 
 export async function handleSummarise(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   controller: AbortController,
@@ -1160,7 +1161,7 @@ export async function handleSummarise(
 }
 
 export async function handleDataGc(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataGcPayload | undefined,
@@ -1234,7 +1235,7 @@ export async function handleDataGc(
 }
 
 export async function handleDataPrune(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: DataPrunePayload | undefined,
@@ -1293,7 +1294,7 @@ export async function handleDataPrune(
 }
 
 export async function handleRunGc(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: RunGcPayload | undefined,

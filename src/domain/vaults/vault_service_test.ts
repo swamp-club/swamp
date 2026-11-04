@@ -1010,6 +1010,85 @@ class InMemoryVaultAuditRepository implements VaultAuditRepository {
   }
 }
 
+Deno.test("VaultService.get: an abandoned provider read cannot return or emit a success audit", async () => {
+  const controller = new AbortController();
+  const started = Promise.withResolvers<void>();
+  const value = Promise.withResolvers<string>();
+  const type = `@test/abandoned-${crypto.randomUUID()}`;
+  let reads = 0;
+  vaultTypeRegistry.register({
+    type,
+    name: "Abandoned read",
+    description: "A provider with an uncancellable read",
+    isBuiltIn: false,
+    createProvider: () => ({
+      get: () => {
+        reads++;
+        started.resolve();
+        return value.promise;
+      },
+      put: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+      getName: () => "abandoned",
+    }),
+  });
+  try {
+    const service = new VaultService();
+    const audit = new InMemoryVaultAuditRepository();
+    service.setAuditRepository(audit);
+    service.registerVault({
+      name: "abandoned",
+      type,
+      config: {},
+      auditReads: true,
+    });
+    const rejected = assertRejects(() =>
+      service.get("abandoned", "key", "authentication", {
+        signal: controller.signal,
+      })
+    );
+    await started.promise;
+    controller.abort();
+    value.resolve("private-vault-canary");
+    assertEquals(await rejected, controller.signal.reason);
+    assertEquals(audit.entries, []);
+    await assertRejects(() =>
+      service.get("abandoned", "key", "authentication", {
+        signal: controller.signal,
+      })
+    );
+    assertEquals(reads, 1);
+  } finally {
+    value.resolve("cleanup");
+    vaultTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("VaultService.fromRepository: cancellation during extension loading stops further setup", async () => {
+  const controller = new AbortController();
+  const loading = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  vaultTypeRegistry.resetLoadedFlag();
+  vaultTypeRegistry.setLoader(() => {
+    started.resolve();
+    return loading.promise;
+  });
+  try {
+    const rejected = assertRejects(() =>
+      VaultService.fromRepository("/unused-repository", {
+        signal: controller.signal,
+      })
+    );
+    await started.promise;
+    controller.abort();
+    loading.resolve();
+    assertEquals(await rejected, controller.signal.reason);
+  } finally {
+    loading.resolve();
+    vaultTypeRegistry.clearLoadersForTesting();
+  }
+});
+
 Deno.test("VaultService - audit trail", async (t) => {
   await t.step(
     "should record audit entry with action get when audit is enabled on vault",

@@ -23,6 +23,7 @@
  * allow scopes the principal; data grants play no part
  */
 
+import type { ServeSession } from "./session.ts";
 import type { AccessPrincipal } from "../domain/access/access_decision_service.ts";
 import { ActionSchema } from "../domain/access/action.ts";
 import type { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
@@ -463,7 +464,7 @@ export function runVaultScopeContext(
 }
 
 export function captureRunPrincipal(
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
 ): RunPrincipalInputs | null {
   if (!principal) return null;
@@ -490,7 +491,7 @@ export function captureRunPrincipal(
 
 export function requestRunVaultScope(
   ctx: Parameters<typeof runVaultScopeContext>[0],
-  socket: WebSocket,
+  socket: ServeSession,
   principal: Principal | null,
   runId?: string,
 ): ServeRunVaultScope | undefined {

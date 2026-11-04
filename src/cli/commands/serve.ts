@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { reconstructChainStateFromStore } from "../../serve/audit_chain_recovery.ts";
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
 import { EventLoopLagMonitor } from "../../serve/event_loop_lag.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
@@ -788,61 +789,6 @@ export function authorizeCancelRequest(
     }, { status: 403 });
   }
   return undefined;
-}
-
-const CHAIN_RECONSTRUCT_LOOKBACK_DAYS = 14;
-
-async function reconstructChainStateFromStore(
-  store: AuditStore,
-): Promise<{ sequence: number; previousDigest: string } | null> {
-  try {
-    let latestSeq = -1;
-    let latestDigest = "";
-    let found = false;
-    for (let d = 0; d < CHAIN_RECONSTRUCT_LOOKBACK_DAYS; d++) {
-      const date = new Date(Date.now() - d * 86_400_000).toISOString().slice(
-        0,
-        10,
-      );
-      const keys = await store.list(`events/${date}/`);
-      for (const key of keys) {
-        const data = await store.get(key);
-        if (!data) continue;
-        const text = new TextDecoder().decode(data);
-        for (const line of text.split("\n")) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line) as Record<string, unknown>;
-            const seq = event.sequence;
-            const digest = event.digest;
-            if (
-              event.version === 1 &&
-              typeof seq === "number" &&
-              typeof digest === "string"
-            ) {
-              if (seq > latestSeq) {
-                latestSeq = seq;
-                latestDigest = digest;
-                found = true;
-              }
-            }
-          } catch {
-            // skip malformed
-          }
-        }
-      }
-      if (found) break;
-    }
-    if (found) {
-      return {
-        sequence: latestSeq,
-        previousDigest: latestDigest,
-      };
-    }
-  } catch {
-    // best-effort reconstruction
-  }
-  return null;
 }
 
 export async function cancelExecution(

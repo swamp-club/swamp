@@ -47,6 +47,7 @@ import {
   findWorkflowById,
   findWorkflowByIdOrName,
 } from "../domain/workflows/workflow_lookup.ts";
+import type { Workflow } from "../domain/workflows/workflow.ts";
 import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import type { RunCheckpointer } from "../domain/workflows/run_checkpointer.ts";
 import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver.ts";
@@ -90,7 +91,7 @@ import {
   acquireModelLocks,
   createWorkflowRunClaims,
   type LockProgressWriter,
-} from "../cli/repo_context.ts";
+} from "../infrastructure/persistence/repo_execution_locks.ts";
 import {
   extractTraceContext,
   runWithParentTrace,
@@ -131,6 +132,7 @@ export async function createWorkflowRunDeps(
      * every serve caller passes it
      */
     runWriteFence?: RunWriteFence;
+    validateWorkflow?: (workflow: Workflow) => void;
   },
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
@@ -275,6 +277,7 @@ export async function createWorkflowRunDeps(
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     telemetrySink: options?.telemetrySink,
+    validateWorkflow: options?.validateWorkflow,
     supersede: {
       findSuspendedRuns: (workflowId, signal) =>
         repoContext.workflowRunRepo.findByStatus(
@@ -512,6 +515,7 @@ export async function executeWorkflowWithLocks(
     vaultAccess?: ServeRunVaultScope;
     defaultVault?: string;
     runWriteFence?: RunWriteFence;
+    validateWorkflow?: (workflow: Workflow) => void;
   },
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution — by the same rule the
@@ -555,6 +559,7 @@ export async function executeWorkflowWithLocks(
       runCheckpointer,
       defaultVault: options.defaultVault,
       runWriteFence: options.runWriteFence,
+      validateWorkflow: options.validateWorkflow,
     },
   );
   const libCtx = createLibSwampContext({

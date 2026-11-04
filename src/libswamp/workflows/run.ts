@@ -24,7 +24,7 @@ import type {
   WorkflowExecutionEvent,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import { markErrorPaths } from "../../domain/errors.ts";
+import { markErrorPaths, userErrorCode } from "../../domain/errors.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -355,6 +355,8 @@ export interface WorkflowRunDeps {
   dataRepo?: UnifiedDataRepository;
   definitionRepo?: DefinitionRepository;
   telemetrySink?: WorkflowTelemetrySink;
+  /** Optional profile admission before superseding or executing work. */
+  validateWorkflow?: (workflow: Workflow) => void;
   /**
    * supersedes matching-input suspended runs and loads the evaluated cache a
    * --last-evaluated run replays; without it nothing is superseded and the
@@ -814,6 +816,12 @@ export async function* workflowRun(
             return;
           }
 
+          try {
+            deps.validateWorkflow?.(workflow);
+          } catch (error) {
+            yield { kind: "error", error: workflowExecutionFailed(error) };
+            return;
+          }
           if (workflow.inputs && !input.lastEvaluated) {
             const coercedInputs = coerceInputTypes(
               input.inputs ?? {},
@@ -852,6 +860,9 @@ export async function* workflowRun(
               evaluatedCache = await deps.supersede.evaluatedCache(
                 workflow.name,
               );
+              if (evaluatedCache) {
+                deps.validateWorkflow?.(evaluatedCache.workflow);
+              }
             } catch (error) {
               yield { kind: "error", error: workflowExecutionFailed(error) };
               return;
@@ -923,6 +934,7 @@ export async function* workflowRun(
                 expectedName: resolvedInput.expectedName,
                 lastEvaluated: resolvedInput.lastEvaluated,
                 evaluatedCache: evaluatedCache ?? undefined,
+                validateWorkflow: deps.validateWorkflow,
                 inputs: resolvedInput.inputs,
                 runtimeTags: resolvedInput.runtimeTags,
                 signal: ctx.signal,
@@ -1056,7 +1068,9 @@ export function inputValidationFailed(
 export function workflowExecutionFailed(cause: unknown): SwampError {
   const message = cause instanceof Error ? cause.message : String(cause);
   return {
-    code: "workflow_execution_failed",
+    code: userErrorCode(cause) === "unsupported_profile"
+      ? "unsupported_profile"
+      : "workflow_execution_failed",
     message: `Workflow execution failed: ${message}`,
     cause: cause instanceof Error ? cause : undefined,
   };

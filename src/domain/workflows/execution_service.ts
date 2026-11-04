@@ -3295,6 +3295,8 @@ export class WorkflowExecutionService {
        * unique, so only a workflow with this name and the id is run.
        */
       expectedName?: string;
+      /** Checks the exact source and evaluated workflow before execution. */
+      validateWorkflow?: (workflow: Workflow) => void;
       lastEvaluated?: boolean;
       /**
        * the evaluated cache a --last-evaluated run replays, as the caller
@@ -3451,6 +3453,7 @@ export class WorkflowExecutionService {
         if (!found) {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
+        options?.validateWorkflow?.(found);
         workflow = found;
         refuseFanOutJobs(found);
         // Refused before anything runs: a wait opened where its records
@@ -3488,6 +3491,7 @@ export class WorkflowExecutionService {
                 `  swamp workflow evaluate ${workflow.name}`,
             );
           }
+          options?.validateWorkflow?.(lastEvaluated.workflow);
           if (mayHoldPlaintextSensitiveValues(lastEvaluated)) {
             throw new UserError(
               `The evaluated workflow cached for "${workflow.name}" was written by an older swamp and may hold sensitive values in plaintext, so it is not replayed. ` +
@@ -3530,6 +3534,7 @@ export class WorkflowExecutionService {
             provenance: lastEvaluated.provenance,
           }, sensitiveValues);
           workflow = restored.workflow;
+          options?.validateWorkflow?.(workflow);
           refuseFanOutJobs(workflow);
           // the cached steps run, not the source's, so their reserved tags are
           // refused before any of them runs too
@@ -3628,6 +3633,7 @@ export class WorkflowExecutionService {
             authoredExpressions,
           );
           workflow = evaluation.workflow;
+          options?.validateWorkflow?.(workflow);
           sanitizedTasks = evaluation.sanitizedTasks;
           stepProvenance = evaluation.stepProvenance;
           workflowProvenance = evaluation.provenance;

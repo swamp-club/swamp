@@ -156,17 +156,8 @@ import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resol
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { loadIdentity, USER_AGENT } from "./load_identity.ts";
-import {
-  isCollectiveToken,
-  setAuthenticated,
-  setAuthScopes,
-  setCollectiveToken,
-  setScopeResolutionFailed,
-} from "./auth_context.ts";
-import {
-  DEFAULT_SWAMP_CLUB_URL,
-  keyFingerprint,
-} from "../domain/auth/auth_credentials.ts";
+import { resolveAccountAuthentication } from "../libswamp/auth/account.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
   createAutoResolveInstallerAdapter,
@@ -197,14 +188,8 @@ import { UserIdentityRepository } from "../infrastructure/persistence/user_ident
 import { TelemetryPreferencesFileRepository } from "../infrastructure/persistence/telemetry_preferences_file_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 import {
-  hasApiKeySource,
   setApiKeyFileOverride,
 } from "../infrastructure/persistence/api_key_source.ts";
-import {
-  getCollectives,
-  SwampClubClient,
-  type WhoamiResponse,
-} from "../infrastructure/http/swamp_club_client.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
@@ -2158,19 +2143,6 @@ export function buildCommandTree(): AnyCommand {
   return tree;
 }
 
-/** saves a CI run, which checks its signin token live, a second call */
-async function gateWhoamiOr(
-  outcome: AuthGateOutcome | undefined,
-  serverUrl: string,
-  apiKey: string,
-): Promise<WhoamiResponse> {
-  if (outcome?.kind === "pass" && outcome.liveResponse) {
-    return outcome.liveResponse;
-  }
-  const client = new SwampClubClient(serverUrl, await loadIdentity());
-  return await client.whoami(apiKey, AbortSignal.timeout(10_000));
-}
-
 /**
  * best effort and bounded by its own timeout; it runs at teardown, so a
  * long-running serve or worker refreshes only on exit and is re-gated on
@@ -2509,86 +2481,18 @@ async function runInvocation(
     }
   }
 
-  // whoami is called only when the cache is stale. scopes are set from the
-  // response to avoid cache round-trip issues with --unstable-bundle module
-  // duplication. must run before the authCollectives read
-  let uncachedCollectives: string[] | undefined;
-  if (!hookMode && hasApiKeySource()) {
-    try {
-      const authRepo = new AuthRepository();
-      const creds = await authRepo.load();
-      if (creds) {
-        if (creds.apiKey) setCollectiveToken(creds.apiKey);
-        if (isCollectiveToken()) {
-          const scopeFingerprint = await keyFingerprint(creds.apiKey);
-          const cachedScopes = await authRepo.loadScopeCache(scopeFingerprint);
-          if (cachedScopes) {
-            setAuthScopes(cachedScopes);
-          } else {
-            const response = await gateWhoamiOr(
-              gateOutcome,
-              creds.serverUrl,
-              creds.apiKey,
-            );
-            if (response.authenticated) {
-              setAuthScopes(response.scopes);
-              if (response.scopes && configDirOwned) {
-                await authRepo.saveScopeCache(
-                  scopeFingerprint,
-                  response.scopes,
-                );
-              }
-            }
-          }
-        } else if (!creds.username) {
-          const response = await gateWhoamiOr(
-            gateOutcome,
-            creds.serverUrl,
-            creds.apiKey,
-          );
-          if (response.authenticated && response.username) {
-            const collectives = getCollectives(response) ?? [];
-            // A process that does not own the config dir must not write the
-            // cache, so it keeps this run's collectives in memory instead.
-            uncachedCollectives = collectives;
-            if (configDirOwned) {
-              await authRepo.saveIdentityCache(
-                creds.serverUrl,
-                response.username,
-                collectives,
-                await keyFingerprint(creds.apiKey),
-                response.scopes,
-              );
-            }
-          }
-        }
-      }
-    } catch (err) {
-      setScopeResolutionFailed(true);
-      logger.warn`Scope resolution failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
-    }
-  }
-
-  let authCollectives: string[] | undefined;
   if (!hookMode) {
-    try {
-      const authRepo = new AuthRepository();
-      const creds = await authRepo.load();
-      authCollectives = creds?.collectives ?? uncachedCollectives;
-      if (!hasApiKeySource()) {
-        if (creds?.apiKey) setCollectiveToken(creds.apiKey);
-        setAuthScopes(creds?.scopes);
-      }
-    } catch {
-      // Auth file unreadable — continue without membership collectives
-    }
-  }
-
-  if (!hookMode) {
-    const autoResolverIdentity = await loadIdentity();
-    setAuthenticated(Boolean(autoResolverIdentity.bearerToken));
+    const { identity: autoResolverIdentity, collectives: authCollectives } =
+      await resolveAccountAuthentication({
+        gateOutcome,
+        canWrite: configDirOwned,
+        loadIdentity,
+        onScopeResolutionFailure: (err) => {
+          logger.warn`Scope resolution failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+        },
+      });
     if (!commandNeedsLoaderSetup(args) || marker === null) {
       await ensureManagedConfigBase(repoDir, marker);
     }

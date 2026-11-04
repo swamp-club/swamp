@@ -300,6 +300,8 @@ const PERSISTENCE_MARK_ADAPTERS: Record<string, string> = {
     "the legacy unit of work forwards each staged change to the mark hook",
   "src/infrastructure/persistence/unit_of_work_scope.ts":
     "signalChange calls the hook directly when no scope is bound to it",
+  "src/infrastructure/persistence/repo_execution_locks.ts":
+    "the shared lock flush adapter marks its catalog export at publication time, outside the repository unit of work; this call moved from CLI repo_context",
 };
 
 function persistenceMarksOutsideAdapters(
@@ -367,7 +369,7 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // command calls it, they publish through runManagedConfigMutation's root unit
   "src/cli/managed_config_sync.ts: pushManagedConfigChanges",
   "src/cli/repo_context.ts: buildMarkDirtyHook (x2)",
-  "src/cli/repo_context.ts: writeCatalogExportIfNeeded",
+  "src/infrastructure/persistence/repo_execution_locks.ts: writeCatalogExportIfNeeded",
   // the legacy unit of work forwarding staged changes to the mark hook; exactly
   // one call, later phases stage through the unit of work instead of adding
   // calls here
@@ -400,7 +402,7 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/completion_types.ts: ModelNameType: YamlDefinitionRepository",
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
-  "src/cli/datastore_expression_resolver.ts: createEarlyVaultService: YamlVaultConfigRepository",
+  "src/libswamp/datastores/resolve_expressions.ts: createEarlyVaultService: YamlVaultConfigRepository",
   "src/cli/mod.ts: configureExtensionAutoResolver: LockfileRepository",
   "src/cli/mod.ts: configureStartupExtensions: LockfileRepository",
   "src/cli/mod.ts: initTelemetryService: YamlVaultConfigRepository",
@@ -598,7 +600,7 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/cli/commands/datastore_setup.ts: nudgeVaultMigration: YamlVaultConfigRepository",
   "src/cli/commands/doctor_datastores.ts: createDoctorDatastoresDeps: YamlVaultConfigRepository",
   "src/cli/commands/serve.ts: serveCommand: YamlVaultConfigRepository",
-  "src/cli/datastore_expression_resolver.ts: createEarlyVaultService: YamlVaultConfigRepository",
+  "src/libswamp/datastores/resolve_expressions.ts: createEarlyVaultService: YamlVaultConfigRepository",
   "src/cli/mod.ts: initTelemetryService: YamlVaultConfigRepository",
   "src/domain/vaults/vault_service.ts: VaultService: YamlVaultConfigRepository",
   "src/libswamp/vaults/annotate.ts: createVaultAnnotateDeps: YamlVaultConfigRepository",

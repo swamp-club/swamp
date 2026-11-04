@@ -55,6 +55,45 @@ export { merge } from "./stream/merge.ts";
 export { assertCompletes, assertErrors, collect } from "./testing.ts";
 
 export {
+  admitOrchestratorPass,
+  type AncestorCheck,
+  authGateBlockedError,
+  type AuthGateCredential,
+  type AuthGateDeps,
+  type AuthGateOutcome,
+  BLOCKING_CHECK_TIMEOUT_MS,
+  blockMessage,
+  createAuthGateDeps,
+  createGatePassKeeper,
+  GATE_PASS_KEEPER_INTERVAL_MS,
+  type GateHandoff,
+  type GatePassKeeper,
+  type NestedGateDeps,
+  nestedGatePassValue,
+  type OrchestratorAdmission,
+  type OrchestratorBlockCause,
+  orchestratorBlockedError,
+  type ProofRefreshResult,
+  publishNestedGatePass,
+  runAuthGate,
+  runProofRefresh,
+  SHORT_CHECK_TIMEOUT_MS,
+} from "./auth/gate.ts";
+export {
+  getAuthScopes,
+  isAuthenticated,
+  isCollectiveToken,
+  requireAuthenticated,
+  requireScope,
+  resolveCliInitiatedBy,
+  scopeMatches,
+  setAuthenticated,
+  setAuthScopes,
+  setCollectiveToken,
+  setScopeResolutionFailed,
+} from "./auth/context.ts";
+export { resolveAccountAuthentication } from "./auth/account.ts";
+export {
   type AuthDeps,
   type AuthWhoamiEvent,
   createAuthDeps,
@@ -1868,6 +1907,11 @@ export {
 export type { ResolveBinary } from "../domain/audit/doctor/checks/resolve_binary.ts";
 export { todaysAuditFilePath } from "../domain/audit/audit_path.ts";
 
+export {
+  type DatastoreExpressionContext,
+  resolveDatastoreExpressions,
+} from "./datastores/resolve_expressions.ts";
+export { resolveFilesystemDatastoreConfig } from "./datastores/resolve_filesystem.ts";
 export {
   createDatastoreStatusDeps,
   type DatastoreHeldLeaseStatus,

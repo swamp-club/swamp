@@ -23,14 +23,13 @@
  * clears it at the end
  */
 
-import { NESTED_GATE_PASS_ENV } from "../domain/auth/nested_gate_pass.ts";
 import {
   admitOrchestratorPass,
   type AuthGateDeps,
   type AuthGateOutcome,
   type GateHandoff,
-  nestedGatePassValue,
   orchestratorBlockedError,
+  publishNestedGatePass,
 } from "./auth_gate.ts";
 import { getActiveTelemetryService } from "./telemetry_integration.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -48,6 +47,8 @@ export interface AuthGateSession {
   readonly deferred: boolean;
 }
 
+export { publishNestedGatePass } from "../libswamp/auth/gate.ts";
+
 let session: AuthGateSession | undefined;
 
 export function beginAuthGateSession(value: AuthGateSession): void {
@@ -60,19 +61,6 @@ export function endAuthGateSession(): void {
 
 export function currentAuthGateSession(): AuthGateSession | undefined {
   return session;
-}
-
-/**
- * hands this run's pass to swamps it starts through the process env; a run with
- * nothing to hand down clears any pass it inherited. Set once per process.
- */
-export function publishNestedGatePass(handoff: GateHandoff | undefined): void {
-  const value = nestedGatePassValue(handoff, Deno.pid);
-  if (value) {
-    Deno.env.set(NESTED_GATE_PASS_ENV, value);
-  } else {
-    Deno.env.delete(NESTED_GATE_PASS_ENV);
-  }
 }
 
 /**

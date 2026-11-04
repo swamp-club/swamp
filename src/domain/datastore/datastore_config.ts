@@ -196,6 +196,20 @@ export interface DatastoreConfigData {
   managedConfig?: boolean;
 }
 
+/** absent when the block does not set it; anything but a boolean is refused */
+export function durableField(
+  ds: { durable?: unknown },
+): { durable?: boolean } {
+  if (ds.durable === undefined) return {};
+  if (typeof ds.durable !== "boolean") {
+    throw new UserError(
+      `Invalid 'durable' in the datastore block of .swamp.yaml: expected ` +
+        `true or false, got ${JSON.stringify(ds.durable)}.`,
+    );
+  }
+  return { durable: ds.durable };
+}
+
 /**
  * format 3 on an extension datastore needs a provider that can host v3, checked
  * where the provider is known; format 2 on an extension datastore is the

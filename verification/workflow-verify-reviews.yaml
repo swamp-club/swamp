@@ -178,7 +178,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: adversarial-review
-        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/') || f.startsWith('src/domain/') || f.startsWith('src/infrastructure/') || f.startsWith('src/libswamp/') || f.startsWith('src/serve/') || f.startsWith('src/worker/') || f.startsWith('src/engine/') || f.startsWith('packages/serve-go/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
@@ -236,7 +236,7 @@ jobs:
             workingDir: "/tmp/swamp-verify-reviews-${{ run.id }}"
 
       - name: ux-review
-        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('src/cli/commands/') || f.startsWith('src/presentation/') || f.startsWith('packages/serve-go/cmd/') || f == 'src/domain/errors.ts' || f.startsWith('src/libswamp/')).size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"

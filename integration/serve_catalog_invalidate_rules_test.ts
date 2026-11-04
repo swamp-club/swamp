@@ -55,6 +55,8 @@ const PINNED = [
   "src/serve/handlers/model_handlers.ts :: pullBeforeUnlockedRun",
   // Built only with a sync service.
   "src/serve/runtime_data_poller.ts :: RuntimeDataPoller",
+  // local-v1 refuses every datastore but v2 before it builds the catalog.
+  "src/serve/local_engine_context.ts :: createLocalEngineContext",
   // Inside the sync-service branch of the migration lock.
   "src/serve/token_secret_migration.ts :: createTokenMigrationLockDeps",
 ];

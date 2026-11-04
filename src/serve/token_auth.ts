@@ -84,11 +84,14 @@ export class ServerTokenNotFoundError extends Error {
 export async function readServerTokenRecord(
   repoContext: RepositoryContext,
   name: string,
+  signal?: AbortSignal,
 ): Promise<ServerToken> {
+  signal?.throwIfAborted();
   const definition = await repoContext.definitionRepo.findByName(
     SERVER_TOKEN_MODEL_TYPE,
     name,
   );
+  signal?.throwIfAborted();
   if (definition === null) {
     throw new ServerTokenNotFoundError(name);
   }
@@ -97,6 +100,7 @@ export async function readServerTokenRecord(
     definition.id,
     TOKEN_DATA_NAME,
   );
+  signal?.throwIfAborted();
   if (content === null) {
     throw new ServerTokenNotFoundError(name);
   }
@@ -105,20 +109,29 @@ export async function readServerTokenRecord(
   );
 }
 
-export async function createServerTokenAuthDeps(
+export function createServerTokenAuthDeps(
   repoDir: string,
   repoContext: RepositoryContext,
+  signal?: AbortSignal,
 ): Promise<ServerTokenAuthDeps> {
-  const vaultService = await VaultService.fromRepository(repoDir);
-  return {
-    readToken: (name) => readServerTokenRecord(repoContext, name),
-    readSecret: (vaultName, secretKey) =>
-      vaultService.get(
+  signal?.throwIfAborted();
+  // Invalid and inactive token records never need to initialize a vault.
+  let vaultService: Promise<VaultService> | undefined;
+  return Promise.resolve({
+    readToken: (name) => readServerTokenRecord(repoContext, name, signal),
+    readSecret: async (vaultName, secretKey) => {
+      signal?.throwIfAborted();
+      vaultService ??= VaultService.fromRepository(repoDir, { signal });
+      const service = await vaultService;
+      signal?.throwIfAborted();
+      return await service.get(
         vaultName,
         secretKey,
         "model:server-token-verify",
-      ),
-  };
+        { signal },
+      );
+    },
+  });
 }
 
 // when a record's vault secret last matched its fingerprint; no secret is
@@ -312,7 +325,8 @@ export function shouldInvalidateDashboardSession(
 
 /**
  * authentication is read-only; explicit model redeem calls keep their
- * lastUsedAt update
+ * lastUsedAt update. A signal stops later stages and the success audit; a
+ * provider call already running still settles and stays caller-accounted
  */
 const MAX_TOKEN_LENGTH = 512;
 
@@ -322,7 +336,9 @@ export async function authenticateServerToken(
   repoContext: RepositoryContext,
   auditContext?: TokenAuthAuditContext,
   authDeps?: ServerTokenAuthDeps,
+  signal?: AbortSignal,
 ): Promise<ServerTokenAuthResult> {
+  signal?.throwIfAborted();
   if (presented.length > MAX_TOKEN_LENGTH) {
     return {
       ok: false,
@@ -342,8 +358,10 @@ export async function authenticateServerToken(
 
   try {
     const deps = authDeps ??
-      await createServerTokenAuthDeps(repoDir, repoContext);
+      await createServerTokenAuthDeps(repoDir, repoContext, signal);
+    signal?.throwIfAborted();
     const token = await deps.readToken(split.name);
+    signal?.throwIfAborted();
     const nowMs = deps.now?.() ?? Date.now();
     validateServerToken(token, split.name, presented, nowMs);
     const matchKey = vaultMatchKey(repoDir, token);
@@ -358,6 +376,7 @@ export async function authenticateServerToken(
       }
     } else {
       const secret = await deps.readSecret(token.vaultName, token.secretKey);
+      signal?.throwIfAborted();
       validateServerToken(token, split.name, presented, nowMs, secret);
       // the presented secret is the vault's; it must also be the one this
       // record was minted with, or the credential would authenticate as another
@@ -365,6 +384,7 @@ export async function authenticateServerToken(
       await verifyServerTokenSecret(token, secret);
       if (matchKey !== undefined) rememberVaultMatch(matchKey, nowMs);
     }
+    signal?.throwIfAborted();
 
     // every caller parses the principal after authentication, so a stored
     // principal that does not parse (hand-edited, or minted before validation)
@@ -388,6 +408,7 @@ export async function authenticateServerToken(
       };
     }
 
+    signal?.throwIfAborted();
     rememberTokenUsername(auditContext, token);
     emitTokenUseAuditEvent(auditContext, split.name, principal, token);
     logger.info("Authenticated token {name} as {principal}", {
@@ -404,6 +425,7 @@ export async function authenticateServerToken(
       ...(token.oauthIdentity ? { oauthIdentity: token.oauthIdentity } : {}),
     };
   } catch (error) {
+    signal?.throwIfAborted();
     const message = error instanceof Error ? error.message : String(error);
     const reason = classifyRedeemError(message);
     logger.warn(

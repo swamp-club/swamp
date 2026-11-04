@@ -435,7 +435,7 @@ Deno.test("serve root units: a workflow.reject whose reply fails after the save 
       };
       const requestId = crypto.randomUUID();
       const active = new Map<string, AbortController>();
-      handleMessage(
+      await handleMessage(
         socket as unknown as WebSocket,
         ctx,
         active,
@@ -528,7 +528,7 @@ async function sendCountingPushes(
   };
   const id = crypto.randomUUID();
   const active = new Map<string, AbortController>();
-  handleMessage(
+  await handleMessage(
     socket as unknown as WebSocket,
     ctx,
     active,
@@ -875,7 +875,7 @@ async function methodRunTimeline(
   };
   const id = crypto.randomUUID();
   const active = new Map<string, AbortController>();
-  handleMessage(
+  await handleMessage(
     socket as unknown as WebSocket,
     ctx,
     active,

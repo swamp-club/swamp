@@ -38,9 +38,6 @@ const PINNED_DIRECT_CLI_ROOTS: readonly string[] = [
   // The managed lockfile transaction, which runs inside the command's own
   // root (runManagedConfigMutation), so its root is that root's child.
   "src/cli/managed_config_sync.ts",
-  // Publish and discard helpers called inside a command's root, or after
-  // it, writing nothing a command reports.
-  "src/cli/repo_context.ts",
   "src/cli/commands/serve.ts",
 ];
 

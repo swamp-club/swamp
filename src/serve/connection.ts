@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  isSessionReply,
+  type ServeSession,
+  type SessionReply,
+} from "./session.ts";
 import { z } from "zod";
 import {
   SERVE_CAPABILITY_LITERAL_INPUTS,
@@ -1877,7 +1882,7 @@ export function createConnectionTeardown(
 }
 
 export function handleMessage(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   activeRequests: Map<string, AbortController>,
   event: MessageEvent,
@@ -1902,11 +1907,13 @@ export function handleMessage(
   }
 
   const request: ServerRequest = validated;
+  const webSocket = isSessionReply(socket) ? undefined : socket;
 
   // a peer authenticated by the peer key may read the commit feed and nothing
   // else: the key says the peer is a team node, never who any caller is
   if (
-    isPeerSocket(socket) && request.type !== "cancel" &&
+    webSocket !== undefined && isPeerSocket(webSocket) &&
+    request.type !== "cancel" &&
     !PEER_REQUESTS.has(request.type)
   ) {
     sendError(
@@ -1925,13 +1932,13 @@ export function handleMessage(
       return;
     }
     // A peer cancels only its own feed requests, never a run.
-    if (isPeerSocket(socket)) return;
+    if (webSocket !== undefined && isPeerSocket(webSocket)) return;
     const run = ctx.activeRunRegistry?.get(request.id);
     if (!run) {
       // a follower runs nothing: a cancel for a run passes on to the leader,
       // where the run is
-      if (ctx.followerGate?.role === "follower") {
-        forwarderFor(socket, ctx.leaderLink)?.cancel(event.data as string);
+      if (ctx.followerGate?.role === "follower" && webSocket !== undefined) {
+        forwarderFor(webSocket, ctx.leaderLink)?.cancel(event.data as string);
       }
       return;
     }
@@ -1946,7 +1953,7 @@ export function handleMessage(
       run,
       principal,
     );
-    cancelTask
+    return cancelTask
       .catch((error: unknown) => {
         logger.error("Unhandled request error for {requestId}: {error}", {
           requestId: request.id,
@@ -1954,7 +1961,6 @@ export function handleMessage(
         });
       })
       .finally(() => activeRequests.delete(request.id));
-    return;
   }
 
   if (activeRequests.size >= MAX_ACTIVE_REQUESTS) {
@@ -2023,8 +2029,8 @@ export function handleMessage(
   // so no step's side effect happens first
   const notLeader = followerRefusal(request.type, ctx.followerGate);
   if (
-    notLeader !== undefined && !notLeader.reads &&
-    forwarderFor(socket, ctx.leaderLink, ctx.feedBarrier)?.forward(
+    notLeader !== undefined && !notLeader.reads && webSocket !== undefined &&
+    forwarderFor(webSocket, ctx.leaderLink, ctx.feedBarrier)?.forward(
       request.id,
       request.type,
       event.data as string,
@@ -2674,17 +2680,21 @@ export function handleMessage(
     case "commits.subscribe":
       // filtered per commit, as GET changes is: every caller may subscribe and
       // sees only what it may read
-      task = handleCommitsSubscribe(
-        socket,
-        ctx,
-        request.id,
-        controller.signal,
-        principal,
-        request.payload,
-      );
+      task = isSessionReply(socket)
+        ? unsupportedOverSession(socket, request.id, request.type)
+        : handleCommitsSubscribe(
+          socket,
+          ctx,
+          request.id,
+          controller.signal,
+          principal,
+          request.payload,
+        );
       break;
     case "commits.head":
-      task = handleCommitsHead(socket, ctx, request.id);
+      task = isSessionReply(socket)
+        ? unsupportedOverSession(socket, request.id, request.type)
+        : handleCommitsHead(socket, ctx, request.id);
       break;
     case "audit.subscribe":
       if (
@@ -4425,8 +4435,23 @@ export function handleMessage(
     .finally(() => activeRequests.delete(request.id));
 }
 
+// the commit feed paces itself on a WebSocket's own buffer
+function unsupportedOverSession(
+  socket: SessionReply,
+  requestId: string,
+  type: string,
+): Promise<void> {
+  sendError(
+    socket,
+    requestId,
+    "unsupported_operation",
+    `Operation '${type}' is not supported by this server version`,
+  );
+  return Promise.resolve();
+}
+
 async function handleCancelRun(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   run: import("./active_run_registry.ts").ActiveRun,
@@ -4566,7 +4591,7 @@ function goneRunResource(
 }
 
 async function handleRunAttach(
-  socket: WebSocket,
+  socket: ServeSession,
   ctx: ConnectionContext,
   requestId: string,
   payload: { runId: string; afterSeq?: number },
