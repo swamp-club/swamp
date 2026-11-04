@@ -70,6 +70,8 @@ export function classifyPrSnapshot(
       reason: `Checks failed: ${snapshot.failedChecks.join(", ")}`,
     };
   }
+  // A request for changes outlives new pushes until the reviewer approves or
+  // the review is dismissed, so a re-run after a fix can land here again.
   if (snapshot.reviewDecision === "CHANGES_REQUESTED") {
     return {
       outcome: "changes_requested",
@@ -108,6 +110,9 @@ export interface CommandResult {
   stderr: string;
 }
 
+/** gh is missing; retrying cannot help. */
+export class GhUnavailableError extends Error {}
+
 export type GhRunner = (
   args: string[],
   signal: AbortSignal,
@@ -124,7 +129,7 @@ export const runGh: GhRunner = async (args, signal) => {
     }).output();
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new Error(
+      throw new GhUnavailableError(
         "watch_pr needs the GitHub CLI (gh) on PATH, authenticated with " +
           "gh auth login.",
       );
@@ -144,7 +149,9 @@ const FAILED_BUCKETS = new Set(["fail", "cancel"]);
 
 /**
  * Reads the failed checks. Required checks decide when the repo defines any;
- * a repo that gates merges some other way has every check counted.
+ * a repo that gates merges some other way has every check counted. gh also
+ * reports no required checks before any has started, so a failing optional
+ * check in that first window counts too.
  */
 async function readFailedChecks(
   url: string,
@@ -172,9 +179,9 @@ async function readChecks(
   );
   const parsed = tryParseJson(result.stdout);
   if (Array.isArray(parsed)) {
-    return parsed.map((c) => ({
-      name: String(c?.name ?? ""),
-      bucket: String(c?.bucket ?? ""),
+    return parsed.map((c: unknown) => ({
+      name: field(c, "name"),
+      bucket: field(c, "bucket"),
     }));
   }
   if (NO_CHECKS.test(result.stderr)) return null;
@@ -185,9 +192,11 @@ export async function fetchPrSnapshot(
   url: string,
   run: GhRunner,
   timeoutMs: number,
+  cancel?: AbortSignal,
 ): Promise<PrSnapshot> {
   assertGitHubPullUrl(url);
-  const signal = AbortSignal.timeout(timeoutMs);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = cancel ? AbortSignal.any([cancel, timeout]) : timeout;
   const view = await run(
     [
       "pr",
@@ -202,18 +211,17 @@ export async function fetchPrSnapshot(
   if (!parsed || typeof parsed !== "object") {
     throw ghError("gh pr view", view);
   }
-  const pr = parsed as Record<string, unknown>;
+  const mergedAt = field(parsed, "mergedAt");
+  const labels: unknown = (parsed as Record<string, unknown>).labels;
   const snapshot: PrSnapshot = {
-    state: String(pr.state ?? ""),
-    mergeable: String(pr.mergeable ?? ""),
-    mergeStateStatus: String(pr.mergeStateStatus ?? ""),
-    reviewDecision: String(pr.reviewDecision ?? ""),
-    labels: Array.isArray(pr.labels)
-      ? pr.labels.map((l) => String(l?.name ?? ""))
+    state: field(parsed, "state"),
+    mergeable: field(parsed, "mergeable"),
+    mergeStateStatus: field(parsed, "mergeStateStatus"),
+    reviewDecision: field(parsed, "reviewDecision"),
+    labels: Array.isArray(labels)
+      ? labels.map((l: unknown) => field(l, "name"))
       : [],
-    ...(typeof pr.mergedAt === "string" && pr.mergedAt
-      ? { mergedAt: pr.mergedAt }
-      : {}),
+    ...(mergedAt ? { mergedAt } : {}),
     failedChecks: [],
   };
   // Checks are moot once the PR has merged or closed.
@@ -221,6 +229,13 @@ export async function fetchPrSnapshot(
     snapshot.failedChecks = await readFailedChecks(url, run, signal);
   }
   return snapshot;
+}
+
+/** A string field of a parsed gh object, or empty when absent or not a string. */
+function field(value: unknown, key: string): string {
+  if (!value || typeof value !== "object") return "";
+  const v = (value as Record<string, unknown>)[key];
+  return typeof v === "string" ? v : "";
 }
 
 function tryParseJson(text: string): unknown {

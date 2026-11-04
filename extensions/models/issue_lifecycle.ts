@@ -77,6 +77,7 @@ import {
   classifyPrSnapshot,
   fetchPrSnapshot,
   type GhRunner,
+  GhUnavailableError,
   type PrSnapshot,
   type PrVerdict,
   runGh,
@@ -427,20 +428,31 @@ export function createWatchPrMethod(deps: WatchPrDeps) {
       const startedAt = new Date(deps.now()).toISOString();
       const attempt = pr.attempt ?? 1;
 
+      // pr_merged and pr_failed refuse to run inside the pr-cooldown window.
+      const cooldownEnd = new Date(pr.linkedAt).getTime() + PR_COOLDOWN_MS;
+
       let polls = 0;
       let failures = 0;
       let snapshot: PrSnapshot | undefined;
       let verdict: PrVerdict = { outcome: "pending" };
       while (true) {
+        verdict = { outcome: "pending" };
         try {
-          snapshot = await fetchPrSnapshot(pr.url, deps.runGh, GH_TIMEOUT_MS);
+          snapshot = await fetchPrSnapshot(
+            pr.url,
+            deps.runGh,
+            GH_TIMEOUT_MS,
+            context.signal,
+          );
           failures = 0;
           polls++;
           verdict = classifyPrSnapshot(snapshot, holdLabels);
-          if (verdict.outcome !== "pending") break;
         } catch (error) {
           failures++;
-          if (failures >= MAX_CONSECUTIVE_GH_FAILURES) throw error;
+          if (
+            error instanceof GhUnavailableError ||
+            failures >= MAX_CONSECUTIVE_GH_FAILURES
+          ) throw error;
           context.logger.warning(
             "Could not read the PR status ({failures} of {max}): {error}",
             {
@@ -449,6 +461,22 @@ export function createWatchPrMethod(deps: WatchPrDeps) {
               error: error instanceof Error ? error.message : String(error),
             },
           );
+        }
+        if (verdict.outcome !== "pending") {
+          const cooldownLeft = cooldownEnd - deps.now();
+          if (verdict.outcome === "held" || cooldownLeft <= 0) break;
+          // Read again once the window passes: a re-run may have fixed a
+          // failure seen this early.
+          context.logger.warning(
+            "{reason}; waiting {seconds}s for the pr-cooldown window, then " +
+              "reading the PR again",
+            {
+              reason: verdict.reason,
+              seconds: Math.ceil(cooldownLeft / 1000),
+            },
+          );
+          await deps.sleep(cooldownLeft, context.signal);
+          continue;
         }
         if (deps.now() + intervalMs > deadline) break;
         await deps.sleep(intervalMs, context.signal);
@@ -490,17 +518,6 @@ export function createWatchPrMethod(deps: WatchPrDeps) {
         context.logger.info("{reason}", { reason });
       } else {
         context.logger.warning("PR needs attention: {reason}", { reason });
-      }
-
-      // pr_merged and pr_failed refuse to run inside the pr-cooldown window.
-      const cooldownLeft = new Date(pr.linkedAt).getTime() + PR_COOLDOWN_MS -
-        deps.now();
-      if (cooldownLeft > 0) {
-        context.logger.info(
-          "Waiting {seconds}s for the pr-cooldown window before recording it",
-          { seconds: Math.ceil(cooldownLeft / 1000) },
-        );
-        await deps.sleep(cooldownLeft, context.signal);
       }
 
       const steps: Array<[CloseOutStepName, Record<string, unknown>]> =

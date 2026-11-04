@@ -23,7 +23,11 @@ import {
   FAKE_SWAMP_CLUB_URL,
   FakeSwampClub,
 } from "./_lib/fake_swamp_club_test_helper.ts";
-import type { CommandResult, GhRunner } from "./_lib/github_pr.ts";
+import {
+  type CommandResult,
+  type GhRunner,
+  GhUnavailableError,
+} from "./_lib/github_pr.ts";
 import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
 
 // ---------------------------------------------------------------------------
@@ -100,12 +104,14 @@ function scriptedGh(states: Array<PrState | Error>): GhRunner {
 async function withWatch(
   opts: {
     gh: GhRunner;
-    linkedAt?: number;
+    /** How long before the fake clock's start link_pr ran. */
+    linkedAgoMs?: number;
     setup?: (club: FakeSwampClub, store: Store) => void;
     skipChecks?: string[];
   },
   test: (h: Harness) => Promise<void>,
 ): Promise<void> {
+  let clock = Date.now();
   const club = new FakeSwampClub();
   club.addIssue({ number: ISSUE, status: "in_progress" });
   const store: Store = {
@@ -113,13 +119,13 @@ async function withWatch(
     "pullRequest-main": {
       url: PR,
       attempt: 1,
-      linkedAt: new Date(opts.linkedAt ?? Date.now() - PR_COOLDOWN_MS - 1000)
-        .toISOString(),
+      linkedAt: new Date(
+        clock - (opts.linkedAgoMs ?? PR_COOLDOWN_MS + 1000),
+      ).toISOString(),
     },
   };
   opts.setup?.(club, store);
 
-  let clock = Date.now();
   const sleeps: number[] = [];
   const nested: string[] = [];
   const warnings: string[] = [];
@@ -340,21 +346,35 @@ Deno.test("watch_pr: each blocking state records pr_failed with its reason", asy
   }
 });
 
-Deno.test("watch_pr: a conflict inside the cooldown waits it out before pr_failed", async () => {
-  const linkedAt = Date.now() - 60_000;
+Deno.test("watch_pr: a conflict inside the cooldown waits it out, reads again, then records pr_failed", async () => {
   await withWatch({
     gh: scriptedGh([{ mergeable: "CONFLICTING" }]),
-    linkedAt,
+    linkedAgoMs: 60_000,
     // The real check reads the wall clock, which the fake clock cannot move.
     skipChecks: ["pr-cooldown"],
   }, async ({ store, sleeps, warnings, run }) => {
     await run();
-    assertEquals(sleeps.length, 1);
-    const expected = linkedAt + PR_COOLDOWN_MS - Date.now();
-    // The fake clock started a moment before this line ran.
-    assertEquals(Math.abs(sleeps[0] - expected) < 5_000, true);
+    assertEquals(sleeps, [PR_COOLDOWN_MS - 60_000]);
+    assertEquals(watchOf(store).polls, 2);
     assertStringIncludes(warnings.join("\n"), "merge conflict");
     assertEquals(phaseOf(store), "pr_failed");
+  });
+});
+
+Deno.test("watch_pr: a failure that clears during the cooldown keeps the watch going", async () => {
+  await withWatch({
+    gh: scriptedGh([
+      { failedChecks: ["Validate Attestation"] },
+      {},
+      { state: "MERGED" },
+    ]),
+    linkedAgoMs: 60_000,
+    skipChecks: ["pr-cooldown"],
+  }, async ({ store, nested, sleeps, run }) => {
+    await run({ pollIntervalSeconds: 30 });
+    assertEquals(sleeps, [PR_COOLDOWN_MS - 60_000, 30_000]);
+    assertEquals(nested, ["pr_merged", "notify", "summarize"]);
+    assertEquals(phaseOf(store), "done");
   });
 });
 
@@ -442,6 +462,20 @@ Deno.test("watch_pr: rides out a gh failure but raises after several in a row", 
     await assertRejects(() => run(), Error, "HTTP 502");
     assertEquals(nested, []);
     assertEquals(phaseOf(store), "pr_open");
+  });
+});
+
+Deno.test("watch_pr: a missing gh fails at once instead of being retried", async () => {
+  let calls = 0;
+  await withWatch({
+    gh: () => {
+      calls++;
+      throw new GhUnavailableError("watch_pr needs the GitHub CLI (gh)");
+    },
+  }, async ({ sleeps, run }) => {
+    await assertRejects(() => run(), GhUnavailableError);
+    assertEquals(calls, 1);
+    assertEquals(sleeps, []);
   });
 });
 
