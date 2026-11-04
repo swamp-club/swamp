@@ -58,6 +58,9 @@ EOF
 
 ## Check Merge Status
 
+For a PR linked to an issue lifecycle, run the lifecycle's `watch_pr` instead of
+checking by hand — it watches the PR and records the outcome.
+
 To check if a PR is ready to merge:
 
 ```bash

@@ -368,8 +368,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.10.21.1", () => {
-  assertEquals(model.version, "2026.10.21.1");
+Deno.test("model: version is 2026.11.04.1", () => {
+  assertEquals(model.version, "2026.11.04.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -2151,6 +2151,8 @@ Deno.test("issue_lifecycle: no upstream write bypasses the policy module", async
  * `notify` sends a contributor ripple and `post_attestation` files an
  * attestation, neither of which rollback can reach, so re-running them would
  * duplicate an external side effect. `review` neither writes nor posts.
+ * `watch_pr` moves the phase only through nested methods that roll back on
+ * their own, and its prWatch record must survive the step that failed.
  *
  * Adding a method forces an edit here and a decision about the flag.
  */
@@ -2180,7 +2182,12 @@ Deno.test("issue_lifecycle: rollbackOnFailure matches the pinned method set", ()
     "unlink_issue",
     "mark_duplicate",
   ];
-  const doesNotRollBack = ["review", "post_attestation", "notify"];
+  const doesNotRollBack = [
+    "review",
+    "post_attestation",
+    "notify",
+    "watch_pr",
+  ];
 
   const methods = model.methods as Record<string, { rollbackOnFailure?: true }>;
   assertEquals(

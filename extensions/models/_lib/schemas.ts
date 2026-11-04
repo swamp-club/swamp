@@ -110,6 +110,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   link_pr: ["verifying", "pr_open", "pr_failed"],
   pr_merged: ["pr_open"],
   pr_failed: ["pr_open"],
+  watch_pr: ["pr_open"],
   complete: ["implementing", "pr_open", "releasing"],
   notify: ["notify"],
   skip_notify: ["notify"],
@@ -536,6 +537,51 @@ export const PullRequestSchema = z.object({
 });
 
 export type PullRequestData = z.infer<typeof PullRequestSchema>;
+
+export const PrWatchOutcome = z.enum([
+  "merged",
+  "closed",
+  "conflict",
+  "checks_failed",
+  "changes_requested",
+  "held",
+  "timed_out",
+]);
+
+export type PrWatchOutcome = z.infer<typeof PrWatchOutcome>;
+
+export const CloseOutStep = z.enum([
+  "pr_merged",
+  "pr_failed",
+  "notify",
+  "summarize",
+]);
+
+export const PrWatchSchema = z.object({
+  url: z.string(),
+  attempt: z.number(),
+  outcome: PrWatchOutcome,
+  reason: z.string(),
+  snapshot: z.object({
+    state: z.string(),
+    mergeable: z.string(),
+    mergeStateStatus: z.string(),
+    reviewDecision: z.string(),
+    labels: z.array(z.string()),
+    mergedAt: z.string().optional(),
+    failedChecks: z.array(z.string()),
+  }).optional().describe("The last PR status read from GitHub."),
+  polls: z.number(),
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  stepsRun: z.array(CloseOutStep).describe(
+    "Lifecycle methods watch_pr ran to completion, in order.",
+  ),
+  failedStep: CloseOutStep.optional(),
+  failure: z.string().optional(),
+});
+
+export type PrWatchData = z.infer<typeof PrWatchSchema>;
 
 // ---------------------------------------------------------------------------
 // Linked Issues and Duplicates

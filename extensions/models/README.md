@@ -24,6 +24,8 @@ plan_generated ──[approve]──> approved
 approved ──[iterate]──> plan_generated  (reopen an approved plan)
 approved ──[implement]──> implementing
 implementing ──[complete]──> done
+pr_open ──[watch_pr]──> done  (merged: pr_merged, notify, summarize)
+pr_open ──[watch_pr]──> pr_failed  (conflict, failed check, changes requested)
 ```
 
 Pre-flight checks enforce valid transitions. You cannot approve without a plan.
@@ -150,6 +152,7 @@ swamp model output search issue-42 --json
 | `resolve_findings`   | Mark adversarial findings as resolved           | no change                                 |
 | `approve`            | Lock the plan and transition to in_progress     | plan_generated -> approved                |
 | `implement`          | Signal implementation started                   | approved -> implementing                  |
+| `watch_pr`           | Watch the PR and drive the lifecycle on         | pr_open -> done / pr_failed / no change   |
 | `pr_merged`          | Record the merge, which ships the issue         | pr_open -> notify                         |
 | `complete`           | Mark lifecycle done                             | implementing -> done                      |
 | `link_issue`         | Carry another issue with this lifecycle         | no change                                 |
@@ -171,6 +174,7 @@ and a new feedback version. You can review any prior version.
 | `adversarialReview` | Adversarial review findings for current plan  |
 | `linkedIssues`      | Issues carried with this one (`link_issue`)   |
 | `duplicate`         | Canonical issue and PR (`mark_duplicate`)     |
+| `prWatch`           | Outcome of the latest `watch_pr` run          |
 
 ## Swamp Club Integration
 
@@ -272,3 +276,4 @@ Create only the files you want to customize.
 - swamp initialized in the repository (`swamp init`)
 - `SWAMP_API_KEY` env var (or `swamp auth login`) for swamp-club access
 - The target lab issue must already exist in swamp-club
+- For `watch_pr`: the GitHub CLI (`gh`) on `PATH`, authenticated

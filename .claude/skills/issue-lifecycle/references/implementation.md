@@ -103,26 +103,49 @@ Calling `link_pr` is **encouraged but not enforced** — `complete` still accept
 records. Prefer the `implementing → link_pr → complete` flow for all new work so
 the lifecycle record carries the PR link.
 
-## 4b. Wait for CI and Check PR Status
+## 4b. Watch the PR
 
-After linking the PR, wait at least 3 minutes for CI to run. The model enforces
-a `pr-cooldown` check — calling `pr_merged` or `pr_failed` within 3 minutes of
-`link_pr` will be rejected.
+Right after `link_pr`, run `watch_pr`. Do not poll GitHub yourself — the
+behavior reads the PR through `gh`, and on a merge it runs `pr_merged`, `notify`
+and `summarize` itself, so the issue reaches `done` with no further step from
+you. Pass the summary now (see section 7 for how to word it); after a
+`pr_failed` cycle that changed what ships, pass the updated summary on the next
+run.
 
-Check the PR status externally (e.g.,
-`gh pr view <url> --json state,statusCheckRollup`):
+```
+swamp behavior run @swamp/issue-lifecycle watch_pr issue-<N> \
+  --input originalProblem="<plain-language restatement of the issue>" \
+  --input deliveredOutcome="<plain-language description of what the PR delivers>" \
+  --input outcomeMet=true
+```
 
-- **PR merged**: call `pr_merged`. Merging is shipping: it transitions the phase
-  to `notify`, sets the swamp-club status to `shipped` (with every linked
-  issue), and posts a `pr_merged` lifecycle entry
-  ```
-  swamp behavior run @swamp/issue-lifecycle pr_merged issue-<N>
-  ```
-- **PR failed** (CI red, changes requested): call `pr_failed` with the reason
-  ```
-  swamp behavior run @swamp/issue-lifecycle pr_failed issue-<N> --input reason="CI failed: type check errors"
-  ```
-- **PR still open and passing**: wait and check again later.
+Add `--input-file` with `linkedOutcomes` when the lifecycle carries linked
+issues — `watch_pr` refuses to start without one per linked issue.
+
+The watch lasts up to 30 minutes (`timeoutMinutes`), longer than a foreground
+shell call allows, so run it in the background and wait for it to exit. While it
+runs it holds the issue's lock, so a manual `pr_failed` or `link_pr` waits for
+it. Needs `gh` on `PATH`, authenticated.
+
+Report the result to the human as soon as it exits. The `prWatch-main` resource
+records the outcome:
+
+| Outcome                                                    | What `watch_pr` did                             | Next                                          |
+| ---------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------- |
+| `merged`                                                   | ran `pr_merged`, `notify`, `summarize` → `done` | nothing — tell the human it shipped           |
+| `conflict`, `checks_failed`, `changes_requested`, `closed` | ran `pr_failed` with the reason                 | tell the human at once, then section 4c       |
+| `held` (a `hold` label)                                    | no transition                                   | tell the human; re-run once the label is gone |
+| `timed_out`                                                | no transition                                   | re-run `watch_pr`                             |
+
+If a nested step fails, `watch_pr` exits non-zero and `prWatch-main` names it
+(`failedStep`). A failed `pr_merged` or `pr_failed` rolled back — fix the cause
+and run that method by hand. A failed `notify` leaves the phase at `notify`:
+follow section 6, then run `summarize` by hand. A failed `summarize` leaves the
+phase at `summarizing`: run it by hand.
+
+`pr_merged` and `pr_failed` still exist for recording an outcome by hand. They
+are refused for 3 minutes after `link_pr` (the `pr-cooldown` check); `watch_pr`
+waits that window out itself.
 
 ## 4c. Handle PR Failure
 

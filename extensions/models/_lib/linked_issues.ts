@@ -61,6 +61,43 @@ export async function readLinkedIssues(
   return data?.issues ?? [];
 }
 
+/**
+ * Every issue the lifecycle carries gets its own outcome, so none can be
+ * closed out on the strength of the primary's.
+ */
+export function assertLinkedOutcomes(
+  linked: LinkedIssueData[],
+  outcomes: { issueNumber: number }[],
+): void {
+  const expected = new Set(linked.map((l) => l.issueNumber));
+  const named = outcomes.map((o) => o.issueNumber);
+  const missing = [...expected].filter((n) => !named.includes(n));
+  const extra = named.filter((n) => !expected.has(n));
+  const repeated = named.filter((n, i) => named.indexOf(n) !== i);
+  if (!missing.length && !extra.length && !repeated.length) return;
+  const problems = [
+    missing.length
+      ? `no outcome for linked issue(s) ${
+        missing.map((n) => `#${n}`).join(", ")
+      }`
+      : "",
+    extra.length
+      ? `outcome for issue(s) ${
+        extra.map((n) => `#${n}`).join(", ")
+      } that this lifecycle does not carry`
+      : "",
+    repeated.length
+      ? `more than one outcome for ${
+        [...new Set(repeated)].map((n) => `#${n}`).join(", ")
+      }`
+      : "",
+  ].filter(Boolean);
+  throw new Error(
+    `linkedOutcomes must name each linked issue exactly once: ` +
+      `${problems.join("; ")}.`,
+  );
+}
+
 /** Walk every linked issue to `target`. Raises on the first failure. */
 export async function advanceLinked(
   sc: SwampClubClient | null,
