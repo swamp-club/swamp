@@ -4253,3 +4253,61 @@ Deno.test("extensionPushPrepare: an extension with no dependencies still records
     assertEquals(Object.keys(record.bundles), ["bundles/a.js"]);
   });
 });
+
+function confirmApplied(visibility: "public" | "private") {
+  return (_url: string, metadata: ExtensionPushMetadata) =>
+    Promise.resolve({
+      name: metadata.name,
+      version: metadata.version,
+      extensionId: "ext-123",
+      visibility,
+    });
+}
+
+Deno.test("extensionPush: explicit public that stays private warns and names the visibility command", async () => {
+  const events = await collect(extensionPush(
+    ctx,
+    makeExecuteDeps({ confirmPush: confirmApplied("private") }),
+    makeExecuteInput({
+      manifest: { ...makeManifest(), visibility: "public" },
+    }),
+  ));
+  const last = events.at(-1);
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.visibility, "private");
+    assertStringIncludes(
+      last.data.visibilityWarning ?? "",
+      "--set public",
+    );
+  }
+});
+
+Deno.test("extensionPush: omitted visibility that stays private does not warn", async () => {
+  const events = await collect(extensionPush(
+    ctx,
+    makeExecuteDeps({ confirmPush: confirmApplied("private") }),
+    makeExecuteInput(),
+  ));
+  const last = events.at(-1);
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.visibility, "private");
+    assertEquals(last.data.visibilityWarning, undefined);
+  }
+});
+
+Deno.test("extensionPush: explicit public applied as public does not warn", async () => {
+  const events = await collect(extensionPush(
+    ctx,
+    makeExecuteDeps({ confirmPush: confirmApplied("public") }),
+    makeExecuteInput({
+      manifest: { ...makeManifest(), visibility: "public" },
+    }),
+  ));
+  const last = events.at(-1);
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.visibilityWarning, undefined);
+  }
+});

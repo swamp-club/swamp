@@ -183,7 +183,9 @@ precedence and registry requirements.
 Optional `--visibility public` selects the registry default and overrides a
 private manifest. Keep the same choice in State 8; it preserves existing
 extension visibility rather than converting an already-private extension to
-public.
+public. To make an already-private extension public, use
+`swamp extension visibility <name> --set public` (see
+[changing visibility](references/publishing.md#changing-visibility-after-publication)).
 
 **On Failure:** If the dry-run reports a missing or incomplete adversarial
 review report, the review gate is unsatisfied. Complete the **Adversarial Review

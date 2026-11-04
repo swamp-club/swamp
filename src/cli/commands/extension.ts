@@ -38,6 +38,7 @@ import { extensionUndeprecateCommand } from "./extension_undeprecate.ts";
 import { extensionTrustCommand } from "./extension_trust.ts";
 import { extensionSourceCommand } from "./extension_source.ts";
 import { extensionPromoteCommand } from "./extension_promote.ts";
+import { extensionVisibilityCommand } from "./extension_visibility.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const extensionCommand = new Command()
@@ -63,4 +64,5 @@ export const extensionCommand = new Command()
   .command("undeprecate", extensionUndeprecateCommand)
   .command("trust", extensionTrustCommand)
   .command("source", extensionSourceCommand)
-  .command("promote", extensionPromoteCommand);
+  .command("promote", extensionPromoteCommand)
+  .command("visibility", extensionVisibilityCommand);
