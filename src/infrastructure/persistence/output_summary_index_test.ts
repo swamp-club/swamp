@@ -16,10 +16,15 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ensureDir } from "@std/fs";
-import { dirname, join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import type { OutputSummary } from "../../domain/models/output_summary.ts";
 import {
   OUTPUT_SUMMARIES_DIR,
@@ -509,19 +514,23 @@ Deno.test("removeStaleOutputSummaries: readers adding rows while it clears fail 
         await index.append(`${TYPE}/${writer}/${i % 8}`, rowsOf(summaryOf()));
       }
     });
+    let warnings: string[];
     try {
-      for (let i = 0; i < 40; i++) {
-        for (let j = 0; j < 32; j++) {
-          await index.append(`${TYPE}/seed/${j}`, rowsOf(summaryOf()));
+      warnings = await warningsDuring(async () => {
+        for (let i = 0; i < 40; i++) {
+          for (let j = 0; j < 32; j++) {
+            await index.append(`${TYPE}/seed/${j}`, rowsOf(summaryOf()));
+          }
+          await removeStaleOutputSummaries(dir);
         }
-        await removeStaleOutputSummaries(dir);
-      }
+      });
     } finally {
       clearing = false;
       await Promise.all(writers);
       (Deno as { remove: typeof Deno.remove }).remove = remove;
     }
     assertEquals(failures, []);
+    assertEquals(warnings, []);
   });
 });
 
@@ -715,6 +724,176 @@ Deno.test("removeStaleOutputSummaries: an entry another clear moved first is not
       (await Array.fromAsync(Deno.readDir(root))).map((entry) => entry.name),
       ["cleared"],
     );
+  });
+});
+
+const denied = () =>
+  new Deno.errors.PermissionDenied("Access is denied. (os error 5)");
+
+async function warningsOfClearWith(
+  dir: string,
+  moveAside: (
+    from: string,
+    to: string,
+    rename: typeof Deno.rename,
+  ) => Promise<void>,
+): Promise<string[]> {
+  const rename = Deno.rename;
+  // Only the moves aside: the marker is written through a rename too.
+  (Deno as { rename: typeof Deno.rename }).rename = (from, to) =>
+    basename(String(to)).startsWith(".cleared-")
+      ? moveAside(String(from), String(to), rename)
+      : rename(from, to);
+  try {
+    return await warningsDuring(() => removeStaleOutputSummaries(dir));
+  } finally {
+    (Deno as { rename: typeof Deno.rename }).rename = rename;
+  }
+}
+
+async function entriesOf(dir: string): Promise<string[]> {
+  return (await Array.fromAsync(
+    Deno.readDir(swampPath(dir, OUTPUT_SUMMARIES_DIR)),
+  )).map((entry) => entry.name).sort();
+}
+
+Deno.test("removeStaleOutputSummaries: an entry refused because another clear moved and is deleting it is not a failure", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "first"));
+    const taken = join(dir, "taken-by-another-clear");
+    let attempts = 0;
+
+    const warnings = await warningsOfClearWith(
+      dir,
+      async (from, to, rename) => {
+        if (attempts++ === 0) {
+          await rename(from, taken);
+          throw denied();
+        }
+        await rename(from, to);
+      },
+    );
+
+    assertEquals(attempts, 2);
+    assertEquals(warnings, []);
+    assertEquals(await entriesOf(dir), ["cleared"]);
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: an entry refused once is moved by the second try", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "first"));
+    let attempts = 0;
+
+    const warnings = await warningsOfClearWith(
+      dir,
+      async (from, to, rename) => {
+        if (attempts++ === 0) throw denied();
+        await rename(from, to);
+      },
+    );
+
+    assertEquals(attempts, 2);
+    assertEquals(warnings, []);
+    assertEquals(await entriesOf(dir), ["cleared"]);
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: an entry refused on every try is left for the next clear, and warns of nothing", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "held"));
+    await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "other"));
+
+    const warnings = await warningsOfClearWith(
+      dir,
+      async (from, to, rename) => {
+        if (basename(from) === "held") throw denied();
+        await rename(from, to);
+      },
+    );
+
+    assertEquals(warnings, []);
+    assertEquals(await entriesOf(dir), ["cleared", "held"]);
+
+    await removeStaleOutputSummaries(dir);
+    assertEquals(await entriesOf(dir), ["cleared"]);
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: a move aside failing for another reason still warns", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(swampPath(dir, OUTPUT_SUMMARIES_DIR, "first"));
+
+    const warnings = await warningsOfClearWith(dir, () => {
+      throw new Deno.errors.Busy("Device or resource busy");
+    });
+
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "Device or resource busy");
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: a shard held open across a clear warns of nothing, and the next clear takes it", async () => {
+  await withTempDir(async (dir) => {
+    await indexIn(dir).append(TYPE, rowsOf(summaryOf()));
+    const shard = await Deno.open(await shardIn(dir), { read: true });
+    let warnings: string[];
+    try {
+      warnings = await warningsDuring(() => removeStaleOutputSummaries(dir));
+    } finally {
+      shard.close();
+    }
+
+    assertEquals(warnings, []);
+    await removeStaleOutputSummaries(dir);
+    assertEquals(await entriesOf(dir), ["cleared"]);
+  });
+});
+
+async function warningsOfClearRefusingMarker(
+  dir: string,
+  refusals: number,
+): Promise<string[]> {
+  const rename = Deno.rename;
+  let refused = 0;
+  (Deno as { rename: typeof Deno.rename }).rename = (from, to) =>
+    basename(String(to)) === "cleared" && refused++ < refusals
+      ? Promise.reject(denied())
+      : rename(from, to);
+  try {
+    return await warningsDuring(() => removeStaleOutputSummaries(dir));
+  } finally {
+    (Deno as { rename: typeof Deno.rename }).rename = rename;
+  }
+}
+
+Deno.test("removeStaleOutputSummaries: a marker refused while another clear replaces it is written by a later try", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+    await removeStaleOutputSummaries(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+    const before = await index.generation();
+
+    const warnings = await warningsOfClearRefusingMarker(dir, 2);
+
+    assertEquals(warnings, []);
+    assertNotEquals(await index.generation(), before);
+    assertEquals(await entriesOf(dir), ["cleared"]);
+  });
+});
+
+Deno.test("removeStaleOutputSummaries: a marker refused on every try warns, and moves no shard", async () => {
+  await withTempDir(async (dir) => {
+    const index = indexIn(dir);
+    await index.append(TYPE, rowsOf(summaryOf()));
+
+    const warnings = await warningsOfClearRefusingMarker(dir, Infinity);
+
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0], "os error 5");
+    assertEquals(await entriesOf(dir), ["v1"]);
+    assertEquals((await index.read(TYPE, DAY)).size, 1);
   });
 });
 
