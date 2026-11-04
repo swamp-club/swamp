@@ -1837,3 +1837,41 @@ Deno.test({
   fn: () =>
     holdCutOffWhileRecordingLineage({ as: "serve", address: undefined }),
 });
+
+Deno.test("collectChunksQuietly: a failure unrelated to the stop still warns during shutdown (swamp-club#4327)", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "v3"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const datastorePath = `/fake-${crypto.randomUUID()}`;
+    const stop = new AbortController();
+    stop.abort();
+    await collectChunksQuietly(
+      {
+        datastorePath,
+        collectChunks: () => Promise.reject(new Error("permission denied")),
+      } as unknown as V3Datastore,
+      60_000,
+      0,
+      stop.signal,
+    );
+    assertEquals(
+      records.filter((record) =>
+        record.message.map(String).join("").includes(datastorePath)
+      ).map((record) => record.level),
+      ["warning"],
+    );
+  } finally {
+    await reset();
+  }
+});

@@ -2441,7 +2441,7 @@ export async function compactQuietly(
         .debug`Compacted ${report.compacted} commits of the v3 datastore at ${handle.datastorePath}`;
     }
   } catch (error) {
-    if (stop?.aborted) {
+    if (stop?.aborted && isBudgetAbort(error, stop.reason)) {
       logger
         .debug`Compacting the v3 datastore at ${handle.datastorePath} stopped for shutdown; the next writer goes on`;
       return;
@@ -2506,7 +2506,7 @@ export async function collectChunksQuietly(
     }
     return report;
   } catch (error) {
-    if (stop?.aborted) {
+    if (stop?.aborted && isBudgetAbort(error, stop.reason)) {
       logger
         .debug`Collecting chunks of the v3 datastore at ${handle.datastorePath} stopped for shutdown; the next sweep goes on`;
       return undefined;
@@ -2565,7 +2565,7 @@ export async function compactRetentionQuietly(
       withStop(AbortSignal.timeout(timeoutMs), stop),
     );
   } catch (error) {
-    if (stop?.aborted) {
+    if (stop?.aborted && isBudgetAbort(error, stop.reason)) {
       logger
         .debug`Compacting the history of the v3 datastore at ${handle.datastorePath} stopped for shutdown; the next pass resumes`;
       return undefined;
