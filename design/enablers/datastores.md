@@ -10660,6 +10660,10 @@ with `swamp extension pull <datastore extension>` before step 2. Step 5 must
 run on every pod so pulled extension sources are complete: each pod restores
 its own sources.
 
+Secrets seeded on a pod reach methods in-process only, never their child
+processes; see
+[vaults § Secret Handoff Beyond the Method](../primitives/vaults.md#secret-handoff-beyond-the-method).
+
 ### Recovery from missing-extensions state
 
 When a pod boots and logs "N pulled extension(s) have missing source files":

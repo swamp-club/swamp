@@ -1387,6 +1387,57 @@ missing or unreadable key at evaluation time.
   in the same run (the run's `SecretBagRegistry` keeps the answer), but its
   read is authorized on every check.
 
+## Secret Handoff Beyond the Method
+
+This section states where a secret can go once a run starts, and where it
+stops. It holds for the CLI and for `swamp serve`, including a
+`managedConfig` pod that runs every method on its loopback executor with no
+workers.
+
+**Inside the method.** A method runs inside the swamp process that started
+the run. Its supported routes to a secret are:
+
+- a `vault.get()` expression in its method or global arguments, resolved
+  before the method runs (see [Workflow Integration](#workflow-integration));
+- a sensitive field read back through `readResource`, `data.latest()` or a
+  step output (see [Read-Side Resolution](#read-side-resolution));
+- a `runModel` target's own expressions, which resolve as in a standalone run.
+  The caller's resolved secrets do not pass to the target.
+
+Each read is checked against the run's vault scope when one is active. Serve
+runs and workflows with a `vaults:` list have one; a plain CLI behavior run
+has none (see [Vault Access Scoping](#vault-access-scoping)).
+
+**The process environment.** swamp never writes a vault value into the
+process environment. `${{ env.* }}` expressions and `Deno.env` in method code
+see only what the operator set when the process started.
+
+**Child processes.** A process that method code starts receives a secret
+only if the method passes it in the child's arguments or environment. There
+is no vault handle, socket or variable for it to attach to. The
+`command/shell` behavior is the one built-in case: it passes each secret in
+its `run:` field as a `__SWAMP_VAULT_N` variable (see
+[Shell Quoting](#shell-quoting)). A `Deno.Command` that extension code builds
+inherits the swamp process environment, `SWAMP_*` variables included, unless
+it passes `clearEnv: true` (see
+[remote execution § Method-to-child env scrubbing](../enablers/remote-execution.md#method-to-child-env-scrubbing-third-boundary)).
+
+**A nested `swamp`.** A `swamp` command started from a method builds its own
+`VaultService` from the repository it runs in. A `local_encryption` vault
+there reads the secrets stored on that host. The nested command is not held to
+the parent run's triggering principal or vault scope, because the scope lives
+in the parent process.
+
+**Remote workers.** A worker builds no vault provider. A dispatched step
+reads secrets through the orchestrator's capability service (see
+[remote execution § The capability protocol](../enablers/remote-execution.md#the-capability-protocol)).
+
+To give a child process a secret, declare it as an argument fed by
+`vault.get()`, mark the argument `sensitive` (see
+[Sensitive Method Arguments](#sensitive-method-arguments)), and put the value
+in the child's `env` yourself. The other option is for the child to attach a
+vault of its own.
+
 ## Security Considerations
 
 ### Credential Management

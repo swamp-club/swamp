@@ -1065,12 +1065,19 @@ global to serve, not per token or per label.
 ### Method-to-child env scrubbing (third boundary)
 
 The layers above protect the orchestrator→worker and worker→dispatch-runner
-boundaries. A third protects the **method→child** boundary. When the shell
-behavior (`command/shell`) or extension code spawns an external subprocess, the
-child must not inherit swamp's own auth tokens (`SWAMP_SERVER_TOKEN`,
+boundaries. A third protects the **method→child** boundary for the shell
+behavior (`command/shell`). When it spawns an external subprocess, the child
+must not inherit swamp's own auth tokens (`SWAMP_SERVER_TOKEN`,
 `SWAMP_API_KEY`, etc.) from the host process. An external tool (an LLM CLI, a
 cloud SDK, kubectl) with these tokens in its `/proc/<pid>/environ` could leak
 them.
+
+Extension code is not covered. A `Deno.Command` it builds inherits the host
+process environment, `SWAMP_*` variables included, unless it passes
+`clearEnv: true`. An `env` option alone is merged over the inherited one,
+and `clearEnv` without `PATH` and `HOME` leaves most tools unable to run.
+See [vaults § Secret Handoff Beyond the Method](../primitives/vaults.md#secret-handoff-beyond-the-method)
+for what such a child can and cannot reach.
 
 The shell behavior builds the child's environment with `createSafeMethodEnv`
 (`src/domain/remote/environment_snapshot.ts`): a copy of the host env with
@@ -1107,7 +1114,7 @@ The three boundaries form a defense-in-depth chain:
 | ------------------------ | ------------------------------------- | -------------------------------------------------------------------- |
 | orchestrator → worker    | `captureEnvironmentSnapshot` denylist, optional `dispatch-env-allow` | `HOME`, `PATH`, `SWAMP_*`, `DENO_*`, `XDG_*`, …; with an allowlist, every unlisted name |
 | worker → dispatch runner | `stripWorkerCredentials`              | `SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`, `SWAMP_ORCHESTRATOR_URL` |
-| method → child process   | `createSafeMethodEnv` + `clearEnv`    | all `SWAMP_*` variables except `NESTED_SWAMP_ENV_VARS`               |
+| shell behavior → child process | `createSafeMethodEnv` + `clearEnv` | all `SWAMP_*` variables except `NESTED_SWAMP_ENV_VARS`               |
 
 A worker accepts up to `capacity` concurrent dispatches (`--concurrency N` on
 `worker connect`, default 1). When all slots are full, a further dispatch is
