@@ -67,8 +67,17 @@ export const OAUTH_SECRETS_MIGRATED_KEY = "oauth-secrets-migrated";
 export async function migrateOAuthSecrets(
   vaultService: OAuthSecretMigrationVaults,
   tokenSecretsVaultName: string,
-  options: { keepClientInUserVault?: boolean } = {},
+  options: { keepClientInUserVault?: boolean; clientSupplied?: boolean } = {},
 ): Promise<void> {
+  // In a vault shared across instances these flat keys may be another
+  // instance's, and one with its own client has no reason to take them.
+  if (options.clientSupplied) {
+    logger.info(
+      "OAuth client supplied: leaving any OAuth secrets in the user vault where they are",
+    );
+    return;
+  }
+
   if (
     await hasSecret(
       vaultService,
@@ -153,6 +162,7 @@ export function createOAuthSecretReader(
     "get" | "getDefaultVaultName" | "getVaultNames"
   >,
   tokenSecretsVaultName: string,
+  options: { clientSupplied?: boolean } = {},
 ): (key: string) => Promise<string | null> {
   let migrated: Promise<boolean> | undefined;
   return async (key) => {
@@ -165,6 +175,9 @@ export function createOAuthSecretReader(
     } catch {
       // Fall through to the user vault.
     }
+    // A supplied client skips the migration, so no marker would ever close this
+    // fallback, and write access to the vault would choose admins on each start.
+    if (options.clientSupplied) return null;
     const userVaultName = vaultService.getDefaultVaultName() ??
       vaultService.getVaultNames().find((n) => n !== tokenSecretsVaultName);
     if (!userVaultName) return null;
