@@ -729,9 +729,8 @@ server builds deps from the shared `RepositoryContext`, drives the same libswamp
 generator as the local command (`src/serve/deps.ts`), and serialises each event
 back over the socket (`src/serve/serializer.ts`).
 
-A method a serve run executes on its loopback executor reads secrets in the
-serve process. Nothing hands serve's vault to a child process the method
-starts. See [vaults § Secret Handoff Beyond the Method](./vaults.md#secret-handoff-beyond-the-method).
+Serve hands its vault to no child process a method starts; see
+[vaults § Secret Handoff Beyond the Method](./vaults.md#secret-handoff-beyond-the-method).
 
 **Every run is detached.** `workflow.run` and `model.method.run` register the
 run in the `ActiveRunRegistry` with its own `AbortController` and a 10 000-event

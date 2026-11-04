@@ -709,9 +709,9 @@ to the run's inbound context until they have all finished.
 
 ### Passing Secrets to Subprocesses
 
-A subprocess has no route to the vault, under `swamp serve` too. Swamp never
-puts vault values in `Deno.env`, so a child reads a secret only if the method
-passes it. Take the secret as an argument the definition fills with
+A subprocess has no route to the run's vault, under `swamp serve` too. Swamp
+never puts vault values in `Deno.env`, so a child reads a secret only if the
+method passes it. Take the secret as an argument the definition fills with
 `vault.get()`, mark it sensitive (see [Resource Specs](#resource-specs) for
 `.meta`), and set it in the child's `env`:
 
@@ -722,15 +722,17 @@ const GlobalArgsSchema = z.object({
 });
 
 await new Deno.Command("my-tool", {
-  args,
+  args: ["sync"],
   env: { LINEAR_API_KEY: context.globalArgs.apiKey },
 }).output();
 ```
 
 Deno merges `env` into the inherited environment, so the child also sees the
-swamp process env, `SWAMP_*` credentials included. Pass `clearEnv: true` to give
-it only what you list. A nested `swamp` command opens its own vault and is not
-held to the run's vault scope.
+swamp process env, `SWAMP_*` credentials included. To drop them, pass
+`clearEnv: true` and list what the tool needs, such as
+`PATH: Deno.env.get("PATH")` and `HOME`; with `clearEnv` alone the child gets an
+empty environment. A nested `swamp` command opens its own vault and is not held
+to the run's vault scope.
 
 ### Arguments Holding Another Service's Template Syntax
 

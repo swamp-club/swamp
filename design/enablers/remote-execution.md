@@ -1074,7 +1074,8 @@ them.
 
 Extension code is not covered. A `Deno.Command` it builds inherits the host
 process environment, `SWAMP_*` variables included, unless it passes
-`clearEnv: true`. An `env` option alone is merged over the inherited one.
+`clearEnv: true`. An `env` option alone is merged over the inherited one,
+and `clearEnv` without `PATH` and `HOME` leaves most tools unable to run.
 See [vaults § Secret Handoff Beyond the Method](../primitives/vaults.md#secret-handoff-beyond-the-method)
 for what such a child can and cannot reach.
 
