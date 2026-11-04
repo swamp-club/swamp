@@ -53,7 +53,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == commandguardian.Mode {
 		os.Exit(commandguardian.Run(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
-	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	runner := run
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "hub" {
+		runner, args = runHub, args[1:]
+	}
+	if err := runner(args, os.Stdout, os.Stderr); err != nil {
 		os.Exit(1)
 	}
 }
@@ -148,31 +153,48 @@ func run(args []string, stdout, stderr io.Writer) (result error) {
 	if err != nil {
 		return startupError(err)
 	}
-	var tlsConfig *tls.Config
-	if *certPath != "" {
-		*certPath, err = resolvePath(*certPath)
-		if err != nil {
-			return err
-		}
-		*keyPath, err = resolvePath(*keyPath)
-		if err != nil {
-			return err
-		}
-		certificate, err := tls.LoadX509KeyPair(*certPath, *keyPath)
-		if err != nil {
-			return fmt.Errorf("invalid TLS certificate/key: %w", err)
-		}
-		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}}
+	tlsConfig, err := loadTLS(*certPath, *keyPath)
+	if err != nil {
+		return err
 	}
+	gatewayConfig := gateway.Config{Host: host, TLS: tlsConfig != nil, TrustedHosts: parseHosts(*trusted), AuthTimeout: config.StartupTimeout + config.ControlTimeout, ControlTimeout: config.ControlTimeout, WriteTimeout: 10 * time.Second}
+	return serveUntilStopped(ctx, stop, *bind, gateway.New(gatewayConfig, gateway.Single(supervisor)), tlsConfig, logger, "local-v1", config.DrainTimeout, supervisor.Run, supervisor.Shutdown)
+}
+
+func loadTLS(certPath, keyPath string) (*tls.Config, error) {
+	if certPath == "" {
+		return nil, nil
+	}
+	certPath, err := resolvePath(certPath)
+	if err != nil {
+		return nil, err
+	}
+	keyPath, err = resolvePath(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid TLS certificate/key: %w", err)
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}}, nil
+}
+
+func parseHosts(trusted string) []string {
 	var hosts []string
-	for _, h := range strings.Split(*trusted, ",") {
+	for _, h := range strings.Split(trusted, ",") {
 		if h = strings.TrimSpace(h); h != "" {
 			hosts = append(hosts, h)
 		}
 	}
-	publicGateway := gateway.New(gateway.Config{Host: host, TLS: tlsConfig != nil, TrustedHosts: hosts, AuthTimeout: config.StartupTimeout + config.ControlTimeout, ControlTimeout: config.ControlTimeout, WriteTimeout: 10 * time.Second}, supervisor)
-	server := newHTTPServer(*bind, publicGateway, tlsConfig, logger)
-	listener, err := net.Listen("tcp", *bind)
+	return hosts
+}
+
+// serveUntilStopped listens, runs the engine clocks, and on a signal or
+// listener failure drains HTTP and engines under one shutdown deadline.
+func serveUntilStopped(ctx context.Context, stop context.CancelFunc, bind string, publicGateway *gateway.Gateway, tlsConfig *tls.Config, logger *slog.Logger, profile string, drainTimeout time.Duration, runEngines func(context.Context), shutdownEngines func(context.Context) error) error {
+	server := newHTTPServer(bind, publicGateway, tlsConfig, logger)
+	listener, err := net.Listen("tcp", bind)
 	if err != nil {
 		return err
 	}
@@ -181,11 +203,11 @@ func run(args []string, stdout, stderr io.Writer) (result error) {
 		listener = tls.NewListener(listener, tlsConfig)
 	}
 	loopDone := make(chan struct{})
-	go func() { supervisor.Run(ctx); close(loopDone) }()
+	go func() { runEngines(ctx); close(loopDone) }()
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 	// net.Listen("tcp") supplies a TCPAddr, preserved by both listener wrappers.
-	logListening(logger, listener.Addr().(*net.TCPAddr), tlsConfig != nil)
+	logListening(logger, listener.Addr().(*net.TCPAddr), tlsConfig != nil, profile)
 	select {
 	case <-ctx.Done():
 	case err = <-serveDone:
@@ -196,13 +218,13 @@ func run(args []string, stdout, stderr io.Writer) (result error) {
 		err = nil
 	}
 	stop()
-	drain, cancelDrain := context.WithTimeout(context.Background(), config.DrainTimeout)
+	drain, cancelDrain := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancelDrain()
 	publicGateway.Shutdown()
 	// Drain HTTP and engine admission together. A slow authentication control
 	// or status poll must not delay starting the process shutdown deadline.
 	engineDone := make(chan error, 1)
-	go func() { engineDone <- supervisor.Shutdown(drain) }()
+	go func() { engineDone <- shutdownEngines(drain) }()
 	httpErr := server.Shutdown(drain)
 	engineErr := <-engineDone
 	<-loopDone
@@ -252,7 +274,7 @@ func startupError(err error) error {
 	return fmt.Errorf("engine validation failed: %w", err)
 }
 
-func logListening(logger *slog.Logger, address *net.TCPAddr, tlsEnabled bool) {
+func logListening(logger *slog.Logger, address *net.TCPAddr, tlsEnabled bool, profile string) {
 	scheme := "ws"
 	if tlsEnabled {
 		scheme = "wss"
@@ -264,7 +286,7 @@ func logListening(logger *slog.Logger, address *net.TCPAddr, tlsEnabled bool) {
 	connectionURL := (&url.URL{Scheme: scheme, Host: address.String()}).String()
 	logger.Info("listening", "status", "listening", "host", host, "port", address.Port,
 		"url", connectionURL, "address", address.String(),
-		"implementation", "go", "profile", "local-v1", "version", version)
+		"implementation", "go", "profile", profile, "version", version)
 }
 
 func validateBind(address string, tlsEnabled bool) (string, error) {

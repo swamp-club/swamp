@@ -204,6 +204,8 @@ export class EngineRuntime {
           authenticationDeadlines: true,
           engineVersion: this.#options.engineVersion,
           gitSha: this.#options.gitSha,
+          // A hub verifies it reached the repository it selected.
+          repo: { path: this.#options.context.repoDir },
         };
       case "session.open":
         this.#admit();

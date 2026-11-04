@@ -45,5 +45,16 @@
     "engine.status",
     "engine.quiesce",
     "engine.shutdown"
-  ]
+  ],
+  "hubControl": {
+    "profile": "hub-control-v1",
+    "controls": [
+      "hello",
+      "workspace.resolve",
+      "workspace.list",
+      "engine.status",
+      "engine.quiesce",
+      "engine.shutdown"
+    ]
+  }
 }

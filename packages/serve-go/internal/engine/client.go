@@ -40,6 +40,7 @@ const cleanupReserveBytes = 64 << 10
 
 var ErrUnavailable = errors.New("engine transport unavailable; an admitted operation may have been interrupted")
 var ErrBusy = errors.New("engine admission limit reached")
+var ErrRepositoryMismatch = errors.New("engine bound a different repository than the one selected")
 var ErrRetiring = &protocol.Error{Code: "engine_retiring", Message: "Engine is recovering authentication; reconnect after accepted work finishes"}
 
 // Session is a bounded mailbox. A slow subscriber never stalls the pipe reader.

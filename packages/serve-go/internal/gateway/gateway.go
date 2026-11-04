@@ -44,6 +44,39 @@ type Backend interface {
 	Close(context.Context, *engine.Session) error
 	Dispatch(context.Context, *engine.Session, []byte) error
 }
+
+// Router selects the backend for an upgrade path and answers readiness probes
+// without starting an engine.
+type Router interface {
+	Route(ctx context.Context, path string) (Backend, error)
+	Readiness(path string) (status int, body interface{}, ok bool)
+}
+
+// RouteError is a routing refusal the gateway reports before authentication.
+type RouteError struct {
+	Status int
+	Code   string
+}
+
+func (e *RouteError) Error() string { return e.Code }
+
+type singleRouter struct{ backend Backend }
+
+// Single routes every upgrade path to one backend: the single-repository profile.
+func Single(backend Backend) Router { return singleRouter{backend} }
+
+func (r singleRouter) Route(context.Context, string) (Backend, error) { return r.backend, nil }
+func (r singleRouter) Readiness(path string) (int, interface{}, bool) {
+	if path != "/ready" && path != "/readyz" {
+		return 0, nil, false
+	}
+	state := r.backend.Snapshot()
+	if state.Ready {
+		return 200, state, true
+	}
+	return 503, state, true
+}
+
 type Config struct {
 	Host           string
 	TLS            bool
@@ -51,14 +84,24 @@ type Config struct {
 	AuthTimeout    time.Duration
 	ControlTimeout time.Duration
 	WriteTimeout   time.Duration
+	// Profile names the public profile in health and refusals; local-v1 by default.
+	Profile string
 }
+
+func (c Config) profile() string {
+	if c.Profile == "" {
+		return "local-v1"
+	}
+	return c.Profile
+}
+
 type rateEntry struct {
 	start time.Time
 	count int
 }
 type Gateway struct {
 	config      Config
-	backend     Backend
+	router      Router
 	mu          sync.Mutex
 	connections map[*websocket.Conn]struct{}
 	rates       map[string]rateEntry
@@ -66,8 +109,8 @@ type Gateway struct {
 	stopping    bool
 }
 
-func New(config Config, backend Backend) *Gateway {
-	return &Gateway{config: config, backend: backend, connections: make(map[*websocket.Conn]struct{}), rates: make(map[string]rateEntry), admissions: make(chan struct{}, engine.MaxSessions+engine.MaxColdWaiters)}
+func New(config Config, router Router) *Gateway {
+	return &Gateway{config: config, router: router, connections: make(map[*websocket.Conn]struct{}), rates: make(map[string]rateEntry), admissions: make(chan struct{}, engine.MaxSessions+engine.MaxColdWaiters)}
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -79,19 +122,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	switch r.URL.Path {
-	case "/health", "/healthz":
-		writeJSON(w, 200, map[string]interface{}{"status": "alive", "implementation": "go", "profile": "local-v1", "protocolVersion": protocol.Version})
-	case "/ready", "/readyz":
-		state := g.backend.Snapshot()
-		status := 503
-		if state.Ready {
-			status = 200
-		}
-		writeJSON(w, status, state)
-	default:
-		writeJSON(w, 404, map[string]string{"error": "unsupported_endpoint", "profile": "local-v1"})
+	if r.URL.Path == "/health" || r.URL.Path == "/healthz" {
+		writeJSON(w, 200, map[string]interface{}{"status": "alive", "implementation": "go", "profile": g.config.profile(), "protocolVersion": protocol.Version})
+		return
 	}
+	if status, body, ok := g.router.Readiness(r.URL.Path); ok {
+		writeJSON(w, status, body)
+		return
+	}
+	writeJSON(w, 404, map[string]string{"error": "unsupported_endpoint", "profile": g.config.profile()})
 }
 func writeJSON(w http.ResponseWriter, status int, value interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -219,7 +258,18 @@ func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
 	// Authentication may create an engine session. Finish the bounded control
 	// exchange even if the HTTP peer leaves, then release that session below.
 	ctx, cancel := context.WithTimeout(context.Background(), g.config.AuthTimeout)
-	session, err := g.backend.Open(ctx, credential, ip)
+	backend, err := g.router.Route(ctx, r.URL.Path)
+	if err != nil {
+		cancel()
+		var refusal *RouteError
+		if errors.As(err, &refusal) {
+			writeJSON(w, refusal.Status, map[string]string{"error": refusal.Code})
+		} else {
+			writeJSON(w, 503, map[string]string{"error": "engine_unavailable"})
+		}
+		return
+	}
+	session, err := backend.Open(ctx, credential, ip)
 	cancel()
 	credential = ""
 	r.Header.Del("Authorization")
@@ -235,7 +285,7 @@ func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), g.config.ControlTimeout)
 		defer cancel()
-		_ = g.backend.Close(ctx, session)
+		_ = backend.Close(ctx, session)
 	}()
 	opts := &websocket.AcceptOptions{InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled}
 	// Origin/Host were checked before waking the engine. The library's default
@@ -266,7 +316,7 @@ func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
 	g.connections[conn] = struct{}{}
 	g.mu.Unlock()
 	defer func() { g.mu.Lock(); delete(g.connections, conn); g.mu.Unlock() }()
-	g.serve(conn, session)
+	g.serve(conn, backend, session)
 }
 
 func headerContains(value, token string) bool {
@@ -283,7 +333,7 @@ type pendingRequest struct {
 	runID    string
 }
 
-func (g *Gateway) serve(conn *websocket.Conn, session *engine.Session) {
+func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.Session) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var pendingMu sync.Mutex
@@ -385,7 +435,7 @@ func (g *Gateway) serve(conn *websocket.Conn, session *engine.Session) {
 		// A socket disconnect detaches an accepted run. It must not cancel the
 		// private admission exchange and fence every session's engine generation.
 		control, stop := context.WithTimeout(context.Background(), g.config.ControlTimeout)
-		err = g.backend.Dispatch(control, session, raw)
+		err = backend.Dispatch(control, session, raw)
 		stop()
 		if err == nil && public.Type == "cancel" {
 			// Legacy cancel(public request ID) detaches its subscription without

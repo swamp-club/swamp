@@ -109,7 +109,18 @@ func (p *childProcess) Kill() error {
 	return p.terminate()
 }
 
+// ExecStarter runs a repository engine with the repository as its working
+// directory, so cwd-relative defaults resolve inside the repository.
 func ExecStarter(executable, repo string, cleanupTimeout ...time.Duration) Starter {
+	return execStarter(executable, repo, []string{"--repo", repo}, cleanupTimeout)
+}
+
+// ControlStarter runs the repository-less hub control engine.
+func ControlStarter(executable string, cleanupTimeout ...time.Duration) Starter {
+	return execStarter(executable, "", []string{"--control"}, cleanupTimeout)
+}
+
+func execStarter(executable, dir string, mode []string, cleanupTimeout []time.Duration) Starter {
 	return func(ctx context.Context) (Process, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -132,7 +143,8 @@ func ExecStarter(executable, repo string, cleanupTimeout ...time.Duration) Start
 				fence.Close()
 			}
 		}()
-		cmd := exec.Command(executable, "engine", "--stdio", "--repo", repo)
+		cmd := exec.Command(executable, append([]string{"engine", "--stdio"}, mode...)...)
+		cmd.Dir = dir
 		// All standard streams use the null device (the nil defaults).
 		// Extension subprocesses must never inherit either private RPC channel.
 		// Own both protocol pipes so Cmd.Wait cannot close the reply pipe before

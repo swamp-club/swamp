@@ -35,6 +35,10 @@ import {
 } from "../infrastructure/runtime/engine_output.ts";
 import { createLocalEngineContext } from "../serve/local_engine_context.ts";
 import { EngineRuntime } from "./runtime.ts";
+import { ControlRuntime } from "./control_runtime.ts";
+import { WorkspaceRegistryFileRepository } from "../infrastructure/persistence/workspace_registry_file_repository.ts";
+import { exists } from "@std/fs";
+import { join } from "@std/path";
 import {
   EngineWriter,
   parseEngineRequest,
@@ -78,25 +82,64 @@ export function engineStartupFailure(
   };
 }
 
-/** Validate the complete supervisor contract before acquiring native resources. */
+export interface EnginePipes {
+  readonly input: readonly [string, string];
+  readonly output: readonly [string, string];
+  readonly guardian: string;
+  readonly fence: string;
+}
+export type EngineLaunch =
+  | { readonly mode: "repo"; readonly repo: string } & EnginePipes
+  | { readonly mode: "control" } & EnginePipes;
+
+/** Parse the complete supervisor contract before acquiring native resources. */
+export function parseEngineLaunchArgs(
+  args: readonly string[],
+  os: string = Deno.build.os,
+): EngineLaunch | undefined {
+  const absolute = os === "windows" ? isWindowsAbsolute : isPosixAbsolute;
+  if (args[0] !== "--stdio") return undefined;
+  let rest: readonly string[];
+  let repo: string | undefined;
+  if (args[1] === "--repo" && args.length === 11 && args[2]) {
+    repo = args[2];
+    rest = args.slice(3);
+  } else if (args[1] === "--control" && args.length === 10) {
+    rest = args.slice(2);
+  } else {
+    return undefined;
+  }
+  if (
+    rest[4] !== "--command-guardian" || !absolute(rest[5]) ||
+    rest[6] !== "--command-fence" ||
+    (os === "windows" ? rest[7] !== "none" : !absolute(rest[7]))
+  ) return undefined;
+  try {
+    // Each adapter owns its descriptor: aliasing input and output is invalid.
+    if (
+      parseEngineInputTarget(rest[0], rest[1], os) ===
+        parseEngineOutputTarget(rest[2], rest[3], os)
+    ) return undefined;
+  } catch {
+    return undefined;
+  }
+  const pipes: EnginePipes = {
+    input: [rest[0], rest[1]],
+    output: [rest[2], rest[3]],
+    guardian: rest[5],
+    fence: rest[7],
+  };
+  return repo === undefined
+    ? { mode: "control", ...pipes }
+    : { mode: "repo", repo, ...pipes };
+}
+
+/** Validate the repository engine contract before acquiring native resources. */
 export function validateEngineLaunchArgs(
   args: readonly string[],
   os: string = Deno.build.os,
 ): boolean {
-  const absolute = os === "windows" ? isWindowsAbsolute : isPosixAbsolute;
-  if (
-    args.length !== 11 || args[0] !== "--stdio" || args[1] !== "--repo" ||
-    !args[2] || args[7] !== "--command-guardian" || !absolute(args[8]) ||
-    args[9] !== "--command-fence" ||
-    (os === "windows" ? args[10] !== "none" : !absolute(args[10]))
-  ) return false;
-  try {
-    // Each adapter owns its descriptor: aliasing input and output is invalid.
-    return parseEngineInputTarget(args[3], args[4], os) !==
-      parseEngineOutputTarget(args[5], args[6], os);
-  } catch {
-    return false;
-  }
+  return parseEngineLaunchArgs(args, os)?.mode === "repo";
 }
 
 /** Hidden process entry. Paths come only from the trusted supervisor argv. */
@@ -104,29 +147,33 @@ export async function runEngineMain(
   args: readonly string[],
   identity: { version: string; gitSha?: string },
 ): Promise<number> {
-  if (!validateEngineLaunchArgs(args)) {
+  const launch = parseEngineLaunchArgs(args);
+  if (!launch) {
     console.error(
-      "Engine is internal; requires --stdio --repo <repository>, private input/output pipes, --command-guardian <absolute executable> and --command-fence <generation fence>",
+      "Engine is internal; requires --stdio with --repo <repository> or --control, private input/output pipes, --command-guardian <absolute executable> and --command-fence <generation fence>",
     );
     return 2;
   }
   let input: EngineInput | undefined;
   let output: EngineOutput | undefined;
   try {
-    input = openEngineInput(args[3], args[4]);
-    output = openEngineOutput(args[5], args[6]);
+    input = openEngineInput(launch.input[0], launch.input[1]);
+    output = openEngineOutput(launch.output[0], launch.output[1]);
   } catch {
     await Promise.allSettled([input?.dispose(), output?.dispose()]);
     console.error("Cannot open the private engine request and reply pipes");
     return 1;
+  }
+  if (launch.mode === "control") {
+    return await runControlEngine(input, output, identity);
   }
   const inputCancellation = new AbortController();
   // This hidden entry owns the process until main calls Deno.exit. Retain its
   // command policy through the final continuation: a cancellation-ignoring
   // task must still use the generation fence during process teardown.
   setCommandGuardian({
-    executable: args[8],
-    fence: args[10],
+    executable: launch.guardian,
+    fence: launch.fence,
   });
   const frames = readEngineFrames(
     input.stream,
@@ -146,7 +193,7 @@ export async function runEngineMain(
     const accepted = await admitEngineOperator(identity.version);
     admission = accepted;
     publishNestedGatePass(accepted.handoff);
-    const composed = await createLocalEngineContext(args[2]);
+    const composed = await createLocalEngineContext(launch.repo);
     contextCreated = true;
     const runtime = new EngineRuntime({
       ...composed,
@@ -191,6 +238,34 @@ export async function runEngineMain(
       } finally {
         await output.dispose();
       }
+    }
+  }
+}
+
+/** The hub's control engine reads only the user's workspace registry. */
+async function runControlEngine(
+  input: EngineInput,
+  output: EngineOutput,
+  identity: { version: string; gitSha?: string },
+): Promise<number> {
+  const runtime = new ControlRuntime({
+    workspaces: new WorkspaceRegistryFileRepository(),
+    isRepo: (path) => exists(join(path, ".swamp.yaml")),
+    realPath: (path) => Deno.realPath(path),
+    engineVersion: identity.version,
+    gitSha: identity.gitSha ?? "unknown",
+  }, output.stream);
+  try {
+    await runtime.serve(readEngineFrames(input.stream));
+    return 0;
+  } catch {
+    console.error("Hub control engine transport failed");
+    return 1;
+  } finally {
+    try {
+      await input.dispose();
+    } finally {
+      await output.dispose();
     }
   }
 }

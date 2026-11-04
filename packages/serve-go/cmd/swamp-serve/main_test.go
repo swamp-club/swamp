@@ -322,7 +322,7 @@ func TestListeningOutputIncludesConnectionURLAndExistingFields(t *testing.T) {
 		{&net.TCPAddr{IP: net.ParseIP("fe80::1"), Zone: "eth0", Port: 4567}, true, "wss://[fe80::1%25eth0]:4567"},
 	} {
 		var output bytes.Buffer
-		logListening(slog.New(slog.NewJSONHandler(&output, nil)), test.address, test.tls)
+		logListening(slog.New(slog.NewJSONHandler(&output, nil)), test.address, test.tls, "local-v1")
 		var value struct {
 			Status         string `json:"status"`
 			Host           string `json:"host"`
@@ -339,7 +339,7 @@ func TestListeningOutputIncludesConnectionURLAndExistingFields(t *testing.T) {
 			t.Fatalf("startup connection fields missing or invalid: %s", &output)
 		}
 		output.Reset()
-		logListening(slog.New(slog.NewTextHandler(&output, nil)), test.address, test.tls)
+		logListening(slog.New(slog.NewTextHandler(&output, nil)), test.address, test.tls, "local-v1")
 		if !strings.Contains(output.String(), test.url) {
 			t.Fatalf("human startup omitted connection URL: %s", &output)
 		}

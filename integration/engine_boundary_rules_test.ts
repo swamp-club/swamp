@@ -216,7 +216,9 @@ Deno.test("engine boundary: operator admission precedes repository and extension
   const admission = source.indexOf(
     "await admitEngineOperator(identity.version)",
   );
-  const composition = source.indexOf("await createLocalEngineContext(args[2])");
+  const composition = source.indexOf(
+    "await createLocalEngineContext(launch.repo)",
+  );
   assert(admission > 0 && composition > admission);
   assertStringIncludes(source, "error instanceof EngineOperatorAuthError");
   assertEquals(source.includes("error instanceof UserError"), false);

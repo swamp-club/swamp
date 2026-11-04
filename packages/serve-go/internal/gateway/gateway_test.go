@@ -72,7 +72,7 @@ func testCtx(t *testing.T) context.Context {
 
 func TestHealthMissingCredentialAndOriginDoNotWakeEngine(t *testing.T) {
 	b := &stubBackend{}
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	for _, path := range []string{"/health", "/ready"} {
 		r := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
@@ -100,7 +100,7 @@ func TestHealthMissingCredentialAndOriginDoNotWakeEngine(t *testing.T) {
 }
 func TestCredentialFailureIsRejectedBeforeUpgrade(t *testing.T) {
 	b := &stubBackend{}
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	r := httptest.NewRequest("GET", "http://localhost/", nil)
 	r.Header.Set("Upgrade", "websocket")
 	r.Header.Set("Authorization", "Bearer wrong")
@@ -149,7 +149,7 @@ func TestOriginAndHostPolicy(t *testing.T) {
 	}
 }
 func TestRateLimitIsBoundedAndExpiresDeterministically(t *testing.T) {
-	g := New(gatewayConfig(), &stubBackend{})
+	g := New(gatewayConfig(), Single(&stubBackend{}))
 	now := time.Unix(123, 0)
 	for i := 0; i < 60; i++ {
 		if !g.rateAllowed("ip", now) {
@@ -165,7 +165,7 @@ func TestRateLimitIsBoundedAndExpiresDeterministically(t *testing.T) {
 }
 
 func TestRateLimitEvictsOldestEntryInsteadOfLockingOutNewAddresses(t *testing.T) {
-	g := New(gatewayConfig(), &stubBackend{})
+	g := New(gatewayConfig(), Single(&stubBackend{}))
 	now := time.Unix(123, 0)
 	for i := 0; i < 4096; i++ {
 		if !g.rateAllowed(fmt.Sprint(i), now.Add(time.Duration(i)*time.Nanosecond)) {
@@ -183,7 +183,7 @@ func TestRateLimitEvictsOldestEntryInsteadOfLockingOutNewAddresses(t *testing.T)
 func TestOversizedCredentialIs401WithoutStartingAuthentication(t *testing.T) {
 	for _, header := range []string{"Authorization", "Sec-WebSocket-Protocol"} {
 		b := &stubBackend{}
-		g := New(gatewayConfig(), b)
+		g := New(gatewayConfig(), Single(b))
 		r := httptest.NewRequest("GET", "http://localhost/", nil)
 		r.Header.Set("Upgrade", "websocket")
 		prefix := "Bearer "
@@ -201,7 +201,7 @@ func TestOversizedCredentialIs401WithoutStartingAuthentication(t *testing.T) {
 
 func TestOversizedMutationGetsSizeErrorAndConnectionRemainsUsable(t *testing.T) {
 	b, _ := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	server := httptest.NewServer(g)
 	t.Cleanup(server.Close)
 	t.Cleanup(g.Shutdown)
@@ -328,7 +328,7 @@ func nextString(n int) string {
 
 func TestRefusedCancelPreservesOriginalMutationBookkeeping(t *testing.T) {
 	b, process := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	server := httptest.NewServer(g)
 	t.Cleanup(server.Close)
 	t.Cleanup(g.Shutdown)
@@ -359,7 +359,7 @@ func TestRefusedCancelPreservesOriginalMutationBookkeeping(t *testing.T) {
 }
 func TestWebSocketRoutesIdenticalIDsAndEchoesBearerProtocol(t *testing.T) {
 	b, _ := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	server := httptest.NewServer(g)
 	t.Cleanup(server.Close)
 	t.Cleanup(g.Shutdown)
@@ -414,7 +414,7 @@ func (w handshakeDeadlineWriter) SetWriteDeadline(deadline time.Time) error {
 
 func TestAuthenticatedUpgradeRefreshesExpiredHTTPWriteDeadline(t *testing.T) {
 	b, _ := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	refreshed := make(chan time.Time, 1)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Simulate the ordinary HTTP write window expiring during bounded cold
@@ -453,7 +453,7 @@ func TestAuthenticatedUpgradeRefreshesExpiredHTTPWriteDeadline(t *testing.T) {
 
 func TestUpgradeDeadlineFailureReleasesAuthenticatedSession(t *testing.T) {
 	b, _ := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	r := httptest.NewRequest("GET", "http://localhost/", nil)
 	r.Header.Set("Upgrade", "websocket")
 	r.Header.Set("Connection", "Upgrade")
@@ -470,7 +470,7 @@ func TestUpgradeDeadlineFailureReleasesAuthenticatedSession(t *testing.T) {
 }
 func TestEngineRevalidationCloseCodeReachesWebSocket(t *testing.T) {
 	b, _ := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	server := httptest.NewServer(g)
 	t.Cleanup(server.Close)
 	t.Cleanup(g.Shutdown)
@@ -491,7 +491,7 @@ func TestEngineRevalidationCloseCodeReachesWebSocket(t *testing.T) {
 
 func TestPublicIDDetachReleasesTransportBookkeeping(t *testing.T) {
 	b, _ := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	server := httptest.NewServer(g)
 	t.Cleanup(server.Close)
 	t.Cleanup(g.Shutdown)
@@ -529,7 +529,7 @@ func TestPublicIDDetachReleasesTransportBookkeeping(t *testing.T) {
 
 func TestDelayedStartedAfterDetachDoesNotResurrectRequest(t *testing.T) {
 	b, _ := gatewayBackend(t)
-	g := New(gatewayConfig(), b)
+	g := New(gatewayConfig(), Single(b))
 	server := httptest.NewServer(g)
 	t.Cleanup(server.Close)
 	t.Cleanup(g.Shutdown)
@@ -572,5 +572,72 @@ func TestDelayedStartedAfterDetachDoesNotResurrectRequest(t *testing.T) {
 	write(`{"type":"data.query","id":"reused"}`)
 	if reply := read(); reply["type"] != "data.query" || reply["id"] != "reused" {
 		t.Fatal(reply)
+	}
+}
+
+type pathRouter struct {
+	backend Backend
+	paths   []string
+	err     error
+}
+
+func (r *pathRouter) Route(_ context.Context, path string) (Backend, error) {
+	r.paths = append(r.paths, path)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.backend, nil
+}
+func (r *pathRouter) Readiness(path string) (int, interface{}, bool) {
+	if path == "/w/alpha/ready" {
+		return 503, map[string]string{"state": "unloaded"}, true
+	}
+	return 0, nil, false
+}
+
+func upgradeRequest(path string) *http.Request {
+	r := httptest.NewRequest("GET", "http://localhost"+path, nil)
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Authorization", "Bearer valid")
+	r.Header.Set("Sec-WebSocket-Key", "MDEyMzQ1Njc4OWFiY2RlZg==")
+	r.Header.Set("Sec-WebSocket-Version", "13")
+	r.Header.Set("Connection", "Upgrade")
+	return r
+}
+
+func TestRouteRefusalAnswersBeforeAuthentication(t *testing.T) {
+	b := &stubBackend{}
+	router := &pathRouter{backend: b, err: &RouteError{Status: 404, Code: "unknown_workspace"}}
+	g := New(gatewayConfig(), router)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, upgradeRequest("/w/missing/"))
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "unknown_workspace") {
+		t.Fatalf("route refusal: %d %s", w.Code, w.Body.String())
+	}
+	if len(router.paths) != 1 || router.paths[0] != "/w/missing/" {
+		t.Fatalf("router saw %v", router.paths)
+	}
+	router.err = fmt.Errorf("control engine unavailable")
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, upgradeRequest("/w/alpha/"))
+	if w.Code != 503 || strings.Contains(w.Body.String(), "control engine") {
+		t.Fatalf("routing failure must be a generic 503: %d %s", w.Code, w.Body.String())
+	}
+	if b.opens.Load() != 0 {
+		t.Fatal("a refused route reached authentication")
+	}
+}
+
+func TestRouterAnswersReadinessPaths(t *testing.T) {
+	g := New(gatewayConfig(), &pathRouter{})
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, httptest.NewRequest("GET", "/w/alpha/ready", nil))
+	if w.Code != 503 || !strings.Contains(w.Body.String(), "unloaded") {
+		t.Fatalf("workspace readiness: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, httptest.NewRequest("GET", "/ready", nil))
+	if w.Code != 404 {
+		t.Fatalf("paths the router does not answer are unsupported: %d", w.Code)
 	}
 }

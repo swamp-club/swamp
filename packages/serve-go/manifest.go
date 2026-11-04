@@ -39,6 +39,20 @@ func Operations() []string {
 	return contract.Operations
 }
 
+// HubControl returns the profile and controls of the hub's repository-less control engine.
+func HubControl() (string, []string) {
+	var contract struct {
+		HubControl struct {
+			Profile  string   `json:"profile"`
+			Controls []string `json:"controls"`
+		} `json:"hubControl"`
+	}
+	if err := json.Unmarshal(manifest, &contract); err != nil || contract.HubControl.Profile == "" {
+		panic("invalid embedded hub control contract")
+	}
+	return contract.HubControl.Profile, contract.HubControl.Controls
+}
+
 // MaxShutdownDeadlineMilliseconds is the engine's safe timer range from the shared contract.
 func MaxShutdownDeadlineMilliseconds() int64 {
 	var contract struct {

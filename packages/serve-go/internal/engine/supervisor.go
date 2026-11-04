@@ -77,6 +77,7 @@ func (s Status) WorkIdle() bool {
 type Supervisor struct {
 	config          Config
 	start           Starter
+	handshake       Handshake
 	gate            admissionGate
 	mu              sync.Mutex
 	client          *Client
@@ -163,8 +164,90 @@ func (g *admissionGate) release(write bool) {
 	g.mu.Unlock()
 }
 
+// Handshake admits a freshly started generation before it serves anything.
+type Handshake func(context.Context, *Client) error
+
+// LocalHandshake admits a local-v1 engine; a non-empty repo must be the
+// repository the engine reports it bound, so a hub never routes to the wrong one.
+func LocalHandshake(repo string) Handshake {
+	return func(ctx context.Context, c *Client) error {
+		var hello struct {
+			Version                 int      `json:"version"`
+			Profile                 string   `json:"profile"`
+			Operations              []string `json:"operations"`
+			EngineVersion           string   `json:"engineVersion"`
+			GitSHA                  string   `json:"gitSha"`
+			CallerSessionIDs        bool     `json:"callerSessionIds"`
+			AuthenticationDeadlines bool     `json:"authenticationDeadlines"`
+			Repo                    struct {
+				Path string `json:"path"`
+			} `json:"repo"`
+		}
+		if err := c.Call(ctx, "hello", map[string]string{"profile": "local-v1"}, &hello); err != nil {
+			return err
+		}
+		if hello.Version != protocol.Version || hello.Profile != "local-v1" || !hello.CallerSessionIDs || !hello.AuthenticationDeadlines || !supportsProfile(hello.Operations) {
+			return protocol.ErrVersion
+		}
+		if repo != "" && hello.Repo.Path != repo {
+			return ErrRepositoryMismatch
+		}
+		return nil
+	}
+}
+
 func NewSupervisor(config Config, start Starter) *Supervisor {
-	return &Supervisor{config: config, start: start, state: "stopped"}
+	return NewSupervisorWith(config, start, LocalHandshake(""))
+}
+
+func NewSupervisorWith(config Config, start Starter, handshake Handshake) *Supervisor {
+	return &Supervisor{config: config, start: start, handshake: handshake, state: "stopped"}
+}
+
+// Call sends one private control to the current generation, starting it if
+// needed. Lifecycle controls stay internal to the supervisor.
+func (s *Supervisor) Call(ctx context.Context, method string, params, result interface{}) error {
+	if err := s.gate.acquire(ctx, false); err != nil {
+		return err
+	}
+	defer s.gate.release(false)
+	c, err := s.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	return c.Call(ctx, method, params, result)
+}
+
+// Activity reports what an eviction decision needs without waking the engine.
+type Activity struct {
+	Running  bool
+	Sessions int
+}
+
+func (s *Supervisor) Activity() Activity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Activity{Running: s.client != nil || s.starting != nil, Sessions: s.sessions}
+}
+
+// Reset is the operator's acknowledgement that the commands of an unconfirmed
+// generation have stopped; it never discards a live or starting generation.
+func (s *Supervisor) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.draining || s.client != nil || s.starting != nil {
+		return ErrUnavailable
+	}
+	s.cleanupError, s.uncertain = nil, nil
+	s.cooldownUntil = time.Time{}
+	s.state = "stopped"
+	return nil
+}
+
+// QuiesceIdle stops an idle generation now instead of after the idle grace;
+// the engine still decides whether its work is quiescent.
+func (s *Supervisor) QuiesceIdle(ctx context.Context) error {
+	return s.tick(ctx, time.Now(), true)
 }
 func (s *Supervisor) Snapshot() Snapshot {
 	s.mu.Lock()
@@ -281,20 +364,8 @@ func (s *Supervisor) launch(ctx context.Context, ready chan struct{}) {
 			if c == nil {
 				c = NewClient("unadmitted", p)
 			}
-			var hello struct {
-				Version                 int      `json:"version"`
-				Profile                 string   `json:"profile"`
-				Operations              []string `json:"operations"`
-				EngineVersion           string   `json:"engineVersion"`
-				GitSHA                  string   `json:"gitSha"`
-				CallerSessionIDs        bool     `json:"callerSessionIds"`
-				AuthenticationDeadlines bool     `json:"authenticationDeadlines"`
-			}
 			if err == nil && c != nil {
-				err = c.Call(ctx, "hello", map[string]string{"profile": "local-v1"}, &hello)
-			}
-			if err == nil && (hello.Version != protocol.Version || hello.Profile != "local-v1" || !hello.CallerSessionIDs || !hello.AuthenticationDeadlines || !supportsProfile(hello.Operations)) {
-				err = protocol.ErrVersion
+				err = s.handshake(ctx, c)
 			}
 		} else {
 			c = NewClient("unadmitted", p)
@@ -398,10 +469,15 @@ func (s *Supervisor) Dispatch(ctx context.Context, session *Session, request []b
 
 // Tick is explicit for deterministic tests; Run supplies the production clock.
 func (s *Supervisor) Tick(ctx context.Context, now time.Time) error {
+	return s.tick(ctx, now, false)
+}
+
+func (s *Supervisor) tick(ctx context.Context, now time.Time, force bool) error {
 	// Avoid queuing a writer ahead of public admission when no idle decision
 	// is possible. Repeat the checks after acquiring the gate to close races.
+	idleDisabled := s.config.IdleTimeout == 0 && !force
 	s.mu.Lock()
-	skip := s.draining || s.client == nil || (!s.client.Retiring() && (s.config.IdleTimeout == 0 || s.sessions != 0))
+	skip := s.draining || s.client == nil || (!s.client.Retiring() && (idleDisabled || s.sessions != 0))
 	if skip {
 		s.idleSince = time.Time{}
 	}
@@ -415,7 +491,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) error {
 	defer s.gate.release(true)
 	s.mu.Lock()
 	c := s.client
-	if s.draining || c == nil || (!c.Retiring() && (s.config.IdleTimeout == 0 || s.sessions != 0)) {
+	if s.draining || c == nil || (!c.Retiring() && (idleDisabled || s.sessions != 0)) {
 		s.idleSince = time.Time{}
 		s.mu.Unlock()
 		return nil
@@ -441,12 +517,12 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) error {
 		s.mu.Unlock()
 		return nil
 	}
-	if !retiring && s.idleSince.IsZero() {
+	if !retiring && !force && s.idleSince.IsZero() {
 		s.idleSince = now
 		s.mu.Unlock()
 		return nil
 	}
-	if !retiring && now.Sub(s.idleSince) < s.config.IdleTimeout {
+	if !retiring && !force && now.Sub(s.idleSince) < s.config.IdleTimeout {
 		s.mu.Unlock()
 		return nil
 	}

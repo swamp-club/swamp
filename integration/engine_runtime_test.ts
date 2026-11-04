@@ -157,6 +157,8 @@ Deno.test("EngineRuntime: hello, refusal, quiescence and disposal are ordered", 
     const hello = await h.control("hello", { profile: "local-v1" });
     assertEquals((hello.result as Frame).callerSessionIds, true);
     assertEquals((hello.result as Frame).authenticationDeadlines, true);
+    // A hub compares this with the workspace it selected before routing.
+    assertEquals((hello.result as Frame).repo, { path: repo.repoDir });
     const rejected = await h.control("session.open", {
       credential: "SECRET_CANARY",
       sourceIp: "127.0.0.1",

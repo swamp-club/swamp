@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { engineStartupFailure, validateEngineLaunchArgs } from "./entry.ts";
+import {
+  engineStartupFailure,
+  parseEngineLaunchArgs,
+  validateEngineLaunchArgs,
+} from "./entry.ts";
 import { EngineOperatorAuthError } from "./operator_auth.ts";
 import { EngineRepositoryNotInitializedError } from "./profile.ts";
 
@@ -81,6 +85,60 @@ Deno.test("validateEngineLaunchArgs: Windows uses private handles and an explici
     );
   }
   assertEquals(validateEngineLaunchArgs(args, "linux"), false);
+});
+
+Deno.test("parseEngineLaunchArgs: the hub control engine takes no repository and the same private pipes", () => {
+  const control = [
+    "--stdio",
+    "--control",
+    "--input-fd",
+    "3",
+    "--output-fd",
+    "4",
+    "--command-guardian",
+    "/installed/swamp-serve",
+    "--command-fence",
+    "/private/generation.sock",
+  ];
+  assertEquals(parseEngineLaunchArgs(control, "linux"), {
+    mode: "control",
+    input: ["--input-fd", "3"],
+    output: ["--output-fd", "4"],
+    guardian: "/installed/swamp-serve",
+    fence: "/private/generation.sock",
+  });
+  // A control launch is never mistaken for a repository engine.
+  assertEquals(validateEngineLaunchArgs(control, "linux"), false);
+  assertEquals(
+    parseEngineLaunchArgs([
+      "--stdio",
+      "--control",
+      "/repo",
+      ...control.slice(2),
+    ], "linux"),
+    undefined,
+  );
+  const aliased = [...control];
+  aliased[5] = "3";
+  assertEquals(parseEngineLaunchArgs(aliased, "linux"), undefined);
+});
+
+Deno.test("parseEngineLaunchArgs: a repository engine reports the repository it was given", () => {
+  const launch = parseEngineLaunchArgs([
+    "--stdio",
+    "--repo",
+    "/repo",
+    "--input-fd",
+    "3",
+    "--output-fd",
+    "4",
+    "--command-guardian",
+    "/installed/swamp-serve",
+    "--command-fence",
+    "/private/generation.sock",
+  ], "linux");
+  assertEquals(launch?.mode, "repo");
+  assertEquals(launch?.mode === "repo" ? launch.repo : undefined, "/repo");
 });
 
 Deno.test("engineStartupFailure: missing marker has fixed actionable recovery even if error properties are modified", () => {
