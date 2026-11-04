@@ -22,7 +22,11 @@ import { Data } from "../../domain/data/data.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { sha256Hex, v3RunArtifactCheck } from "./run_artifact_check.ts";
+import {
+  outputArtifactCheck,
+  sha256Hex,
+  v3RunArtifactCheck,
+} from "./run_artifact_check.ts";
 
 const CONTENT = new TextEncoder().encode('{"value":1}');
 
@@ -102,4 +106,59 @@ Deno.test("v3RunArtifactCheck: missing content is not available", async () => {
     ),
     false,
   );
+});
+
+Deno.test("outputArtifactCheck: the ref's sha256 decides against the version's content", async () => {
+  const { run, data, owner } = fixture();
+  const reads: (number | undefined)[] = [];
+  const check = outputArtifactCheck({
+    findByName: (_type, _id, _name, version) => {
+      reads.push(version);
+      return Promise.resolve(data);
+    },
+    getContent: (_type, _id, _name, version) => {
+      reads.push(version);
+      return Promise.resolve(CONTENT);
+    },
+  });
+  const ref = {
+    dataId: data.id,
+    name: data.name,
+    version: data.version,
+    tags: {},
+  };
+  const producer = { workflowRunId: run.id, startedAt: new Date(0) };
+
+  const matching = await check(owner.modelType, owner.modelId, {
+    ...ref,
+    sha256: await sha256Hex(CONTENT),
+  }, producer);
+  assertEquals(matching.kind, "available");
+  assertEquals(reads, [data.version, data.version]);
+
+  const other = await check(owner.modelType, owner.modelId, {
+    ...ref,
+    sha256: "0".repeat(64),
+  }, producer);
+  assertEquals(other.kind, "unavailable");
+});
+
+Deno.test("outputArtifactCheck: a version that no longer exists is unavailable", async () => {
+  const { data, owner } = fixture();
+  let contentReads = 0;
+  const check = outputArtifactCheck({
+    findByName: () => Promise.resolve(null),
+    getContent: () => {
+      contentReads++;
+      return Promise.resolve(CONTENT);
+    },
+  });
+  const resolution = await check(owner.modelType, owner.modelId, {
+    dataId: data.id,
+    name: data.name,
+    version: data.version,
+    sha256: await sha256Hex(CONTENT),
+  }, { startedAt: new Date(0) });
+  assertEquals(resolution.kind, "unavailable");
+  assertEquals(contentReads, 0);
 });

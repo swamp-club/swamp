@@ -56,13 +56,12 @@ import {
 } from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-import {
-  type ArtifactProducer,
-  resolveRunArtifact,
-  type RunArtifactResolution,
+import type {
+  ArtifactProducer,
+  RunArtifactResolution,
 } from "../../domain/datastore_v3/run_artifact_resolution.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
-import { sha256Hex } from "../data/run_artifact_check.ts";
+import { outputArtifactCheck } from "../data/run_artifact_check.ts";
 export interface ModelOutputDataData {
   outputId: string;
   methodName: string;
@@ -206,28 +205,7 @@ export function createModelOutputDataDeps(
       dataRepo.getContent(type, definitionId, name, version),
     ...(resolverEngine(datastoreResolver) === "v3"
       ? {
-        checkArtifact: async (type, definitionId, ref, producer) => {
-          const data = await dataRepo.findByName(
-            type,
-            definitionId,
-            ref.name,
-            ref.version,
-          );
-          const content = data === null ? null : await dataRepo.getContent(
-            type,
-            definitionId,
-            ref.name,
-            ref.version,
-          );
-          return resolveRunArtifact(
-            ref,
-            producer,
-            data === null || content === null ? undefined : {
-              metadata: data.toData(),
-              sha256: await sha256Hex(content),
-            },
-          );
-        },
+        checkArtifact: outputArtifactCheck(dataRepo),
       }
       : {}),
   };
