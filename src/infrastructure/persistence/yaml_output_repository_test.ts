@@ -32,7 +32,13 @@ import {
 } from "./unreadable_records_test_helpers.ts";
 import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { ensureDir } from "@std/fs";
-import { basename, dirname, join, SEPARATOR } from "@std/path";
+import {
+  basename,
+  dirname,
+  join,
+  SEPARATOR,
+  SEPARATOR_PATTERN,
+} from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
@@ -49,6 +55,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { OutputKey } from "../../domain/models/repositories.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
+import { OUTPUT_SUMMARIES_DIR } from "./output_summary_index.ts";
 import { BULK_SCAN_SHARE, SCAN_CONCURRENCY } from "./scan_permits.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -2307,15 +2314,18 @@ async function countFileOps<T>(
   const readTextFile = Deno.readTextFile;
   const stats: string[] = [];
   const reads: string[] = [];
+  // On Windows an index append through withTempDir's blocking file stats via ensureDir.
+  const isIndexPath = (path: string | URL) =>
+    String(path).split(SEPARATOR_PATTERN).includes(OUTPUT_SUMMARIES_DIR);
   (Deno as { stat: typeof Deno.stat }).stat = (path) => {
-    stats.push(String(path));
+    if (!isIndexPath(path)) stats.push(String(path));
     return stat(path);
   };
   (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = (
     path,
     options,
   ) => {
-    reads.push(String(path));
+    if (!isIndexPath(path)) reads.push(String(path));
     return readTextFile(path, options);
   };
   try {
