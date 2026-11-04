@@ -25,8 +25,6 @@ jobs:
             concurrency: 20
           - model: sonnet
             concurrency: 20
-          - model: gpt-5.4
-            concurrency: 1
           - model: gemini-2.5-pro
             concurrency: 20
           - model: gemini-3.1-pro
@@ -65,7 +63,6 @@ jobs:
         if: steps.check.outputs.run == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           MODEL: ${{ matrix.model }}
           CONCURRENCY: ${{ matrix.concurrency }}

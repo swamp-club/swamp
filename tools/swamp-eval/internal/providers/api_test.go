@@ -190,48 +190,6 @@ func TestTimeoutIsCategorized(t *testing.T) {
 	}
 }
 
-func TestOpenAIRequestAndParse(t *testing.T) {
-	srv, got := server(t, 200, `{"model":"gpt-5.4-2026","choices":[{"message":{"tool_calls":[{"type":"function","function":{"name":"load_data_guide","arguments":"{}"}}]}}],"usage":{"prompt_tokens":50,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":30}}}`)
-	o := &OpenAIAPI{Config: models.API{ModelID: "gpt-5.4"}, Key: testKey, BaseURL: srv.URL, Client: srv.Client()}
-	resp := o.Classify(context.Background(), testRequest())
-	if resp.Err != nil || resp.Tool != "load_data_guide" || *resp.InputTokens != 50 || *resp.CachedInputTokens != 30 || *resp.OutputTokens != 9 {
-		t.Fatalf("resp = %+v", resp)
-	}
-	if got.path != "/v1/chat/completions" || got.header.Get("Authorization") != "Bearer "+testKey {
-		t.Errorf("request = %s", got.path)
-	}
-	if got.body["tool_choice"] != "required" {
-		t.Errorf("tool_choice = %v", got.body["tool_choice"])
-	}
-	for _, absent := range []string{"temperature", "max_completion_tokens", "max_tokens"} {
-		if _, ok := got.body[absent]; ok {
-			t.Errorf("%s must not be sent to a reasoning model", absent)
-		}
-	}
-	msgs := got.body["messages"].([]any)
-	if msgs[0].(map[string]any)["role"] != "system" || msgs[1].(map[string]any)["content"] != testRequest().Input {
-		t.Errorf("messages = %v", msgs)
-	}
-	fn := got.body["tools"].([]any)[0].(map[string]any)
-	if fn["type"] != "function" || fn["function"].(map[string]any)["name"] != "load_vault_guide" {
-		t.Errorf("tool = %v", fn)
-	}
-}
-
-func TestOpenAIRejectsMissingChoicesAndMultipleCalls(t *testing.T) {
-	for name, body := range map[string]string{
-		"no choices": `{"choices":[]}`,
-		"no calls":   `{"choices":[{"message":{"content":"text"}}]}`,
-		"two calls":  `{"choices":[{"message":{"tool_calls":[{"function":{"name":"load_data_guide"}},{"function":{"name":"load_vault_guide"}}]}}]}`,
-	} {
-		srv, _ := server(t, 200, body)
-		resp := (&OpenAIAPI{Config: models.API{ModelID: "m"}, Key: testKey, BaseURL: srv.URL, Client: srv.Client()}).Classify(context.Background(), testRequest())
-		if resp.Err == nil {
-			t.Errorf("%s: want error, got %+v", name, resp)
-		}
-	}
-}
-
 func TestGoogleRequestAndParse(t *testing.T) {
 	srv, got := server(t, 200, `{"modelVersion":"gemini-2.5-pro-001","candidates":[{"content":{"parts":[{"thoughtSignature":"x"},{"functionCall":{"name":"load_vault_guide","args":{}}}]}}],"usageMetadata":{"promptTokenCount":80,"cachedContentTokenCount":64,"candidatesTokenCount":5,"thoughtsTokenCount":40}}`)
 	zero := 0.0

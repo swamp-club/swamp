@@ -54,8 +54,6 @@ func New(m models.Model, route models.Route, getenv func(string) string) (Provid
 	switch m.API.Kind {
 	case models.Anthropic:
 		return &AnthropicAPI{Config: *m.API, Key: key, BaseURL: anthropicBaseURL, Client: client}, nil
-	case models.OpenAI:
-		return &OpenAIAPI{Config: *m.API, Key: key, BaseURL: openAIBaseURL, Client: client}, nil
 	case models.Google:
 		return &GoogleAPI{Config: *m.API, Key: key, BaseURL: googleBaseURL, Client: client}, nil
 	}

@@ -261,8 +261,10 @@ Code CLI: `claude -p` with no tools, every choice's name and description in the
 system prompt, and a JSON-schema enum of the names that forces one pick. A
 claude.ai login is enough and no `ANTHROPIC_API_KEY` is read. `--route cli|api`
 overrides the default, which is `api` in GitHub Actions and for models with no
-CLI route (`fable`, `gpt-5.4`, Gemini), and `cli` otherwise. The optional
-`gpt-6-astra` model always uses the Codex CLI route, including in Actions.
+CLI route (`fable`, Gemini), and `cli` otherwise. OpenAI is covered by
+`gpt-6-astra`, which only runs through `codex exec` on a ChatGPT login: locally
+and in `verify-skills` with `reviewer=codex`, not in the weekly matrix, which has
+no such login.
 A preflight sends one tiny case through the real adapter; an unusable CLI or
 key fails the run (exit 2), it never skips.
 
@@ -288,9 +290,6 @@ deno run eval-skill-triggers --model gpt-6-astra --route cli
 # API route, as CI runs it
 export ANTHROPIC_API_KEY=<your-key>
 deno run eval-skill-triggers --model sonnet --route api
-
-export OPENAI_API_KEY=<your-key>
-deno run eval-skill-triggers --model gpt-5.4
 
 export GOOGLE_API_KEY=<your-key>
 deno run eval-skill-triggers --model gemini-2.5-pro
@@ -324,7 +323,7 @@ for all three suites. Omit the input to keep Claude (`opus`). Tessl skill
 quality review is independent of this selection.
 
 Defaults are concurrency 6 on the CLI route (every case is a separate CLI
-process on your subscription) and 20 on the API route (1 for `gpt-5.4`), and
+process on your subscription) and 20 on the API route, and
 threshold 90%. An API-route sonnet run costs ~$2; the CLI route is billed to the
 subscription and records tokens with a null dollar cost.
 
@@ -369,7 +368,6 @@ more than one model, and reports a missing artifact as a failure:
 | -------------- | --------- | ----------- | ------------------ |
 | opus           | Anthropic | 20          | `ANTHROPIC_API_KEY` |
 | sonnet         | Anthropic | 20          | `ANTHROPIC_API_KEY` |
-| gpt-5.4        | OpenAI    | 1           | `OPENAI_API_KEY`   |
 | gemini-2.5-pro | Google    | 20          | `GOOGLE_API_KEY`   |
 | gemini-3.1-pro | Google    | 20          | `GOOGLE_API_KEY`   |
 | fable          | Anthropic | 20          | `ANTHROPIC_API_KEY` |

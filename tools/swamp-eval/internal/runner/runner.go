@@ -40,9 +40,7 @@ const (
 type Options struct {
 	Concurrency int
 	Timeout     time.Duration
-	// Delay is the pause a worker takes after each call.
-	Delay    time.Duration
-	Progress func(done, total int, r Result)
+	Progress    func(done, total int, r Result)
 }
 
 type Result struct {
@@ -80,12 +78,6 @@ func Run(ctx context.Context, cases []eval.Case, p providers.Provider, opts Opti
 					done++
 					opts.Progress(done, len(cases), results[i])
 					mu.Unlock()
-				}
-				if opts.Delay > 0 {
-					select {
-					case <-ctx.Done():
-					case <-time.After(opts.Delay):
-					}
 				}
 			}
 		})

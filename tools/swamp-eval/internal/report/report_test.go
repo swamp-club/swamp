@@ -181,11 +181,10 @@ func TestCrossModelReport(t *testing.T) {
 		"| fable | api | ✅ pass |",
 		"| [x] shared | opus, sonnet | 2/3 |",
 		"| [x] only | sonnet |",
-		"| gpt-5.4 | — | ❌ missing |",
-		"| gemini-3.1-pro | — | ❌ missing |",
 		"| gemini-2.5-pro | — | ❌ missing |",
+		"| gemini-3.1-pro | — | ❌ missing |",
 		"junk.json",
-		"**gpt-5.4**: no artifact",
+		"**gemini-3.1-pro**: no artifact",
 		"❌ **Action required**",
 	} {
 		if !strings.Contains(md, want) {
@@ -244,8 +243,8 @@ func TestCachedInputIsPricedAtTheCacheRate(t *testing.T) {
 
 func TestFailedRunIsReportedWithItsReason(t *testing.T) {
 	dir := t.TempDir()
-	gpt, _ := models.Lookup("gpt-5.4")
-	failed := Failed(gpt, models.RouteAPI, RunOptions{Threshold: 0.9}, ToolInfo{}, eval.Errorf(eval.ErrRateLimit, "openai: HTTP 429: no credits remaining"), time.Now())
+	gem, _ := models.Lookup("gemini-2.5-pro")
+	failed := Failed(gem, models.RouteAPI, RunOptions{Threshold: 0.9}, ToolInfo{}, eval.Errorf(eval.ErrRateLimit, "google: HTTP 429: no credits remaining"), time.Now())
 	if err := WriteAtomic(filepath.Join(dir, "gpt.json"), failed); err != nil {
 		t.Fatal(err)
 	}
@@ -253,8 +252,8 @@ func TestFailedRunIsReportedWithItsReason(t *testing.T) {
 	if err != nil || len(col.Artifacts) != 1 {
 		t.Fatalf("loaded %+v, %v", col, err)
 	}
-	md, passed := CrossModelMarkdown(col, []string{"gpt-5.4"}, 0.9)
-	if passed || !strings.Contains(md, "| gpt-5.4 | api | ❌ failed: rate_limit |") || !strings.Contains(md, "no credits remaining") || strings.Contains(md, "missing") {
+	md, passed := CrossModelMarkdown(col, []string{"gemini-2.5-pro"}, 0.9)
+	if passed || !strings.Contains(md, "| gemini-2.5-pro | api | ❌ failed: rate_limit |") || !strings.Contains(md, "no credits remaining") || strings.Contains(md, "missing") {
 		t.Errorf("report:\n%s", md)
 	}
 	if !strings.Contains(RunMarkdown(failed), "Failed before any case ran") {

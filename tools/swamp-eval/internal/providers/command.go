@@ -103,6 +103,26 @@ func commandError(ctx context.Context, source string, res CommandResult) *eval.E
 	return eval.Errorf(eval.ErrCLIExit, "%s failed: %v %s", source, res.Err, scrub(string(res.Stderr)))
 }
 
+// choiceTool is the OpenAI function-tool shape the CLI prompts list choices in.
+type choiceTool struct {
+	Type     string         `json:"type"`
+	Function choiceFunction `json:"function"`
+}
+
+type choiceFunction struct {
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	Parameters  jsonSchemaParams `json:"parameters"`
+}
+
+func choiceTools(tools []eval.Tool) []choiceTool {
+	out := make([]choiceTool, len(tools))
+	for i, t := range tools {
+		out[i] = choiceTool{Type: "function", Function: choiceFunction{Name: t.Name, Description: t.Description, Parameters: paramsOf(t)}}
+	}
+	return out
+}
+
 // withChoices appends every tool's name and description to the system prompt.
 // The CLI routes force the answer through a name enum, which carries no
 // descriptions; without this the model routes on tool names alone.
@@ -110,7 +130,7 @@ func withChoices(req eval.Request) string {
 	var choices bytes.Buffer
 	enc := json.NewEncoder(&choices)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(openAITools(req.Tools))
+	_ = enc.Encode(choiceTools(req.Tools))
 	return req.SystemPrompt + "\n\nAvailable routing choices (names and descriptions):\n" + strings.TrimRight(choices.String(), "\n")
 }
 

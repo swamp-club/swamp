@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 )
 
 type Route string
@@ -37,7 +36,6 @@ type APIKind string
 
 const (
 	Anthropic APIKind = "anthropic"
-	OpenAI    APIKind = "openai"
 	Google    APIKind = "google"
 )
 
@@ -58,8 +56,6 @@ type API struct {
 	// MaxTokens of zero leaves the provider's default in place.
 	MaxTokens   int
 	Temperature *float64
-	// Delay is the pause each worker takes after a call.
-	Delay       time.Duration
 	Concurrency int
 	Pricing     *Pricing
 }
@@ -116,14 +112,6 @@ var Registry = []Model{
 		API: &API{Kind: Anthropic, ModelID: "claude-fable-5", KeyEnv: "ANTHROPIC_API_KEY",
 			AdaptiveThinking: true, MaxTokens: 2048, Concurrency: 20,
 			Pricing: &Pricing{10.0, 50.0, 1.00}},
-	},
-	{
-		// A reasoning model: it rejects temperature, and reasoning tokens count
-		// against any output cap, so neither is sent.
-		Alias: "gpt-5.4",
-		API: &API{Kind: OpenAI, ModelID: "gpt-5.4", KeyEnv: "OPENAI_API_KEY",
-			Delay: 500 * time.Millisecond, Concurrency: 1,
-			Pricing: &Pricing{2.0, 8.0, 0.20}},
 	},
 	{
 		// Thinking models: an output cap would also cap thinking, so none is sent.

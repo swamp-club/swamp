@@ -193,9 +193,9 @@ func TestRunPreflightFailureStopsBeforeAnyCase(t *testing.T) {
 		calls++
 		return eval.Response{Err: eval.Errorf(eval.ErrAuth, "HTTP 401")}
 	}}
-	h := newHarness(t, p, map[string]string{"OPENAI_API_KEY": "k"})
+	h := newHarness(t, p, map[string]string{"GOOGLE_API_KEY": "k"})
 	out := filepath.Join(t.TempDir(), "x.json")
-	code := Main(context.Background(), []string{"run", "--repo-root", root, "--model", "gpt-5.4", "--out", out}, h.env)
+	code := Main(context.Background(), []string{"run", "--repo-root", root, "--model", "gemini-2.5-pro", "--out", out}, h.env)
 	if code != ExitUsage || calls != 1 || !strings.Contains(h.stderr.String(), "preflight failed") {
 		t.Fatalf("exit %d, calls %d, stderr %s", code, calls, h.stderr)
 	}

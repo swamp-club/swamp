@@ -139,16 +139,11 @@ func runCommand(ctx context.Context, args []string, env Env) int {
 	}
 	fmt.Fprintf(env.Stdout, "Preflight: ok (%s). Running %d cases, concurrency %d.\n", resolved, len(built), workers)
 
-	var delay time.Duration
-	if r == models.RouteAPI {
-		delay = m.API.Delay
-	}
 	notPassed := 0
 	started := env.Now()
 	results := runner.Run(ctx, built, provider, runner.Options{
 		Concurrency: workers,
 		Timeout:     *timeout,
-		Delay:       delay,
 		Progress: func(done, total int, res runner.Result) {
 			if res.Outcome != runner.Pass {
 				notPassed++

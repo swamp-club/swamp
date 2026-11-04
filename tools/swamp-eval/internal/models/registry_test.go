@@ -33,7 +33,6 @@ func TestResolveRoute(t *testing.T) {
 		{"sonnet", "", false, RouteCLI, false},
 		{"sonnet", "", true, RouteAPI, false},
 		{"fable", "", false, RouteAPI, false},
-		{"gpt-5.4", "", false, RouteAPI, false},
 		{"gemini-3.1-pro", "", true, RouteAPI, false},
 		{"gpt-6-astra", "", false, RouteCLI, false},
 		{"gpt-6-astra", "", true, RouteCLI, false},
@@ -88,7 +87,7 @@ func TestRegistryIsConsistent(t *testing.T) {
 			}
 		}
 	}
-	want := []string{"opus", "sonnet", "fable", "gpt-5.4", "gemini-2.5-pro", "gemini-3.1-pro"}
+	want := []string{"opus", "sonnet", "fable", "gemini-2.5-pro", "gemini-3.1-pro"}
 	got := APIAliases()
 	if len(got) != len(want) {
 		t.Fatalf("API matrix = %v, want %v", got, want)
@@ -97,10 +96,6 @@ func TestRegistryIsConsistent(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("API matrix = %v, want %v", got, want)
 		}
-	}
-	gpt, _ := Lookup("gpt-5.4")
-	if gpt.DefaultConcurrency(RouteAPI) != 1 {
-		t.Error("gpt-5.4 must keep its concurrency of 1")
 	}
 	opus, _ := Lookup("opus")
 	if opus.DefaultConcurrency(RouteCLI) != DefaultCLIConcurrency {
