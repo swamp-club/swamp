@@ -2314,18 +2314,18 @@ async function countFileOps<T>(
   const readTextFile = Deno.readTextFile;
   const stats: string[] = [];
   const reads: string[] = [];
-  // Index I/O is left out: on Windows, appending through withTempDir's file stats.
-  const isRecordOp = (path: string | URL) =>
-    !String(path).split(SEPARATOR_PATTERN).includes(OUTPUT_SUMMARIES_DIR);
+  // On Windows an index append through withTempDir's blocking file stats via ensureDir.
+  const isIndexPath = (path: string | URL) =>
+    String(path).split(SEPARATOR_PATTERN).includes(OUTPUT_SUMMARIES_DIR);
   (Deno as { stat: typeof Deno.stat }).stat = (path) => {
-    if (isRecordOp(path)) stats.push(String(path));
+    if (!isIndexPath(path)) stats.push(String(path));
     return stat(path);
   };
   (Deno as { readTextFile: typeof Deno.readTextFile }).readTextFile = (
     path,
     options,
   ) => {
-    if (isRecordOp(path)) reads.push(String(path));
+    if (!isIndexPath(path)) reads.push(String(path));
     return readTextFile(path, options);
   };
   try {
