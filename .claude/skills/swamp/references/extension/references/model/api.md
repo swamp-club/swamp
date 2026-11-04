@@ -730,9 +730,9 @@ await new Deno.Command("my-tool", {
 Deno merges `env` into the inherited environment, so the child also sees the
 swamp process env, `SWAMP_*` credentials included. To drop them, pass
 `clearEnv: true` and list what the tool needs, such as
-`PATH: Deno.env.get("PATH")` and `HOME`; with `clearEnv` alone the child gets an
-empty environment. A nested `swamp` command opens its own vault and is not held
-to the run's vault scope.
+`PATH: Deno.env.get("PATH") ?? ""` and `HOME`; with `clearEnv` alone the child
+gets an empty environment. A nested `swamp` command opens its own vault and is
+not held to the run's vault scope.
 
 ### Arguments Holding Another Service's Template Syntax
 
