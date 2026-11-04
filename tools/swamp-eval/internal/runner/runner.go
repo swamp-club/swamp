@@ -46,14 +46,15 @@ type Options struct {
 }
 
 type Result struct {
-	Case          eval.Case
-	Outcome       Outcome
-	Actual        string
-	Err           *eval.Error
-	Latency       time.Duration
-	InputTokens   *int64
-	OutputTokens  *int64
-	ResolvedModel string
+	Case              eval.Case
+	Outcome           Outcome
+	Actual            string
+	Err               *eval.Error
+	Latency           time.Duration
+	InputTokens       *int64
+	CachedInputTokens *int64
+	OutputTokens      *int64
+	ResolvedModel     string
 }
 
 const MaxConcurrency = 100
@@ -111,12 +112,13 @@ func classify(ctx context.Context, c eval.Case, p providers.Provider, timeout ti
 		resp.Err = eval.Errorf(eval.ErrTimeout, "case exceeded %s", timeout)
 	}
 	r := Result{
-		Case:          c,
-		Latency:       time.Since(start),
-		Err:           resp.Err,
-		InputTokens:   resp.InputTokens,
-		OutputTokens:  resp.OutputTokens,
-		ResolvedModel: resp.ResolvedModel,
+		Case:              c,
+		Latency:           time.Since(start),
+		Err:               resp.Err,
+		InputTokens:       resp.InputTokens,
+		CachedInputTokens: resp.CachedInputTokens,
+		OutputTokens:      resp.OutputTokens,
+		ResolvedModel:     resp.ResolvedModel,
 	}
 	switch {
 	case resp.Err != nil:

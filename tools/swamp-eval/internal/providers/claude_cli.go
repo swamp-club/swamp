@@ -105,6 +105,7 @@ func parseClaudeOutput(stdout []byte, offered []string) eval.Response {
 	}
 	if doc.Usage != nil {
 		out.InputTokens = sumPresent(doc.Usage.InputTokens, doc.Usage.CacheCreationInputTokens, doc.Usage.CacheReadInputTokens)
+		out.CachedInputTokens = doc.Usage.CacheReadInputTokens
 		out.OutputTokens = doc.Usage.OutputTokens
 	}
 	if doc.IsError {

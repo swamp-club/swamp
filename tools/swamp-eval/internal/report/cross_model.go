@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/swamp-club/swamp/tools/swamp-eval/internal/eval"
 	"github.com/swamp-club/swamp/tools/swamp-eval/internal/runner"
 )
 
@@ -90,12 +91,18 @@ func CrossModelMarkdown(col Collection, expect []string, threshold float64) (str
 		t := a.Summary
 		status := "✅ pass"
 		switch {
+		case a.Status == StatusFailed && a.Error != nil:
+			status = "❌ failed: " + string(a.Error.Category)
 		case a.Status == StatusCancelled:
 			status = "❌ cancelled"
 		case t.Total == 0 || float64(t.Passed)/float64(t.Total) < threshold:
 			status = "❌ below threshold"
 		}
-		if status != "✅ pass" {
+		switch {
+		case status == "✅ pass":
+		case a.Status == StatusFailed && a.Error != nil:
+			below = append(below, fmt.Sprintf("**%s**: failed before any case ran — %s", a.Model.Alias, cell(eval.Truncate(a.Error.Message, 200))))
+		default:
 			below = append(below, fmt.Sprintf("**%s**: %s", a.Model.Alias, pct(t.PassRate)))
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %d | %d | %d | %d | %s |\n", a.Model.Alias, a.Model.Route, status, pct(t.PassRate), t.Passed, t.Failed, t.Errors, t.Total, cost(t.EstimatedCostUSD))

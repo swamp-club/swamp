@@ -91,6 +91,7 @@ type googleResponse struct {
 	} `json:"candidates"`
 	UsageMetadata *struct {
 		PromptTokenCount     *int64 `json:"promptTokenCount"`
+		CachedTokenCount     *int64 `json:"cachedContentTokenCount"`
 		CandidatesTokenCount *int64 `json:"candidatesTokenCount"`
 		ThoughtsTokenCount   *int64 `json:"thoughtsTokenCount"`
 	} `json:"usageMetadata"`
@@ -140,6 +141,7 @@ func (g *GoogleAPI) Classify(ctx context.Context, req eval.Request) eval.Respons
 	out := eval.Response{ResolvedModel: resp.ModelVersion}
 	if u := resp.UsageMetadata; u != nil {
 		out.InputTokens = u.PromptTokenCount
+		out.CachedInputTokens = u.CachedTokenCount
 		// Thinking tokens are billed as output.
 		out.OutputTokens = sumPresent(u.CandidatesTokenCount, u.ThoughtsTokenCount)
 	}

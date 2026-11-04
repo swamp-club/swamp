@@ -230,3 +230,34 @@ func TestRunTextListsEveryCaseBySuite(t *testing.T) {
 		t.Errorf("markdown must list every case:\n%s", md)
 	}
 }
+
+func TestCachedInputIsPricedAtTheCacheRate(t *testing.T) {
+	r := result("x", eval.SuiteRouting, runner.Pass, ptr(1_000_000))
+	r.CachedInputTokens = ptr(600_000)
+	r.OutputTokens = ptr(0)
+	a := build(t, "sonnet", models.RouteAPI, []runner.Result{r})
+	// sonnet: 400k at $3 + 600k at $0.30 per million
+	if *a.Summary.TokenUsage.CachedInput != 600_000 || *a.Summary.EstimatedCostUSD != 1.38 {
+		t.Errorf("usage = %+v, cost = %v", a.Summary.TokenUsage, *a.Summary.EstimatedCostUSD)
+	}
+}
+
+func TestFailedRunIsReportedWithItsReason(t *testing.T) {
+	dir := t.TempDir()
+	gpt, _ := models.Lookup("gpt-5.4")
+	failed := Failed(gpt, models.RouteAPI, RunOptions{Threshold: 0.9}, ToolInfo{}, eval.Errorf(eval.ErrRateLimit, "openai: HTTP 429: no credits remaining"), time.Now())
+	if err := WriteAtomic(filepath.Join(dir, "gpt.json"), failed); err != nil {
+		t.Fatal(err)
+	}
+	col, err := LoadDir(dir)
+	if err != nil || len(col.Artifacts) != 1 {
+		t.Fatalf("loaded %+v, %v", col, err)
+	}
+	md, passed := CrossModelMarkdown(col, []string{"gpt-5.4"}, 0.9)
+	if passed || !strings.Contains(md, "| gpt-5.4 | api | ❌ failed: rate_limit |") || !strings.Contains(md, "no credits remaining") || strings.Contains(md, "missing") {
+		t.Errorf("report:\n%s", md)
+	}
+	if !strings.Contains(RunMarkdown(failed), "Failed before any case ran") {
+		t.Error("run summary must name the failure")
+	}
+}

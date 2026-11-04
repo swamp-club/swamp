@@ -117,6 +117,7 @@ func (a *AnthropicAPI) Classify(ctx context.Context, req eval.Request) eval.Resp
 	out := eval.Response{ResolvedModel: resp.Model}
 	if resp.Usage != nil {
 		out.InputTokens = sumPresent(resp.Usage.InputTokens, resp.Usage.CacheCreationInputTokens, resp.Usage.CacheReadInputTokens)
+		out.CachedInputTokens = resp.Usage.CacheReadInputTokens
 		out.OutputTokens = resp.Usage.OutputTokens
 	}
 	var names []string

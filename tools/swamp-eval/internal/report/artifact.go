@@ -38,11 +38,13 @@ const SchemaVersion = 1
 const (
 	StatusCompleted = "completed"
 	StatusCancelled = "cancelled"
+	StatusFailed    = "failed"
 )
 
 type Artifact struct {
 	SchemaVersion      int          `json:"schema_version"`
 	Status             string       `json:"status"`
+	Error              *eval.Error  `json:"error,omitempty"`
 	StartedAt          time.Time    `json:"started_at"`
 	FinishedAt         time.Time    `json:"finished_at"`
 	RepositoryRevision *string      `json:"repository_revision"`
@@ -74,8 +76,9 @@ type RunOptions struct {
 }
 
 type TokenUsage struct {
-	Input  *int64 `json:"input"`
-	Output *int64 `json:"output"`
+	Input       *int64 `json:"input"`
+	CachedInput *int64 `json:"cached_input"`
+	Output      *int64 `json:"output"`
 }
 
 type Totals struct {
@@ -98,18 +101,19 @@ type SuiteTotal struct {
 }
 
 type CaseRecord struct {
-	ID            string      `json:"id"`
-	Suite         string      `json:"suite"`
-	Description   string      `json:"description"`
-	Expect        string      `json:"expect"`
-	ExpectedTool  string      `json:"expected_tool"`
-	ActualTool    *string     `json:"actual_tool"`
-	Outcome       string      `json:"outcome"`
-	Error         *eval.Error `json:"error"`
-	LatencyMS     int64       `json:"latency_ms"`
-	InputTokens   *int64      `json:"input_tokens"`
-	OutputTokens  *int64      `json:"output_tokens"`
-	ResolvedModel *string     `json:"resolved_model"`
+	ID                string      `json:"id"`
+	Suite             string      `json:"suite"`
+	Description       string      `json:"description"`
+	Expect            string      `json:"expect"`
+	ExpectedTool      string      `json:"expected_tool"`
+	ActualTool        *string     `json:"actual_tool"`
+	Outcome           string      `json:"outcome"`
+	Error             *eval.Error `json:"error"`
+	LatencyMS         int64       `json:"latency_ms"`
+	InputTokens       *int64      `json:"input_tokens"`
+	CachedInputTokens *int64      `json:"cached_input_tokens"`
+	OutputTokens      *int64      `json:"output_tokens"`
+	ResolvedModel     *string     `json:"resolved_model"`
 }
 
 type BuildInput struct {
@@ -153,16 +157,17 @@ func Build(in BuildInput) Artifact {
 	}
 	for _, r := range in.Results {
 		rec := CaseRecord{
-			ID:           r.Case.ID,
-			Suite:        string(r.Case.Suite),
-			Description:  r.Case.Description,
-			Expect:       string(r.Case.Expect),
-			ExpectedTool: r.Case.Label(r.Case.ExpectedTool),
-			Outcome:      string(r.Outcome),
-			Error:        r.Err,
-			LatencyMS:    r.Latency.Milliseconds(),
-			InputTokens:  r.InputTokens,
-			OutputTokens: r.OutputTokens,
+			ID:                r.Case.ID,
+			Suite:             string(r.Case.Suite),
+			Description:       r.Case.Description,
+			Expect:            string(r.Case.Expect),
+			ExpectedTool:      r.Case.Label(r.Case.ExpectedTool),
+			Outcome:           string(r.Outcome),
+			Error:             r.Err,
+			LatencyMS:         r.Latency.Milliseconds(),
+			InputTokens:       r.InputTokens,
+			CachedInputTokens: r.CachedInputTokens,
+			OutputTokens:      r.OutputTokens,
 		}
 		if r.Actual != "" {
 			actual := r.Case.Label(r.Actual)
@@ -211,6 +216,7 @@ func totals(cases []CaseRecord, threshold float64, pricing *models.Pricing) Tota
 		}
 		latency += c.LatencyMS
 		t.TokenUsage.Input = addPtr(t.TokenUsage.Input, c.InputTokens)
+		t.TokenUsage.CachedInput = addPtr(t.TokenUsage.CachedInput, c.CachedInputTokens)
 		t.TokenUsage.Output = addPtr(t.TokenUsage.Output, c.OutputTokens)
 	}
 	t.Total = t.Passed + t.Failed + t.Errors
@@ -220,7 +226,11 @@ func totals(cases []CaseRecord, threshold float64, pricing *models.Pricing) Tota
 	}
 	t.MetThreshold = t.Total > 0 && t.NotRun == 0 && float64(t.Passed)/float64(t.Total) >= threshold
 	if pricing != nil && t.TokenUsage.Input != nil && t.TokenUsage.Output != nil {
-		cost := math.Round(pricing.Cost(*t.TokenUsage.Input, *t.TokenUsage.Output)*1e4) / 1e4
+		var cached int64
+		if t.TokenUsage.CachedInput != nil {
+			cached = *t.TokenUsage.CachedInput
+		}
+		cost := math.Round(pricing.Cost(*t.TokenUsage.Input, cached, *t.TokenUsage.Output)*1e4) / 1e4
 		t.EstimatedCostUSD = &cost
 	}
 	return t
@@ -235,6 +245,24 @@ func addPtr(total, v *int64) *int64 {
 		sum += *total
 	}
 	return &sum
+}
+
+// Failed is the artifact for a run that stopped before any case, so the
+// cross-model report can say why instead of only that it is missing.
+func Failed(m models.Model, route models.Route, opts RunOptions, tool ToolInfo, err *eval.Error, now time.Time) Artifact {
+	return Artifact{
+		SchemaVersion: SchemaVersion,
+		Status:        StatusFailed,
+		Error:         err,
+		StartedAt:     now.UTC(),
+		FinishedAt:    now.UTC(),
+		Tool:          tool,
+		Model:         ModelInfo{Alias: m.Alias, Route: string(route), ConfiguredID: m.ConfiguredID(route), ResolvedModels: []string{}},
+		Options:       opts,
+		Summary:       Totals{ErrorCategories: map[string]int{}},
+		Suites:        []SuiteTotal{},
+		Cases:         []CaseRecord{},
+	}
 }
 
 // WriteAtomic writes through a synced temp file and a rename, so a reader

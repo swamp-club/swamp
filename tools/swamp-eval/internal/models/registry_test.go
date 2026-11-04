@@ -109,8 +109,17 @@ func TestRegistryIsConsistent(t *testing.T) {
 }
 
 func TestPricingCost(t *testing.T) {
-	got := Pricing{InputPerMillion: 3, OutputPerMillion: 15}.Cost(1_000_000, 200_000)
-	if got != 6 {
+	p := Pricing{InputPerMillion: 3, OutputPerMillion: 15, CachedInputPerMillion: 0.3}
+	if got := p.Cost(1_000_000, 0, 200_000); got != 6 {
 		t.Errorf("cost = %v, want 6", got)
+	}
+	// 1M input of which 600k was a cache read: 400k at 3, 600k at 0.3
+	if got := p.Cost(1_000_000, 600_000, 0); got < 1.38-1e-9 || got > 1.38+1e-9 {
+		t.Errorf("cached cost = %v, want 1.38", got)
+	}
+	for _, m := range Registry {
+		if m.API != nil && (m.API.Pricing.CachedInputPerMillion <= 0 || m.API.Pricing.CachedInputPerMillion >= m.API.Pricing.InputPerMillion) {
+			t.Errorf("%s: cache reads must be priced below input", m.Alias)
+		}
 	}
 }

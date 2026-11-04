@@ -81,7 +81,7 @@ func TestAnthropicRequestAndParse(t *testing.T) {
 	if resp.Err != nil || resp.Tool != "load_vault_guide" {
 		t.Fatalf("resp = %+v", resp)
 	}
-	if *resp.InputTokens != 120 || *resp.OutputTokens != 7 || resp.ResolvedModel != "claude-sonnet-4-5-20250929" {
+	if *resp.InputTokens != 120 || *resp.CachedInputTokens != 20 || *resp.OutputTokens != 7 || resp.ResolvedModel != "claude-sonnet-4-5-20250929" {
 		t.Errorf("usage/model = %v %v %s", *resp.InputTokens, *resp.OutputTokens, resp.ResolvedModel)
 	}
 	if got.path != "/v1/messages" || got.header.Get("x-api-key") != testKey || got.header.Get("anthropic-version") != "2023-06-01" {
@@ -151,6 +151,13 @@ func TestHTTPStatusCategoriesAndScrubbing(t *testing.T) {
 		401: eval.ErrAuth, 403: eval.ErrAuth, 429: eval.ErrRateLimit,
 		500: eval.ErrProvider, 529: eval.ErrProvider, 400: eval.ErrBadResponse,
 	}
+	t.Run("google bad key", func(t *testing.T) {
+		srv, _ := server(t, 400, `{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}`)
+		resp := (&GoogleAPI{Config: models.API{ModelID: "m"}, Key: testKey, BaseURL: srv.URL, Client: srv.Client()}).Classify(context.Background(), testRequest())
+		if resp.Err == nil || resp.Err.Category != eval.ErrAuth {
+			t.Fatalf("resp = %+v, want auth", resp)
+		}
+	})
 	for status, want := range cases {
 		body := `{"error":"bad key ` + testKey + ` and AIzaSyA0123456789012345678901234"}` + strings.Repeat("x", 2000)
 		srv, _ := server(t, status, body)
@@ -184,10 +191,10 @@ func TestTimeoutIsCategorized(t *testing.T) {
 }
 
 func TestOpenAIRequestAndParse(t *testing.T) {
-	srv, got := server(t, 200, `{"model":"gpt-5.4-2026","choices":[{"message":{"tool_calls":[{"type":"function","function":{"name":"load_data_guide","arguments":"{}"}}]}}],"usage":{"prompt_tokens":50,"completion_tokens":9}}`)
+	srv, got := server(t, 200, `{"model":"gpt-5.4-2026","choices":[{"message":{"tool_calls":[{"type":"function","function":{"name":"load_data_guide","arguments":"{}"}}]}}],"usage":{"prompt_tokens":50,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":30}}}`)
 	o := &OpenAIAPI{Config: models.API{ModelID: "gpt-5.4"}, Key: testKey, BaseURL: srv.URL, Client: srv.Client()}
 	resp := o.Classify(context.Background(), testRequest())
-	if resp.Err != nil || resp.Tool != "load_data_guide" || *resp.InputTokens != 50 || *resp.OutputTokens != 9 {
+	if resp.Err != nil || resp.Tool != "load_data_guide" || *resp.InputTokens != 50 || *resp.CachedInputTokens != 30 || *resp.OutputTokens != 9 {
 		t.Fatalf("resp = %+v", resp)
 	}
 	if got.path != "/v1/chat/completions" || got.header.Get("Authorization") != "Bearer "+testKey {
@@ -226,11 +233,11 @@ func TestOpenAIRejectsMissingChoicesAndMultipleCalls(t *testing.T) {
 }
 
 func TestGoogleRequestAndParse(t *testing.T) {
-	srv, got := server(t, 200, `{"modelVersion":"gemini-2.5-pro-001","candidates":[{"content":{"parts":[{"thoughtSignature":"x"},{"functionCall":{"name":"load_vault_guide","args":{}}}]}}],"usageMetadata":{"promptTokenCount":80,"candidatesTokenCount":5,"thoughtsTokenCount":40}}`)
+	srv, got := server(t, 200, `{"modelVersion":"gemini-2.5-pro-001","candidates":[{"content":{"parts":[{"thoughtSignature":"x"},{"functionCall":{"name":"load_vault_guide","args":{}}}]}}],"usageMetadata":{"promptTokenCount":80,"cachedContentTokenCount":64,"candidatesTokenCount":5,"thoughtsTokenCount":40}}`)
 	zero := 0.0
 	g := &GoogleAPI{Config: models.API{ModelID: "gemini-2.5-pro", Temperature: &zero}, Key: testKey, BaseURL: srv.URL, Client: srv.Client()}
 	resp := g.Classify(context.Background(), testRequest())
-	if resp.Err != nil || resp.Tool != "load_vault_guide" || *resp.InputTokens != 80 || *resp.OutputTokens != 45 {
+	if resp.Err != nil || resp.Tool != "load_vault_guide" || *resp.InputTokens != 80 || *resp.CachedInputTokens != 64 || *resp.OutputTokens != 45 {
 		t.Fatalf("resp = %+v", resp)
 	}
 	if got.path != "/v1beta/models/gemini-2.5-pro:generateContent" {

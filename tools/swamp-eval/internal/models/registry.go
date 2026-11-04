@@ -65,12 +65,17 @@ type API struct {
 }
 
 type Pricing struct {
-	InputPerMillion  float64
-	OutputPerMillion float64
+	InputPerMillion       float64
+	OutputPerMillion      float64
+	CachedInputPerMillion float64
 }
 
-func (p Pricing) Cost(input, output int64) float64 {
-	return float64(input)/1e6*p.InputPerMillion + float64(output)/1e6*p.OutputPerMillion
+// Cost prices the cached share of input at the cache-read rate; cached is a
+// subset of input.
+func (p Pricing) Cost(input, cached, output int64) float64 {
+	return float64(input-cached)/1e6*p.InputPerMillion +
+		float64(cached)/1e6*p.CachedInputPerMillion +
+		float64(output)/1e6*p.OutputPerMillion
 }
 
 type CLI struct {
@@ -96,21 +101,21 @@ var Registry = []Model{
 		Alias: "opus",
 		API: &API{Kind: Anthropic, ModelID: "claude-opus-5-5", KeyEnv: "ANTHROPIC_API_KEY",
 			AdaptiveThinking: true, MaxTokens: 2048, Concurrency: 20,
-			Pricing: &Pricing{4.0, 20.0}},
+			Pricing: &Pricing{4.0, 20.0, 0.40}},
 		CLI: &CLI{Kind: ClaudeCLI, Model: "opus", Effort: "medium"},
 	},
 	{
 		Alias: "sonnet",
 		API: &API{Kind: Anthropic, ModelID: "claude-sonnet-4-5", KeyEnv: "ANTHROPIC_API_KEY",
 			MaxTokens: 200, Temperature: zero(), Concurrency: 20,
-			Pricing: &Pricing{3.0, 15.0}},
+			Pricing: &Pricing{3.0, 15.0, 0.30}},
 		CLI: &CLI{Kind: ClaudeCLI, Model: "sonnet", Effort: "low"},
 	},
 	{
 		Alias: "fable",
 		API: &API{Kind: Anthropic, ModelID: "claude-fable-5", KeyEnv: "ANTHROPIC_API_KEY",
 			AdaptiveThinking: true, MaxTokens: 2048, Concurrency: 20,
-			Pricing: &Pricing{10.0, 50.0}},
+			Pricing: &Pricing{10.0, 50.0, 1.00}},
 	},
 	{
 		// A reasoning model: it rejects temperature, and reasoning tokens count
@@ -118,20 +123,20 @@ var Registry = []Model{
 		Alias: "gpt-5.4",
 		API: &API{Kind: OpenAI, ModelID: "gpt-5.4", KeyEnv: "OPENAI_API_KEY",
 			Delay: 500 * time.Millisecond, Concurrency: 1,
-			Pricing: &Pricing{2.0, 8.0}},
+			Pricing: &Pricing{2.0, 8.0, 0.20}},
 	},
 	{
 		// Thinking models: an output cap would also cap thinking, so none is sent.
 		Alias: "gemini-2.5-pro",
 		API: &API{Kind: Google, ModelID: "gemini-2.5-pro", KeyEnv: "GOOGLE_API_KEY",
 			Temperature: zero(), Concurrency: 20,
-			Pricing: &Pricing{1.25, 10.0}},
+			Pricing: &Pricing{1.25, 10.0, 0.3125}},
 	},
 	{
 		Alias: "gemini-3.1-pro",
 		API: &API{Kind: Google, ModelID: "gemini-3.1-pro-preview", KeyEnv: "GOOGLE_API_KEY",
 			Temperature: zero(), Concurrency: 20,
-			Pricing: &Pricing{1.25, 10.0}},
+			Pricing: &Pricing{1.25, 10.0, 0.3125}},
 	},
 	{
 		Alias: "gpt-6-astra",

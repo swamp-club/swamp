@@ -105,8 +105,10 @@ type Response struct {
 	Tool          string
 	ResolvedModel string
 	InputTokens   *int64
-	OutputTokens  *int64
-	Err           *Error
+	// CachedInputTokens is the part of InputTokens served from a prompt cache.
+	CachedInputTokens *int64
+	OutputTokens      *int64
+	Err               *Error
 }
 
 type ErrorCategory string

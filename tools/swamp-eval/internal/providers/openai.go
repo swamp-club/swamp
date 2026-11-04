@@ -87,6 +87,9 @@ type openAIResponse struct {
 		CompletionTokens *int64 `json:"completion_tokens"`
 		InputTokens      *int64 `json:"input_tokens"`
 		OutputTokens     *int64 `json:"output_tokens"`
+		Details          *struct {
+			CachedTokens *int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -123,6 +126,9 @@ func (o *OpenAIAPI) Classify(ctx context.Context, req eval.Request) eval.Respons
 	if resp.Usage != nil {
 		out.InputTokens = firstPresent(resp.Usage.PromptTokens, resp.Usage.InputTokens)
 		out.OutputTokens = firstPresent(resp.Usage.CompletionTokens, resp.Usage.OutputTokens)
+		if resp.Usage.Details != nil {
+			out.CachedInputTokens = resp.Usage.Details.CachedTokens
+		}
 	}
 	if len(resp.Choices) == 0 {
 		out.Err = eval.Errorf(eval.ErrBadResponse, "openai returned no choices")

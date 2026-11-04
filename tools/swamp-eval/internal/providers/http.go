@@ -110,7 +110,8 @@ func transportError(ctx context.Context, source string, err error, secret string
 func statusError(source string, status int, excerpt string) *eval.Error {
 	category := eval.ErrBadResponse
 	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	// Google reports a bad key as 400 API_KEY_INVALID rather than 401.
+	case status == http.StatusUnauthorized || status == http.StatusForbidden || strings.Contains(excerpt, "API_KEY_INVALID"):
 		category = eval.ErrAuth
 	case status == http.StatusTooManyRequests:
 		category = eval.ErrRateLimit

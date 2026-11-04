@@ -180,8 +180,9 @@ func TestRunMissingKeyIsAConfigurationError(t *testing.T) {
 	if code != ExitUsage || !strings.Contains(h.stderr.String(), "ANTHROPIC_API_KEY") {
 		t.Fatalf("exit %d, stderr %s", code, h.stderr)
 	}
-	if _, err := os.Stat(out); err == nil {
-		t.Error("no artifact may be written for a configuration error")
+	a, err := report.Load(out)
+	if err != nil || a.Status != report.StatusFailed || a.Error.Category != eval.ErrConfiguration || a.Summary.MetThreshold {
+		t.Fatalf("artifact = %+v, %v", a, err)
 	}
 }
 
@@ -193,9 +194,14 @@ func TestRunPreflightFailureStopsBeforeAnyCase(t *testing.T) {
 		return eval.Response{Err: eval.Errorf(eval.ErrAuth, "HTTP 401")}
 	}}
 	h := newHarness(t, p, map[string]string{"OPENAI_API_KEY": "k"})
-	code := Main(context.Background(), []string{"run", "--repo-root", root, "--model", "gpt-5.4", "--out", filepath.Join(t.TempDir(), "x.json")}, h.env)
+	out := filepath.Join(t.TempDir(), "x.json")
+	code := Main(context.Background(), []string{"run", "--repo-root", root, "--model", "gpt-5.4", "--out", out}, h.env)
 	if code != ExitUsage || calls != 1 || !strings.Contains(h.stderr.String(), "preflight failed") {
 		t.Fatalf("exit %d, calls %d, stderr %s", code, calls, h.stderr)
+	}
+	a, err := report.Load(out)
+	if err != nil || a.Status != report.StatusFailed || a.Error.Category != eval.ErrAuth || len(a.Cases) != 0 {
+		t.Fatalf("a preflight failure must leave a failed artifact: %+v, %v", a, err)
 	}
 }
 

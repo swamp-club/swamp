@@ -100,11 +100,6 @@ func runCommand(ctx context.Context, args []string, env Env) int {
 	}
 	opts := report.RunOptions{Concurrency: workers, TimeoutMS: timeout.Milliseconds(), Threshold: *threshold}
 
-	provider, err := env.NewProvider(m, r, env.Getenv)
-	if err != nil {
-		return errorf(env, "%v", err)
-	}
-
 	tool := report.ToolInfo{SourceTree: env.SourceTree, GoVersion: runtime.Version()}
 	header := fmt.Sprintf("swamp-eval %s (%s)", tool.SourceTree, tool.GoVersion)
 	if r == models.RouteCLI {
@@ -113,6 +108,15 @@ func runCommand(ctx context.Context, args []string, env Env) int {
 		header += fmt.Sprintf(", %s %s", m.CLI.Kind, v)
 	}
 	fmt.Fprintln(env.Stdout, header)
+	failed := func(e *eval.Error, msg string) int {
+		finish(env, report.Failed(m, r, opts, tool, e, env.Now()), artifactPath, *summary, ExitUsage)
+		return errorf(env, "%s", msg)
+	}
+
+	provider, err := env.NewProvider(m, r, env.Getenv)
+	if err != nil {
+		return failed(eval.Errorf(eval.ErrConfiguration, "%v", err), err.Error())
+	}
 	fmt.Fprintf(env.Stdout, "Preflight: %s via %s…\n", m.Alias, provider.ID())
 	pctx, cancel := context.WithTimeout(ctx, preflightTimeout)
 	pre := provider.Classify(pctx, providers.PreflightRequest())
@@ -127,7 +131,7 @@ func runCommand(ctx context.Context, args []string, env Env) int {
 		case pre.Err.Category == eval.ErrRateLimit:
 			hint = " A 429 before any case usually means exhausted credits or billing, not a rate limit."
 		}
-		return errorf(env, "preflight failed for %s: %v.%s", m.Alias, pre.Err, hint)
+		return failed(pre.Err, fmt.Sprintf("preflight failed for %s: %v.%s", m.Alias, pre.Err, hint))
 	}
 	resolved := pre.ResolvedModel
 	if resolved == "" {
@@ -194,7 +198,7 @@ func printSummary(env Env, a report.Artifact) {
 		fmt.Fprintf(env.Stdout, "Cancelled: %d cases did not run.\n", t.NotRun)
 	}
 	if t.TokenUsage.Input != nil || t.TokenUsage.Output != nil {
-		fmt.Fprintf(env.Stdout, "Tokens: %s input, %s output\n", fmtCount(t.TokenUsage.Input), fmtCount(t.TokenUsage.Output))
+		fmt.Fprintf(env.Stdout, "Tokens: %s input (%s from cache), %s output\n", fmtCount(t.TokenUsage.Input), fmtCount(t.TokenUsage.CachedInput), fmtCount(t.TokenUsage.Output))
 	}
 	if t.EstimatedCostUSD != nil {
 		fmt.Fprintf(env.Stdout, "Estimated cost: $%.2f\n", *t.EstimatedCostUSD)

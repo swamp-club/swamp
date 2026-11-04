@@ -245,6 +245,9 @@ as an error, so an outage never reads as a pass or as a prompt regression.
 
 Each run writes one JSON artifact, `eval-results/<model>.json` (gitignored),
 with every case's expected and actual tool, error category, latency and tokens.
+A run that stops before any case (a bad key, no credits, a logged-out CLI) still
+writes one, marked `failed` with the reason, so the cross-model report names the
+cause. Cost estimates price prompt-cache reads at the provider's cache rate.
 `go -C tools/swamp-eval run ./cmd/swamp-eval cases --full` prints the exact
 prompts and tools each case sends, without calling a model.
 

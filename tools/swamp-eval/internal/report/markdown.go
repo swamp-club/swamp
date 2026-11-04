@@ -66,6 +66,10 @@ func expectation(c CaseRecord) string {
 func RunMarkdown(a Artifact) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Skill Eval Results (%s)\n\n", a.Model.Alias)
+	if a.Status == StatusFailed && a.Error != nil {
+		fmt.Fprintf(&b, "**Failed before any case ran** — %s\n", cell(eval.Truncate(a.Error.Error(), 300)))
+		return b.String()
+	}
 	if a.Status == StatusCancelled {
 		fmt.Fprintf(&b, "**Cancelled** — %d cases did not run.\n\n", a.Summary.NotRun)
 	}
