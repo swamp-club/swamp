@@ -152,6 +152,54 @@ Deno.test("leftPoolTokenHolds: a token minted the instant the worker enrolled is
   );
 });
 
+Deno.test("leftPoolTokenHolds: the mint the record holds wins over a serve enrolment stamp from a clock behind the minting one", () => {
+  const ahead = "2026-11-02T10:09:00.000Z";
+  assertEquals(
+    leftPoolTokenHolds(
+      record({ name: "a", tokenCreatedAt: ahead }),
+      token({ name: "a", createdAt: ahead }),
+      NOW,
+    ),
+    true,
+  );
+});
+
+Deno.test("leftPoolTokenHolds: a token newer than the record's mint is a re-mint whatever enrolledAt says", () => {
+  assertEquals(
+    leftPoolTokenHolds(
+      record({
+        name: "a",
+        tokenCreatedAt: MINT,
+        enrolledAt: "2026-11-02T10:30:00.000Z",
+      }),
+      token({ name: "a", createdAt: "2026-11-02T10:01:00.000Z" }),
+      NOW,
+    ),
+    false,
+  );
+});
+
+Deno.test("leftPoolTokenHolds: a record without tokenCreatedAt judges the mint by enrolledAt", () => {
+  const legacy = record({ name: "a" });
+  assertEquals(legacy.tokenCreatedAt, undefined);
+  assertEquals(
+    leftPoolTokenHolds(
+      legacy,
+      token({ name: "a", createdAt: "2026-11-02T10:04:00.000Z" }),
+      NOW,
+    ),
+    true,
+  );
+  assertEquals(
+    leftPoolTokenHolds(
+      legacy,
+      token({ name: "a", createdAt: "2026-11-02T10:06:00.000Z" }),
+      NOW,
+    ),
+    false,
+  );
+});
+
 Deno.test("ServeWorkerPoolReader: live workers are members as the gateway reports them", async () => {
   const pool = await reader({
     liveWorkers: () => [

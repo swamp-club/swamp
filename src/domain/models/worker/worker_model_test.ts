@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   nextWorkerState,
   parseStoredWorkerState,
+  SetStatusArgsSchema,
   WORKER_MODEL_TYPE,
   workerModel,
 } from "./worker_model.ts";
@@ -51,6 +52,51 @@ Deno.test("workerModel: enroll records an idle worker", async () => {
   assertEquals(state.capacity, 1);
   assertEquals(state.activeDispatchIds, []);
   assertEquals((state.labels as Record<string, string>).region, "us-east");
+});
+
+Deno.test("workerModel: enroll records the token mint when given and omits it otherwise", async () => {
+  const mint = "2026-11-02T09:00:00.000Z";
+  const withMint = createInMemoryWorkerContext(WORKER_MODEL_TYPE, "w-mint");
+  await workerModel.methods.enroll.execute(
+    { ...enrollArgs, tokenCreatedAt: mint },
+    withMint.context,
+  );
+  assertEquals(withMint.store.get("state-main")!.tokenCreatedAt, mint);
+
+  const without = createInMemoryWorkerContext(WORKER_MODEL_TYPE, "w-none");
+  await workerModel.methods.enroll.execute(enrollArgs, without.context);
+  assertEquals("tokenCreatedAt" in without.store.get("state-main")!, false);
+});
+
+Deno.test("workerModel: set_status carries the token mint forward and records a new one", async () => {
+  const { context, store } = createInMemoryWorkerContext(
+    WORKER_MODEL_TYPE,
+    "ci-runner-3",
+  );
+  const mint = "2026-11-02T09:00:00.000Z";
+  const reminted = "2026-11-02T09:30:00.000Z";
+  await workerModel.methods.enroll.execute(
+    { ...enrollArgs, tokenCreatedAt: mint },
+    context,
+  );
+  await workerModel.methods.set_status.execute({ status: "busy" }, context);
+  assertEquals(store.get("state-main")!.tokenCreatedAt, mint);
+  await workerModel.methods.set_status.execute(
+    { status: "idle", tokenCreatedAt: reminted },
+    context,
+  );
+  assertEquals(store.get("state-main")!.tokenCreatedAt, reminted);
+});
+
+Deno.test("workerModel: set_status accepts a token mint in its arguments", () => {
+  const mint = "2026-11-02T09:00:00.000Z";
+  assertEquals(
+    SetStatusArgsSchema.parse({
+      status: "idle",
+      tokenCreatedAt: mint,
+    }).tokenCreatedAt,
+    mint,
+  );
 });
 
 Deno.test("workerModel: set_status busy records the dispatch id", async () => {
@@ -196,6 +242,27 @@ Deno.test("nextWorkerState: unverified keeps its failure reason, and the next st
   const idle = nextWorkerState(unverified, { status: "idle" }, now);
   assertEquals(idle.verifyFailureReason, undefined);
   assertEquals(idle.activeDispatchIds, []);
+});
+
+Deno.test("nextWorkerState: keeps the token mint unless the change names a new one", () => {
+  const now = new Date("2026-11-02T10:00:00.000Z");
+  const bound = { ...storedWorker, tokenCreatedAt: "2026-11-02T09:00:00.000Z" };
+  assertEquals(
+    nextWorkerState(bound, { status: "disconnected" }, now).tokenCreatedAt,
+    "2026-11-02T09:00:00.000Z",
+  );
+  assertEquals(
+    nextWorkerState(
+      bound,
+      { status: "idle", tokenCreatedAt: "2026-11-02T09:30:00.000Z" },
+      now,
+    ).tokenCreatedAt,
+    "2026-11-02T09:30:00.000Z",
+  );
+  assertEquals(
+    "tokenCreatedAt" in nextWorkerState(storedWorker, { status: "idle" }, now),
+    false,
+  );
 });
 
 Deno.test("parseStoredWorkerState: nothing stored names the worker's definition", () => {

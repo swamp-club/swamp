@@ -828,17 +828,20 @@ export class WorkerGateway {
         await preparing(() =>
           this.#workerStatus.recordStatus(
             workerName,
-            initialStatus === "unverified"
-              ? {
-                status: "unverified",
-                activeDispatchIds: [...existing.activeDispatchIds],
-              }
-              : existing.activeDispatchIds.length > 0
-              ? {
-                status: "busy",
-                activeDispatchIds: [...existing.activeDispatchIds],
-              }
-              : { status: "idle" },
+            {
+              ...(initialStatus === "unverified"
+                ? {
+                  status: "unverified",
+                  activeDispatchIds: [...existing.activeDispatchIds],
+                }
+                : existing.activeDispatchIds.length > 0
+                ? {
+                  status: "busy",
+                  activeDispatchIds: [...existing.activeDispatchIds],
+                }
+                : { status: "idle" }),
+              tokenCreatedAt,
+            },
           )
         );
       } else {
@@ -857,6 +860,7 @@ export class WorkerGateway {
             protocolVersion: params.protocolVersion,
             capacity,
             status: initialStatus,
+            tokenCreatedAt,
           },
         });
       }
