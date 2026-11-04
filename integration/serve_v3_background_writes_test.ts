@@ -465,6 +465,7 @@ Deno.test("v3 serve background: serve's maintenance timer compacts and collects 
       60_000,
     );
     timer.tick();
+    await timer.runExclusive(() => Promise.resolve());
     await timer.stop();
   });
 });

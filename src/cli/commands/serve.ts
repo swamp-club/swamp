@@ -8002,7 +8002,8 @@ export const serveCommand = new Command()
         await stages.run("worker GC", () => service.dispose());
       }
       // on v3 a pass's compaction and chunk sweep must never overlap the
-      // closing compaction and lease release, so it is awaited there
+      // closing compaction and lease release, so it is awaited there; dispose
+      // aborts them, so the wait ends at their next batch or storage call
       if (retentionGcService) {
         const service = retentionGcService;
         await stages.run(
@@ -8027,7 +8028,7 @@ export const serveCommand = new Command()
       }
       // No promotion during teardown: the lease is released below. Team
       // mode stays on until the datastores close, so a follower still
-      // commits nothing.
+      // commits nothing. stop() ends a promotion in flight between its steps.
       if (serveLeadership) {
         const leadership = serveLeadership;
         await stages.run("leadership", () => leadership.stop(), "awaited");
@@ -8092,7 +8093,8 @@ export const serveCommand = new Command()
         () => policySnapshotLoader.dispose(),
       );
       // a tick's chunk sweep must never overlap the closing compaction and
-      // lease release
+      // lease release; stop() aborts it, so the wait ends at its next batch or
+      // storage call
       if (v3Maintenance) {
         const maintenance = v3Maintenance;
         await stages.run(
@@ -8377,7 +8379,10 @@ export const serveCommand = new Command()
       // The boot already did a leader's work for a node that took the
       // lease at start.
       let bootLead = !v3Follows;
-      const leaderStep = async (what: string, step: () => Promise<void>) => {
+      const leaderStepOnce = async (
+        what: string,
+        step: () => Promise<void>,
+      ) => {
         try {
           await step();
         } catch (error) {
@@ -8450,11 +8455,15 @@ export const serveCommand = new Command()
           await refreshV3FollowerCopy(resolvedRepoDir, location);
           serveCommitEffects?.poke();
         },
-        onLead: async () => {
+        onLead: async (stopped) => {
           if (bootLead) {
             bootLead = false;
             return;
           }
+          // a promotion that shutdown stops runs no further step: the lease
+          // is released beside it
+          const leaderStep = (what: string, step: () => Promise<void>) =>
+            stopped() ? Promise.resolve() : leaderStepOnce(what, step);
           // Before its role flips: what its takeover restored reaches the
           // catalog and policy before it leads on them.
           await leaderStep(
@@ -8465,6 +8474,7 @@ export const serveCommand = new Command()
               await serveCommitEffects?.settled();
             },
           );
+          if (stopped()) return;
           v3Maintenance?.start();
           v3Replication ??= startV3ReplicationUpkeep(
             resolvedRepoDir,
@@ -8802,14 +8812,21 @@ export const serveCommand = new Command()
               ),
             afterPass: async () => {
               repoContext.catalogStore.checkpoint();
-              if (v3Maintenance && v3Location !== undefined) {
+              if (
+                v3Maintenance && v3Location !== undefined &&
+                !control.isStopping()
+              ) {
                 // Folds the history that still holds reaped content, as the
                 // maintenance timer's run: never beside a tick's own sweep.
-                await v3Maintenance.runExclusive(() =>
-                  compactRetentionQuietly(
-                    v3DatastoreFor(resolvedRepoDir, v3Location),
-                    new Date(),
-                  )
+                await v3Maintenance.runExclusive(
+                  () =>
+                    compactRetentionQuietly(
+                      v3DatastoreFor(resolvedRepoDir, v3Location),
+                      new Date(),
+                      undefined,
+                      control.signal,
+                    ),
+                  control.signal,
                 );
               }
             },

@@ -123,6 +123,7 @@ function fakeHandle(storage: object = { quarantineChunk: () => {} }) {
   let sweeps = 0;
   let syncs = 0;
   const verifies: unknown[][] = [];
+  const compactSignals: AbortSignal[] = [];
   let release: () => void = () => {};
   const handle = {
     datastorePath: "/fake",
@@ -133,8 +134,9 @@ function fakeHandle(storage: object = { quarantineChunk: () => {} }) {
         return Promise.resolve(0);
       },
     },
-    compactIfDue: () => {
+    compactIfDue: (signal: AbortSignal) => {
       calls++;
+      compactSignals.push(signal);
       return new Promise<undefined>((resolve) => {
         release = () => resolve(undefined);
       });
@@ -150,31 +152,96 @@ function fakeHandle(storage: object = { quarantineChunk: () => {} }) {
     calls: () => calls,
     sweeps: () => sweeps,
     verifies,
+    compactSignals,
     syncs: () => syncs,
     finish: () => release(),
   };
 }
 
-Deno.test("V3MaintenanceTimer: runs never overlap, and stop waits for the one in flight", async () => {
+Deno.test("V3MaintenanceTimer: runs never overlap, and a run compacts, sweeps and syncs", async () => {
   const fake = fakeHandle();
   const timer = new V3MaintenanceTimer(fake.handle, 60_000);
   timer.tick();
   timer.tick();
   timer.tick();
   assertEquals(fake.calls(), 1, "ticks during a run start nothing");
+  fake.finish();
+  await timer.runExclusive(() => Promise.resolve());
+  assertEquals(fake.sweeps(), 1, "a run sweeps chunks after compacting");
+  assertEquals(fake.syncs(), 1, "and makes the unsynced files durable");
+  await timer.stop();
+});
+
+Deno.test("V3MaintenanceTimer.stop: aborts the run in flight, waits for it, and skips the rest of it (swamp-club#4327)", async () => {
+  const fake = fakeHandle();
+  const timer = new V3MaintenanceTimer(fake.handle, 60_000);
+  timer.tick();
+  assertEquals(fake.compactSignals[0].aborted, false);
   let stopped = false;
   const stopping = timer.stop().then(() => stopped = true);
   await Promise.resolve();
-  assertEquals(stopped, false, "stop waits for the compaction in flight");
+  assert(fake.compactSignals[0].aborted, "stop aborts the compaction");
+  assertEquals(stopped, false, "stop waits for the compaction to return");
   fake.finish();
   await stopping;
-  assert(stopped);
-  assertEquals(fake.sweeps(), 1, "a run sweeps chunks after compacting");
-  assertEquals(fake.syncs(), 1, "and makes the unsynced files durable");
+  assertEquals(fake.sweeps(), 0, "a stopped run sweeps nothing");
+  assertEquals(fake.syncs(), 0, "nor syncs");
   timer.tick();
   assertEquals(fake.calls(), 2, "the next tick runs again");
+  assertEquals(
+    fake.compactSignals[1].aborted,
+    false,
+    "and is not aborted by the earlier stop",
+  );
   fake.finish();
+  await timer.runExclusive(() => Promise.resolve());
+  assertEquals(fake.sweeps(), 1);
   await timer.stop();
+});
+
+Deno.test("V3MaintenanceTimer.stop: a chunk sweep in flight is aborted and logged at debug, not as a failure (swamp-club#4327)", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "v3"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const datastorePath = `/fake-${crypto.randomUUID()}`;
+    let sweepSignal: AbortSignal | undefined;
+    const handle = {
+      datastorePath,
+      storage: {},
+      readModel: { syncUnsyncedFiles: () => Promise.resolve(0) },
+      compactIfDue: () => Promise.resolve(undefined),
+      collectChunks: (signal: AbortSignal) => {
+        sweepSignal = signal;
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason))
+        );
+      },
+    } as unknown as V3Datastore;
+    const timer = new V3MaintenanceTimer(handle, 60_000);
+    timer.tick();
+    await waitFor(() => sweepSignal !== undefined, "the tick's chunk sweep");
+    await timer.stop();
+    assert(sweepSignal?.aborted);
+    assertEquals(
+      records.filter((record) =>
+        record.message.map(String).join("").includes(datastorePath)
+      ).map((record) => record.level),
+      ["debug"],
+    );
+  } finally {
+    await reset();
+  }
 });
 
 Deno.test("V3MaintenanceTimer: only serve's tick verifies chunks, 64 MiB of them; the retention pass and a quiet sweep verify none (swamp-club#3617)", async () => {
@@ -182,6 +249,7 @@ Deno.test("V3MaintenanceTimer: only serve's tick verifies chunks, 64 MiB of them
   const timer = new V3MaintenanceTimer(fake.handle, 60_000);
   timer.tick();
   fake.finish();
+  await timer.runExclusive(() => Promise.resolve());
   await timer.stop();
   assertEquals(SERVE_CHUNK_VERIFY_BYTES, 64 * 1024 * 1024);
   assertEquals(fake.verifies, [[{ bytes: SERVE_CHUNK_VERIFY_BYTES }]]);
@@ -203,6 +271,7 @@ Deno.test("V3MaintenanceTimer: serve verifies no chunks on bucket storage, which
   const bucketTimer = new V3MaintenanceTimer(bucket.handle, 60_000);
   bucketTimer.tick();
   bucket.finish();
+  await bucketTimer.runExclusive(() => Promise.resolve());
   await bucketTimer.stop();
   assertEquals(bucket.sweeps(), 1, "the tick still sweeps");
   assertEquals(bucket.verifies, [[]], "but verifies nothing");
@@ -218,6 +287,7 @@ Deno.test("V3MaintenanceTimer: serve verifies no chunks on bucket storage, which
     const timer = new V3MaintenanceTimer(filesystem.handle, 60_000);
     timer.tick();
     filesystem.finish();
+    await timer.runExclusive(() => Promise.resolve());
     await timer.stop();
     assertEquals(
       filesystem.verifies,
@@ -252,6 +322,69 @@ Deno.test("V3MaintenanceTimer.runExclusive: waits for a tick in flight, and tick
   release();
   await held;
   await timer.stop();
+});
+
+Deno.test("V3MaintenanceTimer.runExclusive: a waiter whose signal aborts gives up without running its work (swamp-club#4327)", async () => {
+  const fake = fakeHandle();
+  const timer = new V3MaintenanceTimer(fake.handle, 60_000);
+  timer.tick();
+  const abort = new AbortController();
+  let ran = false;
+  const waiting = timer.runExclusive(() => {
+    ran = true;
+    return Promise.resolve(7);
+  }, abort.signal);
+  await Promise.resolve();
+  abort.abort();
+  assertEquals(
+    await waiting,
+    undefined,
+    "it returns while the tick still runs",
+  );
+  assertEquals(ran, false);
+  assertEquals(
+    await timer.runExclusive(() => {
+      ran = true;
+      return Promise.resolve(8);
+    }, abort.signal),
+    undefined,
+    "an already aborted signal never waits",
+  );
+  assertEquals(ran, false);
+  fake.finish();
+  await timer.stop();
+});
+
+Deno.test("compactRetentionQuietly: a stop signal aborts the compaction, logs at debug and skips the sweep (swamp-club#4327)", async () => {
+  let sweeps = 0;
+  let given: AbortSignal | undefined;
+  const handle = {
+    datastorePath: "/fake",
+    compactBefore: (_cutoff: Date, signal: AbortSignal) => {
+      given = signal;
+      return new Promise((_, reject) =>
+        signal.addEventListener(
+          "abort",
+          () => reject(new Error("folding stopped", { cause: signal.reason })),
+        )
+      );
+    },
+    collectChunks: () => {
+      sweeps++;
+      return Promise.resolve({ deleted: 0, damaged: [] });
+    },
+  } as unknown as V3Datastore;
+  const stop = new AbortController();
+  const compaction = compactRetentionQuietly(
+    handle,
+    new Date(),
+    60_000,
+    stop.signal,
+  );
+  await waitFor(() => given !== undefined, "the compaction to start");
+  stop.abort();
+  assertEquals(await compaction, undefined);
+  assertEquals(sweeps, 0);
 });
 
 Deno.test("V3MaintenanceTimer: start is idempotent and its timer compacts", async () => {
@@ -793,6 +926,7 @@ Deno.test("V3MaintenanceTimer: a real v3 datastore's chunks are swept by serve's
     });
     const timer = new V3MaintenanceTimer(handle, 60_000);
     timer.tick();
+    await timer.runExclusive(() => Promise.resolve());
     await timer.stop();
     await assertRejects(() => Deno.stat(orphan), Deno.errors.NotFound);
   });
@@ -1702,4 +1836,42 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   fn: () =>
     holdCutOffWhileRecordingLineage({ as: "serve", address: undefined }),
+});
+
+Deno.test("collectChunksQuietly: a failure unrelated to the stop still warns during shutdown (swamp-club#4327)", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "v3"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const datastorePath = `/fake-${crypto.randomUUID()}`;
+    const stop = new AbortController();
+    stop.abort();
+    await collectChunksQuietly(
+      {
+        datastorePath,
+        collectChunks: () => Promise.reject(new Error("permission denied")),
+      } as unknown as V3Datastore,
+      60_000,
+      0,
+      stop.signal,
+    );
+    assertEquals(
+      records.filter((record) =>
+        record.message.map(String).join("").includes(datastorePath)
+      ).map((record) => record.level),
+      ["warning"],
+    );
+  } finally {
+    await reset();
+  }
 });

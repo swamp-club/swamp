@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   DEFAULT_RETENTION_GC_BUDGET_MS,
   RetentionGcService,
@@ -193,4 +194,22 @@ Deno.test("RetentionGcService.runOnce: a pass gets the budget and sees a manual 
     [DEFAULT_RETENTION_GC_BUDGET_MS, false, false],
     [DEFAULT_RETENTION_GC_BUDGET_MS, true, false],
   ]);
+});
+
+Deno.test("RetentionGcService.dispose: aborts the signal a running pass was handed (swamp-club#4327)", async () => {
+  let given: AbortSignal | undefined;
+  const svc = service({ automatic: true, retention: "30d" }, {
+    runPass: (control) => {
+      given = control.signal;
+      return new Promise((resolve) =>
+        control.signal.addEventListener("abort", () => resolve(passResult()))
+      );
+    },
+  });
+  const pass = svc.runOnce();
+  await waitFor(() => given !== undefined, "the pass to start");
+  assertEquals(given?.aborted, false);
+  await svc.dispose();
+  assertEquals(given?.aborted, true);
+  assertEquals((await pass)?.complete, true);
 });

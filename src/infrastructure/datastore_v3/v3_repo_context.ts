@@ -2431,16 +2431,22 @@ export const SERVE_COMPACTION_TIMEOUT_MS = 60_000;
 export async function compactQuietly(
   handle: V3Datastore,
   budgetMs: number,
+  stop?: AbortSignal,
 ): Promise<void> {
-  const signal = AbortSignal.timeout(budgetMs);
+  const budget = AbortSignal.timeout(budgetMs);
   try {
-    const report = await handle.compactIfDue(signal);
+    const report = await handle.compactIfDue(withStop(budget, stop));
     if (report !== undefined) {
       logger
         .debug`Compacted ${report.compacted} commits of the v3 datastore at ${handle.datastorePath}`;
     }
   } catch (error) {
-    if (signal.aborted && isBudgetAbort(error, signal.reason)) {
+    if (stop?.aborted && isBudgetAbort(error, stop.reason)) {
+      logger
+        .debug`Compacting the v3 datastore at ${handle.datastorePath} stopped for shutdown; the next writer goes on`;
+      return;
+    }
+    if (budget.aborted && isBudgetAbort(error, budget.reason)) {
       logger
         .debug`Compacting the v3 datastore at ${handle.datastorePath} used its ${budgetMs} ms budget; the next writer goes on`;
       return;
@@ -2448,6 +2454,10 @@ export async function compactQuietly(
     logger
       .warn`Compacting the v3 datastore at ${handle.datastorePath} failed; the next writer retries: ${error}`;
   }
+}
+
+function withStop(budget: AbortSignal, stop?: AbortSignal): AbortSignal {
+  return stop === undefined ? budget : AbortSignal.any([budget, stop]);
 }
 
 // a layer between the signal and the throw may wrap or re-create the reason
@@ -2477,10 +2487,11 @@ export async function collectChunksQuietly(
   handle: V3Datastore,
   timeoutMs: number = SERVE_CHUNK_GC_TIMEOUT_MS,
   verifyBytes = 0,
+  stop?: AbortSignal,
 ): Promise<ChunkCollectionReport | undefined> {
   try {
     const report = await handle.collectChunks(
-      AbortSignal.timeout(timeoutMs),
+      withStop(AbortSignal.timeout(timeoutMs), stop),
       ...(verifyBytes > 0 ? [{ bytes: verifyBytes }] : []),
     );
     if (report.deleted > 0) {
@@ -2495,6 +2506,11 @@ export async function collectChunksQuietly(
     }
     return report;
   } catch (error) {
+    if (stop?.aborted && isBudgetAbort(error, stop.reason)) {
+      logger
+        .debug`Collecting chunks of the v3 datastore at ${handle.datastorePath} stopped for shutdown; the next sweep goes on`;
+      return undefined;
+    }
     if (error instanceof V3ChunkCollectionDeferredError) {
       // waiting on another lineage is expected, not a failure, but it can last:
       // said once per datastore at info, so a collection that never runs can be
@@ -2540,14 +2556,20 @@ export async function compactRetentionQuietly(
    * resumes
    */
   timeoutMs: number = RETENTION_COMPACTION_TIMEOUT_MS,
+  stop?: AbortSignal,
 ): Promise<RetentionCompaction | undefined> {
   let compaction;
   try {
     compaction = await handle.compactBefore(
       cutoff,
-      AbortSignal.timeout(timeoutMs),
+      withStop(AbortSignal.timeout(timeoutMs), stop),
     );
   } catch (error) {
+    if (stop?.aborted && isBudgetAbort(error, stop.reason)) {
+      logger
+        .debug`Compacting the history of the v3 datastore at ${handle.datastorePath} stopped for shutdown; the next pass resumes`;
+      return undefined;
+    }
     logger
       .warn`Compacting the history of the v3 datastore at ${handle.datastorePath} before the retention cutoff failed; the next pass retries: ${error}`;
     return undefined;
@@ -2557,9 +2579,11 @@ export async function compactRetentionQuietly(
     logger
       .debug`Compacted ${compacted} commits written before ${compaction.bound.toISOString()} of the v3 datastore at ${handle.datastorePath}`;
   }
-  const sweep = await collectChunksQuietly(
+  const sweep = stop?.aborted ? undefined : await collectChunksQuietly(
     handle,
     Math.min(timeoutMs, SERVE_CHUNK_GC_TIMEOUT_MS),
+    0,
+    stop,
   );
   return {
     bound: compaction.bound,
@@ -2607,11 +2631,12 @@ export async function syncUnsyncedQuietly(handle: V3Datastore): Promise<void> {
 
 /**
  * a CLI swamp datastore gc cannot run meanwhile because serve holds the lock;
- * runs never overlap, and stop waits for the one in flight
+ * runs never overlap, and stop aborts the one in flight and waits for it
  */
 export class V3MaintenanceTimer {
   #timer: ReturnType<typeof setInterval> | undefined;
   #running: Promise<void> | undefined;
+  #stopping = new AbortController();
 
   constructor(
     private readonly handle: V3Datastore,
@@ -2631,15 +2656,19 @@ export class V3MaintenanceTimer {
 
   tick(): void {
     if (this.#running !== undefined) return;
+    const stop = this.#stopping.signal;
     this.#running = (async () => {
-      await compactQuietly(this.handle, SERVE_COMPACTION_TIMEOUT_MS);
+      await compactQuietly(this.handle, SERVE_COMPACTION_TIMEOUT_MS, stop);
+      if (stop.aborted) return;
       await collectChunksQuietly(
         this.handle,
         SERVE_CHUNK_GC_TIMEOUT_MS,
         // only storage that quarantines a damaged chunk is verified: the
         // filesystem's own _blobs/
         isChunkQuarantine(this.handle.storage) ? SERVE_CHUNK_VERIFY_BYTES : 0,
+        stop,
       );
+      if (stop.aborted) return;
       await syncUnsyncedQuietly(this.handle);
     })().finally(() => {
       this.#running = undefined;
@@ -2649,10 +2678,18 @@ export class V3MaintenanceTimer {
   /**
    * other work on the same datastore (a retention pass's compaction and chunk
    * sweep) must never overlap a tick: the sweep marker is one row, and two
-   * sweeps at once hide a sweep from writers
+   * sweeps at once hide a sweep from writers. A waiter whose signal aborts
+   * gives up without running fn, so shutdown never waits out a tick for it.
    */
-  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
-    while (this.#running !== undefined) await this.#running;
+  async runExclusive<T>(
+    fn: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T | undefined> {
+    while (this.#running !== undefined) {
+      if (signal?.aborted) return undefined;
+      await settledOrAborted(this.#running, signal);
+    }
+    if (signal?.aborted) return undefined;
     const work = fn();
     this.#running = work.then(() => {}, () => {}).finally(() => {
       this.#running = undefined;
@@ -2663,6 +2700,28 @@ export class V3MaintenanceTimer {
   async stop(): Promise<void> {
     if (this.#timer !== undefined) clearInterval(this.#timer);
     this.#timer = undefined;
-    await this.#running;
+    const stopping = this.#stopping;
+    stopping.abort();
+    try {
+      await this.#running;
+    } finally {
+      // a node that leads again starts a timer whose ticks are not aborted
+      if (this.#stopping === stopping) this.#stopping = new AbortController();
+    }
   }
+}
+
+function settledOrAborted(
+  work: Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal === undefined) return work;
+  return new Promise((done) => {
+    const finish = () => {
+      signal.removeEventListener("abort", finish);
+      done();
+    };
+    signal.addEventListener("abort", finish, { once: true });
+    work.then(finish, finish);
+  });
 }

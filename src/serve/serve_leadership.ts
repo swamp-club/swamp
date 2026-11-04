@@ -88,7 +88,8 @@ export interface ServeLeadershipDeps {
    * Absent, every record is taken as written.
    */
   trust?(leader: ServeLeader): Promise<boolean>;
-  onLead(): Promise<void>;
+  /** stopped turns true once stop() is called: a promotion then ends early */
+  onLead(stopped: () => boolean): Promise<void>;
   /**
    * Called after a promoted node's role becomes leader, for work that must run
    * as the leader rather than while it settles; not called for a boot lead.
@@ -160,7 +161,7 @@ export class ServeLeadership {
       this.#since = new Date(this.#now()).toISOString();
       logger.info`This serve node leads the datastore`;
       await this.#writeRecord();
-      await this.#deps.onLead();
+      await this.#deps.onLead(() => this.#stopped);
     } else {
       this.#refreshedAt = this.#now();
       await this.#readLeader();
@@ -253,8 +254,10 @@ export class ServeLeadership {
       // to apply after it
       await feed.stop();
     }
+    if (this.#stopped) return;
     await this.#deps.refreshCopy();
     this.#refreshedAt = this.#now();
+    if (this.#stopped) return;
     await this.#readLeader();
     feed?.follow(this.#leader);
   }
@@ -275,7 +278,10 @@ export class ServeLeadership {
       return;
     }
     this.#leadPending = false;
-    await this.#deps.onLead();
+    // stopped mid-promotion: the lease taken goes with the closing release
+    if (this.#stopped) return;
+    await this.#deps.onLead(() => this.#stopped);
+    if (this.#stopped) return;
     this.#role = "leader";
     logger.info`This serve node leads the datastore`;
     try {

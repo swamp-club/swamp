@@ -413,3 +413,26 @@ Deno.test("ServeCommitEffects: a copy replaced below what was applied moves the 
     await effects.stop();
   }
 });
+
+Deno.test("ServeCommitEffects.stop: a pass in flight ends without reloading the policy (swamp-club#4327)", async () => {
+  const { store, calls, effects } = setup();
+  const commitStore = store.source.datastore.commitStore as unknown as {
+    changesSince: (cursor: number, limit: number) => Promise<unknown>;
+  };
+  const read = commitStore.changesSince;
+  const reading = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  commitStore.changesSince = async (cursor, limit) => {
+    reading.resolve();
+    await gate.promise;
+    return await read(cursor, limit);
+  };
+  store.land(GRANT);
+  effects.poke();
+  await reading.promise;
+  const stopping = effects.stop();
+  gate.resolve();
+  await stopping;
+  await effects.settled();
+  assertEquals(calls, { catalog: 0, policy: 0, config: 0 });
+});
