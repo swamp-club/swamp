@@ -128,11 +128,11 @@ const NO_COMMANDS_DIRS: ReadonlySet<string> = new Set([
   "agent-constraints",
   "contributing",
   "design",
-  "evals",
   "extensions",
   "integration",
   "packages",
   "scripts",
+  "tools",
   "verification",
 ]);
 

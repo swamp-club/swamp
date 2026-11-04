@@ -102,7 +102,7 @@ jobs:
           type: succeeded
     steps:
       - name: skill-review
-        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f == 'scripts/eval_skill_triggers_promptfoo.ts' || f == 'scripts/promptfoo_install.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('tools/swamp-eval/') || f == '.tool-versions').size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
@@ -112,15 +112,32 @@ jobs:
             run: "deno task review-skills"
             workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
 
+      # One build path for every run: the pinned Go, then gofmt, vet, unit
+      # tests and the binary the eval step below runs.
+      - name: eval-tool-build
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('tools/swamp-eval/') || f == '.tool-versions').size() == 0 }}"
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: skills-eval-build-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: "sh tools/swamp-eval/build.sh"
+            workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
+
       - name: skill-trigger-eval
-        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f == 'scripts/eval_skill_triggers_promptfoo.ts' || f == 'scripts/promptfoo_install.ts' || f.startsWith('evals/promptfoo/')).size() == 0 }}"
+        dependsOn:
+          - step: eval-tool-build
+            condition:
+              type: succeeded
+        guard: "${{ data.latest('repo-' + run.id, 'diff').attributes.files.filter(f, f.startsWith('.claude/skills/') || f == 'CLAUDE.md' || f == 'scripts/review_skills.ts' || f.startsWith('tools/swamp-eval/') || f == '.tool-versions').size() == 0 }}"
         task:
           type: model_method
           modelType: "command/shell"
           modelName: skills-trigger-eval-${{ run.id }}
           methodName: execute
           inputs:
-            run: "deno task eval-skill-triggers --route cli --model ${{ inputs.reviewer == 'codex' ? 'gpt-6-astra' : 'opus' }}"
+            run: "./.bin/swamp-eval run --route cli --model ${{ inputs.reviewer == 'codex' ? 'gpt-6-astra' : 'opus' }}"
             workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
 
   # ── Cleanup ──────────────────────────────────────────────────

@@ -21,9 +21,6 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml";
 import { join } from "@std/path";
 import { ROOT } from "./arch_fitness_helpers.ts";
-import { generateConfig as trigger } from "../evals/promptfoo/generate_config.ts";
-import { generateConfig as routing } from "../evals/promptfoo/generate_routing_config.ts";
-import { generateConfig as sufficiency } from "../evals/promptfoo/generate_sufficiency_config.ts";
 import { InputValidationService } from "../src/domain/inputs/input_validation_service.ts";
 import type { InputsSchema } from "../src/domain/definitions/definition.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
@@ -32,35 +29,30 @@ import {
   replaceExpressions,
 } from "../src/domain/expressions/expression_parser.ts";
 
-Deno.test("skill evals: all three generators wire both CLI providers with real routing choices", async () => {
-  for (const generate of [trigger, routing, sufficiency]) {
-    for (const model of ["opus", "gpt-6-astra"]) {
-      const result = await generate(["--model", model, "--route", "cli"]);
-      const providers = result.providers as Array<
-        {
-          id: string;
-          config: { model: string; toolNames: string[]; tools?: unknown[] };
-        }
-      >;
-      assertEquals(providers.length, 1);
-      assertEquals(
-        providers[0].id,
-        `file://${model === "opus" ? "claude" : "codex"}_cli_provider.mjs`,
-      );
-      assertEquals(providers[0].config.model, model);
-      assertEquals(providers[0].config.toolNames.length > 1, true);
-      assertEquals((result.tests as unknown[]).length > 0, true);
-      if (model === "gpt-6-astra") {
-        assertEquals(
-          providers[0].config.tools?.length,
-          providers[0].config.toolNames.length,
-        );
-        assertStringIncludes(
-          JSON.stringify(providers[0].config.tools),
-          '"description"',
-        );
-      }
-    }
+Deno.test("skill evals: every run builds through the one build script", async () => {
+  const deno = JSON.parse(await Deno.readTextFile(join(ROOT, "deno.json"))) as {
+    tasks: Record<string, string>;
+  };
+  assertEquals(deno.tasks["build-eval-tool"], "sh tools/swamp-eval/build.sh");
+  assertEquals(
+    deno.tasks["eval-skill-triggers"],
+    "sh tools/swamp-eval/build.sh && ./.bin/swamp-eval run",
+  );
+  const workflow = await Deno.readTextFile(
+    join(ROOT, "verification/workflow-verify-skills.yaml"),
+  );
+  assertStringIncludes(workflow, 'run: "sh tools/swamp-eval/build.sh"');
+});
+
+Deno.test("verify-skills: an evaluator or toolchain change re-runs the skill checks", async () => {
+  const workflow = await Deno.readTextFile(
+    join(ROOT, "verification/workflow-verify-skills.yaml"),
+  );
+  const guards = [...workflow.matchAll(/guard: "(.*)"/g)].map((m) => m[1]);
+  assertEquals(guards.length, 3);
+  for (const guard of guards) {
+    assertStringIncludes(guard, "f.startsWith('tools/swamp-eval/')");
+    assertStringIncludes(guard, "f == '.tool-versions'");
   }
 });
 
@@ -109,7 +101,7 @@ Deno.test("verify-skills: defaults to Claude and selects Codex only by input", a
     );
     assertEquals(
       replaceExpressions(run, values),
-      `deno task eval-skill-triggers --route cli --model ${model}`,
+      `./.bin/swamp-eval run --route cli --model ${model}`,
     );
   }
 });

@@ -33,7 +33,6 @@ const EXPECTED_SETUP_STEPS: Record<string, number> = {
   "publish-testing.yml": 1,
   "publish-client.yml": 1,
   "publish-extension-scoring.yml": 1,
-  "multi-model-eval.yml": 2,
   "windows-compat.yml": 1,
   "flaky-tests.yml": 1,
 };
@@ -226,4 +225,64 @@ Deno.test("every setup-deno step reads the version from .tool-versions", async (
     `expected ${EXPECTED_SETUP_TOTAL} setup-deno steps across the workflows, ` +
       `found ${total}`,
   );
+});
+
+Deno.test("the Go toolchain is pinned once and the eval tool needs no modules", async () => {
+  const contents = await Deno.readTextFile(TOOL_VERSIONS);
+  const pinned = contents.match(/^golang\s+(\d+)\.(\d+)\.\d+\s*$/m);
+  assertEquals(
+    pinned !== null,
+    true,
+    `${repoRelative(TOOL_VERSIONS)} has no "golang <x.y.z>" line`,
+  );
+
+  const goMod = await Deno.readTextFile(
+    join(ROOT, "tools", "swamp-eval", "go.mod"),
+  );
+  const directive = goMod.match(/^go\s+(\d+)\.(\d+)/m);
+  assertEquals(
+    directive !== null,
+    true,
+    "tools/swamp-eval/go.mod has no go directive",
+  );
+  const [needMajor, needMinor] = [Number(directive![1]), Number(directive![2])];
+  const [pinMajor, pinMinor] = [Number(pinned![1]), Number(pinned![2])];
+  assertEquals(
+    needMajor < pinMajor || (needMajor === pinMajor && needMinor <= pinMinor),
+    true,
+    "tools/swamp-eval/go.mod requires a newer Go than .tool-versions pins",
+  );
+  assertEquals(
+    /^\s*(require|replace)\b/m.test(goMod),
+    false,
+    "tools/swamp-eval must stay standard-library only: go.mod may not " +
+      "require or replace modules",
+  );
+
+  const offenders: string[] = [];
+  let setupGo = 0;
+  for (const [name, workflow] of await readWorkflows()) {
+    for (const job of Object.values(workflow.jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (
+          typeof step.uses !== "string" ||
+          !step.uses.startsWith("actions/setup-go@")
+        ) {
+          continue;
+        }
+        setupGo++;
+        if (step.with?.["go-version-file"] !== ".tool-versions") {
+          offenders.push(
+            `.github/workflows/${name} must set go-version-file: .tool-versions`,
+          );
+        }
+      }
+    }
+  }
+  assertEquals(
+    setupGo > 0,
+    true,
+    "no setup-go step found; the rule would pass vacuously",
+  );
+  assertEquals(offenders, [], offenders.join("\n"));
 });

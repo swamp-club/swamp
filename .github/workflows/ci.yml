@@ -61,21 +61,10 @@ jobs:
               # affectedCommands.
               - 'scripts/affected_commands.ts'
               - 'scripts/command_index.ts'
-              # The skill trigger evals: runner, `claude -p` provider, the
-              # generators that build the cases, and the installer, manifest
-              # and lockfile that decide which promptfoo dependency tree runs
-              # them. Keep in step with the eval-* configIntegrity.scripts
-              # entries below.
-              - 'scripts/eval_skill_triggers_promptfoo.ts'
-              - 'evals/promptfoo/claude_cli_provider.mjs'
-              - 'evals/promptfoo/codex_cli_provider.mjs'
-              - 'evals/promptfoo/provider_route.ts'
-              - 'evals/promptfoo/generate_config.ts'
-              - 'evals/promptfoo/generate_routing_config.ts'
-              - 'evals/promptfoo/generate_sufficiency_config.ts'
-              - 'scripts/promptfoo_install.ts'
-              - 'evals/promptfoo/package.json'
-              - 'evals/promptfoo/package-lock.json'
+              # The skill trigger evaluator: it decides whether skills still
+              # route correctly. Keep in step with the CONFIG_TREES entry in
+              # scripts/build_attestation.ts.
+              - 'tools/swamp-eval/**'
 
   claude-ci-security-review:
     name: CI Security Review
@@ -380,7 +369,7 @@ jobs:
           fi
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^scripts/eval_skill_triggers_promptfoo\\.ts$|^evals/promptfoo/(claude|codex)_cli_provider\\.mjs$|^evals/promptfoo/provider_route\\.ts$|^evals/promptfoo/generate_config\\.ts$|^evals/promptfoo/generate_routing_config\\.ts$|^evals/promptfoo/generate_sufficiency_config\\.ts$|^scripts/promptfoo_install\\.ts$|^evals/promptfoo/package\\.json$|^evals/promptfoo/package-lock\\.json$"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^tools/swamp-eval/"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -427,16 +416,7 @@ jobs:
             - `scripts/build_attestation.ts`
             - `scripts/affected_commands.ts`
             - `scripts/command_index.ts`
-            - `scripts/eval_skill_triggers_promptfoo.ts`
-            - `scripts/promptfoo_install.ts`
-            - `evals/promptfoo/claude_cli_provider.mjs`
-            - `evals/promptfoo/codex_cli_provider.mjs`
-            - `evals/promptfoo/provider_route.ts`
-            - `evals/promptfoo/generate_config.ts`
-            - `evals/promptfoo/generate_routing_config.ts`
-            - `evals/promptfoo/generate_sufficiency_config.ts`
-            - `evals/promptfoo/package.json`
-            - `evals/promptfoo/package-lock.json`
+            - `tools/swamp-eval/` (every file: the skill trigger evaluator)
 
             For each changed file, read the FULL diff (not just the file — the diff
             shows what was added, removed, or modified).
@@ -469,12 +449,11 @@ jobs:
             - Weakening pass/fail criteria in verification conventions
             - Removing the attestation requirement before PR opening
             - Changing the config integrity checksum list
-            - In `evals/promptfoo/package-lock.json`: a `resolved` URL outside
-              `https://registry.npmjs.org/`, an `integrity` hash that changes
-              while the package's `version` does not, a package newly marked
-              `hasInstallScript`, or a dependency added or re-pointed in
-              `evals/promptfoo/package.json` that the PR description does not
-              explain
+            - In `tools/swamp-eval/`: a `require` block or `replace` directive
+              added to `go.mod` (the module is standard-library only), a
+              change that counts a provider error or an out-of-set answer as a
+              pass, lowers the default threshold, or sends a case's input or
+              an API key anywhere but the selected provider
 
             ### 5. Auto-approve / Backdoor Patterns
             - Adding paths or conditions that bypass review
@@ -744,6 +723,34 @@ jobs:
             fi
           }
 
+          # One digest for a whole directory: sha256sum of the sha256sum
+          # manifest of its tracked files, byte-sorted, paths relative to it.
+          check_tree_hash() {
+            local label="$1" jq_path="$2" dir="$3"
+            local att_hash actual_hash
+            att_hash=$(jq -r "$jq_path // empty" attestation.json)
+            if [ -z "$att_hash" ]; then
+              echo "⚠️ \`$label\`: not in attestation" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::Config integrity: ${label} not in attestation"
+              warnings=$((warnings + 1))
+              return
+            fi
+            if [ -z "$(git ls-files -- "$dir")" ]; then
+              echo "⚠️ \`$label\`: directory not found at commit" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::Config integrity: ${label} directory not found at commit"
+              warnings=$((warnings + 1))
+              return
+            fi
+            actual_hash=$(cd "$dir" && git ls-files -z | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+            if [ "$att_hash" = "$actual_hash" ]; then
+              echo "✅ \`$label\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "❌ \`$label\`: checksum mismatch" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Config integrity mismatch for ${label}: attestation=${att_hash:0:12} actual=${actual_hash:0:12}"
+              errors=$((errors + 1))
+            fi
+          }
+
           check_hash "CLAUDE.md" '.configIntegrity.claudeMd' "CLAUDE.md"
           check_hash "AGENTS.md" '.configIntegrity.agentsMd' "AGENTS.md"
           check_hash "code-review prompt" '.configIntegrity.prompts."code-review"' "verification/review-prompts/code-review.md"
@@ -755,7 +762,6 @@ jobs:
           check_hash "verify-reviews workflow" '.configIntegrity.workflows."verify-reviews"' "verification/workflow-verify-reviews.yaml"
           check_hash "verify-skills workflow" '.configIntegrity.workflows."verify-skills"' "verification/workflow-verify-skills.yaml"
           check_hash "review-skills script" '.configIntegrity.scripts."review-skills"' "scripts/review_skills.ts"
-          check_hash "eval-skill-triggers config" '.configIntegrity.scripts."eval-skill-triggers"' "evals/promptfoo/package.json"
           check_hash "check-review-verdict script" '.configIntegrity.scripts."check-review-verdict"' "scripts/check_review_verdict.ts"
           # The generator attests to its own source. Every other hash here
           # proves the inputs to verification were what the commit says; this
@@ -765,15 +771,7 @@ jobs:
           check_hash "build-attestation script" '.configIntegrity.scripts."build-attestation"' "scripts/build_attestation.ts"
           check_hash "affected-commands script" '.configIntegrity.scripts."affected-commands"' "scripts/affected_commands.ts"
           check_hash "command-index script" '.configIntegrity.scripts."command-index"' "scripts/command_index.ts"
-          check_hash "eval-skill-triggers runner" '.configIntegrity.scripts."eval-skill-triggers-runner"' "scripts/eval_skill_triggers_promptfoo.ts"
-          check_hash "claude-cli eval provider" '.configIntegrity.scripts."eval-claude-cli-provider"' "evals/promptfoo/claude_cli_provider.mjs"
-          check_hash "codex-cli eval provider" '.configIntegrity.scripts."eval-codex-cli-provider"' "evals/promptfoo/codex_cli_provider.mjs"
-          check_hash "eval provider-route module" '.configIntegrity.scripts."eval-provider-route"' "evals/promptfoo/provider_route.ts"
-          check_hash "eval trigger config generator" '.configIntegrity.scripts."eval-generate-config"' "evals/promptfoo/generate_config.ts"
-          check_hash "eval routing config generator" '.configIntegrity.scripts."eval-generate-routing-config"' "evals/promptfoo/generate_routing_config.ts"
-          check_hash "eval sufficiency config generator" '.configIntegrity.scripts."eval-generate-sufficiency-config"' "evals/promptfoo/generate_sufficiency_config.ts"
-          check_hash "eval promptfoo installer" '.configIntegrity.scripts."eval-promptfoo-install"' "scripts/promptfoo_install.ts"
-          check_hash "eval promptfoo lockfile" '.configIntegrity.scripts."eval-promptfoo-lockfile"' "evals/promptfoo/package-lock.json"
+          check_tree_hash "skill eval tool" '.configIntegrity.scripts."eval-tool"' "tools/swamp-eval"
 
           # -- 6. Steps summary table --
           {

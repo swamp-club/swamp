@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   buildAttestation,
   checkCheckout,
@@ -32,6 +38,8 @@ import {
   modelNames,
   parseCommandIndex,
   reviewModels,
+  treeChecksum,
+  treeRelativePath,
   type RunRecord,
   type RunSource,
   type WorkflowDef,
@@ -833,4 +841,38 @@ Deno.test("diffNamesArgs: lists names with rename detection off", () => {
   assert(args.includes("--diff-filter=D"));
   assert(args.includes("-z"));
   assertEquals(args.slice(-2), ["base", "head"]);
+});
+
+// the digest check_tree_hash in ci.yml produces for these files
+const TREE_DIGEST =
+  "7f97a0d50924bb3604a44e30b2d111f0604eabdacc920c590d1c0a7de567d53d";
+
+Deno.test("treeChecksum: matches the sha256sum manifest digest CI computes", async () => {
+  const text = (s: string) => new TextEncoder().encode(s);
+  const files = [
+    { path: "internal/b/empty.txt", content: text("") },
+    { path: "go.mod", content: text("go 1.27\n") },
+    { path: "cmd/main.go", content: text("package main\n") },
+    { path: "Zeta.md", content: text("Z\n") },
+  ];
+  assertEquals(await treeChecksum(files), TREE_DIGEST);
+  assertEquals(await treeChecksum([...files].reverse()), TREE_DIGEST);
+});
+
+Deno.test("treeChecksum: refuses a name sha256sum would escape", async () => {
+  for (const path of ["a\\b.go", "a\nb.go"]) {
+    await assertRejects(() =>
+      treeChecksum([{ path, content: new Uint8Array() }])
+    );
+  }
+});
+
+Deno.test("treeRelativePath: strips the directory and refuses paths outside it", () => {
+  assertEquals(
+    treeRelativePath("tools/swamp-eval", "tools/swamp-eval/internal/x.go"),
+    "internal/x.go",
+  );
+  assertThrows(() =>
+    treeRelativePath("tools/swamp-eval", "tools/swamp-evaluator/x.go")
+  );
 });

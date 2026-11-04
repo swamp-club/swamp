@@ -91,6 +91,65 @@ export interface ConfigFile {
   jsonPath: string[];
 }
 
+export interface ConfigTree {
+  dir: string;
+  jsonPath: string[];
+}
+
+// keep in step with check_tree_hash in ci.yml
+export const CONFIG_TREES: ReadonlyArray<ConfigTree> = [
+  // the skill trigger evals decide whether skills still route correctly
+  { dir: "tools/swamp-eval", jsonPath: ["scripts", "eval-tool"] },
+];
+
+// CI hashes the same manifest with sha256sum, so keep byte-sorted paths and the two-space separator
+export async function treeChecksum(
+  files: ReadonlyArray<{ path: string; content: Uint8Array }>,
+): Promise<string> {
+  // sha256sum escapes a name holding a backslash or newline; refusing them
+  // keeps this manifest byte-identical to the one CI builds
+  const unsafe = files.find((f) => /[\\\n]/.test(f.path));
+  if (unsafe) {
+    throw new Error(`cannot pin ${JSON.stringify(unsafe.path)} in a tree hash`);
+  }
+  const lines = await Promise.all(
+    [...files]
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+      .map(async (f) => `${await computeChecksum(f.content)}  ${f.path}\n`),
+  );
+  return await computeChecksum(new TextEncoder().encode(lines.join("")));
+}
+
+export function treeRelativePath(dir: string, path: string): string {
+  if (!path.startsWith(`${dir}/`)) {
+    throw new Error(`${path} is not under ${dir}`);
+  }
+  return path.slice(dir.length + 1);
+}
+
+async function treeAtCommit(
+  commit: string,
+  dir: string,
+): Promise<Array<{ path: string; content: Uint8Array }> | null> {
+  const listing = await capture("git", [
+    "ls-tree",
+    "-r",
+    "--name-only",
+    "--full-tree",
+    commit,
+    "--",
+    `${dir}/`,
+  ]);
+  if (!listing?.trim()) return null;
+  const files = [];
+  for (const path of listing.trim().split("\n")) {
+    const content = await showAtCommit(commit, path);
+    if (!content) return null;
+    files.push({ path: treeRelativePath(dir, path), content });
+  }
+  return files;
+}
+
 /**
  * CI re-hashes these files at the same commit; keep in step with the check_hash
  * calls in ci.yml (a fitness rule enforces it), since a dropped file only makes
@@ -125,10 +184,6 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
   })),
   { path: "scripts/review_skills.ts", jsonPath: ["scripts", "review-skills"] },
   {
-    path: "evals/promptfoo/package.json",
-    jsonPath: ["scripts", "eval-skill-triggers"],
-  },
-  {
     path: "scripts/check_review_verdict.ts",
     jsonPath: ["scripts", "check-review-verdict"],
   },
@@ -145,45 +200,6 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
   {
     path: "scripts/command_index.ts",
     jsonPath: ["scripts", "command-index"],
-  },
-  // trigger evals decide whether skills still route correctly, so the runner,
-  // provider, case generators, and the installer and lockfile fixing the
-  // promptfoo tree are pinned too
-  {
-    path: "scripts/eval_skill_triggers_promptfoo.ts",
-    jsonPath: ["scripts", "eval-skill-triggers-runner"],
-  },
-  {
-    path: "evals/promptfoo/claude_cli_provider.mjs",
-    jsonPath: ["scripts", "eval-claude-cli-provider"],
-  },
-  {
-    path: "evals/promptfoo/codex_cli_provider.mjs",
-    jsonPath: ["scripts", "eval-codex-cli-provider"],
-  },
-  {
-    path: "evals/promptfoo/provider_route.ts",
-    jsonPath: ["scripts", "eval-provider-route"],
-  },
-  {
-    path: "evals/promptfoo/generate_config.ts",
-    jsonPath: ["scripts", "eval-generate-config"],
-  },
-  {
-    path: "evals/promptfoo/generate_routing_config.ts",
-    jsonPath: ["scripts", "eval-generate-routing-config"],
-  },
-  {
-    path: "evals/promptfoo/generate_sufficiency_config.ts",
-    jsonPath: ["scripts", "eval-generate-sufficiency-config"],
-  },
-  {
-    path: "scripts/promptfoo_install.ts",
-    jsonPath: ["scripts", "eval-promptfoo-install"],
-  },
-  {
-    path: "evals/promptfoo/package-lock.json",
-    jsonPath: ["scripts", "eval-promptfoo-lockfile"],
   },
 ];
 
@@ -1141,6 +1157,18 @@ async function main(): Promise<number> {
       continue;
     }
     setIn(configIntegrity, file.jsonPath, await computeChecksum(content));
+  }
+  for (const tree of CONFIG_TREES) {
+    const files = await treeAtCommit(commit, tree.dir);
+    if (!files) {
+      console.error(
+        `::warning::${tree.dir} not found at ${
+          commit.slice(0, 8)
+        }; its hash will be absent from the attestation`,
+      );
+      continue;
+    }
+    setIn(configIntegrity, tree.jsonPath, await treeChecksum(files));
   }
 
   const affected = await gatherAffectedCommands(commit, repoRoot);

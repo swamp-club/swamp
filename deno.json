@@ -26,7 +26,8 @@
     "setup-verify-env": "deno run --allow-read --allow-write=$HOME/.config --allow-env --allow-run=op scripts/setup_verify_env.ts",
     "build-attestation": "deno run --allow-read --allow-env --allow-run=git,swamp,deno scripts/build_attestation.ts",
     "review-skills": "deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY,TESSL_TOKEN --allow-write scripts/review_skills.ts",
-    "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write --allow-net scripts/eval_skill_triggers_promptfoo.ts",
+    "build-eval-tool": "sh tools/swamp-eval/build.sh",
+    "eval-skill-triggers": "sh tools/swamp-eval/build.sh && ./.bin/swamp-eval run",
     "build-dashboard": "npm --prefix packages/dashboard run build",
     "litestream-pin": "deno run --allow-net=github.com,objects.githubusercontent.com,release-assets.githubusercontent.com --allow-read --allow-write --allow-run=unzip scripts/refresh_litestream_pin.ts"
   },
@@ -79,7 +80,7 @@
     "strict": true
   },
   "test": {
-    "include": ["./", "evals/promptfoo/codex_cli_provider_test.ts"]
+    "include": ["./"]
   },
   "fmt": {
     "exclude": ["scripts/"]
@@ -96,8 +97,7 @@
     "workflows/",
     ".vault-test-vault/",
     "resources/",
-    "evals/",
-    "!evals/promptfoo/*_test.ts",
+    "tools/swamp-eval/",
     ".swamp/",
     ".claude/worktrees/"
   ]

@@ -25,7 +25,7 @@ at all.
 Skills live in `.claude/skills/<skill-name>/` and follow a three-phase lifecycle:
 
 1. **Author** — create the skill following skill-creator conventions
-2. **Test** — validate quality (tessl) and trigger routing (promptfoo)
+2. **Test** — validate quality (tessl) and trigger routing (`swamp-eval`)
 3. **Ship** — CI gates enforce quality before merge
 
 Authoring and testing are iterative — after using a skill on real tasks, you
@@ -142,7 +142,7 @@ Each entry has:
 
 Every guide topic must have at least one case. `skill_routing_test.ts` derives
 the topic list from the `references/` directory on disk, so adding a new guide
-without adding routing evals fails the unit test — no promptfoo run needed.
+without adding routing evals fails the unit test — no model run needed.
 
 ## Writing Sufficiency Evals
 
@@ -178,16 +178,16 @@ should have delegated. Self-contained guides with no `reference.md` carry only
 
 ## Testing Locally
 
-Both testing tools require **Node.js/npm** and **Deno** installed locally. They
-test fundamentally different things:
+Tessl needs **Node.js/npm**; the routing evals need **Go** (the version pinned
+in `.tool-versions`). They test fundamentally different things:
 
 - **Tessl** answers: _"Is this skill well-written?"_ — it scores the quality of
   the SKILL.md description and content.
-- **Promptfoo** answers: _"Does the LLM actually route to this skill
+- **`swamp-eval`** answers: _"Does the LLM actually route to this skill
   correctly?"_ — it sends real queries to a model and checks which skill gets
   called.
 
-A skill can score perfectly on tessl but still fail promptfoo if its description
+A skill can score perfectly on tessl but still fail the routing evals if its description
 overlaps with another skill. Both must pass.
 
 ### Tessl — Skill Quality Review
@@ -220,57 +220,69 @@ deno run review-skills
 This runs tessl against every skill in `.claude/skills/` and prints a summary
 table. In CI, it writes the table to the GitHub Actions step summary.
 
-### Promptfoo — Routing Evaluation
+### `swamp-eval` — Routing Evaluation
 
-Promptfoo tests whether an LLM actually navigates from a user query to the right
-context. `deno run eval-skill-triggers` runs three phases in sequence against
-the same model, then reports a combined pass rate:
+`swamp-eval` (a standard-library-only Go module in `tools/swamp-eval`) tests
+whether an LLM actually navigates from a user query to the right context.
+`deno run eval-skill-triggers` runs the evaluator's unit tests, then all three
+suites against the same model, and reports a combined pass rate:
 
-| Phase | Eval file                      | Generator                        | Question                                          |
-| ----- | ------------------------------ | -------------------------------- | ------------------------------------------------- |
-| 1     | `trigger_evals.json`           | `generate_config.ts`             | Does the right skill trigger?                     |
-| 2     | `routing_evals.json`           | `generate_routing_config.ts`     | Does the right guide get loaded?                  |
-| 3     | `guide_sufficiency_evals.json` | `generate_sufficiency_config.ts` | Is the guide enough, or is `reference.md` needed? |
+| Suite       | Eval file                      | Question                                          |
+| ----------- | ------------------------------ | ------------------------------------------------- |
+| trigger     | `trigger_evals.json`           | Does the right skill trigger?                     |
+| routing     | `routing_evals.json`           | Does the right guide get loaded?                  |
+| sufficiency | `guide_sufficiency_evals.json` | Is the guide enough, or is `reference.md` needed? |
 
-Generators live in `evals/promptfoo/` and turn each eval file into a promptfoo
-config where every choice is a tool the model can call. The driver is
-`scripts/eval_skill_triggers_promptfoo.ts`; each phase writes its raw results
-to `evals/promptfoo/results.json` (phase 1), `routing_results.json` (phase
-2), and `sufficiency_results.json` (phase 3) — generated artifacts that are
-gitignored, not committed.
+Every choice is offered to the model as a tool, and a case passes when the
+model calls exactly the expected one. In the trigger suite the skills are offered
+as `skill_a` and `skill_b`, never by name: nearly every positive query mentions
+swamp, so a tool named `swamp` would pass with any description. Reports map the
+picks back to skill names. A `should_trigger: false` trigger case
+passes on any choice other than its own skill, so a query that belongs to the
+other bundled skill is not a failure. A provider error, a timeout, or an answer
+outside the offered set counts against the pass rate and is reported separately
+as an error, so an outage never reads as a pass or as a prompt regression.
 
-Phase 2 and 3 generators keep a topic map (`GUIDE_TOPICS` / `GUIDE_DIRS`) that
-must list every directory under `references/`; a missing entry makes the
-generator exit with an error naming the unknown topic.
+Each run writes one JSON artifact, `eval-results/<model>.json` (gitignored),
+with every case's expected and actual tool, error category, latency and tokens.
+A run that stops before any case (a bad key, no credits, a logged-out CLI) still
+writes one, marked `failed` with the reason, so the cross-model report names the
+cause. Cost estimates price prompt-cache reads at the provider's cache rate.
+`go -C tools/swamp-eval run ./cmd/swamp-eval cases --full` prints the exact
+prompts and tools each case sends, without calling a model.
+
+The routing catalog (`tools/swamp-eval/internal/cases/routing.go`) must list
+every directory under `references/`; the evaluator's tests fail on a guide it
+does not offer, and a fixture naming an unknown guide fails the run before any
+model call.
 
 **Routes.** Anthropic models (`opus`, `sonnet`) run locally through the Claude
-Code CLI: a custom promptfoo provider (`evals/promptfoo/claude_cli_provider.mjs`)
-calls `claude -p` with no tools and a JSON-schema enum of the choices, so a
+Code CLI: `claude -p` with no tools, every choice's name and description in the
+system prompt, and a JSON-schema enum of the names that forces one pick. A
 claude.ai login is enough and no `ANTHROPIC_API_KEY` is read. `--route cli|api`
 overrides the default, which is `api` in GitHub Actions and for models with no
-CLI route (`fable`, `gpt-5.4`, Gemini), and `cli` otherwise. The optional
-`gpt-6-astra` model always uses the Codex CLI route, including in Actions.
-The preflight checks the selected CLI; an unusable CLI fails the run, it never
-skips. Claude remains the default.
+CLI route (`fable`, Gemini), and `cli` otherwise. OpenAI is covered by
+`gpt-6-astra`, which only runs through `codex exec` on a ChatGPT login: locally
+and in `verify-skills` with `reviewer=codex`, not in the weekly matrix, which has
+no such login.
+A preflight sends one tiny case through the real adapter; an unusable CLI or
+key fails the run (exit 2), it never skips.
 
 The Claude CLI route passes a model alias, so it follows the latest model, and
-records the exact model each run resolved to in the console and step summary. It has no
-temperature or forced tool choice; the schema enum forces the pick and
+records the exact model each run resolved to in the artifact and summary. It has
+no temperature or forced tool choice; the schema enum forces the pick and
 `--effort` (low for sonnet, medium for opus) stands in for thinking.
 
 **Run against the default model (opus):**
 
 ```bash
-deno run eval-skill-triggers
+deno run eval-skill-triggers --model opus
 ```
 
-The CLI default is `opus` (`default: { model: "opus" }` in
-`scripts/eval_skill_triggers_promptfoo.ts`).
-
-**Run against a specific model:**
+**Run against a specific model or suite:**
 
 ```bash
-deno run eval-skill-triggers --model sonnet
+deno run eval-skill-triggers --model sonnet --suite routing
 
 # Optional Codex CLI, using an existing Codex login
 deno run eval-skill-triggers --model gpt-6-astra --route cli
@@ -278,9 +290,6 @@ deno run eval-skill-triggers --model gpt-6-astra --route cli
 # API route, as CI runs it
 export ANTHROPIC_API_KEY=<your-key>
 deno run eval-skill-triggers --model sonnet --route api
-
-export OPENAI_API_KEY=<your-key>
-deno run eval-skill-triggers --model gpt-5.4
 
 export GOOGLE_API_KEY=<your-key>
 deno run eval-skill-triggers --model gemini-2.5-pro
@@ -292,17 +301,34 @@ deno run eval-skill-triggers --model gemini-2.5-pro
 deno run eval-skill-triggers --model sonnet --concurrency 10 --threshold 0.85
 ```
 
+`go -C tools/swamp-eval run ./cmd/swamp-eval list-models` prints every alias,
+its routes, key variable, concurrency and pricing. Other flags: `--suite`,
+`--timeout` (per case, default 120s), `--out`, `--github-summary`. There are no
+retries: a failed call is an error case.
+
+**Building the evaluator.** Every run, local or verification or CI, builds
+through `tools/swamp-eval/build.sh` (`deno task build-eval-tool`): it compiles
+with exactly the Go pinned in `.tool-versions` (Go downloads and
+checksum-verifies that toolchain if yours differs), checks `gofmt`, runs
+`go vet` and the unit tests, none of which call a model, and writes
+`.bin/swamp-eval` (gitignored). The build is reproducible and stamped with the
+source tree id, and every run prints that stamp, the Go version and, on the CLI
+route, the `claude`/`codex` version, all recorded in the artifact. Builds after
+the first take about a tenth of a second from Go's cache. To see exactly what a
+case sends, use `./.bin/swamp-eval cases --full`. Upgrading Go is one line in
+`.tool-versions`; upgrading the evaluator is merging to `main`.
+
 `verify-skills` accepts `--input reviewer=codex` to select this Codex model
-for all three phases. Omit the input to keep Claude (`opus`). Tessl skill
+for all three suites. Omit the input to keep Claude (`opus`). Tessl skill
 quality review is independent of this selection.
 
 Defaults are concurrency 6 on the CLI route (every case is a separate CLI
-process on your subscription) and 20 on the API route, and threshold 90%. An
-API-route sonnet run costs ~$2; the CLI route is billed to the subscription and
-prints tokens instead of a dollar figure.
+process on your subscription) and 20 on the API route, and
+threshold 90%. An API-route sonnet run costs ~$2; the CLI route is billed to the
+subscription and records tokens with a null dollar cost.
 
-On the API route a missing provider key skips (exits 0). The CLI route has no
-key to miss.
+On the API route a missing provider key is an error (exit 2), so a green run
+always means the evals ran. Exit 1 means the cases ran and missed the threshold.
 
 ## CI Pipeline
 
@@ -312,9 +338,7 @@ detection filter triggers on modifications to:
 - `.claude/skills/**`
 - `CLAUDE.md`
 - `scripts/review_skills.ts`
-- `scripts/eval_skill_triggers_promptfoo.ts`
-- `scripts/promptfoo_install.ts`
-- `evals/promptfoo/**`
+- `tools/swamp-eval/**`
 
 ### PR Checks
 
@@ -324,8 +348,8 @@ Two jobs run in parallel on every PR that touches skill files:
 behind `deno run review-skills`) with `TESSL_TOKEN` from repository secrets.
 Fails the PR if any skill scores below 90%.
 
-**skill-trigger-eval** — runs `deno run eval-skill-triggers` (promptfoo) with
-the default opus model, covering all three phases. Fails the PR if the combined
+**skill-trigger-eval** — runs `deno run eval-skill-triggers` with the default
+opus model, covering all three suites. Fails the PR if the combined
 pass rate drops below 90%.
 
 Both jobs write detailed results to the GitHub Actions step summary for easy
@@ -334,16 +358,16 @@ review.
 ### Weekly Multi-Model Regression
 
 A scheduled workflow (`multi-model-eval.yml`) runs every Saturday at 08:00 UTC.
-It runs `deno run eval-skill-triggers --model <m> --concurrency <n> --route api` — all
-three phases — against six models in parallel, and uploads
-`evals/promptfoo/results.json` and `routing_results.json` as a per-model
-artifact (retained 14 days):
+Each model job tests the evaluator, then runs
+`swamp-eval run --model <m> --concurrency <n> --route api` — all three suites —
+and uploads its `eval-results/<m>.json` artifact (retained 14 days). An analysis
+job then runs `swamp-eval report` over every artifact, flags cases that fail on
+more than one model, and reports a missing artifact as a failure:
 
 | Model          | Provider  | Concurrency | API Key Env        |
 | -------------- | --------- | ----------- | ------------------ |
 | opus           | Anthropic | 20          | `ANTHROPIC_API_KEY` |
 | sonnet         | Anthropic | 20          | `ANTHROPIC_API_KEY` |
-| gpt-5.4        | OpenAI    | 1           | `OPENAI_API_KEY`   |
 | gemini-2.5-pro | Google    | 20          | `GOOGLE_API_KEY`   |
 | gemini-3.1-pro | Google    | 20          | `GOOGLE_API_KEY`   |
 | fable          | Anthropic | 20          | `ANTHROPIC_API_KEY` |
@@ -374,7 +398,7 @@ tests), PRs are auto-merged unless the `hold` label is applied.
                      │     Test Locally        │
                      │                         │
                      │  tessl  → quality ok?   │
-                     │  promptfoo → routing ok?│
+                     │  evals  → routing ok?   │
                      └────────────┬────────────┘
                                   │
                           ┌───────┴───────┐
