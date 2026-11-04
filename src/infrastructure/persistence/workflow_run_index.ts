@@ -562,6 +562,8 @@ async function withIndexFileLock<T>(
 function cannotWriteHere(error: unknown): boolean {
   return error instanceof Deno.errors.PermissionDenied ||
     error instanceof Deno.errors.NotADirectory ||
+    // only the recursive mkdir raises it, for a file on the path; the lock opens without createNew
+    error instanceof Deno.errors.AlreadyExists ||
     error instanceof Deno.errors.NotCapable ||
     (typeof error === "object" && error !== null && "code" in error &&
       error.code === "EROFS");
