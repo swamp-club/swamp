@@ -23,6 +23,10 @@
  * ones stay committed, later ones are not tried
  */
 
+import {
+  noteCommandLanded,
+  noteCommandMayHaveLanded,
+} from "./command_landed.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type {
   StagedChange,
@@ -624,6 +628,7 @@ export function createCommitLogUnitOfWork(
         pending = pending.filter((other) => other !== group);
         if (withdrawn) continue;
         noteCommitted(group, options);
+        noteCommandLanded(group.partition, intentKindsOf(group.changes));
         if (!landed.some((other) => other.equals(group.partition))) {
           landed.push(group.partition);
         }
@@ -696,6 +701,7 @@ export function createCommitLogUnitOfWork(
 
   const throwUnconfirmed = (): void => {
     if (unconfirmed !== undefined) {
+      noteCommandMayHaveLanded();
       throw new MayLandLaterError(unconfirmed.cause, unconfirmed.reason);
     }
   };
@@ -711,6 +717,7 @@ export function createCommitLogUnitOfWork(
       dropWork();
       const lost = await discardEntries(options, outbox, abandoned);
       if (lost !== undefined) {
+        noteCommandMayHaveLanded();
         throw new MayLandLaterError(undefined, lost.reason);
       }
       throwUnconfirmed();
@@ -753,6 +760,7 @@ export function createCommitLogUnitOfWork(
         ? unconfirmed
         : await discardEntries(options, outbox, pending) ?? unconfirmed;
       if (lost !== undefined && !(error instanceof MayLandLaterError)) {
+        noteCommandMayHaveLanded();
         throw new MayLandLaterError(error, lost.reason);
       }
       // given up, so nothing of it can land: a commit that never reached the
@@ -886,6 +894,7 @@ export function createCommitLogUnitOfWork(
         throw error;
       }
       if (queued) return "queued";
+      noteCommandLanded(partition, intentKindsOf(group.changes));
       if (!landed.some((other) => other.equals(partition))) {
         landed.push(partition);
       }
@@ -1035,6 +1044,16 @@ const REBASED_REMOVALS: ReadonlySet<string> = new Set([
   "definition.edit",
   "definition.create",
 ]);
+
+/** a data-version or lease op rides along with a put and names no intent */
+function intentKindsOf(changes: readonly TypedChange[]): string[] {
+  const kinds: string[] = [];
+  for (const change of changes) {
+    if ("put" in change) kinds.push(change.put.intent.kind);
+    else if ("intent" in change.op) kinds.push(change.op.intent.kind);
+  }
+  return kinds;
+}
 
 /**
  * a system rewrite (type upgrade, migration) leaves the base, which the user
@@ -1643,6 +1662,7 @@ async function landedDespite(
       group.txnId,
     ) !== undefined;
   } catch (readError) {
+    noteCommandMayHaveLanded();
     throw new MayLandLaterError(error, readError);
   }
 }

@@ -23,6 +23,7 @@
  * ServeUnreachableError, saying whether the request may have reached serve
  */
 
+import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
 import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
@@ -56,6 +57,33 @@ import {
 export const MAX_HAS_HASHES = 1024;
 
 export const DEFAULT_SERVE_TIMEOUT_MS = 30_000;
+
+/**
+ * once a write found serve unreachable, the rest of the command fails at once
+ * instead of waiting out a request timeout per call; requests in flight end too
+ */
+const unreachableLatches = new Map<string, AbortController>();
+
+function unreachableLatchOf(baseUrl: string): AbortSignal {
+  let latch = unreachableLatches.get(baseUrl);
+  if (latch === undefined) {
+    latch = new AbortController();
+    unreachableLatches.set(baseUrl, latch);
+  }
+  return latch.signal;
+}
+
+/** set by a write's failure or an unrenewed lease; a read never sets it */
+export function latchServeUnreachable(baseUrl: string, cause: unknown): void {
+  unreachableLatchOf(baseUrl);
+  const latch = unreachableLatches.get(baseUrl)!;
+  if (!latch.signal.aborted) latch.abort(cause);
+}
+
+/** the command's end: the next command asks serve afresh */
+export function clearServeUnreachableLatches(): void {
+  unreachableLatches.clear();
+}
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
@@ -827,9 +855,14 @@ export class ServeDatastoreClient {
     for (let attempt = 1;; attempt++) {
       span.setAttribute("swamp.datastore.v3.serve.attempts", attempt);
       signal.throwIfAborted();
+      const latch = unreachableLatchOf(this.baseUrl);
+      if (latch.aborted) {
+        throw new ServeUnreachableError(this.baseUrl, "never", latch.reason);
+      }
       const timed = AbortSignal.any([
         signal,
         AbortSignal.timeout(this.#timeoutMs),
+        latch,
       ]);
       let response: Response;
       const sentAt = Date.now();
@@ -842,6 +875,9 @@ export class ServeDatastoreClient {
           ...this.#clientInit(),
         });
       } catch (error) {
+        if (latch.aborted && !signal.aborted) {
+          throw new ServeUnreachableError(this.baseUrl, "maybe", latch.reason);
+        }
         throw this.#unreachable(error, signal, sentOf(error), true);
       }
       // serve's clock, which judges a lease's expiry and corrects an offline
@@ -889,6 +925,9 @@ export class ServeDatastoreClient {
       } catch (error) {
         // The request reached serve: a failure reading its reply may have
         // come after serve acted on it.
+        if (latch.aborted && !signal.aborted) {
+          throw new ServeUnreachableError(this.baseUrl, "maybe", latch.reason);
+        }
         throw this.#unreachable(error, signal, "maybe");
       }
     }
@@ -1196,4 +1235,30 @@ function neverConnected(error: Error): boolean {
   return error.message.includes("client error (Connect)") ||
     error.message.includes("dns error") ||
     error.message.includes("tcp connect error");
+}
+
+/**
+ * ownConnection keeps the client off the shared fetch pool, so its requests
+ * never queue behind another client's upload
+ */
+export function serveDatastoreClientFor(
+  target: ServeUpstreamTarget,
+  namespace: string,
+  options: { readonly ownConnection?: boolean } = {},
+): ServeDatastoreClient {
+  const caCerts = target.caCerts !== undefined && target.caCerts.length > 0
+    ? [...target.caCerts]
+    : undefined;
+  return new ServeDatastoreClient({
+    baseUrl: target.serverUrl,
+    namespace,
+    ...(target.token !== undefined ? { token: target.token } : {}),
+    extraHeaders: target.extraHeaders,
+    ...(caCerts !== undefined || options.ownConnection === true
+      ? {
+        httpClient: () =>
+          Deno.createHttpClient(caCerts !== undefined ? { caCerts } : {}),
+      }
+      : {}),
+  });
 }

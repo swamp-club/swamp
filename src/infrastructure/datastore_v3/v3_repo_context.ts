@@ -23,6 +23,7 @@
  * the process's hold on the writer lock
  */
 
+import { clearServeUnreachableLatches } from "./serve_datastore_client.ts";
 import { dirname, join, resolve } from "@std/path";
 import {
   type DatastoreConfig,
@@ -1860,6 +1861,7 @@ export async function closeV3Datastores(
   );
   keepMarkers = false;
   keptMarkers.clear();
+  clearServeUnreachableLatches();
   // A replication failure comes first: it is what the command reports.
   const failed = [...closing, ...closed, ...unheld, ...released].find((
     result,

@@ -2026,8 +2026,12 @@ export async function unreachableAsCatchUpError<T>(
 const DIRECT_APPEND_ATTEMPTS = 3;
 const DIRECT_APPEND_BACKOFF_MS = 250;
 
-/** a commit that may have landed is retried too: it lands the same bytes again */
+/**
+ * a commit that may have landed is retried too: it lands the same bytes again;
+ * serve unreachable is not retried, as the run stops at that commit
+ */
 function isTransientAppendFailure(error: unknown): boolean {
+  if (fromUnreachableServe(error)) return false;
   if (isNetworkFailure(error) || error instanceof MayLandLaterError) {
     return true;
   }
@@ -2035,6 +2039,21 @@ function isTransientAppendFailure(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code;
   return code === V3_SERVE_UNREACHABLE_CODE ||
     code === V3_STORAGE_UNREACHABLE_CODE;
+}
+
+function fromUnreachableServe(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8; depth++) {
+    if (
+      (current as { code?: unknown } | undefined)?.code ===
+        V3_SERVE_UNREACHABLE_CODE
+    ) {
+      return true;
+    }
+    if (!(current instanceof Error)) return false;
+    current = current.cause;
+  }
+  return false;
 }
 
 function isStepStartChange(change: TypedChange): boolean {

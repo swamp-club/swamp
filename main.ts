@@ -42,6 +42,8 @@ import {
   shutdownExecutionMetrics,
 } from "./src/infrastructure/tracing/otel_metrics_init.ts";
 import { commandSurfaceFromArgs } from "./src/cli/command_surface_args.ts";
+import { extractCommandInfo } from "./src/cli/telemetry_integration.ts";
+import { commandLanded } from "./src/infrastructure/datastore_v3/command_landed.ts";
 import {
   isDispatchRunnerInvocation,
   redirectConsoleToStderr,
@@ -86,8 +88,13 @@ if (import.meta.main) {
     await initializeLogging({
       jsonMode: outputMode === "json",
     });
-    renderError(error, outputMode, commandSurfaceFromArgs(Deno.args));
-    errorExitCode = exitCodeForError(error);
+    const context = {
+      commandLanded: commandLanded(),
+      workflowCommand:
+        extractCommandInfo([...Deno.args]).command === "workflow",
+    };
+    renderError(error, outputMode, commandSurfaceFromArgs(Deno.args), context);
+    errorExitCode = exitCodeForError(error, context);
   } finally {
     // Drain the OTLP logs signal before spans — shutdownLogs() awaits the
     // exporter's in-flight sends so the last log records aren't cut by

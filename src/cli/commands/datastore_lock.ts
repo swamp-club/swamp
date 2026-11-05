@@ -48,7 +48,15 @@ import {
   modelSpecTypeMatches,
   parseModelSpec,
 } from "../../libswamp/datastores/lock.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdOrName,
+  isUuid,
+} from "../../domain/models/model_lookup.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import {
+  type ServeDatastoreClient,
+  serveDatastoreClientFor,
+} from "../../infrastructure/datastore_v3/serve_datastore_client.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { v3WriterLockHandle } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { v3DatastoreConfigOf } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -235,6 +243,21 @@ const datastoreLockReleaseCommand = new Command()
       }
       // a checkout written through serve asks serve to end the lease on the
       // behavior, whoever holds it: admin only.
+      if (resolution.serveUpstream !== undefined && isUuid(parsed.modelId)) {
+        // An id needs no definition lookup, so the checkout's copy is never
+        // opened: rebuilding it for this caller would wait for a running
+        // command's writer lock, and with it for the very lease to end.
+        await releaseServeLeaseById(
+          cliCtx,
+          serveDatastoreClientFor(
+            resolution.serveUpstream,
+            config.namespace ?? "",
+          ),
+          parsed.modelType,
+          parsed.modelId,
+        );
+        return;
+      }
       if (resolution.serveUpstream !== undefined) {
         const binding = serveUpstreamAt(
           (await v3LocationOf(resolution)).path,
@@ -312,3 +335,69 @@ export const datastoreLockCommand = new Command()
   .description("Manage datastore locks")
   .command("status", datastoreLockStatusCommand)
   .command("release", datastoreLockReleaseCommand);
+
+async function releaseServeLeaseById(
+  cliCtx: ReturnType<typeof createContext>,
+  client: ServeDatastoreClient,
+  specType: string,
+  modelId: string,
+): Promise<void> {
+  let modelType: string;
+  try {
+    modelType = ModelType.create(specType).normalized;
+  } catch {
+    throw new UserError(
+      `Invalid behavior type "${specType}": nothing was released.`,
+    );
+  }
+  // serve keys a lease by the canonical, lowercase id
+  const id = modelId.toLowerCase();
+  const lockKey = modelLockKey(undefined, modelType, id);
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const renderer = createDatastoreLockReleaseRenderer(cliCtx.outputMode);
+  try {
+    await consumeStream(
+      datastoreLockRelease(
+        ctx,
+        createServeLeaseReleaseDeps(async () => {
+          // Bounded by the client's own per-request timeout.
+          const outcome = await client.forceReleaseLock(
+            lockKey,
+            new AbortController().signal,
+          );
+          if (!outcome.released) {
+            await refuseWrongType(client, modelType, id);
+          }
+          return outcome;
+        }),
+        {},
+      ),
+      renderer.handlers(),
+    );
+  } finally {
+    client.close();
+  }
+}
+
+/**
+ * a lease on the id under another type means the spec named the wrong type:
+ * said as the definition lookup said it, so the admin can pass the right one
+ */
+async function refuseWrongType(
+  client: ServeDatastoreClient,
+  modelType: string,
+  modelId: string,
+): Promise<void> {
+  const listing = await client.listLocks("data/", new AbortController().signal)
+    .catch(() => undefined);
+  for (const lease of listing?.leases ?? []) {
+    const match = /^data\/(.+)\/([^/]+)\/\.lock$/.exec(lease.lockKey);
+    if (match === null || match[2] !== modelId || match[1] === modelType) {
+      continue;
+    }
+    throw new UserError(
+      `Behavior ${modelId} is of type ${match[1]}, not ${modelType}: ` +
+        `nothing was released. Pass --behavior ${match[1]}/${modelId}.`,
+    );
+  }
+}

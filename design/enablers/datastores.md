@@ -6321,8 +6321,11 @@ records lets the join go ahead: the fence still refuses its commits.
 **Refusals change nothing.** A command v3 refuses must leave the datastore
 byte-identical. Lease contention (`datastore_v3_writer_busy`) exits 75, as
 v2's `lock_timeout` does: nothing changed, so a retry with backoff is safe.
-`datastore_v3_writer_fenced` exits 1: a command whose lease was taken over
-may have landed some of its commits, so it is not blindly retried. `datastore sync` and `datastore migrate-index` open a v3
+`datastore_v3_writer_fenced` exits 75 only when the takeover, a forced
+release or a copy still being restored stopped the command before any of its
+commits landed; otherwise, and always for a writer that had already published
+its head, it exits 1, since a command that landed some commits is not blindly
+retried (the landed rule below). `datastore sync` and `datastore migrate-index` open a v3
 datastore read-only before libswamp refuses them, so they take no lease;
 `integration/datastore_v3_writer_lease_test.ts` checks every refusal.
 
@@ -7896,15 +7899,37 @@ never relies on:
 | Unreachable when the command starts, the work needs a lease the checkout does not hold | `datastore_v3_offline_lease_required`, nothing ran | 75 |
 | Unreachable when the command starts, a definition edit | `datastore_v3_offline_config_edit`, naming the definition by kind and name, nothing changed | 75 |
 | Unreachable when the command starts, a copy that never read serve's feed | `datastore_v3_serve_unreachable` (`ServeNeverReadError`): an empty copy would pass for an empty datastore, so nothing is read or changed | 75 |
-| Unreachable mid-command, request never sent | `datastore_v3_serve_unreachable`, outbox entry discarded, nothing changed (the offline rules never judged this command's work) | 75 |
+| Unreachable mid-command, request never sent | `datastore_v3_serve_unreachable`, outbox entry discarded, nothing changed (the offline rules never judged this command's work) | 75, or 1 when an earlier commit of the command landed |
 | Unreachable after the request may have reached serve | outbox entry kept; the next recovery settles or re-sends it | 1 (may land) |
 | `401` | the `swamp auth server-login --server …` hint | 1 |
 | `409 stale_seq` | caught up and retried | — |
 | `409 precondition_failed` | `config_edit_conflict` for a managed-config definition or the lockfile (swamp-club#4097); otherwise serve's "changed by … at …" message, as a local expect-failed | 1 |
 | `409 datastore_v3_writer_fenced` | the same code | 1 |
+| `409 commit_lease-lost` | `datastore_v3_commit_lease_lost`, no stack trace, with a hint for the command (resume or recover a workflow run; rerun, or check the behavior's data, for a method run) | 75 if nothing of the command landed, else 1 |
+| Lease lapsed (not renewed in time, force-released, or expired at serve) | `datastore_v3_lease_lapsed`: the work under it is cancelled and the run reports the lapse | 75 if nothing of the command landed, else 1 |
 | `503` storage unreachable, writer busy, replication | the same code (serve now answers storage-unreachable and writer-busy as 503, not 500) | 75 |
 | `403` | serve's message and the op's index | 1 |
 | `410 commits_compacted` | serve's compacted base is loaded; a serve with no base route keeps the refusal | 1 (old serve) |
+
+**What landed decides exit 75.** Exit 75 promises a blind retry is safe, so
+a lost lease, a lapsed lease, a fenced writer and an unreachable commit exit
+75 only when nothing of the command landed. The record is per command (one
+CLI process): a commit to any partition but a run's counts, as does one that
+may have reached serve; run records do not, since a rerun makes a new run
+(`command_landed.ts`).
+
+**A run with no explicit lease stops when serve is gone.** It stops at its
+next commit, or when its model lease lapses locally, whichever comes first;
+the renewal interval and the per-renewal deadline (one attempt, ending before
+the next tick, on the lease's own HTTP connection) are unchanged, so one
+stalled renewal never ends a run. Once a commit or a lease left unrenewed
+shows serve unreachable, the rest of the command fails at once instead of
+waiting out a request timeout per call, requests in flight included
+(`latchServeUnreachable`; a read never sets it). The teardown is then
+bounded and releases the writer straight away, leaving kept entries for the
+next command. A run under an explicit lease stops the same way; the next
+command works offline under the lease and queues. Offline mode still begins
+only at a command's start.
 
 A read that cannot reach serve uses the copy as it is and warns that it may be
 out of date; in json mode it says so as a `datastore_offline` notice on

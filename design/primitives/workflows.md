@@ -2460,7 +2460,12 @@ step succeeded; falsy marks it failed with the resolved `message`. The
 **Exit code control (`--fail-on`):** `swamp workflow run` accepts
 `--fail-on <severity>` (default `low`). The run exits non-zero only if an
 assert failure is at or above the threshold. A `low` failure under
-`--fail-on high` is recorded but does not change the exit code.
+`--fail-on high` is recorded but does not change the exit code. Independent
+of `--fail-on`, a run that ends `failed` or `cancelled` always exits non-zero,
+whichever event reports it: a run whose record was already cancelled ends
+with a `completed` event carrying the `cancelled` status, and that must not
+read as success. A run cancelled because its model lease lapsed exits with
+`datastore_v3_lease_lapsed` (75 when nothing of the command landed).
 
 **JUnit XML output (`--junit`):** `swamp workflow run --junit [--out <file>]`
 emits one `<testcase>` per assert step, with a `<failure>` element when false.

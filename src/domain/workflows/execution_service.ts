@@ -981,18 +981,23 @@ class InFlightMethodRuns {
    * also start at the abort still see the run finish; a run whose cleanup
    * outlasted the grace does not wait
    */
-  async settle(graceMs: number): Promise<void> {
+  async settle(
+    graceMs: number,
+    options: { readonly quiet?: boolean } = {},
+  ): Promise<void> {
     if (this.#pending.size === 0) return;
     const remaining = (this.#abortedAt ?? performance.now()) + graceMs -
       performance.now();
     if (remaining <= 0) return;
-    getSwampLogger(["workflow", "cancel"]).info(
-      "Waiting up to {seconds}s for {count} method(s) to stop",
-      {
-        seconds: Math.ceil(remaining / 1000),
-        count: this.#pending.size,
-      },
-    );
+    if (options.quiet !== true) {
+      getSwampLogger(["workflow", "cancel"]).info(
+        "Waiting up to {seconds}s for {count} method(s) to stop",
+        {
+          seconds: Math.ceil(remaining / 1000),
+          count: this.#pending.size,
+        },
+      );
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, remaining);
@@ -1045,9 +1050,10 @@ async function awaitInFlightWork(
     awaitNestedRuns(nestedRuns),
     methodRuns.settle(graceMs),
   ]);
-  await methodRuns.settleDataWrites(
-    graceMs + DATA_WRITE_STOP_GRACE_MS - STEP_STOP_GRACE_MS,
-  );
+  const dataGraceMs = graceMs + DATA_WRITE_STOP_GRACE_MS - STEP_STOP_GRACE_MS;
+  await methodRuns.settleDataWrites(dataGraceMs);
+  // a method whose write just landed still saves its output and reports
+  await methodRuns.settle(dataGraceMs, { quiet: true });
 }
 
 /**

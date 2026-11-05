@@ -40,6 +40,12 @@ import {
 } from "../src/infrastructure/datastore_v3/explicit_model_leases.ts";
 import { ServeLeaseLapsedError } from "../src/infrastructure/datastore_v3/serve_lock.ts";
 import { PartitionsRefusedError } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import {
+  commandLanded,
+  resetCommandLandedForTesting,
+} from "../src/infrastructure/datastore_v3/command_landed.ts";
+import { exitCodeForError } from "../src/presentation/output/error_output.ts";
 import { serveUpstreamAt } from "../src/infrastructure/datastore_v3/serve_upstream_registry.ts";
 import { resetServeLeasesForTesting } from "../src/infrastructure/datastore_v3/serve_lease_registry.ts";
 import { resetLeaseRenewalsForTesting } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
@@ -580,6 +586,138 @@ Deno.test({
       );
       assertInstanceOf(refused, PartitionsRefusedError);
       assertEquals(refused.reason, "lease-lost");
+    });
+  },
+});
+
+/**
+ * a locked save whose lease an admin force-releases before the commit; with
+ * alsoDefinition the same command commits a definition too
+ */
+async function leaseLostSave(
+  scratch: Scratch,
+  serve: Serve,
+  client: Client,
+  alsoDefinition: boolean,
+): Promise<{ error: unknown; landed: boolean }> {
+  const type = serve.modelType;
+  resetCommandLandedForTesting();
+  let error: unknown;
+  await withClientEnv(
+    scratch,
+    serveEnv(serve, "alice-token"),
+    ["model", "method"],
+    async () => {
+      try {
+        const ctx = await requireInitializedRepoUnlocked({
+          repoDir: client.repoDir,
+          outputMode: "json",
+        });
+        const locks = await acquireModelLocks(
+          ctx.datastoreConfig,
+          [{ modelType: type.normalized, modelId: serve.models.web }],
+          client.repoDir,
+          ctx.syncService,
+          ctx.repoContext.catalogStore,
+          () => {},
+          { repoContext: ctx.repoContext },
+        );
+        const released = await fetch(
+          `${serve.origin}/api/v1/datastore/_default/locks`,
+          {
+            method: "DELETE",
+            headers: {
+              authorization: "Bearer carol-token",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              lockKey: `data/${type.normalized}/${serve.models.web}/.lock`,
+            }),
+          },
+        );
+        assertEquals((await released.json()).released, true);
+        error = await assertRejects(() =>
+          runCommandInRootUnit(
+            ctx.repoContext,
+            { push: undefined, release: locks.release },
+            async () => {
+              if (alsoDefinition) {
+                await ctx.repoContext.definitionRepo.save(
+                  type,
+                  Definition.create({
+                    id: "0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a42",
+                    name: "api",
+                    globalArguments: {},
+                  }),
+                );
+              }
+              await ctx.repoContext.unifiedDataRepo.save(
+                type,
+                serve.models.web,
+                dataOf("out", DATA_ID),
+                json({ by: "alice" }),
+              );
+            },
+          )
+        );
+      } finally {
+        await endCommand();
+      }
+    },
+  );
+  return { error, landed: commandLanded() };
+}
+
+const WITH_ADMIN: readonly GrantSpec[] = [
+  ...MEMBER,
+  { user: "carol", actions: ["admin"], kind: "access", pattern: "*" },
+];
+
+Deno.test({
+  name:
+    "serve upstream leases: a commit refused for a lost lease exits 75 when nothing of the command landed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: WITH_ADMIN });
+      const alice = await scratch.client("a");
+      const { error, landed } = await leaseLostSave(
+        scratch,
+        serve,
+        alice,
+        false,
+      );
+      assertInstanceOf(error, PartitionsRefusedError);
+      assertEquals(error.refusals.map((r) => r.reason), ["lease-lost"]);
+      assertEquals(landed, false);
+      assertEquals(exitCodeForError(error, { commandLanded: landed }), 75);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream leases: a commit refused for a lost lease exits 1 when another change of the command landed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: WITH_ADMIN,
+        managedConfig: true,
+      });
+      const alice = await scratch.client("a", { managedConfig: true });
+      const { error, landed } = await leaseLostSave(
+        scratch,
+        serve,
+        alice,
+        true,
+      );
+      assertInstanceOf(error, PartitionsRefusedError);
+      assertEquals(error.refusals.map((r) => r.reason), ["lease-lost"]);
+      assertEquals(landed, true);
+      assertEquals(exitCodeForError(error, { commandLanded: landed }), 1);
     });
   },
 });

@@ -33,6 +33,11 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { WriterFencedError } from "../src/domain/datastore_v3/writer_lease.ts";
 import {
+  commandLanded,
+  resetCommandLandedForTesting,
+} from "../src/infrastructure/datastore_v3/command_landed.ts";
+import { exitCodeForError } from "../src/presentation/output/error_output.ts";
+import {
   AutoDefinitionChanges,
   recordKeyOf,
 } from "../src/domain/datastore_v3/repository_changes.ts";
@@ -123,6 +128,39 @@ Deno.test("v3 writer lease: a writer whose lease another process took over commi
     assertEquals(await commitFences(datastorePath), before);
     await taker.release();
   });
+});
+
+/** a writer taken over before (or after) its command's first commit landed */
+async function fencedExit(landFirst: boolean): Promise<number> {
+  let exit = 0;
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    await saveThroughA(repos, "seed");
+    resetCommandLandedForTesting();
+    if (landFirst) await saveThroughA(repos, "first");
+    const taker = await plantV3WriterLease(datastorePath, { pid: Deno.pid });
+    const store = SqliteCommitStore.open(join(datastorePath, "commits.db"));
+    try {
+      await store.raiseWriterFence(taker.fence);
+    } finally {
+      await store.close();
+    }
+    const error = await assertRejects(() => saveThroughA(repos, "after"));
+    const refusal = fencedRefusal(error);
+    assert(refusal !== undefined, `not a fenced refusal: ${error}`);
+    assertEquals(refusal.reason, "taken-over");
+    assertEquals(commandLanded(), landFirst);
+    exit = exitCodeForError(refusal, { commandLanded: commandLanded() });
+    await taker.release();
+  });
+  return exit;
+}
+
+Deno.test("v3 writer lease: a writer taken over before its command landed anything exits 75", async () => {
+  assertEquals(await fencedExit(false), 75);
+});
+
+Deno.test("v3 writer lease: a writer taken over after its command landed a commit exits 1", async () => {
+  assertEquals(await fencedExit(true), 1);
 });
 
 Deno.test("v3 writer lease: a holder whose lease was force-released stops committing before anyone takes over", async () => {

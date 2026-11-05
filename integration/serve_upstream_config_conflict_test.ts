@@ -26,11 +26,15 @@ import { configEditConflictOf } from "../src/domain/datastore_v3/config_edit_con
 import { runAsUserConfigEdit } from "../src/infrastructure/datastore_v3/config_edit_scope.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
+import { requireInitializedRepo } from "../src/cli/repo_context.ts";
+import { runManagedConfigMutation } from "../src/cli/managed_config_sync.ts";
 import {
   type Client,
+  endCommand,
   readCommand,
   type Scratch,
   serveEnv,
+  withClientEnv,
   withScratch,
   writeCommand,
   writeInOpenCommand,
@@ -173,5 +177,103 @@ Deno.test({
       assertConflict(error);
       assertEquals(await editedBy(scratch, a, env, type), "A");
     });
+  },
+});
+
+/**
+ * B's edit races A's through serve the way an edit command runs: a result is
+ * printed before the root commits, and serve refuses the commit
+ */
+async function racedEditOutput(
+  outputOnlyOnSuccess: boolean,
+): Promise<{ error: unknown; stdout: string[] }> {
+  const stdout: string[] = [];
+  let error: unknown;
+  await withScratch(async (scratch) => {
+    const serve = await scratch.serve({ managedConfig: true });
+    const bucket = scratch.bucket();
+    const a = await scratch.client("a", { bucket, managedConfig: true });
+    const b = await scratch.client("b", { bucket, managedConfig: true });
+    const env = serveEnv(serve, "alice-token");
+    const type = serve.modelType;
+    await userEdit(
+      scratch,
+      a,
+      env,
+      (repos) => repos.definitionRepo.save(type, api("seed")),
+    );
+    assertEquals(await editedBy(scratch, b, env, type), "seed");
+    const outside = AsyncResource.bind(
+      <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    ) as <T>(fn: () => Promise<T>) => Promise<T>;
+    const log = console.log;
+    console.log = (...args: unknown[]) => stdout.push(args.join(" "));
+    try {
+      await runAsUserConfigEdit(() =>
+        withClientEnv(scratch, env, ["model", "edit"], async () => {
+          try {
+            const ctx = await requireInitializedRepo({
+              repoDir: b.repoDir,
+              outputMode: "json",
+            });
+            await runManagedConfigMutation(
+              ctx.repoContext,
+              undefined,
+              // read only to publish through a v2 sync service; there is none
+              { type: "filesystem", path: b.repoDir },
+              null,
+              "model edit",
+              async () => {
+                await outside(() =>
+                  runAsUserConfigEdit(() =>
+                    writeInOpenCommand(
+                      scratch,
+                      a,
+                      env,
+                      (aRepos) => aRepos.definitionRepo.save(type, api("A")),
+                    )
+                  )
+                );
+                await ctx.repoContext.definitionRepo.save(type, api("B"));
+                console.log(JSON.stringify({ status: "updated" }));
+              },
+              { outputOnlyOnSuccess },
+            );
+          } finally {
+            await endCommand();
+          }
+        })
+      );
+    } catch (thrown) {
+      error = thrown;
+    } finally {
+      console.log = log;
+    }
+    assertEquals(await editedBy(scratch, a, env, type), "A");
+  });
+  return { error, stdout };
+}
+
+Deno.test({
+  name:
+    "serve upstream config conflict: an edit serve refuses at its commit prints no result",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const { error, stdout } = await racedEditOutput(true);
+    assertConflict(error);
+    assertEquals(stdout, []);
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream config conflict: without the edit option the held result is still printed before the refusal",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const { error, stdout } = await racedEditOutput(false);
+    assertConflict(error);
+    assertEquals(stdout, [JSON.stringify({ status: "updated" })]);
   },
 });

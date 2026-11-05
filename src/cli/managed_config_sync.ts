@@ -142,6 +142,7 @@ export async function runManagedConfigMutation<T>(
   marker: RepoMarkerData | null,
   reason: string,
   mutate: () => Promise<T>,
+  options: { readonly outputOnlyOnSuccess?: boolean } = {},
 ): Promise<T> {
   const publishes = syncService !== undefined &&
     marker?.datastore?.managedConfig === true;
@@ -152,6 +153,9 @@ export async function runManagedConfigMutation<T>(
         ? () => publishManagedConfigChanges(syncService, datastoreConfig)
         : undefined,
       pushWhen: "completed",
+      ...(options.outputOnlyOnSuccess === true
+        ? { outputOnlyOnSuccess: true }
+        : {}),
     },
     async (root) => {
       const value = await mutate();

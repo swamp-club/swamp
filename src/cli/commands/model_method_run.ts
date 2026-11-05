@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeLeaseLapsedError } from "../../infrastructure/datastore_v3/serve_lock.ts";
 import {
   checkLastEvaluation,
   lastEvaluatedDefinition,
@@ -1018,6 +1019,12 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 throw error;
               },
             );
+          // a run the lapse stopped exits as the lapse, once its root committed;
+          // one that finished first keeps its own exit
+          const lapsed = modelLocks?.leaseLost?.reason;
+          if (lapsed instanceof ServeLeaseLapsedError && Deno.exitCode === 1) {
+            throw lapsed;
+          }
           if (!finished) return;
           if (publishFailure !== undefined) {
             const { error } = publishFailure;

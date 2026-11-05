@@ -244,6 +244,7 @@ value for them other than the server's defaults, and stores those defaults.`,
             }),
             renderer.handlers(),
           ),
+        { outputOnlyOnSuccess: true },
       ), `the vault definition "${editNameOrId}"`);
 
   // a vault is edited on a copy and saved like a piped edit so it is committed;
