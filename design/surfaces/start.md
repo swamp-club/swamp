@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-23 @ 9a065cc6
+last-verified: 2026-11-04 @ 4b6e263c
 ---
 
 # swamp start
@@ -166,7 +166,10 @@ behavior and a first run.
 ## Security
 
 - The server binds `127.0.0.1` on an ephemeral port; the address is never
-  configurable.
+  configurable. With the Go hub installed, the page is served by the hub
+  instead, and the start server is reached only through it: the token is the
+  invocation's page lease, and the hub bridges `/start/ws` and `/start/ping`
+  to this process's server ([local dashboard](./local-dashboard.md#the-go-hub)).
 - A 32-byte one-time token travels in the URL fragment, then as the
   `bearer.<token>` WebSocket subprotocol, compared in constant time and echoed
   on upgrade.
@@ -226,4 +229,5 @@ when nothing opens, the page shows a command to copy.
 No method runs by Swamp, no credentials in the browser, no Git, no shared
 datastore, no change to repo resolution or the harness allowlists. A workspace's
 dashboard is the [local dashboard](./local-dashboard.md): the start server also
-serves it, and "Open dashboard" leads there once a workspace is open.
+serves it (or the Go hub, when installed), and "Open dashboard" leads there once
+a workspace is open.

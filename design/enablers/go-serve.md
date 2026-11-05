@@ -292,9 +292,10 @@ a rollback. This adapter introduces no data migration.
 `swamp-serve hub` fronts every workspace in the user's registry at
 `/w/<workspace>/`, one on-demand engine per workspace. A repository-less control
 engine resolves workspace names and trust, so Go still reads no swamp
-persistence. With `--admin-token-file`, the hub also serves the local dashboard
-in place of the TypeScript `workspace_hub.ts` and `swamp dashboard --child`
-pair.
+persistence. With `--record`, the hub also serves the local dashboard in place
+of the TypeScript `workspace_hub.ts` and `swamp dashboard --child` pair, for
+`swamp start` and `swamp dashboard`
+([local dashboard](../surfaces/local-dashboard.md#the-go-hub)).
 
 **Caller classes.** Each engine session has a class, fixed when it opens:
 
@@ -321,8 +322,8 @@ is never treated as a page because it lacks a cli token.
 
 **Engine modes.** The hub asks for pages in `hello`, and only then may an engine
 fall back. A repository that `local-v1` refuses before its first write (a
-non-filesystem or format-3 datastore, managed config, or a refused `serve.yaml`)
-opens read-only, as the dashboard child does. Read-only engines take no v3
+non-filesystem or format-3 datastore, managed config, a refused `serve.yaml`, or
+no serve admins for token authentication) opens read-only, as the dashboard child does. Read-only engines take no v3
 writer lease, perform none of the full mode's startup writes, and admit page
 sessions only. A cli caller is refused with 403 `unsupported_profile` before its
 credential is sent. An untrusted workspace's engine starts with
@@ -331,12 +332,31 @@ resolve, and an extension-backed datastore refuses with `workspace_untrusted`.
 cli traffic to an untrusted workspace stays refused. A change of trust starts a
 new generation.
 
+**Hub record.** Once listening, the hub writes `--record` (0600, replaced by
+rename, never through a symlink): pid, port, a fresh admin token, its own
+version, and the engine executable and build the control engine reported. It
+removes the record on exit only if the record still names its pid.
+
 **Page leases.** A lease is 32 random bytes in base64url, kept only in hub
 memory under its SHA-256 digest. Each lease is scoped to every workspace or to
-exactly one. The admin API, served only to loopback peers with the admin token
-from `--admin-token-file` (written 0600, never through a symlink), issues
-leases with `POST /hub/leases` and revokes them with `DELETE /hub/leases/<id>`.
-Revoking a lease closes its sockets and health streams.
+exactly one. A one-workspace lease may name a folder (`path`, checked by the
+control engine's `workspace.inspect`). That workspace is then served from that
+folder, trusted, for this lease only, by an engine keyed by the realpath that
+every lease bound to it shares. A lease may have a **backend**,
+`http://127.0.0.1:<port>` only, which receives the bridged `/start/ws` socket
+and `/start/ping`. A lease not renewed for `--lease-ttl` (default one minute) is
+revoked. Revoking a lease closes its sockets, health streams and start sockets.
+
+**Admin API.** It is served only to loopback peers with the record's admin
+token:
+
+- `POST /hub/leases` (`{scope, workspace?, path?}`) issues a lease.
+- `PUT /hub/leases/<id>/backend` sets its backend.
+- `GET /hub/leases/<id>` renews it and returns its open dashboard pages.
+- `DELETE /hub/leases/<id>` revokes it.
+- `GET /hub/ping` returns the record without its token.
+- `POST /hub/shutdown` stops a hub started with `--exit-when-idle` that holds
+  no lease, and answers 409 otherwise.
 
 **Page routes.** Every page route checks, in this order and before anything
 resolves or starts:
@@ -344,7 +364,8 @@ resolves or starts:
 1. The peer is loopback, else 404.
 2. `Host` is exactly `127.0.0.1:<port>` or `localhost:<port>`, else 421.
 3. The lease is valid, else 401.
-4. The lease's scope covers the workspace, else 403.
+4. The lease's scope covers the workspace, else 404 `No workspace named
+   <workspace>`, as for an unknown workspace.
 5. For WebSockets only, `Origin` is absent or exactly the hub's own origin,
    else 403.
 
@@ -361,8 +382,22 @@ The routes are:
   the engine never idles out under a watching tab.
 - `?compress=gzip` sockets get frames of 16 KiB or more as binary gzip.
 
+Outside any workspace, after the loopback and `Host` checks:
+
+- `/` redirects to `/dashboard/start`.
+- `/dashboard/…` needs no lease. The control engine's `asset.get` answers it in
+  chunks that fit a control reply, with the SPA fallback to `index.html`.
+  Immutable files stay in memory, up to 64 MiB.
+- `GET /api/local/workspaces` needs a lease. It lists every workspace for an
+  all-workspaces lease, else the lease's one.
+- `/start/ws` and `/start/ping` need a lease with a backend. The socket also
+  needs the exact origin, and is bridged frame by frame.
+
 An engine stays up for `--page-idle-grace` (default 10 minutes) after its last
 page session closes. Forced least-recently-used eviction ignores the grace.
+With `--exit-when-idle`, the hub stops once no lease and no engine has been
+left for that long. `swamp hub daemon enable` installs the hub as a user
+service (`swamp-hub.service` / `club.swamp.hub`) without it.
 
 ## Verification and release evidence
 

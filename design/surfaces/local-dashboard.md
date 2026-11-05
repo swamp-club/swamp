@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-23 @ 268af553
+last-verified: 2026-11-04 @ 4b6e263c
 ---
 
 # Local dashboard
@@ -23,10 +23,61 @@ reached two ways:
   command's only result is a page in a browser. `swamp start --json` keeps its
   read-only inspection.
 
-Both run the same loopback server, the [start](./start.md) server, which this
-page calls the **hub**.
+Both are served by the user's **hub**. When `swamp-serve` sits next to the
+swamp executable (or `SWAMP_SERVE_BINARY` names it), that is the Go hub, one
+long-lived process per user shared by every invocation (see
+[The Go hub](#the-go-hub)). Otherwise each invocation runs its own TypeScript
+hub inside the [start](./start.md) server, as described from
+[Why this shape](#why-this-shape) on. Phase 4 removes the TypeScript hub.
+
+## The Go hub
+
+`swamp start` and `swamp dashboard` find the hub through
+`<dataDir>/hub/hub.json`, which the hub writes once it listens (mode 0600,
+never through a symlink): its pid, port, admin token and the swamp executable
+it runs as its engines. A record whose hub is gone, or that runs another swamp
+build, is not reused. A hub that swamp launched for another build is asked to
+stop once no page uses it, and a new one is launched. The launch is detached,
+on `127.0.0.1:0`, with `--exit-when-idle 60s`, under
+`<dataDir>/hub/launch.lock` so two invocations never both launch one. A hub run
+by `swamp hub daemon enable` (user service `swamp-hub.service` /
+`club.swamp.hub`, fixed address `127.0.0.1:9870`) never exits when idle.
+
+Each invocation takes a **page lease** from the hub's admin API. The lease's
+token is the page token in the printed URL, and Ctrl-C (or any exit) revokes
+it.
+
+- `swamp start` leases every workspace. Its start server still runs in the
+  invoking process, for the `start.*` flows and workspace claims, and is the
+  lease's **backend**: the hub bridges `/start/ws` and `/start/ping` to it. The
+  hub reports the lease's open dashboard tabs when the invocation renews it,
+  and the start server counts them as open pages.
+- `swamp dashboard` leases its one workspace and runs no server. A registered
+  folder is served under its workspace name. Anything else is bound to the
+  lease by its realpath and served under its folder name made routable
+  (lowercased, other characters to `-`). It is trusted, since the user ran
+  swamp there. The command ends paused after 10 minutes with no tab open.
+
+The hub serves `/` (redirect to `/dashboard/start`), the bundle under
+`/dashboard/` (fetched from the control engine in chunks and kept in memory
+when immutable) and `/api/local/workspaces` (every registered workspace for
+an all-workspaces lease, else the lease's one, with `switchable: false`). The
+`/w/<workspace>/` routes are the hub's page routes
+([go-serve](../enablers/go-serve.md#hub-dashboard-pages)): one engine per
+workspace, read-only when `local-v1` refuses the repo (any repo with no serve
+admins, for instance), so the dashboard child is not used. A lease asking for
+a workspace outside its scope gets the same `No workspace named <name>` 404 as
+an unknown one. An invocation that stops renewing loses its lease after a
+minute. The hub exits a minute after no lease and no engine remain.
+
+On the shared hub, `/` and `/dashboard/start` load for every page, whatever
+command opened it. A `swamp dashboard` lease has no backend, so its token
+cannot open a start page socket.
 
 ## Why this shape
+
+The rest of this page describes the TypeScript hub, which is used when
+`swamp-serve` is not installed.
 
 **One swamp process serves one repo.** The extension type registries (models,
 vaults, datastores, reports, webhooks) are process-wide and bound to one
@@ -234,17 +285,22 @@ re-read once.
 | Piece | Path |
 | --- | --- |
 | Command | `src/cli/commands/dashboard.ts` (hub mode via `runStart`, `--child` mode) |
-| Hub | `src/serve/local/workspace_hub.ts`, mounted by `src/serve/start/start_server.ts` (`hub` option) |
+| Go hub discovery and leases | `src/infrastructure/process/hub_binary.ts`, `hub_launcher.ts`, `hub_probe.ts`, `src/infrastructure/persistence/hub_record.ts`, `src/infrastructure/http/hub_admin_client.ts`, `src/serve/local/hub_lease_session.ts` |
+| Go hub | `packages/serve-go/internal/hub/` (`admin.go`, `leases.go`, `site.go`), `internal/gateway/local.go` |
+| Hub service | `src/cli/commands/hub.ts` |
+| TypeScript hub | `src/serve/local/workspace_hub.ts`, mounted by `src/serve/start/start_server.ts` (`hub` option) |
 | Child server | `src/serve/local/local_dashboard_server.ts` |
 | Actions | `src/serve/local/local_actions.ts` |
 | SPA | `packages/dashboard/src/client/workspace_path.ts`, `client/workspace_list.ts`, `components/WorkspaceSwitcher.tsx`, `views/ServeOnlyStates.tsx` |
 | Fixed repo | `src/serve/local/fixed_repo.ts` (`resolveFixedRepo`) |
-| Tests | `integration/workspace_hub_test.ts`, `integration/local_dashboard_server_test.ts`, `integration/start_server_test.ts` (dashboard tab lifetime), unit tests beside each file |
+| Tests | `integration/workspace_hub_test.ts`, `integration/local_dashboard_server_test.ts`, `integration/start_server_test.ts` (dashboard tab lifetime, hub-held pages), `integration/hub_launcher_test.ts`, `packages/serve-go/internal/hub/local_test.go`, unit tests beside each file |
 
 ## Not yet
 
-- A second `swamp dashboard` or `swamp start` starts its own hub instead of
-  reusing a running one. Two are safe side by side, only redundant.
+- Releases do not ship `swamp-serve`, so an installed swamp uses the TypeScript
+  hub unless `SWAMP_SERVE_BINARY` names one.
+- On the Go hub the workspace switcher lists workspaces in registry order, not
+  by most recent task as the TypeScript hub does.
 - On a remote datastore a child reads the local cache as CLI read commands do
   (`requireInitializedRepoReadOnly` does not pull); actions sync, reads may lag.
 - Windows: the spawns follow the CLI's own patterns but are not exercised.
