@@ -55,17 +55,24 @@ export function setConsoleGuardJsonMode(enabled: boolean): void {
   _jsonMode = enabled;
 }
 
+function inspectArg(a: unknown): string {
+  return Deno.inspect(a, {
+    strAbbreviateSize: Infinity,
+    breakLength: Infinity,
+  });
+}
+
 function formatArg(a: unknown): string {
   if (typeof a === "string") return a;
   if (typeof a === "number") return String(a);
+  // JSON renders these as {}, losing an error's message and stack
+  if (a instanceof Error || a instanceof Map || a instanceof Set) {
+    return inspectArg(a);
+  }
   try {
-    return JSON.stringify(a) ??
-      Deno.inspect(a, { strAbbreviateSize: Infinity, breakLength: Infinity });
+    return JSON.stringify(a) ?? inspectArg(a);
   } catch {
-    return Deno.inspect(a, {
-      strAbbreviateSize: Infinity,
-      breakLength: Infinity,
-    });
+    return inspectArg(a);
   }
 }
 
@@ -151,8 +158,13 @@ export async function withConsoleGuard<T>(
   if (effectiveJsonMode) allActiveLogs.add(logs);
   if (activeGuards === 0) {
     for (const method of CAPTURED_METHODS) {
-      const original = console[method] as ConsoleMethod;
-      preGuardConsole.set(method, original);
+      preGuardConsole.set(method, console[method] as ConsoleMethod);
+    }
+    for (const method of CAPTURED_METHODS) {
+      const original = preGuardConsole.get(method)!;
+      const target = LOG_MODE_TARGET[method];
+      // bound now: a reference held past the last guard outlives the map
+      const logModeWrite = target ? preGuardConsole.get(target)! : original;
       // A line cannot be attributed to one of several concurrent methods, so
       // every active guard records it, but it reaches stderr only once.
       // deno-lint-ignore no-explicit-any
@@ -164,10 +176,7 @@ export async function withConsoleGuard<T>(
         const line = renderLine(method, args);
         if (line === undefined) return;
         if (allActiveLogs.size === 0) {
-          const target = LOG_MODE_TARGET[method];
-          (target ? preGuardConsole.get(target)! : original)(
-            runFileSink.redactActive(line),
-          );
+          logModeWrite(runFileSink.redactActive(line));
           return;
         }
         for (const logArray of allActiveLogs) {
