@@ -231,3 +231,48 @@ Deno.test("extractExtensionNameFromPath: resolves through a symlinked repo direc
     );
   });
 });
+
+Deno.test("extractExtensionNameFromPath: a manifest.yaml naming another extension is package content, not an owner", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    const source = await installPackage(
+      pulledRoot,
+      "@acme/tools",
+      "models/templates/gen.ts",
+    );
+    await Deno.writeTextFile(
+      join(
+        pulledRoot,
+        "@acme",
+        "tools",
+        "models",
+        "templates",
+        "manifest.yaml",
+      ),
+      'name: "@acme/fixture"\n',
+    );
+    assertEquals(extractExtensionNameFromPath(source, repo), "@acme/tools");
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: a directory named manifest.yaml is not an owner", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    const source = await installPackage(
+      pulledRoot,
+      "@acme/tools",
+      "models/templates/gen.ts",
+    );
+    await Deno.mkdir(
+      join(
+        pulledRoot,
+        "@acme",
+        "tools",
+        "models",
+        "templates",
+        "manifest.yaml",
+      ),
+    );
+    assertEquals(extractExtensionNameFromPath(source, repo), "@acme/tools");
+  });
+});

@@ -19,6 +19,7 @@
 
 import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import { parse as parseYaml } from "@std/yaml";
 import {
   bundleExtension,
   fixCjsEsmInterop,
@@ -192,7 +193,8 @@ export function extractExtensionNameFromPath(
 
 /**
  * an extension is installed at <pulled root>/<name>/manifest.yaml, so the
- * nearest manifest above the source names its owner, however many segments
+ * nearest manifest above the source that names its own directory is the owner;
+ * any other manifest.yaml in the tree is package content
  */
 function nearestManifestName(
   root: string,
@@ -201,14 +203,22 @@ function nearestManifestName(
   const minSegments = segments[0].startsWith("@") ? 2 : 1;
   for (let depth = segments.length - 1; depth >= minSegments; depth--) {
     const dirSegments = segments.slice(0, depth);
-    try {
-      Deno.lstatSync(join(root, ...dirSegments, "manifest.yaml"));
-      return dirSegments.join("/");
-    } catch {
-      // Not here; walk up.
-    }
+    const name = dirSegments.join("/");
+    if (manifestDeclaresName(join(root, ...dirSegments), name)) return name;
   }
   return undefined;
+}
+
+function manifestDeclaresName(dir: string, name: string): boolean {
+  const manifestPath = join(dir, "manifest.yaml");
+  try {
+    if (!Deno.lstatSync(manifestPath).isFile) return false;
+    const parsed = parseYaml(Deno.readTextFileSync(manifestPath));
+    return typeof parsed === "object" && parsed !== null &&
+      (parsed as Record<string, unknown>).name === name;
+  } catch {
+    return false;
+  }
 }
 
 /**
