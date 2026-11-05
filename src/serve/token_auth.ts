@@ -172,7 +172,6 @@ export interface TokenRefusalNodeState {
 
 let nodeState: (() => TokenRefusalNodeState) | undefined;
 
-/** serve registers it at startup and clears it at shutdown */
 export function setTokenRefusalNodeState(
   state: (() => TokenRefusalNodeState) | undefined,
 ): void {

@@ -21,7 +21,6 @@ export const FOLLOWER_READY_WAIT_MS = 30_000;
 
 export const FOLLOWER_READY_RETRY_MS = 250;
 
-/** how often a follower still behind past the first wait says so again */
 export const FOLLOWER_READY_STALL_LOG_MS = 60_000;
 
 export interface FirstFollowerCatchUpDeps {

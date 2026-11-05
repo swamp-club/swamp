@@ -40,11 +40,7 @@ import {
 
 const ignore = SIDECAR_TESTS_IGNORED;
 
-/**
- * signals the sidecar's whole process group, as a systemd stop does to every
- * process in the unit's cgroup, and waits for Litestream's own final sync and
- * exit
- */
+// as a systemd stop signals every process in the unit's cgroup
 async function signalSidecarWithServe(env: ReplicationEnv): Promise<void> {
   const presence = await presenceOf(env);
   if (presence?.litestreamPid === undefined) {

@@ -522,7 +522,7 @@ async function handle(request: NodeRequest): Promise<unknown> {
       // One check of serve's readiness rule: the test asks again after the
       // feed moves.
       return (await ctx!.followerCatchUp?.() ?? "caught-up") === "caught-up" &&
-          (wiring?.effectsCurrent() ?? true)
+          (wiring?.effectsReachNow()() ?? true)
         ? "caught-up"
         : "behind";
     case "pids":

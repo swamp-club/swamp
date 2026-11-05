@@ -3337,7 +3337,7 @@ export const serveCommand = new Command()
     const v3Follows = v3Role === "follower";
     let serveLeadership: ServeLeadership | undefined;
     let serveFollowerFeed: FollowerFeed | undefined;
-    let serveFollowerEffectsCurrent: (() => boolean) | undefined;
+    let serveFollowerEffectsReachNow: (() => () => boolean) | undefined;
     // the leader's timers a follower starts once it first leads; a leader that
     // loses the lead shuts down, which stops them
     const leaderStarts: Array<() => void> = [];
@@ -8444,7 +8444,7 @@ export const serveCommand = new Command()
         // it is refused as behind
         connectionCtx.followerCatchUp = () => followerFeed.caughtUp();
         serveFollowerFeed = followerFeed;
-        serveFollowerEffectsCurrent = () => followerPolicy.effectsCurrent();
+        serveFollowerEffectsReachNow = () => followerPolicy.effectsReachNow();
       }
       const leadership = new ServeLeadership({
         instanceId,
@@ -8998,11 +8998,18 @@ export const serveCommand = new Command()
     if (
       followerFeedAtBoot !== undefined && serveLeadership?.role === "follower"
     ) {
-      const effectsCurrent = serveFollowerEffectsCurrent;
+      const effectsReachNow = serveFollowerEffectsReachNow;
+      let effectsReached: (() => boolean) | undefined;
       await awaitFirstFollowerCatchUp({
-        caughtUp: async () =>
-          await followerFeedAtBoot.caughtUp() === "caught-up" &&
-          (effectsCurrent?.() ?? true),
+        caughtUp: async () => {
+          if (effectsReached === undefined) {
+            if (await followerFeedAtBoot.caughtUp() !== "caught-up") {
+              return false;
+            }
+            effectsReached = effectsReachNow?.() ?? (() => true);
+          }
+          return effectsReached();
+        },
         ended: () => shuttingDown || serveLeadership?.role !== "follower",
         stalled: (waitedMs) =>
           logger.warn(

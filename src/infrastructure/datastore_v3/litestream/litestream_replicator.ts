@@ -168,11 +168,7 @@ export interface ReplicationHandle {
     deadlineMs: number,
     options?: SyncOptions,
   ): Promise<string>;
-  /**
-   * confirms with no sidecar, for one already gone: restores the replica and
-   * passes only when readCursor of the restored file reaches localCursor;
-   * then publishes and checks the lease as sync does
-   */
+  /** passes only when readCursor of the restored replica reaches localCursor */
   confirmFromReplica(
     readCursor: (restored: string) => number | undefined,
     localCursor: number,

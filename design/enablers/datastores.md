@@ -8312,8 +8312,9 @@ nothing was taken, so a retry is safe), in one place per surface:
 - Readiness: a node that starts as a follower with a leader feed reports
   `/ready` only once its copy holds the head the leader names and the
   follower's commit effects (policy snapshot, config) are applied through
-  that copy (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`;
-  `effectsCurrent`, `src/serve/follower_policy_wiring.ts`). A token check reads
+  what its read model held at that moment, so commits still landing cannot
+  hold it back (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`;
+  `effectsReachNow`, `src/serve/follower_policy_wiring.ts`). A token check reads
   the token record from that copy, so a node ready before it would refuse
   tokens the other node accepts. The wait has no timeout: past 30 seconds it
   logs where the copy stands, then again every minute, and stays 503; it stops
