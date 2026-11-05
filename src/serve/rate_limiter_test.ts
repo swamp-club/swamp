@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   checkFailedAttempts,
   checkIpBurst,
@@ -510,4 +512,33 @@ Deno.test("checkPrincipalRate: the bucket map stays bounded, evicting idle bucke
     assertEquals(checkPrincipalRate("p-busy", later).allowed, true);
   }
   assertEquals(checkPrincipalRate("p-busy", later).allowed, false);
+});
+
+Deno.test("limitFailedAttempts: the failure that locks a key out is logged once, naming the key and count", async () => {
+  const key = `token:lockout-${crypto.randomUUID()}`;
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "rate-limit"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    for (let i = 0; i < 7; i++) {
+      await limitFailedAttempts(key, () => Promise.resolve({ ok: false }));
+    }
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  const lockouts = records.filter((record) => record.properties.key === key);
+  assertEquals(lockouts.length, 1);
+  assertEquals(lockouts[0].properties.count, 5);
+  assert((lockouts[0].properties.seconds as number) > 0);
 });

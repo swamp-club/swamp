@@ -86,6 +86,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=${args.join(" ")}
 ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
 WorkingDirectory=${escapedRepoDir}
 Restart=always
 RestartSec=10${envBlock}

@@ -41,6 +41,11 @@ export interface FollowerPolicyWiring {
   readonly commitFeed: V3CommitFeedSource;
   gate(leadership: FollowerGate): FollowerGate;
   barrier(feedBarrier: () => Promise<unknown>): () => Promise<void>;
+  /**
+   * pinned to what the read model holds now, so a feed that keeps landing
+   * commits cannot keep it from passing
+   */
+  effectsReachNow(): () => boolean;
 }
 
 export function wireFollowerPolicy(
@@ -74,6 +79,12 @@ export function wireFollowerPolicy(
         leadership.isStale() ||
         (leadership.role === "follower" && !effects.policyKnown()),
     }),
+    // a follower's effects follow its read model, which the feed's catch-up
+    // brings up with the copy
+    effectsReachNow: () => {
+      const target = source.datastore.readModel.cursor();
+      return () => effects.policyKnown() && effects.appliedCursor() >= target;
+    },
     barrier: (feedBarrier) => async () => {
       await feedBarrier();
       if (!deps.isFollower()) return;

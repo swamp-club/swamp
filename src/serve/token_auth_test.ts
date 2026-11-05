@@ -28,8 +28,11 @@ import {
   readServerTokenRecord,
   type ServerTokenAuthDeps,
   ServerTokenNotFoundError,
+  setTokenRefusalNodeState,
   splitServerToken,
 } from "./token_auth.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   type ServerToken,
@@ -916,4 +919,77 @@ Deno.test("authenticateServerToken: a cached secret is read again after a minute
   nowMs += 1;
   assertEquals((await auth("test-token.secret-value")).ok, true);
   assertEquals(reads, 2);
+});
+
+async function capturingTokenAuthLogs(
+  fn: () => Promise<void>,
+): Promise<LogRecord[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "token-auth"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records;
+}
+
+Deno.test("authenticateServerToken: a refusal log names the reason and the node's uptime, readiness, role and catch-up", async () => {
+  const catchUp = { live: true, applied: 41, lastAskedLeaderHead: 44 };
+  setTokenRefusalNodeState(() => ({
+    uptimeSeconds: 21,
+    ready: true,
+    role: "follower",
+    catchUp,
+  }));
+  try {
+    const records = await capturingTokenAuthLogs(async () => {
+      await authenticateWithDeps(
+        "missing-token.secret",
+        makeAuthDeps({
+          readToken: () =>
+            Promise.reject(new ServerTokenNotFoundError("missing-token")),
+        }),
+      );
+    });
+    const refusal = records.find((record) =>
+      record.rawMessage.toString().startsWith("Token authentication failed")
+    );
+    assertEquals(refusal?.properties.reason, "no-definition");
+    assertEquals(refusal?.properties.node, {
+      uptimeSeconds: 21,
+      ready: true,
+      role: "follower",
+      catchUp,
+    });
+    assertEquals(
+      JSON.stringify(refusal?.properties).includes('secret"'),
+      false,
+    );
+  } finally {
+    setTokenRefusalNodeState(undefined);
+  }
+});
+
+Deno.test("authenticateServerToken: a refusal log without serve's node state still logs the reason", async () => {
+  const records = await capturingTokenAuthLogs(async () => {
+    await authenticateWithDeps("test-token.wrong-secret", makeAuthDeps());
+  });
+  const refusal = records.find((record) =>
+    record.rawMessage.toString().startsWith("Token authentication failed")
+  );
+  assertEquals(refusal?.properties.reason, "secret-mismatch");
+  assertEquals(refusal?.properties.node, null);
 });

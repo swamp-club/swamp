@@ -219,3 +219,40 @@ Deno.test("wireFollowerPolicy: a forwarded write's barrier returns once its comm
     await t.wiring.effects.stop();
   }
 });
+
+Deno.test("wireFollowerPolicy: a readiness check passes once the policy is known and applied through the read model as it stood when taken", async () => {
+  let fail = false;
+  const t = setup({ current: "follower" }, () => fail);
+  try {
+    assertEquals(t.wiring.effectsReachNow()(), true);
+    t.store.land(GRANT);
+    t.store.applied();
+    const reached = t.wiring.effectsReachNow();
+    assertEquals(reached(), false);
+    fail = true;
+    await t.catchUp();
+    assertEquals(reached(), false, "an unknown policy never passes");
+    fail = false;
+    await t.catchUp();
+    assertEquals(reached(), true);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
+
+Deno.test("wireFollowerPolicy: commits landing after a readiness check was taken do not hold it back", async () => {
+  const t = setup({ current: "follower" });
+  try {
+    t.store.land(GRANT);
+    t.store.applied();
+    const reached = t.wiring.effectsReachNow();
+    await t.catchUp();
+    // the feed keeps landing commits the effects have not reached yet
+    t.store.land(GRANT);
+    t.store.applied();
+    assertEquals(t.wiring.effectsReachNow()(), false);
+    assertEquals(reached(), true);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});
