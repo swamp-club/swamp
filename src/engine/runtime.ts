@@ -19,7 +19,7 @@
 
 import type { Principal } from "../domain/access/principal.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
-import { handleMessage } from "../serve/connection.ts";
+import { handleMessage, validateServerRequest } from "../serve/connection.ts";
 import {
   type ConnectionContext,
   removeConnection,
@@ -30,7 +30,22 @@ import {
   setConnectionToken,
 } from "../serve/handlers/shared.ts";
 import type { SessionReply } from "../serve/session.ts";
-import type { ServerMessage } from "../serve/protocol.ts";
+import { HTTP_REQUEST_TYPES, type ServerMessage } from "../serve/protocol.ts";
+import {
+  type CallerClass,
+  CallerClassPolicy,
+  isCallerClass,
+  pageRefusal,
+} from "../serve/caller_class.ts";
+import {
+  FORWARDED_READS,
+  isDelegatedAction,
+} from "../serve/local/local_actions.ts";
+import {
+  type ActionRunner,
+  runDelegatedAction,
+  SWAMP_CLI_ACTIONS,
+} from "../serve/local/delegated_actions.ts";
 import {
   authenticateServerToken,
   type ServerTokenAuthDeps,
@@ -46,16 +61,36 @@ import { validateEngineMethodRun } from "./profile.ts";
 
 interface Session {
   readonly reply: SessionReply;
-  readonly principal: Principal;
+  readonly callerClass: CallerClass;
+  readonly ctx: ConnectionContext;
+  readonly principal: Principal | null;
   readonly requests: Map<string, AbortController>;
-  readonly timer: ReturnType<typeof setTimeout>;
+  readonly timer?: ReturnType<typeof setTimeout>;
+  /** page reads this session dispatched: the only ids its cancel may name */
+  readonly forwarded: Set<string>;
+  /** closes once its single request settles, as an HTTP reply stream does */
+  readonly oneShot: boolean;
+  dispatched: boolean;
 }
+export type EngineMode = "full" | "read-only";
 interface OpeningSession {
   cancelled: boolean;
   readonly controller: AbortController;
 }
 export interface EngineRuntimeOptions {
+  /** cli sessions use this context; in read-only mode it is the page context */
   context: ConnectionContext;
+  /** dashboard tabs share every service but run with auth mode none */
+  page?: {
+    context: ConnectionContext;
+    actions?: ActionRunner;
+  };
+  /** read-only engines admit page sessions only */
+  mode?: EngineMode;
+  readOnlyReason?: string;
+  /** false when an untrusted workspace's engine loaded no extension code */
+  extensions?: boolean;
+  health?: (signal: AbortSignal) => Promise<unknown>;
   engineVersion: string;
   gitSha: string;
   /** AsyncIterable inputs share this controller with their framed reader. */
@@ -87,6 +122,10 @@ export class EngineRuntime {
   // bounded even when a legacy provider ignores cancellation forever.
   readonly #authenticationWork = new Set<Promise<unknown>>();
   readonly #tasks = new Set<Promise<void>>();
+  readonly #cliPolicy = CallerClassPolicy.cli(ENGINE_PROTOCOL.operations);
+  readonly #pagePolicy = CallerClassPolicy.page();
+  // Stopping kills attached delegated commands and ends a resume's wait.
+  readonly #actionsStopped = new AbortController();
   #generation: string | undefined;
   #state = "starting";
   readonly #inputCancellation: AbortController;
@@ -101,6 +140,13 @@ export class EngineRuntime {
     this.#inputCancellation = options.inputCancellation ??
       new AbortController();
     this.#writer = new EngineWriter(output, () => this.#failTransport());
+    if (options.mode === "read-only" && !options.page) {
+      throw new Error("A read-only engine serves page sessions only");
+    }
+  }
+  get #callerClasses(): CallerClass[] {
+    if (!this.#options.page) return ["cli"];
+    return this.#options.mode === "read-only" ? ["page"] : ["cli", "page"];
   }
   get status() {
     return {
@@ -161,6 +207,14 @@ export class EngineRuntime {
       id: request.id,
     };
     const response = this.#respond(request, base);
+    if (request.method === "health.snapshot") {
+      // Collection reads the datastore; established sessions keep the loop.
+      const tracked = response.catch(() => this.#failTransport()).finally(() =>
+        this.#tasks.delete(tracked)
+      );
+      this.#tasks.add(tracked);
+      return;
+    }
     if (request.method === "session.open") {
       // Vault providers may be slow. Authentication has bounded reservations
       // but never owns the control loop used by established sessions.
@@ -206,6 +260,9 @@ export class EngineRuntime {
           gitSha: this.#options.gitSha,
           // A hub verifies it reached the repository it selected.
           repo: { path: this.#options.context.repoDir },
+          callerClasses: this.#callerClasses,
+          mode: this.#options.mode ?? "full",
+          extensions: this.#options.extensions ?? true,
         };
       case "session.open":
         this.#admit();
@@ -237,7 +294,19 @@ export class EngineRuntime {
         const publicId = typeof value.id === "string" && value.id.length <= 256
           ? value.id
           : "unknown";
-        if (!ENGINE_PROTOCOL.operations.includes(String(value.type))) {
+        if (session.oneShot) {
+          if (session.dispatched) {
+            throw new ControlError(
+              "invalid_request",
+              "A one-shot session takes one request",
+            );
+          }
+          session.dispatched = true;
+        }
+        if (session.callerClass === "page") {
+          return this.#dispatchPage(session, value, publicId, params.http);
+        }
+        if (!this.#cliPolicy.allows(String(value.type))) {
           session.reply.send({
             type: "error",
             id: publicId,
@@ -265,31 +334,19 @@ export class EngineRuntime {
             return {};
           }
         }
-        if (value.type !== "cancel" && this.#tasks.size >= 128) {
+        this.#handle(session, value, publicId);
+        return {};
+      }
+      case "health.snapshot": {
+        const health = this.#options.health;
+        if (!health) {
           throw new ControlError(
-            "too_many_requests",
-            "Engine request limit reached",
+            "unsupported_operation",
+            "Unknown engine control operation",
           );
         }
-        const task = (async () =>
-          await handleMessage(
-            session.reply,
-            this.#options.context,
-            session.requests,
-            new MessageEvent("message", { data: JSON.stringify(value) }),
-            session.principal,
-          ))();
-        const tracked = task.catch(() => {
-          if (session.reply.open) {
-            session.reply.send({
-              type: "error",
-              id: publicId,
-              error: { code: "engine_error", message: "Engine request failed" },
-            });
-          }
-        }).finally(() => this.#tasks.delete(tracked));
-        this.#tasks.add(tracked);
-        return {};
+        this.#admit();
+        return await health(AbortSignal.timeout(30_000));
       }
       case "engine.status":
         return this.status;
@@ -324,6 +381,129 @@ export class EngineRuntime {
           "Unknown engine control operation",
         );
     }
+  }
+  #handle(
+    session: Session,
+    value: Record<string, unknown>,
+    publicId: string,
+  ): void {
+    if (value.type !== "cancel" && this.#tasks.size >= 128) {
+      throw new ControlError(
+        "too_many_requests",
+        "Engine request limit reached",
+      );
+    }
+    this.#track(
+      session,
+      publicId,
+      (async () =>
+        await handleMessage(
+          session.reply,
+          session.ctx,
+          session.requests,
+          new MessageEvent("message", { data: JSON.stringify(value) }),
+          session.principal,
+        ))(),
+    );
+  }
+  #track(session: Session, publicId: string, task: Promise<unknown>): void {
+    const tracked = task.then(() => {}, () => {
+      if (session.reply.open) {
+        session.reply.send({
+          type: "error",
+          id: publicId,
+          error: { code: "engine_error", message: "Engine request failed" },
+        });
+      }
+    }).finally(() => {
+      this.#tasks.delete(tracked);
+      if (session.oneShot) session.reply.close(1000, "Request complete");
+    });
+    this.#tasks.add(tracked);
+  }
+  /** what a dashboard tab sends: its reads, its four actions and cancel */
+  #dispatchPage(
+    session: Session,
+    value: Record<string, unknown>,
+    publicId: string,
+    http: unknown,
+  ): Record<string, never> {
+    const type = String(value.type);
+    if (http === true) {
+      if (!session.oneShot) {
+        throw new ControlError(
+          "invalid_request",
+          "HTTP requests need a one-shot session",
+        );
+      }
+      // The same refusals, in the same order, as the hub and its child.
+      if (!FORWARDED_READS.has(type)) {
+        throw new ControlError(
+          "use_websocket",
+          `'${type}' is not answered over HTTP here; send it over the WebSocket`,
+        );
+      }
+      const validated = validateServerRequest(value);
+      if (typeof validated === "string") {
+        throw new ControlError("invalid_request", validated);
+      }
+      if (!HTTP_REQUEST_TYPES.has(type)) {
+        throw new ControlError(
+          "use_websocket",
+          `'${type}' is not answered over HTTP; send it over the WebSocket`,
+        );
+      }
+    }
+    if (type === "cancel") {
+      // A cancel for anything else is the page detaching from an action.
+      if (session.forwarded.has(publicId)) {
+        this.#handle(session, value, publicId);
+      } else if (session.oneShot) {
+        session.reply.close(1000, "Request complete");
+      }
+      return {};
+    }
+    if (isDelegatedAction(type)) {
+      if (this.#tasks.size >= 128) {
+        throw new ControlError(
+          "too_many_requests",
+          "Engine request limit reached",
+        );
+      }
+      const page = this.#options.page!;
+      const reply = (frame: unknown) => {
+        if (session.reply.open) session.reply.send(frame as ServerMessage);
+      };
+      this.#track(
+        session,
+        publicId,
+        runDelegatedAction(
+          {
+            repoDir: session.ctx.repoDir,
+            actions: page.actions ?? SWAMP_CLI_ACTIONS,
+            signal: this.#actionsStopped.signal,
+          },
+          type,
+          publicId,
+          value.payload,
+          reply,
+        ).then(({ exited }) => {
+          // The run is the resume's own: never awaited, `done` only if it
+          // ends while this page still listens.
+          exited?.then(() => reply({ type: "done", id: publicId }))
+            .catch(() => {});
+        }),
+      );
+      return {};
+    }
+    if (!this.#pagePolicy.allows(type)) {
+      session.reply.send(pageRefusal(publicId, type) as ServerMessage);
+      if (session.oneShot) session.reply.close(1000, "Request complete");
+      return {};
+    }
+    session.forwarded.add(publicId);
+    this.#handle(session, value, publicId);
+    return {};
   }
   #admit(operation?: string): void {
     if (this.#state === "retiring") {
@@ -373,8 +553,46 @@ export class EngineRuntime {
         "Session ID is already in use",
       );
     }
-    const credential = textParam(params, "credential");
+    const callerClass = params.class ?? "cli";
+    if (!isCallerClass(callerClass)) {
+      throw new ControlError("invalid_request", "Invalid caller class");
+    }
+    if (!this.#callerClasses.includes(callerClass)) {
+      throw new ControlError(
+        "unsupported_profile",
+        callerClass === "cli"
+          ? this.#options.readOnlyReason ??
+            "This workspace is served read-only to the dashboard; the CLI cannot use it through this engine"
+          : "This engine serves no dashboard sessions",
+      );
+    }
+    const oneShot = params.oneShot ?? false;
+    if (typeof oneShot !== "boolean") {
+      throw new ControlError("invalid_request", "Invalid one-shot flag");
+    }
     const sourceIp = textParam(params, "sourceIp");
+    if (callerClass === "page") {
+      // The hub checked a page lease; a page carries no credential here.
+      if (this.#state !== "ready") {
+        throw new ControlError("draining", "Engine is not accepting work");
+      }
+      const reply = this.#publish(sessionId, {
+        callerClass,
+        ctx: this.#options.page!.context,
+        principal: null,
+        oneShot,
+      });
+      setConnectionSourceIp(reply, sourceIp);
+      setConnectionTeardown(reply, () => this.#detach(sessionId));
+      return { sessionId };
+    }
+    if (oneShot) {
+      throw new ControlError(
+        "invalid_request",
+        "One-shot sessions are for page requests",
+      );
+    }
+    const credential = textParam(params, "credential");
     const authenticationTimeoutMs = params.authenticationTimeoutMs ?? 10_000;
     if (
       typeof authenticationTimeoutMs !== "number" ||
@@ -457,6 +675,39 @@ export class EngineRuntime {
     if (opening.cancelled || this.#state !== "ready") {
       throw new ControlError("session_closed", "Authentication was abandoned");
     }
+    const reply = this.#publish(sessionId, {
+      callerClass: "cli",
+      ctx,
+      principal: parsePrincipal(auth.principalId),
+      oneShot: false,
+      expiresInMs: 8 * 60 * 60 * 1000,
+    });
+    setConnectionCollectives(
+      reply,
+      auth.collectives,
+      auth.groups,
+      auth.principalId,
+    );
+    setConnectionToken(reply, {
+      name: auth.tokenName,
+      createdAt: auth.tokenCreatedAt,
+      principalId: auth.principalId,
+    });
+    setConnectionLoginIdentity(reply, auth.oauthIdentity);
+    setConnectionSourceIp(reply, sourceIp);
+    setConnectionTeardown(reply, () => this.#detach(sessionId));
+    return { sessionId };
+  }
+  #publish(
+    sessionId: string,
+    options: {
+      callerClass: CallerClass;
+      ctx: ConnectionContext;
+      principal: Principal | null;
+      oneShot: boolean;
+      expiresInMs?: number;
+    },
+  ): SessionReply {
     let open = true;
     const reply: SessionReply = {
       kind: "session-reply",
@@ -504,29 +755,20 @@ export class EngineRuntime {
     };
     const session: Session = {
       reply,
-      principal: parsePrincipal(auth.principalId),
+      callerClass: options.callerClass,
+      ctx: options.ctx,
+      principal: options.principal,
       requests: new Map(),
-      timer: setTimeout(
+      timer: options.expiresInMs === undefined ? undefined : setTimeout(
         () => reply.close(4002, "Session expired; reauthenticate"),
-        8 * 60 * 60 * 1000,
+        options.expiresInMs,
       ),
+      forwarded: new Set(),
+      oneShot: options.oneShot,
+      dispatched: false,
     };
     this.#sessions.set(sessionId, session);
-    setConnectionCollectives(
-      reply,
-      auth.collectives,
-      auth.groups,
-      auth.principalId,
-    );
-    setConnectionToken(reply, {
-      name: auth.tokenName,
-      createdAt: auth.tokenCreatedAt,
-      principalId: auth.principalId,
-    });
-    setConnectionLoginIdentity(reply, auth.oauthIdentity);
-    setConnectionSourceIp(reply, sourceIp);
-    setConnectionTeardown(reply, () => this.#detach(sessionId));
-    return { sessionId };
+    return reply;
   }
   #close(id: string): void {
     const opening = this.#openingSessions.get(id);
@@ -579,6 +821,7 @@ export class EngineRuntime {
     const disposalGrace = Math.min(5_000, deadlineMs / 3);
     const cancellationGrace = Math.min(5_000, (deadlineMs - disposalGrace) / 2);
     this.#state = "draining";
+    this.#actionsStopped.abort();
     const registry = this.#options.context.activeRunRegistry;
     registry?.beginDraining();
     for (const opening of this.#openingSessions.values()) {

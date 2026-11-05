@@ -20,7 +20,10 @@
     "engineControlBytes": 65536,
     "engineCloseFrameBytes": 2048,
     "maxShutdownDeadlineMs": 2147483647,
-    "commandGuardians": 256
+    "commandGuardians": 256,
+    "compressionThresholdBytes": 16384,
+    "httpRequestBodyBytes": 65536,
+    "httpRequestsInFlight": 100
   },
   "operations": [
     "server.version",
@@ -44,7 +47,8 @@
     "request.dispatch",
     "engine.status",
     "engine.quiesce",
-    "engine.shutdown"
+    "engine.shutdown",
+    "health.snapshot"
   ],
   "hubControl": {
     "profile": "hub-control-v1",
@@ -56,5 +60,93 @@
       "engine.quiesce",
       "engine.shutdown"
     ]
+  },
+  "callerClasses": {
+    "page": {
+      "operations": [
+        "audit.query",
+        "audit.subscribe",
+        "audit.unsubscribe",
+        "cancel",
+        "cluster.instances",
+        "data.get",
+        "data.query",
+        "data.search",
+        "data.versions",
+        "datastore.status",
+        "extension.list",
+        "model.get",
+        "model.output.search",
+        "model.search",
+        "model.usage.summary",
+        "serve.config",
+        "vault.audit-trail",
+        "vault.describe",
+        "vault.list-keys",
+        "vault.search",
+        "worker.list",
+        "workflow.approvals",
+        "workflow.approve",
+        "workflow.cancel",
+        "workflow.get",
+        "workflow.history.get",
+        "workflow.history.logs",
+        "workflow.reject",
+        "workflow.resume",
+        "workflow.run.search",
+        "workflow.run.summary",
+        "workflow.search",
+        "workflow.trigger.get",
+        "workflow.waits"
+      ],
+      "reads": [
+        "audit.query",
+        "audit.subscribe",
+        "audit.unsubscribe",
+        "cluster.instances",
+        "data.get",
+        "data.query",
+        "data.search",
+        "data.versions",
+        "datastore.status",
+        "extension.list",
+        "model.get",
+        "model.output.search",
+        "model.search",
+        "model.usage.summary",
+        "serve.config",
+        "vault.audit-trail",
+        "vault.describe",
+        "vault.list-keys",
+        "vault.search",
+        "worker.list",
+        "workflow.approvals",
+        "workflow.get",
+        "workflow.history.get",
+        "workflow.history.logs",
+        "workflow.run.search",
+        "workflow.run.summary",
+        "workflow.search",
+        "workflow.trigger.get",
+        "workflow.waits"
+      ],
+      "actions": [
+        "workflow.approve",
+        "workflow.reject",
+        "workflow.resume",
+        "workflow.cancel"
+      ],
+      "httpOperations": [
+        "data.get",
+        "data.query",
+        "data.versions",
+        "model.output.search",
+        "workflow.history.get",
+        "workflow.history.logs"
+      ],
+      "refusalMessage": "${type} is not available on the local dashboard. Run it with the swamp CLI, or through swamp serve.",
+      "httpRefusalMessage": "'${type}' is not answered over HTTP here; send it over the WebSocket",
+      "httpUnsupportedMessage": "'${type}' is not answered over HTTP; send it over the WebSocket"
+    }
   }
 }

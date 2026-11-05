@@ -236,3 +236,47 @@ Deno.test("engine boundary: command containment remains installed through proces
   const main = await Deno.readTextFile(join(ROOT, "main.ts"));
   assert(/Deno\.exit\(\s*await runEngineMain\(/.test(main));
 });
+
+Deno.test("engine boundary: raw spawns the engine can reach are pinned, and only delegated dashboard actions bypass the command guardian on purpose", async () => {
+  const pending = ["src/engine/entry.ts"];
+  const visited = new Set<string>();
+  const sites: string[] = [];
+  while (pending.length > 0) {
+    const module = pending.pop()!;
+    if (visited.has(module)) continue;
+    visited.add(module);
+    const path = join(ROOT, module);
+    const source = await Deno.readTextFile(path);
+    if (/\bnew Deno\.Command\s*\(/.test(source)) sites.push(module);
+    for (const reference of findModuleReferences(path, source)) {
+      const target = resolveImport(path, reference.specifier);
+      if (target !== undefined && /\.tsx?$/.test(target)) pending.push(target);
+    }
+  }
+  assert(visited.size > 100, "Inspect the engine's import graph");
+  assertPinnedSet(
+    sites.sort(),
+    [
+      "src/cli/context.ts",
+      "src/domain/extensions/dependency_resolution/deno_info.ts",
+      "src/domain/extensions/extension_quality_checker.ts",
+      "src/domain/models/bundle.ts",
+      "src/infrastructure/datastore_v3/boot_identity.ts",
+      "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts",
+      "src/infrastructure/datastore_v3/litestream/litestream_processes.ts",
+      "src/infrastructure/datastore_v3/litestream/litestream_restorer.ts",
+      "src/infrastructure/editor/editor_service.ts",
+      "src/infrastructure/persistence/git_worktree.ts",
+      "src/infrastructure/process/process_executor.ts",
+      "src/infrastructure/process/process_kill.ts",
+      "src/infrastructure/process/resolve_command.ts",
+      "src/infrastructure/runtime/embedded_deno_runtime.ts",
+      "src/infrastructure/runtime/process.ts",
+      "src/infrastructure/runtime/process_bundle_prober.ts",
+      "src/infrastructure/security/file_security_check.ts",
+      "src/serve/local/delegated_actions.ts",
+    ],
+    "engine-reachable raw spawns",
+    "Run repository commands through process_executor so the generation's command guardian contains them. Only a dashboard's delegated workflow action may outlive the engine.",
+  );
+});

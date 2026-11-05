@@ -49,8 +49,11 @@ import {
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import {
   type ConnectionContext,
+  listTokenSessions,
   terminateTokenSessions,
 } from "../src/serve/handlers/shared.ts";
+import { localPageServices } from "../src/serve/local_engine_context.ts";
+import type { ActionRunner } from "../src/serve/local/delegated_actions.ts";
 
 await initializeLogging({});
 type Frame = Record<string, unknown>;
@@ -1269,5 +1272,460 @@ Deno.test("EngineRuntime: shutdown preserves a supplied budget above five minute
       await shutdown;
       await h.task;
     }
+  });
+});
+
+function pageHarness(
+  ctx: ConnectionContext,
+  options: Partial<Omit<EngineRuntimeOptions, "context" | "dispose">> = {},
+) {
+  return harness(ctx, { ...localPageServices(ctx), ...options });
+}
+
+async function openPage(
+  h: ReturnType<typeof harness>,
+  params: Frame = {},
+): Promise<string> {
+  const response = await h.control("session.open", {
+    sessionId: crypto.randomUUID().replaceAll("-", ""),
+    class: "page",
+    sourceIp: "127.0.0.1",
+    ...params,
+  });
+  assertExists(response.result, JSON.stringify(response));
+  return (response.result as { sessionId: string }).sessionId;
+}
+
+function sessionMessages(h: ReturnType<typeof harness>, sessionId: string) {
+  return h.frames.filter((f) => f.sessionId === sessionId && f.message)
+    .map((f) => f.message as Frame);
+}
+
+function fakeActions(
+  overrides: Partial<ActionRunner> = {},
+): ActionRunner & { calls: string[][] } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    run(_repoDir, args) {
+      calls.push([...args]);
+      return Promise.resolve({
+        code: 0,
+        stdout: JSON.stringify({ approved: true }),
+        stderr: "",
+      });
+    },
+    start(_repoDir, args) {
+      calls.push([...args]);
+      return { pid: 4242, exited: new Promise<number>(() => {}) };
+    },
+    watchRuns() {
+      return { isRunning: () => true, close() {} };
+    },
+    ...overrides,
+  };
+}
+
+Deno.test("EngineRuntime: a page session needs no credential and reads as the anonymous local caller", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "visible");
+    // Token mode with no grants: a cli caller could read nothing.
+    const ctx = createServeCtx(repo, [], { detached: true });
+    const h = pageHarness(ctx);
+    const hello = await h.control("hello", { profile: "local-v1" });
+    assertEquals((hello.result as Frame).callerClasses, ["cli", "page"]);
+    assertEquals((hello.result as Frame).mode, "full");
+    assertEquals((hello.result as Frame).extensions, true);
+    const id = await openPage(h);
+    assertEquals(listTokenSessions(), []);
+    await h.control("request.dispatch", {
+      sessionId: id,
+      request: {
+        id: "read",
+        type: "model.get",
+        payload: { modelIdOrName: model.name },
+      },
+    });
+    await waitFor(
+      () => sessionMessages(h, id).some((m) => m.id === "read"),
+      "page read answered",
+    );
+    assertEquals(
+      sessionMessages(h, id).find((m) => m.id === "read")?.type,
+      "model.get",
+    );
+    assertEquals((await h.control("engine.quiesce")).result, {
+      quiescent: false,
+    });
+    await h.control("session.close", { sessionId: id });
+    assertEquals((await h.control("engine.quiesce")).result, {
+      quiescent: true,
+    });
+    await h.task;
+  });
+});
+
+Deno.test("EngineRuntime: a page may not send what the dashboard never sends", async () => {
+  await withServeRepo(async (repo) => {
+    const h = pageHarness(createServeCtx(repo, [], { detached: true }));
+    try {
+      await h.control("hello", { profile: "local-v1" });
+      const id = await openPage(h);
+      for (const type of ["workflow.run", "model.method.run", "vault.get"]) {
+        await h.control("request.dispatch", {
+          sessionId: id,
+          request: { id: type, type, payload: {} },
+        });
+      }
+      await waitFor(
+        () => sessionMessages(h, id).length === 3,
+        "every refusal answered",
+      );
+      assertEquals(
+        sessionMessages(h, id).find((m) => m.id === "workflow.run"),
+        {
+          type: "error",
+          id: "workflow.run",
+          error: {
+            code: "not_available_locally",
+            message:
+              "workflow.run is not available on the local dashboard. Run it with the swamp CLI, or through swamp serve.",
+          },
+        },
+      );
+    } finally {
+      await h.control("engine.shutdown");
+      await h.task;
+    }
+  });
+});
+
+Deno.test("EngineRuntime: a page cancel reaches the engine only for a read it sent", async () => {
+  await withServeRepo(async (repo) => {
+    const h = pageHarness(createServeCtx(repo, [], { detached: true }));
+    try {
+      await h.control("hello", { profile: "local-v1" });
+      const id = await openPage(h);
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: { id: "never-sent", type: "cancel" },
+      });
+      assertEquals(h.runtime.status.requests, 0);
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: { id: "sub", type: "audit.subscribe", payload: {} },
+      });
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: { id: "sub", type: "cancel" },
+      });
+      await waitFor(
+        () => sessionMessages(h, id).some((m) => m.id === "sub"),
+        "subscription answered",
+      );
+      assert(!sessionMessages(h, id).some((m) => m.id === "never-sent"));
+    } finally {
+      await h.control("engine.shutdown");
+      await h.task;
+    }
+  });
+});
+
+Deno.test("EngineRuntime: a page approve runs the CLI and replies with its JSON", async () => {
+  await withServeRepo(async (repo) => {
+    const actions = fakeActions();
+    const ctx = createServeCtx(repo, [], { detached: true });
+    const h = harness(ctx, {
+      ...localPageServices(ctx),
+      page: { ...localPageServices(ctx).page, actions },
+    });
+    try {
+      await h.control("hello", { profile: "local-v1" });
+      const id = await openPage(h);
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: {
+          id: "a1",
+          type: "workflow.approve",
+          payload: {
+            workflowIdOrName: "deploy",
+            runId: "0123abcd-0000",
+            stepName: "gate",
+            reason: "looks good",
+          },
+        },
+      });
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: {
+          id: "a2",
+          type: "workflow.reject",
+          payload: {
+            workflowIdOrName: "--all",
+            runId: "0123abcd-0000",
+            stepName: "gate",
+          },
+        },
+      });
+      await waitFor(
+        () => sessionMessages(h, id).length === 2,
+        "both actions answered",
+      );
+      assertEquals(sessionMessages(h, id).find((m) => m.id === "a1"), {
+        type: "workflow.approve",
+        id: "a1",
+        payload: { data: { approved: true } },
+      });
+      assertEquals(sessionMessages(h, id).find((m) => m.id === "a2"), {
+        type: "error",
+        id: "a2",
+        error: {
+          code: "workflow_reject_failed",
+          message: `The workflow "--all" can't start with "-".`,
+        },
+      });
+      assertEquals(actions.calls, [[
+        "workflow",
+        "approve",
+        "deploy",
+        "gate",
+        "--run=0123abcd-0000",
+        "--reason=looks good",
+        "--json",
+      ]]);
+    } finally {
+      await h.control("engine.shutdown");
+      await h.task;
+    }
+  });
+});
+
+Deno.test("EngineRuntime: a page resume says started once its run runs, then done, and its detach stays in the engine", async () => {
+  await withServeRepo(async (repo) => {
+    let exit!: (code: number) => void;
+    let polls = 0;
+    const actions = fakeActions({
+      start: () => ({
+        pid: 7,
+        exited: new Promise<number>((resolve) => exit = resolve),
+      }),
+      watchRuns: () => ({ isRunning: () => ++polls > 1, close() {} }),
+    });
+    const ctx = createServeCtx(repo, [], { detached: true });
+    const h = harness(ctx, {
+      ...localPageServices(ctx),
+      page: { ...localPageServices(ctx).page, actions },
+    });
+    try {
+      await h.control("hello", { profile: "local-v1" });
+      const id = await openPage(h);
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: {
+          id: "r1",
+          type: "workflow.resume",
+          payload: { workflowIdOrName: "deploy", runId: "0123abcd-0000" },
+        },
+      });
+      await waitFor(
+        () => sessionMessages(h, id).some((m) => m.type === "event"),
+        "resume started",
+      );
+      assertEquals(sessionMessages(h, id), [{
+        type: "event",
+        id: "r1",
+        payload: { runId: "0123abcd-0000" },
+      }]);
+      assertEquals(h.runtime.status.requests, 0);
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: { id: "r1", type: "cancel" },
+      });
+      exit(0);
+      await waitFor(
+        () => sessionMessages(h, id).some((m) => m.type === "done"),
+        "resume done",
+      );
+      assertEquals(sessionMessages(h, id).at(-1), { type: "done", id: "r1" });
+    } finally {
+      await h.control("engine.shutdown");
+      await h.task;
+    }
+  });
+});
+
+Deno.test("EngineRuntime: a page resume that stops before its run starts names the command", async () => {
+  await withServeRepo(async (repo) => {
+    const actions = fakeActions({
+      start: () => ({ pid: 7, exited: Promise.resolve(3) }),
+      watchRuns: () => ({ isRunning: () => false, close() {} }),
+    });
+    const ctx = createServeCtx(repo, [], { detached: true });
+    const h = harness(ctx, {
+      ...localPageServices(ctx),
+      page: { ...localPageServices(ctx).page, actions },
+    });
+    try {
+      await h.control("hello", { profile: "local-v1" });
+      const id = await openPage(h);
+      await h.control("request.dispatch", {
+        sessionId: id,
+        request: {
+          id: "r1",
+          type: "workflow.resume",
+          payload: { workflowIdOrName: "deploy", runId: "0123abcd-0000" },
+        },
+      });
+      await waitFor(
+        () => sessionMessages(h, id).length === 1,
+        "resume failed",
+      );
+      assertEquals(sessionMessages(h, id)[0], {
+        type: "error",
+        id: "r1",
+        error: {
+          code: "workflow_resume_failed",
+          message:
+            "The resume stopped before its run started (exit 3). Run `swamp workflow resume deploy --run=0123abcd-0000` in this repo to see why.",
+        },
+      });
+    } finally {
+      await h.control("engine.shutdown");
+      await h.task;
+    }
+  });
+});
+
+Deno.test("EngineRuntime: shutdown stops a page action still running", async () => {
+  await withServeRepo(async (repo) => {
+    let aborted = false;
+    const actions = fakeActions({
+      run: (_repoDir, _args, signal) =>
+        new Promise((resolve) =>
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ code: 1, stdout: "", stderr: "killed" });
+          })
+        ),
+    });
+    const ctx = createServeCtx(repo, [], { detached: true });
+    const h = harness(ctx, {
+      ...localPageServices(ctx),
+      page: { ...localPageServices(ctx).page, actions },
+    });
+    await h.control("hello", { profile: "local-v1" });
+    const id = await openPage(h);
+    await h.control("request.dispatch", {
+      sessionId: id,
+      request: {
+        id: "c1",
+        type: "workflow.cancel",
+        payload: { workflowIdOrName: "deploy", runId: "0123abcd-0000" },
+      },
+    });
+    assertEquals(h.runtime.status.requests, 1);
+    await h.control("engine.shutdown");
+    await h.task;
+    assert(aborted);
+  });
+});
+
+Deno.test("EngineRuntime: a one-shot page session answers one HTTP read and closes", async () => {
+  await withServeRepo(async (repo) => {
+    const h = pageHarness(createServeCtx(repo, [], { detached: true }));
+    try {
+      await h.control("hello", { profile: "local-v1" });
+      const refusals: Array<[string, Frame, string]> = [
+        ["model.get", { modelIdOrName: "x" }, "use_websocket"],
+        ["workflow.run", {}, "use_websocket"],
+        ["data.query", "not-an-object" as unknown as Frame, "invalid_request"],
+      ];
+      for (const [type, payload, code] of refusals) {
+        const id = await openPage(h, { oneShot: true });
+        const refused = await h.control("request.dispatch", {
+          sessionId: id,
+          http: true,
+          request: { id: "q", type, payload },
+        });
+        assertEquals((refused.error as Frame)?.code, code, type);
+        await h.control("session.close", { sessionId: id });
+      }
+      const id = await openPage(h, { oneShot: true });
+      await h.control("request.dispatch", {
+        sessionId: id,
+        http: true,
+        request: { id: "q", type: "data.query", payload: { predicate: "" } },
+      });
+      await waitFor(
+        () => h.frames.some((f) => f.sessionId === id && f.closed),
+        "one-shot session closed",
+      );
+      assertEquals(
+        (h.frames.find((f) => f.sessionId === id && f.closed)!.closed as Frame)
+          .code,
+        1000,
+      );
+      assert(sessionMessages(h, id).some((m) => m.id === "q"));
+      const second = await h.control("request.dispatch", {
+        sessionId: id,
+        http: true,
+        request: { id: "q2", type: "data.query", payload: {} },
+      });
+      assertEquals((second.error as Frame).code, "unknown_session");
+    } finally {
+      await h.control("engine.shutdown");
+      await h.task;
+    }
+  });
+});
+
+Deno.test("EngineRuntime: a read-only engine refuses cli sessions and a cli-only engine refuses pages", async () => {
+  await withServeRepo(async (repo) => {
+    const ctx = createServeCtx(repo, [], { detached: true });
+    const page = localPageServices(ctx);
+    const readOnly = harness(page.page.context, { ...page, mode: "read-only" });
+    const hello = await readOnly.control("hello", { profile: "local-v1" });
+    assertEquals((hello.result as Frame).callerClasses, ["page"]);
+    assertEquals((hello.result as Frame).mode, "read-only");
+    const cli = await readOnly.control("session.open", {
+      credential: "SECRET_CANARY",
+      sourceIp: "127.0.0.1",
+    });
+    assertEquals((cli.error as Frame).code, "unsupported_profile");
+    await readOnly.control("engine.shutdown");
+    await readOnly.task;
+
+    const cliOnly = harness(ctx);
+    await cliOnly.control("hello", { profile: "local-v1" });
+    const refused = await cliOnly.control("session.open", {
+      class: "page",
+      sourceIp: "127.0.0.1",
+    });
+    assertEquals((refused.error as Frame).code, "unsupported_profile");
+    await cliOnly.control("engine.shutdown");
+    await cliOnly.task;
+  });
+});
+
+Deno.test("EngineRuntime: health.snapshot answers from the composed collector", async () => {
+  await withServeRepo(async (repo) => {
+    const ctx = createServeCtx(repo, [], { detached: true });
+    const h = harness(ctx, {
+      ...localPageServices(ctx),
+      health: () => Promise.resolve({ status: "ok", activeRuns: [] }),
+    });
+    await h.control("hello", { profile: "local-v1" });
+    const snapshot = await h.control("health.snapshot");
+    assertEquals(snapshot.result, { status: "ok", activeRuns: [] });
+    await h.control("engine.shutdown");
+    await h.task;
+    const bare = harness(ctx);
+    await bare.control("hello", { profile: "local-v1" });
+    assertEquals(
+      ((await bare.control("health.snapshot")).error as Frame).code,
+      "unsupported_operation",
+    );
+    await bare.control("engine.shutdown");
+    await bare.task;
   });
 });

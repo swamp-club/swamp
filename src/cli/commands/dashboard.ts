@@ -34,20 +34,15 @@ import {
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
-import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
-import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
-import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
-import { HealthCollector } from "../../serve/health_collector.ts";
 import type { ConnectionContext } from "../../serve/handlers/shared.ts";
 import {
+  createLocalHealthCollector,
   startLocalDashboardServer,
-  trackedWorkflowRuns,
+  trackedRunsFrom,
 } from "../../serve/local/local_dashboard_server.ts";
-import { STALE_TTL_MS } from "../../domain/models/active_run.ts";
 import { HUB_TOKEN_ENV } from "../../serve/local/hub_token.ts";
 import { runStart } from "./start.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -88,23 +83,10 @@ async function runChild(options: AnyOptions): Promise<void> {
     vaultsDir: repo.vaultsDir,
     defaultVault: repo.marker?.defaultVault,
   };
-  const healthCollector = new HealthCollector({
+  const healthCollector = createLocalHealthCollector({
     instanceId,
-    deploymentMode: "local",
-    startedAt: Date.now(),
-    isReady: () => true,
     activeRunRegistry,
-    metricsTracker: new RunMetricsTracker(),
-    componentChecker: new ComponentHealthChecker({
-      checkDatastore: isCustomDatastoreConfig(datastoreConfig)
-        ? undefined
-        : () => new FilesystemDatastoreVerifier(datastoreConfig.path).verify(),
-    }),
-    workerProvider: null,
-    scheduleProvider: null,
-    scheduleEnabled: false,
-    webhookProvider: null,
-    remoteOnly: false,
+    datastoreConfig,
   });
   ctx.healthCollector = healthCollector;
 
@@ -113,12 +95,7 @@ async function runChild(options: AnyOptions): Promise<void> {
     healthCollector,
     hubToken,
     busy: () => activeRunRegistry.list().length > 0,
-    trackedRuns: () =>
-      trackedWorkflowRuns(
-        runTracker.findAllRunning(),
-        Date.now(),
-        STALE_TTL_MS,
-      ),
+    trackedRuns: trackedRunsFrom(runTracker),
   });
   await Deno.stdout.write(
     new TextEncoder().encode(JSON.stringify({ port: server.port }) + "\n"),

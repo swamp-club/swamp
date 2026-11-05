@@ -105,6 +105,11 @@ import {
   settleDeadOwnerRun,
 } from "../domain/workflows/orphaned_run_reaper.ts";
 import { ActiveRunRegistry } from "./active_run_registry.ts";
+import {
+  collectLocalHealth,
+  createLocalHealthCollector,
+  trackedRunsFrom,
+} from "./local/local_dashboard_server.ts";
 import { RunCancelRegistry } from "./run_cancel_registry.ts";
 import { loadServeConfig, mergeServeOptions } from "./serve_config.ts";
 import {
@@ -124,11 +129,19 @@ import {
   validateEngineWorkflow,
 } from "../engine/profile.ts";
 
-/** Composition for the explicitly local profile; never starts a listener or CLI. */
-export async function createLocalEngineContext(repoDir: string): Promise<{
+export interface LocalEngineComposition {
   context: ConnectionContext;
+  page: { context: ConnectionContext };
+  health(signal: AbortSignal): Promise<unknown>;
+  mode: "full" | "read-only";
+  extensions: boolean;
   dispose(): Promise<void>;
-}> {
+}
+
+/** Composition for the explicitly local profile; never starts a listener or CLI. */
+export async function createLocalEngineContext(
+  repoDir: string,
+): Promise<LocalEngineComposition> {
   if (modelsDirEnvConflict()) {
     throw new EngineProfileError(
       "conflicting SWAMP_MODELS_DIR and SWAMP_BEHAVIORS_DIR",
@@ -563,11 +576,46 @@ export async function createLocalEngineContext(repoDir: string): Promise<{
     });
     stops.push(() => tokenRevalidation.dispose());
     tokenRevalidation.start();
-    return { context, dispose };
+    return {
+      context,
+      ...localPageServices(context),
+      mode: "full",
+      extensions: true,
+      dispose,
+    };
   } catch (error) {
     try {
       await dispose();
     } catch { /* Preserve the original startup refusal. */ }
     throw error;
   }
+}
+
+/**
+ * Built after every context mutation: a page shares each service with the cli
+ * context, and only its auth mode differs.
+ */
+export function localPageServices(context: ConnectionContext): {
+  page: { context: ConnectionContext };
+  health(signal: AbortSignal): Promise<unknown>;
+} {
+  const healthCollector = createLocalHealthCollector({
+    instanceId: context.instanceId ?? crypto.randomUUID(),
+    activeRunRegistry: context.activeRunRegistry!,
+    datastoreConfig: context.datastoreConfig,
+  });
+  const trackedRuns = context.runTracker
+    ? trackedRunsFrom(context.runTracker)
+    : undefined;
+  return {
+    page: {
+      context: {
+        ...context,
+        authConfig: buildServeAuthConfig({}),
+        healthCollector,
+      },
+    },
+    health: (signal) =>
+      collectLocalHealth(healthCollector, trackedRuns, signal),
+  };
 }

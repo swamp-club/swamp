@@ -31,11 +31,21 @@ import {
   setConnectionCompression,
   setConnectionSourceIp,
 } from "../handlers/shared.ts";
-import type {
+import {
   HealthCollector,
-  HealthSnapshot,
-  HealthSnapshotRun,
+  type HealthSnapshot,
+  type HealthSnapshotRun,
 } from "../health_collector.ts";
+import type { ActiveRunRegistry } from "../active_run_registry.ts";
+import { RunMetricsTracker } from "../run_metrics_tracker.ts";
+import { ComponentHealthChecker } from "../component_health_checker.ts";
+import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
+import type { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { STALE_TTL_MS } from "../../domain/models/active_run.ts";
 import { createHealthStreamResponse } from "../health_stream.ts";
 import { handleHttpRequest } from "../http_request_route.ts";
 import { SERVE_REQUEST_PATH } from "../protocol.ts";
@@ -91,6 +101,54 @@ export function trackedWorkflowRuns(
     }));
 }
 
+/** a local dashboard schedules nothing and has no workers or webhooks */
+export function createLocalHealthCollector(options: {
+  instanceId: string;
+  activeRunRegistry: ActiveRunRegistry;
+  datastoreConfig: DatastoreConfig;
+}): HealthCollector {
+  const { datastoreConfig } = options;
+  return new HealthCollector({
+    instanceId: options.instanceId,
+    deploymentMode: "local",
+    startedAt: Date.now(),
+    isReady: () => true,
+    activeRunRegistry: options.activeRunRegistry,
+    metricsTracker: new RunMetricsTracker(),
+    componentChecker: new ComponentHealthChecker({
+      checkDatastore: isCustomDatastoreConfig(datastoreConfig)
+        ? undefined
+        : () => new FilesystemDatastoreVerifier(datastoreConfig.path).verify(),
+    }),
+    workerProvider: null,
+    scheduleProvider: null,
+    scheduleEnabled: false,
+    webhookProvider: null,
+    remoteOnly: false,
+  });
+}
+
+/** workflow runs other swamp processes execute in this repo, from its tracker */
+export function trackedRunsFrom(
+  runTracker: Pick<RunTrackerStore, "findAllRunning">,
+): () => HealthSnapshotRun[] {
+  return () =>
+    trackedWorkflowRuns(runTracker.findAllRunning(), Date.now(), STALE_TTL_MS);
+}
+
+export async function collectLocalHealth(
+  healthCollector: HealthCollector,
+  trackedRuns: (() => HealthSnapshotRun[]) | undefined,
+  signal: AbortSignal,
+): Promise<HealthSnapshot> {
+  const snapshot = await healthCollector.collect(signal);
+  const tracked = trackedRuns?.() ?? [];
+  return tracked.length === 0 ? snapshot : {
+    ...snapshot,
+    activeRuns: mergeActiveRuns(snapshot.activeRuns, tracked),
+  };
+}
+
 function hubTokenOffered(req: Request): string | null {
   const header = req.headers.get(HUB_TOKEN_HEADER);
   if (header) return header;
@@ -111,14 +169,8 @@ export function startLocalDashboardServer(
   options: LocalDashboardServerOptions,
 ): LocalDashboardServer {
   const { ctx, healthCollector, hubToken } = options;
-  const collect = async (signal: AbortSignal): Promise<HealthSnapshot> => {
-    const snapshot = await healthCollector.collect(signal);
-    const tracked = options.trackedRuns?.() ?? [];
-    return tracked.length === 0 ? snapshot : {
-      ...snapshot,
-      activeRuns: mergeActiveRuns(snapshot.activeRuns, tracked),
-    };
-  };
+  const collect = (signal: AbortSignal): Promise<HealthSnapshot> =>
+    collectLocalHealth(healthCollector, options.trackedRuns, signal);
   const ac = new AbortController();
   let port = 0;
   const server = Deno.serve(
