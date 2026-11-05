@@ -34,6 +34,8 @@ import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { handleWorkflowApprove } from "../src/serve/handlers/workflow_handlers.ts";
 import { autoResumeAfterApproval } from "../src/serve/resume_launcher.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
+import type { CompletedRunSlot } from "../src/serve/handlers/run_data_attributes.ts";
+import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
@@ -420,6 +422,99 @@ Deno.test({
       assertEquals(
         run?.getJob("main")?.getStep("approve-deploy")?.status,
         "succeeded",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "auto-resume: the detached resume keeps its live completed run for subscribers only once the run is saved",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const workflow = gatedWorkflow("auto-resume-completed-slot", true);
+      await new YamlWorkflowRepository(repoDir).save(workflow);
+      const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
+        await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+
+      let runId: string | undefined;
+      await executeWorkflowWithLocks(
+        resolved,
+        repoContext,
+        datastoreConfig,
+        { workflowIdOrName: workflow.name, inputs: {} },
+        new AbortController().signal,
+        (event: WorkflowRunEvent) => {
+          if (event.kind === "started") runId = event.runId;
+        },
+        syncService,
+        undefined,
+        { syncGate: undefined },
+      );
+      if (!runId) throw new Error("no run id observed");
+
+      const order: string[] = [];
+      const runRepo = repoContext.workflowRunRepo;
+      const save = runRepo.save.bind(runRepo);
+      runRepo.save = async (...args: Parameters<typeof runRepo.save>) => {
+        const saved = await save(...args);
+        order.push(`saved:${args[1].status}`);
+        return saved;
+      };
+      const registry = new ActiveRunRegistry();
+      const register = registry.register.bind(registry);
+      let slot: CompletedRunSlot | undefined;
+      registry.register = (run) => {
+        slot = run.completedRun;
+        if (slot) {
+          let held: WorkflowRun | undefined;
+          Object.defineProperty(slot, "run", {
+            get: () => held,
+            set: (live: WorkflowRun) => {
+              order.push("filled");
+              held = live;
+            },
+          });
+        }
+        register(run);
+      };
+      const ctx = {
+        repoDir: resolved,
+        repoContext,
+        datastoreConfig,
+        authConfig: modeNone,
+        activeRunRegistry: registry,
+        serveOptions: { autoResume: false } as MergedServeOptions,
+      } as ConnectionContext;
+      const socket: MockSocket = {
+        sent: [],
+        readyState: WebSocket.OPEN,
+        send(data: string) {
+          this.sent.push(data);
+        },
+      };
+
+      await handleWorkflowApprove(
+        socket as unknown as WebSocket,
+        ctx,
+        "approve-1",
+        { workflowIdOrName: workflow.name, stepName: "approve-deploy", runId },
+        new AbortController(),
+        null,
+      );
+      await waitFor(
+        () => registry.get(runId!) === undefined && order.includes("filled"),
+        "resume finished and its slot filled",
+      );
+
+      assertEquals(slot?.run?.status, "succeeded");
+      assertEquals(order.lastIndexOf("saved:succeeded") >= 0, true);
+      assertEquals(
+        order.lastIndexOf("saved:succeeded") < order.indexOf("filled"),
+        true,
+        order.join(","),
       );
     });
   },

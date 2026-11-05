@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { CompletedRunSlot } from "./handlers/run_data_attributes.ts";
-import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
+import {
+  deferCompletedForOutputs,
+  mapWorkflowExecutionEvent,
+} from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
 import { isWireEvent, serializeEvent } from "./serializer.ts";
@@ -334,22 +337,27 @@ export async function startDetachedResume(
             );
             const doResume = async () => {
               for await (
-                const event of runGeneratorWithVaultAccess(
-                  vaultScope?.access,
-                  () =>
-                    service.resume(workflowName, resolvedRun.id, {
-                      signal: runController.signal,
-                      inputs: request.inputs ?? {},
-                      fromStep: request.from,
-                      fromJob: request.fromJob,
-                      suspendedOnly: request.suspendedOnly,
-                      instanceId: ctx.instanceId,
-                      continuation: request.continuation,
-                      requireCurrentRecord: request.requireCurrentRecord,
-                    }),
+                const { event } of deferCompletedForOutputs(
+                  runGeneratorWithVaultAccess(
+                    vaultScope?.access,
+                    () =>
+                      service.resume(workflowName, resolvedRun.id, {
+                        signal: runController.signal,
+                        inputs: request.inputs ?? {},
+                        fromStep: request.from,
+                        fromJob: request.fromJob,
+                        suspendedOnly: request.suspendedOnly,
+                        instanceId: ctx.instanceId,
+                        continuation: request.continuation,
+                        requireCurrentRecord: request.requireCurrentRecord,
+                      }),
+                  ),
+                  (completed) => {
+                    completedRun.run = completed;
+                    return Promise.resolve(undefined);
+                  },
                 )
               ) {
-                if (event.kind === "completed") completedRun.run = event.run;
                 const mapped = mapWorkflowExecutionEvent(event, runRepo);
                 if (!isWireEvent(mapped)) continue;
                 const serialized = serializeEvent(

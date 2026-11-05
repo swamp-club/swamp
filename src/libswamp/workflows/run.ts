@@ -573,11 +573,7 @@ export async function* deferCompletedForOutputs(
   }
 }
 
-/**
- * a mapped run view with the attributes and outputs of stepOutputs added,
- * placed and masked as toRunData places them; every other field of the view
- * is kept as given
- */
+/** placed and masked through toRunData, so the live run's sensitive values apply */
 export function withRunStepOutputs(
   view: WorkflowRunView,
   run: WorkflowRun,
