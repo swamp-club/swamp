@@ -26,6 +26,7 @@ import {
   withCapturedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
 import { resolveHttpRoute, traceHttpRequests } from "./http_request_span.ts";
+import { SERVE_REQUEST_PATH } from "./protocol.ts";
 
 const INFO = {
   remoteAddr: { transport: "tcp", hostname: "127.0.0.1", port: 1234 },
@@ -49,6 +50,7 @@ Deno.test("resolveHttpRoute: maps known paths to low-cardinality routes", () => 
     ["/auth/dashboard/session", "/auth/dashboard/session"],
     ["/api/v1/health/stream", "/api/v1/health/stream"],
     ["/api/v1/cancel", "/api/v1/cancel"],
+    [SERVE_REQUEST_PATH, "/api/v1/request"],
     ["/api/v1/cancel/method-run/abc-123", "/api/v1/cancel/{kind}/{id}"],
     ["/api/v1/cancel/workflow-run/def", "/api/v1/cancel/{kind}/{id}"],
     ["/dashboard", "/dashboard"],
@@ -95,6 +97,17 @@ Deno.test("traceHttpRequests: names the span by method and route with status", a
     assertEquals(span.attributes["url.path"], undefined);
     assertEquals(span.attributes["http.response.status_code"], 202);
     assertEquals(span.status.code, SpanStatusCode.UNSET);
+  });
+});
+
+Deno.test("traceHttpRequests: a refused request on the HTTP request route keeps its route", async () => {
+  await withCapturedSpans(async (spans) => {
+    const handler = traceHttpRequests(() =>
+      new Response("unauthorized", { status: 401 })
+    );
+    await handler(request(SERVE_REQUEST_PATH, { method: "POST" }), INFO);
+    const span = findSpan(spans, "POST /api/v1/request");
+    assertEquals(span.attributes["http.route"], "/api/v1/request");
   });
 });
 
