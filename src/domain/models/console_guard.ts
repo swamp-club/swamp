@@ -93,7 +93,8 @@ export interface ConsoleGuardOptions {
 }
 
 // in JSON mode captured console output goes into logs and, redacted, to stderr
-// to avoid stdout pollution; otherwise console output flows to stdout normally
+// to avoid stdout pollution; otherwise it flows to its own stream, redacted
+// once a run has secrets
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
@@ -101,18 +102,19 @@ export async function withConsoleGuard<T>(
 ): Promise<T> {
   const effectiveJsonMode = options?.jsonMode ?? _jsonMode;
 
-  if (!effectiveJsonMode) {
-    return await fn();
-  }
-
-  allActiveLogs.add(logs);
+  if (effectiveJsonMode) allActiveLogs.add(logs);
   if (activeGuards === 0) {
     for (const method of CAPTURED_METHODS) {
-      preGuardConsole.set(method, console[method] as ConsoleMethod);
+      const original = console[method] as ConsoleMethod;
+      preGuardConsole.set(method, original);
       // A line cannot be attributed to one of several concurrent methods, so
       // every active guard records it, but it reaches stderr only once.
       // deno-lint-ignore no-explicit-any
       (console as any)[method] = (...args: unknown[]) => {
+        if (allActiveLogs.size === 0 && !runFileSink.hasActiveSecrets) {
+          original(...args);
+          return;
+        }
         const line = method === "dir"
           ? Deno.inspect(args[0], {
             ...args[1] as Deno.InspectOptions | undefined,
@@ -121,6 +123,14 @@ export async function withConsoleGuard<T>(
             breakLength: Infinity,
           })
           : args.map(formatArg).join(" ");
+        if (allActiveLogs.size === 0) {
+          // console.dir would quote a string, so the rendered line goes to log
+          const target = method === "dir"
+            ? preGuardConsole.get("log")!
+            : original;
+          target(runFileSink.redactActive(line));
+          return;
+        }
         for (const logArray of allActiveLogs) {
           logArray.push(line);
         }

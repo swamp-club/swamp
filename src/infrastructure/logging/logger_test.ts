@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import type { LogRecord } from "@logtape/logtape";
 import { join } from "@std/path";
 import {
+  createRedactingSink,
   createStderrSink,
   endSystemPipeOutput,
   escapeLogTemplate,
@@ -616,6 +618,71 @@ Deno.test("initializeLogging: stderrOnly masks an active redactor's secrets unde
 
       const output = capture.stderr.join("");
       assertEquals(output.includes("secret-3526"), false, output);
+      assertEquals(output.split("***").length - 1, secrets.length, output);
+    } finally {
+      runFileSink.unregisterRedactor(handle);
+      capture.restore();
+    }
+  }
+});
+
+Deno.test("createRedactingSink: hands the inner sink a record with every active redactor's secrets masked and leaves the original intact", () => {
+  const secret = `stdout-secret-${crypto.randomUUID()}`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const handle = runFileSink.registerRedactor(redactor);
+  const value = { token: secret };
+  const record = {
+    ...recordHolding(secret),
+    message: ["value ", value, ""],
+    properties: { v: value, s: secret },
+  };
+  const received: LogRecord[] = [];
+  try {
+    createRedactingSink((r) => received.push(r))(record);
+    const seen = JSON.stringify(received);
+    assertEquals(seen.includes(secret), false, seen);
+    assertStringIncludes(seen, "***");
+    assertEquals(record.message[1], value);
+    assertEquals(record.properties.s, secret);
+  } finally {
+    runFileSink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("createRedactingSink: passes the record through unchanged when no redactor is active", () => {
+  const record = recordHolding("plain-value");
+  const received: LogRecord[] = [];
+  createRedactingSink((r) => received.push(r))(record);
+  assertEquals(received.length, 1);
+  assertEquals(received[0] === record, true);
+});
+
+Deno.test("initializeLogging: under --log the stdout console sinks mask an active redactor's secrets in run log lines under both formatters", async () => {
+  const secrets = [
+    `run-secret-${crypto.randomUUID()}`,
+    `quo"ted\\run-secret-${crypto.randomUUID()}`,
+  ];
+  for (const prettyOutput of [false, true]) {
+    const capture = captureStreams();
+    const redactor = new SecretRedactor();
+    for (const secret of secrets) redactor.addSecret(secret);
+    const handle = runFileSink.registerRedactor(redactor);
+    try {
+      await initializeLogging({
+        prettyOutput,
+        forceLog: true,
+        noColor: true,
+        _reset: true,
+        _logsConfig: { exporterKind: "none" },
+      });
+
+      for (const secret of secrets) {
+        getRunLogger("demo", "show").info`logger: ${secret}`;
+      }
+
+      const output = capture.stdout.join("\n");
+      assertEquals(output.includes("run-secret-"), false, output);
       assertEquals(output.split("***").length - 1, secrets.length, output);
     } finally {
       runFileSink.unregisterRedactor(handle);

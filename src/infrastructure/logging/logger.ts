@@ -63,6 +63,35 @@ function writeStderr(text: string): void {
   Deno.stderr.writeSync(stderrEncoder.encode(text));
 }
 
+// mask complete rendered values before layout can wrap or abbreviate a secret;
+// the message becomes a literal so the formatter only lays out scrubbed text
+function redactRecord(record: LogRecord): LogRecord {
+  const redactString = (value: unknown) =>
+    typeof value === "string" ? runFileSink.redactActive(value) : value;
+  const render = (value: unknown) =>
+    runFileSink.redactActive(Deno.inspect(redactString(value), {
+      colors: false,
+      strAbbreviateSize: Infinity,
+      breakLength: Infinity,
+      iterableLimit: Infinity,
+    }));
+  const message = record.message.map((value, index) =>
+    index % 2 === 0 ? String(value) : render(value)
+  ).join("");
+  return {
+    ...record,
+    message: [runFileSink.redactActive(message)],
+    properties: Object.fromEntries(
+      Object.entries(record.properties).map(([key, value]) => [
+        key,
+        value !== null && typeof value === "object"
+          ? render(value)
+          : redactString(value),
+      ]),
+    ),
+  };
+}
+
 /**
  * lines pass through runFileSink.redactActive so a dispatch's secrets are
  * masked in method log lines and failure warnings; the formatter owns the
@@ -77,35 +106,14 @@ export function createStderrSink(
       write(formatter(record));
       return;
     }
-    // mask complete rendered values before layout can wrap or abbreviate a
-    // secret; the message becomes a literal so the formatter only lays out
-    // scrubbed text; other sinks get the original record
-    const redactString = (value: unknown) =>
-      typeof value === "string" ? runFileSink.redactActive(value) : value;
-    const render = (value: unknown) =>
-      runFileSink.redactActive(Deno.inspect(redactString(value), {
-        colors: false,
-        strAbbreviateSize: Infinity,
-        breakLength: Infinity,
-        iterableLimit: Infinity,
-      }));
-    const message = record.message.map((value, index) =>
-      index % 2 === 0 ? String(value) : render(value)
-    ).join("");
-    const redacted = {
-      ...record,
-      message: [runFileSink.redactActive(message)],
-      properties: Object.fromEntries(
-        Object.entries(record.properties).map(([key, value]) => [
-          key,
-          value !== null && typeof value === "object"
-            ? render(value)
-            : redactString(value),
-        ]),
-      ),
-    };
-    write(runFileSink.redactActive(formatter(redacted)));
+    write(runFileSink.redactActive(formatter(redactRecord(record))));
   };
+}
+
+// the inner sink gets a scrubbed copy; other sinks keep the original record
+export function createRedactingSink(inner: Sink): Sink {
+  return (record) =>
+    inner(runFileSink.hasActiveSecrets ? redactRecord(record) : record);
 }
 
 let isInitialized = false;
@@ -195,9 +203,9 @@ export async function initializeLogging(
   // pretty one included
   const consoleSink: Sink = options.stderrOnly
     ? createStderrSink()
-    : getConsoleSink({
+    : createRedactingSink(getConsoleSink({
       formatter: createDynamicFormatter(textFormatter()),
-    });
+    }));
 
   const sinks: Record<string, Sink | (Sink & Disposable)> = {
     console: consoleSink,
@@ -226,7 +234,7 @@ export async function initializeLogging(
     const prettyFormatter = createDynamicFormatter(prettyFormat);
     sinks["pretty"] = options.stderrOnly
       ? createStderrSink(prettyFormatter)
-      : getConsoleSink({ formatter: prettyFormatter });
+      : createRedactingSink(getConsoleSink({ formatter: prettyFormatter }));
   }
 
   // OTLP log export goes over the network only, orthogonal to output mode; a

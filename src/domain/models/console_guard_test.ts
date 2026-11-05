@@ -379,3 +379,128 @@ Deno.test("withConsoleGuard: console.dir masks a secret learned during execution
     runFileSink.unregisterRedactor(handle);
   }
 });
+
+Deno.test("withConsoleGuard: in log mode masks an active redactor's secrets on each console stream and captures nothing", async () => {
+  const secret = `log-mode-secret-${crypto.randomUUID()}`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const handle = runFileSink.registerRedactor(redactor);
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalDir = console.dir;
+  const stdout: unknown[][] = [];
+  const stderr: unknown[][] = [];
+  const logStub = (...args: unknown[]) => stdout.push(args);
+  const errorStub = (...args: unknown[]) => stderr.push(args);
+  console.log = logStub;
+  console.error = errorStub;
+  const logs: string[] = [];
+
+  try {
+    await withConsoleGuard(
+      () => {
+        console.log("console:", secret);
+        console.error(`failed with ${secret}`);
+        console.dir({ token: secret });
+      },
+      logs,
+      { jsonMode: false },
+    );
+
+    assertEquals(stdout, [["console: ***"], ['{ token: "***" }']]);
+    assertEquals(stderr, [["failed with ***"]]);
+    assertEquals(logs, []);
+    assertEquals(console.log, logStub);
+    assertEquals(console.error, errorStub);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    console.dir = originalDir;
+    runFileSink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("withConsoleGuard: in log mode forwards the original arguments when no secret is active", async () => {
+  const originalLog = console.log;
+  const calls: unknown[][] = [];
+  console.log = (...args: unknown[]) => calls.push(args);
+  const value = { nested: [1, 2] };
+
+  try {
+    await withConsoleGuard(
+      () => {
+        console.log("%s value", "formatted", value);
+      },
+      [],
+      { jsonMode: false },
+    );
+
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0][0], "%s value");
+    assertEquals(calls[0][2] === value, true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("withConsoleGuard: in log mode restores the console after a throw", async () => {
+  const originalLog = console.log;
+  const stub = (..._args: unknown[]) => {};
+  console.log = stub;
+
+  try {
+    let thrown = false;
+    try {
+      await withConsoleGuard(
+        () => {
+          throw new Error("boom");
+        },
+        [],
+        { jsonMode: false },
+      );
+    } catch {
+      thrown = true;
+    }
+
+    assertEquals(thrown, true);
+    assertEquals(console.log, stub);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("withConsoleGuard: a JSON-mode guard keeps capturing while a log-mode guard is active", async () => {
+  const stderr: string[] = [];
+  setConsoleGuardStderrWriter((line) => stderr.push(line));
+  const jsonLogs: string[] = [];
+  const logModeLogs: string[] = [];
+  const logModeEntered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+
+  try {
+    const logMode = withConsoleGuard(
+      async () => {
+        logModeEntered.resolve();
+        await release.promise;
+      },
+      logModeLogs,
+      { jsonMode: false },
+    );
+    await logModeEntered.promise;
+    await withConsoleGuard(
+      () => {
+        console.log("from json mode");
+      },
+      jsonLogs,
+      { jsonMode: true },
+    );
+    release.resolve();
+    await logMode;
+
+    assertEquals(jsonLogs, ["from json mode"]);
+    assertEquals(logModeLogs, []);
+    assertEquals(stderr, ["from json mode"]);
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
+  }
+});
