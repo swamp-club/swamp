@@ -19,6 +19,7 @@
 
 import type { WorkspaceRegistryRepository } from "../domain/workspace/workspace_registry.ts";
 import { parseWorkspaceName } from "../domain/workspace/workspace_name.ts";
+import type { DashboardAsset } from "../serve/dashboard_assets.ts";
 import {
   ENGINE_PROTOCOL,
   type EngineRequest,
@@ -36,6 +37,13 @@ export interface ControlRuntimeOptions {
   readonly workspaces: WorkspaceRegistryRepository;
   isRepo(path: string): Promise<boolean>;
   realPath(path: string): Promise<string>;
+  /** the file answering `/dashboard/<subPath>`, SPA fallback included */
+  locateAsset(subPath: string): Promise<DashboardAsset | "forbidden" | null>;
+  readAsset(
+    file: string,
+    offset: number,
+    length: number,
+  ): Promise<{ readonly bytes: Uint8Array; readonly size: number }>;
   readonly engineVersion: string;
   readonly gitSha: string;
 }
@@ -50,6 +58,19 @@ const UNKNOWN_WORKSPACE = new ControlFailure(
   "unknown_workspace",
   "No registered workspace by that name",
 );
+
+const NOT_A_REPO = new ControlFailure(
+  "not_a_repo",
+  "That folder is not a swamp repository",
+);
+
+const UNKNOWN_ASSET = new ControlFailure(
+  "unknown_asset",
+  "No dashboard asset at that path",
+);
+
+/** base64 of a chunk stays under the 64 KiB control reply limit */
+export const ASSET_CHUNK_BYTES = 32 * 1024;
 
 /**
  * The hub's repository-less engine: Go asks it for workspace facts because Go
@@ -137,6 +158,10 @@ export class ControlRuntime {
         return await this.#resolve(params.name);
       case "workspace.list":
         return { workspaces: await this.#list() };
+      case "workspace.inspect":
+        return await this.#inspect(params.path);
+      case "asset.get":
+        return await this.#asset(params.path, params.offset);
       case "engine.status":
         return {
           state: this.#state,
@@ -181,12 +206,70 @@ export class ControlRuntime {
     };
   }
 
+  /** what the start page lists: registered folders that are still repos */
   async #list(): Promise<HubWorkspace[]> {
     const registry = await this.#options.workspaces.load();
-    return (registry?.list() ?? []).map((entry) => ({
+    const entries = registry?.list() ?? [];
+    const repos = await Promise.all(
+      entries.map((entry) => this.#options.isRepo(entry.path)),
+    );
+    return entries.filter((_, i) => repos[i]).map((entry) => ({
       name: entry.name,
       path: entry.path,
       trusted: registry!.isTrusted(entry.path),
     }));
   }
+
+  async #inspect(path: unknown): Promise<{ path: string }> {
+    if (typeof path !== "string" || path === "") throw NOT_A_REPO;
+    let real: string;
+    try {
+      real = await this.#options.realPath(path);
+    } catch {
+      throw NOT_A_REPO;
+    }
+    if (!await this.#options.isRepo(real)) throw NOT_A_REPO;
+    return { path: real };
+  }
+
+  async #asset(path: unknown, offset: unknown): Promise<unknown> {
+    if (
+      typeof path !== "string" ||
+      typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0
+    ) {
+      throw new ControlFailure("invalid_request", "Invalid asset request");
+    }
+    const asset = await this.#options.locateAsset(path);
+    if (asset === "forbidden") throw UNKNOWN_ASSET;
+    if (asset === null) {
+      throw new ControlFailure(
+        "assets_unavailable",
+        "Dashboard assets not available in this build",
+      );
+    }
+    let chunk: { bytes: Uint8Array; size: number };
+    try {
+      chunk = await this.#options.readAsset(
+        asset.file,
+        offset,
+        ASSET_CHUNK_BYTES,
+      );
+    } catch {
+      throw UNKNOWN_ASSET;
+    }
+    return {
+      contentType: asset.contentType,
+      cacheControl: asset.cacheControl,
+      size: chunk.size,
+      offset,
+      data: toBase64(chunk.bytes),
+      done: offset + chunk.bytes.length >= chunk.size,
+    };
+  }
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }

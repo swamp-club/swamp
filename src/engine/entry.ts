@@ -41,6 +41,11 @@ import {
 import type { ReadOnlyRepoOpener } from "../serve/local/read_only_dashboard.ts";
 import { EngineRuntime } from "./runtime.ts";
 import { ControlRuntime } from "./control_runtime.ts";
+import {
+  DASHBOARD_DIST_DIR,
+  locateDashboardRoute,
+  readDashboardChunk,
+} from "../serve/dashboard_assets.ts";
 import { WorkspaceRegistryFileRepository } from "../infrastructure/persistence/workspace_registry_file_repository.ts";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
@@ -322,6 +327,8 @@ async function runControlEngine(
     workspaces: new WorkspaceRegistryFileRepository(),
     isRepo: (path) => exists(join(path, ".swamp.yaml")),
     realPath: (path) => Deno.realPath(path),
+    locateAsset: (subPath) => locateDashboardRoute(DASHBOARD_DIST_DIR, subPath),
+    readAsset: readDashboardChunk,
     engineVersion: identity.version,
     gitSha: identity.gitSha ?? "unknown",
   }, output.stream);

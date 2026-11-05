@@ -17,19 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   type WorkspaceEntry,
   WorkspaceRegistry,
   type WorkspaceRegistryRepository,
 } from "../domain/workspace/workspace_registry.ts";
 import {
+  ASSET_CHUNK_BYTES,
   ControlRuntime,
   type ControlRuntimeOptions,
 } from "./control_runtime.ts";
 import { ENGINE_PROTOCOL, readEngineFrames } from "./protocol.ts";
 
 const GENERATION = "generation-1";
+
+const ASSET = new Uint8Array(ASSET_CHUNK_BYTES * 2 + 7).map((_, i) => i % 251);
 
 function registryOf(
   entries: WorkspaceEntry[],
@@ -58,8 +61,27 @@ function options(
       { name: "beta", path: "/repos/beta", createdAt: "2026-01-01T00:00:00Z" },
       { name: "gone", path: "/repos/gone", createdAt: "2026-01-01T00:00:00Z" },
     ]),
-    isRepo: (path) => Promise.resolve(path !== "/repos/gone"),
-    realPath: (path) => Promise.resolve(`/real${path}`),
+    isRepo: (path) => Promise.resolve(!path.endsWith("/repos/gone")),
+    realPath: (path) =>
+      path.startsWith("/missing")
+        ? Promise.reject(new Deno.errors.NotFound(path))
+        : Promise.resolve(path.startsWith("/real") ? path : `/real${path}`),
+    locateAsset: (subPath) =>
+      Promise.resolve(
+        subPath.includes("..") ? "forbidden" : {
+          file: subPath.startsWith("assets/")
+            ? `/dist/${subPath}`
+            : "/dist/index.html",
+          contentType: "application/javascript",
+          cacheControl: subPath.startsWith("assets/")
+            ? "public, max-age=31536000, immutable"
+            : "no-cache",
+        },
+      ),
+    readAsset: (_file, offset, length) => {
+      const bytes = ASSET.subarray(offset, offset + length);
+      return Promise.resolve({ bytes, size: ASSET.length });
+    },
     engineVersion: "1.2.3",
     gitSha: "abc",
     ...overrides,
@@ -167,7 +189,7 @@ Deno.test("ControlRuntime: registry failures cross the pipe without their paths"
   });
 });
 
-Deno.test("ControlRuntime: workspace.list reports every registered workspace", async () => {
+Deno.test("ControlRuntime: workspace.list reports the registered folders that are still repos", async () => {
   const replies = await exchange(options(), [
     hello,
     request("list", "workspace.list"),
@@ -177,8 +199,90 @@ Deno.test("ControlRuntime: workspace.list reports every registered workspace", a
     [
       { name: "alpha", path: "/repos/alpha", trusted: true },
       { name: "beta", path: "/repos/beta", trusted: false },
-      { name: "gone", path: "/repos/gone", trusted: false },
     ],
+  );
+});
+
+Deno.test("ControlRuntime: workspace.inspect answers a repo's realpath and refuses anything else", async () => {
+  const replies = await exchange(options(), [
+    hello,
+    request("repo", "workspace.inspect", { path: "/repos/alpha" }),
+    request("plain", "workspace.inspect", { path: "/repos/gone" }),
+    request("missing", "workspace.inspect", { path: "/missing/x" }),
+    request("untyped", "workspace.inspect", { path: 3 }),
+  ]);
+  assertEquals(replies.repo.result, { path: "/real/repos/alpha" });
+  for (const id of ["plain", "missing", "untyped"]) {
+    assertEquals(
+      (replies[id].error as { code: string }).code,
+      "not_a_repo",
+      id,
+    );
+  }
+});
+
+Deno.test("ControlRuntime: asset.get returns a file in chunks that fit a control reply", async () => {
+  const replies = await exchange(options(), [
+    hello,
+    request("c0", "asset.get", { path: "assets/app.js", offset: 0 }),
+    request("c1", "asset.get", {
+      path: "assets/app.js",
+      offset: ASSET_CHUNK_BYTES,
+    }),
+    request("c2", "asset.get", {
+      path: "assets/app.js",
+      offset: ASSET_CHUNK_BYTES * 2,
+    }),
+  ]);
+  const chunks = ["c0", "c1", "c2"].map((id) =>
+    replies[id].result as {
+      data: string;
+      done: boolean;
+      size: number;
+      offset: number;
+      cacheControl: string;
+    }
+  );
+  assertEquals(chunks.map((c) => c.done), [false, false, true]);
+  assertEquals(chunks[0].cacheControl, "public, max-age=31536000, immutable");
+  const joined = chunks.flatMap((c) =>
+    Array.from(atob(c.data), (ch) => ch.charCodeAt(0))
+  );
+  assertEquals(new Uint8Array(joined), ASSET);
+  for (const id of ["c0", "c1", "c2"]) {
+    assert(JSON.stringify(replies[id]).length < 64 * 1024, id);
+  }
+});
+
+Deno.test("ControlRuntime: asset.get refuses a path outside the bundle and bad offsets", async () => {
+  const replies = await exchange(options(), [
+    hello,
+    request("escape", "asset.get", { path: "../secret", offset: 0 }),
+    request("negative", "asset.get", { path: "index.html", offset: -1 }),
+    request("fallback", "asset.get", { path: "w/alpha", offset: 0 }),
+  ]);
+  assertEquals(
+    (replies.escape.error as { code: string }).code,
+    "unknown_asset",
+  );
+  assertEquals(
+    (replies.negative.error as { code: string }).code,
+    "invalid_request",
+  );
+  assertEquals(
+    (replies.fallback.result as { cacheControl: string }).cacheControl,
+    "no-cache",
+  );
+});
+
+Deno.test("ControlRuntime: asset.get without a bundle says so", async () => {
+  const replies = await exchange(
+    options({ locateAsset: () => Promise.resolve(null) }),
+    [hello, request("a", "asset.get", { path: "", offset: 0 })],
+  );
+  assertEquals(
+    (replies.a.error as { code: string }).code,
+    "assets_unavailable",
   );
 });
 

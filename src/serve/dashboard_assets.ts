@@ -58,10 +58,17 @@ export async function dashboardBundleExists(
   }
 }
 
-export async function serveDashboardFile(
+export interface DashboardAsset {
+  readonly file: string;
+  readonly contentType: string;
+  readonly cacheControl: string;
+}
+
+/** null for a file the bundle lacks; "forbidden" for a path outside it */
+export async function locateDashboardFile(
   distDir: string,
   filePath: string,
-): Promise<Response | null> {
+): Promise<DashboardAsset | "forbidden" | null> {
   const root = resolve(distDir);
   const target = resolve(join(root, normalize(filePath)));
   if (
@@ -69,19 +76,48 @@ export async function serveDashboardFile(
     (!target.startsWith(root + "/") && target !== root &&
       !target.startsWith(root + "\\"))
   ) {
-    return new Response("Forbidden", { status: 403 });
+    return "forbidden";
   }
   try {
-    const content = await Deno.readFile(target);
-    const ext = extname(target);
-    const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
-    const isIndexHtml = basename(target) === "index.html";
-    return new Response(content, {
+    if (!(await Deno.stat(target)).isFile) return null;
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) return null;
+    throw e;
+  }
+  return {
+    file: target,
+    contentType: MIME_TYPES[extname(target)] ?? "application/octet-stream",
+    cacheControl: basename(target) === "index.html"
+      ? "no-cache"
+      : "public, max-age=31536000, immutable",
+  };
+}
+
+/**
+ * The file a `/dashboard/<subPath>` request is answered with: the SPA falls
+ * back to index.html for any path the bundle lacks.
+ */
+export async function locateDashboardRoute(
+  distDir: string,
+  subPath: string,
+): Promise<DashboardAsset | "forbidden" | null> {
+  const found = await locateDashboardFile(distDir, subPath || "index.html");
+  if (found !== null) return found;
+  return await locateDashboardFile(distDir, "index.html");
+}
+
+export async function serveDashboardFile(
+  distDir: string,
+  filePath: string,
+): Promise<Response | null> {
+  const asset = await locateDashboardFile(distDir, filePath);
+  if (asset === "forbidden") return new Response("Forbidden", { status: 403 });
+  if (asset === null) return null;
+  try {
+    return new Response(await Deno.readFile(asset.file), {
       headers: {
-        "content-type": contentType,
-        "cache-control": isIndexHtml
-          ? "no-cache"
-          : "public, max-age=31536000, immutable",
+        "content-type": asset.contentType,
+        "cache-control": asset.cacheControl,
       },
     });
   } catch (e) {
@@ -114,4 +150,23 @@ export async function serveDashboardRoute(
     "Dashboard assets not available in this build",
     { status: 404, headers: { "content-type": "text/plain" } },
   );
+}
+
+/** up to `length` bytes from `offset`, and the file's size */
+export async function readDashboardChunk(
+  file: string,
+  offset: number,
+  length: number,
+): Promise<{ bytes: Uint8Array; size: number }> {
+  using handle = await Deno.open(file, { read: true });
+  const size = (await handle.stat()).size;
+  await handle.seek(Math.min(offset, size), Deno.SeekMode.Start);
+  const bytes = new Uint8Array(Math.max(0, Math.min(length, size - offset)));
+  let read = 0;
+  while (read < bytes.length) {
+    const n = await handle.read(bytes.subarray(read));
+    if (n === null) break;
+    read += n;
+  }
+  return { bytes: bytes.subarray(0, read), size };
 }
