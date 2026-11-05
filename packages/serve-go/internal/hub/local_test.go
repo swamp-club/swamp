@@ -37,13 +37,25 @@ import (
 )
 
 type fakeSiteControl struct {
-	files map[string]AssetChunk
-	calls sync.Map // path -> *atomic.Int32
-	list  []Workspace
-	chunk int
+	files   map[string]AssetChunk
+	calls   sync.Map // path -> *atomic.Int32
+	list    []Workspace
+	trusted []string
+	chunk   int
 }
 
 func (c *fakeSiteControl) List(context.Context) ([]Workspace, error) { return c.list, nil }
+
+func (c *fakeSiteControl) Trust(_ context.Context, name string) (Workspace, error) {
+	c.trusted = append(c.trusted, name)
+	for _, w := range c.list {
+		if w.Name == name {
+			w.Trusted = true
+			return w, nil
+		}
+	}
+	return Workspace{}, ErrUnknownWorkspace
+}
 
 func (c *fakeSiteControl) AssetChunk(_ context.Context, path string, offset int64) (AssetChunk, error) {
 	counter, _ := c.calls.LoadOrStore(path, &atomic.Int32{})

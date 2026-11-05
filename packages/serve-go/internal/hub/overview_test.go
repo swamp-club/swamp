@@ -392,3 +392,42 @@ func TestHubStartsAServeWithoutOpeningAPage(t *testing.T) {
 		t.Fatalf("start a running serve: %d, %d starts", code, p.startCount("/repos/a"))
 	}
 }
+
+func TestHubTrustRecordsItAndReplacesTheUntrustedServe(t *testing.T) {
+	control := siteFiles()
+	control.list = []Workspace{{Name: "u", Path: "/repos/u"}}
+	p := newSiteHarness(t, control, Workspace{Name: "u", Path: "/repos/u"})
+	_, manage := p.manageToken(t)
+	if w := p.serve(p.request("GET", "/w/u/api/v1/health", p.token, nil)); w.Code != 200 || p.startCount("/repos/u") != 1 {
+		t.Fatalf("untrusted health: %d", w.Code)
+	}
+	trust := func(token, body string) int {
+		r := p.request("POST", "/api/local/hub/workspaces/trust", token, strings.NewReader(body))
+		r.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", p.port))
+		return p.serve(r).Code
+	}
+	if code := trust(p.token, `{"name":"u"}`); code != 403 {
+		t.Fatalf("trust without manage: %d", code)
+	}
+	if code := trust(manage, `{"name":"u","path":"/repos/u"}`); code != 400 {
+		t.Fatalf("trust a folder: %d", code)
+	}
+	if code := trust(manage, `{"name":"nope"}`); code != 404 {
+		t.Fatalf("trust unknown: %d", code)
+	}
+	if code := trust(manage, `{"name":"u"}`); code != 204 || len(control.trusted) == 0 || control.trusted[len(control.trusted)-1] != "u" {
+		t.Fatalf("trust: %d %v", code, control.trusted)
+	}
+	if engine := p.overview(t, manage).Workspaces[0].Engine; engine != nil {
+		t.Fatalf("untrusted serve kept after trust: %+v", engine)
+	}
+	p.resolver.set(Workspace{Name: "u", Path: "/repos/u", Trusted: true})
+	if w := p.serve(p.request("GET", "/w/u/api/v1/health", p.token, nil)); w.Code != 200 || p.startCount("/repos/u") != 2 {
+		t.Fatalf("trusted restart: %d, %d starts", w.Code, p.startCount("/repos/u"))
+	}
+	for _, e := range p.hub.Engines() {
+		if e.Workspace.Name == "u" && !e.Workspace.Trusted {
+			t.Fatal("the new serve is untrusted")
+		}
+	}
+}

@@ -126,6 +126,8 @@ export const STOP_HUB_PATH = "/api/local/hub/stop";
 
 export const START_SERVE_PATH = "/api/local/hub/workspaces/start";
 
+export const TRUST_WORKSPACE_PATH = "/api/local/hub/workspaces/trust";
+
 /** the body that starts a workspace's serve; a lease-bound folder names its path */
 export function startServeBody(
   name: string,

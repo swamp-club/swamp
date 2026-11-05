@@ -57,6 +57,7 @@
       "workspace.resolve",
       "workspace.list",
       "workspace.inspect",
+      "workspace.trust",
       "asset.get",
       "engine.status",
       "engine.quiesce",

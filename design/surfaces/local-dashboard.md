@@ -90,7 +90,11 @@ A stopped workspace has a **Start** button, which starts its serve without
 opening a page; it then stays up for the page idle grace. A running one has
 **Open**, which loads its dashboard, and **Stop**, which ends its serve (its
 tabs reconnect to a new one). A lease-bound folder has no Open: only its own
-`swamp dashboard` can open it. You can also end another session (its command
+`swamp dashboard` can open it. An untrusted registered workspace has
+**Trust**, which asks first and then records `trustedAt` in `workspaces.json`
+as the start page's trust screen does; its untrusted serve is replaced, so
+open tabs reconnect to one that loads extensions. You can also end another
+session (its command
 exits with "The swamp hub ended this session.") or stop an auto-launched hub;
 each stop asks first. A service hub can't be stopped there, since its service
 manager would restart it. A workspace's switcher leads back to the overview. A

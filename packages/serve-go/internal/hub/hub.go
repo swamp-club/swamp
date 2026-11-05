@@ -445,6 +445,19 @@ func (h *Hub) StartWorkspace(ctx context.Context, workspace Workspace) error {
 	return nil
 }
 
+// Retrusted forgets a workspace's cached lookup and retires its untrusted
+// engine, so its tabs reconnect to one that loads extensions.
+func (h *Hub) Retrusted(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.resolved, name)
+	if e := h.engines[name]; e != nil && !e.workspace.Trusted {
+		delete(h.engines, name)
+		delete(h.pending, name)
+		h.retire(e)
+	}
+}
+
 // StopEngine retires one engine now, closing its sessions; the next request
 // for its workspace starts a new generation.
 func (h *Hub) StopEngine(id string) bool {

@@ -46,6 +46,7 @@ export interface ControlRuntimeOptions {
   ): Promise<{ readonly bytes: Uint8Array; readonly size: number }>;
   readonly engineVersion: string;
   readonly gitSha: string;
+  readonly now?: () => Date;
 }
 
 class ControlFailure extends Error {
@@ -160,6 +161,8 @@ export class ControlRuntime {
         return { workspaces: await this.#list() };
       case "workspace.inspect":
         return await this.#inspect(params.path);
+      case "workspace.trust":
+        return await this.#trust(params.name);
       case "asset.get":
         return await this.#asset(params.path, params.offset);
       case "engine.status":
@@ -204,6 +207,21 @@ export class ControlRuntime {
       path: await this.#options.realPath(entry.path),
       trusted: registry!.isTrusted(entry.path),
     };
+  }
+
+  /**
+   * records the user's trust in a registered workspace, as the start page's
+   * trust confirmation does; the hub asks only for a manage lease's page
+   */
+  async #trust(name: unknown): Promise<HubWorkspace> {
+    const workspace = await this.#resolve(name);
+    const at = (this.#options.now?.() ?? new Date()).toISOString();
+    await this.#options.workspaces.update((registry) => {
+      const entry = registry.get(workspace.name);
+      if (!entry) throw UNKNOWN_WORKSPACE;
+      registry.markTrusted(entry.path, at);
+    });
+    return { ...workspace, trusted: true };
   }
 
   /** what the start page lists: registered folders that are still repos */

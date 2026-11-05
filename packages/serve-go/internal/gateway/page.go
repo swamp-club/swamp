@@ -107,6 +107,8 @@ type HubSite interface {
 	Overview(ctx context.Context, lease Lease) (interface{}, error)
 	// StartServe starts a workspace's engine; path names a lease-bound folder.
 	StartServe(ctx context.Context, name, path string) error
+	// TrustWorkspace lets a registered workspace's engine load its extensions.
+	TrustWorkspace(ctx context.Context, name string) error
 	StopEngine(id string) bool
 	RevokeLease(id string) bool
 	StopHub() error

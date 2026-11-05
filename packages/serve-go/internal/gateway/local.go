@@ -173,19 +173,24 @@ func (g *Gateway) serveHub(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
 	switch {
-	case len(parts) == 2 && parts[0] == "workspaces" && parts[1] == "start":
+	case len(parts) == 2 && parts[0] == "workspaces" && (parts[1] == "start" || parts[1] == "trust"):
 		var body struct {
 			Name string `json:"name"`
 			Path string `json:"path"`
 		}
 		raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
-		if err != nil || json.Unmarshal(raw, &body) != nil || body.Name == "" {
+		if err != nil || json.Unmarshal(raw, &body) != nil || body.Name == "" || (parts[1] == "trust" && body.Path != "") {
 			writeJSON(w, 400, map[string]string{"error": "invalid_request"})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), g.config.AuthTimeout)
 		defer cancel()
-		if err := site.StartServe(ctx, body.Name, body.Path); err != nil {
+		if parts[1] == "trust" {
+			err = site.TrustWorkspace(ctx, body.Name)
+		} else {
+			err = site.StartServe(ctx, body.Name, body.Path)
+		}
+		if err != nil {
 			writeRouteFailure(w, err)
 			return
 		}

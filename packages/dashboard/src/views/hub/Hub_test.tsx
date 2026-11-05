@@ -110,6 +110,8 @@ Deno.test("HubOverviewView: shows the hub, its workspaces with their serves, and
   // docs is registered and stopped, loose is a stopped lease-bound folder: both start.
   assertEquals(html.split(">Start</button>").length - 1, 2);
   assertEquals(html.includes(`<a href="/dashboard/w/`), false);
+  // Only docs is registered and untrusted; loose came from swamp dashboard.
+  assertEquals(html.split(">Trust</button>").length - 1, 1);
   assertStringIncludes(html, "started\nready");
   assertEquals(html.includes(`href="/dashboard/w/loose"`), false);
 });

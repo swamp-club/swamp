@@ -402,6 +402,8 @@ Outside any workspace, after the loopback and `Host` checks:
   workspace with its engine, the leases (never their tokens) and the last
   200 lines of the last 64 KiB of `--log-file`.
 - `POST /api/local/hub/workspaces/start` (`{name, path?}`),
+  `…/workspaces/trust` (`{name}`, through the control engine's
+  `workspace.trust`, which replaces the workspace's untrusted engine),
   `…/engines/<id>/stop`, `…/leases/<id>/revoke` and `…/stop` need a manage
   lease and `Origin` equal to the hub's own. Starting resolves a registered
   workspace, or a folder some live lease is bound to, and keeps the new engine

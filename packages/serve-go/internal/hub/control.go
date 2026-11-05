@@ -96,6 +96,17 @@ func (r ControlResolver) Resolve(ctx context.Context, name string) (Workspace, e
 	return workspace, err
 }
 
+// Trust records the user's trust in a registered workspace.
+func (r ControlResolver) Trust(ctx context.Context, name string) (Workspace, error) {
+	var workspace Workspace
+	err := r.Control.Call(ctx, "workspace.trust", map[string]string{"name": name}, &workspace)
+	var failure *protocol.Error
+	if errors.As(err, &failure) && failure.Code == "unknown_workspace" {
+		return Workspace{}, ErrUnknownWorkspace
+	}
+	return workspace, err
+}
+
 func (r ControlResolver) List(ctx context.Context) ([]Workspace, error) {
 	var listed struct {
 		Workspaces []Workspace `json:"workspaces"`

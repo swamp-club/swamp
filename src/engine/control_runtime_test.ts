@@ -311,3 +311,44 @@ Deno.test("ControlRuntime: the first frame must be the hub control hello", async
     exchange(options(), [request("a", "workspace.list")])
   );
 });
+
+Deno.test("ControlRuntime: workspace.trust records trust for a registered repo and nothing else", async () => {
+  let registry = WorkspaceRegistry.fromEntries([
+    { name: "beta", path: "/repos/beta", createdAt: "2026-01-01T00:00:00Z" },
+    { name: "gone", path: "/repos/gone", createdAt: "2026-01-01T00:00:00Z" },
+  ]);
+  const workspaces: WorkspaceRegistryRepository = {
+    load: () => Promise.resolve(registry),
+    update: (change) => {
+      const next = WorkspaceRegistry.fromEntries(registry.list());
+      const result = change(next);
+      registry = next;
+      return Promise.resolve(result);
+    },
+  };
+  const replies = await exchange(
+    options({ workspaces, now: () => new Date("2026-11-05T12:00:00Z") }),
+    [
+      hello,
+      request("beta", "workspace.trust", { name: "beta" }),
+      request("gone", "workspace.trust", { name: "gone" }),
+      request("nope", "workspace.trust", { name: "nope" }),
+      request("bad", "workspace.trust", { name: "../x" }),
+    ],
+  );
+  assertEquals(replies.beta.result, {
+    name: "beta",
+    path: "/real/repos/beta",
+    trusted: true,
+  });
+  assertEquals(registry.isTrusted("/repos/beta"), true);
+  assertEquals(registry.get("beta")?.trustedAt, "2026-11-05T12:00:00.000Z");
+  assertEquals(registry.isTrusted("/repos/gone"), false);
+  for (const id of ["gone", "nope", "bad"]) {
+    assertEquals(
+      (replies[id].error as { code: string }).code,
+      "unknown_workspace",
+      id,
+    );
+  }
+});

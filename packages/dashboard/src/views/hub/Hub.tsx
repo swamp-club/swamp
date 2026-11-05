@@ -38,6 +38,7 @@ import {
   startServeBody,
   STOP_HUB_PATH,
   stopEnginePath,
+  TRUST_WORKSPACE_PATH,
 } from "./client.ts";
 import {
   engineStatus,
@@ -248,13 +249,13 @@ function StartButton({ onStart }: { onStart: () => Promise<void> }) {
   );
 }
 
-function WorkspaceActions(
+function ServeActions(
   { workspace, act }: { workspace: HubWorkspace; act: Act },
 ) {
   const serve = workspace.engine;
   if (serve !== null && serve.running) {
     return (
-      <span className="hub-buttons">
+      <>
         {workspace.temporary || workspace.missing ? null : (
           <a
             className="btn-sm hub-open"
@@ -270,7 +271,7 @@ function WorkspaceActions(
             : "Stop this serve?"}
           onConfirm={() => act(stopEnginePath(serve.id)).catch(() => {})}
         />
-      </span>
+      </>
     );
   }
   // A registered folder that is gone has nothing to serve.
@@ -286,6 +287,31 @@ function WorkspaceActions(
           ),
         )}
     />
+  );
+}
+
+function WorkspaceActions(
+  { workspace, act }: { workspace: HubWorkspace; act: Act },
+) {
+  // Only a registered workspace records trust; a swamp dashboard folder already has it.
+  const trustable = !workspace.trusted && !workspace.temporary &&
+    !workspace.missing;
+  return (
+    <span className="hub-buttons">
+      {trustable
+        ? (
+          <ConfirmButton
+            label="Trust"
+            question={`Trust ${workspace.name}? Its extensions run as you.`}
+            onConfirm={() =>
+              act(TRUST_WORKSPACE_PATH, { name: workspace.name }).catch(
+                () => {},
+              )}
+          />
+        )
+        : null}
+      <ServeActions workspace={workspace} act={act} />
+    </span>
   );
 }
 

@@ -33,6 +33,7 @@ import (
 // SiteControl is what the dashboard site needs from the control engine.
 type SiteControl interface {
 	List(ctx context.Context) ([]Workspace, error)
+	Trust(ctx context.Context, name string) (Workspace, error)
 	AssetChunk(ctx context.Context, path string, offset int64) (AssetChunk, error)
 }
 

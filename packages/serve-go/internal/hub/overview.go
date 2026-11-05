@@ -247,6 +247,20 @@ func (s *Site) StartServe(ctx context.Context, name, path string) error {
 	return unknown
 }
 
+// TrustWorkspace records trust in a registered workspace, as the start page's
+// confirmation does, and replaces its untrusted engine.
+func (s *Site) TrustWorkspace(ctx context.Context, name string) error {
+	_, err := s.Control.Trust(ctx, name)
+	if errors.Is(err, ErrUnknownWorkspace) {
+		return &gateway.RouteError{Status: 404, Code: "unknown_workspace"}
+	}
+	if err != nil {
+		return err
+	}
+	s.Hub.Retrusted(name)
+	return nil
+}
+
 func (s *Site) StopEngine(id string) bool { return s.Hub.StopEngine(id) }
 
 func (s *Site) RevokeLease(id string) bool { return s.Leases != nil && s.Leases.Revoke(id) }
