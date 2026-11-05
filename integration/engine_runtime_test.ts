@@ -461,14 +461,15 @@ Deno.test("EngineRuntime: hung authentication stays bounded until accepted work 
     > = [];
     const h = harness(context, {
       authenticationDeps: {
-        readToken: base.readToken,
-        async readSecret() {
+        // The record read: a recent vault match skips the secret read.
+        async readToken(name) {
           if (blocked) {
             reads++;
             await release.promise;
           }
-          return secret;
+          return await base.readToken(name);
         },
+        readSecret: () => Promise.resolve(secret),
       },
       scheduleAuthenticationDeadline(delayMs, expire) {
         const deadline = { delayMs, expire, cancelled: false };
