@@ -71,6 +71,7 @@ export const SWAMP_OWNED_DIR_NAMES: readonly string[] = [
     "pulled-extensions",
     "cache",
     "start",
+    "serve-instances",
     "pre-v3-records",
     // A file: a pending managedConfig lockfile publish.
     "managed-config-lockfile-unpublished",

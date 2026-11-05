@@ -488,6 +488,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/persistence/server_credential_repository.ts: FileServerCredentialRepository":
       CONFIG_WRITE,
+    "src/infrastructure/persistence/serve_instance_record.ts: writeServeInstanceRecord":
+      CONFIG_WRITE,
     "src/infrastructure/persistence/shared_datastore_write_tracker.ts: SharedDatastoreWriteTracker":
       CONFIG_WRITE,
     "src/infrastructure/persistence/start_server_record.ts: writeStartServerRecord":

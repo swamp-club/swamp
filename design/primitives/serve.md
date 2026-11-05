@@ -1627,6 +1627,13 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   rejections and uncaught errors from extension code so the daemon stays up
   (`src/serve/unhandled_rejection_guard.ts`). The open-file limit is raised at
   startup.
+- **Instance record.** Once listening, every serve writes
+  `.swamp/serve-instances/<pid>.json` (mode 0600, never through a symlink):
+  pid, host, bound port, url, auth mode, whether the dashboard is on, start time
+  and version. It removes the record at shutdown; a reader deletes a record
+  whose pid is gone. The swamp hub's control engine reads these to list running
+  serves (`src/infrastructure/persistence/serve_instance_record.ts`). A failed
+  write only logs a warning.
 - **PID file and hot reload.** With `--hot-reload`, serve writes `Deno.pid` to
   `.swamp/serve.pid` and installs a SIGHUP handler. `swamp serve reload` sends
   the signal locally, or issues the `serve.reload` request with `--server`.

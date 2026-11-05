@@ -453,6 +453,10 @@ import {
 import { validateServerRepoExclusivity } from "./access_helpers.ts";
 import { VERSION } from "./version.ts";
 import {
+  removeServeInstanceRecord,
+  writeServeInstanceRecord,
+} from "../../infrastructure/persistence/serve_instance_record.ts";
+import {
   registerInstance,
   sendInstanceHeartbeat,
 } from "../../serve/oauth_client.ts";
@@ -6703,6 +6707,8 @@ export const serveCommand = new Command()
       }
       return authenticated;
     };
+    // Settles false when the record could not be written; never rejects.
+    let instanceRecord: Promise<boolean> | undefined;
     const server = Deno.serve(
       {
         port,
@@ -6711,6 +6717,21 @@ export const serveCommand = new Command()
         cert,
         key,
         onListen({ hostname, port: listenPort }) {
+          instanceRecord = writeServeInstanceRecord(resolvedRepoDir, {
+            pid: Deno.pid,
+            host: hostname,
+            port: listenPort,
+            url: `${tlsEnabled ? "https" : "http"}://${hostname}:${listenPort}`,
+            authMode: authConfig.mode,
+            dashboard: dashboardEnabled,
+            startedAt: new Date().toISOString(),
+            version: VERSION,
+          }).then(() => true, (error) => {
+            logger.warn`Could not record this serve for the swamp hub: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+            return false;
+          });
           if (isJson) {
             console.log(JSON.stringify({
               status: "listening",
@@ -8101,6 +8122,17 @@ export const serveCommand = new Command()
         } catch {
           // PID file may already be gone
         }
+      }
+      const recorded = instanceRecord;
+      if (recorded !== undefined) {
+        await stages.run("serve instance record", async () => {
+          if (!await recorded) return;
+          try {
+            await removeServeInstanceRecord(resolvedRepoDir, Deno.pid);
+          } catch {
+            // A record left behind is pruned once this pid is gone.
+          }
+        });
       }
       if (isJson) {
         console.log(JSON.stringify({ status: "stopped" }));
