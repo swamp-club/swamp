@@ -74,10 +74,12 @@ export function normalizeHookInput(
   }
 }
 
+const CLAUDE_SHELL_TOOL_NAMES = new Set(["Bash", "PowerShell"]);
+
 function normalizeClaude(
   raw: Record<string, unknown>,
 ): NormalizedHookInput | null {
-  if (raw.tool_name !== "Bash") return null;
+  if (!CLAUDE_SHELL_TOOL_NAMES.has(raw.tool_name as string)) return null;
 
   const toolInput = raw.tool_input as { command?: string } | undefined;
   const command = toolInput?.command;

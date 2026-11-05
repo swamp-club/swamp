@@ -94,8 +94,19 @@ Fail rows print a `hint:` line beneath them with the remediation step.
 Fields per check: `name`, `status` (`pass | fail | skip`), `message`, optional
 `hint` (on fail), optional `details` (structured payload for consumers).
 
-`overallStatus` is `pass` if no fails, `warn` if every check skipped, `fail`
+A passing check can also carry a `warning`. `overallStatus` is `fail` if any
+check fails, `warn` if every check skipped or any carries a warning, `pass`
 otherwise. Exit code mirrors `fail` only.
+
+For Claude, `agent-config-loadable` warns when the repo sits below its git root
+and no user-level hook is installed: Claude Code reads
+`.claude/settings.local.json` from the git root, so the repo's own audit hook
+does not fire for sessions started above it. Fix it with
+`swamp audit install --user`, which adds the hook to `~/.claude/settings.json`
+and covers every repo (it runs on every Bash and PowerShell call in every
+project; calls outside a swamp repo are not recorded). Remove it with
+`swamp audit uninstall --user`. A user-level hook also satisfies the check when
+the repo file has none.
 
 ### Common failures
 
@@ -106,6 +117,7 @@ otherwise. Exit code mirrors `fail` only.
 | "Could not parse"       | Run the AI tool to regenerate its config; check for hand edits       |
 | "No default agent"      | Set the default agent through the AI tool's UI/config                |
 | "audit record rejected" | Check `swamp` and AI tool versions match; rerun `swamp repo upgrade` |
+| "below the git root"    | Run `swamp audit install --user`                                     |
 
 ### `NoToolConfiguredError`
 

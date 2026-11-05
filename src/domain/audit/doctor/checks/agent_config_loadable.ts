@@ -26,6 +26,10 @@ import {
   countAuditHooks,
   CURSOR_AUDIT_HOOK_SHAPE,
 } from "../../../repo/repo_service.ts";
+import {
+  claudeUserAuditHookInstalled,
+  claudeUserSettingsPath,
+} from "../../user_hook.ts";
 
 const CONFIG_FILES: Record<string, string[]> = {
   kiro: [".kiro/agents/swamp.json"],
@@ -153,7 +157,38 @@ async function checkKiro(ctx: CheckContext): Promise<CheckResult> {
   };
 }
 
-async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
+const REPO_HOOK_MISSING = { repoHookMissing: true };
+
+function canonicalPath(path: string): string {
+  try {
+    return Deno.realPathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Claude Code reads settings.local.json from the git root, not a nested repo */
+function nestedRepoWarning(ctx: CheckContext): CheckResult | undefined {
+  const gitRoot = ctx.findGitRoot?.(ctx.repoPath) ?? null;
+  if (gitRoot === null) return undefined;
+  const root = canonicalPath(gitRoot);
+  if (root === canonicalPath(ctx.repoPath)) return undefined;
+  if (ctx.homeDir !== undefined && root === canonicalPath(ctx.homeDir)) {
+    return undefined;
+  }
+  return {
+    name: "agent-config-loadable",
+    status: "pass",
+    message: "",
+    warning:
+      `this repo is below the git root ${gitRoot}. Claude Code reads .claude/settings.local.json from the git root (from the folder a session starts in on Windows and before Claude Code 2.1.211), so this repo's audit hook does not fire for sessions started above it and may not fire at all`,
+    hint:
+      "Run `swamp audit install --user` to add the audit hook to your Claude Code user settings, which covers every repo.",
+    details: { gitRoot },
+  };
+}
+
+async function checkClaudeRepoFile(ctx: CheckContext): Promise<CheckResult> {
   const configPath = join(ctx.repoPath, ".claude/settings.local.json");
   let parsed: Record<string, unknown>;
   try {
@@ -165,6 +200,7 @@ async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
         status: "fail",
         message: `${configPath} is missing`,
         hint: "Run `swamp init --tool claude --force` to regenerate.",
+        details: REPO_HOOK_MISSING,
       };
     }
     return {
@@ -185,6 +221,7 @@ async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
       message:
         "Claude hooks (PostToolUse/PostToolUseFailure) are not configured",
       hint: "Run `swamp init --tool claude --force` to install the hooks.",
+      details: REPO_HOOK_MISSING,
     };
   }
   if (!JSON.stringify(hooks).includes("swamp audit record --from-hook")) {
@@ -193,6 +230,7 @@ async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
       status: "fail",
       message: "Claude hooks do not reference `swamp audit record --from-hook`",
       hint: "Run `swamp init --tool claude --force` to rewrite the hooks.",
+      details: REPO_HOOK_MISSING,
     };
   }
   const duplicate = duplicateAuditHookResult(
@@ -206,6 +244,37 @@ async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
     status: "pass",
     message: `${configPath} is present with both PostToolUse hooks wired`,
   };
+}
+
+async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
+  const userSettings = ctx.homeDir === undefined
+    ? undefined
+    : claudeUserSettingsPath(ctx.homeDir);
+  const userHook = ctx.homeDir !== undefined &&
+    await claudeUserAuditHookInstalled(ctx.homeDir);
+  const repoResult = await checkClaudeRepoFile(ctx);
+
+  if (repoResult.status === "fail") {
+    if (userHook && repoResult.details === REPO_HOOK_MISSING) {
+      return {
+        name: "agent-config-loadable",
+        status: "pass",
+        message: `${userSettings} runs the audit hook for every repo`,
+        details: { userSettings },
+      };
+    }
+    return repoResult;
+  }
+  if (userHook) {
+    return {
+      ...repoResult,
+      message: `${repoResult.message}; ${userSettings} also runs it`,
+      details: { userSettings },
+    };
+  }
+  const nested = nestedRepoWarning(ctx);
+  if (nested === undefined) return repoResult;
+  return { ...nested, message: repoResult.message };
 }
 
 async function checkCursor(ctx: CheckContext): Promise<CheckResult> {

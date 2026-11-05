@@ -83,6 +83,50 @@ Deno.test("normalizeHookInput claude: normalizes failed Bash tool", () => {
   assertEquals(result?.errorMessage, "Command failed");
 });
 
+Deno.test("normalizeHookInput claude: normalizes successful PowerShell tool", () => {
+  const result = normalizeHookInput("claude", {
+    session_id: "session-123",
+    cwd: "C:\\repo",
+    hook_event_name: "PostToolUse",
+    tool_name: "PowerShell",
+    tool_input: { command: "swamp data list" },
+  });
+
+  assertEquals(result, {
+    command: "swamp data list",
+    cwd: "C:\\repo",
+    sessionId: "session-123",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput claude: normalizes failed PowerShell tool", () => {
+  const result = normalizeHookInput("claude", {
+    session_id: "session-123",
+    cwd: "C:\\repo",
+    hook_event_name: "PostToolUseFailure",
+    tool_name: "PowerShell",
+    tool_input: { command: "swamp workflow run deploy" },
+    error: "Exit code 2\n\nWorkflow failed",
+  });
+
+  assertEquals(result?.command, "swamp workflow run deploy");
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.exitCode, 2);
+  assertEquals(result?.errorMessage, "Workflow failed");
+});
+
+Deno.test("normalizeHookInput claude: skips a lowercase powershell tool name", () => {
+  const result = normalizeHookInput("claude", {
+    cwd: "/repo",
+    hook_event_name: "PostToolUse",
+    tool_name: "powershell",
+    tool_input: { command: "swamp data list" },
+  });
+
+  assertEquals(result, null);
+});
+
 Deno.test("normalizeHookInput claude: skips non-Bash tools", () => {
   const result = normalizeHookInput("claude", {
     session_id: "session-123",

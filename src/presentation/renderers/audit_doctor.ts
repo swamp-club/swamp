@@ -66,7 +66,10 @@ class LogAuditDoctorRenderer implements AuditDoctorRenderer {
       "check-completed": (e) => {
         const r = e.result;
         writeOutput(`${iconFor(r.status)} ${bold(r.name)}  ${dim(r.message)}`);
-        if (r.status === "fail" && r.hint) {
+        if (r.warning) {
+          writeOutput(`    ${yellow("warning:")} ${r.warning}`);
+        }
+        if ((r.status === "fail" || r.warning) && r.hint) {
           writeOutput(`    ${yellow("hint:")} ${r.hint}`);
         }
       },

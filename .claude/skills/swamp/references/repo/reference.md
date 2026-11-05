@@ -146,6 +146,12 @@ diagnostic flow (preflight checks, output shapes, common failures, escalation to
 other tiers), see the `swamp-troubleshooting` skill's
 `references/health-checks.md`.
 
+Claude Code reads project hooks only from the folder a session starts in (the
+git root, for `.claude/settings.local.json`). For a swamp repo nested below its
+git root, or sessions started above the repo, run `swamp audit install --user`
+to add the audit hook to `~/.claude/settings.json`; it records swamp calls in
+every repo. `swamp audit uninstall --user` removes it.
+
 ## Upgrade a Repository
 
 Update an existing repository to the latest swamp version. This updates skills,
