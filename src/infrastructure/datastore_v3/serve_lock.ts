@@ -628,6 +628,10 @@ function sleepUnlessAborted(
   signal: AbortSignal | undefined,
 ): Promise<void> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
     const done = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", done);

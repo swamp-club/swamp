@@ -91,6 +91,25 @@ function installSignalHandler(): void {
 }
 
 /**
+ * for a forced exit that skips the command's teardown, so a remote lock or
+ * lease is not left held until its TTL; bounded by waitMs
+ */
+export async function releaseRegisteredLocks(waitMs = 2_000): Promise<void> {
+  const releases = [...entries.values()]
+    .filter((e) => e.lock)
+    .map((e) => e.lock!.release().catch(() => {}));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, waitMs);
+  });
+  try {
+    await Promise.race([Promise.all(releases), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * a command that owns shutdown releases its locks in its own teardown, so
  * under suppressSyncExitOnSignal this does nothing: releasing here would hand
  * an in-flight method's lock to a waiter

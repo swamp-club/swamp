@@ -138,10 +138,6 @@ export interface MethodExecutor {
   ): Promise<MethodResult>;
 }
 
-/**
- * runs every step without remote placement from live in-process objects given
- * at construction, ignoring the serialized parts of ExecutionRequest
- */
 /** each call that persists a version counts as a started write */
 function trackedDataWriter(
   writer: DataWriter,
@@ -164,6 +160,10 @@ function trackedDataWriter(
   };
 }
 
+/**
+ * runs every step without remote placement from live in-process objects given
+ * at construction, ignoring the serialized parts of ExecutionRequest
+ */
 export class InProcessExecutor {
   contextWithWriters?: MethodContext;
 

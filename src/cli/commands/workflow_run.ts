@@ -134,7 +134,10 @@ import {
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
-import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import {
+  releaseRegisteredLocks,
+  suppressSyncExitOnSignal,
+} from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { watchV3ServeFeeds } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -686,6 +689,7 @@ export const workflowRunCommand = new Command()
               handler: () => abort.abort(),
               forceExitOnRepeat: true,
               dataWrites: processDataWrites,
+              beforeForceExit: releaseRegisteredLocks,
             });
             const baseLibCtx = libSwampContextForRepo(repoContext, {
               signal: abort.signal,

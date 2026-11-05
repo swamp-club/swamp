@@ -4190,7 +4190,9 @@ engine evaluates the remaining steps in topological order:
   running keeps its lock until it settles or the command's teardown releases
   it.
 - A second Ctrl+C exits 130, but first waits up to `DATA_WRITE_STOP_GRACE_MS`
-  for data writes already started; a third exits at once. The wait never
+  for data writes already started, then releases the command's registered
+  locks (bounded), since it skips the teardown that would; a third exits at
+  once. The wait never
   pushes: on a remote datastore the record syncs on the next command, and on a
   v3 datastore the uncommitted root unit still loses it.
 - Steps, `forEach` iterations and jobs that the interrupted level never started

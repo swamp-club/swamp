@@ -51,6 +51,11 @@ export interface ShutdownHandlerOptions {
    * land, up to DATA_WRITE_STOP_GRACE_MS; a third exits at once
    */
   dataWrites?: Pick<InFlightDataWrites, "size" | "settle">;
+  /**
+   * with forceExitOnRepeat, runs before the second signal's exit, after the
+   * data-write wait; the caller bounds it
+   */
+  beforeForceExit?: () => Promise<void>;
 }
 
 export interface ShutdownHandlerHandle {
@@ -83,6 +88,7 @@ export function registerShutdownHandler(
     includePosixSignals = true,
     forceExitOnRepeat = false,
     dataWrites,
+    beforeForceExit,
   } = options;
 
   const registered: Deno.Signal[] = [];
@@ -95,18 +101,25 @@ export function registerShutdownHandler(
         handler();
         return;
       }
-      if (fired === 2 && dataWrites !== undefined && dataWrites.size > 0) {
-        getSwampLogger(["shutdown"]).warn(
-          "Waiting for {count} data write(s) to finish before exiting; signal again to exit now",
-          { count: dataWrites.size },
-        );
-        dataWrites.settle(DATA_WRITE_STOP_GRACE_MS).then(
-          () => exit(130),
-          () => exit(130),
-        );
+      const pendingWrites = dataWrites?.size ?? 0;
+      if (fired > 2 || (pendingWrites === 0 && beforeForceExit === undefined)) {
+        exit(130);
         return;
       }
-      exit(130);
+      const finish = async () => {
+        if (dataWrites !== undefined && pendingWrites > 0) {
+          getSwampLogger(["shutdown"]).warn(
+            "Waiting up to {seconds}s for {count} data write(s) to finish before exiting; press Ctrl+C again to exit now",
+            {
+              seconds: Math.ceil(DATA_WRITE_STOP_GRACE_MS / 1000),
+              count: pendingWrites,
+            },
+          );
+          await dataWrites.settle(DATA_WRITE_STOP_GRACE_MS);
+        }
+        await beforeForceExit?.();
+      };
+      finish().then(() => exit(130), () => exit(130));
     }
     : handler;
 

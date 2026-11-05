@@ -403,3 +403,32 @@ Deno.test("registerShutdownHandler: a second signal with no data write in flight
     handle.dispose();
   }
 });
+
+Deno.test("registerShutdownHandler: a second signal releases through beforeForceExit after the data-write wait, then exits 130", async () => {
+  const stopRequests = fakeStopRequests();
+  const order: string[] = [];
+  const writes = pendingWrites(1);
+  const handle = registerShutdownHandler({
+    handler: () => {},
+    forceExitOnRepeat: true,
+    dataWrites: writes,
+    beforeForceExit: () => {
+      order.push("release");
+      return Promise.resolve();
+    },
+  }, {
+    os: "windows",
+    listenForStopRequests: stopRequests.listenForStopRequests,
+    exit: (code) => order.push(`exit ${code}`),
+  });
+  try {
+    stopRequests.handlers[0]();
+    stopRequests.handlers[0]();
+    assertEquals(order, []);
+    writes.finish();
+    await waitFor(() => order.length === 2, "the release and the exit");
+    assertEquals(order, ["release", "exit 130"]);
+  } finally {
+    handle.dispose();
+  }
+});

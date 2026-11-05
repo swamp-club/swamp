@@ -1014,15 +1014,19 @@ class InFlightMethodRuns {
       performance.now();
     if (remaining <= 0) return;
     const logger = getSwampLogger(["workflow", "cancel"]);
-    logger.info("Waiting up to {ms}ms for {count} data write(s) to finish", {
-      ms: Math.ceil(remaining),
-      count: this.dataWrites.size,
-    });
+    logger.info(
+      "Waiting up to {seconds}s for {count} data write(s) to finish",
+      {
+        seconds: Math.ceil(remaining / 1000),
+        count: this.dataWrites.size,
+      },
+    );
     const left = await this.dataWrites.settle(remaining);
     if (left > 0) {
-      logger.warn("Stopped waiting for {count} data write(s)", {
-        count: left,
-      });
+      logger.warn(
+        "Stopped waiting for {count} data write(s); their data may not have been saved",
+        { count: left },
+      );
     }
   }
 

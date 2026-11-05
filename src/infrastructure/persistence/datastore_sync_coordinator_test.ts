@@ -33,6 +33,7 @@ import {
   registerDatastoreSync,
   registerDatastoreSyncNamed,
   releaseLocksOnInterrupt,
+  releaseRegisteredLocks,
   suppressSyncExitOnSignal,
 } from "./datastore_sync_coordinator.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
@@ -826,4 +827,26 @@ Deno.test("registerDatastoreSyncNamed: an aborted lock wait registers nothing", 
   assertEquals(seen, [abort.signal]);
   assertEquals(getRegisteredLockKeys().includes(key), false);
   assertEquals(lock.releaseCount, 0);
+});
+
+Deno.test("releaseRegisteredLocks: releases every registered lock, and stops waiting on one that hangs at its bound", async () => {
+  const lock = new FakeLock();
+  const hanging = new FakeLock();
+  const never = Promise.withResolvers<void>();
+  hanging.release = () => never.promise;
+  const key = `force-exit-${crypto.randomUUID()}`;
+  const hangingKey = `force-exit-hang-${crypto.randomUUID()}`;
+  await registerDatastoreSyncNamed(key, { lock, label: "@test/force" });
+  await registerDatastoreSyncNamed(hangingKey, {
+    lock: hanging,
+    label: "@test/force-hang",
+  });
+  try {
+    await releaseRegisteredLocks(10);
+    assertEquals(lock.releaseCount, 1);
+  } finally {
+    never.resolve();
+    await flushDatastoreSyncNamed(key);
+    await flushDatastoreSyncNamed(hangingKey);
+  }
 });

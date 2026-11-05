@@ -125,7 +125,10 @@ import { SERVE_CAPABILITY_LITERAL_INPUTS } from "../../serve/protocol.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
-import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import {
+  releaseRegisteredLocks,
+  suppressSyncExitOnSignal,
+} from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";
 import {
@@ -589,6 +592,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             handler: () => abort.abort(),
             forceExitOnRepeat: true,
             dataWrites: processDataWrites,
+            beforeForceExit: releaseRegisteredLocks,
           });
           const baseLibCtx = libSwampContextForRepo(repoContext, {
             signal: abort.signal,
