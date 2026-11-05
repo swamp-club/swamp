@@ -219,3 +219,25 @@ Deno.test("wireFollowerPolicy: a forwarded write's barrier returns once its comm
     await t.wiring.effects.stop();
   }
 });
+
+Deno.test("wireFollowerPolicy: effects are current only once the policy is known and applied through the read model", async () => {
+  let fail = false;
+  const t = setup({ current: "follower" }, () => fail);
+  try {
+    assertEquals(t.wiring.effectsCurrent(), true);
+    t.store.land(GRANT);
+    t.store.applied();
+    assertEquals(t.wiring.effectsCurrent(), false);
+    await t.catchUp();
+    assertEquals(t.wiring.effectsCurrent(), true);
+    t.store.land(GRANT);
+    fail = true;
+    await t.catchUp();
+    assertEquals(t.wiring.effectsCurrent(), false);
+    fail = false;
+    await t.catchUp();
+    assertEquals(t.wiring.effectsCurrent(), true);
+  } finally {
+    await t.wiring.effects.stop();
+  }
+});

@@ -29,6 +29,13 @@ const baseConfig: ServiceConfig = {
   host: "127.0.0.1",
 };
 
+Deno.test("buildServeService: stops only serve, which confirms replication before its sidecar goes", () => {
+  for (const mode of ["agent", "daemon"] as const) {
+    const unit = buildServeService(baseConfig, mode);
+    assertStringIncludes(unit, "\nKillMode=mixed\n");
+  }
+});
+
 Deno.test("buildServeService: includes Restart=always", () => {
   const unit = buildServeService(baseConfig);
   assertStringIncludes(unit, "Restart=always");

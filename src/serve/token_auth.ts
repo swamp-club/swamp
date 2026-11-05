@@ -162,6 +162,31 @@ function rememberVaultMatch(key: string, nowMs: number): void {
   }
 }
 
+/** what a refusal log says about the node, so a refusal can be traced to it */
+export interface TokenRefusalNodeState {
+  readonly uptimeSeconds: number;
+  readonly ready: boolean;
+  readonly role: string;
+  readonly catchUp?: unknown;
+}
+
+let nodeState: (() => TokenRefusalNodeState) | undefined;
+
+/** serve registers it at startup and clears it at shutdown */
+export function setTokenRefusalNodeState(
+  state: (() => TokenRefusalNodeState) | undefined,
+): void {
+  nodeState = state;
+}
+
+function describeNode(): TokenRefusalNodeState | null {
+  try {
+    return nodeState?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function splitServerToken(
   presented: string,
 ): { name: string; secret: string } | null {
@@ -407,8 +432,8 @@ export async function authenticateServerToken(
     const message = error instanceof Error ? error.message : String(error);
     const reason = classifyRedeemError(message);
     logger.warn(
-      "Token authentication failed for {name} ({reason}): {error}",
-      { name: split.name, reason, error: message },
+      "Token authentication failed for {name} ({reason}): {error}; node: {node}",
+      { name: split.name, reason, error: message, node: describeNode() },
     );
     return { ok: false, error: "Authentication failed", reason };
   }

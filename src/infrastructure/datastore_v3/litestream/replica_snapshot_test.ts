@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { parseNewestSnapshotTxid } from "./replica_snapshot.ts";
+import {
+  parseNewestSnapshotTxid,
+  parseReplicaMaxTxid,
+} from "./replica_snapshot.ts";
 
 /**
  * output of the pinned litestream against a file replica; a pin bump that
@@ -67,4 +70,27 @@ Deno.test("parseNewestSnapshotTxid: anything it does not recognise is unknown", 
   ) {
     assertEquals(parseNewestSnapshotTxid(output), undefined, output);
   }
+});
+
+Deno.test("parseReplicaMaxTxid: takes the highest TXID across every level", () => {
+  const output = JSON.stringify([
+    { level: 0, min_txid: "0000000000000007", max_txid: "0000000000000007" },
+    { level: 1, min_txid: "0000000000000001", max_txid: "0000000000000006" },
+    { level: 9, min_txid: "0000000000000001", max_txid: "0000000000000001" },
+  ]);
+  assertEquals(parseReplicaMaxTxid(output), "0000000000000007");
+  assertEquals(parseNewestSnapshotTxid(output), undefined);
+});
+
+Deno.test("parseReplicaMaxTxid: an entry it does not recognise reads as unknown", () => {
+  assertEquals(parseReplicaMaxTxid("not json"), undefined);
+  assertEquals(parseReplicaMaxTxid("{}"), undefined);
+  assertEquals(
+    parseReplicaMaxTxid(JSON.stringify([{ level: 0, max_txid: "zz" }])),
+    undefined,
+  );
+  assertEquals(
+    parseReplicaMaxTxid(JSON.stringify([{ max_txid: "0000000000000001" }])),
+    undefined,
+  );
 });

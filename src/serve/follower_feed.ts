@@ -45,6 +45,13 @@ export const FOLLOWER_FEED_STUCK_MS = 30_000;
  */
 export type FollowerCatchUp = "caught-up" | "catching-up" | "stuck";
 
+export interface FollowerCatchUpState {
+  readonly live: boolean;
+  readonly applied: number;
+  readonly lastAskedLeaderHead: number | null;
+  readonly lastFrameAgoMs: number | null;
+}
+
 export interface FeedChange {
   readonly cursor: number;
   readonly commit: unknown;
@@ -68,6 +75,7 @@ export class FollowerFeed implements FollowerCopyFeed {
   #leader: ServeLeader | undefined;
   #lastFrameAt: number | undefined;
   #applied = 0;
+  #lastHead: number | undefined;
   #failed = false;
   #chain: Promise<void> = Promise.resolve();
   #heads = new Map<string, (cursor: number) => void>();
@@ -96,6 +104,18 @@ export class FollowerFeed implements FollowerCopyFeed {
 
   get live(): boolean {
     return this.current(this.#leader);
+  }
+
+  /** for logs: how far this copy is from the head the leader last named */
+  describeCatchUp(): FollowerCatchUpState {
+    return {
+      live: this.live,
+      applied: this.#applied,
+      lastAskedLeaderHead: this.#lastHead ?? null,
+      lastFrameAgoMs: this.#lastFrameAt === undefined
+        ? null
+        : this.#now() - this.#lastFrameAt,
+    };
   }
 
   follow(leader: ServeLeader | undefined): void {
@@ -149,6 +169,7 @@ export class FollowerFeed implements FollowerCopyFeed {
     });
     // undefined: the leader named none in time; negative: the feed closed
     if (head === undefined || head < 0) return false;
+    this.#lastHead = head;
     while (this.#applied < head && this.live) {
       const left = deadline - this.#now();
       if (left <= 0) return false;

@@ -161,6 +161,7 @@ import {
   extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
+  setTokenRefusalNodeState,
   shouldInvalidateDashboardSession,
 } from "../../serve/token_auth.ts";
 import {
@@ -3336,6 +3337,7 @@ export const serveCommand = new Command()
     const v3Follows = v3Role === "follower";
     let serveLeadership: ServeLeadership | undefined;
     let serveFollowerFeed: FollowerFeed | undefined;
+    let serveFollowerEffectsCurrent: (() => boolean) | undefined;
     // the leader's timers a follower starts once it first leads; a leader that
     // loses the lead shuts down, which stops them
     const leaderStarts: Array<() => void> = [];
@@ -6614,6 +6616,14 @@ export const serveCommand = new Command()
     let shuttingDown = false;
     const enableInternalApi = merged.enableInternalApi;
     const serverStartedAt = Date.now();
+    setTokenRefusalNodeState(() => ({
+      uptimeSeconds: Math.round((Date.now() - serverStartedAt) / 1000),
+      ready: isReady && !shuttingDown,
+      role: serveLeadership?.role ?? "single",
+      ...(serveFollowerFeed !== undefined
+        ? { catchUp: serveFollowerFeed.describeCatchUp() }
+        : {}),
+    }));
 
     const runMetricsTracker = new RunMetricsTracker();
 
@@ -8147,6 +8157,7 @@ export const serveCommand = new Command()
       }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
+      setTokenRefusalNodeState(undefined);
       setRemoteOnlyMode(false);
       ac.abort();
       if (pidPath) {
@@ -8433,6 +8444,7 @@ export const serveCommand = new Command()
         // it is refused as behind
         connectionCtx.followerCatchUp = () => followerFeed.caughtUp();
         serveFollowerFeed = followerFeed;
+        serveFollowerEffectsCurrent = () => followerPolicy.effectsCurrent();
       }
       const leadership = new ServeLeadership({
         instanceId,
@@ -8986,16 +8998,21 @@ export const serveCommand = new Command()
     if (
       followerFeedAtBoot !== undefined && serveLeadership?.role === "follower"
     ) {
-      const outcome = await awaitFirstFollowerCatchUp({
+      const effectsCurrent = serveFollowerEffectsCurrent;
+      await awaitFirstFollowerCatchUp({
         caughtUp: async () =>
-          await followerFeedAtBoot.caughtUp() === "caught-up",
+          await followerFeedAtBoot.caughtUp() === "caught-up" &&
+          (effectsCurrent?.() ?? true),
         ended: () => shuttingDown || serveLeadership?.role !== "follower",
+        stalled: (waitedMs) =>
+          logger.warn(
+            "This serve node's copy has not caught up with the leader after {seconds}s; /ready stays 503 until it has: {state}",
+            {
+              seconds: Math.round(waitedMs / 1000),
+              state: followerFeedAtBoot.describeCatchUp(),
+            },
+          ),
       });
-      if (outcome === "timed-out") {
-        logger.warn(
-          "This serve node's copy did not catch up with the leader within the readiness wait; it reports ready anyway, and refuses reads it is behind on until it has",
-        );
-      }
     }
     isReady = true;
     logger.info("Startup complete — /ready is now serving 200");

@@ -69,7 +69,10 @@ import {
   type V3WriterLeaseHolder,
   v3WriterLeaseHolder,
 } from "./v3_writer_lock.ts";
-import { peekDatastoreOwner } from "./sqlite_commit_store.ts";
+import {
+  peekDatastoreOwner,
+  peekHighWaterCursor,
+} from "./sqlite_commit_store.ts";
 import { countPendingOutboxEntries } from "./sqlite_commit_outbox.ts";
 import {
   judgeRecordedProcess,
@@ -1740,9 +1743,16 @@ export async function closeV3Datastores(
   // a writer folds history the policy does not retain before it lets go of the
   // lock: compaction is the single writer's
   for (const handle of unreachable ? [] : handles) {
-    if (holdsV3WriterLock(handle.datastorePath)) {
-      await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
+    if (!holdsV3WriterLock(handle.datastorePath)) continue;
+    // a sidecar already gone (signalled with this process) replicates nothing
+    // more, so no commit is made that no replica could hold
+    const use = replications.get(resolve(handle.datastorePath))?.[0];
+    if (use !== undefined && !await use.probe()) {
+      logger
+        .debug`Not compacting the v3 datastore at ${handle.datastorePath} at close: its Litestream sidecar is gone`;
+      continue;
     }
+    await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
   }
   // one sync per datastore confirms every commit this process made,
   // compaction's included; before the stores close, since it makes Litestream
@@ -1758,6 +1768,7 @@ export async function closeV3Datastores(
   const synced = await Promise.allSettled([
     ...heldEntries.map(async ([datastore, uses]) => {
       const watch = watchStorageDuringSync(datastore, handles, unreachable);
+      const startedAt = Date.now();
       try {
         return await syncAndPublish(
           datastore,
@@ -1767,6 +1778,23 @@ export async function closeV3Datastores(
           watch.signal,
           // serve's shutdown deadline covers the wait for a probe's sync too
           { queueWaitCounts: shutdownDeadline !== undefined },
+        );
+      } catch (error) {
+        const left = deadlineMs - (Date.now() - startedAt);
+        if (
+          !(error instanceof V3ReplicationError) ||
+          watch.signal?.aborted === true ||
+          left < MIN_QUEUED_SYNC_MS || await uses[0].probe()
+        ) {
+          throw error;
+        }
+        return await confirmClosedFromReplica(
+          datastore,
+          uses[0],
+          handles,
+          left,
+          watch.signal,
+          error,
         );
       } finally {
         if (watch.stop()) unreachable = true;
@@ -1920,12 +1948,51 @@ const MIN_QUEUED_SYNC_MS = 500;
 
 const publishing = new Map<string, Promise<unknown>>();
 
+/**
+ * a sidecar signalled with this process (a unit's whole cgroup) did its own
+ * final sync but can no longer say so: the replica is read instead, never a
+ * new sidecar, so this process keeps its hold and lease throughout
+ */
+async function confirmClosedFromReplica(
+  datastore: string,
+  use: ReplicationHandle,
+  handles: readonly V3Datastore[],
+  deadlineMs: number,
+  signal: AbortSignal | undefined,
+  syncError: V3ReplicationError,
+): Promise<number | undefined> {
+  const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
+  if (
+    handle !== undefined &&
+    handle.commitStore.highWaterMark().cursor <=
+      (publishedMarks.get(datastore) ?? -1)
+  ) {
+    return publishedMarks.get(datastore);
+  }
+  try {
+    return await syncAndPublishNow(
+      datastore,
+      use,
+      handles,
+      deadlineMs,
+      signal,
+      "replica",
+    );
+  } catch (error) {
+    if (error instanceof WriterFencedError) throw error;
+    logger
+      .warn`The closing sync of the v3 datastore at ${datastore} found its Litestream sidecar gone, and reading the replica did not confirm this copy's commits: ${error}`;
+    throw syncError;
+  }
+}
+
 async function syncAndPublishNow(
   datastore: string,
   use: ReplicationHandle,
   handles: readonly V3Datastore[],
   deadlineMs: number,
   signal?: AbortSignal,
+  via: "sync" | "replica" = "sync",
 ): Promise<number | undefined> {
   const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
   const copy = handle === undefined
@@ -1937,6 +2004,7 @@ async function syncAndPublishNow(
     ? undefined
     : v3WriterFence(handle.datastorePath);
   if (handle === undefined || copy === undefined || writerFence === undefined) {
+    if (via === "replica") throw new V3ReplicationError("no copy to check");
     await use.sync(deadlineMs, signal === undefined ? {} : { signal });
     return undefined;
   }
@@ -1945,9 +2013,9 @@ async function syncAndPublishNow(
   // only commits nobody acknowledged
   const mark = handle.commitStore.highWaterMark();
   let first = false;
-  await use.sync(deadlineMs, {
+  const confirmOptions = {
     ...(signal === undefined ? {} : { signal }),
-    beforeLeaseCheck: async (txid) => {
+    beforeLeaseCheck: async (txid: string) => {
       first = await publishV3Head(copy, {
         lineageFence: use.lineageFence,
         writerFence,
@@ -1955,7 +2023,17 @@ async function syncAndPublishNow(
         mark,
       });
     },
-  });
+  };
+  if (via === "replica") {
+    await use.confirmFromReplica(
+      peekHighWaterCursor,
+      mark.cursor,
+      deadlineMs,
+      confirmOptions,
+    );
+  } else {
+    await use.sync(deadlineMs, confirmOptions);
+  }
   publishedMarks.set(
     datastore,
     Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),

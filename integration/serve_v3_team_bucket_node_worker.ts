@@ -68,7 +68,6 @@ import {
   DatastoreLockLeases,
 } from "../src/serve/datastore_locks.ts";
 import type { FollowerGate } from "../src/serve/follower_requests.ts";
-import { awaitFirstFollowerCatchUp } from "../src/serve/follower_ready.ts";
 import { LeaderLink } from "../src/serve/leader_link.ts";
 import {
   type FollowerPolicyWiring,
@@ -520,13 +519,12 @@ async function handle(request: NodeRequest): Promise<unknown> {
       leaderHead = request.cursor;
       return undefined;
     case "ready":
-      return await awaitFirstFollowerCatchUp({
-        caughtUp: async () =>
-          (await ctx!.followerCatchUp?.() ?? "caught-up") === "caught-up",
-        ended: () => false,
-        // One check: the test asks again after the feed moves.
-        boundMs: 0,
-      });
+      // One check of serve's readiness rule: the test asks again after the
+      // feed moves.
+      return (await ctx!.followerCatchUp?.() ?? "caught-up") === "caught-up" &&
+          (wiring?.effectsCurrent() ?? true)
+        ? "caught-up"
+        : "behind";
     case "pids":
       return [...launched];
     case "close":

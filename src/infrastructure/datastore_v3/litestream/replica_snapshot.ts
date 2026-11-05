@@ -31,6 +31,15 @@ import {
 const SNAPSHOT_LEVEL = 9;
 
 export function parseNewestSnapshotTxid(output: string): string | undefined {
+  return newestTxid(output, SNAPSHOT_LEVEL);
+}
+
+/** the highest TXID any level of the replica holds */
+export function parseReplicaMaxTxid(output: string): string | undefined {
+  return newestTxid(output);
+}
+
+function newestTxid(output: string, level?: number): string | undefined {
   let files: unknown;
   try {
     files = JSON.parse(output);
@@ -42,7 +51,8 @@ export function parseNewestSnapshotTxid(output: string): string | undefined {
   for (const file of files) {
     if (typeof file !== "object" || file === null) return undefined;
     const entry = file as Record<string, unknown>;
-    if (entry.level !== SNAPSHOT_LEVEL) return undefined;
+    if (typeof entry.level !== "number") return undefined;
+    if (level !== undefined && entry.level !== level) return undefined;
     const max = normalizeTxid(entry.max_txid);
     if (max === undefined) return undefined;
     // Fixed width, so text order is TXID order.
@@ -62,6 +72,21 @@ export interface SnapshotListRequest {
 export async function readNewestSnapshotTxid(
   request: SnapshotListRequest,
 ): Promise<string | undefined> {
+  const output = await listLtx(request, String(SNAPSHOT_LEVEL));
+  return output === undefined ? undefined : parseNewestSnapshotTxid(output);
+}
+
+export async function readReplicaMaxTxid(
+  request: SnapshotListRequest,
+): Promise<string | undefined> {
+  const output = await listLtx(request, "all");
+  return output === undefined ? undefined : parseReplicaMaxTxid(output);
+}
+
+async function listLtx(
+  request: SnapshotListRequest,
+  level: string,
+): Promise<string | undefined> {
   try {
     const result = await new Deno.Command(request.binary, {
       args: [
@@ -70,7 +95,7 @@ export async function readNewestSnapshotTxid(
         request.config,
         "-no-expand-env",
         "-level",
-        String(SNAPSHOT_LEVEL),
+        level,
         "-json",
         request.source,
       ],
@@ -83,7 +108,7 @@ export async function readNewestSnapshotTxid(
       clearEnv: true,
     }).output();
     if (!result.success) return undefined;
-    return parseNewestSnapshotTxid(new TextDecoder().decode(result.stdout));
+    return new TextDecoder().decode(result.stdout);
   } catch {
     return undefined;
   }

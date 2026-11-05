@@ -8310,12 +8310,20 @@ nothing was taken, so a retry is safe), in one place per surface:
   (`serve_follower_behind`, see "Team mode: the CLI's serve upstream"), after
   authentication and the read check (swamp-club#4254).
 - Readiness: a node that starts as a follower with a leader feed reports
-  `/ready` only once its copy holds the head the leader names
-  (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`). It stops
-  trying after 30 seconds, so with a last feed check in flight the wait can
-  reach about 35, and it stops at once if it takes the lead or shuts down. A node
-  restored from the bucket after a takeover can trail the members' copies,
-  and the team address would otherwise route them to it (swamp-club#4254).
+  `/ready` only once its copy holds the head the leader names and the
+  follower's commit effects (policy snapshot, config) are applied through
+  that copy (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`;
+  `effectsCurrent`, `src/serve/follower_policy_wiring.ts`). A token check reads
+  the token record from that copy, so a node ready before it would refuse
+  tokens the other node accepts. The wait has no timeout: past 30 seconds it
+  logs where the copy stands, then again every minute, and stays 503; it stops
+  at once if the node takes the lead or shuts down. A node restored from the
+  bucket after a takeover can trail the members' copies, and the team address
+  would otherwise route them to it (swamp-club#4254, swamp-club#4432). A
+  refused token is logged with its reason and the node's uptime, readiness,
+  role and catch-up state (the cursor applied, and the leader head named at the
+  last check, which can trail it), and a token name locked out after five
+  failures in a row is logged when the lock starts.
 - Webhooks: a verified delivery gets a 503 with `Retry-After`, naming no
   leader. Cron fires are left to the leader (the fire dedup answers
   "claimed by another instance"), as they are by a leader whose lease was

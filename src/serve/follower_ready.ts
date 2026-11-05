@@ -21,17 +21,28 @@ export const FOLLOWER_READY_WAIT_MS = 30_000;
 
 export const FOLLOWER_READY_RETRY_MS = 250;
 
+/** how often a follower still behind past the first wait says so again */
+export const FOLLOWER_READY_STALL_LOG_MS = 60_000;
+
 export interface FirstFollowerCatchUpDeps {
   caughtUp(): Promise<boolean>;
   ended(): boolean;
+  /** told once the first wait has passed, then every stall interval */
+  stalled?(waitedMs: number): void;
   readonly boundMs?: number;
+  readonly stallLogMs?: number;
   readonly retryMs?: number;
   readonly now?: () => number;
   readonly pause?: (ms: number) => Promise<void>;
 }
 
-export type FirstFollowerCatchUp = "caught-up" | "ended" | "timed-out";
+export type FirstFollowerCatchUp = "caught-up" | "ended";
 
+/**
+ * a follower behind its leader would refuse the tokens and reads the other
+ * node accepts, so it never reports ready on a timer; a takeover or shutdown
+ * ends the wait
+ */
 export async function awaitFirstFollowerCatchUp(
   deps: FirstFollowerCatchUpDeps,
 ): Promise<FirstFollowerCatchUp> {
@@ -39,13 +50,18 @@ export async function awaitFirstFollowerCatchUp(
   const pause = deps.pause ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const bound = deps.boundMs ?? FOLLOWER_READY_WAIT_MS;
+  const stallLog = deps.stallLogMs ?? FOLLOWER_READY_STALL_LOG_MS;
   const retry = deps.retryMs ?? FOLLOWER_READY_RETRY_MS;
   const start = now();
+  let nextStall = start + bound;
   for (;;) {
     if (deps.ended()) return "ended";
     if (await deps.caughtUp()) return "caught-up";
     if (deps.ended()) return "ended";
-    if (now() - start >= bound) return "timed-out";
+    if (now() >= nextStall) {
+      deps.stalled?.(now() - start);
+      nextStall += stallLog;
+    }
     await pause(retry);
   }
 }
