@@ -38,7 +38,11 @@ import {
 import { StepStartUnrecordedError } from "../../domain/workflows/step_start.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
-import { WorkflowRunCheckpointer } from "./workflow_run_checkpointer.ts";
+import {
+  RUN_CHECKPOINT_INTERVAL_MS,
+  setRunCheckpointIntervalForTesting,
+  WorkflowRunCheckpointer,
+} from "./workflow_run_checkpointer.ts";
 
 const ROOT_FAILED = new Error("the end commit failed");
 const COMMITTED_THEN_THREW = new Error("refused, settled and committed");
@@ -222,6 +226,71 @@ Deno.test("WorkflowRunCheckpointer: within the interval a save waits for one tra
     await checkpointer.restoreUncommittedRuns(() => tracker(), ROOT_FAILED),
     [],
   );
+});
+
+Deno.test("setRunCheckpointIntervalForTesting: paces a checkpointer built without an interval", async () => {
+  setRunCheckpointIntervalForTesting(60_000);
+  try {
+    const commitLog = engine(() => Promise.resolve("committed"));
+    let now = 0;
+    const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+      now: () => now,
+    });
+    const run = newRun();
+    await checkpointer.checkpoint(run);
+    now = 59_999;
+    await checkpointer.checkpoint(run);
+    assertEquals(commitLog.calls(), 1);
+    await checkpointer.close();
+    assertEquals(commitLog.calls(), 1);
+  } finally {
+    setRunCheckpointIntervalForTesting(undefined);
+  }
+});
+
+Deno.test("setRunCheckpointIntervalForTesting: undefined restores the default interval", async () => {
+  setRunCheckpointIntervalForTesting(60_000);
+  setRunCheckpointIntervalForTesting(undefined);
+  const commitLog = engine(() => Promise.resolve("committed"));
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    now: () => now,
+  });
+  const run = newRun();
+  await checkpointer.checkpoint(run);
+  now = RUN_CHECKPOINT_INTERVAL_MS - 1;
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+  await checkpointer.close();
+  const fresh = new WorkflowRunCheckpointer({ commitLog }, {
+    now: () => now,
+  });
+  now = 0;
+  await fresh.checkpoint(run);
+  now = RUN_CHECKPOINT_INTERVAL_MS;
+  await fresh.checkpoint(run);
+  assertEquals(commitLog.calls(), 3);
+  await fresh.close();
+});
+
+Deno.test("setRunCheckpointIntervalForTesting: an explicit interval wins over it", async () => {
+  setRunCheckpointIntervalForTesting(60_000);
+  try {
+    const commitLog = engine(() => Promise.resolve("committed"));
+    let now = 0;
+    const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+      intervalMs: 0,
+      now: () => now,
+    });
+    const run = newRun();
+    await checkpointer.checkpoint(run);
+    now = 1;
+    await checkpointer.checkpoint(run);
+    assertEquals(commitLog.calls(), 2);
+    await checkpointer.close();
+  } finally {
+    setRunCheckpointIntervalForTesting(undefined);
+  }
 });
 
 Deno.test("WorkflowRunCheckpointer: close cancels a trailing checkpoint not yet started, and a later save takes none", async () => {
