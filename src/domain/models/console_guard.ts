@@ -28,7 +28,12 @@ const CAPTURED_METHODS = [
   "warn",
   "error",
   "dir",
+  "table",
+  "trace",
+  "assert",
 ] as const;
+
+type CapturedMethod = typeof CAPTURED_METHODS[number];
 
 const STDERR_ENCODER = new TextEncoder();
 
@@ -50,19 +55,67 @@ export function setConsoleGuardJsonMode(enabled: boolean): void {
   _jsonMode = enabled;
 }
 
+function inspectArg(a: unknown): string {
+  return Deno.inspect(a, {
+    strAbbreviateSize: Infinity,
+    breakLength: Infinity,
+  });
+}
+
 function formatArg(a: unknown): string {
   if (typeof a === "string") return a;
   if (typeof a === "number") return String(a);
+  // JSON renders these as {}, losing an error's message and stack
+  if (a instanceof Error || a instanceof Map || a instanceof Set) {
+    return inspectArg(a);
+  }
   try {
-    return JSON.stringify(a) ??
-      Deno.inspect(a, { strAbbreviateSize: Infinity, breakLength: Infinity });
+    return JSON.stringify(a) ?? inspectArg(a);
   } catch {
-    return Deno.inspect(a, {
-      strAbbreviateSize: Infinity,
-      breakLength: Infinity,
-    });
+    return inspectArg(a);
   }
 }
+
+// undefined when the call prints nothing, as a passing console.assert does
+function renderLine(
+  method: CapturedMethod,
+  args: unknown[],
+): string | undefined {
+  switch (method) {
+    case "dir":
+    case "table":
+      return Deno.inspect(args[0], {
+        ...(method === "dir"
+          ? args[1] as Deno.InspectOptions | undefined
+          : undefined),
+        // Truncating a secret before redaction would expose its prefix.
+        strAbbreviateSize: Infinity,
+        breakLength: Infinity,
+      });
+    case "assert": {
+      if (args[0]) return undefined;
+      const data = args.slice(1).map(formatArg).join(" ");
+      return data ? `Assertion failed: ${data}` : "Assertion failed";
+    }
+    case "trace": {
+      const data = args.map(formatArg).join(" ");
+      // drops the Error line and the renderLine and patched console frames
+      const frames = new Error().stack?.split("\n").slice(3).join("\n") ?? "";
+      return `Trace${data ? `: ${data}` : ""}\n${frames}`;
+    }
+    default:
+      return args.map(formatArg).join(" ");
+  }
+}
+
+// a rendered table or dir would be quoted by its own method, and trace and
+// assert report on stderr, so log mode prints the masked line through these
+const LOG_MODE_TARGET: Partial<Record<CapturedMethod, "log" | "error">> = {
+  dir: "log",
+  table: "log",
+  trace: "error",
+  assert: "error",
+};
 
 let activeGuards = 0;
 const allActiveLogs: Set<string[]> = new Set();
@@ -93,7 +146,8 @@ export interface ConsoleGuardOptions {
 }
 
 // in JSON mode captured console output goes into logs and, redacted, to stderr
-// to avoid stdout pollution; otherwise console output flows to stdout normally
+// to avoid stdout pollution; otherwise it flows to its own stream, redacted
+// once a run has secrets
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
@@ -101,26 +155,30 @@ export async function withConsoleGuard<T>(
 ): Promise<T> {
   const effectiveJsonMode = options?.jsonMode ?? _jsonMode;
 
-  if (!effectiveJsonMode) {
-    return await fn();
-  }
-
-  allActiveLogs.add(logs);
+  if (effectiveJsonMode) allActiveLogs.add(logs);
   if (activeGuards === 0) {
     for (const method of CAPTURED_METHODS) {
       preGuardConsole.set(method, console[method] as ConsoleMethod);
+    }
+    for (const method of CAPTURED_METHODS) {
+      const original = preGuardConsole.get(method)!;
+      const target = LOG_MODE_TARGET[method];
+      // bound now: a reference held past the last guard outlives the map
+      const logModeWrite = target ? preGuardConsole.get(target)! : original;
       // A line cannot be attributed to one of several concurrent methods, so
       // every active guard records it, but it reaches stderr only once.
       // deno-lint-ignore no-explicit-any
       (console as any)[method] = (...args: unknown[]) => {
-        const line = method === "dir"
-          ? Deno.inspect(args[0], {
-            ...args[1] as Deno.InspectOptions | undefined,
-            // Truncating a secret before redaction would expose its prefix.
-            strAbbreviateSize: Infinity,
-            breakLength: Infinity,
-          })
-          : args.map(formatArg).join(" ");
+        if (allActiveLogs.size === 0 && !runFileSink.hasActiveSecrets) {
+          original(...args);
+          return;
+        }
+        const line = renderLine(method, args);
+        if (line === undefined) return;
+        if (allActiveLogs.size === 0) {
+          logModeWrite(runFileSink.redactActive(line));
+          return;
+        }
         for (const logArray of allActiveLogs) {
           logArray.push(line);
         }

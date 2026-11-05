@@ -187,6 +187,7 @@ function registerRecorder(canaries: readonly Canary[], seen: Seen): string {
 async function runWorkflow(
   repoDir: string,
   workflow: Workflow,
+  onEvent?: (event: WorkflowRunEvent) => void,
 ): Promise<{ status?: string; errors: string[] }> {
   await new YamlWorkflowRepository(repoDir).save(workflow);
   const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
@@ -202,6 +203,7 @@ async function runWorkflow(
     (event: WorkflowRunEvent) => {
       if (event.kind === "completed") status = event.run.status;
       if (event.kind === "step_failed") errors.push(event.error);
+      onEvent?.(event);
     },
     syncService,
     undefined,
@@ -370,6 +372,103 @@ Deno.test(
         kindsByClass(canaries, seen.read, "s"),
         allOf(canaries, "plaintext"),
       );
+    });
+  },
+);
+
+function registerEcho(canaries: readonly Canary[]): string {
+  const type = ModelType.create(`test/canary-echo-${crypto.randomUUID()}`);
+  modelRegistry.register({
+    type,
+    version: "2026.11.04.1",
+    methods: {
+      echo: {
+        description: "Logs each sensitive argument it receives",
+        arguments: z.object(
+          perCanary(canaries, "m", () => z.string().meta({ sensitive: true })),
+        ),
+        execute: (args, context) => {
+          const received = args as Record<string, string>;
+          // a plain-string message parses braces, which would alter the
+          // reference-shaped canary before it is ever logged
+          canaries.forEach((_, i) => {
+            const value = received[`m${i}`];
+            context.logger.info`echo-tagged ${i}: ${value}`;
+            context.logger.info("echo-props {i}: {value}", { i, value });
+          });
+          return Promise.resolve({});
+        },
+      },
+    },
+  });
+  return type.normalized;
+}
+
+function eventText(event: WorkflowRunEvent): string {
+  const inspected = Deno.inspect(event, {
+    depth: Infinity,
+    strAbbreviateSize: Infinity,
+    iterableLimit: Infinity,
+  });
+  try {
+    return `${JSON.stringify(event)}\n${inspected}`;
+  } catch {
+    return inspected;
+  }
+}
+
+Deno.test(
+  "secret canary boundaries: workflow run events carry no canary a method logs",
+  async () => {
+    await withCanaryRepo(async (repoDir, canaries) => {
+      const type = registerEcho(canaries);
+      const events: WorkflowRunEvent[] = [];
+      try {
+        const { status, errors } = await runWorkflow(
+          repoDir,
+          Workflow.create({
+            name: `canary-echo-${crypto.randomUUID().slice(0, 8)}`,
+            jobs: [Job.create({
+              name: "main",
+              steps: [Step.create({
+                name: "echo",
+                task: StepTask.directExecution(
+                  type,
+                  "echo",
+                  "echo",
+                  perCanary(canaries, "m", ref),
+                ),
+              })],
+            })],
+          }),
+          (event) => events.push(event),
+        );
+        assertEquals(status, "succeeded", errors.join("\n"));
+      } finally {
+        modelRegistry.invalidateType(type);
+      }
+
+      const lines = events.flatMap((e) =>
+        e.kind === "method_output" ? [e.line] : []
+      );
+      assertEquals(lines.length, canaries.length * 2, lines.join("\n"));
+      const text = events.map(eventText).join("\n");
+      // escaping can hide a leaked value from a substring check, so its ASCII
+      // prefix and suffix are checked as well
+      const leaked = canaries.filter((c) => c.unique).flatMap((canary) =>
+        [canary.value, canary.value.slice(0, 13), canary.value.slice(-10)]
+            .some((form) => text.includes(form))
+          ? [canary.class]
+          : []
+      );
+      assertEquals(leaked, []);
+      for (const canary of canaries.filter((c) => c.unique)) {
+        const i = canaries.indexOf(canary);
+        assert(
+          lines.includes(`echo-tagged ${i}: ***`),
+          `${canary.class}: ${lines.join("\n")}`,
+        );
+      }
     });
   },
 );

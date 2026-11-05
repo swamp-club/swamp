@@ -27,6 +27,7 @@ import {
 } from "./in_process_executor.ts";
 import type { MethodExecutor } from "./in_process_executor.ts";
 import type { ExecutionRequest } from "./execution_envelope.ts";
+import { SecretRedactor } from "../secrets/mod.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
 import type {
@@ -1215,4 +1216,65 @@ Deno.test("InProcessExecutor: a failed method rolls back the file versions it to
     [[["unfinished", 2]]],
   );
   assertEquals(result.outputs.length, 1);
+});
+
+Deno.test("wrapLoggerWithOutput: masks the redactor's secrets in the output event line for every logging form", () => {
+  const secret = `s3cr3t-${crypto.randomUUID()}`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const lines: string[] = [];
+  const wrapped = wrapLoggerWithOutput(
+    getLogger(["test", "wrap-redact"]),
+    (e) => {
+      if (e.type === "output") lines.push(e.line);
+    },
+    redactor,
+  );
+  wrapped.info(`plain ${secret}`);
+  wrapped.info`tagged ${secret}`;
+  wrapped.warn("props {value}", { value: secret });
+  assertEquals(lines, ["plain ***", "tagged ***", "props ***"]);
+});
+
+Deno.test("wrapLoggerWithOutput: leaves the line as written without a redactor or with an empty one", () => {
+  const lines: string[] = [];
+  const onEvent = (e: MethodExecutionEvent) => {
+    if (e.type === "output") lines.push(e.line);
+  };
+  const logger = getLogger(["test", "wrap-redact-none"]);
+  wrapLoggerWithOutput(logger, onEvent).info("no redactor");
+  wrapLoggerWithOutput(logger, onEvent, new SecretRedactor()).info("empty");
+  assertEquals(lines, ["no redactor", "empty"]);
+});
+
+Deno.test("InProcessExecutor: a line the method logs reaches onEvent with the context redactor's secrets masked", async () => {
+  const secret = `s3cr3t-${crypto.randomUUID()}`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const executor: MethodExecutor = {
+    execute: (_def, _method, context) => {
+      context.logger.info(`token is ${secret}`);
+      return Promise.resolve({});
+    },
+  };
+  const lines: string[] = [];
+  const context: MethodContext = {
+    ...createMockContext(),
+    redactor,
+    onEvent: (e: MethodExecutionEvent) => {
+      if (e.type === "output") lines.push(e.line);
+    },
+  };
+
+  const result = await new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  ).execute(createMockRequest());
+
+  assertEquals(result.status, "success");
+  assertEquals(lines, ["token is ***"]);
 });

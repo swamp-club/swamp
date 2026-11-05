@@ -35,6 +35,7 @@ import type {
   WorkflowGateRejectOptions,
 } from "./model.ts";
 import type { WorkflowGateService } from "./workflow_gate_service.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
 import {
   createFileWriterFactory,
   createResourceDeleter,
@@ -65,9 +66,12 @@ function renderMessageTemplate(
   );
 }
 
+// the line is masked before it becomes an event, so every renderer and the
+// serve stream receive it scrubbed; the run file sink masks the record itself
 export function wrapLoggerWithOutput(
   logger: Logger,
   onEvent: ((event: MethodExecutionEvent) => void) | undefined,
+  redactor?: SecretRedactor,
 ): Logger {
   if (!onEvent) return logger;
   return new Proxy(logger, {
@@ -100,7 +104,7 @@ export function wrapLoggerWithOutput(
           }
           onEvent({
             type: "output",
-            line,
+            line: redactor?.hasSecrets ? redactor.redact(line) : line,
             stream: prop === "warn" || prop === "warning" || prop === "error"
               ? "stderr"
               : "stdout",
@@ -250,7 +254,11 @@ export class InProcessExecutor {
       ...this.context,
       methodName: this.methodName,
       traceHeaders: request.traceHeaders,
-      logger: wrapLoggerWithOutput(this.context.logger, this.context.onEvent),
+      logger: wrapLoggerWithOutput(
+        this.context.logger,
+        this.context.onEvent,
+        this.context.redactor,
+      ),
       writeResource,
       readResource,
       deleteResource,

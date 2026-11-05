@@ -1053,9 +1053,10 @@ at review time are these: the `step_skipped` event and debug log (raw
 `.runs-index.json` (`inputs`, `tags`, `failureReason`), `outputs/*.yaml`
 (`error`), the step-lease `error` (the worker's `result.error`, scrubbed by
 value on both hops since swamp-club#3525), the worker's debug log of runner
-stderr, `run_tracker.db` pending-run payloads, control-plane wait records,
-`_catalog.db` tags, the serve audit WAL and store at each detail level, the CLI
-command audit, and on v3 every record's copy in
+stderr, terminal stdout of a log-mode run (method logger lines, method console
+output, and run log records under `--log`), `run_tracker.db` pending-run
+payloads, control-plane wait records, `_catalog.db` tags, the serve audit WAL
+and store at each detail level, the CLI command audit, and on v3 every record's copy in
 `commits.db` and `_blobs/`. The checked-in inventory,
 integration/secret_sink_inventory.json, is the list every phase gate is measured
 against. Its rules test fails when this section or the code names a destination
@@ -1982,5 +1983,6 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |
 | Runner stderr sanitisation (swamp-club#3526)  | `src/infrastructure/logging/run_file_sink.ts` (`registerRedactor`, `redactActive`), `logger.ts` (`createStderrSink`), `src/domain/models/console_guard.ts`, `src/worker/exec_dispatch.ts` (`runDispatchRunner`), `dispatch_handler.ts` (`scrubRunnerStderr`) |
+| Terminal output sanitisation (swamp-club#4412) | `src/domain/models/in_process_executor.ts` (`wrapLoggerWithOutput` masks the output event line with the context redactor), `src/domain/models/console_guard.ts` (`withConsoleGuard` masks in log mode too), `src/infrastructure/logging/logger.ts` (`createRedactingSink` on the stdout console and pretty sinks), `integration/secret_canary_boundaries_test.ts` |
 
 Implementation PRs update this map as they add seams.
