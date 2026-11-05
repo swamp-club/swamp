@@ -41,6 +41,17 @@ type Workspace struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
 	Trusted bool   `json:"trusted"`
+	// bound came from a page lease, not the registry.
+	bound bool
+}
+
+// key names a workspace's engine: a lease-bound folder shares one engine with
+// every lease bound to it, whatever name each lease gives it.
+func (w Workspace) key() string {
+	if w.bound {
+		return "path:" + w.Path
+	}
+	return w.Name
 }
 
 type Resolver interface {
@@ -77,6 +88,7 @@ func ParseRoute(path string) (name, rest string, ok bool) {
 
 type workspaceEngine struct {
 	*engine.Supervisor
+	key       string
 	workspace Workspace
 	lastUsed  atomic.Int64
 }
@@ -180,8 +192,12 @@ func (h *Hub) admitted(ctx context.Context, workspace Workspace) (*workspaceEngi
 func (h *Hub) PageWorkspace(path string) (string, string, bool) { return ParseRoute(path) }
 
 // RoutePage serves a dashboard tab. An untrusted workspace gets an engine that
-// loads no extension code, so its built-in reads still work.
-func (h *Hub) RoutePage(ctx context.Context, name string) (gateway.PageBackend, error) {
+// loads no extension code, so its built-in reads still work. A lease bound to
+// a folder is served from it; the user ran swamp there, so it is trusted.
+func (h *Hub) RoutePage(ctx context.Context, lease gateway.Lease, name string) (gateway.PageBackend, error) {
+	if path, ok := lease.Bound(name); ok {
+		return h.admitted(ctx, Workspace{Name: name, Path: path, Trusted: true, bound: true})
+	}
 	workspace, err := h.resolve(ctx, name)
 	if errors.Is(err, ErrUnknownWorkspace) {
 		return nil, &gateway.RouteError{Status: 404, Code: "unknown_workspace"}
@@ -223,7 +239,8 @@ func (h *Hub) engineFor(workspace Workspace) (*workspaceEngine, error) {
 	if h.stopping {
 		return nil, &gateway.RouteError{Status: 503, Code: "draining"}
 	}
-	existing := h.engines[workspace.Name]
+	key := workspace.key()
+	existing := h.engines[key]
 	// Trust decides whether extension code may load, so a change needs a new generation.
 	if existing != nil && existing.workspace.Path == workspace.Path && existing.workspace.Trusted == workspace.Trusted {
 		existing.workspace = workspace
@@ -243,10 +260,11 @@ func (h *Hub) engineFor(workspace Workspace) (*workspaceEngine, error) {
 	}
 	e := &workspaceEngine{
 		Supervisor: engine.NewSupervisorWith(h.config.Engine, h.config.Starter(workspace), engine.HubHandshake(workspace.Path, workspace.Trusted)),
+		key:        key,
 		workspace:  workspace,
 	}
 	e.touch()
-	h.engines[workspace.Name] = e
+	h.engines[key] = e
 	if h.runCtx != nil {
 		h.startLoop(e)
 	}
@@ -287,7 +305,7 @@ func (h *Hub) admit(ctx context.Context, target *workspaceEngine) error {
 		running, victim := h.capacity(target, refused)
 		if running < h.config.MaxEngines {
 			h.mu.Lock()
-			h.pending[target.workspace.Name] = time.Now()
+			h.pending[target.key] = time.Now()
 			h.mu.Unlock()
 			return nil
 		}
@@ -374,6 +392,27 @@ func (h *Hub) Reset(name string) error {
 		return ErrUnknownWorkspace
 	}
 	return e.Reset()
+}
+
+// Idle reports no engine running or starting, so nothing would be lost if
+// the hub stopped.
+func (h *Hub) Idle() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.pending) != 0 {
+		for key, started := range h.pending {
+			e := h.engines[key]
+			if e != nil && !e.Activity().Running && time.Since(started) <= h.config.Engine.StartupTimeout {
+				return false
+			}
+		}
+	}
+	for _, e := range h.engines {
+		if activity := e.Activity(); activity.Running || activity.Sessions != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Run drives every engine's idle clock until ctx ends.

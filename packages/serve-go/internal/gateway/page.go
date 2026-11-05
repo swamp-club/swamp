@@ -47,8 +47,16 @@ const LocalTokenHeader = "X-Swamp-Local-Token"
 // Lease is a dashboard tab's credential. The hub checks it; engines never see it.
 type Lease interface {
 	Allows(workspace string) bool
-	// Hold registers a live socket or stream that revoking the lease stops.
+	// ScopeOf is every workspace, or the one workspace the lease names.
+	ScopeOf() (all bool, workspace string)
+	// Bound is the folder the lease serves its workspace from, if it names one.
+	Bound(workspace string) (path string, ok bool)
+	// Backend is the invoking process's loopback start server, or "".
+	Backend() string
+	// Hold registers a live dashboard socket or stream that revoking the lease stops.
 	Hold(stop func()) (release func(), ok bool)
+	// HoldBackend registers a proxied start socket, which is not a dashboard page.
+	HoldBackend(stop func()) (release func(), ok bool)
 }
 
 type Leases interface {
@@ -68,7 +76,31 @@ type PageBackend interface {
 type PageRouter interface {
 	// PageWorkspace names the workspace a path addresses, resolving nothing.
 	PageWorkspace(path string) (workspace, rest string, ok bool)
-	RoutePage(ctx context.Context, workspace string) (PageBackend, error)
+	RoutePage(ctx context.Context, lease Lease, workspace string) (PageBackend, error)
+}
+
+// Asset is one dashboard bundle file.
+type Asset struct {
+	ContentType  string
+	CacheControl string
+	Body         []byte
+}
+
+// LocalWorkspace is one entry of the workspace switcher.
+type LocalWorkspace struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+var (
+	ErrAssetsUnavailable = errors.New("dashboard assets unavailable")
+	ErrAssetForbidden    = errors.New("dashboard asset outside the bundle")
+)
+
+// Site serves what a dashboard tab loads outside any workspace.
+type Site interface {
+	Asset(ctx context.Context, path string) (Asset, error)
+	Workspaces(ctx context.Context, lease Lease) ([]LocalWorkspace, bool, error)
 }
 
 var page = servecontract.Page()
@@ -147,17 +179,24 @@ type pageRequest struct {
 	rest      string
 }
 
-// guardPage refuses in a fixed order before anything resolves, so a probe
-// without a lease never wakes the control engine or a workspace engine.
-func (g *Gateway) guardPage(w http.ResponseWriter, r *http.Request, router PageRouter, token string) (pageRequest, bool) {
+// guardLocal admits only this machine's browser addressing the hub by its own
+// authority, which defeats DNS rebinding.
+func (g *Gateway) guardLocal(w http.ResponseWriter, r *http.Request) bool {
 	if !loopbackPeer(r) {
 		writeJSON(w, 404, map[string]string{"error": "unsupported_endpoint", "profile": g.config.profile()})
-		return pageRequest{}, false
+		return false
 	}
 	port := g.port.Load()
 	if port == 0 || (r.Host != fmt.Sprintf("127.0.0.1:%d", port) && r.Host != fmt.Sprintf("localhost:%d", port)) {
 		writeText(w, 421, "Misdirected request")
-		return pageRequest{}, false
+		return false
+	}
+	return true
+}
+
+func (g *Gateway) guardLease(w http.ResponseWriter, r *http.Request, token string) (Lease, bool) {
+	if !g.guardLocal(w, r) {
+		return nil, false
 	}
 	var lease Lease
 	if token != "" && len(token) <= 512 {
@@ -165,6 +204,16 @@ func (g *Gateway) guardPage(w http.ResponseWriter, r *http.Request, router PageR
 	}
 	if lease == nil {
 		writeText(w, 401, "Unauthorized")
+		return nil, false
+	}
+	return lease, true
+}
+
+// guardPage refuses in a fixed order before anything resolves, so a probe
+// without a lease never wakes the control engine or a workspace engine.
+func (g *Gateway) guardPage(w http.ResponseWriter, r *http.Request, router PageRouter, token string) (pageRequest, bool) {
+	lease, ok := g.guardLease(w, r, token)
+	if !ok {
 		return pageRequest{}, false
 	}
 	workspace, rest, ok := router.PageWorkspace(r.URL.Path)
@@ -172,15 +221,22 @@ func (g *Gateway) guardPage(w http.ResponseWriter, r *http.Request, router PageR
 		writeJSON(w, 404, map[string]string{"error": "workspace_required"})
 		return pageRequest{}, false
 	}
+	// Worded as the dashboard child's hub did: a lease never learns whether
+	// a workspace outside its scope exists.
 	if !lease.Allows(workspace) {
-		writeText(w, 403, "Forbidden")
+		writeText(w, 404, "No workspace named "+workspace)
 		return pageRequest{}, false
 	}
 	return pageRequest{lease: lease, workspace: workspace, rest: rest}, true
 }
 
-func (g *Gateway) routePage(w http.ResponseWriter, ctx context.Context, router PageRouter, workspace string) (PageBackend, bool) {
-	backend, err := router.RoutePage(ctx, workspace)
+func (g *Gateway) routePage(w http.ResponseWriter, ctx context.Context, router PageRouter, request pageRequest) (PageBackend, bool) {
+	backend, err := router.RoutePage(ctx, request.lease, request.workspace)
+	var refusal *RouteError
+	if errors.As(err, &refusal) && refusal.Code == "unknown_workspace" {
+		writeText(w, 404, "No workspace named "+request.workspace)
+		return nil, false
+	}
 	if err != nil {
 		writeRouteFailure(w, err)
 		return nil, false
@@ -227,7 +283,7 @@ func (g *Gateway) upgradePage(w http.ResponseWriter, r *http.Request, router Pag
 	}
 	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), g.config.AuthTimeout)
-	backend, ok := g.routePage(w, ctx, router, request.workspace)
+	backend, ok := g.routePage(w, ctx, router, request)
 	if !ok {
 		cancel()
 		return
@@ -364,7 +420,7 @@ func (g *Gateway) pageRequestRoute(w http.ResponseWriter, r *http.Request, route
 	}
 	defer g.httpSlot(request.workspace, false)
 	ctx, cancel := context.WithTimeout(r.Context(), g.config.AuthTimeout)
-	backend, ok := g.routePage(w, ctx, router, request.workspace)
+	backend, ok := g.routePage(w, ctx, router, request)
 	if !ok {
 		cancel()
 		return
@@ -465,7 +521,7 @@ func (g *Gateway) httpSlot(workspace string, take bool) bool {
 func (g *Gateway) pageHealth(w http.ResponseWriter, r *http.Request, router PageRouter, request pageRequest) {
 	ctx, cancel := context.WithTimeout(r.Context(), g.config.AuthTimeout)
 	defer cancel()
-	backend, ok := g.routePage(w, ctx, router, request.workspace)
+	backend, ok := g.routePage(w, ctx, router, request)
 	if !ok {
 		return
 	}
@@ -527,7 +583,7 @@ func (g *Gateway) pageHealthStream(w http.ResponseWriter, r *http.Request, route
 		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), g.config.AuthTimeout)
-	backend, ok := g.routePage(w, ctx, router, request.workspace)
+	backend, ok := g.routePage(w, ctx, router, request)
 	if !ok {
 		cancel()
 		return

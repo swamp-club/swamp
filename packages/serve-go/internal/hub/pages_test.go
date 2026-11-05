@@ -43,6 +43,7 @@ import (
 type pageHarness struct {
 	*harness
 	leases  *LeaseStore
+	admin   *Admin
 	gateway *gateway.Gateway
 	server  *httptest.Server
 	port    int
@@ -53,7 +54,8 @@ type pageHarness struct {
 
 func newPageHarness(t *testing.T, workspaces ...Workspace) *pageHarness {
 	t.Helper()
-	p := &pageHarness{harness: newHarness(t, 0, workspaces...), leases: NewLeaseStore("admin-secret")}
+	p := &pageHarness{harness: newHarness(t, 0, workspaces...), leases: NewLeaseStore(0)}
+	p.admin = NewAdmin("admin-secret", p.leases)
 	p.opened = func(params json.RawMessage) {
 		var decoded map[string]interface{}
 		_ = json.Unmarshal(params, &decoded)
@@ -61,7 +63,7 @@ func newPageHarness(t *testing.T, workspaces ...Workspace) *pageHarness {
 		p.opens = append(p.opens, decoded)
 		p.mu.Unlock()
 	}
-	p.gateway = gateway.New(gateway.Config{Host: "127.0.0.1", AuthTimeout: 10 * time.Second, ControlTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, Profile: "hub", Leases: p.leases, Admin: p.leases}, p.hub)
+	p.gateway = gateway.New(gateway.Config{Host: "127.0.0.1", AuthTimeout: 10 * time.Second, ControlTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, Profile: "hub", Leases: p.leases, Admin: p.admin}, p.hub)
 	p.server = httptest.NewServer(p.gateway)
 	t.Cleanup(p.server.Close)
 	addr := p.server.Listener.Addr().(*net.TCPAddr)
@@ -134,8 +136,8 @@ func TestPageRoutesRefuseInOrderBeforeAnythingWakes(t *testing.T) {
 		t.Fatalf("refused probes resolved %d workspaces and started %d engines", calls, p.startCount("/repo/a"))
 	}
 	_, scoped, _ := p.leases.Issue(LeaseScope{Workspace: "b"})
-	if w := p.serve(p.request("GET", "/w/a/auth/info", scoped, nil)); w.Code != 403 {
-		t.Fatalf("lease scoped to another workspace got %d", w.Code)
+	if w := p.serve(p.request("GET", "/w/a/auth/info", scoped, nil)); w.Code != 404 || w.Body.String() != "No workspace named a" {
+		t.Fatalf("lease scoped to another workspace got %d %q", w.Code, w.Body.String())
 	}
 	w := p.serve(p.request("GET", "/w/a/auth/info", p.token, nil))
 	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"local":true,"mode":"none"}` {

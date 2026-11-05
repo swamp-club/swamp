@@ -158,7 +158,7 @@ func run(args []string, stdout, stderr io.Writer) (result error) {
 		return err
 	}
 	gatewayConfig := gateway.Config{Host: host, TLS: tlsConfig != nil, TrustedHosts: parseHosts(*trusted), AuthTimeout: config.StartupTimeout + config.ControlTimeout, ControlTimeout: config.ControlTimeout, WriteTimeout: 10 * time.Second}
-	return serveUntilStopped(ctx, stop, *bind, gateway.New(gatewayConfig, gateway.Single(supervisor)), tlsConfig, logger, "local-v1", config.DrainTimeout, supervisor.Run, supervisor.Shutdown)
+	return serveUntilStopped(ctx, stop, *bind, gateway.New(gatewayConfig, gateway.Single(supervisor)), tlsConfig, logger, "local-v1", config.DrainTimeout, supervisor.Run, supervisor.Shutdown, nil)
 }
 
 func loadTLS(certPath, keyPath string) (*tls.Config, error) {
@@ -192,11 +192,17 @@ func parseHosts(trusted string) []string {
 
 // serveUntilStopped listens, runs the engine clocks, and on a signal or
 // listener failure drains HTTP and engines under one shutdown deadline.
-func serveUntilStopped(ctx context.Context, stop context.CancelFunc, bind string, publicGateway *gateway.Gateway, tlsConfig *tls.Config, logger *slog.Logger, profile string, drainTimeout time.Duration, runEngines func(context.Context), shutdownEngines func(context.Context) error) error {
+func serveUntilStopped(ctx context.Context, stop context.CancelFunc, bind string, publicGateway *gateway.Gateway, tlsConfig *tls.Config, logger *slog.Logger, profile string, drainTimeout time.Duration, runEngines func(context.Context), shutdownEngines func(context.Context) error, onListening func(*net.TCPAddr) error) error {
 	server := newHTTPServer(bind, publicGateway, tlsConfig, logger)
 	listener, err := net.Listen("tcp", bind)
 	if err != nil {
 		return err
+	}
+	if onListening != nil {
+		if err := onListening(listener.Addr().(*net.TCPAddr)); err != nil {
+			_ = listener.Close()
+			return err
+		}
 	}
 	listener = gateway.LimitListener(listener, 256)
 	if tlsConfig != nil {

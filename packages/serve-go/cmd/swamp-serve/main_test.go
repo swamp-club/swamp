@@ -21,6 +21,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,11 +31,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	servecontract "github.com/swamp-club/swamp/packages/serve-go"
 	"github.com/swamp-club/swamp/packages/serve-go/internal/engine"
+	"github.com/swamp-club/swamp/packages/serve-go/internal/hub"
 	"github.com/swamp-club/swamp/packages/serve-go/internal/protocol"
 )
 
@@ -349,23 +352,38 @@ func TestListeningOutputIncludesConnectionURLAndExistingFields(t *testing.T) {
 	}
 }
 
-func TestAdminTokenFileIsPrivateReplacedAndNeverFollowsASymlink(t *testing.T) {
+func TestHubRecordIsPrivateReplacedRemovedOnlyByItsOwnerAndNeverFollowsASymlink(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "admin-token")
-	if err := writeAdminToken(path, "first"); err != nil {
+	path := filepath.Join(dir, "hub.json")
+	if err := writeHubRecord(path, hubRecord{PID: 1, Port: 1000, AdminToken: "first"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAdminToken(path, "second"); err != nil {
+	if err := writeHubRecord(path, hubRecord{PID: 2, Port: 2000, AdminToken: "second", AutoExit: true}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
-	if err != nil || string(data) != "second\n" {
-		t.Fatalf("token file %q %v", data, err)
+	var record hubRecord
+	if err != nil || json.Unmarshal(data, &record) != nil || record.AdminToken != "second" || record.Port != 2000 || !record.AutoExit {
+		t.Fatalf("record %q %v", data, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("temporary files left behind: %v", entries)
+	}
+	removeHubRecord(path, 1)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("a previous hub removed its successor's record")
+	}
+	removeHubRecord(path, 2)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("owner left its record: %v", err)
 	}
 	if runtime.GOOS != "windows" {
+		if err := writeHubRecord(path, hubRecord{PID: 3}); err != nil {
+			t.Fatal(err)
+		}
 		info, _ := os.Stat(path)
 		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("token file mode %v", info.Mode().Perm())
+			t.Fatalf("record mode %v", info.Mode().Perm())
 		}
 		target := filepath.Join(dir, "target")
 		link := filepath.Join(dir, "link")
@@ -375,11 +393,48 @@ func TestAdminTokenFileIsPrivateReplacedAndNeverFollowsASymlink(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		if err := writeAdminToken(link, "secret"); err == nil {
-			t.Fatal("followed a symlinked token path")
+		if err := writeHubRecord(link, hubRecord{PID: 4, AdminToken: "secret"}); err == nil {
+			t.Fatal("followed a symlinked record path")
 		}
 		if kept, _ := os.ReadFile(target); string(kept) != "keep" {
 			t.Fatal("symlink target overwritten")
 		}
+	}
+}
+
+func TestAutoLaunchedHubStopsOnlyAfterNoLeaseAndNoEngineForTheGrace(t *testing.T) {
+	leases := hub.NewLeaseStore(0)
+	lease, _, _ := leases.Issue(hub.LeaseScope{All: true})
+	var idle atomic.Bool
+	idle.Store(true)
+	tick := make(chan time.Time)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stopped atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		watchLeases(ctx, tick, leases, idle.Load, time.Minute, func() { stopped.Store(true) })
+		close(done)
+	}()
+	// Each tick is handled while the test moves on, so every gap after a
+	// change stays under the grace whichever side of it the tick saw.
+	start := time.Unix(1000, 0)
+	tick <- start
+	tick <- start.Add(30 * time.Second)
+	leases.Revoke(lease.ID)
+	tick <- start.Add(60 * time.Second)
+	idle.Store(false)
+	tick <- start.Add(80 * time.Second)
+	tick <- start.Add(85 * time.Second)
+	idle.Store(true)
+	tick <- start.Add(100 * time.Second)
+	tick <- start.Add(110 * time.Second)
+	if stopped.Load() {
+		t.Fatal("stopped before the grace passed")
+	}
+	tick <- start.Add(200 * time.Second)
+	<-done
+	if !stopped.Load() {
+		t.Fatal("never stopped once idle for the grace")
 	}
 }

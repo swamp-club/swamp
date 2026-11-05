@@ -15,6 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 package hub
 
@@ -24,10 +25,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
-	"io"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -47,17 +44,50 @@ type PageLease struct {
 	CreatedAt time.Time
 	hash      [32]byte
 	store     *LeaseStore
-	holds     map[int]func()
+	// boundPath serves Scope.Workspace from this repository, registered or not.
+	boundPath string
+	backend   string
+	renewed   time.Time
+	holds     map[int]hold
 	next      int
 	revoked   bool
+}
+
+type hold struct {
+	stop func()
+	page bool
 }
 
 func (l *PageLease) Allows(workspace string) bool {
 	return l.Scope.All || l.Scope.Workspace == workspace
 }
 
-// Hold registers a socket or stream that revoking the lease stops.
-func (l *PageLease) Hold(stop func()) (func(), bool) {
+func (l *PageLease) ScopeOf() (bool, string) { return l.Scope.All, l.Scope.Workspace }
+
+// Bound is the repository a lease serves its workspace from, when the
+// invoking process named one instead of the registry.
+func (l *PageLease) Bound(workspace string) (string, bool) {
+	if l.boundPath == "" || l.Scope.All || l.Scope.Workspace != workspace {
+		return "", false
+	}
+	return l.boundPath, true
+}
+
+// Backend is the invoking process's loopback start server, if it has one.
+func (l *PageLease) Backend() string {
+	l.store.mu.Lock()
+	defer l.store.mu.Unlock()
+	return l.backend
+}
+
+// Hold registers a dashboard socket or stream that revoking the lease stops.
+func (l *PageLease) Hold(stop func()) (func(), bool) { return l.hold(stop, true) }
+
+// HoldBackend registers a proxied start socket: revocation stops it, but it
+// is not an open dashboard page.
+func (l *PageLease) HoldBackend(stop func()) (func(), bool) { return l.hold(stop, false) }
+
+func (l *PageLease) hold(stop func(), page bool) (func(), bool) {
 	l.store.mu.Lock()
 	defer l.store.mu.Unlock()
 	if l.revoked {
@@ -65,7 +95,7 @@ func (l *PageLease) Hold(stop func()) (func(), bool) {
 	}
 	key := l.next
 	l.next++
-	l.holds[key] = stop
+	l.holds[key] = hold{stop: stop, page: page}
 	return func() {
 		l.store.mu.Lock()
 		delete(l.holds, key)
@@ -76,15 +106,16 @@ func (l *PageLease) Hold(stop func()) (func(), bool) {
 // LeaseStore keys leases by token digest, so a lookup never compares tokens
 // byte by byte; the digest match is still confirmed in constant time.
 type LeaseStore struct {
-	mu        sync.Mutex
-	byHash    map[[32]byte]*PageLease
-	byID      map[string]*PageLease
-	adminHash [32]byte
-	now       func() time.Time
+	mu     sync.Mutex
+	byHash map[[32]byte]*PageLease
+	byID   map[string]*PageLease
+	// ttl revokes a lease its invoker stopped renewing; zero never expires.
+	ttl time.Duration
+	now func() time.Time
 }
 
-func NewLeaseStore(adminToken string) *LeaseStore {
-	return &LeaseStore{byHash: map[[32]byte]*PageLease{}, byID: map[string]*PageLease{}, adminHash: sha256.Sum256([]byte(adminToken)), now: time.Now}
+func NewLeaseStore(ttl time.Duration) *LeaseStore {
+	return &LeaseStore{byHash: map[[32]byte]*PageLease{}, byID: map[string]*PageLease{}, ttl: ttl, now: time.Now}
 }
 
 // NewToken is 32 random bytes in base64url, the page token format the
@@ -98,6 +129,11 @@ func NewToken() (string, error) {
 }
 
 func (s *LeaseStore) Issue(scope LeaseScope) (*PageLease, string, error) {
+	return s.IssueBound(scope, "")
+}
+
+// IssueBound issues a lease whose workspace is served from path.
+func (s *LeaseStore) IssueBound(scope LeaseScope, path string) (*PageLease, string, error) {
 	token, err := NewToken()
 	if err != nil {
 		return nil, "", err
@@ -106,7 +142,8 @@ func (s *LeaseStore) Issue(scope LeaseScope) (*PageLease, string, error) {
 	if _, err := rand.Read(id[:]); err != nil {
 		return nil, "", err
 	}
-	lease := &PageLease{ID: hex.EncodeToString(id[:]), Scope: scope, CreatedAt: s.now(), hash: sha256.Sum256([]byte(token)), store: s, holds: map[int]func(){}}
+	now := s.now()
+	lease := &PageLease{ID: hex.EncodeToString(id[:]), Scope: scope, CreatedAt: now, renewed: now, boundPath: path, hash: sha256.Sum256([]byte(token)), store: s, holds: map[int]hold{}}
 	s.mu.Lock()
 	s.byHash[lease.hash] = lease
 	s.byID[lease.ID] = lease
@@ -125,6 +162,68 @@ func (s *LeaseStore) Lookup(token string) (gateway.Lease, bool) {
 	return lease, true
 }
 
+// LeaseStatus is what the invoking process learns when it renews.
+type LeaseStatus struct {
+	ID    string `json:"id"`
+	Pages int    `json:"pages"`
+}
+
+// Renew keeps a lease alive and reports its open dashboard pages.
+func (s *LeaseStore) Renew(id string) (LeaseStatus, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lease := s.byID[id]
+	if lease == nil {
+		return LeaseStatus{}, false
+	}
+	lease.renewed = s.now()
+	pages := 0
+	for _, h := range lease.holds {
+		if h.page {
+			pages++
+		}
+	}
+	return LeaseStatus{ID: id, Pages: pages}, true
+}
+
+func (s *LeaseStore) SetBackend(id, backend string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lease := s.byID[id]
+	if lease == nil {
+		return false
+	}
+	lease.backend = backend
+	lease.renewed = s.now()
+	return true
+}
+
+func (s *LeaseStore) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byID)
+}
+
+// Expire revokes every lease not renewed within the TTL, so an invoker that
+// died without revoking never keeps the hub alive.
+func (s *LeaseStore) Expire() {
+	if s.ttl <= 0 {
+		return
+	}
+	s.mu.Lock()
+	cutoff := s.now().Add(-s.ttl)
+	var stale []string
+	for id, lease := range s.byID {
+		if lease.renewed.Before(cutoff) {
+			stale = append(stale, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range stale {
+		s.Revoke(id)
+	}
+}
+
 // Revoke forgets the lease and stops every socket and stream it holds.
 func (s *LeaseStore) Revoke(id string) bool {
 	s.mu.Lock()
@@ -137,78 +236,13 @@ func (s *LeaseStore) Revoke(id string) bool {
 	delete(s.byHash, lease.hash)
 	lease.revoked = true
 	stops := make([]func(), 0, len(lease.holds))
-	for _, stop := range lease.holds {
-		stops = append(stops, stop)
+	for _, h := range lease.holds {
+		stops = append(stops, h.stop)
 	}
-	lease.holds = map[int]func(){}
+	lease.holds = map[int]hold{}
 	s.mu.Unlock()
 	for _, stop := range stops {
 		stop()
 	}
 	return true
-}
-
-func (s *LeaseStore) admin(r *http.Request) bool {
-	auth := r.Header.Get("Authorization")
-	if len(auth) <= 7 || !strings.EqualFold(auth[:7], "Bearer ") {
-		return false
-	}
-	digest := sha256.Sum256([]byte(auth[7:]))
-	return subtle.ConstantTimeCompare(digest[:], s.adminHash[:]) == 1
-}
-
-// ServeHTTP is the admin API: POST /hub/leases issues, DELETE
-// /hub/leases/<id> revokes. The gateway serves it to loopback peers only.
-func (s *LeaseStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !s.admin(r) {
-		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
-		return
-	}
-	if r.URL.Path == "/hub/leases" && r.Method == http.MethodPost {
-		var body struct {
-			Scope     string `json:"scope"`
-			Workspace string `json:"workspace"`
-		}
-		raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
-		if err != nil || json.Unmarshal(raw, &body) != nil {
-			writeJSON(w, 400, map[string]string{"error": "invalid_request"})
-			return
-		}
-		var scope LeaseScope
-		switch body.Scope {
-		case "all":
-			scope.All = true
-		case "workspace":
-			if !namePattern.MatchString(body.Workspace) {
-				writeJSON(w, 400, map[string]string{"error": "invalid_workspace"})
-				return
-			}
-			scope.Workspace = body.Workspace
-		default:
-			writeJSON(w, 400, map[string]string{"error": "invalid_scope"})
-			return
-		}
-		lease, token, err := s.Issue(scope)
-		if err != nil {
-			writeJSON(w, 503, map[string]string{"error": "lease_unavailable"})
-			return
-		}
-		writeJSON(w, 201, map[string]string{"id": lease.ID, "token": token})
-		return
-	}
-	if id, ok := strings.CutPrefix(r.URL.Path, "/hub/leases/"); ok && r.Method == http.MethodDelete {
-		if !s.Revoke(id) {
-			writeJSON(w, 404, map[string]string{"error": "unknown_lease"})
-			return
-		}
-		w.WriteHeader(204)
-		return
-	}
-	writeJSON(w, 404, map[string]string{"error": "unsupported_endpoint"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, value interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
 }

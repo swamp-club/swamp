@@ -91,6 +91,8 @@ type Config struct {
 	Leases Leases
 	// Admin serves /hub/ to loopback peers; it authenticates its own callers.
 	Admin http.Handler
+	// Site serves the dashboard bundle and the routes outside any workspace.
+	Site Site
 }
 
 func (c Config) profile() string {
@@ -137,6 +139,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		g.upgrade(w, r)
+		return
+	}
+	if pages && g.config.Site != nil && g.serveLocal(w, r) {
 		return
 	}
 	if r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/healthz") {
@@ -249,6 +254,10 @@ func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if router, ok := g.pages(); ok {
+		if r.URL.Path == "/start/ws" && g.config.Site != nil {
+			g.proxyStartSocket(w, r)
+			return
+		}
 		if token, subprotocol, page := classifyPage(r); page {
 			g.upgradePage(w, r, router, token, subprotocol)
 			return
