@@ -299,7 +299,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/cli/commands/vault_migrate.ts: vaultMigrateCommand": CLI_REINVOCATION,
     "src/cli/commands/workflow_search.ts: workflowSearchAction":
       CLI_REINVOCATION,
-    "src/serve/local/workspace_hub.ts: SWAMP_CLI_ACTIONS": CLI_REINVOCATION,
+    "src/serve/local/delegated_actions.ts: SWAMP_CLI_ACTIONS": CLI_REINVOCATION,
     "src/serve/local/workspace_hub.ts: spawnDashboardChild": CLI_REINVOCATION,
     "src/cli/context.ts: getGitRootSync": TOOLING,
     "src/domain/extensions/dependency_resolution/deno_info.ts: runDenoInfo":
