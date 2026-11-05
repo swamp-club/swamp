@@ -25,6 +25,8 @@ export interface LocalWorkspace {
 export interface WorkspaceList {
   workspaces: LocalWorkspace[];
   switchable: boolean;
+  /** where "all workspaces" leads: the start page, the hub overview, or nowhere */
+  home: "start" | "hub" | null;
 }
 
 /**
@@ -33,7 +35,10 @@ export interface WorkspaceList {
  * without the field comes from a hub that always was.
  */
 export function parseWorkspaceList(body: unknown): WorkspaceList {
-  const { workspaces, switchable } = (body ?? {}) as Record<string, unknown>;
+  const { workspaces, switchable, home } = (body ?? {}) as Record<
+    string,
+    unknown
+  >;
   return {
     workspaces: Array.isArray(workspaces)
       ? workspaces.filter((w): w is LocalWorkspace =>
@@ -41,5 +46,7 @@ export function parseWorkspaceList(body: unknown): WorkspaceList {
       )
       : [],
     switchable: switchable !== false,
+    // A hub that predates the field always had a start page.
+    home: home === "hub" ? "hub" : home === null ? null : "start",
   };
 }

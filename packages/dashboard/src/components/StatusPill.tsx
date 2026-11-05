@@ -32,7 +32,10 @@ const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
   idle: { bg: "var(--cancelled-bg)", color: "var(--cancelled)" },
 };
 
-export function StatusPill({ status }: { status: string }) {
+/** `label` replaces the shown word when it differs from the style's name. */
+export function StatusPill(
+  { status, label }: { status: string; label?: string },
+) {
   const style = STATUS_STYLES[status] ?? STATUS_STYLES.pending;
   return (
     <span
@@ -49,7 +52,7 @@ export function StatusPill({ status }: { status: string }) {
         color: style.color,
       }}
     >
-      {status}
+      {label ?? status}
     </span>
   );
 }

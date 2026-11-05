@@ -25,6 +25,7 @@ import {
   type ClickLike,
   type DetailView,
   encodeSegment,
+  isHubPath,
   isPlainLeftClick,
   isStartPath,
   legacyRedirectPath,
@@ -607,6 +608,14 @@ Deno.test("absoluteUrl: prefixes the origin", () => {
     ),
     "https://ops.example.com/dashboard/behaviors/m/data/d/versions/2",
   );
+});
+
+Deno.test("isHubPath: matches only the hub overview, with or without a slash", () => {
+  assertEquals(isHubPath("/dashboard/hub"), true);
+  assertEquals(isHubPath("/dashboard/hub/"), true);
+  assertEquals(isHubPath("/dashboard/hubs"), false);
+  assertEquals(isHubPath("/dashboard/w/hub"), false);
+  assertEquals(isHubPath("/dashboard/start"), false);
 });
 
 Deno.test("isStartPath: matches the start page with or without a slash", () => {

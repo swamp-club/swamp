@@ -78,10 +78,11 @@ import {
 } from "./views/ServeOnlyStates.tsx";
 import type { CopyFn } from "./views/AuditStates.tsx";
 import { copyText } from "./components/clipboard.ts";
-import { buildPath, isStartPath } from "./routes.ts";
+import { buildPath, isHubPath, isStartPath } from "./routes.ts";
 import { AgentSessions } from "./views/AgentSessions.tsx";
 import { useAgentSessionsVisible } from "./client/useAgentSessions.ts";
 import "./styles/shell.css";
+import "./styles/hub.css";
 
 // Views whose content is runs over time, which the dashboard-wide time
 // range scopes; the shell shows the picker above them.
@@ -103,7 +104,19 @@ const Start = lazy(() =>
   import("./views/start/Start.tsx").then((m) => ({ default: m.Start }))
 );
 
+// Only `swamp hub open` serves the hub overview.
+const Hub = lazy(() =>
+  import("./views/hub/Hub.tsx").then((m) => ({ default: m.Hub }))
+);
+
 export function App() {
+  if (isHubPath(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="loading">Loading...</div>}>
+        <Hub />
+      </Suspense>
+    );
+  }
   // The `swamp start` page talks only to its own loopback server, so it
   // must never mount the serve provider, its auth probe or its socket.
   if (isStartPath(location.pathname)) {

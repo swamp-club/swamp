@@ -115,6 +115,11 @@ export function isStartPath(pathname: string): boolean {
   return pathname === "/dashboard/start" || pathname === "/dashboard/start/";
 }
 
+/** True for the hub overview, which `swamp hub open` serves from the Go hub. */
+export function isHubPath(pathname: string): boolean {
+  return pathname === "/dashboard/hub" || pathname === "/dashboard/hub/";
+}
+
 /**
  * Percent-encodes one path segment. `@` stays readable (it is legal in a
  * path segment) so scoped names read as `@swamp%2Fworkflow-summary`; `/`

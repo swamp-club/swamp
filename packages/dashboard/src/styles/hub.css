@@ -1,0 +1,135 @@
+/* swamp hub overview */
+.hub-page {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text-1, inherit);
+}
+
+.hub-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hub-brand {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.hub-main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.hub-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.hub-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.hub-panel-head h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.hub-notice p,
+.hub-empty {
+  padding: 14px 18px;
+  color: var(--text-2);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.hub-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px 24px;
+  padding: 14px 18px;
+}
+
+.hub-field dt {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 2px;
+}
+
+.hub-field dd {
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.hub-dim {
+  color: var(--text-3);
+  font-size: 0.78rem;
+  margin-left: 8px;
+}
+
+.hub-path {
+  margin-left: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.hub-workspace {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-tag {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+.hub-tag-warn {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.hub-actions {
+  text-align: right;
+}
+
+.hub-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+}
+
+.hub-log {
+  margin: 0;
+  padding: 14px 18px;
+  max-height: 360px;
+  overflow: auto;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

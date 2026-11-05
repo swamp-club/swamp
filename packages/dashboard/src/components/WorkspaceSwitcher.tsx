@@ -73,9 +73,19 @@ export function WorkspaceSwitcher({ current }: { current: string }) {
           </option>
         ))}
       </select>
-      <a className="workspace-switcher-all" href="/dashboard/start">
-        All workspaces and tasks
-      </a>
+      {list.home === "hub"
+        ? (
+          <a className="workspace-switcher-all" href="/dashboard/hub">
+            Hub overview
+          </a>
+        )
+        : list.home === "start"
+        ? (
+          <a className="workspace-switcher-all" href="/dashboard/start">
+            All workspaces and tasks
+          </a>
+        )
+        : null}
     </div>
   );
 }

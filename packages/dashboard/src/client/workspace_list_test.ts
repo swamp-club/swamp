@@ -26,7 +26,11 @@ Deno.test("parseWorkspaceList: a fixed repo is not switchable", () => {
       workspaces: [{ name: "repo1", path: "/r/repo1" }],
       switchable: false,
     }),
-    { workspaces: [{ name: "repo1", path: "/r/repo1" }], switchable: false },
+    {
+      workspaces: [{ name: "repo1", path: "/r/repo1" }],
+      switchable: false,
+      home: "start",
+    },
   );
 });
 
@@ -35,6 +39,7 @@ Deno.test("parseWorkspaceList: workspace mode is switchable, with or without the
   assertEquals(parseWorkspaceList({ workspaces, switchable: true }), {
     workspaces,
     switchable: true,
+    home: "start",
   });
   assertEquals(parseWorkspaceList({ workspaces }).switchable, true);
 });
@@ -45,5 +50,19 @@ Deno.test("parseWorkspaceList: drops malformed entries and survives a bad body",
       .workspaces,
     [{ name: "a", path: "/a" }],
   );
-  assertEquals(parseWorkspaceList(null), { workspaces: [], switchable: true });
+  assertEquals(parseWorkspaceList(null), {
+    workspaces: [],
+    switchable: true,
+    home: "start",
+  });
+});
+
+Deno.test("parseWorkspaceList: home leads to the hub overview, the start page, or nowhere", () => {
+  assertEquals(parseWorkspaceList({ workspaces: [], home: "hub" }).home, "hub");
+  assertEquals(
+    parseWorkspaceList({ workspaces: [], home: "start" }).home,
+    "start",
+  );
+  assertEquals(parseWorkspaceList({ workspaces: [], home: null }).home, null);
+  assertEquals(parseWorkspaceList({ workspaces: [] }).home, "start");
 });
