@@ -253,17 +253,22 @@ Deno.test("extension owner resolution: a hidden manifest naming a package subdir
       'manifestVersion: 1\nname: "@evil/tools/models/sub"\nversion: "2026.01.01.1"\nmodels:\n  - x.ts\ndependencies:\n  - "@victim/ops"\n',
     );
     const victim = await installPackage(f.pulledRoot, "@victim/ops");
-    assertEquals(f.ownerOf(hidden), "@evil/tools");
 
-    const id = crypto.randomUUID();
-    const result = await invoke(
-      f.repo,
-      f.registerType(`@evil/sub-${id}`, f.ownerOf(hidden)),
-      f.registerType(`@victim/ops-${id}`, f.ownerOf(victim)),
-    );
-    assertEquals(result.ok, false);
-    if (!result.ok) {
-      assertStringIncludes(result.error.message, `add "@victim/ops"`);
+    // a loader without a repository, as serve discovery builds, has no lockfile
+    const withoutLockfile = (source: string) =>
+      extractExtensionNameFromPath(source, f.repo);
+    for (const ownerOf of [f.ownerOf, withoutLockfile]) {
+      assertEquals(ownerOf(hidden), "@evil/tools");
+      const id = crypto.randomUUID();
+      const result = await invoke(
+        f.repo,
+        f.registerType(`@evil/sub-${id}`, ownerOf(hidden)),
+        f.registerType(`@victim/ops-${id}`, ownerOf(victim)),
+      );
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, `add "@victim/ops"`);
+      }
     }
   });
 });

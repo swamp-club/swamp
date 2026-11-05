@@ -186,27 +186,32 @@ export function extractExtensionNameFromPath(
 
   const segments = relative.split(SEPARATOR);
   if (segments.length < 2) return undefined;
-  // an installed name outranks a manifest: a package can ship a manifest.yaml
-  // naming one of its own subdirectories, which would otherwise own the
-  // sources there with dependencies its published manifest never declared
-  const name = deepestOwner(segments, isInstalled ?? (() => false)) ??
-    deepestOwner(segments, (candidate) => manifestNames(root, candidate)) ??
-    segmentGuessName(segments);
+  // a package can ship a manifest.yaml naming one of its own subdirectories, so
+  // only the lockfile may pick a nested owner; without it the outermost
+  // manifest wins, and nothing a package ships sits above its own manifest
+  const name =
+    ownerCandidates(segments).reverse().find((candidate) =>
+      isInstalled?.(candidate)
+    ) ??
+      ownerCandidates(segments).find((candidate) =>
+        manifestNames(root, candidate)
+      ) ??
+      segmentGuessName(segments);
   if (name.includes("..") || name.includes("\0")) return undefined;
   return name;
 }
 
-/** an extension is installed at <pulled root>/<name>/, however many segments */
-function deepestOwner(
-  segments: readonly string[],
-  isOwner: (candidate: string) => boolean,
-): string | undefined {
+/**
+ * an extension is installed at <pulled root>/<name>/, however many segments;
+ * outermost first
+ */
+function ownerCandidates(segments: readonly string[]): string[] {
   const minSegments = segments[0].startsWith("@") ? 2 : 1;
-  for (let depth = segments.length - 1; depth >= minSegments; depth--) {
-    const candidate = segments.slice(0, depth).join("/");
-    if (isOwner(candidate)) return candidate;
+  const candidates: string[] = [];
+  for (let depth = minSegments; depth < segments.length; depth++) {
+    candidates.push(segments.slice(0, depth).join("/"));
   }
-  return undefined;
+  return candidates;
 }
 
 function manifestNames(root: string, candidate: string): boolean {

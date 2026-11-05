@@ -148,7 +148,7 @@ Deno.test("extractExtensionNameFromPath: a nested name ending in a kind director
   });
 });
 
-Deno.test("extractExtensionNameFromPath: a nested extension installed under its ancestor owns its own files", async () => {
+Deno.test("extractExtensionNameFromPath: a nested extension under its installed ancestor owns its files only when the lockfile says so", async () => {
   await withTempRepo(async (repo) => {
     const pulledRoot = join(repo, ".swamp", "pulled-extensions");
     const parent = await installPackage(
@@ -161,11 +161,17 @@ Deno.test("extractExtensionNameFromPath: a nested extension installed under its 
       "@swamp/gcp/gmail",
       "models/users_messages.ts",
     );
-    assertEquals(extractExtensionNameFromPath(parent, repo), "@swamp/gcp");
+    const installed = new Set(["@swamp/gcp", "@swamp/gcp/gmail"]);
+    const isInstalled = (name: string) => installed.has(name);
     assertEquals(
-      extractExtensionNameFromPath(nested, repo),
+      extractExtensionNameFromPath(parent, repo, isInstalled),
+      "@swamp/gcp",
+    );
+    assertEquals(
+      extractExtensionNameFromPath(nested, repo, isInstalled),
       "@swamp/gcp/gmail",
     );
+    assertEquals(extractExtensionNameFromPath(nested, repo), "@swamp/gcp");
   });
 });
 
@@ -328,6 +334,26 @@ Deno.test("extractExtensionNameFromPath: a name the lockfile does not know yet f
     assertEquals(
       extractExtensionNameFromPath(source, repo, () => false),
       "@swamp/gcp/gmail",
+    );
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: without lockfile knowledge a manifest naming a package subdirectory still cannot take ownership", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    const source = await installPackage(
+      pulledRoot,
+      "@evil/tools",
+      "models/sub/x.ts",
+    );
+    await Deno.writeTextFile(
+      join(pulledRoot, "@evil", "tools", "models", "sub", "manifest.yaml"),
+      'name: "@evil/tools/models/sub"\n',
+    );
+    assertEquals(extractExtensionNameFromPath(source, repo), "@evil/tools");
+    assertEquals(
+      extractExtensionNameFromPath(source, repo, () => false),
+      "@evil/tools",
     );
   });
 });
