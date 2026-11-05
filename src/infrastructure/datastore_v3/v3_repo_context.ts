@@ -652,12 +652,18 @@ export async function holdV3Writer(
   // processes; serve orders the writers. Its copy is brought up to serve's log
   // before it writes, or goes offline if serve is unreachable
   if (role === "writer" && serveUpstreamAt(config.path) !== undefined) {
-    await v3DatastoreFor(repoDir, config).catchUpForWrite?.(undefined, {
-      mayGoOffline: true,
-    });
+    const handle = v3DatastoreFor(repoDir, config);
+    await handle.catchUpForWrite?.(undefined, { mayGoOffline: true });
+    caughtUpFromServe.add(handle);
   }
   return role;
 }
+
+/**
+ * handles holdV3Writer just caught up from serve: the repository open that
+ * follows it brings only the read model up, not serve's feed again
+ */
+const caughtUpFromServe = new WeakSet<V3Datastore>();
 
 /**
  * does nothing for a datastore not read through serve, so serve itself never
@@ -686,8 +692,12 @@ export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
   const path = resolve(datastorePath);
   for (const handle of [...opened.values()]) {
     if (resolve(handle.datastorePath) !== path) continue;
-    await handle.catchUpForWrite?.();
-    await handle.catchUp();
+    if (handle.catchUpForWrite !== undefined) {
+      await handle.catchUpForWrite();
+      await (handle.catchUpReadModel?.() ?? handle.catchUp());
+    } else {
+      await handle.catchUp();
+    }
   }
 }
 
@@ -1424,7 +1434,15 @@ export async function v3RepositoryFactoryConfig(
   if (writer && caughtUpWriters.has(handle)) {
     // Caught up when this process's first context opened.
   } else if (otherWriter === undefined) {
-    await handle.catchUp();
+    if (
+      writer && caughtUpFromServe.has(handle) &&
+      handle.catchUpReadModel !== undefined
+    ) {
+      caughtUpFromServe.delete(handle);
+      await handle.catchUpReadModel();
+    } else {
+      await handle.catchUp();
+    }
     if (writer) caughtUpWriters.add(handle);
   } else {
     // the writer's files are newest only once the read model is complete; until

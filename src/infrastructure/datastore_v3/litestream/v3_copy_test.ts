@@ -1030,3 +1030,33 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "publishV3Head: a lineage's confirmation is written once per process, not on every sync",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await prepareV3WriterLineage(env.copy, 5, { restored: false });
+      const at = (txid: string) =>
+        publishV3Head(env.copy, {
+          lineageFence: 5,
+          writerFence: 7,
+          txid,
+          mark: { cursor: Number.parseInt(txid, 16) },
+        });
+      assertEquals(await at("0000000000000020"), true);
+      const confirmed = join(
+        env.copy.datastorePath,
+        "_control",
+        "lineage",
+        "000000000005",
+        "confirmed.json",
+      );
+      // Gone from storage, the marker shows whether a later sync asks again.
+      await Deno.remove(confirmed);
+      assertEquals(await at("0000000000000021"), false);
+      assertEquals(await exists(confirmed), false);
+    });
+  },
+});

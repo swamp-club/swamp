@@ -791,3 +791,129 @@ Deno.test("authenticateDashboardSession: passes on the user name an OAuth login 
   assertEquals(result.ok, true);
   assertEquals(names, { "sub-collective": "alice" });
 });
+
+async function fingerprintedToken(
+  overrides: Partial<ServerToken> = {},
+): Promise<ServerToken> {
+  return activeToken({
+    secretFingerprint: await serverTokenSecretFingerprint("secret-value"),
+    ...overrides,
+  });
+}
+
+/** a fresh repoDir per test, so no entry another test cached is found */
+function cachingAuth(deps: ServerTokenAuthDeps) {
+  const repoDir = `/tmp/token-cache-${crypto.randomUUID()}`;
+  return (presented: string) =>
+    authenticateServerToken(
+      presented,
+      repoDir,
+      unusedRepoContext,
+      undefined,
+      deps,
+    );
+}
+
+Deno.test("authenticateServerToken: a verified vault secret is read once for repeated requests", async () => {
+  let reads = 0;
+  const token = await fingerprintedToken();
+  const auth = cachingAuth(makeAuthDeps({
+    readToken: () => Promise.resolve(token),
+    readSecret: () => {
+      reads++;
+      return Promise.resolve("secret-value");
+    },
+  }));
+  for (let i = 0; i < 3; i++) {
+    assertEquals((await auth("test-token.secret-value")).ok, true);
+  }
+  assertEquals(reads, 1);
+});
+
+Deno.test("authenticateServerToken: a cached secret never outlives revocation, which the record decides", async () => {
+  let token = await fingerprintedToken();
+  const auth = cachingAuth(makeAuthDeps({
+    readToken: () => Promise.resolve(token),
+  }));
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  token = { ...token, state: "revoked" };
+  const refused = await auth("test-token.secret-value");
+  assertEquals(refused.ok, false);
+  if (!refused.ok) assertEquals(refused.reason, "revoked");
+});
+
+Deno.test("authenticateServerToken: a re-mint's new fingerprint reads the vault again and refuses the old secret", async () => {
+  let reads = 0;
+  let secret = "secret-value";
+  let token = await fingerprintedToken();
+  const auth = cachingAuth(makeAuthDeps({
+    readToken: () => Promise.resolve(token),
+    readSecret: () => {
+      reads++;
+      return Promise.resolve(secret);
+    },
+  }));
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  secret = "rotated-value";
+  token = await fingerprintedToken({
+    secretFingerprint: await serverTokenSecretFingerprint(secret),
+  });
+  assertEquals((await auth("test-token.secret-value")).ok, false);
+  assertEquals((await auth("test-token.rotated-value")).ok, true);
+  assertEquals(reads, 3);
+});
+
+Deno.test("authenticateServerToken: a wrong secret is refused against a cached one and caches nothing", async () => {
+  let reads = 0;
+  const token = await fingerprintedToken();
+  const auth = cachingAuth(makeAuthDeps({
+    readToken: () => Promise.resolve(token),
+    readSecret: () => {
+      reads++;
+      return Promise.resolve("secret-value");
+    },
+  }));
+  assertEquals((await auth("test-token.wrong-value")).ok, false);
+  assertEquals((await auth("test-token.wrong-value")).ok, false);
+  assertEquals(reads, 2);
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  const refused = await auth("test-token.wrong-value");
+  assertEquals(refused.ok, false);
+  // refused as the vault comparison refuses it, not as a mispaired mint
+  if (!refused.ok) assertEquals(refused.reason, "secret-mismatch");
+  assertEquals(reads, 3);
+});
+
+Deno.test("authenticateServerToken: a record without a fingerprint reads the vault on every request", async () => {
+  let reads = 0;
+  const auth = cachingAuth(makeAuthDeps({
+    readSecret: () => {
+      reads++;
+      return Promise.resolve("secret-value");
+    },
+  }));
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  assertEquals(reads, 2);
+});
+
+Deno.test("authenticateServerToken: a cached secret is read again after a minute", async () => {
+  let reads = 0;
+  let nowMs = Date.parse("2026-06-01T00:00:00.000Z");
+  const token = await fingerprintedToken();
+  const auth = cachingAuth(makeAuthDeps({
+    readToken: () => Promise.resolve(token),
+    readSecret: () => {
+      reads++;
+      return Promise.resolve("secret-value");
+    },
+    now: () => nowMs,
+  }));
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  nowMs += 59_999;
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  assertEquals(reads, 1);
+  nowMs += 1;
+  assertEquals((await auth("test-token.secret-value")).ok, true);
+  assertEquals(reads, 2);
+});

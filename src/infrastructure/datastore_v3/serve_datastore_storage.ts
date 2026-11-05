@@ -29,7 +29,10 @@ import {
   type StorageCapabilities,
   type StoredChunk,
 } from "../../domain/datastore/datastore_storage.ts";
-import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
+import {
+  CHUNK_BYTES,
+  type PrefetchingStorage,
+} from "../../domain/datastore_v3/chunk_store.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   FileSystemStorage,
@@ -141,7 +144,10 @@ export function storageNamespaceOf(namespace: string): string {
   return namespace === "" ? "_default" : namespace;
 }
 
-export class CachedServeStorage extends FileSystemStorage {
+const PREFETCH_CONCURRENCY = 8;
+
+export class CachedServeStorage extends FileSystemStorage
+  implements PrefetchingStorage {
   readonly #remote: DatastoreStorage;
   readonly #offline: () => boolean;
 
@@ -173,6 +179,41 @@ export class CachedServeStorage extends FileSystemStorage {
       local.add(hash);
     }
     return local;
+  }
+
+  async prefetch(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (this.#offline()) return;
+    let local: Set<string>;
+    try {
+      local = await super.has(namespace, hashes, signal);
+    } catch {
+      return;
+    }
+    const rest = hashes.filter((hash) => !local.has(hash));
+    let next = 0;
+    let failed = false;
+    const worker = async () => {
+      while (next < rest.length && !failed && !signal.aborted) {
+        const hash = rest[next++];
+        try {
+          await this.get(namespace, hash, signal);
+        } catch {
+          // A hung serve would cost every chunk a timeout: stop, and the read
+          // that needs a chunk fetches it and reports why.
+          failed = true;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(PREFETCH_CONCURRENCY, rest.length) },
+        worker,
+      ),
+    );
   }
 
   override async get(

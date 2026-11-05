@@ -1,0 +1,1050 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { parseArgs } from "@std/cli/parse-args";
+import { join, resolve } from "@std/path";
+
+interface Options {
+  readonly binaries: Readonly<Record<string, string>>;
+  readonly latencyMs: number;
+  readonly handshakeRtts: number;
+  readonly rounds: number;
+  readonly history: number;
+  readonly followers: number;
+  readonly workDir: string;
+  readonly fakeGcsImage: string;
+  readonly keep: boolean;
+  readonly setupOnly: boolean;
+}
+
+const GCS_EXTENSION = "@swamp/gcs-datastore";
+const BUCKET = "lane";
+const WRITER = "writer";
+const WORKFLOW = "two-steps";
+
+function usage(): never {
+  console.error(
+    `usage: deno run -A scripts/measure_v3_team_round_trips.ts \\
+  --binary label=path [--binary label=path ...] [--latency-ms 100] \\
+  [--handshake-rtts 2] [--rounds 12] [--history 200] [--followers 1] \\
+  [--work-dir dir] [--fake-gcs-image image] [--keep] [--setup-only]`,
+  );
+  Deno.exit(2);
+}
+
+function parseOptions(): Options {
+  const args = parseArgs(Deno.args, {
+    string: [
+      "binary",
+      "latency-ms",
+      "handshake-rtts",
+      "rounds",
+      "history",
+      "followers",
+      "work-dir",
+      "fake-gcs-image",
+    ],
+    boolean: ["keep", "setup-only"],
+    collect: ["binary"],
+    default: {
+      "latency-ms": "100",
+      "handshake-rtts": "2",
+      rounds: "12",
+      history: "200",
+      followers: "1",
+      "fake-gcs-image": "fsouza/fake-gcs-server:1.56.1",
+    },
+  });
+  const binaries: Record<string, string> = {};
+  for (const spec of (args.binary ?? []) as string[]) {
+    const at = spec.indexOf("=");
+    if (at <= 0) usage();
+    binaries[spec.slice(0, at)] = resolve(spec.slice(at + 1));
+  }
+  if (Object.keys(binaries).length === 0) usage();
+  return {
+    binaries,
+    latencyMs: Number(args["latency-ms"]),
+    handshakeRtts: Number(args["handshake-rtts"]),
+    rounds: Number(args.rounds),
+    history: Number(args.history),
+    followers: Number(args.followers),
+    workDir: resolve(
+      args["work-dir"] ?? Deno.makeTempDirSync({ prefix: "swamp-team-lane-" }),
+    ),
+    fakeGcsImage: args["fake-gcs-image"],
+    keep: args.keep,
+    setupOnly: args["setup-only"],
+  };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((done) => setTimeout(done, ms));
+}
+
+function freePort(): number {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+  listener.close();
+  return port;
+}
+
+type StorageKind =
+  | "upload"
+  | "download"
+  | "metadata"
+  | "list"
+  | "delete"
+  | "other";
+
+function storageKind(req: Request): StorageKind {
+  const url = new URL(req.url);
+  if (req.method === "DELETE") return "delete";
+  if (url.pathname.startsWith("/upload/") || req.method === "PUT") {
+    return "upload";
+  }
+  if (url.searchParams.get("alt") === "media") return "download";
+  if (req.method === "GET" && /\/b\/[^/]+\/o$/.test(url.pathname)) {
+    return "list";
+  }
+  if (req.method === "GET" && url.pathname.includes("/o/")) return "metadata";
+  if (req.method === "GET" && url.searchParams.has("prefix")) return "list";
+  return "other";
+}
+
+interface StorageEvent {
+  readonly at: number;
+  readonly kind: StorageKind;
+}
+
+const DROPPED_RESPONSE_HEADERS = [
+  "content-encoding",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+];
+
+function startStorageProxy(
+  port: number,
+  upstream: string,
+  latencyMs: number,
+  handshakeRtts: number,
+  events: StorageEvent[],
+): Deno.HttpServer {
+  const connections = new Set<string>();
+  const upstreamHost = new URL(upstream).host;
+  const ownHost = `127.0.0.1:${port}`;
+  return Deno.serve(
+    { port, hostname: "127.0.0.1", onListen: () => {} },
+    async (req, info) => {
+      const remote = info.remoteAddr as Deno.NetAddr;
+      const key = `${remote.hostname}:${remote.port}`;
+      const handshake = connections.has(key) ? 0 : handshakeRtts;
+      connections.add(key);
+      // Buffered before forwarding: a body cut short by a stopping sidecar
+      // must not land as a truncated object.
+      const body = req.body === null
+        ? undefined
+        : new Uint8Array(await req.arrayBuffer());
+      await delay(latencyMs * (1 + handshake));
+      events.push({ at: Date.now(), kind: storageKind(req) });
+      const url = new URL(req.url);
+      const upstreamResponse = await fetch(
+        upstream + url.pathname + url.search,
+        {
+          method: req.method,
+          headers: req.headers,
+          ...(body === undefined ? {} : { body }),
+          redirect: "manual",
+        },
+      );
+      const headers = new Headers(upstreamResponse.headers);
+      for (const name of DROPPED_RESPONSE_HEADERS) headers.delete(name);
+      const location = headers.get("location");
+      if (location !== null) {
+        headers.set("location", location.replaceAll(upstreamHost, ownHost));
+      }
+      let bytes: Uint8Array<ArrayBuffer> | null = req.method === "HEAD"
+        ? null
+        : new Uint8Array(await upstreamResponse.arrayBuffer());
+      const type = headers.get("content-type") ?? "";
+      if (bytes !== null && /json|xml/.test(type)) {
+        bytes = new TextEncoder().encode(
+          new TextDecoder().decode(bytes).replaceAll(upstreamHost, ownHost),
+        );
+      }
+      return new Response(bytes, { status: upstreamResponse.status, headers });
+    },
+  );
+}
+
+interface SinkSpan {
+  readonly name: string;
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly parentSpanId: string;
+  readonly startMs: number;
+  readonly endMs: number;
+  readonly attributes: Readonly<Record<string, string | number | boolean>>;
+}
+
+function attributeValue(
+  value: Record<string, unknown>,
+): string | number | boolean {
+  if ("stringValue" in value) return String(value.stringValue);
+  if ("intValue" in value) return Number(value.intValue);
+  if ("doubleValue" in value) return Number(value.doubleValue);
+  if ("boolValue" in value) return Boolean(value.boolValue);
+  return JSON.stringify(value);
+}
+
+function nanosToMs(value: unknown): number {
+  return Number(BigInt(String(value)) / 1_000_000n);
+}
+
+function startOtlpSink(port: number, spans: SinkSpan[]): Deno.HttpServer {
+  return Deno.serve(
+    { port, hostname: "127.0.0.1", onListen: () => {} },
+    async (req) => {
+      const url = new URL(req.url);
+      if (req.method !== "POST") return new Response(null, { status: 405 });
+      if (!url.pathname.endsWith("/v1/traces")) {
+        await req.body?.cancel();
+        return Response.json({});
+      }
+      const payload = await req.json() as {
+        resourceSpans?: {
+          scopeSpans?: { spans?: Record<string, unknown>[] }[];
+        }[];
+      };
+      for (const resource of payload.resourceSpans ?? []) {
+        for (const scope of resource.scopeSpans ?? []) {
+          for (const span of scope.spans ?? []) {
+            const attributes: Record<string, string | number | boolean> = {};
+            for (
+              const attribute of (span.attributes ?? []) as {
+                key: string;
+                value: Record<string, unknown>;
+              }[]
+            ) {
+              attributes[attribute.key] = attributeValue(attribute.value);
+            }
+            spans.push({
+              name: String(span.name),
+              traceId: String(span.traceId),
+              spanId: String(span.spanId),
+              parentSpanId: String(span.parentSpanId ?? ""),
+              startMs: nanosToMs(span.startTimeUnixNano),
+              endMs: nanosToMs(span.endTimeUnixNano),
+              attributes,
+            });
+          }
+        }
+      }
+      return Response.json({});
+    },
+  );
+}
+
+interface Env {
+  readonly home: string;
+  readonly storageHost: string;
+  readonly otlp: string;
+}
+
+function baseEnv(env: Env): Record<string, string> {
+  return {
+    PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+    HOME: Deno.env.get("HOME") ?? env.home,
+    TMPDIR: Deno.env.get("TMPDIR") ?? "/tmp",
+    SWAMP_NO_UPDATE_CHECK: "1",
+    SWAMP_NO_TELEMETRY: "1",
+    DO_NOT_TRACK: "1",
+    STORAGE_EMULATOR_HOST: env.storageHost,
+    OTEL_EXPORTER_OTLP_ENDPOINT: env.otlp,
+    OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
+  };
+}
+
+interface RunResult {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly ms: number;
+}
+
+async function run(
+  binary: string,
+  args: readonly string[],
+  cwd: string,
+  env: Record<string, string>,
+  check = true,
+): Promise<RunResult> {
+  const started = performance.now();
+  const output = await new Deno.Command(binary, {
+    args: [...args],
+    cwd,
+    env,
+    clearEnv: true,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const result = {
+    code: output.code,
+    stdout: new TextDecoder().decode(output.stdout),
+    stderr: new TextDecoder().decode(output.stderr),
+    ms: performance.now() - started,
+  };
+  if (check && result.code !== 0) {
+    throw new Error(
+      `${binary} ${args.join(" ")} exited ${result.code}:\n${result.stderr}\n${result.stdout}`,
+    );
+  }
+  return result;
+}
+
+function lastJson(text: string): Record<string, unknown> {
+  const start = text.indexOf("{");
+  return JSON.parse(text.slice(start)) as Record<string, unknown>;
+}
+
+interface Lane {
+  readonly leader: ServeNode;
+  readonly followers: readonly ServeNode[];
+  readonly members: readonly Member[];
+  stop(): Promise<void>;
+}
+
+interface ServeNode {
+  readonly name: string;
+  readonly repo: string;
+  readonly origin: string;
+  readonly process: Deno.ChildProcess;
+  readonly logged: Promise<unknown>;
+}
+
+interface Member {
+  readonly name: string;
+  readonly repo: string;
+  readonly origin: string;
+  readonly token: string;
+}
+
+function gcsConfig(prefix: string, storageHost: string): string {
+  return JSON.stringify({
+    bucket: BUCKET,
+    prefix,
+    projectId: "test",
+    apiEndpoint: `http://${storageHost}`,
+  });
+}
+
+async function initRepo(
+  binary: string,
+  dir: string,
+  env: Record<string, string>,
+): Promise<void> {
+  await Deno.mkdir(dir, { recursive: true });
+  await run(binary, ["repo", "init", "--tool", "none", "--json"], dir, env);
+  await run(
+    binary,
+    ["extension", "pull", GCS_EXTENSION, "--json"],
+    dir,
+    env,
+  );
+}
+
+async function startServe(
+  binary: string,
+  name: string,
+  repo: string,
+  port: number,
+  env: Record<string, string>,
+  logDir: string,
+  claimedAddress?: string,
+): Promise<ServeNode> {
+  const origin = `http://127.0.0.1:${port}`;
+  const open = (stream: string) =>
+    Deno.open(join(logDir, `${name}.${stream}.log`), {
+      write: true,
+      create: true,
+      truncate: true,
+    });
+  const out = await open("out");
+  const err = await open("err");
+  const process = new Deno.Command(binary, {
+    args: [
+      "serve",
+      "--no-schedule",
+      "--auth-mode",
+      "token",
+      "--admins",
+      "user:lane-admin",
+      "--port",
+      String(port),
+      "--host",
+      "127.0.0.1",
+      // every node names the claim's address; each advertises its own
+      "--address",
+      claimedAddress ?? origin,
+      "--advertise-address",
+      origin,
+      "--repo-dir",
+      repo,
+    ],
+    cwd: repo,
+    env,
+    clearEnv: true,
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const logged = Promise.all([
+    process.stdout.pipeTo(out.writable),
+    process.stderr.pipeTo(err.writable),
+  ]);
+  for (let i = 0; i < 600; i++) {
+    try {
+      const response = await fetch(`${origin}/health`);
+      await response.body?.cancel();
+      if (response.status < 500) {
+        return { name, repo, origin, process, logged };
+      }
+    } catch {
+      // not listening yet
+    }
+    await delay(250);
+  }
+  throw new Error(`serve ${name} did not start; see ${logDir}/${name}.err.log`);
+}
+
+async function setUpLane(
+  binary: string,
+  label: string,
+  options: Options,
+  env: Env,
+): Promise<Lane> {
+  const root = join(options.workDir, label);
+  await Deno.mkdir(root, { recursive: true });
+  const runEnv = baseEnv(env);
+  const prefix = `${label}-${crypto.randomUUID().slice(0, 8)}`;
+  const leaderRepo = join(root, "serve-a");
+  await initRepo(binary, leaderRepo, runEnv);
+  await run(binary, [
+    "datastore",
+    "setup",
+    "extension",
+    GCS_EXTENSION,
+    "--format",
+    "3",
+    "--config",
+    gcsConfig(prefix, env.storageHost),
+    "--json",
+  ], leaderRepo, runEnv);
+  await run(
+    binary,
+    ["datastore", "config", "migrate", "--json"],
+    leaderRepo,
+    runEnv,
+  );
+  const leaderPort = freePort();
+  const leaderOrigin = `http://127.0.0.1:${leaderPort}`;
+  const members: Member[] = [];
+  const memberCount = 3;
+  const tokens: string[] = [];
+  for (let i = 1; i <= memberCount; i++) {
+    const name = `m${i}`;
+    await run(binary, [
+      "access",
+      "grant",
+      "create",
+      "--subject",
+      `user:${name}`,
+      "--allow",
+      "read,write,run",
+      "--on",
+      "behavior:*",
+      "--json",
+    ], leaderRepo, runEnv);
+    await run(binary, [
+      "access",
+      "grant",
+      "create",
+      "--subject",
+      `user:${name}`,
+      "--allow",
+      "read,write,run",
+      "--on",
+      "workflow:*",
+      "--json",
+    ], leaderRepo, runEnv);
+    await run(binary, [
+      "access",
+      "grant",
+      "create",
+      "--subject",
+      `user:${name}`,
+      "--allow",
+      "read,write",
+      "--on",
+      "data:*",
+      "--json",
+    ], leaderRepo, runEnv);
+    await run(binary, [
+      "access",
+      "grant",
+      "create",
+      "--subject",
+      `user:${name}`,
+      "--allow",
+      "read,write",
+      "--on",
+      "vault:*",
+      "--json",
+    ], leaderRepo, runEnv);
+    await run(binary, [
+      "access",
+      "token",
+      "mint",
+      name,
+      "--principal",
+      `user:${name}`,
+      "--json",
+    ], leaderRepo, runEnv);
+    const revealed = await run(
+      binary,
+      ["access", "token", "reveal", name, "--json"],
+      leaderRepo,
+      runEnv,
+    );
+    tokens.push(String(lastJson(revealed.stdout).token));
+  }
+  await run(binary, [
+    "datastore",
+    "claim",
+    "--address",
+    leaderOrigin,
+    "--json",
+  ], leaderRepo, runEnv);
+  const leader = await startServe(
+    binary,
+    "serve-a",
+    leaderRepo,
+    leaderPort,
+    runEnv,
+    root,
+  );
+  const followers: ServeNode[] = [];
+  for (let i = 0; i < options.followers; i++) {
+    const name = `serve-${String.fromCharCode(98 + i)}`;
+    const repo = join(root, name);
+    await Deno.mkdir(repo, { recursive: true });
+    await Deno.copyFile(
+      join(leaderRepo, ".swamp.yaml"),
+      join(repo, ".swamp.yaml"),
+    );
+    // the datastore's extension installs itself when serve loads .swamp.yaml
+    followers.push(
+      await startServe(
+        binary,
+        name,
+        repo,
+        freePort(),
+        runEnv,
+        root,
+        leader.origin,
+      ),
+    );
+  }
+  for (let i = 0; i < memberCount; i++) {
+    const name = `m${i + 1}`;
+    const repo = join(root, name);
+    await initRepo(binary, repo, runEnv);
+    // The far member reaches the leader through a follower.
+    const origin = i === memberCount - 1 && followers.length > 0
+      ? followers[0].origin
+      : leader.origin;
+    const marker = await Deno.readTextFile(join(leaderRepo, ".swamp.yaml"));
+    const datastore = marker.slice(marker.indexOf("datastore:"));
+    const own = await Deno.readTextFile(join(repo, ".swamp.yaml"));
+    await Deno.writeTextFile(
+      join(repo, ".swamp.yaml"),
+      own.slice(0, own.indexOf("datastore:") >= 0 ? own.indexOf("datastore:") : own.length)
+        .trimEnd() + `\nserverAddress: ${JSON.stringify(origin)}\n` +
+        datastore,
+    );
+    members.push({ name, repo, origin, token: tokens[i] });
+  }
+  return {
+    leader,
+    followers,
+    members,
+    async stop() {
+      for (const node of [...followers, leader]) {
+        try {
+          node.process.kill("SIGTERM");
+        } catch {
+          // already gone
+        }
+        await node.process.status;
+        await node.logged;
+      }
+    },
+  };
+}
+
+function memberEnv(env: Env, member: Member): Record<string, string> {
+  return {
+    ...baseEnv(env),
+    SWAMP_SERVER_URL: member.origin,
+    SWAMP_SERVER_TOKEN: member.token,
+  };
+}
+
+async function memberRun(
+  binary: string,
+  env: Env,
+  member: Member,
+  args: readonly string[],
+): Promise<RunResult> {
+  return await run(
+    binary,
+    [...args, "--json"],
+    member.repo,
+    memberEnv(env, member),
+  );
+}
+
+async function seedMember(binary: string, env: Env, member: Member) {
+  await memberRun(binary, env, member, [
+    "model",
+    "create",
+    "command/shell",
+    WRITER,
+    "--global-arg",
+    "run=echo written",
+  ]);
+  const body = join(member.repo, "two-steps.body.yaml");
+  await Deno.writeTextFile(
+    body,
+    [
+      `name: ${WORKFLOW}`,
+      "jobs:",
+      "  - name: main",
+      "    steps:",
+      "      - name: one",
+      "        task:",
+      "          type: model_method",
+      `          modelIdOrName: ${WRITER}`,
+      "          methodName: execute",
+      "      - name: two",
+      "        dependsOn:",
+      "          - step: one",
+      "            condition:",
+      "              type: succeeded",
+      "        task:",
+      "          type: model_method",
+      `          modelIdOrName: ${WRITER}`,
+      "          methodName: execute",
+      "",
+    ].join("\n"),
+  );
+  // workflow edit opens $EDITOR on the stored file: this one keeps its id and
+  // writes the two steps
+  const editor = join(member.repo, "write-workflow.sh");
+  await Deno.writeTextFile(
+    editor,
+    `#!/bin/sh\nid=$(grep '^id:' "$1")\n{ echo "$id"; cat '${body}'; } > "$1"\n`,
+  );
+  await Deno.chmod(editor, 0o755);
+  await memberRun(binary, env, member, ["workflow", "create", WORKFLOW]);
+  await run(
+    binary,
+    ["workflow", "edit", WORKFLOW, "--json"],
+    member.repo,
+    { ...memberEnv(env, member), EDITOR: editor, VISUAL: editor },
+  );
+}
+
+interface Sample {
+  readonly binary: string;
+  readonly member: string;
+  readonly command: string;
+  readonly round: number;
+  readonly ms: number;
+  readonly code: number;
+  readonly memberRequests: readonly string[];
+  readonly storage: Readonly<Record<StorageKind, number>>;
+  readonly spans: readonly SinkSpan[];
+}
+
+function emptyStorageCounts(): Record<StorageKind, number> {
+  return {
+    upload: 0,
+    download: 0,
+    metadata: 0,
+    list: 0,
+    delete: 0,
+    other: 0,
+  };
+}
+
+const COMMANDS: Readonly<Record<string, readonly string[]>> = {
+  write: ["model", "method", "run", WRITER, "execute"],
+  workflow: ["workflow", "run", WORKFLOW],
+  "data get": ["data", "get", WRITER, "result"],
+  "data list": ["data", "list", WRITER],
+};
+
+function percentile(values: readonly number[], p: number): number {
+  if (values.length === 0) return NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, rank))];
+}
+
+async function settle(
+  spans: readonly SinkSpan[],
+  events: readonly StorageEvent[],
+): Promise<void> {
+  // Exporters flush at process exit and serve batches; wait until quiet.
+  let last = -1;
+  for (let i = 0; i < 40; i++) {
+    const now = spans.length + events.length;
+    if (now === last) return;
+    last = now;
+    await delay(250);
+  }
+}
+
+async function measure(
+  label: string,
+  binary: string,
+  lane: Lane,
+  options: Options,
+  env: Env,
+  spans: SinkSpan[],
+  events: StorageEvent[],
+): Promise<Sample[]> {
+  const samples: Sample[] = [];
+  for (let round = 0; round < options.rounds; round++) {
+    for (const member of lane.members) {
+      for (const [command, args] of Object.entries(COMMANDS)) {
+        await settle(spans, events);
+        const fromSpan = spans.length;
+        const fromEvent = events.length;
+        const started = Date.now();
+        const result = await run(
+          binary,
+          [...args, "--json"],
+          member.repo,
+          memberEnv(env, member),
+          false,
+        );
+        const ended = Date.now();
+        await settle(spans, events);
+        const window = spans.slice(fromSpan).filter((span) =>
+          span.startMs >= started - 5 && span.startMs <= ended + 5
+        );
+        const storage = emptyStorageCounts();
+        for (const event of events.slice(fromEvent)) {
+          if (event.at >= started && event.at <= ended) storage[event.kind]++;
+        }
+        samples.push({
+          binary: label,
+          member: member.name,
+          command,
+          round,
+          ms: result.ms,
+          code: result.code,
+          memberRequests: window
+            .filter((span) => span.name === "swamp.datastore.v3.serve.request")
+            .sort((a, b) => a.startMs - b.startMs)
+            .map((span) =>
+              `${span.attributes["http.request.method"]} ${
+                span.attributes["http.route"]
+              }`
+            ),
+          storage,
+          spans: window,
+        });
+        if (result.code !== 0) {
+          console.error(
+            `  ${label} ${member.name} ${command}: exit ${result.code}: ${
+              result.stderr.trim().split("\n").slice(-2).join(" | ")
+            }`,
+          );
+        }
+      }
+    }
+  }
+  return samples;
+}
+
+async function seedHistory(
+  binary: string,
+  lane: Lane,
+  options: Options,
+  env: Env,
+): Promise<void> {
+  const member = lane.members[0];
+  for (let i = 0; i < options.history; i++) {
+    await memberRun(binary, env, member, [...COMMANDS.write]);
+  }
+}
+
+// K2a: the swamp.cli span less bootstrap and the method's own execution
+function k2aMs(sample: Sample): number {
+  const total = (name: string) =>
+    sample.spans
+      .filter((span) => span.name === name)
+      .reduce((sum, span) => sum + span.endMs - span.startMs, 0);
+  return total("swamp.cli") - total("swamp.cli.bootstrap") -
+    total("swamp.method.execute");
+}
+
+export function summarize(
+  samples: readonly Sample[],
+  options: Pick<Options, "latencyMs" | "handshakeRtts" | "rounds" | "followers">,
+): string {
+  const lines: string[] = [];
+  lines.push(
+    `latency ${options.latencyMs} ms per storage request, ${options.handshakeRtts} handshake RTTs per new connection, ${options.rounds} rounds`,
+  );
+  const groups = new Map<string, Sample[]>();
+  for (const sample of samples) {
+    const near = sample.member === "m3" && options.followers > 0
+      ? "far"
+      : "near";
+    const key = `${sample.binary} | ${sample.command} | ${near}`;
+    groups.set(key, [...(groups.get(key) ?? []), sample]);
+  }
+  lines.push(
+    "binary | command | member | n | failed | wall p50 / p95 ms | K2a p50 / p95 ms | requests to serve (median) | storage requests (median)",
+  );
+  for (const [key, group] of groups) {
+    const ok = group.filter((sample) => sample.code === 0);
+    const ms = ok.map((sample) => sample.ms);
+    const k2a = ok.map(k2aMs);
+    const requests = ok.map((sample) => sample.memberRequests.length);
+    const storage = ok.map((sample) =>
+      Object.values(sample.storage).reduce((a, b) => a + b, 0)
+    );
+    lines.push(
+      `${key} | ${group.length} | ${group.length - ok.length} | ${
+        Math.round(percentile(ms, 50))
+      } / ${Math.round(percentile(ms, 95))} | ${
+        Math.round(percentile(k2a, 50))
+      } / ${Math.round(percentile(k2a, 95))} | ${percentile(requests, 50)} | ${
+        percentile(storage, 50)
+      }`,
+    );
+  }
+  return lines.join("\n");
+}
+
+// serve ignores an incoming traceparent: a serve span is matched to the
+// member request it falls inside, by route
+export function breakdown(samples: readonly Sample[], label: string): string {
+  const lines: string[] = [];
+  for (const command of Object.keys(COMMANDS)) {
+    const group = samples
+      .filter((sample) =>
+        sample.binary === label && sample.command === command &&
+        sample.member === "m1" && sample.code === 0
+      )
+      .sort((a, b) => a.ms - b.ms);
+    if (group.length === 0) continue;
+    const median = group[Math.floor(group.length / 2)];
+    lines.push(
+      `\n${label} ${command} (m1, ${Math.round(median.ms)} ms, ${median.memberRequests.length} requests to serve)`,
+    );
+    const byId = new Map(median.spans.map((span) => [span.spanId, span]));
+    const under = (root: SinkSpan) =>
+      median.spans.filter((span) => {
+        for (
+          let parent = byId.get(span.parentSpanId);
+          parent !== undefined;
+          parent = byId.get(parent.parentSpanId)
+        ) {
+          if (parent.spanId === root.spanId) return true;
+        }
+        return false;
+      });
+    const requests = median.spans
+      .filter((span) => span.name === "swamp.datastore.v3.serve.request")
+      .sort((a, b) => a.startMs - b.startMs);
+    const parentName = (span: SinkSpan) =>
+      byId.get(span.parentSpanId)?.name ?? "";
+    for (const request of requests) {
+      const route = String(request.attributes["http.route"]);
+      const method = String(request.attributes["http.request.method"]);
+      const server = median.spans.find((span) =>
+        span.name === `${method} /api/v1/datastore/{namespace}/${route}` &&
+        span.startMs >= request.startMs - 2 && span.endMs <= request.endMs + 2
+      );
+      const storage = server === undefined
+        ? []
+        : under(server).filter((span) => span.name.startsWith("GCS ") ||
+          span.name.startsWith("S3 "));
+      lines.push(
+        `  ${String(request.endMs - request.startMs).padStart(5)} ms  ${method} ${route}  [${
+          parentName(request).replace("swamp.datastore.v3.serve.", "")
+        }]`,
+      );
+      for (const call of storage) {
+        const key = String(call.attributes["gcp.gcs.key"] ?? "")
+          .replace(/[0-9a-f]{64}/, "<sha256>");
+        lines.push(
+          `           ${String(call.endMs - call.startMs).padStart(5)} ms  ${call.name} ${key}`,
+        );
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+async function main(): Promise<void> {
+  const options = parseOptions();
+  await Deno.mkdir(options.workDir, { recursive: true });
+  const spans: SinkSpan[] = [];
+  const events: StorageEvent[] = [];
+  const gcsPort = freePort();
+  const proxyPort = freePort();
+  const otlpPort = freePort();
+  const container = `swamp-team-lane-${crypto.randomUUID().slice(0, 8)}`;
+  await new Deno.Command("docker", {
+    args: [
+      "run",
+      "-d",
+      "--name",
+      container,
+      "-p",
+      `127.0.0.1:${gcsPort}:4443`,
+      options.fakeGcsImage,
+      "-scheme",
+      "http",
+      "-port",
+      "4443",
+      // its own address: it serves a download only when the Host header names
+      // it, and fetch sends the upstream's; the proxy rewrites links back
+      "-public-host",
+      `127.0.0.1:${gcsPort}`,
+    ],
+    stdout: "null",
+  }).output();
+  const proxy = startStorageProxy(
+    proxyPort,
+    `http://127.0.0.1:${gcsPort}`,
+    options.latencyMs,
+    options.handshakeRtts,
+    events,
+  );
+  const sink = startOtlpSink(otlpPort, spans);
+  const env: Env = {
+    home: options.workDir,
+    storageHost: `127.0.0.1:${proxyPort}`,
+    otlp: `http://127.0.0.1:${otlpPort}`,
+  };
+  const all: Sample[] = [];
+  try {
+    for (let i = 0; i < 120; i++) {
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${gcsPort}/storage/v1/b?project=test`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: BUCKET }),
+          },
+        );
+        await response.body?.cancel();
+        if (response.status < 500) break;
+      } catch {
+        // not up yet
+      }
+      await delay(250);
+    }
+    const lanes: [string, string, Lane][] = [];
+    for (const [label, binary] of Object.entries(options.binaries)) {
+      console.error(`setting up the ${label} lane`);
+      const lane = await setUpLane(binary, label, options, env);
+      lanes.push([label, binary, lane]);
+      if (options.setupOnly) {
+        console.error(JSON.stringify({
+          storageHost: env.storageHost,
+          otlp: env.otlp,
+          leader: lane.leader.origin,
+          members: lane.members,
+        }));
+        await new Promise<void>((done) =>
+          Deno.addSignalListener("SIGINT", () => done())
+        );
+        await lane.stop();
+        return;
+      }
+      await seedMember(binary, env, lane.members[0]);
+      console.error(`seeding ${options.history} commits`);
+      await seedHistory(binary, lane, options, env);
+    }
+    // Interleaved blocks, so drift on the host lands on every binary alike.
+    for (let block = 0; block < 2; block++) {
+      for (const [label, binary, lane] of lanes) {
+        console.error(`measuring ${label}, block ${block + 1}`);
+        all.push(
+          ...await measure(
+            label,
+            binary,
+            lane,
+            { ...options, rounds: Math.ceil(options.rounds / 2) },
+            env,
+            spans,
+            events,
+          ),
+        );
+      }
+    }
+    for (const [, , lane] of lanes) await lane.stop();
+  } finally {
+    await Deno.writeTextFile(
+      join(options.workDir, "samples.json"),
+      JSON.stringify(all, null, 1),
+    );
+    console.log(summarize(all, options));
+    const first = Object.keys(options.binaries)[0];
+    console.log(breakdown(all, first));
+    console.error(`samples: ${join(options.workDir, "samples.json")}`);
+    // serve's Litestream supervisors outlive it until they idle out
+    await new Deno.Command("pkill", {
+      args: ["-f", `__swamp_v3_replication_supervisor --db ${options.workDir}`],
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    await proxy.shutdown();
+    await sink.shutdown();
+    if (!options.keep) {
+      await new Deno.Command("docker", {
+        args: ["rm", "-f", container],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+    }
+  }
+}
+
+if (import.meta.main) await main();

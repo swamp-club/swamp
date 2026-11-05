@@ -19,6 +19,8 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
+import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import {
   CHUNK_BYTES,
   ChunkStore,
@@ -296,4 +298,120 @@ Deno.test("ServeStorageUnsupportedError: names the method refused", () => {
     ServeStorageUnsupportedError,
     "no way to delete chunks",
   );
+});
+
+/** a remote whose reads wait on a gate, counting how many run at once */
+function gatedRemote(
+  chunks: ReadonlyMap<string, Uint8Array>,
+  fail: ReadonlySet<string> = new Set(),
+) {
+  let inFlight = 0;
+  const seen = { reads: 0, mostAtOnce: 0 };
+  const gate = Promise.withResolvers<void>();
+  const remote = {
+    async get(_namespace: string, sha256: string): Promise<Uint8Array | null> {
+      seen.reads++;
+      seen.mostAtOnce = Math.max(seen.mostAtOnce, ++inFlight);
+      try {
+        await gate.promise;
+        if (fail.has(sha256)) throw new Error("serve unreachable");
+        return chunks.get(sha256) ?? null;
+      } finally {
+        inFlight--;
+      }
+    },
+    has: () => Promise.resolve(new Set<string>()),
+  } as unknown as DatastoreStorage;
+  return { remote, seen, open: () => gate.resolve() };
+}
+
+async function withGatedCache(
+  remote: DatastoreStorage,
+  fn: (cache: CachedServeStorage) => Promise<void>,
+  offline = false,
+) {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-serve-storage-" });
+  try {
+    await fn(
+      new CachedServeStorage(join(dir, "datastore"), remote, {
+        ...NO_SYNC,
+        offline: () => offline,
+      }),
+    );
+  } finally {
+    await removeTempDir(dir);
+  }
+}
+
+Deno.test("CachedServeStorage.prefetch: fetches what the cache lacks, eight at a time, and later reads are local", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 12 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const { remote, seen, open } = gatedRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+  );
+  await withGatedCache(remote, async (cache) => {
+    for (const held of all.slice(0, 2)) {
+      await cache.put("_default", held.sha256, held.bytes, live());
+    }
+    const prefetched = cache.prefetch(
+      "_default",
+      all.map((c) => c.sha256),
+      live(),
+    );
+    await waitFor(() => seen.reads === 8, "eight reads in flight");
+    open();
+    await prefetched;
+    assertEquals(seen, { reads: 10, mostAtOnce: 8 });
+    for (const c of all) {
+      assertEquals(await cache.get("_default", c.sha256, live()), c.bytes);
+    }
+    assertEquals(seen.reads, 10, "every read after the prefetch was local");
+  });
+});
+
+Deno.test("CachedServeStorage.prefetch: a chunk it cannot fetch is left for its read, the rest are kept", async () => {
+  const [good, bad] = await Promise.all([chunk("good"), chunk("bad")]);
+  const { remote, seen, open } = gatedRemote(
+    new Map([[good.sha256, good.bytes], [bad.sha256, bad.bytes]]),
+    new Set([bad.sha256]),
+  );
+  open();
+  await withGatedCache(remote, async (cache) => {
+    await cache.prefetch("_default", [good.sha256, bad.sha256], live());
+    assertEquals(seen.reads, 2);
+    const held = await cache.statChunks(
+      "_default",
+      [good.sha256, bad.sha256],
+      live(),
+    );
+    assertEquals([...held.keys()], [good.sha256]);
+  });
+});
+
+Deno.test("CachedServeStorage.prefetch: an offline checkout fetches nothing", async () => {
+  const [a, b] = await Promise.all([chunk("a"), chunk("b")]);
+  const { remote, seen, open } = gatedRemote(
+    new Map([[a.sha256, a.bytes], [b.sha256, b.bytes]]),
+  );
+  open();
+  await withGatedCache(remote, async (cache) => {
+    await cache.prefetch("_default", [a.sha256, b.sha256], live());
+    assertEquals(seen.reads, 0);
+  }, true);
+});
+
+Deno.test("CachedServeStorage.prefetch: stops at the first failure, so a hung serve costs one timeout, not one per chunk", async () => {
+  const all = await Promise.all(
+    Array.from({ length: 20 }, (_, i) => chunk(`chunk-${i}`)),
+  );
+  const { remote, seen, open } = gatedRemote(
+    new Map(all.map((c) => [c.sha256, c.bytes])),
+    new Set(all.map((c) => c.sha256)),
+  );
+  open();
+  await withGatedCache(remote, async (cache) => {
+    await cache.prefetch("_default", all.map((c) => c.sha256), live());
+    assertEquals(seen.reads, 8, "only the reads already in flight");
+  });
 });

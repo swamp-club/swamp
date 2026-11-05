@@ -727,3 +727,62 @@ Deno.test("ChunkStore.beginBatch: a failed commit stores nothing and syncs nothi
     "namespace",
   );
 });
+
+class PrefetchMemoryStorage extends MemoryStorage {
+  readonly asked: { namespace: string; hashes: readonly string[] }[] = [];
+  prefetch(namespace: string, hashes: readonly string[]): Promise<void> {
+    this.asked.push({ namespace, hashes });
+    return Promise.resolve();
+  }
+}
+
+const HASH = (c: string) => c.repeat(64);
+
+Deno.test("ChunkStore.prefetch: asks a prefetching storage for every distinct chunk of the refs, once", async () => {
+  const storage = new PrefetchMemoryStorage();
+  const store = new ChunkStore(storage);
+  const whole = BlobRef.create({ sha256: HASH("a"), size: 1 });
+  const split = BlobRef.create({
+    sha256: HASH("b"),
+    size: 2,
+    parts: [{ sha256: HASH("c"), size: 1 }, { sha256: HASH("a"), size: 1 }],
+  });
+  await store.prefetch(
+    SOLO_NAMESPACE,
+    [whole, split, whole],
+    new AbortController().signal,
+  );
+  assertEquals(storage.asked, [{
+    namespace: "_default",
+    hashes: [HASH("a"), HASH("c")],
+  }]);
+});
+
+Deno.test("ChunkStore.prefetch: one chunk is left to its read", async () => {
+  const storage = new PrefetchMemoryStorage();
+  await new ChunkStore(storage).prefetch(
+    SOLO_NAMESPACE,
+    [BlobRef.create({ sha256: HASH("a"), size: 1 })],
+    new AbortController().signal,
+  );
+  assertEquals(storage.asked, []);
+});
+
+Deno.test("ChunkStore.prefetch: a storage that does not keep what it fetches is not read ahead", async () => {
+  const storage = new MemoryStorage();
+  const reads: string[] = [];
+  const get = storage.get.bind(storage);
+  storage.get = (namespace, sha256, signal) => {
+    reads.push(sha256);
+    return get(namespace, sha256, signal);
+  };
+  await new ChunkStore(storage).prefetch(
+    SOLO_NAMESPACE,
+    [
+      BlobRef.create({ sha256: HASH("a"), size: 1 }),
+      BlobRef.create({ sha256: HASH("b"), size: 1 }),
+    ],
+    new AbortController().signal,
+  );
+  assertEquals(reads, []);
+});

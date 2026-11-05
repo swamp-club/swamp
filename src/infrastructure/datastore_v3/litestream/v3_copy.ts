@@ -929,6 +929,8 @@ export async function recordV3LeaseFence(
   }
 }
 
+const confirmedLineages = new Set<string>();
+
 /**
  * publishes the head, then the first confirmation, then records the copy holds
  * it, before the writer checks its lease; resolves true on the first
@@ -958,11 +960,20 @@ export async function publishV3Head(
       mark: head.mark,
       publishedAt: at,
     });
-    const first = await registry.confirm({
-      fence: head.lineageFence,
-      txid: head.txid,
-      confirmedAt: at,
-    });
+    // A lineage is confirmed once, by whichever writer gets there first:
+    // once its marker is known to exist, a later sync need not ask again.
+    const confirmedKey = [
+      resolve(copy.datastorePath),
+      root.value,
+      head.lineageFence,
+    ].join("\0");
+    const first = confirmedLineages.has(confirmedKey) ? false : await registry
+      .confirm({
+        fence: head.lineageFence,
+        txid: head.txid,
+        confirmedAt: at,
+      });
+    confirmedLineages.add(confirmedKey);
     // Never backwards (copyStateAdvances): a fenced process in this
     // checkout that publishes late, on its lineage or an older one, must not
     // make the copy look behind what it holds.

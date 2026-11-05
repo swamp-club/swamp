@@ -568,6 +568,8 @@ export interface V3Datastore {
     signal?: AbortSignal,
     options?: { readonly mayGoOffline?: boolean },
   ): Promise<void>;
+  /** the read model alone, for a copy just caught up with catchUpForWrite */
+  catchUpReadModel?(signal?: AbortSignal): Promise<void>;
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   readonly offlineFlushPort?: OfflineFlushPort;
   readonly serveCopyId?: string;
@@ -1240,6 +1242,11 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             signal ?? lifetime.signal,
             "write",
             catchUpOptions?.mayGoOffline === true,
+          );
+        },
+        async catchUpReadModel(signal?: AbortSignal) {
+          await unreachableAsCatchUpError(() =>
+            readModel.catchUp(signal ?? lifetime.signal)
           );
         },
       }

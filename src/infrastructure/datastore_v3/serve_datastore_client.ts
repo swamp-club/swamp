@@ -43,6 +43,7 @@ import {
   ChunkHashMismatchError,
   encodeCommitBody,
 } from "./chunk_ingest.ts";
+import { type Span, withSpan } from "../tracing/tracer.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import { recordServeClock } from "./serve_offline.ts";
 import {
@@ -800,7 +801,23 @@ export class ServeDatastoreClient {
     return this.#takesStepStarts;
   }
 
-  async #exchange<T>(
+  #exchange<T>(
+    spec: RequestSpec,
+    signal: AbortSignal,
+    read: (response: Response) => Promise<T>,
+  ): Promise<T> {
+    return withSpan(
+      "swamp.datastore.v3.serve.request",
+      {
+        "http.request.method": spec.method,
+        "http.route": routeTemplate(spec.path),
+      },
+      (span) => this.#exchangeIn(span, spec, signal, read),
+    );
+  }
+
+  async #exchangeIn<T>(
+    span: Span,
     spec: RequestSpec,
     signal: AbortSignal,
     read: (response: Response) => Promise<T>,
@@ -808,6 +825,7 @@ export class ServeDatastoreClient {
     const url = this.#url(spec);
     const headers = this.#headers(spec);
     for (let attempt = 1;; attempt++) {
+      span.setAttribute("swamp.datastore.v3.serve.attempts", attempt);
       signal.throwIfAborted();
       const timed = AbortSignal.any([
         signal,
@@ -835,6 +853,7 @@ export class ServeDatastoreClient {
         sentAt,
         Date.now(),
       );
+      span.setAttribute("http.response.status_code", response.status);
       if (response.status === 429 && attempt < this.#maxAttempts) {
         const wait = retryAfterMs(response.headers.get("retry-after"));
         if (wait !== undefined) {
@@ -940,6 +959,21 @@ export class ServeDatastoreClient {
     return { client: this.#httpClient };
   }
 }
+
+// Span attributes leave the machine through an OTLP exporter, so a route
+// names its kind of resource, never a partition, chunk, lease or txn id.
+export function routeTemplate(path: string): string {
+  const [head, id, ...rest] = path.split("/");
+  if (id === undefined || path === "chunks/has") return path;
+  return [head, `{${ROUTE_PARAMS[head] ?? "id"}}`, ...rest].join("/");
+}
+
+const ROUTE_PARAMS: Readonly<Record<string, string>> = {
+  chunks: "sha256",
+  locks: "leaseId",
+  partitions: "partition",
+  quarantine: "txnId",
+};
 
 /** A partition's path segment: its key, encoded once more than serve decodes. */
 function partitionPath(partition: PartitionKey): string {

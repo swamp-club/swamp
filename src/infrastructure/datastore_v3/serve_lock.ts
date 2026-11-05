@@ -28,6 +28,7 @@ import {
   type LockInfo,
   LockTimeoutError,
 } from "../../domain/datastore/distributed_lock.ts";
+import { withSpan } from "../tracing/tracer.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type {
   LockLease,
@@ -145,7 +146,15 @@ export class ServeLock implements DistributedLock {
    * @throws ServeUnreachableError when serve cannot be reached: the
    *   command ends before it changes anything
    */
-  async acquire(): Promise<void> {
+  acquire(): Promise<void> {
+    return withSpan(
+      "swamp.datastore.v3.serve.lock.acquire",
+      {},
+      () => this.#acquire(),
+    );
+  }
+
+  async #acquire(): Promise<void> {
     if (this.#lease !== undefined || this.#localOnly) return;
     const offline = this.#options.offline?.();
     if (offline !== undefined) {
@@ -362,13 +371,19 @@ export class ServeLock implements DistributedLock {
     }
   }
 
-  async release(): Promise<void> {
-    this.#releasing = true;
-    try {
-      await this.#release();
-    } finally {
-      this.#releasing = false;
-    }
+  release(): Promise<void> {
+    return withSpan(
+      "swamp.datastore.v3.serve.lock.release",
+      {},
+      async () => {
+        this.#releasing = true;
+        try {
+          await this.#release();
+        } finally {
+          this.#releasing = false;
+        }
+      },
+    );
   }
 
   async #release(): Promise<void> {
