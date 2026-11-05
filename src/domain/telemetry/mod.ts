@@ -83,7 +83,16 @@ export {
   type TelemetryEntryData,
 } from "./telemetry_entry.ts";
 
-export type { TelemetryRepository } from "./repositories.ts";
+export type {
+  TelemetryFlushRecordRepository,
+  TelemetryRepository,
+} from "./repositories.ts";
+
+export {
+  applyFlushAttempt,
+  type TelemetryFlushAttempt,
+  type TelemetryFlushRecord,
+} from "./telemetry_flush_record.ts";
 
 export type {
   TelemetryFlushResult,

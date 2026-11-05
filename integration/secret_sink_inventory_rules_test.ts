@@ -494,6 +494,9 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CONFIG_WRITE,
     "src/infrastructure/persistence/swamp_sources_repository.ts: writeSwampSources":
       CONFIG_WRITE,
+    "src/infrastructure/persistence/json_telemetry_flush_record_repository.ts: JsonTelemetryFlushRecordRepository":
+      "Writes timestamps, a count and the telemetry sender's fixed failure " +
+      "reason; no expression value reaches it.",
     "src/infrastructure/persistence/telemetry_preferences_file_repository.ts: TelemetryPreferencesFileRepository":
       CONFIG_WRITE,
     "src/infrastructure/persistence/user_identity_repository.ts: UserIdentityRepository":

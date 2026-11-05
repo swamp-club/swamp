@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { TelemetryEntry } from "./telemetry_entry.ts";
+import type { TelemetryFlushRecord } from "./telemetry_flush_record.ts";
 
 export interface TelemetryRepository {
   /** never throws; errors are logged silently */
@@ -57,4 +58,10 @@ export interface TelemetryRepository {
    * not worth retaining indefinitely
    */
   deleteQuarantinedOlderThan(date: Date): Promise<number>;
+}
+
+/** advisory: never throws, and a missing or invalid record reads as null */
+export interface TelemetryFlushRecordRepository {
+  read(): Promise<TelemetryFlushRecord | null>;
+  write(record: TelemetryFlushRecord): Promise<void>;
 }

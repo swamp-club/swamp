@@ -59,7 +59,10 @@ async function readPersistedEntries(
   const dir = join(configDir, "swamp", "telemetry");
   const entries: Record<string, unknown>[] = [];
   for await (const file of Deno.readDir(dir)) {
-    if (!file.isFile || !file.name.endsWith(".json")) continue;
+    if (
+      !file.isFile || !file.name.startsWith("telemetry-") ||
+      !file.name.endsWith(".json")
+    ) continue;
     const text = await Deno.readTextFile(join(dir, file.name));
     entries.push(JSON.parse(text) as Record<string, unknown>);
   }

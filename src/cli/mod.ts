@@ -174,6 +174,8 @@ import {
   isBundleArtifactPath,
 } from "./auto_resolver_adapters.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
+import { isTelemetryDisabledByEnv } from "../infrastructure/telemetry/telemetry_opt_out_env.ts";
+import { JsonTelemetryFlushRecordRepository } from "../infrastructure/persistence/json_telemetry_flush_record_repository.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
 import { YamlVaultConfigRepository } from "../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
@@ -345,20 +347,12 @@ export function resolveLogLevel(
   return undefined;
 }
 
+export { isTelemetryDisabledByEnv };
+
 export function isTelemetryDisabledByConfig(
   marker: RepoMarkerData | null,
 ): boolean {
   return marker?.telemetryDisabled === true;
-}
-
-export function isTelemetryDisabledByEnv(): boolean {
-  return isOptOutEnvSet("SWAMP_NO_TELEMETRY") || isOptOutEnvSet("DO_NOT_TRACK");
-}
-
-function isOptOutEnvSet(name: string): boolean {
-  const val = Deno.env.get(name);
-  if (val === undefined) return false;
-  return val !== "0" && val !== "false" && val !== "";
 }
 
 export interface TelemetryOptOutSources {
@@ -1966,6 +1960,7 @@ async function initTelemetryService(
       undefined,
       undefined,
       telemetryEndpoint,
+      new JsonTelemetryFlushRecordRepository(globalTelemetryDir()),
     );
 
     return {

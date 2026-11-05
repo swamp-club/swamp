@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { TelemetryRepository } from "./repositories.ts";
+import type {
+  TelemetryFlushRecordRepository,
+  TelemetryRepository,
+} from "./repositories.ts";
+import { applyFlushAttempt } from "./telemetry_flush_record.ts";
 import type {
   TelemetryFlushResult,
   TelemetrySender,
@@ -125,6 +129,7 @@ export class TelemetryService {
      * different endpoint
      */
     private readonly endpoint?: string,
+    private readonly flushRecords?: TelemetryFlushRecordRepository,
   ) {
     this.invocationId = invocationId ?? generateTelemetryId();
   }
@@ -370,6 +375,7 @@ export class TelemetryService {
           config.authToken,
           config.signal,
         );
+        await this.#recordFlushAttempt(result, 1);
         const unmarkedIds: string[] = [];
         if (result.ok) {
           const marked = await this.repository.markFlushed(
@@ -387,6 +393,27 @@ export class TelemetryService {
         };
       }
     });
+  }
+
+  /** best-effort: the record is advisory, so it never changes a flush outcome */
+  async #recordFlushAttempt(
+    result: TelemetryFlushResult,
+    attempted: number,
+  ): Promise<void> {
+    if (!this.flushRecords) return;
+    try {
+      const previous = await this.flushRecords.read();
+      await this.flushRecords.write(
+        applyFlushAttempt(previous, {
+          at: new Date(),
+          ok: result.ok,
+          reason: result.reason,
+          sentCount: result.ok ? attempted : 0,
+        }),
+      );
+    } catch {
+      // A failed record write must not turn a delivered batch into a failure.
+    }
   }
 
   #serialize<T>(fn: () => Promise<T>): Promise<T> {
@@ -426,6 +453,7 @@ export class TelemetryService {
       authToken,
       signal,
     );
+    await this.#recordFlushAttempt(result, entries.length);
     const unmarkedIds: string[] = [];
     if (result.ok) {
       for (const entry of entries) {

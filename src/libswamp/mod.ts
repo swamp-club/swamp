@@ -1742,9 +1742,11 @@ export {
 
 export {
   createTelemetryStatsDeps,
+  type TelemetryOptOutSource,
   telemetryStats,
   type TelemetryStatsData,
   type TelemetryStatsDeps,
+  type TelemetryStatsEmptyState,
   type TelemetryStatsEvent,
   type TelemetryStatsInput,
 } from "./telemetry/stats.ts";

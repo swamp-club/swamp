@@ -5218,7 +5218,7 @@ they stay repo-local, on v3 as on v2. Nothing changes on v2.
 | Directory | Writers | Readers | Other checkouts or nodes |
 |---|---|---|---|
 | `audit/` | Agent-hook command audit (`JsonlAuditRepository`, `commands-YYYY-MM-DD.jsonl`, 7-day retention) and vault audit (`JsonlVaultAuditRepository`, `vault-audit-YYYY-MM-DD.jsonl`, no retention). Both build `swampPath(repoDir, "audit")`, the checkout's own `.swamp`. | `swamp audit`, `swamp doctor audit`, `swamp vault audit-trail`, serve's `audit.timeline` and `vault.audit-trail`, all on the node's own disk. | Never shared: each serve node shows only what it recorded. |
-| `telemetry/` | None in the repository. The spool is user-global (`globalTelemetryDir()`), uploaded over HTTP. `migrateRepoTelemetryToGlobal` drains a legacy repo-local spool. | `swamp telemetry stats`, over the user-global spool. | Not a datastore concern. |
+| `telemetry/` | None in the repository. The spool is user-global (`globalTelemetryDir()`), uploaded over HTTP, with `flush-state.json` beside it recording the last flush. `migrateRepoTelemetryToGlobal` drains a legacy repo-local spool. | `swamp telemetry stats`, over the user-global spool. | Not a datastore concern. |
 | `logs/` | None. | None. | Nothing to share. |
 | `files/` | None. `repo init` stopped creating it as unused (commit `b703d746`), and `DEFAULT_DATASTORE_SUBDIRS` copied it from the old subdirectory list (`153e19a5`). | None. | Nothing to share. |
 
