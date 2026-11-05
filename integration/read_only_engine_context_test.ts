@@ -40,6 +40,8 @@ import {
   withServeRepo,
 } from "./serve_request_harness.ts";
 
+const SERVE_CONFIG = join(".swamp", "serve.yaml");
+
 await initializeLogging({});
 
 function opener(repo: ServeRepo, calls: string[]): ReadOnlyRepoOpener {
@@ -77,6 +79,20 @@ Deno.test("createLocalEngineContext: a refusal before the first write offers a r
       () => Deno.stat(join(repo.repoDir, ".swamp", "_extension_catalog.db")),
       Deno.errors.NotFound,
     );
+  });
+});
+
+Deno.test("createLocalEngineContext: a repo with no serve admins offers a read-only fallback", async () => {
+  await withServeRepo(async (repo) => {
+    await Deno.remove(join(repo.repoDir, SERVE_CONFIG), { recursive: true })
+      .catch(() => {});
+    await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+      await assertRejects(
+        () => createLocalEngineContext(repo.repoDir),
+        EngineReadOnlyFallback,
+        "serve authentication",
+      );
+    });
   });
 });
 

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../domain/errors.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import { initializeControlPlaneVault } from "../domain/vaults/control_plane_vault_init.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
@@ -266,7 +267,18 @@ async function composeFullEngine(
     format: readDatastoreFormatKey("filesystem", raw?.format),
     namespace: raw?.namespace,
   });
-  const authConfig = buildServeAuthConfig(options);
+  let authConfig: ReturnType<typeof buildServeAuthConfig>;
+  try {
+    authConfig = buildServeAuthConfig(options);
+  } catch (error) {
+    // A repo with no serve config has no admins for token mode: it serves
+    // no cli caller, but a hub can still show its dashboard read-only.
+    if (!(error instanceof UserError)) throw error;
+    throw new EngineProfileError(
+      "this repository's serve authentication",
+      error.message,
+    );
+  }
   const datastoreConfig: FilesystemDatastoreConfig = raw
     ? await resolveFilesystemDatastoreConfig(raw, repoDir, {
       beforeExpressions: async (base) => {
