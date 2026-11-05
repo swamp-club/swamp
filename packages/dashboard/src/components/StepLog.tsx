@@ -31,6 +31,8 @@ import {
   logFromQueryReply,
   parseLog,
   pickLogArtifact,
+  type QueriedLog,
+  readsByName,
   stepLogQuery,
 } from "./step_log.ts";
 import type { ArtifactRefLike } from "./run_graph_model.ts";
@@ -50,29 +52,32 @@ export function StepLog(
 ) {
   const ref = pickLogArtifact(artifacts);
   const modelName = ref?.tags?.modelName;
-  // the run-pinned query reads the log even after its behavior is deleted;
-  // an artifact without run tags is read by behavior name as before
+  // the run-pinned query reads the log even after its behavior is deleted
   const query = ref ? stepLogQuery(ref) : null;
   const queryReq = useRequest("data.query", query ?? undefined, {
     enabled: query !== null,
   });
+  const queried = query && queryReq.data && !queryReq.error
+    ? logFromQueryReply(queryReq.data)
+    : null;
+  const byName = readsByName(query, queryReq);
   const getReq = useRequest("data.get", {
     modelIdOrName: modelName,
     dataName: ref?.name,
     version: ref?.version,
     includeContent: true,
-  }, { enabled: ref !== null && query === null && !!modelName });
-  const req = query ? queryReq : getReq;
-  const item: { content?: string; contentEncoding?: string } | null =
-    req.error || !req.data
-      ? null
-      : query
-      ? logFromQueryReply(req.data)
-      : extractObject<DataItem>(req.data);
-  const missing = query !== null && !!req.data && !req.error && !item;
+  }, { enabled: ref !== null && byName && !!modelName });
+  const req = byName ? getReq : queryReq;
+  const got = byName && req.data && !req.error
+    ? extractObject<DataItem>(req.data)
+    : null;
+  const item: QueriedLog | null = got
+    ? { content: got.content ?? "", contentEncoding: got.contentEncoding }
+    : queried;
+  const unavailable = item !== null && item.content === null;
   const binary = item?.contentEncoding === "base64";
   const text = item && !binary
-    ? item.content ?? ""
+    ? item.content
     : ref === null
     ? logFromOutputs(outputs)
     : null;
@@ -105,7 +110,8 @@ export function StepLog(
     )
     : null;
 
-  if (ref && req.loading && !item) {
+  // a read not yet sent (the by-name fallback) has no data, error or loading
+  if (ref && !req.error && (req.loading || !req.data) && !item) {
     return (
       <SkeletonRegion label="Loading step log" className="sl sl-loading">
         {[70, 52, 64].map((w, i) => (
@@ -114,20 +120,20 @@ export function StepLog(
       </SkeletonRegion>
     );
   }
-  if (missing) {
+  if (ref && req.error) {
     return (
       <div className="sl sl-empty">
-        No stored log matches this step's run.{" "}
+        The step's log could not be loaded ({req.error}).{" "}
         <button type="button" className="btn-sm" onClick={req.refetch}>
           Retry
         </button>
       </div>
     );
   }
-  if (ref && req.error) {
+  if (unavailable) {
     return (
       <div className="sl sl-empty">
-        The step's log could not be loaded ({req.error}).{" "}
+        The log is stored, but its content is not available on this host.{" "}
         <button type="button" className="btn-sm" onClick={req.refetch}>
           Retry
         </button>

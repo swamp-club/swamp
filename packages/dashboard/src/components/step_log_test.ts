@@ -23,6 +23,7 @@ import {
   logFromQueryReply,
   parseLog,
   pickLogArtifact,
+  readsByName,
   stepLogQuery,
 } from "./step_log.ts";
 
@@ -121,7 +122,7 @@ const projected = (rows: Record<string, unknown>[]) => ({
   },
 });
 
-Deno.test("logFromQueryReply: reads the first projected row, or null for none", () => {
+Deno.test("logFromQueryReply: reads the first projected row, null content as unavailable, or null for none", () => {
   assertEquals(
     logFromQueryReply(
       projected([{ content: "[stdout]\nhello", contentEncoding: "utf-8" }]),
@@ -136,8 +137,33 @@ Deno.test("logFromQueryReply: reads the first projected row, or null for none", 
   );
   assertEquals(logFromQueryReply(projected([])), null);
   assertEquals(
+    logFromQueryReply(projected([{ content: null, contentEncoding: "utf-8" }])),
+    { content: null, contentEncoding: "utf-8" },
+  );
+  assertEquals(
+    logFromQueryReply(projected([{ content: { ok: true } }])),
+    { content: '{\n  "ok": true\n}' },
+  );
+  assertEquals(
     logFromQueryReply({ data: { results: [], total: 0, limited: false } }),
     null,
   );
   assertEquals(logFromQueryReply(null), null);
+});
+
+Deno.test("readsByName: falls back to the behavior name without run tags or when the query has no row", () => {
+  const query = stepLogQuery(ref("log", runTags));
+  const row = projected([{ content: "x", contentEncoding: "utf-8" }]);
+  assertEquals(readsByName(null, { data: null, error: null }), true);
+  assertEquals(readsByName(query, { data: projected([]), error: null }), true);
+  assertEquals(readsByName(query, { data: row, error: null }), false);
+  assertEquals(readsByName(query, { data: null, error: null }), false);
+  assertEquals(readsByName(query, { data: null, error: "boom" }), false);
+  assertEquals(
+    readsByName(query, {
+      data: projected([{ content: null, contentEncoding: "utf-8" }]),
+      error: null,
+    }),
+    false,
+  );
 });

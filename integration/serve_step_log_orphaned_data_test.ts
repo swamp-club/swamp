@@ -42,11 +42,9 @@ const RUN_ID = crypto.randomUUID();
 const BEHAVIOR = `review-comments-${RUN_ID}`;
 const JOB = "review";
 const STEP = "comments-[src/a.ts]";
+const MODEL_ID = crypto.randomUUID();
 
-/**
- * a step log whose behavior has no definition: the per-run behavior was deleted
- * after the run, the data it wrote was not
- */
+// data outlives its per-run behavior: no definition is ever created for BEHAVIOR
 async function saveOrphanedLog(
   repo: ServeRepo,
   text: string,
@@ -83,8 +81,6 @@ async function saveOrphanedLog(
   );
   return { dataId: data.id, version: saved.version, tags };
 }
-
-const MODEL_ID = crypto.randomUUID();
 
 const behaviorReader = (pattern: string): Grant[] => [
   grant({ actions: ["read"], resource: { kind: "data", pattern } }),

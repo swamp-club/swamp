@@ -101,7 +101,8 @@ export function stepLogQuery(ref: ArtifactRefLike): StepLogQueryPayload | null {
 }
 
 export interface QueriedLog {
-  content: string;
+  /** null when the item is stored but its content is not on this host */
+  content: string | null;
   contentEncoding?: string;
 }
 
@@ -117,9 +118,27 @@ export function logFromQueryReply(payload: unknown): QueriedLog | null {
   if (!first || typeof first !== "object") return null;
   const { content, contentEncoding } = first as Record<string, unknown>;
   return {
-    content: typeof content === "string" ? content : "",
+    // a JSON item's content arrives parsed
+    content: typeof content === "string"
+      ? content
+      : content == null
+      ? null
+      : JSON.stringify(content, null, 2),
     ...(typeof contentEncoding === "string" && { contentEncoding }),
   };
+}
+
+/**
+ * Whether to read the log by behavior name: the artifact has no run tags, or
+ * the run-pinned query answered with no row (data that predates its recorded
+ * job and step, or was renamed since).
+ */
+export function readsByName(
+  query: StepLogQueryPayload | null,
+  reply: { data: unknown; error: string | null },
+): boolean {
+  if (query === null) return true;
+  return !!reply.data && !reply.error && logFromQueryReply(reply.data) === null;
 }
 
 /** A log built from a step's `stdout`/`stderr` outputs, when it has them. */
