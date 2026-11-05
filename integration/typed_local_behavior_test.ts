@@ -1068,7 +1068,7 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
         reason: unreachable,
       }]);
 
-      // One probe per reference per validation, so a slow backend costs one wait.
+      // validate asks the provider once for a reference, however many passes it makes.
       const counted = await deps.validateModel(
         await define("counted", "${{ vault.get('counted', 'item') }}"),
         f.model,
