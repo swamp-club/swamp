@@ -43,6 +43,8 @@ export interface RegisterDatastoreSyncOptions {
   metadataOnly?: boolean;
   namespace?: string;
   slowLockScope?: SlowLockScope;
+  /** stops the lock wait; an aborted wait registers nothing */
+  signal?: AbortSignal;
 }
 
 export interface SlowLockScope {
@@ -83,19 +85,27 @@ function installSignalHandler(): void {
   if (shutdownHandle) return;
 
   shutdownHandle = registerShutdownHandler({
-    handler: () => {
-      const forceExit = setTimeout(() => Deno.exit(130), 5_000);
-      const releases = [...entries.values()]
-        .filter((e) => e.lock)
-        .map((e) => e.lock!.release().catch(() => {}));
-      Promise.all(releases).finally(() => {
-        clearTimeout(forceExit);
-        if (suppressCount === 0) {
-          Deno.exit(130);
-        }
-      });
-    },
+    handler: releaseLocksOnInterrupt,
     includePosixSignals: false,
+  });
+}
+
+/**
+ * a command that owns shutdown releases its locks in its own teardown, so
+ * under suppressSyncExitOnSignal this does nothing: releasing here would hand
+ * an in-flight method's lock to a waiter
+ */
+export function releaseLocksOnInterrupt(): void {
+  if (suppressCount > 0) return;
+  const forceExit = setTimeout(() => Deno.exit(130), 5_000);
+  const releases = [...entries.values()]
+    .filter((e) => e.lock)
+    .map((e) => e.lock!.release().catch(() => {}));
+  Promise.all(releases).finally(() => {
+    clearTimeout(forceExit);
+    if (suppressCount === 0) {
+      Deno.exit(130);
+    }
   });
 }
 
@@ -260,7 +270,7 @@ export async function registerDatastoreSyncNamed(
       await withRunPhase(
         "waiting_for_lock",
         { resource: key },
-        () => lock.acquire(),
+        () => lock.acquire(options.signal),
       );
       const lockMs = Date.now() - lockStart;
       if (options.slowLockScope) {

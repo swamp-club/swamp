@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { registerShutdownHandler } from "./shutdown_handlers.ts";
 
 Deno.test({
@@ -312,4 +313,93 @@ Deno.test({
       `unexpected handler output: ${stdout}`,
     );
   },
+});
+
+function pendingWrites(count: number) {
+  const done = Promise.withResolvers<void>();
+  let size = count;
+  return {
+    get size() {
+      return size;
+    },
+    settled: 0,
+    settle(_waitMs: number): Promise<number> {
+      this.settled++;
+      return done.promise.then(() => size = 0);
+    },
+    finish: () => done.resolve(),
+  };
+}
+
+Deno.test("registerShutdownHandler: a second signal waits for started data writes before exiting 130", async () => {
+  const stopRequests = fakeStopRequests();
+  const exits: number[] = [];
+  const writes = pendingWrites(2);
+  const handle = registerShutdownHandler({
+    handler: () => {},
+    forceExitOnRepeat: true,
+    dataWrites: writes,
+  }, {
+    os: "windows",
+    listenForStopRequests: stopRequests.listenForStopRequests,
+    exit: (code) => exits.push(code),
+  });
+  try {
+    stopRequests.handlers[0]();
+    stopRequests.handlers[0]();
+    assertEquals(writes.settled, 1);
+    assertEquals(exits, []);
+    writes.finish();
+    await waitFor(() => exits.length === 1, "the delayed exit");
+    assertEquals(exits, [130]);
+  } finally {
+    handle.dispose();
+  }
+});
+
+Deno.test("registerShutdownHandler: a third signal exits 130 without waiting for data writes", () => {
+  const stopRequests = fakeStopRequests();
+  const exits: number[] = [];
+  const writes = pendingWrites(1);
+  const handle = registerShutdownHandler({
+    handler: () => {},
+    forceExitOnRepeat: true,
+    dataWrites: writes,
+  }, {
+    os: "windows",
+    listenForStopRequests: stopRequests.listenForStopRequests,
+    exit: (code) => exits.push(code),
+  });
+  try {
+    stopRequests.handlers[0]();
+    stopRequests.handlers[0]();
+    stopRequests.handlers[0]();
+    assertEquals(exits, [130]);
+  } finally {
+    writes.finish();
+    handle.dispose();
+  }
+});
+
+Deno.test("registerShutdownHandler: a second signal with no data write in flight exits 130 at once", () => {
+  const stopRequests = fakeStopRequests();
+  const exits: number[] = [];
+  const writes = pendingWrites(0);
+  const handle = registerShutdownHandler({
+    handler: () => {},
+    forceExitOnRepeat: true,
+    dataWrites: writes,
+  }, {
+    os: "windows",
+    listenForStopRequests: stopRequests.listenForStopRequests,
+    exit: (code) => exits.push(code),
+  });
+  try {
+    stopRequests.handlers[0]();
+    stopRequests.handlers[0]();
+    assertEquals(exits, [130]);
+    assertEquals(writes.settled, 0);
+  } finally {
+    handle.dispose();
+  }
 });

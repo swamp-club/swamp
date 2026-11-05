@@ -146,16 +146,17 @@ export class ServeLock implements DistributedLock {
    * @throws ServeUnreachableError when serve cannot be reached: the
    *   command ends before it changes anything
    */
-  acquire(): Promise<void> {
+  acquire(signal?: AbortSignal): Promise<void> {
     return withSpan(
       "swamp.datastore.v3.serve.lock.acquire",
       {},
-      () => this.#acquire(),
+      () => this.#acquire(signal),
     );
   }
 
-  async #acquire(): Promise<void> {
+  async #acquire(signal: AbortSignal | undefined): Promise<void> {
     if (this.#lease !== undefined || this.#localOnly) return;
+    signal?.throwIfAborted();
     const offline = this.#options.offline?.();
     if (offline !== undefined) {
       await this.#acquireOffline(offline);
@@ -169,6 +170,9 @@ export class ServeLock implements DistributedLock {
     let heldBy = "another caller";
     try {
       while (true) {
+        // checked between asks only: aborting an ask serve may have granted
+        // would leave its lease held at serve until the TTL
+        signal?.throwIfAborted();
         const remaining = this.#options.maxWaitMs - (this.#now() - started);
         if (remaining <= 0) {
           throw this.#timeout(client, heldBy, this.#now() - started);
@@ -214,7 +218,7 @@ export class ServeLock implements DistributedLock {
             backoff,
             Math.max(0, remaining - (this.#now() - asked)),
           );
-          await new Promise((resolve) => setTimeout(resolve, pause));
+          await sleepUnlessAborted(pause, signal);
           backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
         }
       }
@@ -616,4 +620,20 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** resolves early on abort; the caller's next check throws the reason */
+function sleepUnlessAborted(
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }

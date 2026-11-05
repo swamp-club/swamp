@@ -102,6 +102,7 @@ import {
 } from "../remote_run.ts";
 import { SERVE_CAPABILITY_RESUME_FROM_JOB } from "../../serve/protocol.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -579,6 +580,7 @@ export const workflowResumeCommand = withRemoteOptions(
     const shutdownHandle = registerShutdownHandler({
       handler: () => abort.abort(),
       forceExitOnRepeat: true,
+      dataWrites: processDataWrites,
     });
     const disarmTimeout = timeoutMs !== undefined
       ? abortOnTimeout(abort, timeoutMs)

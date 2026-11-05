@@ -194,6 +194,11 @@ import {
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
+import {
+  DATA_WRITE_STOP_GRACE_MS,
+  InFlightDataWrites,
+  processDataWrites,
+} from "../data/in_flight_data_writes.ts";
 import { CompositeUnifiedDataRepository } from "../data/composite_data_repository.ts";
 import { CompositeDataQueryService } from "../data/composite_data_query_service.ts";
 import type { ResourceOverrides } from "../definitions/definition.ts";
@@ -861,6 +866,8 @@ export interface StepExecutionContext {
   sensitiveValues: RunSensitiveValues;
   sanitizedTasks?: SanitizedTaskOverlay;
   stepProvenance?: StepProvenanceOverlay;
+  /** the run's started writes, waited for when the run is cancelled */
+  inFlightDataWrites?: InFlightDataWrites;
   reportFilterOptions?: ReportFilterOptions;
   swampSha?: string;
   skipCheckNames?: string[];
@@ -943,6 +950,7 @@ export const STEP_STOP_GRACE_MS = 4_000;
  * each records its own cancellation first
  */
 class InFlightMethodRuns {
+  readonly dataWrites = new InFlightDataWrites(processDataWrites);
   readonly #pending = new Set<Promise<void>>();
   readonly #signal: AbortSignal | undefined;
   #abortedAt: number | undefined;
@@ -996,6 +1004,28 @@ class InFlightMethodRuns {
     }
   }
 
+  /**
+   * counted from the abort like settle; a write started after the run settled
+   * is not waited for, as the step lock is released in teardown
+   */
+  async settleDataWrites(graceMs: number): Promise<void> {
+    if (this.dataWrites.size === 0) return;
+    const remaining = (this.#abortedAt ?? performance.now()) + graceMs -
+      performance.now();
+    if (remaining <= 0) return;
+    const logger = getSwampLogger(["workflow", "cancel"]);
+    logger.info("Waiting up to {ms}ms for {count} data write(s) to finish", {
+      ms: Math.ceil(remaining),
+      count: this.dataWrites.size,
+    });
+    const left = await this.dataWrites.settle(remaining);
+    if (left > 0) {
+      logger.warn("Stopped waiting for {count} data write(s)", {
+        count: left,
+      });
+    }
+  }
+
   dispose(): void {
     this.#signal?.removeEventListener("abort", this.#onAbort);
   }
@@ -1006,10 +1036,14 @@ async function awaitInFlightWork(
   methodRuns: InFlightMethodRuns,
   stepStopGraceMs: number | undefined,
 ): Promise<void> {
+  const graceMs = stepStopGraceMs ?? STEP_STOP_GRACE_MS;
   await Promise.all([
     awaitNestedRuns(nestedRuns),
-    methodRuns.settle(stepStopGraceMs ?? STEP_STOP_GRACE_MS),
+    methodRuns.settle(graceMs),
   ]);
+  await methodRuns.settleDataWrites(
+    graceMs + DATA_WRITE_STOP_GRACE_MS - STEP_STOP_GRACE_MS,
+  );
 }
 
 /**
@@ -1288,6 +1322,8 @@ export type StepLockHook = (
   modelId: string,
   /** for a hook that judges the step before it starts; a hook may ignore it */
   step?: { readonly methodName: string; readonly behaviorName: string },
+  /** stops the wait once the step is cancelled; a hook may ignore it */
+  signal?: AbortSignal,
 ) => Promise<StepLockResult>;
 
 export interface StepExecutorDeps {
@@ -2263,11 +2299,15 @@ export class DefaultStepExecutor implements StepExecutor {
         modelType.normalized,
         originalDefinition.id,
         { methodName: task.methodName, behaviorName: originalDefinition.name },
+        ctx.signal,
       );
       flushLock = lockResult.flush;
       heldLockIds = lockResult.lentLocks ?? lockResult.heldLockIds;
     }
     try {
+      // a step queued on a sibling's lock must not start its side effect once
+      // the run is cancelled; inside the try so the finally still releases
+      ctx.signal.throwIfAborted();
       // Save evaluated arguments with runtime expressions still raw and
       // sensitive values masked or referenced, without forwarded input aliases.
       const persisted = persistEvaluatedDefinition(
@@ -2686,6 +2726,7 @@ export class DefaultStepExecutor implements StepExecutor {
           vaultSecrets: secretBag,
           placement: resolvedPlacement,
           declaredWrites: ctx.declaredWrites,
+          inFlightDataWrites: ctx.inFlightDataWrites,
           skipCheckNames: ctx.skipCheckNames,
           skipCheckLabels: ctx.skipCheckLabels,
           skipAllChecks: ctx.skipAllChecks,
@@ -7318,9 +7359,14 @@ export class WorkflowExecutionService {
     ctx: StepExecutionContext,
     options: StepOptions,
   ): Promise<unknown> {
+    const dataWrites = options.inFlightMethodRuns?.dataWrites;
     const execution = runWithRejectionReport(
       createRejectionReport(),
-      () => this.executor.execute(step, ctx),
+      () =>
+        this.executor.execute(
+          step,
+          dataWrites ? { ...ctx, inFlightDataWrites: dataWrites } : ctx,
+        ),
     );
     return options.inFlightMethodRuns?.track(execution) ?? execution;
   }

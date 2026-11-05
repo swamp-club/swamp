@@ -18486,6 +18486,7 @@ async function runStepUnderLockHook(
     Promise.resolve({}),
   resources: ModelDefinition["resources"] = {},
   labels?: Record<string, string>,
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<{
   error: unknown;
   outputs: import("../models/model_output.ts").ModelOutput[];
@@ -18563,7 +18564,7 @@ async function runStepUnderLockHook(
           jobName: "job",
           stepName: "step",
           repoDir: tempDir,
-          signal: new AbortController().signal,
+          signal,
           step,
           catalogStore,
           authoredExpressions: new Set(),
@@ -18648,6 +18649,65 @@ Deno.test("DefaultStepExecutor: takes the step lock before the step writes anyth
     runId: outputs[0].id,
     status: "completed",
   }]);
+});
+
+function cancelledWhileQueued(labels?: Record<string, string>) {
+  const controller = new AbortController();
+  const seen: Array<AbortSignal | undefined> = [];
+  let ran = 0;
+  let lock: ReturnType<typeof countingLockHook> | undefined;
+  const result = runStepUnderLockHook(
+    () => {
+      lock = countingLockHook(() => {
+        controller.abort(new Error("run cancelled"));
+        return Promise.resolve();
+      });
+      return (modelType, modelId, step, signal) => {
+        seen.push(signal);
+        return lock!.hook(modelType, modelId, step, signal);
+      };
+    },
+    "execute",
+    () => {
+      ran++;
+      return Promise.resolve({});
+    },
+    {},
+    labels,
+    controller.signal,
+  );
+  return {
+    result,
+    signal: controller.signal,
+    seen,
+    ran: () => ran,
+    flushes: () => lock?.flushes(),
+  };
+}
+
+Deno.test("DefaultStepExecutor: a step whose lock arrives after the run was cancelled never runs its method", async () => {
+  const queued = cancelledWhileQueued();
+  const { error, outputs, evaluatedCount, tracker } = await queued.result;
+
+  assert(error instanceof Error, `unexpected error: ${error}`);
+  assertEquals(error.message, "run cancelled");
+  assertEquals(queued.seen, [queued.signal]);
+  assertEquals(queued.ran(), 0);
+  assertEquals(queued.flushes(), 1);
+  assertEquals(outputs.length, 0);
+  assertEquals(evaluatedCount, 0);
+  assertEquals(tracker.registrations.length, 0);
+});
+
+Deno.test("DefaultStepExecutor: a placed step whose lock arrives after the run was cancelled is never dispatched", async () => {
+  const queued = cancelledWhileQueued({ region: "eu" });
+  const { error, outputs } = await queued.result;
+
+  assert(error instanceof Error, `unexpected error: ${error}`);
+  assertEquals(error.message, "run cancelled");
+  assertEquals(queued.ran(), 0);
+  assertEquals(queued.flushes(), 1);
+  assertEquals(outputs.length, 0);
 });
 
 Deno.test("DefaultStepExecutor: releases the step lock when the step fails before the method runs", async () => {
@@ -19669,7 +19729,8 @@ Deno.test("DefaultStepExecutor: a method cancelled with a reason records that re
 });
 
 Deno.test("DefaultStepExecutor: a cleanup method the cleanup grace cuts off is recorded cancelled as cleanup grace expired (swamp-club#2922)", async () => {
-  const signal = cleanupGraceSignal(1);
+  // long enough for the method to start: a grace already run out never starts it
+  const signal = cleanupGraceSignal(500);
   const { outputs, tracker } = await runModelStep({ signal }, async () => {
     await waitFor(() => signal.aborted, "the cleanup grace to run out");
     throw new Error("process exited with signal SIGTERM");
@@ -19764,7 +19825,7 @@ class GatedRunRepository extends SpyWorkflowRunRepository {
 async function registerMethodModel(
   tempDir: string,
   definitionNames: string[],
-  execute: () => Promise<Record<string, never>>,
+  execute: ModelDefinition["methods"][string]["execute"],
 ): Promise<ModelType> {
   const { z } = await import("zod");
   const { modelRegistry } = await import("../models/model.ts");
@@ -19885,6 +19946,54 @@ Deno.test("run(): a cancelled run waits for its parallel model methods to save t
       assertEquals(step.status, "failed", name);
       assertEquals(step.error, CANCELLED_STEP_ERROR, name);
     }
+  });
+});
+
+Deno.test("run(): a cancelled run waits for a data write its method started until the write lands", async () => {
+  await withTempDir(async (tempDir) => {
+    const controller = new AbortController();
+    let landed = false;
+    let started = 0;
+    // two steps share the level, so the level stops waiting at the abort
+    await registerMethodModel(tempDir, ["m1", "m2"], async (_args, context) => {
+      if (++started === 2) return {};
+      controller.abort();
+      const write = new Promise<void>((resolve) =>
+        setTimeout(() => {
+          landed = true;
+          resolve();
+        }, 200)
+      );
+      assertExists(context.inFlightDataWrites);
+      await context.inFlightDataWrites.track(write);
+      return {};
+    });
+    const workflow = Workflow.create({
+      name: "write-cancel-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [methodStep("w1", "m1"), methodStep("w2", "m2")],
+        }),
+      ],
+    });
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      new RecordingRunTracker(),
+      new InFlightCountingExecutor(new DefaultStepExecutor()),
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      controller.signal,
+      undefined,
+      SHORT_STEP_STOP_GRACE_MS,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(landed, true);
   });
 });
 

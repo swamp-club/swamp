@@ -96,7 +96,8 @@ export interface LockOptions {
 }
 
 export interface DistributedLock {
-  acquire(): Promise<void>;
+  /** an aborted signal stops the wait with its reason, holding nothing */
+  acquire(signal?: AbortSignal): Promise<void>;
 
   release(): Promise<void>;
 
@@ -235,7 +236,7 @@ export function withCoreLockErrors(lock: DistributedLock): DistributedLock {
     throw toCoreLockTimeoutError(error) ?? error;
   };
   return {
-    acquire: () => lock.acquire().catch(rethrow),
+    acquire: (signal?: AbortSignal) => lock.acquire(signal).catch(rethrow),
     release: () => lock.release(),
     withLock: <T>(fn: () => Promise<T>) => lock.withLock(fn).catch(rethrow),
     inspect: () => lock.inspect(),

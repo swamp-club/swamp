@@ -31,6 +31,7 @@ import {
 import { OWNER_STOP_GRACE_MS } from "../src/cli/commands/workflow_cancel.ts";
 import { SHUTDOWN_ABORT_GRACE_MS } from "../src/serve/shutdown_drain.ts";
 import { RUN_CANCEL_GRACE_MS } from "../src/serve/suspended_run_cancel.ts";
+import { DATA_WRITE_STOP_GRACE_MS } from "../src/domain/data/in_flight_data_writes.ts";
 
 Deno.test("cancel graces: the step stop grace outlasts the shell kill grace", () => {
   // A shell step that ignores SIGTERM is killed, and saves its method run
@@ -51,4 +52,14 @@ Deno.test("cancel graces: the step stop grace fits the owner-stop margin after o
   // left.
   const ownerStopMargin = OWNER_STOP_GRACE_MS - CLEANUP_GRACE_TIMEOUT_MS;
   assert(STEP_STOP_GRACE_MS < ownerStopMargin);
+});
+
+Deno.test("cancel graces: a started data write is waited for past the step stop grace, and serve still sees the run finish", () => {
+  // Counted from the abort like the step stop grace and serve's timers.
+  assert(STEP_STOP_GRACE_MS < DATA_WRITE_STOP_GRACE_MS);
+  assert(DATA_WRITE_STOP_GRACE_MS < SHUTDOWN_ABORT_GRACE_MS);
+  assert(DATA_WRITE_STOP_GRACE_MS < RUN_CANCEL_GRACE_MS);
+  assert(
+    DATA_WRITE_STOP_GRACE_MS < OWNER_STOP_GRACE_MS - CLEANUP_GRACE_TIMEOUT_MS,
+  );
 });

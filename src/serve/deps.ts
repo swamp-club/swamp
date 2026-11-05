@@ -455,7 +455,7 @@ export function createStepLockHook(
    */
   onLeaseLost?: (reason: unknown) => void,
 ): StepLockHook {
-  return async (modelType, modelId) => {
+  return async (modelType, modelId, _step, signal) => {
     const result = await acquireModelLocks(
       datastoreConfig,
       [{ modelType, modelId }],
@@ -466,6 +466,7 @@ export function createStepLockHook(
       {
         wrapSync: (fn, kind) => withRunSyncGate(syncGate, fn, kind),
         repoContext,
+        signal,
       },
     );
     if (result.synced) repoContext.catalogStore.invalidate();

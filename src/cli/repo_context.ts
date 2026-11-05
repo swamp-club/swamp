@@ -2764,6 +2764,8 @@ export interface AcquireModelLocksOptions {
    */
   pull?: boolean;
   failIfBusy?: boolean;
+  /** stops every lock wait; nothing taken so far stays held */
+  signal?: AbortSignal;
 }
 
 /**
@@ -3281,7 +3283,9 @@ async function waitForGlobalLockRelease(
   config: DatastoreConfig,
   write: LockProgressWriter,
   next: string,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
     write(
@@ -3298,7 +3302,8 @@ async function waitForGlobalLockRelease(
       { resource: ".datastore.lock" },
       async () => {
         while (true) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          await pollDelay(1_000, signal);
+          signal?.throwIfAborted();
           const info = await globalLock.inspect();
           if (!info) break;
           const acquiredAt = new Date(info.acquiredAt).getTime();
@@ -3560,6 +3565,7 @@ export async function acquireModelLocks(
       config,
       write,
       "per-model locks",
+      options?.signal,
     );
   }
 
@@ -3640,6 +3646,7 @@ export async function acquireModelLocks(
           scope: { kind: "model", modelType, modelId },
           shareable: isCustomDatastoreConfig(config),
         },
+        signal: options?.signal,
       });
       lockKeys.push(coordinatorKey);
       heldLocks.push(lock);
@@ -3674,7 +3681,8 @@ export async function acquireModelLocks(
           { resource: ".datastore.lock" },
           async () => {
             while (true) {
-              await new Promise((resolve) => setTimeout(resolve, 1_000));
+              await pollDelay(1_000, options?.signal);
+              options?.signal?.throwIfAborted();
               const info = await globalLock.inspect();
               if (!info) break;
               const acquiredAt = new Date(info.acquiredAt).getTime();
