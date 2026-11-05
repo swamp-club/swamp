@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join } from "@std/path";
-import type { ServiceConfig } from "../../domain/serve/service_config.ts";
+import {
+  SERVE_SERVICE,
+  type ServiceConfig,
+  type ServiceIdentity,
+} from "../../domain/serve/service_config.ts";
 import type {
   ServiceScheduler,
   ServiceStatus,
@@ -28,18 +32,18 @@ import { escapeXml } from "../update/launchd_scheduler.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import { homeDirectory } from "../persistence/paths.ts";
 
-const LABEL = "club.swamp.serve";
-
-function agentPlistPath(): string {
-  return join(homeDirectory(), "Library", "LaunchAgents", `${LABEL}.plist`);
-}
-
-function daemonPlistPath(): string {
-  return join("/Library", "LaunchDaemons", `${LABEL}.plist`);
-}
-
-function plistPathForMode(mode: LaunchdMode): string {
-  return mode === "agent" ? agentPlistPath() : daemonPlistPath();
+function plistPathForMode(
+  mode: LaunchdMode,
+  identity: ServiceIdentity = SERVE_SERVICE,
+): string {
+  return mode === "agent"
+    ? join(
+      homeDirectory(),
+      "Library",
+      "LaunchAgents",
+      `${identity.label}.plist`,
+    )
+    : join("/Library", "LaunchDaemons", `${identity.label}.plist`);
 }
 
 export function serveLogDir(mode: LaunchdMode = "agent"): string {
@@ -52,27 +56,33 @@ export function serveLogDir(mode: LaunchdMode = "agent"): string {
 export function buildServePlist(
   config: ServiceConfig,
   mode: LaunchdMode = "agent",
+  identity: ServiceIdentity = SERVE_SERVICE,
 ): string {
   const escapedBinary = escapeXml(config.binaryPath);
   const logDir = serveLogDir(mode);
-  const stdoutLog = escapeXml(join(logDir, "serve.stdout.log"));
-  const stderrLog = escapeXml(join(logDir, "serve.stderr.log"));
+  const stdoutLog = escapeXml(join(logDir, `${identity.logName}.stdout.log`));
+  const stderrLog = escapeXml(join(logDir, `${identity.logName}.stderr.log`));
   const escapedRepoDir = escapeXml(config.repoDir);
 
   const userNameEntry = mode === "daemon"
     ? `\n  <key>UserName</key>\n  <string>root</string>`
     : "";
 
-  const args = [
-    `    <string>${escapedBinary}</string>`,
-    `    <string>serve</string>`,
-    `    <string>--repo-dir</string>`,
-    `    <string>${escapedRepoDir}</string>`,
-    `    <string>--port</string>`,
-    `    <string>${config.port}</string>`,
-    `    <string>--host</string>`,
-    `    <string>${escapeXml(config.host)}</string>`,
-  ];
+  const args = config.argv
+    ? [
+      `    <string>${escapedBinary}</string>`,
+      ...config.argv.map((arg) => `    <string>${escapeXml(arg)}</string>`),
+    ]
+    : [
+      `    <string>${escapedBinary}</string>`,
+      `    <string>serve</string>`,
+      `    <string>--repo-dir</string>`,
+      `    <string>${escapedRepoDir}</string>`,
+      `    <string>--port</string>`,
+      `    <string>${config.port}</string>`,
+      `    <string>--host</string>`,
+      `    <string>${escapeXml(config.host)}</string>`,
+    ];
 
   if (config.certFile) {
     args.push(`    <string>--cert-file</string>`);
@@ -107,7 +117,7 @@ export function buildServePlist(
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LABEL}</string>
+  <string>${identity.label}</string>
   <key>ProgramArguments</key>
   <array>
 ${args.join("\n")}
@@ -141,20 +151,29 @@ async function getUid(): Promise<string> {
 
 export class LaunchdServiceScheduler implements ServiceScheduler {
   readonly mode: LaunchdMode;
+  readonly identity: ServiceIdentity;
 
-  constructor(mode: LaunchdMode = "agent") {
+  constructor(
+    mode: LaunchdMode = "agent",
+    identity: ServiceIdentity = SERVE_SERVICE,
+  ) {
     this.mode = mode;
+    this.identity = identity;
   }
 
   async enable(config: ServiceConfig): Promise<void> {
     await this.disable();
 
-    const path = plistPathForMode(this.mode);
+    const path = plistPathForMode(this.mode, this.identity);
     await Deno.mkdir(dirname(path), { recursive: true });
     await Deno.mkdir(serveLogDir(this.mode), { recursive: true });
-    await atomicWriteTextFile(path, buildServePlist(config, this.mode), {
-      mode: 0o600,
-    });
+    await atomicWriteTextFile(
+      path,
+      buildServePlist(config, this.mode, this.identity),
+      {
+        mode: 0o600,
+      },
+    );
 
     const domain = await this.launchctlDomain();
     const cmd = new Deno.Command("launchctl", {
@@ -171,7 +190,7 @@ export class LaunchdServiceScheduler implements ServiceScheduler {
   }
 
   async disable(): Promise<void> {
-    const path = plistPathForMode(this.mode);
+    const path = plistPathForMode(this.mode, this.identity);
     try {
       await Deno.stat(path);
     } catch {
@@ -180,7 +199,7 @@ export class LaunchdServiceScheduler implements ServiceScheduler {
 
     const domain = await this.launchctlDomain();
     const cmd = new Deno.Command("launchctl", {
-      args: ["bootout", `${domain}/${LABEL}`],
+      args: ["bootout", `${domain}/${this.identity.label}`],
       stdout: "null",
       stderr: "null",
     });
@@ -190,7 +209,7 @@ export class LaunchdServiceScheduler implements ServiceScheduler {
   }
 
   async status(): Promise<ServiceStatus> {
-    const path = plistPathForMode(this.mode);
+    const path = plistPathForMode(this.mode, this.identity);
     try {
       await Deno.stat(path);
     } catch {
@@ -199,7 +218,7 @@ export class LaunchdServiceScheduler implements ServiceScheduler {
 
     const domain = await this.launchctlDomain();
     const cmd = new Deno.Command("launchctl", {
-      args: ["print", `${domain}/${LABEL}`],
+      args: ["print", `${domain}/${this.identity.label}`],
       stdout: "piped",
       stderr: "null",
     });

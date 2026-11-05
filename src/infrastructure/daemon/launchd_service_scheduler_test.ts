@@ -17,10 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { assertFalse } from "@std/assert/false";
 import { buildServePlist } from "./launchd_service_scheduler.ts";
-import type { ServiceConfig } from "../../domain/serve/service_config.ts";
+import {
+  HUB_SERVICE,
+  type ServiceConfig,
+} from "../../domain/serve/service_config.ts";
 
 const baseConfig: ServiceConfig = {
   binaryPath: "/usr/local/bin/swamp",
@@ -148,4 +151,26 @@ Deno.test("buildServePlist: omits extraArgs when not provided", () => {
 Deno.test("buildServePlist: does not include StartInterval", () => {
   const plist = buildServePlist(baseConfig);
   assertFalse(plist.includes("StartInterval"));
+});
+
+Deno.test("buildServePlist: another service's identity, logs and arguments replace serve's", () => {
+  const plist = buildServePlist(
+    {
+      binaryPath: "/opt/swamp/swamp-serve",
+      repoDir: "/Users/me/.swamp",
+      port: 0,
+      host: "",
+      argv: ["hub", "--engine", "/opt/swamp/swamp"],
+    },
+    "agent",
+    HUB_SERVICE,
+  );
+  assertStringIncludes(plist, "<string>club.swamp.hub</string>");
+  assertStringIncludes(plist, "hub.stdout.log");
+  assertStringIncludes(
+    plist,
+    "<string>hub</string>\n    <string>--engine</string>",
+  );
+  assertEquals(plist.includes("--repo-dir"), false);
+  assertEquals(plist.includes("club.swamp.serve"), false);
 });

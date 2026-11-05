@@ -17,10 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { assertFalse } from "@std/assert/false";
 import { buildServeService } from "./systemd_service_scheduler.ts";
-import type { ServiceConfig } from "../../domain/serve/service_config.ts";
+import {
+  HUB_SERVICE,
+  type ServiceConfig,
+} from "../../domain/serve/service_config.ts";
 
 const baseConfig: ServiceConfig = {
   binaryPath: "/usr/local/bin/swamp",
@@ -159,4 +162,25 @@ Deno.test("buildServeService: does not include OnCalendar or timer config", () =
   const unit = buildServeService(baseConfig);
   assertFalse(unit.includes("OnCalendar"));
   assertFalse(unit.includes("[Timer]"));
+});
+
+Deno.test("buildServeService: another service's identity and arguments replace serve's", () => {
+  const unit = buildServeService(
+    {
+      binaryPath: "/opt/swamp/swamp-serve",
+      repoDir: "/home/me/.swamp",
+      port: 0,
+      host: "",
+      argv: ["hub", "--engine", "/opt/swamp/swamp", "--bind", "127.0.0.1:9870"],
+    },
+    "agent",
+    HUB_SERVICE,
+  );
+  assertStringIncludes(unit, "Description=Swamp hub");
+  assertStringIncludes(
+    unit,
+    'ExecStart="/opt/swamp/swamp-serve" "hub" "--engine" "/opt/swamp/swamp" "--bind" "127.0.0.1:9870"',
+  );
+  assertEquals(unit.includes("--repo-dir"), false);
+  assertStringIncludes(unit, "WorkingDirectory=/home/me/.swamp");
 });

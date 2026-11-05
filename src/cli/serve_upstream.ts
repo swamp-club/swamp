@@ -230,6 +230,7 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
   },
   "first-rule": { applies: true, reason: NO_REPO },
   help: { applies: true, reason: NO_REPO },
+  hub: { applies: true, reason: NO_REPO },
   inbox: { applies: true, reason: NO_REPO },
   invite: { applies: true, reason: NO_REPO },
   issue: { applies: true, reason: NO_REPO },

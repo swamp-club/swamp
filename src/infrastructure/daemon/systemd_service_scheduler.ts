@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import type { ServiceConfig } from "../../domain/serve/service_config.ts";
+import {
+  SERVE_SERVICE,
+  type ServiceConfig,
+  type ServiceIdentity,
+} from "../../domain/serve/service_config.ts";
 import type {
   ServiceScheduler,
   ServiceStatus,
@@ -31,29 +35,36 @@ import {
 } from "../update/systemd_scheduler.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 
-const UNIT_NAME = "swamp-serve";
-
-function servicePath(mode: LaunchdMode = "agent"): string {
-  return join(systemdUnitDir(mode), `${UNIT_NAME}.service`);
+function servicePath(
+  mode: LaunchdMode = "agent",
+  identity: ServiceIdentity = SERVE_SERVICE,
+): string {
+  return join(systemdUnitDir(mode), `${identity.unitName}.service`);
 }
 
 export function buildServeService(
   config: ServiceConfig,
   mode: LaunchdMode = "agent",
+  identity: ServiceIdentity = SERVE_SERVICE,
 ): string {
   const escapedBinary = escapeSystemdPath(config.binaryPath);
   const escapedRepoDir = escapeSystemdPath(config.repoDir);
 
-  const args = [
-    `"${escapedBinary}"`,
-    "serve",
-    "--repo-dir",
-    `"${escapedRepoDir}"`,
-    "--port",
-    String(config.port),
-    "--host",
-    `"${escapeSystemdPath(config.host)}"`,
-  ];
+  const args = config.argv
+    ? [
+      `"${escapedBinary}"`,
+      ...config.argv.map((arg) => `"${escapeSystemdPath(arg)}"`),
+    ]
+    : [
+      `"${escapedBinary}"`,
+      "serve",
+      "--repo-dir",
+      `"${escapedRepoDir}"`,
+      "--port",
+      String(config.port),
+      "--host",
+      `"${escapeSystemdPath(config.host)}"`,
+    ];
 
   if (config.certFile) {
     args.push("--cert-file", `"${escapeSystemdPath(config.certFile)}"`);
@@ -78,7 +89,7 @@ export function buildServeService(
   const envBlock = envLines.length > 0 ? "\n" + envLines.join("\n") : "";
 
   return `[Unit]
-Description=Swamp serve daemon
+Description=${identity.description}
 After=network-online.target
 Wants=network-online.target
 
@@ -114,9 +125,14 @@ async function systemctl(
 
 export class SystemdServiceScheduler implements ServiceScheduler {
   readonly mode: LaunchdMode;
+  readonly identity: ServiceIdentity;
 
-  constructor(mode: LaunchdMode = "agent") {
+  constructor(
+    mode: LaunchdMode = "agent",
+    identity: ServiceIdentity = SERVE_SERVICE,
+  ) {
     this.mode = mode;
+    this.identity = identity;
   }
 
   async enable(config: ServiceConfig): Promise<void> {
@@ -127,8 +143,8 @@ export class SystemdServiceScheduler implements ServiceScheduler {
       await Deno.mkdir(dir, { recursive: true });
 
       await atomicWriteTextFile(
-        servicePath(this.mode),
-        buildServeService(config, this.mode),
+        servicePath(this.mode, this.identity),
+        buildServeService(config, this.mode, this.identity),
         { mode: 0o600 },
       );
     } catch (err: unknown) {
@@ -153,25 +169,30 @@ export class SystemdServiceScheduler implements ServiceScheduler {
       this.mode,
       "enable",
       "--now",
-      `${UNIT_NAME}.service`,
+      `${this.identity.unitName}.service`,
     );
     if (!result.success) {
       throw new Error(
-        `Failed to enable systemd service ${UNIT_NAME}.service`,
+        `Failed to enable systemd service ${this.identity.unitName}.service`,
       );
     }
   }
 
   async disable(): Promise<void> {
-    await systemctl(this.mode, "disable", "--now", `${UNIT_NAME}.service`);
+    await systemctl(
+      this.mode,
+      "disable",
+      "--now",
+      `${this.identity.unitName}.service`,
+    );
     await systemctl(this.mode, "daemon-reload");
 
-    await Deno.remove(servicePath(this.mode)).catch(() => {});
+    await Deno.remove(servicePath(this.mode, this.identity)).catch(() => {});
   }
 
   async status(): Promise<ServiceStatus> {
     try {
-      await Deno.stat(servicePath(this.mode));
+      await Deno.stat(servicePath(this.mode, this.identity));
     } catch {
       return { enabled: false, running: false };
     }
@@ -179,7 +200,7 @@ export class SystemdServiceScheduler implements ServiceScheduler {
     const isActive = await systemctl(
       this.mode,
       "is-active",
-      `${UNIT_NAME}.service`,
+      `${this.identity.unitName}.service`,
     );
     const running = isActive.stdout === "active";
 
@@ -188,7 +209,7 @@ export class SystemdServiceScheduler implements ServiceScheduler {
       this.mode,
       "show",
       "--property=MainPID",
-      `${UNIT_NAME}.service`,
+      `${this.identity.unitName}.service`,
     );
     const pidMatch = showPid.stdout.match(/MainPID=(\d+)/);
     if (pidMatch) {
@@ -199,8 +220,8 @@ export class SystemdServiceScheduler implements ServiceScheduler {
     }
 
     const logHint = this.mode === "agent"
-      ? `journalctl --user -u ${UNIT_NAME}`
-      : `journalctl -u ${UNIT_NAME}`;
+      ? `journalctl --user -u ${this.identity.unitName}`
+      : `journalctl -u ${this.identity.unitName}`;
 
     return {
       enabled: true,

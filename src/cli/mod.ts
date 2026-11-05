@@ -76,6 +76,7 @@ import { subscriptionCommand } from "./commands/subscription.ts";
 import { inboxCommand } from "./commands/inbox.ts";
 import { startCommand } from "./commands/start.ts";
 import { dashboardCommand } from "./commands/dashboard.ts";
+import { hubCommand } from "./commands/hub.ts";
 import { workspaceCommand } from "./commands/workspace.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
@@ -345,6 +346,8 @@ const NON_REPO_COMMANDS = new Set([
   "start",
   // Manages the workspace registry; never runs inside one.
   "workspace",
+  // Manages the user's hub service; never runs inside a repo.
+  "hub",
 ]);
 
 export function isRepoScopedCommand(
@@ -767,6 +770,7 @@ export function registerCommands(cli: AnyCommand): void {
     .command("inbox", inboxCommand)
     .command("start", startCommand)
     .command("dashboard", dashboardCommand)
+    .command("hub", hubCommand)
     .command("workspace", workspaceCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree

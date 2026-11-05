@@ -93,6 +93,7 @@ export function renderDaemonStatus(
   status: ServiceStatus,
   mode: OutputMode,
   serviceMode: ServiceMode,
+  enableCommand = "swamp serve daemon enable",
 ): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
@@ -107,9 +108,7 @@ export function renderDaemonStatus(
       `${dim(`Status (${label}):`)} ${dim("not configured")}`,
     );
     writeOutput(
-      `${dim("Run")} ${bold("swamp serve daemon enable")} ${
-        dim("to set up the daemon")
-      }`,
+      `${dim("Run")} ${bold(enableCommand)} ${dim("to set up the daemon")}`,
     );
     return;
   }

@@ -24,6 +24,10 @@ import { detectBinaryOwnership } from "../update/scheduler_factory.ts";
 import { LaunchdServiceScheduler } from "./launchd_service_scheduler.ts";
 import { SystemdServiceScheduler } from "./systemd_service_scheduler.ts";
 import { hasSystemctl } from "./has_systemctl.ts";
+import {
+  SERVE_SERVICE,
+  type ServiceIdentity,
+} from "../../domain/serve/service_config.ts";
 
 export async function resolveServiceMode(
   options?: { user?: boolean },
@@ -60,27 +64,29 @@ export async function resolveServiceMode(
 
 export interface ServiceSchedulerOptions {
   mode?: LaunchdMode;
+  identity?: ServiceIdentity;
 }
 
 export async function createServiceScheduler(
   options?: ServiceSchedulerOptions,
 ): Promise<ServiceScheduler> {
   const mode = options?.mode ?? "agent";
+  const identity = options?.identity ?? SERVE_SERVICE;
   switch (Deno.build.os) {
     case "darwin":
-      return new LaunchdServiceScheduler(mode);
+      return new LaunchdServiceScheduler(mode, identity);
     case "linux":
       if (await hasSystemctl()) {
-        return new SystemdServiceScheduler(mode);
+        return new SystemdServiceScheduler(mode, identity);
       }
       throw new UserError(
-        "swamp serve daemon currently requires systemd on Linux, but systemctl was not found.\n" +
+        `${identity.command} currently requires systemd on Linux, but systemctl was not found.\n` +
           "If you need support for your init system, please file a feature request:\n\n" +
           "  swamp issue feature",
       );
     default:
       throw new UserError(
-        `swamp serve daemon is not yet supported on ${Deno.build.os}`,
+        `${identity.command} is not yet supported on ${Deno.build.os}`,
       );
   }
 }

@@ -26,4 +26,32 @@ export interface ServiceConfig {
   readonly keyFile?: string;
   readonly extraArgs?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  /** replaces serve's arguments; repoDir stays the working directory */
+  readonly argv?: readonly string[];
 }
+
+/** names one installed service, so two daemons never share a unit or label */
+export interface ServiceIdentity {
+  readonly unitName: string;
+  readonly label: string;
+  readonly description: string;
+  readonly logName: string;
+  /** the command that manages it, for messages */
+  readonly command: string;
+}
+
+export const SERVE_SERVICE: ServiceIdentity = {
+  unitName: "swamp-serve",
+  label: "club.swamp.serve",
+  description: "Swamp serve daemon",
+  logName: "serve",
+  command: "swamp serve daemon",
+};
+
+export const HUB_SERVICE: ServiceIdentity = {
+  unitName: "swamp-hub",
+  label: "club.swamp.hub",
+  description: "Swamp hub",
+  logName: "hub",
+  command: "swamp hub daemon",
+};
