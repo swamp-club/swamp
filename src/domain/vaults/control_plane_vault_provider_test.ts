@@ -42,6 +42,10 @@ import {
   tokenKeyFingerprint,
   TokenSecretsKeyError,
 } from "./token_secrets_key.ts";
+import {
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 import { isVaultExistenceProvider } from "./vault_provider.ts";
 
 await initializeLogging({});
@@ -92,11 +96,13 @@ Deno.test("ControlPlaneVaultProvider: get throws for missing secret", async () =
   const provider = new ControlPlaneVaultProvider(createMockStore());
   await provider.initialize();
 
-  await assertRejects(
+  const error = await assertRejects(
     () => provider.get("nonexistent"),
-    Error,
+    SecretNotFoundError,
     "not found",
   );
+  assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+  assertEquals(error.key, "nonexistent");
 });
 
 Deno.test("ControlPlaneVaultProvider: delete removes a secret", async () => {

@@ -20,6 +20,7 @@
 // deno-lint-ignore-file no-import-prefix
 import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
 import {
+  SECRET_NOT_FOUND_CODE,
   VaultAnnotation,
   type VaultAnnotationProvider,
   type VaultExistenceProvider,
@@ -257,16 +258,23 @@ export async function assertVaultConformance(
     const missingKey = `${prefix}nonexistent-${
       crypto.randomUUID().slice(0, 8)
     }`;
+    let getMissingError: unknown;
     let getMissingThrew = false;
     try {
       await provider.get(missingKey);
-    } catch {
+    } catch (error) {
       getMissingThrew = true;
+      getMissingError = error;
     }
     assertEquals(
       getMissingThrew,
       true,
       "get() must reject for a key that was never put()",
+    );
+    assertEquals(
+      (getMissingError as { code?: unknown } | undefined)?.code,
+      SECRET_NOT_FOUND_CODE,
+      `get() must reject a key that was never put() with an error whose code is "${SECRET_NOT_FOUND_CODE}" (throw SecretNotFoundError)`,
     );
 
     // tag pass-through (opt-in)

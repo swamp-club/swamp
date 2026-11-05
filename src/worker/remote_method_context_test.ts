@@ -40,7 +40,7 @@ import type {
 } from "../domain/models/model.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../domain/vaults/secret_reference_errors.ts";
 import { RECORD_KIND_TAG } from "../domain/models/data_writer.ts";
-import { RpcChannel } from "../domain/remote/rpc_channel.ts";
+import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   type DispatchParams,
   type DispatchSecretLoadReference,
@@ -49,8 +49,16 @@ import {
   RemoteMethod,
 } from "../domain/remote/protocol.ts";
 import { ModelType } from "../domain/models/model_type.ts";
-import type { DataPlaneClient } from "./data_plane_client.ts";
+import {
+  type DataPlaneClient,
+  DispatchSecretLoadError,
+} from "./data_plane_client.ts";
 import { secretReadKey } from "../domain/vaults/secret_loader.ts";
+import {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "../domain/vaults/secret_not_found_error.ts";
 import { modelIdentityPredicate } from "../domain/data/data_access_service.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/remote-ctx-test");
@@ -147,6 +155,15 @@ function harness(
   });
   orchestrator.register(RemoteMethod.resolveSecret, (params) => {
     calls.push({ method: "resolveSecret", params });
+    const { secretKey } = params as { secretKey: string };
+    if (secretKey === "gone") {
+      return Promise.reject(
+        new RpcError({ code: "secret_not_found", message: "not found" }),
+      );
+    }
+    if (secretKey === "locked") {
+      return Promise.reject(new Error("token expired"));
+    }
     return Promise.resolve({ value: "s3cret" });
   });
   orchestrator.register(RemoteMethod.putSecret, (params) => {
@@ -248,6 +265,18 @@ function harness(
     },
     loadSecrets: (references: DispatchSecretLoadReference[]) => {
       calls.push({ method: "loadSecrets", params: references });
+      const gone = references.find((reference) => reference.key === "gone");
+      if (gone) {
+        return Promise.reject(
+          new DispatchSecretLoadError(404, "secret_not_found", gone),
+        );
+      }
+      const locked = references.find((reference) => reference.key === "locked");
+      if (locked) {
+        return Promise.reject(
+          new DispatchSecretLoadError(500, "vault_error", locked),
+        );
+      }
       return Promise.resolve(
         new Map(references.map((reference) => [
           secretReadKey(reference),
@@ -1078,6 +1107,50 @@ Deno.test("remote context: on a version 6 dispatch a readResource claim goes thr
       [{ vaultName: "v", secretKey: "api-key" }],
     );
     assertEquals(h.redact("s3cret refresh-tok-loaded"), "*** ***");
+  });
+});
+
+Deno.test("remote context: a missing key reads as SecretNotFoundError over resolveSecret and the load route, and other failures do not", async () => {
+  await withScratch(async (dir) => {
+    const rpc = harness(dir);
+    const viaRpc = await assertRejects(
+      () => rpc.context.vaultService!.get("v", "gone"),
+      SecretNotFoundError,
+      "Secret 'gone' not found in vault 'v'",
+    );
+    assertEquals([viaRpc.code, viaRpc.vaultName, viaRpc.key], [
+      SECRET_NOT_FOUND_CODE,
+      "v",
+      "gone",
+    ]);
+    assertEquals(viaRpc.cause instanceof RpcError, true);
+    const otherRpc = await assertRejects(() =>
+      rpc.context.vaultService!.get("v", "locked")
+    );
+    assertEquals(isSecretNotFoundError(otherRpc), false);
+
+    for (const key of ["gone", "locked"]) {
+      const route = harness(
+        dir,
+        undefined,
+        { refreshToken: `\${{ vault.get('my-vault', '${key}') }}` },
+        referenceDispatch(),
+        undefined,
+        { "_swamp.sensitiveFields": JSON.stringify(["refreshToken"]) },
+      );
+      const error = await assertRejects(() =>
+        route.context.readResource!("state-main")
+      );
+      assertEquals(isSecretNotFoundError(error), key === "gone");
+      if (key === "gone") {
+        assertEquals(error instanceof SecretNotFoundError, true);
+        assertEquals((error as SecretNotFoundError).vaultName, "my-vault");
+        assertEquals(
+          (error as Error).cause instanceof DispatchSecretLoadError,
+          true,
+        );
+      }
+    }
   });
 });
 

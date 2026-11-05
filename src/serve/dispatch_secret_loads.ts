@@ -43,6 +43,7 @@ import {
   runWithVaultAccess,
   VaultAccessDeniedError,
 } from "../domain/vaults/run_vault_access.ts";
+import { isSecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
 import {
   assertSecretKeyNotDenied,
@@ -399,6 +400,15 @@ export class DispatchSecretLoads {
             403,
             "vault_access_denied",
             `${VERB}: the run's vault access does not allow secret '${key}' of vault '${vaultName}'`,
+            references.length,
+            reference,
+          );
+        }
+        if (isSecretNotFoundError(error)) {
+          return refusal(
+            404,
+            "secret_not_found",
+            `${VERB}: secret '${key}' of vault '${vaultName}' does not exist`,
             references.length,
             reference,
           );

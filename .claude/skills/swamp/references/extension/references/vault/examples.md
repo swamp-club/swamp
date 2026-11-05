@@ -7,6 +7,7 @@ A simple vault that stores secrets in memory (useful for testing):
 ```typescript
 // extensions/vaults/memory-vault/mod.ts
 import { z } from "npm:zod@4";
+import { SecretNotFoundError } from "jsr:@swamp-club/swamp-testing";
 
 export const vault = {
   type: "@myorg/memory-vault",
@@ -19,7 +20,7 @@ export const vault = {
       get: async (secretKey: string): Promise<string> => {
         const value = secrets.get(secretKey);
         if (value === undefined) {
-          throw new Error(`Secret '${secretKey}' not found in vault '${name}'`);
+          throw new SecretNotFoundError(name, secretKey);
         }
         return value;
       },
@@ -49,6 +50,7 @@ A vault that connects to a REST API for secret management:
 ```typescript
 // extensions/vaults/http-vault/mod.ts
 import { z } from "npm:zod@4";
+import { SecretNotFoundError } from "jsr:@swamp-club/swamp-testing";
 
 const ConfigSchema = z.object({
   endpoint: z.string().url().describe("Base URL of the secrets API"),
@@ -74,6 +76,10 @@ export const vault = {
         const response = await fetch(`${baseUrl}/secrets/${secretKey}`, {
           headers,
         });
+        if (response.status === 404) {
+          await response.body?.cancel();
+          throw new SecretNotFoundError(name, secretKey);
+        }
         if (!response.ok) {
           throw new Error(
             `Failed to get secret '${secretKey}': HTTP ${response.status}`,
@@ -128,6 +134,7 @@ A vault that stores encrypted secrets in local files:
 ```typescript
 // extensions/vaults/encrypted-file/mod.ts
 import { z } from "npm:zod@4";
+import { SecretNotFoundError } from "jsr:@swamp-club/swamp-testing";
 
 const ConfigSchema = z.object({
   path: z.string().describe("Directory to store encrypted secret files"),
@@ -200,7 +207,7 @@ export const vault = {
           return await decrypt(encrypted);
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) {
-            throw new Error(`Secret '${secretKey}' not found`);
+            throw new SecretNotFoundError(name, secretKey);
           }
           throw error;
         }

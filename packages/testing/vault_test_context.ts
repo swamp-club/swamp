@@ -24,6 +24,7 @@ import type {
   VaultProvider,
   VaultPutOptions,
 } from "./vault_types.ts";
+import { SecretNotFoundError } from "./vault_types.ts";
 
 /** A recorded vault operation for inspection. */
 export interface VaultOperation {
@@ -168,9 +169,10 @@ export function createVaultTestContext(
       if (secret === undefined) {
         if (throwOnMissing) {
           return Promise.reject(
-            new Error(
-              `Secret '${secretKey}' not found in test vault '${name}'`,
-            ),
+            new SecretNotFoundError(name, secretKey, {
+              message:
+                `Secret '${secretKey}' not found in test vault '${name}'`,
+            }),
           );
         }
         return Promise.resolve("");

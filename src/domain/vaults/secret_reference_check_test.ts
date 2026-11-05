@@ -26,6 +26,11 @@ import {
 import { UserError } from "../errors.ts";
 import { RunVaultAccess, runWithVaultAccess } from "./run_vault_access.ts";
 import { SecretBagRegistry } from "./secret_bag_registry.ts";
+import {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 import { checkSecretReference } from "./secret_reference_check.ts";
 import { SecretReferenceUnavailableError } from "./secret_reference_errors.ts";
 import { VaultService } from "./vault_service.ts";
@@ -124,6 +129,33 @@ Deno.test("checkSecretReference: a key has() denies fails with secret_reference_
       );
       await assertRejects(() => check(service, registry, "token"));
       assertEquals(ctx.getOperationsByMethod("has").length, 2);
+    },
+  );
+});
+
+Deno.test("checkSecretReference: a probe read of a missing key keeps the secret_not_found code an extension store raised", async () => {
+  await withTestVault("erp", { secrets: {} }, async (service) => {
+    const error = await assertRejects(
+      () => check(service, new SecretBagRegistry(), "token"),
+      SecretNotFoundError,
+      `Failed to resolve vault expression ${CALL} (at ${LOCATION}): `,
+    );
+    assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+    assertEquals(error.vaultName, "erp");
+    assertEquals(error.key, "token");
+    assertEquals(isSecretNotFoundError(error.cause), true);
+  });
+});
+
+Deno.test("checkSecretReference: a store's other failure does not read as secret_not_found", async () => {
+  await withTestVault(
+    "erp",
+    { unauthorizedKeys: ["token"] },
+    async (service) => {
+      const error = await assertRejects(() =>
+        check(service, new SecretBagRegistry(), "token")
+      );
+      assertEquals(isSecretNotFoundError(error), false);
     },
   );
 });
