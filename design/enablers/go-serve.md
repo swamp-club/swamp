@@ -287,6 +287,83 @@ To roll back, drain and stop `swamp-serve`, then start the existing
 `swamp serve` against the same repository. Do not use simultaneous listeners as
 a rollback. This adapter introduces no data migration.
 
+## Hub: dashboard pages
+
+`swamp-serve hub` fronts every workspace in the user's registry at
+`/w/<workspace>/`, one on-demand engine per workspace. A repository-less control
+engine resolves workspace names and trust, so Go still reads no swamp
+persistence. With `--admin-token-file`, the hub also serves the local dashboard
+in place of the TypeScript `workspace_hub.ts` and `swamp dashboard --child`
+pair.
+
+**Caller classes.** Each engine session has a class, fixed when it opens:
+
+| Class  | Credential                         | Principal in the engine          | Requests                                                                 |
+| ------ | ---------------------------------- | -------------------------------- | ------------------------------------------------------------------------ |
+| `cli`  | serve token, checked by the engine | the token's principal and grants | the `local-v1` operations                                                |
+| `page` | page lease, checked by Go          | none (auth mode none)            | `callerClasses.page` in `protocol.json`: the dashboard's reads, `cancel`, approve/reject/resume/cancel |
+
+A page session runs against a second connection context that shares every
+service with the cli context and differs only in auth mode. Page sessions never
+enter the token-keyed connection maps, so token revalidation and revocation
+never see them. Anything outside the page set gets `not_available_locally` with
+the message swamp-uat pins. Go and the engine both enforce it. A page `cancel`
+reaches the engine only for a read that socket sent. Delegated workflow actions
+run as `swamp workflow <verb> --json` in the workspace. They are the engine's
+only spawn outside the command guardian, because a resumed run must outlive the
+engine.
+
+Go tells the classes apart by credential carrier and shape alone. The
+`x-swamp-local-token` header, or a `bearer.` subprotocol whose token has no dot,
+is a page lease and is checked only against the lease store. `Authorization`,
+or a dotted subprotocol token (every serve token has a dot), is cli. A request
+is never treated as a page because it lacks a cli token.
+
+**Engine modes.** The hub asks for pages in `hello`, and only then may an engine
+fall back. A repository that `local-v1` refuses before its first write (a
+non-filesystem or format-3 datastore, managed config, or a refused `serve.yaml`)
+opens read-only, as the dashboard child does. Read-only engines take no v3
+writer lease, perform none of the full mode's startup writes, and admit page
+sessions only. A cli caller is refused with 403 `unsupported_profile` before its
+credential is sent. An untrusted workspace's engine starts with
+`--no-extensions`: no extension loader is configured, so only built-in types
+resolve, and an extension-backed datastore refuses with `workspace_untrusted`.
+cli traffic to an untrusted workspace stays refused. A change of trust starts a
+new generation.
+
+**Page leases.** A lease is 32 random bytes in base64url, kept only in hub
+memory under its SHA-256 digest. Each lease is scoped to every workspace or to
+exactly one. The admin API, served only to loopback peers with the admin token
+from `--admin-token-file` (written 0600, never through a symlink), issues
+leases with `POST /hub/leases` and revokes them with `DELETE /hub/leases/<id>`.
+Revoking a lease closes its sockets and health streams.
+
+**Page routes.** Every page route checks, in this order and before anything
+resolves or starts:
+
+1. The peer is loopback, else 404.
+2. `Host` is exactly `127.0.0.1:<port>` or `localhost:<port>`, else 421.
+3. The lease is valid, else 401.
+4. The lease's scope covers the workspace, else 403.
+5. For WebSockets only, `Origin` is absent or exactly the hub's own origin,
+   else 403.
+
+The routes are:
+
+- `auth/info` answers `{mode:"none", local:true}` and `auth/dashboard/session`
+  answers 401; neither wakes an engine.
+- `POST api/v1/request` filters to the dashboard's reads, then opens a one-shot
+  page session. The engine applies the HTTP route's own validation, and the
+  session's frames stream back as NDJSON until it closes.
+- `api/v1/health` calls the engine's `health.snapshot` control.
+- `api/v1/health/stream` polls `health.snapshot` with the TypeScript interval
+  clamp and `Last-Event-ID` numbering. It holds a page session while open, so
+  the engine never idles out under a watching tab.
+- `?compress=gzip` sockets get frames of 16 KiB or more as binary gzip.
+
+An engine stays up for `--page-idle-grace` (default 10 minutes) after its last
+page session closes. Forced least-recently-used eviction ignores the grace.
+
 ## Verification and release evidence
 
 `verify-build` calls `scripts/serve_go.ts check` for the pinned Go version,
