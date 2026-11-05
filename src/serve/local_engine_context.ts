@@ -181,7 +181,9 @@ export async function createReadOnlyEngineContext(
   }
   const repo = await open(repoDir, options);
   try {
-    const dashboard = composeReadOnlyDashboard(repo);
+    const dashboard = composeReadOnlyDashboard(repo, {
+      untrustedWorkspace: !options.extensions,
+    });
     dashboard.warmup.start();
     return {
       context: dashboard.context,

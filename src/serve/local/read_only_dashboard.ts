@@ -70,6 +70,7 @@ export interface ReadOnlyDashboard {
 /** what `swamp dashboard --child` serves: auth mode none over a read-only repo */
 export function composeReadOnlyDashboard(
   repo: ReadOnlyRepo,
+  options: { readonly untrustedWorkspace?: boolean } = {},
 ): ReadOnlyDashboard {
   const activeRunRegistry = new ActiveRunRegistry();
   const runTracker = RunTrackerStore.fromSwampDir(swampPath(repo.repoDir));
@@ -92,6 +93,7 @@ export function composeReadOnlyDashboard(
     vaultsDir: repo.vaultsDir,
     defaultVault: repo.defaultVault,
     healthCollector,
+    ...(options.untrustedWorkspace ? { untrustedWorkspace: true } : {}),
   };
   const warmup = new RunIndexWarmup({
     listWorkflowIds: async () =>

@@ -20,6 +20,8 @@
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { isSessionOpen, type ServeSession } from "../session.ts";
+import { WORKSPACE_UNTRUSTED_CODE } from "../../domain/workspace/workspace_untrusted.ts";
+import { userErrorCode } from "../../domain/errors.ts";
 import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
@@ -1478,7 +1480,9 @@ export async function handleModelGet(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createModelGetDeps(ctx.repoContext.definitionRepo);
+    const deps = await createModelGetDeps(ctx.repoContext.definitionRepo, {
+      untrustedWorkspace: ctx.untrustedWorkspace,
+    });
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1514,7 +1518,14 @@ export async function handleModelGet(
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "model_get_failed", message);
+    sendError(
+      socket,
+      requestId,
+      userErrorCode(error) === WORKSPACE_UNTRUSTED_CODE
+        ? WORKSPACE_UNTRUSTED_CODE
+        : "model_get_failed",
+      message,
+    );
   }
 }
 

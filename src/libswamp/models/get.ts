@@ -32,6 +32,7 @@ import {
   findDefinitionByIdOrName,
 } from "../../domain/models/model_lookup.ts";
 import { redactSensitiveValues } from "../../domain/models/sensitive_field_extractor.ts";
+import { WorkspaceUntrustedTypeError } from "../../domain/workspace/workspace_untrusted.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -93,6 +94,7 @@ export interface ModelGetDeps {
 
 export async function createModelGetDeps(
   definitionRepo: YamlDefinitionRepository,
+  options: { readonly untrustedWorkspace?: boolean } = {},
 ): Promise<ModelGetDeps> {
   await modelRegistry.ensureLoaded();
   const withAutoCreated = async (
@@ -114,7 +116,12 @@ export async function createModelGetDeps(
       ),
     getModelDef: async (type) => {
       await modelRegistry.ensureTypeLoaded(type);
-      return modelRegistry.get(type);
+      const modelDef = modelRegistry.get(type);
+      // without the schema the arguments could not be redacted
+      if (!modelDef && options.untrustedWorkspace) {
+        throw new WorkspaceUntrustedTypeError(type.normalized);
+      }
+      return modelDef;
     },
   };
 }

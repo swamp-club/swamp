@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import "../src/domain/models/models.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
   EngineReadOnlyFallback,
@@ -31,7 +31,14 @@ import {
 import type { ReadOnlyRepoOpener } from "../src/serve/local/read_only_dashboard.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { type ServeRepo, withServeRepo } from "./serve_request_harness.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import {
+  errorFrame,
+  sendRequest,
+  type ServeRepo,
+  withServeRepo,
+} from "./serve_request_harness.ts";
 
 await initializeLogging({});
 
@@ -129,5 +136,46 @@ Deno.test("createReadOnlyEngineContext: an untrusted workspace with an extension
     assertEquals(composed.extensions, false);
     await composed.dispose();
     assertEquals(calls, ["open false", "dispose"]);
+  });
+});
+
+Deno.test("createReadOnlyEngineContext: an untrusted workspace refuses to read an extension type it cannot redact", async () => {
+  await withServeRepo(async (repo) => {
+    const definition = Definition.create({
+      name: "bucket",
+      globalArguments: { apiKey: "plain-secret-value" },
+    });
+    await repo.repoContext.definitionRepo.save(
+      ModelType.create(`@example/bucket-${crypto.randomUUID()}`),
+      definition,
+    );
+    const request = {
+      type: "model.get",
+      id: "get-1",
+      payload: { modelIdOrName: "bucket" },
+    };
+    for (const extensions of [false, true]) {
+      const composed = await withMockedEnv(
+        { SWAMP_DATASTORE: undefined },
+        () =>
+          createReadOnlyEngineContext(repo.repoDir, opener(repo, []), {
+            extensions,
+          }),
+      );
+      try {
+        const frames = await sendRequest(composed.context, request, null);
+        const error = errorFrame(frames) as
+          | { error: { code: string } }
+          | undefined;
+        if (extensions) {
+          assertEquals(error, undefined);
+        } else {
+          assertEquals(error?.error.code, "workspace_untrusted");
+          assert(!JSON.stringify(frames).includes("plain-secret-value"));
+        }
+      } finally {
+        await composed.dispose();
+      }
+    }
   });
 });

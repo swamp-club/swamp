@@ -420,6 +420,8 @@ export interface ConnectionContext {
   grantUsernameResolver?: GrantUsernameResolver;
   serveOptions?: MergedServeOptions;
   healthCollector?: HealthCollector;
+  /** no extension code is loaded, so a type the registries lack refuses */
+  untrustedWorkspace?: boolean;
   vaultsDir?: string;
   managedDefinitionsDir?: string;
   auditEmitter?: AuditEmitter;
