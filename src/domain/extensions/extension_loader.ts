@@ -148,11 +148,13 @@ export function extractExtensionNameFromPath(
   ];
   const cheapResolved = resolve(absolutePath);
 
+  let root: string;
   let relative: string;
   const matchedCheap = pulledRoots.find((r) =>
     cheapResolved.startsWith(r + SEPARATOR)
   );
   if (matchedCheap) {
+    root = matchedCheap;
     relative = cheapResolved.slice(matchedCheap.length + 1);
   } else {
     let realRepoDir: string;
@@ -176,19 +178,48 @@ export function extractExtensionNameFromPath(
       realResolved.startsWith(r + SEPARATOR)
     );
     if (!matchedReal) return undefined;
+    root = matchedReal;
     relative = realResolved.slice(matchedReal.length + 1);
   }
 
   const segments = relative.split(SEPARATOR);
   if (segments.length < 2) return undefined;
-  let name: string;
-  if (segments[0].startsWith("@") && segments.length >= 3) {
-    name = `${segments[0]}/${segments[1]}`;
-  } else {
-    name = segments[0];
-  }
+  const name = nearestManifestName(root, segments) ??
+    segmentGuessName(segments);
   if (name.includes("..") || name.includes("\0")) return undefined;
   return name;
+}
+
+/**
+ * an extension is installed at <pulled root>/<name>/manifest.yaml, so the
+ * nearest manifest above the source names its owner, however many segments
+ */
+function nearestManifestName(
+  root: string,
+  segments: readonly string[],
+): string | undefined {
+  const minSegments = segments[0].startsWith("@") ? 2 : 1;
+  for (let depth = segments.length - 1; depth >= minSegments; depth--) {
+    const dirSegments = segments.slice(0, depth);
+    try {
+      Deno.lstatSync(join(root, ...dirSegments, "manifest.yaml"));
+      return dirSegments.join("/");
+    } catch {
+      // Not here; walk up.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * never undefined for a pulled source: an unnamed caller skips runModel
+ * authorization, so a source with no manifest must still fail closed
+ */
+function segmentGuessName(segments: readonly string[]): string {
+  if (segments[0].startsWith("@") && segments.length >= 3) {
+    return `${segments[0]}/${segments[1]}`;
+  }
+  return segments[0];
 }
 
 /**

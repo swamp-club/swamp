@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { extractExtensionNameFromPath } from "./extension_loader.ts";
 
 Deno.test("extractExtensionNameFromPath: scoped extension name", () => {
@@ -76,10 +77,157 @@ Deno.test("extractExtensionNameFromPath: path too short", () => {
   assertEquals(result, undefined);
 });
 
-Deno.test("extractExtensionNameFromPath: deeply nested scoped path", () => {
+Deno.test("extractExtensionNameFromPath: nested scoped path without a manifest still names an extension", () => {
   const result = extractExtensionNameFromPath(
     "/repo/.swamp/pulled-extensions/@swamp/aws/ec2/models/instance/model.ts",
     "/repo",
   );
   assertEquals(result, "@swamp/aws");
+});
+
+async function withTempRepo(
+  fn: (repo: string) => Promise<void>,
+): Promise<void> {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_extract_name_" });
+  try {
+    await fn(repo);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repo, { recursive: true });
+    }
+  }
+}
+
+async function installPackage(
+  pulledRoot: string,
+  name: string,
+  sourceRelative: string,
+): Promise<string> {
+  const extensionRoot = join(pulledRoot, ...name.split("/"));
+  const source = join(extensionRoot, ...sourceRelative.split("/"));
+  await Deno.mkdir(join(source, ".."), { recursive: true });
+  await Deno.writeTextFile(
+    join(extensionRoot, "manifest.yaml"),
+    `name: "${name}"\n`,
+  );
+  await Deno.writeTextFile(source, "export const model = {};\n");
+  return source;
+}
+
+Deno.test("extractExtensionNameFromPath: a nested name resolves to the directory holding its manifest", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    const gmail = await installPackage(
+      pulledRoot,
+      "@swamp/gcp/gmail",
+      "models/users_messages.ts",
+    );
+    const ec2 = await installPackage(
+      pulledRoot,
+      "@swamp/aws/ec2",
+      "models/instance/model.ts",
+    );
+    assertEquals(extractExtensionNameFromPath(gmail, repo), "@swamp/gcp/gmail");
+    assertEquals(extractExtensionNameFromPath(ec2, repo), "@swamp/aws/ec2");
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: a nested name ending in a kind directory keeps that segment", async () => {
+  await withTempRepo(async (repo) => {
+    const source = await installPackage(
+      join(repo, ".swamp", "pulled-extensions"),
+      "@swamp/gcp/workflows",
+      "models/workflow.ts",
+    );
+    assertEquals(
+      extractExtensionNameFromPath(source, repo),
+      "@swamp/gcp/workflows",
+    );
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: a nested extension installed under its ancestor owns its own files", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    const parent = await installPackage(
+      pulledRoot,
+      "@swamp/gcp",
+      "models/shared.ts",
+    );
+    const nested = await installPackage(
+      pulledRoot,
+      "@swamp/gcp/gmail",
+      "models/users_messages.ts",
+    );
+    assertEquals(extractExtensionNameFromPath(parent, repo), "@swamp/gcp");
+    assertEquals(
+      extractExtensionNameFromPath(nested, repo),
+      "@swamp/gcp/gmail",
+    );
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: resolves nested names under the managed config pulled root", async () => {
+  await withTempRepo(async (repo) => {
+    const source = await installPackage(
+      join(repo, ".swamp", "config", "pulled-extensions"),
+      "@swamp/gcp/gmail",
+      "models/users_messages.ts",
+    );
+    assertEquals(
+      extractExtensionNameFromPath(source, repo),
+      "@swamp/gcp/gmail",
+    );
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: an unscoped name with a manifest", async () => {
+  await withTempRepo(async (repo) => {
+    const source = await installPackage(
+      join(repo, ".swamp", "pulled-extensions"),
+      "myext",
+      "models/greeter/model.ts",
+    );
+    assertEquals(extractExtensionNameFromPath(source, repo), "myext");
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: a manifest at the bare scope directory is not a name", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    await Deno.mkdir(join(pulledRoot, "@swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(pulledRoot, "@swamp", "manifest.yaml"),
+      'name: "@swamp"\n',
+    );
+    const source = join(pulledRoot, "@swamp", "ssh", "models", "ssh.ts");
+    await Deno.mkdir(join(source, ".."), { recursive: true });
+    await Deno.writeTextFile(source, "export const model = {};\n");
+    assertEquals(extractExtensionNameFromPath(source, repo), "@swamp/ssh");
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: resolves through a symlinked repo directory", async () => {
+  await withTempRepo(async (repo) => {
+    const realRepo = join(repo, "real");
+    const source = await installPackage(
+      join(realRepo, ".swamp", "pulled-extensions"),
+      "@swamp/gcp/gmail",
+      "models/users_messages.ts",
+    );
+    const linkedRepo = join(repo, "linked");
+    try {
+      await Deno.symlink(realRepo, linkedRepo, { type: "dir" });
+    } catch (error) {
+      // Windows without symlink privilege cannot exercise this path.
+      if (error instanceof Deno.errors.PermissionDenied) return;
+      throw error;
+    }
+    assertEquals(
+      extractExtensionNameFromPath(source, linkedRepo),
+      "@swamp/gcp/gmail",
+    );
+  });
 });
