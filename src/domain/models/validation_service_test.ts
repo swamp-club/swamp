@@ -25,6 +25,7 @@ import {
   DefaultModelValidationService,
   FOREIGN_TEMPLATE_WARNING_NAME,
   type ModelValidationOptions,
+  UNCHECKED_SECRET_REFERENCES_WARNING_NAME,
   ValidationResult,
 } from "./validation_service.ts";
 import { DATA_NAMESPACE_ACCESSORS } from "../expressions/expression_parser.ts";
@@ -3744,6 +3745,112 @@ Deno.test("validateModel: a refused or failed delivery reports once for multiple
   assertEquals(failures[0].name, "Check argument delivery");
   assertStringIncludes(failures[0].error ?? "", "secret_destination_refused");
   assertEquals(executed, 0);
+});
+
+Deno.test("validateModel: references the vault could not answer for run the checks on stored text and warn, without failing", async () => {
+  const service = new DefaultModelValidationService();
+  const stored = '${{ vault.get("demo", "some-item") }}';
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: stored },
+  });
+  const seen: unknown[] = [];
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      policy: {
+        description: "Reads the password",
+        labels: ["policy"],
+        execute: (context) => {
+          seen.push(context.globalArgs.password);
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  const unchecked = {
+    location: "globalArguments.password:1:1",
+    vaultName: "demo",
+    key: "some-item",
+    reason: "1Password CLI (op) is not installed or not in PATH.",
+  };
+  const { results, warnings } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: () =>
+        Promise.resolve({
+          globalArgs: { password: stored },
+          unresolvedMethodArgs: {},
+          uncheckedReferences: [unchecked],
+        }),
+    }),
+  );
+  assertEquals(results.filter((r) => !r.passed), []);
+  assertEquals(
+    results.find((r) => r.name === "Check: policy")?.passed,
+    true,
+  );
+  assertEquals(seen, [stored]);
+  const warning = warnings.find((w) =>
+    w.name === UNCHECKED_SECRET_REFERENCES_WARNING_NAME
+  );
+  assertEquals(warning?.secretReferences, [unchecked]);
+  assertStringIncludes(warning?.message ?? "", "A run checks again");
+});
+
+Deno.test("validateModel: a delivery with every reference checked adds no unchecked-references warning", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: "plain" },
+  });
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      policy: {
+        description: "Passes",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+  const { warnings } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: () =>
+        Promise.resolve({
+          globalArgs: { password: "plain" },
+          unresolvedMethodArgs: {},
+        }),
+    }),
+  );
+  assertEquals(
+    warnings.some((w) => w.name === UNCHECKED_SECRET_REFERENCES_WARNING_NAME),
+    false,
+  );
 });
 
 Deno.test("validateModel: with no applicable check nothing is delivered", async () => {

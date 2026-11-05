@@ -422,6 +422,39 @@ Deno.test("modelValidate single model propagates warnings", async () => {
   assertEquals(data.warnings[0].envVars?.[0].envVar, "BASE_URL");
 });
 
+Deno.test("modelValidate single model propagates the secret references of an unchecked-references warning and still passes", async () => {
+  const reference = {
+    location: "globalArguments.apiKey:1:1",
+    vaultName: "demo",
+    key: "some-item",
+    reason: "1Password CLI (op) is not installed or not in PATH.",
+  };
+  const deps = makeDeps({
+    validateModel: () =>
+      Promise.resolve({
+        results: [{ name: "Check: api-key-configured", passed: true }],
+        warnings: [{
+          name: "Secret references not checked",
+          message: "The vault could not be reached to check these references.",
+          secretReferences: [reference],
+        }],
+      }),
+  });
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ModelValidateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as ModelValidateData;
+  assertEquals(data.passed, true);
+  assertEquals(data.warnings[0].secretReferences, [reference]);
+});
+
 async function validateSingleData(
   overrides: Partial<ModelValidateDeps>,
 ): Promise<ModelValidateData> {

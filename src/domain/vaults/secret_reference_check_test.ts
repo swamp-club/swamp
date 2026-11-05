@@ -17,17 +17,29 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   createVaultTestContext,
   type VaultTestContextOptions,
   type VaultTestContextResult,
 } from "@swamp-club/swamp-testing";
 import { UserError } from "../errors.ts";
-import { RunVaultAccess, runWithVaultAccess } from "./run_vault_access.ts";
+import {
+  RunVaultAccess,
+  runWithVaultAccess,
+  VaultAccessDeniedError,
+} from "./run_vault_access.ts";
 import { SecretBagRegistry } from "./secret_bag_registry.ts";
 import { checkSecretReference } from "./secret_reference_check.ts";
-import { SecretReferenceUnavailableError } from "./secret_reference_errors.ts";
+import {
+  SecretReferenceUnavailableError,
+  SecretReferenceUncheckedError,
+} from "./secret_reference_errors.ts";
 import { VaultService } from "./vault_service.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 
@@ -171,10 +183,89 @@ Deno.test("checkSecretReference: a provider that refuses its own credentials fai
           `Failed to resolve vault expression ${CALL} (at ${LOCATION}): Access denied to secret 'token'`,
         );
         assertEquals(error instanceof SecretReferenceUnavailableError, false);
+        assertInstanceOf(error, SecretReferenceUncheckedError);
+        assertEquals(error.reference, { vaultName: "erp", key: "token" });
+        assertEquals(error.location, LOCATION);
+        assertEquals(
+          error.reason,
+          "Access denied to secret 'token' in test vault 'erp'",
+        );
         assertEquals(error.message.includes("s3cret"), false);
       },
     );
   }
+});
+
+Deno.test("checkSecretReference: a provider that cannot answer is unchecked with its reason on one line, and is asked again next time", async () => {
+  for (const withExistence of [true, false]) {
+    await withTestVault(
+      "erp",
+      { withExistence, secrets: { token: "s3cret" } },
+      async (service, ctx) => {
+        const fail = () =>
+          Promise.reject(new Error("op is not installed\n  Install it"));
+        if (withExistence) {
+          (ctx.vault as unknown as { has: unknown }).has = fail;
+        } else {
+          ctx.vault.get = fail;
+        }
+        const registry = new SecretBagRegistry();
+        const error = await assertRejects(
+          () => check(service, registry, "token"),
+          SecretReferenceUncheckedError,
+          `Failed to resolve vault expression ${CALL} (at ${LOCATION}): op is not installed — Install it`,
+        );
+        assertEquals(error.reason, "op is not installed — Install it");
+        await assertRejects(
+          () => check(service, registry, "token"),
+          SecretReferenceUncheckedError,
+        );
+      },
+    );
+  }
+});
+
+Deno.test("checkSecretReference: a get-only provider's missing key is unchecked, a has() provider's is unavailable", async () => {
+  await withTestVault("erp", { secrets: {} }, async (service) => {
+    await assertRejects(
+      () => check(service, new SecretBagRegistry(), "token"),
+      SecretReferenceUncheckedError,
+    );
+  });
+  await withTestVault(
+    "erp",
+    { withExistence: true, secrets: {} },
+    async (service) => {
+      await assertRejects(
+        () => check(service, new SecretBagRegistry(), "token"),
+        SecretReferenceUnavailableError,
+      );
+    },
+  );
+});
+
+Deno.test("checkSecretReference: a refusal by the run's vault access inside the provider call is never unchecked", async () => {
+  await withTestVault(
+    "erp",
+    { withExistence: true, secrets: { token: "s3cret" } },
+    async (service, ctx) => {
+      (ctx.vault as unknown as { has: unknown }).has = () =>
+        Promise.reject(
+          new VaultAccessDeniedError({
+            vaultName: "erp",
+            action: "read",
+            secretKey: "token",
+            reason: "revoked",
+          }),
+        );
+      const error = await assertRejects(
+        () => check(service, new SecretBagRegistry(), "token"),
+        UserError,
+      );
+      assertEquals(error.code, "vault_access_denied");
+      assertEquals(error instanceof SecretReferenceUncheckedError, false);
+    },
+  );
 });
 
 Deno.test("checkSecretReference: an unknown vault fails with the vault service's error on one line", async () => {
@@ -188,4 +279,5 @@ Deno.test("checkSecretReference: an unknown vault fails with the vault service's
     `Failed to resolve vault expression ${CALL} (at ${LOCATION}): `,
   );
   assertEquals(error.message.includes("\n"), false);
+  assertEquals(error instanceof SecretReferenceUncheckedError, false);
 });

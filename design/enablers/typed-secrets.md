@@ -1406,8 +1406,13 @@ before delivery unless an explicit method-argument override replaces it.
 
 Validation reports indirect vault use even without pre-flight checks. A check
 receives global arguments after delivery, method arguments as sentinels and the
-loaded `context.vaultSecrets`. Only absent input/environment bindings stay
-unevaluated; other failures stop delivery and produce one delivery finding.
+loaded `context.vaultSecrets`. Absent input/environment bindings stay
+unevaluated. So does a reference the provider cannot answer for (its CLI absent,
+its backend down, its own credentials refused), which validate reports in a
+`Secret references not checked` warning; a run still fails on it. A get-only
+provider cannot tell a missing key from such a failure, so its missing key is
+reported the same way and fails at run time. Other failures stop delivery and
+produce one delivery finding.
 Static findings carry `code` and `location` in JSON. Plain expressions initialize
 no vault scope. Providers without `has` still perform one probe per reference at
 evaluation plus a load at delivery. Remote transport remains the Phase 5 baseline.
@@ -1653,14 +1658,16 @@ extracted from `executeWorkflow` and shared with the method boundary. The pass
 covers the global arguments and the selected method's arguments only, the scope
 every delivery's runtime pass has (Section 5), binds the definition's input
 defaults and the environment as a run does, and nothing is delivered when no
-check applies; a refused destination, a denied, missing or unreadable reference
-(its existence check failing), a vault reached other than through a direct
-`vault.get` call, or a failed load fails every applicable check with a
-value-free error, while what validate cannot evaluate (an input with no default,
-an environment variable unset where validate runs) is left as its stored text
-for the checks, as the untyped path leaves it, one expression at a time
-(`keepUnevaluated`): the pass goes on past it, so a refusal or a missing key
-beside it is reported whatever the key order; `context.runModel`
+check applies; a refused destination, a denied reference, a key `has` reports
+missing, a vault not configured in the repository, a vault reached other than
+through a direct `vault.get` call, or a failed load fails every applicable check
+with a value-free error, while what validate cannot evaluate (an input with no
+default, an environment variable unset where validate runs, a reference whose
+provider throws instead of answering, `SecretReferenceUncheckedError`) is left
+as its stored text for the checks, one expression at a time
+(`keepUnevaluated`), and an unanswered reference is listed in a
+`Secret references not checked` warning: the pass goes on past it, so a refusal
+or a missing key beside it is reported whatever the key order; `context.runModel`
 builds its nested run over `callerContext.vaultSecrets.registry.independent()`,
 which carries the option and nothing else, so references are checked anew and
 loaded once per attempt under the destination policy. `model.method` gains the
