@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   autoResumeAfterApproval,
@@ -259,10 +264,13 @@ Deno.test("startDetachedResume: registers the resume and unwinds the registratio
   assertEquals(registry.registered[0].kind, "workflow-resume");
   assertEquals(registry.registered[0].runId, run.id);
   assertEquals(registry.registered[0].principalId, "user:operator");
+  if (!result.ok) throw new Error("expected a launch");
+  assertStrictEquals(registry.registered[0].completedRun, result.completedRun);
 
   await waitFor(() => terminals.length === 1, "resume terminal reported");
   assertEquals(terminals[0].kind, "error");
   assertEquals(registry.get(run.id), undefined);
+  assertEquals(result.completedRun.run, undefined);
 });
 
 Deno.test("startDetachedResume: refuses a run that is already registered", async () => {

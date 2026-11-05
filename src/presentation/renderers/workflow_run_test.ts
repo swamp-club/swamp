@@ -33,6 +33,10 @@ import {
   showsDataAttributes,
 } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../../domain/data/data.ts";
 
 function makeRunView(
   status: "succeeded" | "failed",
@@ -354,6 +358,55 @@ Deno.test("ConsoleWorkflowRunRenderer: report and log artifacts stay out of the 
   assertStringIncludes(output, "total_records");
   assertEquals(output.includes("hidden_report"), false, output);
   assertEquals(output.includes("hidden_log"), false, output);
+});
+
+function runViewWithHiddenArtifacts(): WorkflowRunView {
+  const runView = makeRunView("succeeded");
+  const hiddenTags = { [SUMMARY_DISPLAY_TAG]: SUMMARY_DISPLAY_HIDDEN };
+  runView.jobs[0].steps[0].dataArtifacts!.push({
+    dataId: "d-2",
+    name: "step-scratch",
+    version: 1,
+    tags: hiddenTags,
+  });
+  runView.workflowDataArtifacts = [{
+    dataId: "d-3",
+    name: "workflow-scratch",
+    version: 1,
+    tags: hiddenTags,
+  }];
+  return runView;
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: display-hidden step and workflow artifacts stay out of the data box", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(simpleEvents(runViewWithHiddenArtifacts())),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "api-records");
+  assertEquals(output.includes("step-scratch"), false, output);
+  assertEquals(output.includes("workflow-scratch"), false, output);
+});
+
+Deno.test("JsonWorkflowRunRenderer: keeps display-hidden artifacts", async () => {
+  const renderer = createWorkflowRunRenderer("json", {
+    workflowName: "test-pipeline",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(simpleEvents(runViewWithHiddenArtifacts())),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "step-scratch");
+  assertStringIncludes(output, "workflow-scratch");
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: error event throws UserError", () => {

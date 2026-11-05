@@ -21,6 +21,10 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import { dataQueryCommand } from "../../domain/data/data_query_command.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../../domain/data/data.ts";
 
 export type ColorFn = (str: string) => string;
 
@@ -209,6 +213,17 @@ export interface DataBoxOptions {
   globalArguments?: Record<string, unknown>;
   methodArguments?: Record<string, unknown>;
   modelName?: string;
+}
+
+export function isUserFacingArtifact(
+  artifact: { name: string; tags?: Record<string, string> },
+): boolean {
+  if (artifact.name.startsWith("report-")) return false;
+  if (artifact.name === "log") return false;
+  if (artifact.tags?.[SUMMARY_DISPLAY_TAG] === SUMMARY_DISPLAY_HIDDEN) {
+    return false;
+  }
+  return true;
 }
 
 export function renderDataBox(

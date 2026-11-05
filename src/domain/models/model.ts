@@ -64,6 +64,8 @@ export interface ResourceOutputSpec {
   sensitiveOutput?: boolean;
 
   vaultName?: string;
+
+  display?: boolean;
 }
 
 export interface FileOutputSpec {
@@ -78,6 +80,8 @@ export interface FileOutputSpec {
   streaming?: boolean;
 
   tags?: Record<string, string>;
+
+  display?: boolean;
 }
 
 export const ResourceOutputSpecSchema = z.object({
@@ -89,6 +93,7 @@ export const ResourceOutputSpecSchema = z.object({
   tags: z.record(z.string(), z.string()).optional(),
   sensitiveOutput: z.boolean().optional(),
   vaultName: z.string().optional(),
+  display: z.boolean().optional(),
 });
 
 export const FileOutputSpecSchema = z.object({
@@ -98,6 +103,7 @@ export const FileOutputSpecSchema = z.object({
   garbageCollection: GarbageCollectionSchema,
   streaming: z.boolean().optional(),
   tags: z.record(z.string(), z.string()).optional(),
+  display: z.boolean().optional(),
 });
 
 export interface ResourceWriteOverrides {

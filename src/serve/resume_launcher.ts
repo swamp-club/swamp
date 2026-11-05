@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { CompletedRunSlot } from "./handlers/run_data_attributes.ts";
 import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
@@ -139,7 +140,12 @@ export interface DetachedResumeRequest {
 }
 
 export type DetachedResumeResult =
-  | { ok: true; runId: string; buffer: RunEventBuffer }
+  | {
+    ok: true;
+    runId: string;
+    buffer: RunEventBuffer;
+    completedRun: CompletedRunSlot;
+  }
   | { ok: false; code: string; message: string };
 
 function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
@@ -215,6 +221,7 @@ export async function startDetachedResume(
   const runController = new AbortController();
   const runId: string = resolvedRun.id;
   const startedAt = new Date();
+  const completedRun: CompletedRunSlot = {};
 
   let resolveCompletion!: () => void;
   const completion = new Promise<void>((r) => {
@@ -232,6 +239,7 @@ export async function startDetachedResume(
       startedAt,
       completion,
       principalId: request.principalId,
+      completedRun,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -341,6 +349,7 @@ export async function startDetachedResume(
                     }),
                 )
               ) {
+                if (event.kind === "completed") completedRun.run = event.run;
                 const mapped = mapWorkflowExecutionEvent(event, runRepo);
                 if (!isWireEvent(mapped)) continue;
                 const serialized = serializeEvent(
@@ -530,7 +539,7 @@ export async function startDetachedResume(
     });
   }
 
-  return { ok: true, runId, buffer };
+  return { ok: true, runId, buffer, completedRun };
 }
 
 export interface ApprovalOutcome {

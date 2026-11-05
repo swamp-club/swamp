@@ -96,6 +96,12 @@ files: {
 },
 ```
 
+**Hiding from the run summary:** Set `display: false` on a resource or file spec
+to leave its records out of the "Data produced" box after `swamp behavior run`
+and `swamp workflow run`. The data is still written, returned as a handle, and
+listed by `data list` and every `--json` output; swamp tags each record
+`_swamp.display: hidden`.
+
 ---
 
 ## Reading Bundled Assets

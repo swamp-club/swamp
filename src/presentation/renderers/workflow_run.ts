@@ -50,6 +50,7 @@ import {
   type DataBoxOptions,
   formatDuration,
   formatTimestamp,
+  isUserFacingArtifact,
   PipeWriter,
   renderDataBox,
   STATUS_COLORS,
@@ -69,14 +70,6 @@ export interface WorkflowRunRenderOpts {
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
   workflowFailed(): boolean;
-}
-
-function isUserFacingArtifact(
-  artifact: { name: string },
-): boolean {
-  if (artifact.name.startsWith("report-")) return false;
-  if (artifact.name === "log") return false;
-  return true;
 }
 
 const QUIET_BUFFER_LIMIT = 500;

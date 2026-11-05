@@ -27,7 +27,11 @@ import {
   RESERVED_TAG_PREFIX,
 } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
-import { RECORD_KIND_TAG } from "../data/data.ts";
+import {
+  RECORD_KIND_TAG,
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../data/data.ts";
 import type {
   DeferredWriteReceipt,
   UnifiedDataRepository,
@@ -1281,6 +1285,9 @@ export function createResourceWriter(
 
     // Stamped after every override, so only the writer sets it.
     resolvedTags[RECORD_KIND_TAG] = "resource";
+    if (spec.display === false) {
+      resolvedTags[SUMMARY_DISPLAY_TAG] = SUMMARY_DISPLAY_HIDDEN;
+    }
 
     claimed.settle = outputNames?.claim(instanceName, "resource", specName);
 
@@ -2441,6 +2448,9 @@ export function createFileWriterFactory(
     }
 
     resolvedTags[RECORD_KIND_TAG] = "file";
+    if (spec.display === false) {
+      resolvedTags[SUMMARY_DISPLAY_TAG] = SUMMARY_DISPLAY_HIDDEN;
+    }
 
     checkDataNamePortability(
       instanceName,

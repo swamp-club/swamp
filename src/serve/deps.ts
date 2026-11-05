@@ -105,6 +105,7 @@ import { refreshLocalModelsForRun } from "./local_model_refresh.ts";
 import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import type { RunWriteFence } from "../domain/workflows/run_write_fence.ts";
+import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 
 const logger = getSwampLogger(["serve", "deps"]);
 
@@ -131,6 +132,7 @@ export async function createWorkflowRunDeps(
      * every serve caller passes it
      */
     runWriteFence?: RunWriteFence;
+    onCompletedRun?: (run: WorkflowRun) => void;
   },
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
@@ -275,6 +277,7 @@ export async function createWorkflowRunDeps(
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     telemetrySink: options?.telemetrySink,
+    onCompletedRun: options?.onCompletedRun,
     supersede: {
       findSuspendedRuns: (workflowId, signal) =>
         repoContext.workflowRunRepo.findByStatus(
@@ -513,6 +516,8 @@ export async function executeWorkflowWithLocks(
     vaultAccess?: ServeRunVaultScope;
     defaultVault?: string;
     runWriteFence?: RunWriteFence;
+    /** handed the live run before its completed event reaches onEvent */
+    onCompletedRun?: (run: WorkflowRun) => void;
   },
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution — by the same rule the
@@ -556,6 +561,7 @@ export async function executeWorkflowWithLocks(
       runCheckpointer,
       defaultVault: options.defaultVault,
       runWriteFence: options.runWriteFence,
+      onCompletedRun: options.onCompletedRun,
     },
   );
   const libCtx = createLibSwampContext({
