@@ -1838,6 +1838,7 @@ export {
   type AuditUserHookDeps,
   type AuditUserHookEvent,
   createAuditUserHookDeps,
+  resolveClaudeUserConfigDir,
 } from "./audit/install.ts";
 
 export {

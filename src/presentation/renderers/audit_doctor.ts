@@ -33,8 +33,9 @@ export interface AuditDoctorRenderer {
   readonly overallStatus: OverallStatus;
 }
 
-function iconFor(status: CheckResult["status"]): string {
-  switch (status) {
+function iconFor(result: CheckResult): string {
+  if (result.status === "pass" && result.warning) return yellow("!");
+  switch (result.status) {
     case "pass":
       return green("✓");
     case "fail":
@@ -65,7 +66,7 @@ class LogAuditDoctorRenderer implements AuditDoctorRenderer {
       },
       "check-completed": (e) => {
         const r = e.result;
-        writeOutput(`${iconFor(r.status)} ${bold(r.name)}  ${dim(r.message)}`);
+        writeOutput(`${iconFor(r)} ${bold(r.name)}  ${dim(r.message)}`);
         if (r.warning) {
           writeOutput(`    ${yellow("warning:")} ${r.warning}`);
         }
@@ -75,11 +76,18 @@ class LogAuditDoctorRenderer implements AuditDoctorRenderer {
       },
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
-        const pass = e.report.checks.filter((c) => c.status === "pass").length;
+        const pass =
+          e.report.checks.filter((c) => c.status === "pass" && !c.warning)
+            .length;
+        const warned =
+          e.report.checks.filter((c) => c.status === "pass" && c.warning)
+            .length;
         const fail = e.report.checks.filter((c) => c.status === "fail").length;
         const skip = e.report.checks.filter((c) => c.status === "skip").length;
         writeOutput(
-          `\n${pass} passed, ${fail} failed, ${skip} skipped — ${
+          `\n${pass} passed, ${
+            warned > 0 ? `${warned} warned, ` : ""
+          }${fail} failed, ${skip} skipped — ${
             summaryLine(e.report.overallStatus)
           }`,
         );

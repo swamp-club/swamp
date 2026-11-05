@@ -94,8 +94,10 @@ export interface CheckContext {
   abortSignal: AbortSignal;
   /** Spawn the swamp binary. Production wires the real binary; tests inject a fake. */
   spawnSwamp: SpawnFn;
-  /** absent when HOME is unset; user-level hooks are then not looked for */
+  /** absent when HOME is unset; a git root at home gets no nested-repo warning */
   homeDir?: string;
+  /** absent when it cannot be found; user-level hooks are then not looked for */
+  claudeConfigDir?: string;
   /** the git root Claude Code reads project settings from, or null outside git */
   findGitRoot?: (dir: string) => string | null;
 }

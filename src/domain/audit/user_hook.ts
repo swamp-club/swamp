@@ -34,8 +34,16 @@ export interface UserAuditHookResult {
   changed: boolean;
 }
 
-export function claudeUserSettingsPath(homeDir: string): string {
-  return join(homeDir, ".claude", "settings.json");
+/** Claude Code reads user settings from CLAUDE_CONFIG_DIR when it is set */
+export function claudeUserConfigDir(
+  homeDir: string,
+  envConfigDir: string | undefined,
+): string {
+  return envConfigDir ? envConfigDir : join(homeDir, ".claude");
+}
+
+export function claudeUserSettingsPath(claudeDir: string): string {
+  return join(claudeDir, "settings.json");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,23 +97,26 @@ async function resolveWritePath(settingsPath: string): Promise<string> {
 }
 
 interface LoadedSettings {
+  settingsPath: string;
   writePath: string;
+  text: string | null;
   settings: Record<string, unknown> | null;
   hooks: Record<string, unknown>;
   mode?: number;
+  uid?: number;
 }
 
 /** configures every Claude session, so anything unexpected is refused, never overwritten */
 async function loadSettings(settingsPath: string): Promise<LoadedSettings> {
   const writePath = await resolveWritePath(settingsPath);
   let text: string;
-  let mode: number | undefined;
+  let info: Deno.FileInfo;
   try {
     text = await Deno.readTextFile(writePath);
-    mode = (await Deno.stat(writePath)).mode ?? undefined;
+    info = await Deno.stat(writePath);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      return { writePath, settings: null, hooks: {} };
+      return { settingsPath, writePath, text: null, settings: null, hooks: {} };
     }
     throw error;
   }
@@ -142,27 +153,59 @@ async function loadSettings(settingsPath: string): Promise<LoadedSettings> {
     );
   }
   return {
+    settingsPath,
     writePath,
+    text,
     settings: parsed,
     hooks: (parsed.hooks as Record<string, unknown> | undefined) ?? {},
-    mode,
+    mode: info.mode ?? undefined,
+    uid: info.uid ?? undefined,
   };
+}
+
+async function readTextOrNull(path: string): Promise<string | null> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+}
+
+/** the rename would hand another user's settings file to the user running swamp */
+function refuseOtherOwner(loaded: LoadedSettings): void {
+  const uid = Deno.uid();
+  if (uid === null || loaded.uid === undefined || loaded.uid === uid) return;
+  throw markErrorPaths(
+    new UserError(
+      `${loaded.settingsPath} belongs to another user; run the command as that user. The file was not changed.`,
+    ),
+    [loaded.settingsPath],
+  );
 }
 
 async function saveSettings(
   loaded: LoadedSettings,
   settings: Record<string, unknown>,
 ): Promise<void> {
+  refuseOtherOwner(loaded);
   const dir = dirname(loaded.writePath);
   await ensureDir(dir);
   const tmpPath = join(dir, `.settings.json.${crypto.randomUUID()}.tmp`);
   // a rename never leaves Claude Code reading a half-written settings file
   try {
-    await Deno.writeTextFile(
-      tmpPath,
-      JSON.stringify(settings, null, 2) + "\n",
-      loaded.mode === undefined ? undefined : { mode: loaded.mode & 0o777 },
-    );
+    await Deno.writeTextFile(tmpPath, JSON.stringify(settings, null, 2) + "\n");
+    if (loaded.mode !== undefined && Deno.build.os !== "windows") {
+      await Deno.chmod(tmpPath, loaded.mode & 0o777);
+    }
+    if (await readTextOrNull(loaded.writePath) !== loaded.text) {
+      throw markErrorPaths(
+        new UserError(
+          `${loaded.settingsPath} changed while swamp was updating it; run the command again. The file was not changed.`,
+        ),
+        [loaded.settingsPath],
+      );
+    }
     await Deno.rename(tmpPath, loaded.writePath);
   } catch (error) {
     await Deno.remove(tmpPath).catch(() => {});
@@ -171,9 +214,9 @@ async function saveSettings(
 }
 
 export async function installClaudeUserAuditHook(
-  homeDir: string,
+  claudeDir: string,
 ): Promise<UserAuditHookResult> {
-  const settingsPath = claudeUserSettingsPath(homeDir);
+  const settingsPath = claudeUserSettingsPath(claudeDir);
   const loaded = await loadSettings(settingsPath);
   const hooks = mergeAuditHooks(
     migrateLegacyClaudeAuditHooks(loaded.hooks),
@@ -188,9 +231,9 @@ export async function installClaudeUserAuditHook(
 
 /** removes only entries equal to one swamp wrote; a user's own variant stays */
 export async function removeClaudeUserAuditHook(
-  homeDir: string,
+  claudeDir: string,
 ): Promise<UserAuditHookResult> {
-  const settingsPath = claudeUserSettingsPath(homeDir);
+  const settingsPath = claudeUserSettingsPath(claudeDir);
   const loaded = await loadSettings(settingsPath);
   if (loaded.settings === null) return { settingsPath, changed: false };
 
@@ -202,7 +245,7 @@ export async function removeClaudeUserAuditHook(
   ]);
   const hooks: Record<string, unknown> = {};
   for (const [event, entries] of Object.entries(loaded.hooks)) {
-    if (!Array.isArray(entries) || !(event in claudeAuditHooks())) {
+    if (!Array.isArray(entries) || !Object.hasOwn(claudeAuditHooks(), event)) {
       hooks[event] = entries;
       continue;
     }
@@ -222,16 +265,27 @@ export async function removeClaudeUserAuditHook(
   return { settingsPath, changed: true };
 }
 
-/** never throws: the doctor reports a missing or unreadable file as no hook */
-export async function claudeUserAuditHookInstalled(
-  homeDir: string,
-): Promise<boolean> {
+/** never throws: the doctor reports a missing or unreadable file as no hooks */
+export async function readClaudeSettingsHooks(
+  settingsPath: string,
+): Promise<Record<string, unknown>> {
   try {
-    const { hooks } = await loadSettings(claudeUserSettingsPath(homeDir));
-    return Object.keys(claudeAuditHooks()).every((event) =>
-      countAuditHooks(hooks[event], CLAUDE_AUDIT_HOOK_SHAPE) > 0
-    );
+    return (await loadSettings(settingsPath)).hooks;
   } catch {
-    return false;
+    return {};
   }
+}
+
+export function runsClaudeAuditHook(hooks: Record<string, unknown>): boolean {
+  return Object.keys(claudeAuditHooks()).every((event) =>
+    countAuditHooks(hooks[event], CLAUDE_AUDIT_HOOK_SHAPE) > 0
+  );
+}
+
+export async function claudeUserAuditHookInstalled(
+  claudeDir: string,
+): Promise<boolean> {
+  return runsClaudeAuditHook(
+    await readClaudeSettingsHooks(claudeUserSettingsPath(claudeDir)),
+  );
 }

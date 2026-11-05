@@ -99,25 +99,28 @@ check fails, `warn` if every check skipped or any carries a warning, `pass`
 otherwise. Exit code mirrors `fail` only.
 
 For Claude, `agent-config-loadable` warns when the repo sits below its git root
-and no user-level hook is installed: Claude Code reads
-`.claude/settings.local.json` from the git root, so the repo's own audit hook
-does not fire for sessions started above it. Fix it with
+and neither a user-level hook nor the git root's own settings run the audit
+hook: Claude Code reads `.claude/settings.local.json` from the git root, so the
+repo's own audit hook does not fire for sessions started there. Fix it with
 `swamp audit install --user`, which adds the hook to `~/.claude/settings.json`
-and covers every repo (it runs on every Bash and PowerShell call in every
-project; calls outside a swamp repo are not recorded). Remove it with
-`swamp audit uninstall --user`. A user-level hook also satisfies the check when
-the repo file has none.
+(or `settings.json` in `CLAUDE_CONFIG_DIR`). It records calls whose working
+directory is inside any swamp repo; it runs on every Bash and PowerShell call in
+every project. Remove it with `swamp audit uninstall --user`. A user-level hook
+also satisfies the check when the repo file has none. The check also warns when
+the repo and user settings run different audit handlers, which records every
+call twice; keep one form.
 
 ### Common failures
 
-| Hint contains           | Fix                                                                  |
-| ----------------------- | -------------------------------------------------------------------- |
-| "Not found on PATH"     | Install the AI tool, or add its bin dir to `$PATH`                   |
-| "swamp not on PATH"     | Install the `swamp` binary into a directory on `$PATH`               |
-| "Could not parse"       | Run the AI tool to regenerate its config; check for hand edits       |
-| "No default agent"      | Set the default agent through the AI tool's UI/config                |
-| "audit record rejected" | Check `swamp` and AI tool versions match; rerun `swamp repo upgrade` |
-| "below the git root"    | Run `swamp audit install --user`                                     |
+| Hint contains             | Fix                                                                               |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| "Not found on PATH"       | Install the AI tool, or add its bin dir to `$PATH`                                |
+| "swamp not on PATH"       | Install the `swamp` binary into a directory on `$PATH`                            |
+| "Could not parse"         | Run the AI tool to regenerate its config; check for hand edits                    |
+| "No default agent"        | Set the default agent through the AI tool's UI/config                             |
+| "audit record rejected"   | Check `swamp` and AI tool versions match; rerun `swamp repo upgrade`              |
+| "below the git root"      | Run `swamp audit install --user`                                                  |
+| "records each call twice" | Keep one form of the hook: `swamp repo upgrade` or `swamp audit uninstall --user` |
 
 ### `NoToolConfiguredError`
 

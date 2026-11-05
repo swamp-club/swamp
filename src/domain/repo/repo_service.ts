@@ -346,7 +346,6 @@ function claudeAuditHookEntry(matcher: string): Record<string, unknown> {
   };
 }
 
-/** covers both of Claude Code's shell tools */
 export function claudeAuditHooks(): Record<string, unknown[]> {
   return Object.fromEntries(
     CLAUDE_AUDIT_HOOK_EVENTS.map((event) => [
@@ -356,7 +355,6 @@ export function claudeAuditHooks(): Record<string, unknown[]> {
   );
 }
 
-/** what swamp wrote before the hook matched PowerShell */
 export const LEGACY_CLAUDE_AUDIT_HOOK_ENTRY: Readonly<Record<string, unknown>> =
   claudeAuditHookEntry("Bash");
 

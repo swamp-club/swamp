@@ -17,14 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { join } from "@std/path";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   auditInstall,
   auditUninstall,
   type AuditUserHookDeps,
+  resolveClaudeUserConfigDir,
 } from "./install.ts";
 
 function fakeDeps(overrides: Partial<AuditUserHookDeps> = {}): {
@@ -35,18 +38,18 @@ function fakeDeps(overrides: Partial<AuditUserHookDeps> = {}): {
   return {
     calls,
     deps: {
-      homeDir: () => "/home/u",
+      claudeDir: () => "/home/u/.claude",
       install: (home) => {
         calls.push(`install ${home}`);
         return Promise.resolve({
-          settingsPath: `${home}/.claude/settings.json`,
+          settingsPath: `${home}/settings.json`,
           changed: true,
         });
       },
       remove: (home) => {
         calls.push(`remove ${home}`);
         return Promise.resolve({
-          settingsPath: `${home}/.claude/settings.json`,
+          settingsPath: `${home}/settings.json`,
           changed: false,
         });
       },
@@ -58,7 +61,7 @@ function fakeDeps(overrides: Partial<AuditUserHookDeps> = {}): {
 Deno.test("auditInstall: installs into the home dir and reports the file", async () => {
   const { deps, calls } = fakeDeps();
   const events = await collect(auditInstall(createLibSwampContext(), deps));
-  assertEquals(calls, ["install /home/u"]);
+  assertEquals(calls, ["install /home/u/.claude"]);
   assertEquals(events, [{
     kind: "completed",
     data: {
@@ -74,7 +77,7 @@ Deno.test("auditInstall: installs into the home dir and reports the file", async
 Deno.test("auditUninstall: removes from the home dir and reports no change", async () => {
   const { deps, calls } = fakeDeps();
   const events = await collect(auditUninstall(createLibSwampContext(), deps));
-  assertEquals(calls, ["remove /home/u"]);
+  assertEquals(calls, ["remove /home/u/.claude"]);
   assertEquals(events.length, 1);
   assertEquals(events[0].kind, "completed");
   if (events[0].kind === "completed") {
@@ -104,4 +107,36 @@ Deno.test("auditInstall: an unexpected failure propagates", async () => {
     () => collect(auditInstall(createLibSwampContext(), deps)),
     Deno.errors.PermissionDenied,
   );
+});
+
+Deno.test("resolveClaudeUserConfigDir: CLAUDE_CONFIG_DIR wins over HOME", () => {
+  withMockedEnv({ CLAUDE_CONFIG_DIR: "/cfg/claude", HOME: "/home/u" }, () => {
+    assertEquals(resolveClaudeUserConfigDir(), "/cfg/claude");
+  });
+  withMockedEnv({ CLAUDE_CONFIG_DIR: undefined, HOME: "/home/u" }, () => {
+    assertEquals(resolveClaudeUserConfigDir(), join("/home/u", ".claude"));
+  });
+});
+
+Deno.test("resolveClaudeUserConfigDir: no HOME and no CLAUDE_CONFIG_DIR is a UserError", () => {
+  withMockedEnv(
+    { CLAUDE_CONFIG_DIR: undefined, HOME: undefined, USERPROFILE: undefined },
+    () => {
+      assertThrows(
+        () => resolveClaudeUserConfigDir(),
+        UserError,
+        "CLAUDE_CONFIG_DIR",
+      );
+    },
+  );
+});
+
+Deno.test("auditInstall: a missing home dir becomes an error event", async () => {
+  const { deps } = fakeDeps({
+    claudeDir: () => {
+      throw new UserError("Cannot find your Claude Code settings");
+    },
+  });
+  const events = await collect(auditInstall(createLibSwampContext(), deps));
+  assertEquals(events[0].kind, "error");
 });

@@ -51,20 +51,25 @@ actions to swamp workflow runs.
 - **`swamp audit install --user` / `uninstall --user`**
   (`src/cli/commands/audit_install.ts`, `src/domain/audit/user_hook.ts`): add
   or remove swamp's Claude audit hook in the user's Claude Code settings,
-  `~/.claude/settings.json`. Claude Code loads project hooks only from the
+  `settings.json` in `CLAUDE_CONFIG_DIR` when set, else in `~/.claude`. Claude Code loads project hooks only from the
   folder a session starts in (`.claude/settings.local.json` from the git root,
   or the start folder on Windows and before Claude Code 2.1.211), so a repo
   nested below its git root, or one a session starts above, never runs its own
-  hook. The user-level hook covers every repo, because recording already
-  resolves the repo from the payload's `cwd` and drops rows outside one. The
+  hook. The user-level hook records calls whose working directory is inside
+  any swamp repo, because recording resolves the repo from the payload's `cwd`
+  and drops rows outside one. A call run from above the repo (a `cd` inside a
+  subshell, or `--repo-dir`) carries the outer `cwd` and is not recorded. The
   cost is a swamp process for every Bash and PowerShell call in every project,
   about 0.45 s each, most of it binary startup. Install merges with
   `mergeAuditHooks` like the repo config, keeps every other key, refuses a file
   that does not parse, and writes through a symlinked file or `.claude` dir to
-  its target so a dotfiles link stays a link. Uninstall removes only entries
+  its target so a dotfiles link stays a link. It keeps the file mode, refuses a
+  file owned by another user, and refuses when the file changes between its
+  read and the rename. Uninstall removes only entries
   equal to one swamp wrote. Claude Code runs an identical handler defined in
   several settings files once, even under different matchers, so a repo hook
-  plus the user hook records each call once. `--user` is the only scope; the repo hook belongs to `swamp repo
+  plus the user hook records each call once; two different audit handlers
+  both run, which `doctor audit` flags. `--user` is the only scope; the repo hook belongs to `swamp repo
   upgrade`.
 
 - **`swamp audit`**: shows the merged timeline. With `--server` it sends

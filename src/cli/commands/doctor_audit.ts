@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { auditDoctor } from "../../domain/audit/doctor/doctor_service.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
+import { resolveClaudeUserConfigDir } from "../../libswamp/audit/install.ts";
 import {
   NoToolConfiguredError,
   type SpawnFn,
@@ -42,6 +43,14 @@ import {
 import { resolveDatastoreForRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveServeUrl, withRemoteOptions } from "../remote_run.ts";
+
+function userClaudeConfigDir(): string | undefined {
+  try {
+    return resolveClaudeUserConfigDir();
+  } catch {
+    return undefined;
+  }
+}
 
 function userHomeDir(): string | undefined {
   try {
@@ -211,6 +220,7 @@ export const doctorAuditCommand = withRemoteOptions(
         abortSignal: controller.signal,
         resolveBinary: (name) => commandResolver.resolve(name),
         homeDir: userHomeDir(),
+        claudeConfigDir: userClaudeConfigDir(),
         findGitRoot: getGitRootSync,
       }),
       renderer.handlers(),

@@ -27,8 +27,9 @@ import {
   CURSOR_AUDIT_HOOK_SHAPE,
 } from "../../../repo/repo_service.ts";
 import {
-  claudeUserAuditHookInstalled,
   claudeUserSettingsPath,
+  readClaudeSettingsHooks,
+  runsClaudeAuditHook,
 } from "../../user_hook.ts";
 
 const CONFIG_FILES: Record<string, string[]> = {
@@ -157,7 +158,7 @@ async function checkKiro(ctx: CheckContext): Promise<CheckResult> {
   };
 }
 
-const REPO_HOOK_MISSING = { repoHookMissing: true };
+const REPO_HOOK_MISSING = Object.freeze({ repoHookMissing: true });
 
 function canonicalPath(path: string): string {
   try {
@@ -168,7 +169,9 @@ function canonicalPath(path: string): string {
 }
 
 /** Claude Code reads settings.local.json from the git root, not a nested repo */
-function nestedRepoWarning(ctx: CheckContext): CheckResult | undefined {
+async function nestedRepoWarning(
+  ctx: CheckContext,
+): Promise<CheckResult | undefined> {
   const gitRoot = ctx.findGitRoot?.(ctx.repoPath) ?? null;
   if (gitRoot === null) return undefined;
   const root = canonicalPath(gitRoot);
@@ -176,16 +179,56 @@ function nestedRepoWarning(ctx: CheckContext): CheckResult | undefined {
   if (ctx.homeDir !== undefined && root === canonicalPath(ctx.homeDir)) {
     return undefined;
   }
+  const rootHooks = await readClaudeSettingsHooks(
+    join(gitRoot, ".claude/settings.local.json"),
+  );
+  if (runsClaudeAuditHook(rootHooks)) return undefined;
   return {
     name: "agent-config-loadable",
     status: "pass",
     message: "",
     warning:
-      `this repo is below the git root ${gitRoot}. Claude Code reads .claude/settings.local.json from the git root (from the folder a session starts in on Windows and before Claude Code 2.1.211), so this repo's audit hook does not fire for sessions started above it and may not fire at all`,
+      `this repo is below the git root ${gitRoot}, and Claude Code reads .claude/settings.local.json from the git root, so this repo's audit hook does not fire for sessions started there`,
     hint:
-      "Run `swamp audit install --user` to add the audit hook to your Claude Code user settings, which covers every repo.",
+      "Run `swamp audit install --user` to add the audit hook to your Claude Code user settings; it records calls run inside any swamp repo.",
     details: { gitRoot },
   };
+}
+
+function auditHandlers(
+  hooks: Record<string, unknown>,
+  event: string,
+): string[] {
+  const entries = hooks[event];
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry): entry is Record<string, unknown> =>
+      typeof entry === "object" && entry !== null &&
+      CLAUDE_AUDIT_HOOK_SHAPE.applies(entry as Record<string, unknown>) &&
+      Array.isArray((entry as Record<string, unknown>).hooks)
+    )
+    .flatMap((entry) => entry.hooks as unknown[])
+    .filter((hook) =>
+      typeof hook === "object" && hook !== null &&
+      typeof (hook as { command?: unknown }).command === "string" &&
+      (hook as { command: string }).command.includes(
+        CLAUDE_AUDIT_HOOK_SHAPE.marker,
+      )
+    )
+    .map((hook) => JSON.stringify(hook));
+}
+
+/** Claude Code runs a handler once across settings files only when the handlers are identical */
+function differingHandlersEvent(
+  repoHooks: Record<string, unknown>,
+  userHooks: Record<string, unknown>,
+): string | undefined {
+  return ["PostToolUse", "PostToolUseFailure"].find((event) =>
+    new Set([
+      ...auditHandlers(repoHooks, event),
+      ...auditHandlers(userHooks, event),
+    ]).size > 1
+  );
 }
 
 async function checkClaudeRepoFile(ctx: CheckContext): Promise<CheckResult> {
@@ -247,11 +290,13 @@ async function checkClaudeRepoFile(ctx: CheckContext): Promise<CheckResult> {
 }
 
 async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
-  const userSettings = ctx.homeDir === undefined
+  const userSettings = ctx.claudeConfigDir === undefined
     ? undefined
-    : claudeUserSettingsPath(ctx.homeDir);
-  const userHook = ctx.homeDir !== undefined &&
-    await claudeUserAuditHookInstalled(ctx.homeDir);
+    : claudeUserSettingsPath(ctx.claudeConfigDir);
+  const userHooks = userSettings === undefined
+    ? {}
+    : await readClaudeSettingsHooks(userSettings);
+  const userHook = runsClaudeAuditHook(userHooks);
   const repoResult = await checkClaudeRepoFile(ctx);
 
   if (repoResult.status === "fail") {
@@ -259,20 +304,38 @@ async function checkClaude(ctx: CheckContext): Promise<CheckResult> {
       return {
         name: "agent-config-loadable",
         status: "pass",
-        message: `${userSettings} runs the audit hook for every repo`,
+        message:
+          `${userSettings} runs the audit hook for calls inside any swamp repo`,
         details: { userSettings },
       };
     }
     return repoResult;
   }
   if (userHook) {
+    const repoHooks = await readClaudeSettingsHooks(
+      join(ctx.repoPath, ".claude/settings.local.json"),
+    );
+    const event = differingHandlersEvent(repoHooks, userHooks);
+    if (event !== undefined) {
+      return {
+        name: "agent-config-loadable",
+        status: "pass",
+        message: repoResult.message,
+        warning:
+          `${event} runs different audit hooks from .claude/settings.local.json and ${userSettings}, so Claude Code runs both and records each call twice`,
+        hint:
+          "Keep one form of the audit hook: run `swamp repo upgrade` to restore swamp's entry in the repo, or `swamp audit uninstall --user`.",
+        details: { event, userSettings },
+      };
+    }
     return {
       ...repoResult,
-      message: `${repoResult.message}; ${userSettings} also runs it`,
+      message:
+        `${repoResult.message}; ${userSettings} runs the same hook, which Claude Code runs once`,
       details: { userSettings },
     };
   }
-  const nested = nestedRepoWarning(ctx);
+  const nested = await nestedRepoWarning(ctx);
   if (nested === undefined) return repoResult;
   return { ...nested, message: repoResult.message };
 }

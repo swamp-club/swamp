@@ -40,9 +40,10 @@ export function auditUserHookLines(d: AuditUserHookData): string[] {
     d.changed
       ? `${green("✓")} Added swamp's audit hook to ${path}`
       : `${dim("•")} ${path} already runs swamp's audit hook`,
-    "Claude Code now records Bash and PowerShell calls in every swamp repo,",
-    "wherever the session started. The hook runs on every such call in every",
-    "project; calls outside a swamp repo are not recorded.",
+    "Claude Code now records Bash and PowerShell calls whose working directory is",
+    "inside a swamp repo, wherever the session started. The hook runs on every",
+    "such call in every project; calls run from outside a swamp repo are not",
+    "recorded.",
   ];
 }
 

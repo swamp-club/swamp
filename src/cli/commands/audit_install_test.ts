@@ -28,11 +28,11 @@ await initializeLogging({});
 function deps(calls: string[]): AuditUserHookDeps {
   const result = (home: string) =>
     Promise.resolve({
-      settingsPath: `${home}/.claude/settings.json`,
+      settingsPath: `${home}/settings.json`,
       changed: true,
     });
   return {
-    homeDir: () => "/home/u",
+    claudeDir: () => "/home/u/.claude",
     install: (home) => {
       calls.push("install");
       return result(home);

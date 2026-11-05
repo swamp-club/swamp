@@ -21,6 +21,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
+  claudeUserConfigDir,
   installClaudeUserAuditHook,
   removeClaudeUserAuditHook,
   type UserAuditHookResult,
@@ -41,14 +42,26 @@ export type AuditUserHookEvent =
   | { kind: "error"; error: SwampError };
 
 export interface AuditUserHookDeps {
-  homeDir(): string;
-  install(homeDir: string): Promise<UserAuditHookResult>;
-  remove(homeDir: string): Promise<UserAuditHookResult>;
+  claudeDir(): string;
+  install(claudeDir: string): Promise<UserAuditHookResult>;
+  remove(claudeDir: string): Promise<UserAuditHookResult>;
+}
+
+export function resolveClaudeUserConfigDir(): string {
+  const envConfigDir = Deno.env.get("CLAUDE_CONFIG_DIR");
+  if (envConfigDir) return claudeUserConfigDir("", envConfigDir);
+  try {
+    return claudeUserConfigDir(homeDirectory(), undefined);
+  } catch {
+    throw new UserError(
+      "Cannot find your Claude Code settings: set HOME (USERPROFILE on Windows) or CLAUDE_CONFIG_DIR.",
+    );
+  }
 }
 
 export function createAuditUserHookDeps(): AuditUserHookDeps {
   return {
-    homeDir: homeDirectory,
+    claudeDir: resolveClaudeUserConfigDir,
     install: installClaudeUserAuditHook,
     remove: removeClaudeUserAuditHook,
   };
@@ -64,10 +77,10 @@ function userHookEvents(
     {},
     (async function* () {
       try {
-        const home = deps.homeDir();
+        const claudeDir = deps.claudeDir();
         const result = action === "install"
-          ? await deps.install(home)
-          : await deps.remove(home);
+          ? await deps.install(claudeDir)
+          : await deps.remove(claudeDir);
         ctx.logger.debug`Audit hook ${action} at ${result.settingsPath}`;
         yield {
           kind: "completed" as const,

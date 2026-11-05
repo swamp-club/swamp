@@ -33,7 +33,7 @@ import { createAuditUserHookHandlers } from "../../presentation/renderers/audit_
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/** --user is the only scope today; the repo-level hook belongs to repo upgrade */
+/** --user is the only scope; the repo-level hook belongs to repo upgrade */
 export function requireUserScope(action: string, user: unknown): void {
   if (user === true) return;
   throw new UserError(
@@ -60,10 +60,11 @@ export async function runAuditUserHook(
 export const auditInstallCommand = new Command()
   .name("install")
   .description(
-    "Add swamp's audit hook to your Claude Code user settings (~/.claude/settings.json)\n" +
-      "so Bash and PowerShell calls are recorded in every swamp repo, even when a\n" +
-      "session starts above the repo. The hook runs swamp on every such call in every\n" +
-      "project; calls outside a swamp repo are not recorded.",
+    "Add swamp's audit hook to your Claude Code user settings (~/.claude/settings.json,\n" +
+      "or settings.json in CLAUDE_CONFIG_DIR) so Bash and PowerShell calls whose working\n" +
+      "directory is inside a swamp repo are recorded, even when the session started\n" +
+      "above the repo. The hook runs swamp on every such call in every project; calls\n" +
+      "run from outside a swamp repo are not recorded.",
   )
   .option("--user", "Install into your Claude Code user settings (required)")
   .example("Install the user-level hook", "swamp audit install --user")

@@ -627,6 +627,7 @@ function claudeCtx(
   return {
     ...makeCtx(repo, "claude"),
     homeDir: home,
+    claudeConfigDir: join(home, ".claude"),
     findGitRoot: () => gitRoot,
   };
 }
@@ -674,7 +675,7 @@ Deno.test("agentConfigLoadable: claude does not warn when the user settings run 
     );
     assertEquals(result.status, "pass");
     assertEquals(result.warning, undefined);
-    assertStringIncludes(result.message, "also runs it");
+    assertStringIncludes(result.message, "which Claude Code runs once");
   });
 });
 
@@ -687,7 +688,10 @@ Deno.test("agentConfigLoadable: claude passes on the user hook alone when the re
       claudeCtx(repo, home, root),
     );
     assertEquals(missing.status, "pass");
-    assertStringIncludes(missing.message, "runs the audit hook for every repo");
+    assertStringIncludes(
+      missing.message,
+      "runs the audit hook for calls inside any swamp repo",
+    );
 
     await writeJson(join(repo, ".claude/settings.local.json"), {
       permissions: { allow: [] },
@@ -732,5 +736,77 @@ Deno.test("agentConfigLoadable: claude without a user or repo hook still fails",
     );
     assertEquals(result.status, "fail");
     assertStringIncludes(result.message, "is missing");
+  });
+});
+
+Deno.test("agentConfigLoadable: claude does not warn when the git root's settings run the audit hook", async () => {
+  await withClaudeLayout(async ({ root, repo, home }) => {
+    await writeJson(join(repo, ".claude/settings.local.json"), {
+      hooks: SWAMP_CLAUDE_HOOKS,
+    });
+    await writeJson(join(root, ".claude/settings.local.json"), {
+      hooks: SWAMP_CLAUDE_HOOKS,
+    });
+    const result = await agentConfigLoadableCheck.run(
+      claudeCtx(repo, home, root),
+    );
+    assertEquals(result.status, "pass");
+    assertEquals(result.warning, undefined);
+  });
+});
+
+Deno.test("agentConfigLoadable: claude warns when repo and user settings run different audit hooks", async () => {
+  await withClaudeLayout(async ({ root, repo, home }) => {
+    const wrapped = {
+      matcher: "Bash",
+      hooks: [{
+        type: "command",
+        command: "timeout 5 swamp audit record --from-hook",
+      }],
+    };
+    await writeJson(join(repo, ".claude/settings.local.json"), {
+      hooks: { PostToolUse: [wrapped], PostToolUseFailure: [wrapped] },
+    });
+    await writeJson(join(home, ".claude/settings.json"), {
+      hooks: SWAMP_CLAUDE_HOOKS,
+    });
+    const result = await agentConfigLoadableCheck.run(
+      claudeCtx(repo, home, root),
+    );
+    assertEquals(result.status, "pass");
+    assertStringIncludes(result.warning ?? "", "records each call twice");
+    assertEquals(result.details?.event, "PostToolUse");
+  });
+});
+
+Deno.test("agentConfigLoadable: claude does not warn for swamp's old Bash-only repo hook beside the user hook", async () => {
+  await withClaudeLayout(async ({ root, repo, home }) => {
+    const legacy = { ...SWAMP_CLAUDE_ENTRY, matcher: "Bash" };
+    await writeJson(join(repo, ".claude/settings.local.json"), {
+      hooks: { PostToolUse: [legacy], PostToolUseFailure: [legacy] },
+    });
+    await writeJson(join(home, ".claude/settings.json"), {
+      hooks: SWAMP_CLAUDE_HOOKS,
+    });
+    const result = await agentConfigLoadableCheck.run(
+      claudeCtx(repo, home, root),
+    );
+    assertEquals(result.warning, undefined);
+  });
+});
+
+Deno.test("agentConfigLoadable: claude reads user hooks from the Claude config dir it is given", async () => {
+  await withClaudeLayout(async ({ root, repo, home }) => {
+    await writeJson(join(repo, ".claude/settings.local.json"), {
+      hooks: SWAMP_CLAUDE_HOOKS,
+    });
+    await writeJson(join(home, ".claude/settings.json"), {
+      hooks: SWAMP_CLAUDE_HOOKS,
+    });
+    const elsewhere = await agentConfigLoadableCheck.run({
+      ...claudeCtx(repo, home, root),
+      claudeConfigDir: join(home, "cfg"),
+    });
+    assertStringIncludes(elsewhere.warning ?? "", "below the git root");
   });
 });

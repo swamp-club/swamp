@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { UserError } from "../errors.ts";
 import {
   claudeUserAuditHookInstalled,
+  claudeUserConfigDir,
   claudeUserSettingsPath,
   installClaudeUserAuditHook,
   removeClaudeUserAuditHook,
@@ -42,6 +43,8 @@ async function withHome(fn: (home: string) => Promise<void>): Promise<void> {
 
 const AUDIT = "swamp audit record --from-hook";
 
+const claudeDir = (home: string) => join(home, ".claude");
+
 function entry(command: string, matcher: string): Record<string, unknown> {
   return { matcher, hooks: [{ type: "command", command }] };
 }
@@ -50,19 +53,21 @@ const SWAMP_ENTRY = entry(AUDIT, "Bash|PowerShell");
 const LEGACY_ENTRY = entry(AUDIT, "Bash");
 
 async function readSettings(home: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await Deno.readTextFile(claudeUserSettingsPath(home)));
+  return JSON.parse(
+    await Deno.readTextFile(claudeUserSettingsPath(claudeDir(home))),
+  );
 }
 
 async function writeSettings(home: string, content: string): Promise<void> {
   await Deno.mkdir(join(home, ".claude"), { recursive: true });
-  await Deno.writeTextFile(claudeUserSettingsPath(home), content);
+  await Deno.writeTextFile(claudeUserSettingsPath(claudeDir(home)), content);
 }
 
 Deno.test("installClaudeUserAuditHook: creates the settings file and .claude dir", async () => {
   await withHome(async (home) => {
-    const result = await installClaudeUserAuditHook(home);
+    const result = await installClaudeUserAuditHook(claudeDir(home));
     assertEquals(result, {
-      settingsPath: claudeUserSettingsPath(home),
+      settingsPath: claudeUserSettingsPath(claudeDir(home)),
       changed: true,
     });
     assertEquals(await readSettings(home), {
@@ -71,7 +76,7 @@ Deno.test("installClaudeUserAuditHook: creates the settings file and .claude dir
         PostToolUseFailure: [SWAMP_ENTRY],
       },
     });
-    assertEquals(await claudeUserAuditHookInstalled(home), true);
+    assertEquals(await claudeUserAuditHookInstalled(claudeDir(home)), true);
   });
 });
 
@@ -86,7 +91,7 @@ Deno.test("installClaudeUserAuditHook: keeps every other setting and hook", asyn
         hooks: { PostToolUse: [formatter], Stop: [formatter] },
       }),
     );
-    await installClaudeUserAuditHook(home);
+    await installClaudeUserAuditHook(claudeDir(home));
     assertEquals(await readSettings(home), {
       model: "opus",
       permissions: { allow: ["Bash(ls:*)"] },
@@ -101,11 +106,16 @@ Deno.test("installClaudeUserAuditHook: keeps every other setting and hook", asyn
 
 Deno.test("installClaudeUserAuditHook: a second install changes nothing", async () => {
   await withHome(async (home) => {
-    await installClaudeUserAuditHook(home);
-    const before = await Deno.readTextFile(claudeUserSettingsPath(home));
-    assertEquals((await installClaudeUserAuditHook(home)).changed, false);
+    await installClaudeUserAuditHook(claudeDir(home));
+    const before = await Deno.readTextFile(
+      claudeUserSettingsPath(claudeDir(home)),
+    );
     assertEquals(
-      await Deno.readTextFile(claudeUserSettingsPath(home)),
+      (await installClaudeUserAuditHook(claudeDir(home))).changed,
+      false,
+    );
+    assertEquals(
+      await Deno.readTextFile(claudeUserSettingsPath(claudeDir(home))),
       before,
     );
   });
@@ -122,7 +132,10 @@ Deno.test("installClaudeUserAuditHook: widens swamp's Bash-only entry", async ()
         },
       }),
     );
-    assertEquals((await installClaudeUserAuditHook(home)).changed, true);
+    assertEquals(
+      (await installClaudeUserAuditHook(claudeDir(home))).changed,
+      true,
+    );
     assertEquals((await readSettings(home)).hooks, {
       PostToolUse: [SWAMP_ENTRY],
       PostToolUseFailure: [SWAMP_ENTRY],
@@ -137,7 +150,10 @@ Deno.test("installClaudeUserAuditHook: keeps a user's own audit hook instead of 
       hooks: { PostToolUse: [wrapped], PostToolUseFailure: [wrapped] },
     };
     await writeSettings(home, JSON.stringify(settings));
-    assertEquals((await installClaudeUserAuditHook(home)).changed, false);
+    assertEquals(
+      (await installClaudeUserAuditHook(claudeDir(home))).changed,
+      false,
+    );
     assertEquals(await readSettings(home), settings);
   });
 });
@@ -145,8 +161,11 @@ Deno.test("installClaudeUserAuditHook: keeps a user's own audit hook instead of 
 Deno.test("installClaudeUserAuditHook: treats an empty file as no settings", async () => {
   await withHome(async (home) => {
     await writeSettings(home, "  \n");
-    assertEquals((await installClaudeUserAuditHook(home)).changed, true);
-    assertEquals(await claudeUserAuditHookInstalled(home), true);
+    assertEquals(
+      (await installClaudeUserAuditHook(claudeDir(home))).changed,
+      true,
+    );
+    assertEquals(await claudeUserAuditHookInstalled(claudeDir(home)), true);
   });
 });
 
@@ -155,15 +174,15 @@ Deno.test("installClaudeUserAuditHook: refuses a file it cannot parse and leaves
     await withHome(async (home) => {
       await writeSettings(home, content);
       await assertRejects(
-        () => installClaudeUserAuditHook(home),
+        () => installClaudeUserAuditHook(claudeDir(home)),
         UserError,
         "The file was not changed",
       );
       assertEquals(
-        await Deno.readTextFile(claudeUserSettingsPath(home)),
+        await Deno.readTextFile(claudeUserSettingsPath(claudeDir(home))),
         content,
       );
-      assertEquals(await claudeUserAuditHookInstalled(home), false);
+      assertEquals(await claudeUserAuditHookInstalled(claudeDir(home)), false);
     });
   }
 });
@@ -178,13 +197,13 @@ Deno.test({
       const target = join(dotfiles, "claude-settings.json");
       await Deno.writeTextFile(target, JSON.stringify({ model: "opus" }));
       await Deno.mkdir(join(home, ".claude"));
-      await Deno.symlink(target, claudeUserSettingsPath(home), {
+      await Deno.symlink(target, claudeUserSettingsPath(claudeDir(home)), {
         type: "file",
       });
 
-      await installClaudeUserAuditHook(home);
+      await installClaudeUserAuditHook(claudeDir(home));
 
-      const link = await Deno.lstat(claudeUserSettingsPath(home));
+      const link = await Deno.lstat(claudeUserSettingsPath(claudeDir(home)));
       assertEquals(link.isSymlink, true);
       const written = JSON.parse(await Deno.readTextFile(target));
       assertEquals(written.model, "opus");
@@ -202,7 +221,7 @@ Deno.test({
       await Deno.mkdir(real, { recursive: true });
       await Deno.symlink(real, join(home, ".claude"), { type: "dir" });
 
-      await installClaudeUserAuditHook(home);
+      await installClaudeUserAuditHook(claudeDir(home));
 
       assertEquals((await Deno.lstat(join(home, ".claude"))).isSymlink, true);
       const written = JSON.parse(
@@ -221,16 +240,16 @@ Deno.test({
       await Deno.mkdir(join(home, ".claude"));
       await Deno.symlink(
         join(home, "missing.json"),
-        claudeUserSettingsPath(home),
+        claudeUserSettingsPath(claudeDir(home)),
         { type: "file" },
       );
       await assertRejects(
-        () => installClaudeUserAuditHook(home),
+        () => installClaudeUserAuditHook(claudeDir(home)),
         UserError,
         "symlink to a file that does not exist",
       );
       assertEquals(
-        (await Deno.lstat(claudeUserSettingsPath(home))).isSymlink,
+        (await Deno.lstat(claudeUserSettingsPath(claudeDir(home)))).isSymlink,
         true,
       );
     });
@@ -238,15 +257,17 @@ Deno.test({
 });
 
 Deno.test({
-  name: "installClaudeUserAuditHook: keeps the file mode",
+  name:
+    "installClaudeUserAuditHook: keeps the file mode exactly, past the umask",
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withHome(async (home) => {
       await writeSettings(home, "{}");
-      await Deno.chmod(claudeUserSettingsPath(home), 0o600);
-      await installClaudeUserAuditHook(home);
-      const mode = (await Deno.stat(claudeUserSettingsPath(home))).mode!;
-      assertEquals(mode & 0o777, 0o600);
+      await Deno.chmod(claudeUserSettingsPath(claudeDir(home)), 0o666);
+      await installClaudeUserAuditHook(claudeDir(home));
+      const mode = (await Deno.stat(claudeUserSettingsPath(claudeDir(home))))
+        .mode!;
+      assertEquals(mode & 0o777, 0o666);
     });
   },
 });
@@ -265,34 +286,43 @@ Deno.test("removeClaudeUserAuditHook: removes only swamp's entries and empty eve
         },
       }),
     );
-    assertEquals((await removeClaudeUserAuditHook(home)).changed, true);
+    assertEquals(
+      (await removeClaudeUserAuditHook(claudeDir(home))).changed,
+      true,
+    );
     assertEquals(await readSettings(home), {
       model: "opus",
       hooks: { PostToolUse: [formatter], Stop: [formatter] },
     });
-    assertEquals(await claudeUserAuditHookInstalled(home), false);
+    assertEquals(await claudeUserAuditHookInstalled(claudeDir(home)), false);
   });
 });
 
 Deno.test("removeClaudeUserAuditHook: drops the hooks key it empties and keeps a user's variant", async () => {
   await withHome(async (home) => {
-    await installClaudeUserAuditHook(home);
-    await removeClaudeUserAuditHook(home);
+    await installClaudeUserAuditHook(claudeDir(home));
+    await removeClaudeUserAuditHook(claudeDir(home));
     assertEquals(await readSettings(home), {});
 
     const wrapped = entry(`timeout 5 ${AUDIT}`, "Bash");
     const settings = { hooks: { PostToolUse: [wrapped] } };
     await writeSettings(home, JSON.stringify(settings));
-    assertEquals((await removeClaudeUserAuditHook(home)).changed, false);
+    assertEquals(
+      (await removeClaudeUserAuditHook(claudeDir(home))).changed,
+      false,
+    );
     assertEquals(await readSettings(home), settings);
   });
 });
 
 Deno.test("removeClaudeUserAuditHook: a missing file is no change and is not created", async () => {
   await withHome(async (home) => {
-    assertEquals((await removeClaudeUserAuditHook(home)).changed, false);
+    assertEquals(
+      (await removeClaudeUserAuditHook(claudeDir(home))).changed,
+      false,
+    );
     await assertRejects(
-      () => Deno.stat(claudeUserSettingsPath(home)),
+      () => Deno.stat(claudeUserSettingsPath(claudeDir(home))),
       Deno.errors.NotFound,
     );
   });
@@ -304,6 +334,30 @@ Deno.test("claudeUserAuditHookInstalled: needs the hook on both events", async (
       home,
       JSON.stringify({ hooks: { PostToolUse: [SWAMP_ENTRY] } }),
     );
-    assertEquals(await claudeUserAuditHookInstalled(home), false);
+    assertEquals(await claudeUserAuditHookInstalled(claudeDir(home)), false);
+  });
+});
+
+Deno.test("claudeUserConfigDir: prefers CLAUDE_CONFIG_DIR over the home dir", () => {
+  assertEquals(
+    claudeUserConfigDir("/home/u", "/cfg/claude"),
+    "/cfg/claude",
+  );
+  assertEquals(
+    claudeUserConfigDir("/home/u", undefined),
+    join("/home/u", ".claude"),
+  );
+  assertEquals(claudeUserConfigDir("/home/u", ""), join("/home/u", ".claude"));
+});
+
+Deno.test("installClaudeUserAuditHook: writes into a custom Claude config dir", async () => {
+  await withHome(async (home) => {
+    const dir = join(home, "cfg");
+    await installClaudeUserAuditHook(dir);
+    assertEquals(await claudeUserAuditHookInstalled(dir), true);
+    await assertRejects(
+      () => Deno.stat(join(home, ".claude")),
+      Deno.errors.NotFound,
+    );
   });
 });

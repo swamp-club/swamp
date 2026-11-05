@@ -53,6 +53,7 @@ export interface AuditDoctorDeps {
   resolveBinary?: ResolveBinary;
   checks?: readonly PreflightCheck[];
   homeDir?: string;
+  claudeConfigDir?: string;
   findGitRoot?: (dir: string) => string | null;
 }
 
@@ -142,6 +143,7 @@ export async function* auditDoctor(
         abortSignal,
         spawnSwamp: deps.spawnSwamp,
         homeDir: deps.homeDir,
+        claudeConfigDir: deps.claudeConfigDir,
         findGitRoot: deps.findGitRoot,
       });
     } catch (error) {

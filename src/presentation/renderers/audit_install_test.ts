@@ -69,7 +69,7 @@ Deno.test("createAuditUserHookHandlers: log mode names the file and the per-call
     true,
   );
   assertEquals(
-    text.includes("calls outside a swamp repo are not recorded"),
+    text.includes("calls run from outside a swamp repo"),
     true,
   );
 });
