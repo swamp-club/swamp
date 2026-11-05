@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -86,6 +87,10 @@ type Config struct {
 	WriteTimeout   time.Duration
 	// Profile names the public profile in health and refusals; local-v1 by default.
 	Profile string
+	// Leases enables dashboard page routes on a PageRouter; nil serves cli only.
+	Leases Leases
+	// Admin serves /hub/ to loopback peers; it authenticates its own callers.
+	Admin http.Handler
 }
 
 func (c Config) profile() string {
@@ -107,27 +112,52 @@ type Gateway struct {
 	rates       map[string]rateEntry
 	admissions  chan struct{}
 	stopping    bool
+	// port is the listener's, for the dashboard routes' exact Host check.
+	port         atomic.Int64
+	httpInFlight map[string]int
+	streams      map[*context.CancelFunc]context.CancelFunc
 }
 
 func New(config Config, router Router) *Gateway {
-	return &Gateway{config: config, router: router, connections: make(map[*websocket.Conn]struct{}), rates: make(map[string]rateEntry), admissions: make(chan struct{}, engine.MaxSessions+engine.MaxColdWaiters)}
+	return &Gateway{config: config, router: router, connections: make(map[*websocket.Conn]struct{}), rates: make(map[string]rateEntry), admissions: make(chan struct{}, engine.MaxSessions+engine.MaxColdWaiters), httpInFlight: make(map[string]int), streams: make(map[*context.CancelFunc]context.CancelFunc)}
 }
 
+// Listening records the bound address; page routes refuse every Host until then.
+func (g *Gateway) Listening(addr *net.TCPAddr) { g.port.Store(int64(addr.Port)) }
+
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	router, pages := g.pages()
+	if pages && g.config.Admin != nil && strings.HasPrefix(r.URL.Path, "/hub/") {
+		if !loopbackPeer(r) {
+			writeJSON(w, 404, map[string]string{"error": "unsupported_endpoint", "profile": g.config.profile()})
+			return
+		}
+		g.config.Admin.ServeHTTP(w, r)
+		return
+	}
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		g.upgrade(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
-		writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
-		return
-	}
-	if r.URL.Path == "/health" || r.URL.Path == "/healthz" {
+	if r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/healthz") {
 		writeJSON(w, 200, map[string]interface{}{"status": "alive", "implementation": "go", "profile": g.config.profile(), "protocolVersion": protocol.Version})
 		return
 	}
-	if status, body, ok := g.router.Readiness(r.URL.Path); ok {
-		writeJSON(w, status, body)
+	if r.Method == http.MethodGet {
+		if status, body, ok := g.router.Readiness(r.URL.Path); ok {
+			writeJSON(w, status, body)
+			return
+		}
+	}
+	// Go serves no cli HTTP route, so a workspace path is a dashboard route.
+	if pages {
+		if _, _, ok := router.PageWorkspace(r.URL.Path); ok {
+			g.servePageHTTP(w, r, router)
+			return
+		}
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
 		return
 	}
 	writeJSON(w, 404, map[string]string{"error": "unsupported_endpoint", "profile": g.config.profile()})
@@ -218,6 +248,12 @@ func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "invalid_upgrade"})
 		return
 	}
+	if router, ok := g.pages(); ok {
+		if token, subprotocol, page := classifyPage(r); page {
+			g.upgradePage(w, r, router, token, subprotocol)
+			return
+		}
+	}
 	if !allowed(r, g.config) {
 		writeJSON(w, 403, map[string]string{"error": "untrusted_origin_or_host"})
 		return
@@ -275,8 +311,11 @@ func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
 	r.Header.Del("Authorization")
 	if err != nil {
 		var failure *protocol.Error
+		var refusal *RouteError
 		if errors.As(err, &failure) && failure.Code == "unauthorized" {
 			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		} else if errors.As(err, &refusal) {
+			writeJSON(w, refusal.Status, map[string]string{"error": refusal.Code})
 		} else {
 			writeJSON(w, 503, map[string]string{"error": "engine_unavailable"})
 		}
@@ -316,7 +355,7 @@ func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
 	g.connections[conn] = struct{}{}
 	g.mu.Unlock()
 	defer func() { g.mu.Lock(); delete(g.connections, conn); g.mu.Unlock() }()
-	g.serve(conn, backend, session)
+	g.serve(conn, backend, session, &connection{gzip: r.URL.Query().Get("compress") == "gzip"})
 }
 
 func headerContains(value, token string) bool {
@@ -333,7 +372,11 @@ type pendingRequest struct {
 	runID    string
 }
 
-func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.Session) {
+type dispatcher interface {
+	Dispatch(context.Context, *engine.Session, []byte) error
+}
+
+func (g *Gateway) serve(conn *websocket.Conn, backend dispatcher, session *engine.Session, options *connection) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var pendingMu sync.Mutex
@@ -364,7 +407,7 @@ func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.S
 							detail["details"] = map[string]string{"runId": p.runID}
 						}
 						payload, _ := json.Marshal(map[string]interface{}{"type": "error", "id": id, "error": detail})
-						if g.write(ctx, conn, payload) != nil {
+						if g.send(ctx, conn, payload, options) != nil {
 							break
 						}
 					}
@@ -394,7 +437,7 @@ func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.S
 				}
 				pendingMu.Unlock()
 			}
-			if g.write(ctx, conn, msg) != nil {
+			if g.send(ctx, conn, msg, options) != nil {
 				return
 			}
 		}
@@ -406,6 +449,10 @@ func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.S
 			return
 		}
 		if kind != websocket.MessageText || !utf8.Valid(raw) {
+			// A page's stray frames are dropped, as the TypeScript hub did.
+			if options.page {
+				continue
+			}
 			_ = conn.Close(websocket.StatusUnsupportedData, "Expected UTF-8 JSON text")
 			return
 		}
@@ -414,8 +461,29 @@ func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.S
 			ID   string `json:"id"`
 		}
 		if json.Unmarshal(raw, &public) != nil || public.ID == "" || len(public.ID) > 256 {
+			if options.page {
+				continue
+			}
 			_ = conn.Close(websocket.StatusPolicyViolation, "Invalid request envelope")
 			return
+		}
+		if options.page {
+			// The engine enforces the page set too; this is the second check.
+			if public.Type == "cancel" {
+				if !options.forwarded[public.ID] {
+					continue
+				}
+			} else if !pageOperations[public.Type] {
+				if g.send(ctx, conn, pageRefusal(public.ID, public.Type), options) != nil {
+					return
+				}
+				continue
+			} else if pageReads[public.Type] {
+				if options.forwarded == nil {
+					options.forwarded = map[string]bool{}
+				}
+				options.forwarded[public.ID] = true
+			}
 		}
 		pendingMu.Lock()
 		if public.Type != "cancel" {
@@ -451,7 +519,7 @@ func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.S
 					failure = &protocol.Error{Code: "admission_limit", Message: "Request admission limit reached"}
 				}
 				payload, _ := json.Marshal(map[string]interface{}{"type": "error", "id": public.ID, "error": failure})
-				if g.write(ctx, conn, payload) != nil {
+				if g.send(ctx, conn, payload, options) != nil {
 					return
 				}
 				pendingMu.Lock()
@@ -478,7 +546,7 @@ func (g *Gateway) serve(conn *websocket.Conn, backend Backend, session *engine.S
 						message = "Engine handoff failed; inspect history before retrying"
 					}
 					payload, _ := json.Marshal(map[string]interface{}{"type": "error", "id": public.ID, "error": map[string]string{"code": code, "message": message}})
-					_ = g.write(ctx, conn, payload)
+					_ = g.send(ctx, conn, payload, options)
 				}
 				return
 			}
@@ -490,6 +558,21 @@ func (g *Gateway) write(ctx context.Context, conn *websocket.Conn, msg []byte) e
 	defer cancel()
 	return conn.Write(deadline, websocket.MessageText, msg)
 }
+
+// send writes one frame; a socket that asked for gzip gets large frames as
+// binary gzip, which is application compression, not permessage-deflate.
+func (g *Gateway) send(ctx context.Context, conn *websocket.Conn, msg []byte, options *connection) error {
+	options.mu.Lock()
+	defer options.mu.Unlock()
+	if options.gzip {
+		if compressed, ok := gzipFrame(msg); ok {
+			deadline, cancel := context.WithTimeout(ctx, g.config.WriteTimeout)
+			defer cancel()
+			return conn.Write(deadline, websocket.MessageBinary, compressed)
+		}
+	}
+	return g.write(ctx, conn, msg)
+}
 func (g *Gateway) Shutdown() {
 	g.mu.Lock()
 	g.stopping = true
@@ -497,7 +580,14 @@ func (g *Gateway) Shutdown() {
 	for c := range g.connections {
 		connections = append(connections, c)
 	}
+	streams := make([]context.CancelFunc, 0, len(g.streams))
+	for _, cancel := range g.streams {
+		streams = append(streams, cancel)
+	}
 	g.mu.Unlock()
+	for _, cancel := range streams {
+		cancel()
+	}
 	for _, c := range connections {
 		_ = c.CloseNow()
 	}

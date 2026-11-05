@@ -26,6 +26,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -342,6 +345,41 @@ func TestListeningOutputIncludesConnectionURLAndExistingFields(t *testing.T) {
 		logListening(slog.New(slog.NewTextHandler(&output, nil)), test.address, test.tls, "local-v1")
 		if !strings.Contains(output.String(), test.url) {
 			t.Fatalf("human startup omitted connection URL: %s", &output)
+		}
+	}
+}
+
+func TestAdminTokenFileIsPrivateReplacedAndNeverFollowsASymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "admin-token")
+	if err := writeAdminToken(path, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAdminToken(path, "second"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "second\n" {
+		t.Fatalf("token file %q %v", data, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(path)
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("token file mode %v", info.Mode().Perm())
+		}
+		target := filepath.Join(dir, "target")
+		link := filepath.Join(dir, "link")
+		if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeAdminToken(link, "secret"); err == nil {
+			t.Fatal("followed a symlinked token path")
+		}
+		if kept, _ := os.ReadFile(target); string(kept) != "keep" {
+			t.Fatal("symlink target overwritten")
 		}
 	}
 }

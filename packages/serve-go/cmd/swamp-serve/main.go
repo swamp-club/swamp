@@ -202,11 +202,12 @@ func serveUntilStopped(ctx context.Context, stop context.CancelFunc, bind string
 	if tlsConfig != nil {
 		listener = tls.NewListener(listener, tlsConfig)
 	}
+	// net.Listen("tcp") supplies a TCPAddr, preserved by both listener wrappers.
+	publicGateway.Listening(listener.Addr().(*net.TCPAddr))
 	loopDone := make(chan struct{})
 	go func() { runEngines(ctx); close(loopDone) }()
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
-	// net.Listen("tcp") supplies a TCPAddr, preserved by both listener wrappers.
 	logListening(logger, listener.Addr().(*net.TCPAddr), tlsConfig != nil, profile)
 	select {
 	case <-ctx.Done():

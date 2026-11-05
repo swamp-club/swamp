@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -52,6 +53,7 @@ type hubOptions struct {
 	controlIdle time.Duration
 	maxEngines  int
 	resolveTTL  time.Duration
+	adminToken  string
 }
 
 func hubFlags(options *hubOptions) *flag.FlagSet {
@@ -72,6 +74,8 @@ func hubFlags(options *hubOptions) *flag.FlagSet {
 	flags.DurationVar(&options.controlIdle, "control-idle-timeout", 10*time.Minute, "Control engine idle grace; zero keeps it running")
 	flags.IntVar(&options.maxEngines, "max-engines", 8, "Workspace engines running at once; the least recently used idle one stops first; zero is unbounded")
 	flags.DurationVar(&options.resolveTTL, "resolve-ttl", 5*time.Second, "How long a workspace lookup is reused for new connections")
+	flags.StringVar(&options.adminToken, "admin-token-file", "", "Write a fresh admin token here (mode 0600) and serve dashboard pages; the admin API issues page leases")
+	flags.DurationVar(&options.engine.PageIdleGrace, "page-idle-grace", 10*time.Minute, "Keep a workspace engine up this long after its last dashboard page closes")
 	return flags
 }
 
@@ -99,8 +103,8 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 		return errors.New("--engine is required; use swamp-serve hub --help for options")
 	}
 	config := options.engine
-	if config.StartupTimeout <= 0 || config.ControlTimeout <= 0 || config.DrainTimeout <= 0 || config.Cooldown <= 0 || config.IdleTimeout < 0 || options.controlIdle < 0 || options.resolveTTL < 0 {
-		return errors.New("timeouts must be positive; only idle timeouts and --resolve-ttl accept zero")
+	if config.StartupTimeout <= 0 || config.ControlTimeout <= 0 || config.DrainTimeout <= 0 || config.Cooldown <= 0 || config.IdleTimeout < 0 || options.controlIdle < 0 || options.resolveTTL < 0 || config.PageIdleGrace < 0 {
+		return errors.New("timeouts must be positive; only idle timeouts, --page-idle-grace and --resolve-ttl accept zero")
 	}
 	if options.maxEngines < 0 {
 		return errors.New("--max-engines must not be negative")
@@ -123,6 +127,23 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 	tlsConfig, err := loadTLS(options.certPath, options.keyPath)
 	if err != nil {
 		return err
+	}
+	var leases *hub.LeaseStore
+	if options.adminToken != "" {
+		// The file is new each start: resolve its directory, never the file.
+		dir, err := resolvePath(filepath.Dir(options.adminToken))
+		if err != nil {
+			return fmt.Errorf("invalid admin token path: %w", err)
+		}
+		path := filepath.Join(dir, filepath.Base(options.adminToken))
+		token, err := hub.NewToken()
+		if err != nil {
+			return err
+		}
+		if err := writeAdminToken(path, token); err != nil {
+			return err
+		}
+		leases = hub.NewLeaseStore(token)
 	}
 	var handler slog.Handler = slog.NewTextHandler(stdout, nil)
 	if options.jsonMode {
@@ -153,10 +174,17 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 		MaxEngines: options.maxEngines,
 		ResolveTTL: options.resolveTTL,
 		Starter: func(workspace hub.Workspace) engine.Starter {
+			if !workspace.Trusted {
+				return engine.UntrustedStarter(executable, workspace.Path, config.DrainTimeout)
+			}
 			return engine.ExecStarter(executable, workspace.Path, config.DrainTimeout)
 		},
 	}, hub.ControlResolver{Control: control})
 	gatewayConfig := gateway.Config{Host: host, TLS: tlsConfig != nil, TrustedHosts: parseHosts(options.trusted), AuthTimeout: 2*config.StartupTimeout + config.ControlTimeout, ControlTimeout: config.ControlTimeout, WriteTimeout: 10 * time.Second, Profile: "hub"}
+	if leases != nil {
+		gatewayConfig.Leases = leases
+		gatewayConfig.Admin = leases
+	}
 	runEngines := func(ctx context.Context) {
 		done := make(chan struct{})
 		go func() { control.Run(ctx); close(done) }()
@@ -169,6 +197,27 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 		return errors.Join(workspaces.Shutdown(ctx), <-controlDone)
 	}
 	return serveUntilStopped(ctx, stop, options.bind, gateway.New(gatewayConfig, workspaces), tlsConfig, logger, "hub", config.DrainTimeout, runEngines, shutdownEngines)
+}
+
+// writeAdminToken replaces a previous run's token file but never follows a
+// symlink planted at the path, and creates the file private from the start.
+func writeAdminToken(path, token string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing admin token path %s: not a regular file", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := io.WriteString(file, token+"\n")
+	return errors.Join(writeErr, file.Close())
 }
 
 func writeHubHelp(output io.Writer, flags *flag.FlagSet, jsonMode bool) error {

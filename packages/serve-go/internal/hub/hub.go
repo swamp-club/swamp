@@ -23,6 +23,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -82,9 +83,37 @@ type workspaceEngine struct {
 
 func (e *workspaceEngine) touch() { e.lastUsed.Store(time.Now().UnixNano()) }
 
+// Open admits a cli caller only to an engine that serves cli: a read-only
+// engine is refused before the credential is ever sent.
 func (e *workspaceEngine) Open(ctx context.Context, credential, ip string) (*engine.Session, error) {
 	e.touch()
+	info, err := e.Supervisor.Info(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Serves(engine.ClassCLI) {
+		return nil, &gateway.RouteError{Status: 403, Code: "unsupported_profile"}
+	}
 	return e.Supervisor.Open(ctx, credential, ip)
+}
+
+func (e *workspaceEngine) OpenPage(ctx context.Context, ip string, oneShot bool) (*engine.Session, error) {
+	e.touch()
+	return e.Supervisor.OpenAs(ctx, engine.OpenRequest{Class: engine.ClassPage, SourceIP: ip, OneShot: oneShot})
+}
+
+func (e *workspaceEngine) DispatchHTTP(ctx context.Context, session *engine.Session, request []byte) error {
+	e.touch()
+	return session.DispatchHTTP(ctx, request)
+}
+
+func (e *workspaceEngine) Health(ctx context.Context) (json.RawMessage, error) {
+	e.touch()
+	var snapshot json.RawMessage
+	if err := e.Supervisor.Call(ctx, "health.snapshot", struct{}{}, &snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
 }
 
 func (e *workspaceEngine) Dispatch(ctx context.Context, session *engine.Session, request []byte) error {
@@ -134,6 +163,10 @@ func (h *Hub) Route(ctx context.Context, path string) (gateway.Backend, error) {
 	if !workspace.Trusted {
 		return nil, &gateway.RouteError{Status: 403, Code: "workspace_untrusted"}
 	}
+	return h.admitted(ctx, workspace)
+}
+
+func (h *Hub) admitted(ctx context.Context, workspace Workspace) (*workspaceEngine, error) {
 	e, err := h.engineFor(workspace)
 	if err != nil {
 		return nil, err
@@ -142,6 +175,21 @@ func (h *Hub) Route(ctx context.Context, path string) (gateway.Backend, error) {
 		return nil, err
 	}
 	return e, nil
+}
+
+func (h *Hub) PageWorkspace(path string) (string, string, bool) { return ParseRoute(path) }
+
+// RoutePage serves a dashboard tab. An untrusted workspace gets an engine that
+// loads no extension code, so its built-in reads still work.
+func (h *Hub) RoutePage(ctx context.Context, name string) (gateway.PageBackend, error) {
+	workspace, err := h.resolve(ctx, name)
+	if errors.Is(err, ErrUnknownWorkspace) {
+		return nil, &gateway.RouteError{Status: 404, Code: "unknown_workspace"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return h.admitted(ctx, workspace)
 }
 
 func (h *Hub) resolve(ctx context.Context, name string) (Workspace, error) {
@@ -176,7 +224,8 @@ func (h *Hub) engineFor(workspace Workspace) (*workspaceEngine, error) {
 		return nil, &gateway.RouteError{Status: 503, Code: "draining"}
 	}
 	existing := h.engines[workspace.Name]
-	if existing != nil && existing.workspace.Path == workspace.Path {
+	// Trust decides whether extension code may load, so a change needs a new generation.
+	if existing != nil && existing.workspace.Path == workspace.Path && existing.workspace.Trusted == workspace.Trusted {
 		existing.workspace = workspace
 		return existing, nil
 	}
@@ -184,7 +233,11 @@ func (h *Hub) engineFor(workspace Workspace) (*workspaceEngine, error) {
 		// A workspace re-pointed at another repository: never mix the two
 		// behind one name while the old one still serves connections.
 		if existing.Activity().Sessions != 0 {
-			return nil, &gateway.RouteError{Status: 409, Code: "workspace_moved"}
+			code := "workspace_moved"
+			if existing.workspace.Path == workspace.Path {
+				code = "workspace_trust_changed"
+			}
+			return nil, &gateway.RouteError{Status: 409, Code: code}
 		}
 		h.retire(existing)
 	}
