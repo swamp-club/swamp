@@ -357,3 +357,47 @@ Deno.test("extractExtensionNameFromPath: without lockfile knowledge a manifest n
     );
   });
 });
+
+Deno.test("extractExtensionNameFromPath: a root manifest that does not name its directory stops the search below it", async () => {
+  for (
+    const rootManifest of ['name: "@evil/tools-v2"\n', "name: [unclosed\n"]
+  ) {
+    await withTempRepo(async (repo) => {
+      const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+      const source = await installPackage(
+        pulledRoot,
+        "@evil/tools",
+        "models/sub/x.ts",
+      );
+      await Deno.writeTextFile(
+        join(pulledRoot, "@evil", "tools", "manifest.yaml"),
+        rootManifest,
+      );
+      await Deno.writeTextFile(
+        join(pulledRoot, "@evil", "tools", "models", "sub", "manifest.yaml"),
+        'name: "@evil/tools/models/sub"\n',
+      );
+      assertEquals(extractExtensionNameFromPath(source, repo), "@evil/tools");
+    });
+  }
+});
+
+Deno.test("extractExtensionNameFromPath: a nested root manifest that does not name its directory falls back to the guess", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    const source = await installPackage(
+      pulledRoot,
+      "@evil/a/b",
+      "models/sub/x.ts",
+    );
+    await Deno.writeTextFile(
+      join(pulledRoot, "@evil", "a", "b", "manifest.yaml"),
+      'name: "@evil/other"\n',
+    );
+    await Deno.writeTextFile(
+      join(pulledRoot, "@evil", "a", "b", "models", "sub", "manifest.yaml"),
+      'name: "@evil/a/b/models/sub"\n',
+    );
+    assertEquals(extractExtensionNameFromPath(source, repo), "@evil/a");
+  });
+});

@@ -187,16 +187,12 @@ export function extractExtensionNameFromPath(
   const segments = relative.split(SEPARATOR);
   if (segments.length < 2) return undefined;
   // a package can ship a manifest.yaml naming one of its own subdirectories, so
-  // only the lockfile may pick a nested owner; without it the outermost
-  // manifest wins, and nothing a package ships sits above its own manifest
-  const name =
-    ownerCandidates(segments).reverse().find((candidate) =>
-      isInstalled?.(candidate)
-    ) ??
-      ownerCandidates(segments).find((candidate) =>
-        manifestNames(root, candidate)
-      ) ??
-      segmentGuessName(segments);
+  // only the lockfile may pick an owner inside another manifest's directory;
+  // without it the outermost manifest.yaml decides or the guess applies
+  const candidates = ownerCandidates(segments);
+  const name = candidates.findLast((candidate) => isInstalled?.(candidate)) ??
+    outermostManifestOwner(root, candidates) ??
+    segmentGuessName(segments);
   if (name.includes("..") || name.includes("\0")) return undefined;
   return name;
 }
@@ -214,10 +210,31 @@ function ownerCandidates(segments: readonly string[]): string[] {
   return candidates;
 }
 
-function manifestNames(root: string, candidate: string): boolean {
-  const manifestPath = join(root, ...candidate.split("/"), "manifest.yaml");
+/**
+ * the search never passes a manifest.yaml: one that is not a file naming its
+ * own directory decides nothing, so nothing deeper inside the package can win
+ */
+function outermostManifestOwner(
+  root: string,
+  candidates: readonly string[],
+): string | undefined {
+  for (const candidate of candidates) {
+    const manifestPath = join(root, ...candidate.split("/"), "manifest.yaml");
+    let entry: Deno.FileInfo;
+    try {
+      entry = Deno.lstatSync(manifestPath);
+    } catch {
+      continue;
+    }
+    return entry.isFile && manifestNames(manifestPath, candidate)
+      ? candidate
+      : undefined;
+  }
+  return undefined;
+}
+
+function manifestNames(manifestPath: string, candidate: string): boolean {
   try {
-    if (!Deno.lstatSync(manifestPath).isFile) return false;
     const parsed = parseYaml(Deno.readTextFileSync(manifestPath));
     return typeof parsed === "object" && parsed !== null &&
       (parsed as Record<string, unknown>).name === candidate;
