@@ -78,3 +78,45 @@ func MaxCommandGuardians() int {
 	}
 	return contract.Limits.CommandGuardians
 }
+
+// PageContract is what a dashboard tab may send through the hub.
+type PageContract struct {
+	Operations             []string `json:"operations"`
+	Reads                  []string `json:"reads"`
+	Actions                []string `json:"actions"`
+	HTTPOperations         []string `json:"httpOperations"`
+	RefusalMessage         string   `json:"refusalMessage"`
+	HTTPRefusalMessage     string   `json:"httpRefusalMessage"`
+	HTTPUnsupportedMessage string   `json:"httpUnsupportedMessage"`
+}
+
+func Page() PageContract {
+	var contract struct {
+		CallerClasses struct {
+			Page PageContract `json:"page"`
+		} `json:"callerClasses"`
+	}
+	if err := json.Unmarshal(manifest, &contract); err != nil || len(contract.CallerClasses.Page.Operations) == 0 ||
+		contract.CallerClasses.Page.RefusalMessage == "" {
+		panic("invalid embedded page caller contract")
+	}
+	return contract.CallerClasses.Page
+}
+
+// PageLimits are the TypeScript dashboard servers' bounds, which the hub keeps.
+type PageLimits struct {
+	CompressionThresholdBytes int `json:"compressionThresholdBytes"`
+	HTTPRequestBodyBytes      int `json:"httpRequestBodyBytes"`
+	HTTPRequestsInFlight      int `json:"httpRequestsInFlight"`
+}
+
+func PageLimitsOf() PageLimits {
+	var contract struct {
+		Limits PageLimits `json:"limits"`
+	}
+	if err := json.Unmarshal(manifest, &contract); err != nil || contract.Limits.CompressionThresholdBytes <= 0 ||
+		contract.Limits.HTTPRequestBodyBytes <= 0 || contract.Limits.HTTPRequestsInFlight <= 0 {
+		panic("invalid embedded page limits")
+	}
+	return contract.Limits
+}

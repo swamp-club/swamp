@@ -189,7 +189,7 @@ func (h *Hub) engineFor(workspace Workspace) (*workspaceEngine, error) {
 		h.retire(existing)
 	}
 	e := &workspaceEngine{
-		Supervisor: engine.NewSupervisorWith(h.config.Engine, h.config.Starter(workspace), engine.LocalHandshake(workspace.Path)),
+		Supervisor: engine.NewSupervisorWith(h.config.Engine, h.config.Starter(workspace), engine.HubHandshake(workspace.Path, workspace.Trusted)),
 		workspace:  workspace,
 	}
 	e.touch()

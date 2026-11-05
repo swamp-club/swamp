@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -969,4 +970,109 @@ func TestClientExpiredJoinPreservesAlreadyConfirmedCleanup(t *testing.T) {
 	if err := client.WaitContext(expired); err != nil {
 		t.Fatalf("confirmed cleanup became uncertain: %v", err)
 	}
+}
+
+func pageProcess(mode string, extensions bool, repo string, opened *[]string, mu *sync.Mutex) *fakeProcess {
+	return newFake(func(p *fakeProcess, e protocol.Envelope) {
+		switch e.Method {
+		case "hello":
+			classes := []string{"cli", "page"}
+			if mode == "read-only" {
+				classes = []string{"page"}
+			}
+			p.reply(e, map[string]interface{}{"version": 1, "profile": "local-v1", "callerSessionIds": true, "authenticationDeadlines": true, "operations": servecontract.Operations(), "callerClasses": classes, "mode": mode, "extensions": extensions, "repo": map[string]string{"path": repo}})
+		case "session.open":
+			if opened != nil {
+				mu.Lock()
+				*opened = append(*opened, string(e.Params))
+				mu.Unlock()
+			}
+			p.reply(e, map[string]string{"sessionId": openingSessionID(e)})
+		case "engine.status":
+			p.reply(e, Status{State: "ready"})
+		case "engine.quiesce":
+			p.reply(e, map[string]bool{"quiescent": true})
+			p.finish()
+		case "engine.shutdown":
+			p.reply(e, struct{}{})
+			p.finish()
+		default:
+			p.reply(e, struct{}{})
+		}
+	})
+}
+
+func TestPageSessionHoldsEngineThroughGraceButForcedEvictionIgnoresIt(t *testing.T) {
+	config := DefaultConfig()
+	config.IdleTimeout = time.Second
+	config.PageIdleGrace = time.Hour
+	var opened []string
+	var mu sync.Mutex
+	s := NewSupervisorWith(config, func(context.Context) (Process, error) {
+		return pageProcess("full", true, "/repo", &opened, &mu), nil
+	}, HubHandshake("/repo", true))
+	ctx := testContext(t)
+	session, err := s.OpenAs(ctx, OpenRequest{Class: ClassPage, SourceIP: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Class != ClassPage {
+		t.Fatalf("session class %q", session.Class)
+	}
+	mu.Lock()
+	params := opened[0]
+	mu.Unlock()
+	// A page open names its class and carries no credential.
+	if !strings.Contains(params, `"class":"page"`) || strings.Contains(params, "credential") {
+		t.Fatalf("page open params %s", params)
+	}
+	if err := s.Close(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, at := range []time.Time{now, now.Add(30 * time.Minute)} {
+		if err := s.Tick(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.Snapshot().State != "ready" {
+		t.Fatal("engine stopped inside the page grace")
+	}
+	if err := s.QuiesceIdle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.Snapshot().State != "stopped" {
+		t.Fatal("forced eviction waited for the page grace")
+	}
+}
+
+func TestHubHandshakeRecordsModeAndRefusesMismatches(t *testing.T) {
+	ctx := testContext(t)
+	readOnly := NewSupervisorWith(DefaultConfig(), func(context.Context) (Process, error) {
+		return pageProcess("read-only", false, "/repo", nil, nil), nil
+	}, HubHandshake("/repo", false))
+	info, err := readOnly.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode != "read-only" || info.Serves(ClassCLI) || !info.Serves(ClassPage) || info.Extensions {
+		t.Fatalf("read-only info %+v", info)
+	}
+	_ = readOnly.Shutdown(ctx)
+	// An engine that loaded extensions for an untrusted workspace is refused.
+	mismatch := NewSupervisorWith(DefaultConfig(), func(context.Context) (Process, error) {
+		return pageProcess("full", true, "/repo", nil, nil), nil
+	}, HubHandshake("/repo", false))
+	if err := mismatch.Validate(ctx); !errors.Is(err, ErrExtensionsMismatch) {
+		t.Fatalf("expected extensions mismatch, got %v", err)
+	}
+	_ = mismatch.Shutdown(ctx)
+	// A cli-only engine predates dashboard pages and cannot serve the hub.
+	legacy := NewSupervisorWith(DefaultConfig(), func(context.Context) (Process, error) {
+		return lifecycleProcess(&atomic.Bool{}), nil
+	}, HubHandshake("", true))
+	if err := legacy.Validate(ctx); !errors.Is(err, protocol.ErrVersion) {
+		t.Fatalf("expected version refusal, got %v", err)
+	}
+	_ = legacy.Shutdown(ctx)
 }

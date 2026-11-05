@@ -115,6 +115,12 @@ func ExecStarter(executable, repo string, cleanupTimeout ...time.Duration) Start
 	return execStarter(executable, repo, []string{"--repo", repo}, cleanupTimeout)
 }
 
+// UntrustedStarter runs a repository engine that loads no extension code:
+// it serves an untrusted workspace's dashboard read-only.
+func UntrustedStarter(executable, repo string, cleanupTimeout ...time.Duration) Starter {
+	return execStarter(executable, repo, []string{"--repo", repo, "--no-extensions"}, cleanupTimeout)
+}
+
 // ControlStarter runs the repository-less hub control engine.
 func ControlStarter(executable string, cleanupTimeout ...time.Duration) Starter {
 	return execStarter(executable, "", []string{"--control"}, cleanupTimeout)

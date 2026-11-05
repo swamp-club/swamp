@@ -40,6 +40,9 @@ type Config struct {
 	IdleTimeout    time.Duration
 	DrainTimeout   time.Duration
 	Cooldown       time.Duration
+	// PageIdleGrace keeps an engine up this long after its last dashboard
+	// session closes, so page navigation does not cold-start it each time.
+	PageIdleGrace time.Duration
 }
 
 func DefaultConfig() Config {
@@ -92,6 +95,8 @@ type Supervisor struct {
 	cooldownUntil   time.Time
 	idleSince       time.Time
 	sessions        int
+	pageSessions    int
+	lastPageClose   time.Time
 	draining        bool
 	cleanupError    error
 	uncertain       *Client
@@ -192,6 +197,53 @@ func LocalHandshake(repo string) Handshake {
 		if repo != "" && hello.Repo.Path != repo {
 			return ErrRepositoryMismatch
 		}
+		return nil
+	}
+}
+
+// HubHandshake admits a workspace engine for the hub: it must serve dashboard
+// pages, bind the selected repository, and load extensions only if trusted.
+func HubHandshake(repo string, extensions bool) Handshake {
+	return func(ctx context.Context, c *Client) error {
+		var hello struct {
+			Version                 int           `json:"version"`
+			Profile                 string        `json:"profile"`
+			Operations              []string      `json:"operations"`
+			CallerSessionIDs        bool          `json:"callerSessionIds"`
+			AuthenticationDeadlines bool          `json:"authenticationDeadlines"`
+			CallerClasses           []CallerClass `json:"callerClasses"`
+			Mode                    string        `json:"mode"`
+			Extensions              *bool         `json:"extensions"`
+			Repo                    struct {
+				Path string `json:"path"`
+			} `json:"repo"`
+		}
+		if err := c.Call(ctx, "hello", map[string]interface{}{"profile": "local-v1", "pages": true}, &hello); err != nil {
+			return err
+		}
+		info := EngineInfo{Mode: hello.Mode, CallerClasses: hello.CallerClasses, Extensions: hello.Extensions != nil && *hello.Extensions}
+		if hello.Version != protocol.Version || hello.Profile != "local-v1" || !hello.CallerSessionIDs || !hello.AuthenticationDeadlines || hello.Extensions == nil || !info.Serves(ClassPage) {
+			return protocol.ErrVersion
+		}
+		switch info.Mode {
+		case "full":
+			if !info.Serves(ClassCLI) || !supportsProfile(hello.Operations) {
+				return protocol.ErrVersion
+			}
+		case "read-only":
+			if info.Serves(ClassCLI) {
+				return protocol.ErrVersion
+			}
+		default:
+			return protocol.ErrVersion
+		}
+		if hello.Repo.Path != repo {
+			return ErrRepositoryMismatch
+		}
+		if info.Extensions != extensions {
+			return ErrExtensionsMismatch
+		}
+		c.info.Store(&info)
 		return nil
 	}
 }
@@ -415,6 +467,23 @@ func (s *Supervisor) launch(ctx context.Context, ready chan struct{}) {
 	s.mu.Unlock()
 }
 func (s *Supervisor) Open(ctx context.Context, credential, ip string) (*Session, error) {
+	return s.OpenAs(ctx, OpenRequest{Class: ClassCLI, Credential: credential, SourceIP: ip})
+}
+
+// Info starts the generation if needed and reports what its hello offered.
+func (s *Supervisor) Info(ctx context.Context) (EngineInfo, error) {
+	if err := s.gate.acquire(ctx, false); err != nil {
+		return EngineInfo{}, err
+	}
+	defer s.gate.release(false)
+	c, err := s.ensure(ctx)
+	if err != nil {
+		return EngineInfo{}, err
+	}
+	return c.Info(), nil
+}
+
+func (s *Supervisor) OpenAs(ctx context.Context, request OpenRequest) (*Session, error) {
 	if err := s.gate.acquire(ctx, false); err != nil {
 		return nil, err
 	}
@@ -425,22 +494,36 @@ func (s *Supervisor) Open(ctx context.Context, credential, ip string) (*Session,
 		return nil, ErrBusy
 	}
 	s.sessions++
+	if request.Class == ClassPage {
+		s.pageSessions++
+	}
 	s.idleSince = time.Time{}
 	s.mu.Unlock()
 	c, err := s.ensure(ctx)
 	if err == nil {
 		var session *Session
 		authentication, cancelAuthentication := context.WithTimeout(ctx, s.config.ControlTimeout)
-		session, err = c.Open(authentication, credential, ip)
+		session, err = c.OpenAs(authentication, request)
 		cancelAuthentication()
 		if err == nil {
 			return session, nil
 		}
 	}
 	s.mu.Lock()
-	s.sessions--
+	s.release(request.Class)
 	s.mu.Unlock()
 	return nil, err
+}
+
+// release is called with mu held.
+func (s *Supervisor) release(class CallerClass) {
+	s.sessions--
+	if class == ClassPage {
+		s.pageSessions--
+		if s.pageSessions == 0 {
+			s.lastPageClose = time.Now()
+		}
+	}
 }
 func (s *Supervisor) Close(ctx context.Context, session *Session) error {
 	// Closing cannot admit domain work, so it must not wait behind the idle or
@@ -448,7 +531,7 @@ func (s *Supervisor) Close(ctx context.Context, session *Session) error {
 	// Client retains the remote slot until its reserved cleanup is acknowledged.
 	var err error
 	session.released.Do(func() {
-		defer func() { s.mu.Lock(); s.sessions--; s.mu.Unlock() }()
+		defer func() { s.mu.Lock(); s.release(session.Class); s.mu.Unlock() }()
 		err = session.Close(ctx)
 	})
 	return err
@@ -477,7 +560,7 @@ func (s *Supervisor) tick(ctx context.Context, now time.Time, force bool) error 
 	// is possible. Repeat the checks after acquiring the gate to close races.
 	idleDisabled := s.config.IdleTimeout == 0 && !force
 	s.mu.Lock()
-	skip := s.draining || s.client == nil || (!s.client.Retiring() && (idleDisabled || s.sessions != 0))
+	skip := s.draining || s.client == nil || (!s.client.Retiring() && (idleDisabled || s.sessions != 0 || s.inPageGrace(now, force)))
 	if skip {
 		s.idleSince = time.Time{}
 	}
@@ -491,7 +574,7 @@ func (s *Supervisor) tick(ctx context.Context, now time.Time, force bool) error 
 	defer s.gate.release(true)
 	s.mu.Lock()
 	c := s.client
-	if s.draining || c == nil || (!c.Retiring() && (idleDisabled || s.sessions != 0)) {
+	if s.draining || c == nil || (!c.Retiring() && (idleDisabled || s.sessions != 0 || s.inPageGrace(now, force))) {
 		s.idleSince = time.Time{}
 		s.mu.Unlock()
 		return nil
@@ -560,6 +643,12 @@ func (s *Supervisor) tick(ctx context.Context, now time.Time, force bool) error 
 	s.mu.Unlock()
 	return err
 }
+
+// inPageGrace is called with mu held. Forced eviction ignores the grace.
+func (s *Supervisor) inPageGrace(now time.Time, force bool) bool {
+	return !force && s.config.PageIdleGrace > 0 && !s.lastPageClose.IsZero() && now.Sub(s.lastPageClose) < s.config.PageIdleGrace
+}
+
 func (s *Supervisor) Run(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()

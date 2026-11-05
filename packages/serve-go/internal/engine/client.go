@@ -41,12 +41,32 @@ const cleanupReserveBytes = 64 << 10
 var ErrUnavailable = errors.New("engine transport unavailable; an admitted operation may have been interrupted")
 var ErrBusy = errors.New("engine admission limit reached")
 var ErrRepositoryMismatch = errors.New("engine bound a different repository than the one selected")
+var ErrExtensionsMismatch = errors.New("engine extension loading does not match the workspace's trust")
 var ErrRetiring = &protocol.Error{Code: "engine_retiring", Message: "Engine is recovering authentication; reconnect after accepted work finishes"}
+
+// CallerClass is who opened a session: a serve-token CLI caller or a
+// dashboard tab whose page lease the hub already checked.
+type CallerClass string
+
+const (
+	ClassCLI  CallerClass = "cli"
+	ClassPage CallerClass = "page"
+)
+
+// OpenRequest is one session open. A page carries no credential; OneShot
+// sessions close once their single request settles.
+type OpenRequest struct {
+	Class      CallerClass
+	Credential string
+	SourceIP   string
+	OneShot    bool
+}
 
 // Session is a bounded mailbox. A slow subscriber never stalls the pipe reader.
 type Session struct {
 	ID         string
 	Generation string
+	Class      CallerClass
 	client     *Client
 	mu         sync.Mutex
 	queue      chan json.RawMessage
@@ -159,6 +179,31 @@ type Client struct {
 	waitError   error
 	finished    chan struct{}
 	unconfirmed atomic.Bool
+	info        atomic.Pointer[EngineInfo]
+}
+
+// EngineInfo is what a generation's hello said it serves.
+type EngineInfo struct {
+	Mode          string
+	CallerClasses []CallerClass
+	Extensions    bool
+}
+
+func (i EngineInfo) Serves(class CallerClass) bool {
+	for _, offered := range i.CallerClasses {
+		if offered == class {
+			return true
+		}
+	}
+	return false
+}
+
+// Info is the admitted generation's hello; a cli-only engine reports only cli.
+func (c *Client) Info() EngineInfo {
+	if info := c.info.Load(); info != nil {
+		return *info
+	}
+	return EngineInfo{Mode: "full", CallerClasses: []CallerClass{ClassCLI}, Extensions: true}
 }
 
 func NewClient(generation string, process Process) *Client {
@@ -468,6 +513,13 @@ func (c *Client) queueClose(slot *sessionSlot) error {
 }
 
 func (c *Client) Open(ctx context.Context, credential, sourceIP string) (*Session, error) {
+	return c.OpenAs(ctx, OpenRequest{Class: ClassCLI, Credential: credential, SourceIP: sourceIP})
+}
+
+func (c *Client) OpenAs(ctx context.Context, request OpenRequest) (*Session, error) {
+	if request.Class == "" {
+		request.Class = ClassCLI
+	}
 	if c.Retiring() {
 		return nil, ErrRetiring
 	}
@@ -507,12 +559,19 @@ func (c *Client) Open(ctx context.Context, credential, sourceIP string) (*Sessio
 			c.fail()
 		}
 	}
-	err, outstanding := c.call(ctx, "session.open", struct {
+	params := struct {
 		SessionID               string `json:"sessionId"`
-		Credential              string `json:"credential"`
+		Class                   string `json:"class,omitempty"`
+		Credential              string `json:"credential,omitempty"`
 		SourceIP                string `json:"sourceIp"`
 		AuthenticationTimeoutMs int64  `json:"authenticationTimeoutMs"`
-	}{id, credential, sourceIP, authenticationTimeout}, &result, abandoned)
+		OneShot                 bool   `json:"oneShot,omitempty"`
+	}{SessionID: id, Credential: request.Credential, SourceIP: request.SourceIP, AuthenticationTimeoutMs: authenticationTimeout, OneShot: request.OneShot}
+	// A cli open keeps the original wire shape, so older engines still accept it.
+	if request.Class != ClassCLI {
+		params.Class = string(request.Class)
+	}
+	err, outstanding := c.call(ctx, "session.open", params, &result, abandoned)
 	if err != nil {
 		if !outstanding {
 			c.releaseSlot(slot)
@@ -524,7 +583,7 @@ func (c *Client) Open(ctx context.Context, credential, sourceIP string) (*Sessio
 		c.releaseSlot(slot)
 		return nil, protocol.ErrFrame
 	}
-	s := &Session{ID: result.SessionID, Generation: c.generation, client: c, slot: slot, queue: make(chan json.RawMessage, MaxSessionFrames), done: make(chan struct{})}
+	s := &Session{ID: result.SessionID, Generation: c.generation, Class: request.Class, client: c, slot: slot, queue: make(chan json.RawMessage, MaxSessionFrames), done: make(chan struct{})}
 	c.mu.Lock()
 	if slot.closed != nil {
 		delete(c.slots, slot.key)
@@ -552,6 +611,16 @@ func (s *Session) Dispatch(ctx context.Context, request json.RawMessage) error {
 		SessionID string          `json:"sessionId"`
 		Request   json.RawMessage `json:"request"`
 	}{s.ID, request}, nil)
+}
+
+// DispatchHTTP sends a one-shot page session's HTTP read. The engine refuses
+// what the HTTP route would refuse before it streams anything.
+func (s *Session) DispatchHTTP(ctx context.Context, request json.RawMessage) error {
+	return s.client.Call(ctx, "request.dispatch", struct {
+		SessionID string          `json:"sessionId"`
+		HTTP      bool            `json:"http"`
+		Request   json.RawMessage `json:"request"`
+	}{s.ID, true, request}, nil)
 }
 func (s *Session) Close(ctx context.Context) error {
 	s.close(protocol.Closed{Code: 1000, Reason: "Session closed"})

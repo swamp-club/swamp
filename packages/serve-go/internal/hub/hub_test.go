@@ -55,9 +55,32 @@ func (p *pipeEngine) Kill() error {
 
 // fakeEngine answers like a local-v1 engine bound to repo; busy reports a run.
 func fakeEngine(repo string, busy *atomic.Bool) *pipeEngine {
+	return fakeEngineWith(fakeOptions{repo: repo, busy: busy, mode: "full", extensions: true})
+}
+
+type fakeOptions struct {
+	repo       string
+	busy       *atomic.Bool
+	mode       string
+	extensions bool
+	// opened receives each session.open's parameters.
+	opened func(json.RawMessage)
+	// dispatched answers request.dispatch; nil accepts it.
+	dispatched func(request protocol.Envelope, out func(protocol.Envelope)) *protocol.Error
+}
+
+func fakeEngineWith(options fakeOptions) *pipeEngine {
+	repo, busy := options.repo, options.busy
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	p := &pipeEngine{inR: inR, inW: inW, outR: outR, outW: outW, done: make(chan struct{})}
+	var writeMu sync.Mutex
+	write := func(envelope protocol.Envelope) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		frame, _ := protocol.Encode(envelope)
+		_ = protocol.Write(outW, frame)
+	}
 	go func() {
 		defer p.Kill()
 		for {
@@ -66,16 +89,30 @@ func fakeEngine(repo string, busy *atomic.Bool) *pipeEngine {
 				return
 			}
 			var result interface{} = struct{}{}
+			var failure *protocol.Error
 			finish := false
 			switch e.Method {
 			case "hello":
-				result = map[string]interface{}{"version": 1, "profile": "local-v1", "callerSessionIds": true, "authenticationDeadlines": true, "operations": servecontract.Operations(), "repo": map[string]string{"path": repo}}
+				classes := []string{"cli", "page"}
+				if options.mode == "read-only" {
+					classes = []string{"page"}
+				}
+				result = map[string]interface{}{"version": 1, "profile": "local-v1", "callerSessionIds": true, "authenticationDeadlines": true, "operations": servecontract.Operations(), "repo": map[string]string{"path": repo}, "callerClasses": classes, "mode": options.mode, "extensions": options.extensions}
 			case "session.open":
 				var params struct {
 					SessionID string `json:"sessionId"`
 				}
 				_ = json.Unmarshal(e.Params, &params)
+				if options.opened != nil {
+					options.opened(e.Params)
+				}
 				result = map[string]string{"sessionId": params.SessionID}
+			case "request.dispatch":
+				if options.dispatched != nil {
+					failure = options.dispatched(e, write)
+				}
+			case "health.snapshot":
+				result = map[string]interface{}{"status": "ok", "activeRuns": []interface{}{}}
 			case "engine.status":
 				runs := 0
 				if busy != nil && busy.Load() {
@@ -89,9 +126,12 @@ func fakeEngine(repo string, busy *atomic.Bool) *pipeEngine {
 			case "engine.shutdown":
 				finish = true
 			}
+			if failure != nil {
+				write(protocol.Envelope{Version: 1, Generation: e.Generation, ID: e.ID, Error: failure})
+				continue
+			}
 			raw, _ := json.Marshal(result)
-			frame, _ := protocol.Encode(protocol.Envelope{Version: 1, Generation: e.Generation, ID: e.ID, Result: raw})
-			_ = protocol.Write(outW, frame)
+			write(protocol.Envelope{Version: 1, Generation: e.Generation, ID: e.ID, Result: raw})
 			if finish {
 				return
 			}
@@ -132,11 +172,16 @@ type harness struct {
 	starts   sync.Map // path -> *atomic.Int32
 	busy     sync.Map // path -> *atomic.Bool
 	boundTo  func(Workspace) string
+	// mode reports each start's engine mode; full unless set.
+	mode       func(Workspace) string
+	extensions func(Workspace) bool
+	opened     func(json.RawMessage)
+	dispatched func(protocol.Envelope, func(protocol.Envelope)) *protocol.Error
 }
 
 func newHarness(t *testing.T, maxEngines int, workspaces ...Workspace) *harness {
 	t.Helper()
-	h := &harness{resolver: &mapResolver{workspaces: map[string]Workspace{}}, boundTo: func(w Workspace) string { return w.Path }}
+	h := &harness{resolver: &mapResolver{workspaces: map[string]Workspace{}}, boundTo: func(w Workspace) string { return w.Path }, mode: func(Workspace) string { return "full" }, extensions: func(w Workspace) bool { return w.Trusted }}
 	for _, w := range workspaces {
 		h.resolver.set(w)
 	}
@@ -147,7 +192,13 @@ func newHarness(t *testing.T, maxEngines int, workspaces ...Workspace) *harness 
 			counter, _ := h.starts.LoadOrStore(w.Path, &atomic.Int32{})
 			counter.(*atomic.Int32).Add(1)
 			busy, _ := h.busy.LoadOrStore(w.Path, &atomic.Bool{})
-			return fakeEngine(h.boundTo(w), busy.(*atomic.Bool)), nil
+			return fakeEngineWith(fakeOptions{repo: h.boundTo(w), busy: busy.(*atomic.Bool), mode: h.mode(w), extensions: h.extensions(w), opened: h.opened, dispatched: func(e protocol.Envelope, out func(protocol.Envelope)) *protocol.Error {
+				// Read per request, so a test can change the answer between requests.
+				if h.dispatched == nil {
+					return nil
+				}
+				return h.dispatched(e, out)
+			}}), nil
 		}
 	}}, h.resolver)
 	t.Cleanup(func() {
