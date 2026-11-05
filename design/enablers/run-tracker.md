@@ -167,7 +167,14 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    (7 days) and finds older ones through their workflow row, by workflow
    name and, when the name no longer resolves, by run id under any workflow,
    so no run is stranded by age or a rename. It does not look at a settled
-   row again. `settleInterruptedWorkflowRows` marks settled every
+   row again. A record that cannot be parsed raises
+   `UnreadableRunRecordError`, and a live owner's next save replaces it. `findUnreadableRuns` reads the records the index lists as running or interrupted or does not list, and `run doctor --fix` settles those whose local
+   row shows a dead owner through `settleUnreadableRun`, as `failed` rather than `interrupted`, since recovery needs the steps the record lost. It
+   reads the record again first, so one its owner repaired is never overwritten.
+   Other unreadable records are reported and left alone, among them a record that parses but fails the schema: it is whole, so it is not replaced. Only `findGlobalByStatus`, which falls back to reading the workflow's records when its index cannot be repaired, and `workflow history search`, which names the workflow it leaves out, pass over an unreadable record: the other scans throw, because serve's guard on deleting a workflow
+   counts a failed scan as a guarded run and `workflow cancel` decides for itself
+   whether to skip one.
+   `settleInterruptedWorkflowRows` marks settled every
    `interrupted` workflow row whose record is no longer `running`
    (`record_settled`) or is stored under no workflow (`record_missing`), such
    as a row reaped while its owner went on to finish the run. It runs at

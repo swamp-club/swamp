@@ -136,6 +136,15 @@ export interface DoctorRunProgress {
   readonly progressScope?: string;
 }
 
+export interface DoctorUnreadableRuns {
+  readonly runs: readonly {
+    readonly runId: string;
+    readonly path: string;
+    readonly reason: string;
+  }[];
+  readonly reaped: number;
+}
+
 export function writeDoctorRunsLog(
   active: ActiveRun[],
   stale: ActiveRun[],
@@ -149,9 +158,10 @@ export function writeDoctorRunsLog(
   progressByRun?: ReadonlyMap<string, DoctorRunProgress>,
   webhookAdmissions?:
     readonly import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[],
+  unreadable?: DoctorUnreadableRuns,
 ): void {
   if (
-    active.length === 0 && stale.length === 0 &&
+    active.length === 0 && stale.length === 0 && !unreadable?.runs.length &&
     (!orphanedWorkflowRuns || orphanedWorkflowRuns === 0) &&
     (!orphanedMethodRuns || orphanedMethodRuns === 0) &&
     orphanedMethodError === undefined && !webhookAdmissions?.length &&
@@ -227,6 +237,39 @@ export function writeDoctorRunsLog(
     } else if (!fix) {
       lines.push(
         dim("Run with --fix to automatically reap orphaned workflow runs."),
+      );
+    }
+  }
+
+  if (unreadable?.runs.length) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      bold(
+        red(
+          `${unreadable.runs.length} workflow run(s) with an unreadable record:`,
+        ),
+      ),
+    );
+    for (const run of unreadable.runs) {
+      lines.push(`  ${run.runId} ${dim(run.path)}`);
+      lines.push(`    ${red(run.reason)}`);
+    }
+    if (fix) {
+      if (unreadable.reaped > 0) {
+        lines.push(green(`Settled ${unreadable.reaped} as failed.`));
+      }
+      if (unreadable.reaped < unreadable.runs.length) {
+        lines.push(
+          dim(
+            "A run that finished, whose owner may still be working, that this host does not track, or whose record is whole but fails the schema is left as it is. To clear one, restore or remove its file.",
+          ),
+        );
+      }
+    } else {
+      lines.push(
+        dim(
+          "Run with --fix to settle unfinished, damaged ones whose owner is gone. This replaces each record and keeps no step detail.",
+        ),
       );
     }
   }
@@ -331,6 +374,7 @@ export function writeDoctorRunsJson(
   progressByRun?: ReadonlyMap<string, DoctorRunProgress>,
   webhookAdmissions?:
     readonly import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[],
+  unreadable?: DoctorUnreadableRuns,
 ): void {
   // A run is stale because doctor listed it as stale: an expired heartbeat,
   // or an owner process that is gone while its heartbeat is still fresh.
@@ -371,6 +415,13 @@ export function writeDoctorRunsJson(
       }
       : {}),
     ...(orphanedMethodError !== undefined ? { orphanedMethodError } : {}),
+    ...(unreadable?.runs.length
+      ? {
+        unreadableWorkflowRuns: unreadable.runs.length,
+        unreadableReaped: unreadable.reaped,
+        unreadableRuns: unreadable.runs,
+      }
+      : {}),
     activeRuns: activeRuns.map(mapRun(false)),
     staleRuns: staleRuns.map(mapRun(true)),
   }));

@@ -1661,3 +1661,73 @@ Deno.test("handleWorkerLeaseList: returns leases for an admin, scoped to the rep
   assertStringIncludes(predicates[0], 'ns == "repo-ns"');
   assertStringIncludes(predicates[0], 'name in ["lease-d-1"]');
 });
+
+Deno.test("handleRunDoctor: reports an unreadable record, and settles it only with fix", async () => {
+  const scan = async (fix: boolean) => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp-doctor-unreadable-" });
+    const tracker = new RunTrackerStore(join(dir, "tracker.db"));
+    try {
+      const runId = crypto.randomUUID();
+      tracker.register(ActiveRun.createWorkflowRun({
+        id: runId,
+        workflowName: "wf",
+        pid: 2147483647,
+        hostname: hostname(),
+      }));
+      const saved: string[] = [];
+      const ctx = {
+        runTracker: tracker,
+        repoContext: {
+          markDirty: () => Promise.resolve(),
+          workflowRunRepo: {
+            findUnreadableRuns: () =>
+              Promise.resolve([{
+                workflowId: crypto.randomUUID(),
+                runId,
+                path: "/runs/workflow-run.yaml",
+                reason: "it is empty",
+                damaged: true,
+              }]),
+            isRunDamaged: () => Promise.resolve(true),
+            save: (_workflowId: WorkflowId, run: WorkflowRun) => {
+              saved.push(run.status);
+              return Promise.resolve();
+            },
+          },
+        },
+        authConfig: {
+          mode: "none" as const,
+          admins: [],
+          allowedCollectives: [],
+          allowedUsers: [],
+          oauthProvider: "",
+          groupsField: "collectives",
+          restrictedModelTypes: [],
+          restrictedCommands: [],
+          approveRequiresExplicitGrant: false,
+          signalRequiresExplicitGrant: false,
+          tagRequiresExplicitGrant: false,
+        },
+      } as unknown as ConnectionContext;
+      const socket = createMockSocket();
+      await handleRunDoctor(socket, ctx, "req-doctor", { fix }, null);
+      return { reply: JSON.parse(socket.sent[0]).payload, saved };
+    } finally {
+      tracker.close();
+      await Deno.remove(dir, { recursive: true }).catch(
+        Deno.build.os === "windows" ? () => {} : (error) => {
+          throw error;
+        },
+      );
+    }
+  };
+
+  const report = await scan(false);
+  assertEquals(report.reply.unreadableRuns.length, 1);
+  assertEquals(report.reply.unreadableReaped, 0);
+  assertEquals(report.saved, []);
+
+  const fixed = await scan(true);
+  assertEquals(fixed.reply.unreadableReaped, 1);
+  assertEquals(fixed.saved, ["failed"]);
+});

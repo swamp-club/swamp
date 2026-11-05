@@ -20,8 +20,11 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
 import { Box, Text } from "ink";
+import { dim, red } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
+  HistorySkippedWorkflow,
   WorkflowHistorySearchData,
   WorkflowHistorySearchEvent,
   WorkflowHistorySearchItem,
@@ -101,6 +104,9 @@ class JsonWorkflowHistorySearchRenderer
           query: e.data.query,
           results: filtered,
           ...(e.data.reapedBefore ? { reapedBefore: e.data.reapedBefore } : {}),
+          ...(e.data.skippedWorkflows
+            ? { skippedWorkflows: e.data.skippedWorkflows }
+            : {}),
         };
         console.log(JSON.stringify(output, null, 2));
       },
@@ -160,11 +166,26 @@ class InkWorkflowHistorySearchRenderer
           this._selected = result.item;
         }
         writeReapedRunsLine(e.data.reapedBefore);
+        writeSkippedWorkflowsLines(e.data.skippedWorkflows);
       },
       error: (e) => {
         throw new UserError(e.error.message);
       },
     };
+  }
+}
+
+function writeSkippedWorkflowsLines(
+  skipped: readonly HistorySkippedWorkflow[] | undefined,
+): void {
+  for (const { workflowName, runId, reason } of skipped ?? []) {
+    writeOutput(
+      `${
+        red(`Left out workflow ${workflowName}:`)
+      } the record of run ${runId} cannot be read: ${reason}. ${
+        dim("See 'swamp run doctor'.")
+      }`,
+    );
   }
 }
 
@@ -185,7 +206,10 @@ export function createWorkflowHistorySearchRenderer(
           itemLabel: "runs",
           items: (e) => filterRuns(e.data.results, e.data.query),
           renderEntry: (item) => renderHistoryScrollback(item, undefined),
-          afterList: (e) => writeReapedRunsLine(e.data.reapedBefore),
+          afterList: (e) => {
+            writeReapedRunsLine(e.data.reapedBefore);
+            writeSkippedWorkflowsLines(e.data.skippedWorkflows);
+          },
           toError: (error) => new UserError(error.message),
         });
       }

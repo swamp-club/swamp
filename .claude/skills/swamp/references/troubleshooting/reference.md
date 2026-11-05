@@ -56,6 +56,7 @@ reach for it last.
 | Data `datastore setup` migrated never reached S3/GCS | Tier 1 → `swamp doctor datastores --repair` (preview, `-y`) |
 | A data version missing from `data list` / type query | Tier 1 → `swamp doctor datastores` (`mixed_kind_names`)     |
 | Run stuck in "running" / orphaned after crash        | Tier 1 → `swamp run doctor --fix`                           |
+| `run_record_unreadable` from any command             | Tier 1 → `swamp run doctor --fix`, if it had not finished   |
 | "Is anything running right now?"                     | Tier 1 → `swamp run history --active`                       |
 | Command errored — message is clear                   | Tier 2 → read it, fix the named issue                       |
 | Command errored — message is vague or unhelpful      | Tier 2 → re-run with `--json`, then escalate                |

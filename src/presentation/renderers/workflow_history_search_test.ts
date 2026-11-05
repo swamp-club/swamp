@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { createWorkflowHistorySearchRenderer } from "./workflow_history_search.tsx";
 import { reapedRunsLine } from "./workflow_run_search.tsx";
 import { captureLog } from "./search_list_test_helpers.ts";
@@ -56,4 +57,43 @@ Deno.test("createWorkflowHistorySearchRenderer: non-interactive log lists matchi
   assertEquals(lines[0].includes("r2"), false);
   assertEquals(lines[2], "runs: 1");
   assertEquals(lines[3], reapedRunsLine(REAPED));
+});
+
+const SKIPPED = [{
+  workflowId: "w1",
+  workflowName: "deploy",
+  runId: "r1",
+  reason: "it is empty",
+}];
+
+Deno.test("createWorkflowHistorySearchRenderer: log mode names a workflow left out for an unreadable record", async () => {
+  const renderer = createWorkflowHistorySearchRenderer("log", undefined, {
+    interactive: false,
+  });
+  const lines = await captureLog(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      data: { query: "", results: [], skippedWorkflows: SKIPPED },
+    })
+  );
+  const output = stripAnsiCode(lines.join("\n"));
+  assertStringIncludes(output, "Left out workflow deploy:");
+  assertStringIncludes(output, "r1");
+  assertStringIncludes(output, "swamp run doctor");
+});
+
+Deno.test("createWorkflowHistorySearchRenderer: json mode carries a workflow left out for an unreadable record", async () => {
+  const renderer = createWorkflowHistorySearchRenderer("json", undefined);
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (message: string) => logs.push(message);
+  try {
+    await renderer.handlers().completed({
+      kind: "completed",
+      data: { query: "", results: [], skippedWorkflows: SKIPPED },
+    });
+  } finally {
+    console.log = original;
+  }
+  assertEquals(JSON.parse(logs[0]).skippedWorkflows, SKIPPED);
 });

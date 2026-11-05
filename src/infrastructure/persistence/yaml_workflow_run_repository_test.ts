@@ -41,6 +41,8 @@ import {
 } from "./workflow_run_index.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { UnreadableRunRecordError } from "../../domain/workflows/unreadable_run_record.ts";
+import { EventBus } from "../../domain/events/event_bus.ts";
 import { SCHEDULED_FOR_TAG } from "../../domain/workflows/schedule_catch_up.ts";
 import { StepStart } from "../../domain/workflows/step_start.ts";
 import { INDEXED_INPUT_MAX_BYTES } from "../../domain/workflows/workflow_run_summary.ts";
@@ -5652,5 +5654,251 @@ Deno.test("YamlWorkflowRunRepository: a job run's fan-out plan round-trips throu
       JSON.parse(JSON.stringify(loaded!.jobs[0].toData())),
       JSON.parse(JSON.stringify(job.toData())),
     );
+  });
+});
+
+async function truncateRecord(
+  repo: YamlWorkflowRunRepository,
+  run: WorkflowRun,
+): Promise<string> {
+  const path = repo.getPath(createWorkflowId(run.workflowId), run.id);
+  const content = await Deno.readTextFile(path);
+  const cut = content.indexOf("workflowName:") + "workflowName: 'te".length;
+  await Deno.writeTextFile(path, `${content.slice(0, cut)}'unterminated`);
+  return path;
+}
+
+async function saveStarted(
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+): Promise<WorkflowRun> {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  await repo.save(workflow.id, run);
+  return run;
+}
+
+Deno.test("YamlWorkflowRunRepository.findById: a truncated record throws UnreadableRunRecordError naming the run and path, without quoting the record", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    const path = await truncateRecord(repo, run);
+
+    const error = await assertRejects(
+      () => repo.findById(workflow.id, run.id),
+      UnreadableRunRecordError,
+    );
+    assertEquals(error.runId, run.id);
+    assertEquals(error.path, path);
+    assertEquals(error.code, "run_record_unreadable");
+    assertEquals(error.message.includes("unterminated"), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findById: a record that fails the schema is unreadable, without quoting it; an empty one still reads as no run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    const path = repo.getPath(workflow.id, run.id);
+
+    await Deno.writeTextFile(path, `id: ${run.id}\nsecret: hunter2\n`);
+    const error = await assertRejects(
+      () => repo.findById(workflow.id, run.id),
+      UnreadableRunRecordError,
+    );
+    assertEquals(error.message.includes("hunter2"), false);
+
+    await Deno.writeTextFile(path, "");
+    assertEquals(await repo.findById(workflow.id, run.id), null);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: repairs an unreadable record, sends no second start event, and still sends the terminal event", async () => {
+  await withTempDir(async (dir) => {
+    const eventBus = new EventBus();
+    const events: string[] = [];
+    for (const type of ["WorkflowRunStarted", "WorkflowRunFailed"] as const) {
+      eventBus.subscribe(type, (event) => {
+        events.push(event.type);
+        return Promise.resolve();
+      });
+    }
+    const repo = new YamlWorkflowRunRepository(dir, eventBus);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    assertEquals(events, ["WorkflowRunStarted"]);
+
+    await truncateRecord(repo, run);
+    await repo.save(workflow.id, run);
+    assertEquals(events, ["WorkflowRunStarted"]);
+    assertEquals((await repo.findById(workflow.id, run.id))?.status, "running");
+
+    await truncateRecord(repo, run);
+    run.complete();
+    await repo.save(workflow.id, run);
+    assertEquals(events, ["WorkflowRunStarted", "WorkflowRunFailed"]);
+    assertEquals((await repo.findById(workflow.id, run.id))?.status, "failed");
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalByStatus: leaves out an unreadable record and returns the others", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const damaged = await saveStarted(repo, workflow);
+    const healthy = await saveStarted(repo, workflow);
+    await truncateRecord(repo, damaged);
+
+    const running = await repo.findGlobalByStatus("running");
+    assertEquals(running.map(({ run }) => run.id), [healthy.id]);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findGlobalByStatus: when an index rebuild hits an unreadable record, the workflow's other runs and other workflows are still found", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const other = createTestWorkflow2();
+    const damaged = await saveStarted(repo, workflow);
+    const sibling = await saveStarted(repo, workflow);
+    const finished = await saveStarted(repo, workflow);
+    finished.complete();
+    await repo.save(workflow.id, finished);
+    const elsewhere = await saveStarted(repo, other);
+    const path = await truncateRecord(repo, damaged);
+    await Deno.remove(join(dirname(path), ".runs-index.json"));
+
+    const running = await repo.findGlobalByStatus("running");
+    assertEquals(
+      running.map(({ run }) => run.id as string).sort(),
+      [sibling.id as string, elsewhere.id as string].sort(),
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findById: a logFile that is not a string is unreadable, not a raw path error", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    const path = repo.getPath(workflow.id, run.id);
+    await Deno.writeTextFile(
+      path,
+      `${await Deno.readTextFile(path)}logFile: 5\n`,
+    );
+
+    await assertRejects(
+      () => repo.findById(workflow.id, run.id),
+      UnreadableRunRecordError,
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository: the other scans throw on an unreadable record, so a guard or a caller that decides for itself still sees it", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const damaged = await saveStarted(repo, workflow);
+    const path = await truncateRecord(repo, damaged);
+    await Deno.remove(join(dirname(path), ".runs-index.json"));
+
+    for (
+      const scan of [
+        () => repo.findAllByWorkflowId(workflow.id),
+        () => repo.findAllGlobalSince(new Date(0)),
+        () => repo.findAllSummariesFromIndex(workflow.id),
+      ]
+    ) {
+      await assertRejects(scan, UnreadableRunRecordError);
+    }
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findUnreadableRuns: finds a running run with or without an index, and an empty record too", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const damaged = await saveStarted(repo, workflow);
+    const path = await truncateRecord(repo, damaged);
+
+    const indexed = await repo.findUnreadableRuns();
+    assertEquals(indexed.map((run) => run.runId), [damaged.id]);
+    assertEquals(indexed[0].workflowName, workflow.name);
+    assertEquals(indexed[0].path, path);
+
+    await Deno.remove(join(dirname(path), ".runs-index.json"));
+    const rebuilt = await repo.findUnreadableRuns();
+    assertEquals(rebuilt.map((run) => run.runId), [damaged.id]);
+
+    await Deno.writeTextFile(path, "");
+    const empty = await repo.findUnreadableRuns();
+    assertEquals(empty.map((run) => run.reason), ["it is empty"]);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findUnreadableRuns: finds a damaged interrupted run, and tells a cut-short record from one that fails the schema", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    run.interrupt("test");
+    await repo.save(workflow.id, run);
+    const path = await truncateRecord(repo, run);
+
+    assertEquals((await repo.findUnreadableRuns())[0].damaged, true);
+
+    await Deno.writeTextFile(path, `id: ${run.id}\nstatus: new\n`);
+    assertEquals((await repo.findUnreadableRuns())[0].damaged, false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findUnreadableRuns: does not read a record the index lists as finished", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    run.complete();
+    await repo.save(workflow.id, run);
+    await truncateRecord(repo, run);
+
+    assertEquals(await repo.findUnreadableRuns(), []);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.isRunDamaged: follows the record as it is now, and a whole record that fails the schema is not damaged", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    const check = () => repo.isRunDamaged(workflow.id, run.id);
+    assertEquals(await check(), false);
+
+    const path = await truncateRecord(repo, run);
+    assertEquals(await check(), true);
+
+    await Deno.writeTextFile(path, "id: 'unterminated");
+    assertEquals(await check(), true);
+
+    await Deno.writeTextFile(path, "");
+    assertEquals(await check(), true);
+
+    for (
+      const whole of [
+        `id: ${run.id}\nstatus: new\n`,
+        `id: ${run.id}\nlogFile: 5\n`,
+        `id: ${run.id}\nlogFile: {path: x}\n`,
+        "just-a-scalar\n",
+        "id: 'unterminated\n",
+        "0\n",
+      ]
+    ) {
+      await Deno.writeTextFile(path, whole);
+      assertEquals(await check(), false, whole);
+    }
+
+    await Deno.remove(path);
+    assertEquals(await check(), false);
   });
 });

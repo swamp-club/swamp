@@ -223,12 +223,14 @@ import {
   resetExtensionLoadWarnings,
 } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { localOwnerLiveness } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   runRecordFinder,
   settleInterruptedWorkflowRows,
+  settleUnreadableRun,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -2390,6 +2392,46 @@ export async function handleRunDoctor(
     }
   }
 
+  let unreadableRuns: { runId: string; path: string; reason: string }[] = [];
+  let unreadableReaped = 0;
+  try {
+    const runRepo = ctx.repoContext.workflowRunRepo;
+    const found = await runRepo.findUnreadableRuns?.() ?? [];
+    unreadableRuns = found.map(({ runId, path, reason }) => ({
+      runId,
+      path,
+      reason,
+    }));
+    if (payload?.fix && found.length > 0) {
+      const runTracker = ctx.runTracker;
+      const liveness = {
+        ...localOwnerLiveness(),
+        instanceId: ctx.instanceId,
+      };
+      await runInRootUnitOfWork(
+        ctx.repoContext,
+        { flush: undefined },
+        async () => {
+          for (const unreadable of found) {
+            if (
+              await settleUnreadableRun(
+                runRepo,
+                runTracker,
+                unreadable,
+                liveness,
+              )
+            ) unreadableReaped++;
+          }
+        },
+      );
+    }
+  } catch (err: unknown) {
+    getSwampLogger(["serve", "run-doctor"]).warn(
+      "Failed to check for unreadable workflow run records: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+  }
+
   const mapRun = (r: ActiveRun) => ({
     id: r.id,
     runKind: r.runKind,
@@ -2417,6 +2459,9 @@ export async function handleRunDoctor(
       reaped,
       orphanedWorkflowRuns,
       orphanedReaped,
+      ...(unreadableRuns.length > 0
+        ? { unreadableRuns, unreadableReaped }
+        : {}),
       activeRuns: active.map(mapRun),
       liveProgress: runProgressSnapshots(),
       webhookAdmissions: ctx.webhookAdmissionSnapshots?.(),

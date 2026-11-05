@@ -43,6 +43,10 @@ import {
   StepStart,
 } from "../../domain/workflows/step_start.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import {
+  type UnreadableRun,
+  UnreadableRunRecordError,
+} from "../../domain/workflows/unreadable_run_record.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { RunIndexCache, type RunIndexStamp } from "./run_index_cache.ts";
 import { SharedIndexRead } from "./shared_index_read.ts";
@@ -301,12 +305,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
       throw error;
     }
-    const data = parseYaml(content) as WorkflowRunData | null;
+    const data = decodeRunRecord(path, content);
     if (!data || data.id !== runId) return null;
     if (data.logFile) {
       data.logFile = toAbsolutePath(this.repoDir, data.logFile);
     }
-    return WorkflowRun.fromData(data);
+    return runFromRecord(path, data);
   }
 
   async findAllByWorkflowId(workflowId: WorkflowId): Promise<WorkflowRun[]> {
@@ -338,12 +342,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         try {
           const content = await Deno.readTextFile(path);
           tallyRead(tally, content);
-          const data = parseYaml(content) as WorkflowRunData | null;
+          const data = decodeRunRecord(path, content);
           if (!data) continue;
           if (data.logFile) {
             data.logFile = toAbsolutePath(this.repoDir, data.logFile);
           }
-          runs.push(WorkflowRun.fromData(data));
+          runs.push(runFromRecord(path, data));
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) continue;
           throw error;
@@ -410,9 +414,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           tallyRead(tally, content);
           // parseWorkflowRunSummary keeps only the displayed fields; the heavy
           // jobs/output subtree in `parseYaml`'s result is dropped and GC'd.
-          const parsed = parseYaml(content);
-          if (!parsed) continue;
-          summaries.push(boundSummaryInputs(parseWorkflowRunSummary(parsed)));
+          const summary = summaryFromRecord(path, content);
+          if (!summary) continue;
+          summaries.push(boundSummaryInputs(summary));
         } catch (error) {
           if (error instanceof Deno.errors.NotFound) continue;
           throw error;
@@ -711,12 +715,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         Deno.readTextFile(path)
       );
       tallyRead(tally, content);
-      const data = parseYaml(content) as WorkflowRunData | null;
+      const data = decodeRunRecord(path, content);
       if (!data) return undefined;
       if (data.logFile) {
         data.logFile = toAbsolutePath(this.repoDir, data.logFile);
       }
-      const run = WorkflowRun.fromData(data);
+      const run = runFromRecord(path, data);
       const startedAtMs = run.startedAt?.getTime();
       if (startedAtMs === undefined || startedAtMs < cutoffMs) return undefined;
       return { run, workflowId };
@@ -750,6 +754,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         } catch (error) {
           // A workflow removed mid-scan has no runs to find.
           if (error instanceof Deno.errors.NotFound) return [];
+          // The index cannot be repaired, but the workflow's other runs count.
+          if (error instanceof UnreadableRunRecordError) {
+            return (await this.findRunIdsByStatusFromRecords(
+              workflowId,
+              statusSet,
+              sinceMs,
+            )).map((runId) => ({ workflowId, runId }));
+          }
           throw error;
         }
       },
@@ -758,11 +770,17 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       matching,
       SCAN_CONCURRENCY,
       async ({ workflowId, runId }) => {
-        const run = await this.readById(
-          workflowId,
-          runId as WorkflowRunId,
-          openUnderSearchPermit,
-        );
+        let run: WorkflowRun | null;
+        try {
+          run = await this.readById(
+            workflowId,
+            runId as WorkflowRunId,
+            openUnderSearchPermit,
+          );
+        } catch (error) {
+          if (skipUnreadable(error)) return undefined;
+          throw error;
+        }
         if (!run) return undefined;
         // The index named the run under a status its record no longer has.
         if (!statusSet.has(run.status)) {
@@ -787,6 +805,133 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       const bTime = b.run.startedAt?.getTime() ?? 0;
       return bTime - aTime;
     });
+  }
+
+  /** a record the index lists as finished is not read, so it is not found */
+  async findUnreadableRuns(): Promise<UnreadableRun[]> {
+    const workflowIds = await this.scanWorkflowIds();
+    const found = await mapBounded(
+      workflowIds,
+      SCAN_CONCURRENCY,
+      async (workflowId) => {
+        const runsDir = this.getRunsDir(workflowId);
+        // A rebuild reads every record, so it fails on the ones sought here.
+        const index = await this.getValidatedIndex(
+          runsDir,
+          this.getLocalIndexDir(workflowId),
+          undefined,
+          openUnderSearchPermit,
+        ).catch((error) => {
+          if (
+            error instanceof UnreadableRunRecordError ||
+            error instanceof Deno.errors.NotFound
+          ) {
+            return null;
+          }
+          throw error;
+        });
+        const unreadable: UnreadableRun[] = [];
+        let entries: Deno.DirEntry[];
+        try {
+          entries = await openUnderSearchPermit(() => readDirSorted(runsDir));
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) return unreadable;
+          throw error;
+        }
+        for (const entry of entries) {
+          if (
+            !entry.isFile || !entry.name.startsWith("workflow-run-") ||
+            !entry.name.endsWith(".yaml")
+          ) {
+            continue;
+          }
+          const runId = runIdFromFileName(entry.name);
+          const indexed = index?.[runId];
+          if (
+            !isUuid(runId) ||
+            (indexed && indexed.status !== "running" &&
+              indexed.status !== "interrupted")
+          ) {
+            continue;
+          }
+          const path = join(runsDir, entry.name);
+          try {
+            const found = await readProblem(path);
+            if (found === undefined) continue;
+            unreadable.push({
+              workflowId,
+              runId,
+              path,
+              ...found,
+              ...(indexed ? { workflowName: indexed.workflowName } : {}),
+            });
+          } catch (error) {
+            if (error instanceof Deno.errors.NotFound) continue;
+            throw error;
+          }
+        }
+        return unreadable;
+      },
+    );
+    return found.flat();
+  }
+
+  async isRunDamaged(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<boolean> {
+    try {
+      return (await readProblem(this.getPath(workflowId, runId)))?.damaged ===
+        true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+  }
+
+  private async findRunIdsByStatusFromRecords(
+    workflowId: WorkflowId,
+    statusSet: Set<string>,
+    sinceMs: number | undefined,
+  ): Promise<string[]> {
+    const runsDir = this.getRunsDir(workflowId);
+    const ids: string[] = [];
+    let entries: Deno.DirEntry[];
+    try {
+      entries = await openUnderSearchPermit(() => readDirSorted(runsDir));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return ids;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (
+        !entry.isFile || !entry.name.startsWith("workflow-run-") ||
+        !entry.name.endsWith(".yaml")
+      ) {
+        continue;
+      }
+      const path = join(runsDir, entry.name);
+      try {
+        const content = await openUnderSearchPermit(() =>
+          Deno.readTextFile(path)
+        );
+        const summary = summaryFromRecord(path, content);
+        if (!summary || !statusSet.has(summary.status)) continue;
+        const startedAtMs = summary.startedAt?.getTime();
+        if (
+          sinceMs !== undefined &&
+          (startedAtMs === undefined || startedAtMs < sinceMs)
+        ) {
+          continue;
+        }
+        ids.push(runIdFromFileName(entry.name));
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        if (skipUnreadable(error)) continue;
+        throw error;
+      }
+    }
+    return ids;
   }
 
   private async findRunIdsByStatusFromIndex(
@@ -852,8 +997,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
       let previousStatus: string | undefined;
       if (this.eventBus) {
-        const existingRun = await this.findById(workflowId, run.id);
-        previousStatus = existingRun?.status;
+        try {
+          const existingRun = await this.findById(workflowId, run.id);
+          previousStatus = existingRun?.status;
+        } catch (error) {
+          if (!(error instanceof UnreadableRunRecordError)) throw error;
+          // The run in memory is the truth, so this write repairs the record.
+          logger
+            .warn`Replacing the unreadable record of workflow run ${run.id}: ${error.reason}`;
+          previousStatus = UNREADABLE_PREVIOUS_STATUS;
+        }
       }
 
       // The persisted form: sensitive values the run read through expressions
@@ -2362,10 +2515,100 @@ function indexEntryDiffers(index: ReadIndexResult, run: WorkflowRun): boolean {
     (entry.awaitingResume ?? false) !== run.isAwaitingResume();
 }
 
+// Not a run status, so a save over an unreadable record never counts as a start.
+const UNREADABLE_PREVIOUS_STATUS = "unreadable";
+
+function unreadableRecord(path: string, reason: string) {
+  return new UnreadableRunRecordError(
+    runIdFromFileName(basename(path)),
+    path,
+    reason,
+  );
+}
+
+function parseRecord(path: string, content: string): unknown {
+  try {
+    return parseYaml(content);
+  } catch (error) {
+    // The parser's first line only: the lines after it quote the record.
+    const message = error instanceof Error ? error.message : String(error);
+    throw unreadableRecord(path, message.split("\n")[0].replace(/:$/, ""));
+  }
+}
+
+function checkRecordShape(path: string, parsed: unknown): WorkflowRunData {
+  if (typeof parsed !== "object") {
+    throw unreadableRecord(path, "it is not a run record");
+  }
+  const { logFile } = parsed as { logFile?: unknown };
+  if (logFile !== undefined && typeof logFile !== "string") {
+    throw unreadableRecord(path, "it does not match the run record schema");
+  }
+  return parsed as WorkflowRunData;
+}
+
+/** null for an empty record, which scans pass over */
+function decodeRunRecord(
+  path: string,
+  content: string,
+): WorkflowRunData | null {
+  const parsed = parseRecord(path, content);
+  return parsed ? checkRecordShape(path, parsed) : null;
+}
+
+function runFromRecord(path: string, data: WorkflowRunData): WorkflowRun {
+  try {
+    return WorkflowRun.fromData(data);
+  } catch {
+    // A schema error can quote field values, so none of it is repeated.
+    throw unreadableRecord(path, "it does not match the run record schema");
+  }
+}
+
+function summaryFromRecord(
+  path: string,
+  content: string,
+): WorkflowRunSummary | null {
+  const data = decodeRunRecord(path, content);
+  if (!data) return null;
+  try {
+    return parseWorkflowRunSummary(data);
+  } catch {
+    throw unreadableRecord(path, "it does not match the run record schema");
+  }
+}
+
+/** undefined when the record reads as a run; throws when it is gone */
+async function readProblem(
+  path: string,
+): Promise<{ reason: string; damaged: boolean } | undefined> {
+  const content = await openUnderSearchPermit(() => Deno.readTextFile(path));
+  const empty = content.trim() === "";
+  // A cut can leave valid YAML, but only a whole write ends in a newline.
+  const damaged = empty || !content.endsWith("\n");
+  try {
+    const parsed = parseRecord(path, content);
+    if (!parsed) {
+      const reason = empty ? "it is empty" : "it is not a run record";
+      return { reason, damaged };
+    }
+    runFromRecord(path, checkRecordShape(path, parsed));
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof UnreadableRunRecordError)) throw error;
+    return { reason: error.reason, damaged };
+  }
+}
+
+function skipUnreadable(error: unknown): boolean {
+  if (!(error instanceof UnreadableRunRecordError)) return false;
+  logger.warn`Skipping a workflow run: ${error.message}`;
+  return true;
+}
+
 /**
  * fingerprints the version read only when the file did not change while it was
- * read; null for a record that is gone or empty, and a record that does not
- * parse throws
+ * read; null for a record that is gone or empty, and an unreadable one throws
  */
 async function readIndexedRecord(
   path: string,
@@ -2382,12 +2625,9 @@ async function readIndexedRecord(
   }
   tallyRead(tally, content);
   const after = await statRecord(path);
-  const parsed = parseYaml(content);
-  if (!parsed) return null;
-  return {
-    summary: parseWorkflowRunSummary(parsed),
-    record: sameFingerprint(before, after),
-  };
+  const summary = summaryFromRecord(path, content);
+  if (!summary) return null;
+  return { summary, record: sameFingerprint(before, after) };
 }
 
 async function fingerprintIfContent(

@@ -2080,6 +2080,8 @@ export interface RunDoctorResponse {
   reaped: number;
   orphanedWorkflowRuns?: number;
   orphanedReaped?: number;
+  unreadableRuns?: { runId: string; path: string; reason: string }[];
+  unreadableReaped?: number;
   activeRuns: RunHistoryResponse["runs"];
   staleRuns: RunHistoryResponse["runs"];
 }

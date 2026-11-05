@@ -213,3 +213,75 @@ Deno.test("writeDoctorRunsJson and writeDoctorRunsLog: report a method-run check
     "Could not check method runs for a gone owner: permission denied",
   );
 });
+
+const UNREADABLE = {
+  runs: [{
+    runId: "run-1",
+    path: "/repo/workflow-run-run-1.yaml",
+    reason: "it is empty",
+  }],
+  reaped: 1,
+};
+
+Deno.test("writeDoctorRunsJson: reports unreadable runs only when there are some", () => {
+  const write = (unreadable?: typeof UNREADABLE) =>
+    JSON.parse(captureLogs(() =>
+      writeDoctorRunsJson(
+        0,
+        [],
+        [],
+        0,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        unreadable,
+      )
+    ));
+  const none = write({ runs: [], reaped: 0 });
+  assertEquals("unreadableWorkflowRuns" in none, false);
+  assertEquals("unreadableRuns" in none, false);
+  const some = write(UNREADABLE);
+  assertEquals(some.unreadableWorkflowRuns, 1);
+  assertEquals(some.unreadableReaped, 1);
+  assertEquals(some.unreadableRuns, UNREADABLE.runs);
+});
+
+Deno.test("writeDoctorRunsLog: an unreadable run is reported even with nothing else to show", () => {
+  const write = (unreadable: typeof UNREADABLE, fix: boolean) =>
+    stripAnsiCode(captureLogs(() =>
+      writeDoctorRunsLog(
+        [],
+        [],
+        0,
+        fix,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        unreadable,
+      )
+    ));
+  const unfixed = { ...UNREADABLE, reaped: 0 };
+
+  const report = write(unfixed, false);
+  assertStringIncludes(report, "1 workflow run(s) with an unreadable record:");
+  assertStringIncludes(report, "run-1");
+  assertStringIncludes(report, "/repo/workflow-run-run-1.yaml");
+  assertStringIncludes(report, UNREADABLE.runs[0].reason);
+  assertStringIncludes(report, "Run with --fix");
+
+  const settled = write(UNREADABLE, true);
+  assertStringIncludes(settled, "Settled 1 as failed.");
+  assertEquals(settled.includes("left as it is"), false);
+
+  const leftAlone = write(unfixed, true);
+  assertEquals(leftAlone.includes("Settled"), false);
+  assertStringIncludes(leftAlone, "left as it is");
+});

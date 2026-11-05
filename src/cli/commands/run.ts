@@ -46,15 +46,18 @@ import {
   settleDeadOwnerMethodRuns,
   settleDeadOwnerRun,
   settleInterruptedWorkflowRows,
+  settleUnreadableRun,
   trackerShowsDeadOwner,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
+import { UnreadableRunRecordError } from "../../domain/workflows/unreadable_run_record.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import {
   createModelRunsOutput,
+  type DoctorUnreadableRuns,
   writeDoctorRunsJson,
   writeDoctorRunsLog,
   writeModelRunsJson,
@@ -250,6 +253,7 @@ export interface LocalRunDiagnosis {
   readonly orphanedMethodRuns: number;
   readonly orphanedMethodReaped: number;
   readonly orphanedMethodError?: string;
+  readonly unreadable: DoctorUnreadableRuns;
 }
 
 /**
@@ -319,7 +323,14 @@ export async function diagnoseLocalRuns(
       continue;
     }
     if (!trackerShowsDeadOwner(row, liveness)) continue;
-    const record = await findRecord(row);
+    let record;
+    try {
+      record = await findRecord(row);
+    } catch (error) {
+      // Reported and settled through findUnreadableRuns below.
+      if (error instanceof UnreadableRunRecordError) continue;
+      throw error;
+    }
     if (record?.run.status === "running") records.set(row.id, record);
   }
   for (const { run, workflowId } of records.values()) {
@@ -340,8 +351,26 @@ export async function diagnoseLocalRuns(
     }
   }
 
+  const unreadableRuns = await runRepo.findUnreadableRuns?.() ?? [];
+  let unreadableReaped = 0;
+  if (fix) {
+    for (const unreadable of unreadableRuns) {
+      if (await settleUnreadableRun(runRepo, tracker, unreadable, liveness)) {
+        unreadableReaped++;
+      }
+    }
+  }
+
   return {
     totalTracked: allRuns.length,
+    unreadable: {
+      runs: unreadableRuns.map(({ runId, path, reason }) => ({
+        runId,
+        path,
+        reason,
+      })),
+      reaped: unreadableReaped,
+    },
     active,
     stale,
     reaped,
@@ -356,7 +385,7 @@ export async function diagnoseLocalRuns(
 const runDoctorCommand = withRemoteOptions(
   new Command()
     .name("doctor")
-    .description("Diagnose stale or orphaned runs")
+    .description("Diagnose stale, orphaned or unreadable runs")
     .example("Check for stale runs", "swamp run doctor")
     .example("Auto-reap stale runs", "swamp run doctor --fix")
     .example(
@@ -367,7 +396,10 @@ const runDoctorCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("--fix", "Automatically reap stale runs")
+    .option(
+      "--fix",
+      "Reap stale runs and settle unreadable runs whose owner is gone, replacing the record",
+    )
     .action(async function (options: AnyOptions) {
       const ctx = createContext(options as GlobalOptions, ["run", "doctor"]);
 
@@ -424,6 +456,10 @@ const runDoctorCommand = withRemoteOptions(
             undefined,
             progressByRun,
             response.webhookAdmissions,
+            {
+              runs: response.unreadableRuns ?? [],
+              reaped: response.unreadableReaped ?? 0,
+            },
           );
         } else {
           writeDoctorRunsLog(
@@ -438,6 +474,10 @@ const runDoctorCommand = withRemoteOptions(
             undefined,
             progressByRun,
             response.webhookAdmissions,
+            {
+              runs: response.unreadableRuns ?? [],
+              reaped: response.unreadableReaped ?? 0,
+            },
           );
         }
         return;
@@ -479,6 +519,9 @@ const runDoctorCommand = withRemoteOptions(
             result.orphanedMethodRuns,
             result.orphanedMethodReaped,
             result.orphanedMethodError,
+            undefined,
+            undefined,
+            result.unreadable,
           );
         } else {
           writeDoctorRunsLog(
@@ -491,6 +534,9 @@ const runDoctorCommand = withRemoteOptions(
             result.orphanedMethodRuns,
             result.orphanedMethodReaped,
             result.orphanedMethodError,
+            undefined,
+            undefined,
+            result.unreadable,
           );
         }
       } finally {
