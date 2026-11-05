@@ -42,6 +42,12 @@ import {
 } from "../src/domain/models/data_writer.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../src/domain/vaults/secret_reference_errors.ts";
+import {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "../src/domain/vaults/secret_not_found_error.ts";
+import { SecretNotFoundError as ExtensionSecretNotFoundError } from "../packages/testing/vault_types.ts";
 import { PathTraversalError } from "../src/infrastructure/persistence/safe_path.ts";
 import { createEphemeralStore } from "../src/infrastructure/persistence/ephemeral_store.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
@@ -61,6 +67,7 @@ import { dataContentPath } from "../src/serve/capability_service.ts";
 import {
   BASELINE_VAULT,
   type BaselineOrchestrator,
+  type BaselineOrchestratorOptions,
   canary,
   startBaselineOrchestrator,
   withTempDir,
@@ -144,9 +151,10 @@ async function withFixture(
   // The current version reads sensitive fields through the protected load
   // route; a version 5 dispatch reads them through resolveSecret.
   protocolVersion: number = REMOTE_PROTOCOL_VERSION,
+  orchestratorOptions: BaselineOrchestratorOptions = {},
 ): Promise<void> {
   await withTempDir(async (dir) => {
-    const o = await startBaselineOrchestrator(dir);
+    const o = await startBaselineOrchestrator(dir, orchestratorOptions);
     const abort = new AbortController();
     const suffix = crypto.randomUUID().slice(0, 8);
     const typeA = ModelType.create(`test/baseline-rr-a-${suffix}`);
@@ -813,6 +821,100 @@ Deno.test({
           assertEquals(error.code, "secret_reference_invalid", malformed);
         }
       }, null);
+    }
+  },
+});
+
+async function writeState(f: Fixture): Promise<{ key: string }> {
+  const { writeResource } = createResourceWriter(
+    f.o.repoContext.unifiedDataRepo,
+    f.typeA,
+    f.modelIdA,
+    RESOURCE_SPECS,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    await VaultService.fromRepository(f.o.repoDir),
+    "run",
+  );
+  const written = await writeResource(SPEC, "state", {
+    password: canary("session"),
+    note: "n",
+  });
+  const [{ key }] = sensitiveVaultReferences(written.attributes!, [
+    "password",
+  ]);
+  return { key };
+}
+
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: a deleted vault key rejects with secret_not_found over resolveSecret and the load route",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (
+      const version of [
+        LEGACY_PLAINTEXT_PROTOCOL_VERSION,
+        REMOTE_PROTOCOL_VERSION,
+      ]
+    ) {
+      await withFixture(
+        async (f) => {
+          const { key } = await writeState(f);
+          const vault = await VaultService.fromRepository(f.o.repoDir);
+          await vault.delete(BASELINE_VAULT, key);
+          const error = await assertRejects(
+            () => f.context.readResource!("state"),
+            SecretNotFoundError,
+          );
+          assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+          assertEquals(error.vaultName, BASELINE_VAULT);
+          assertEquals(error.key, key);
+        },
+        undefined,
+        version,
+      );
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote secrets baseline: readResource: an extension store's own SecretNotFoundError class reaches the worker as secret_not_found, and its other failures do not",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (const missing of [true, false]) {
+      let target: string | undefined;
+      await withFixture(
+        async (f) => {
+          target = (await writeState(f)).key;
+          const error = await assertRejects(() =>
+            f.context.readResource!("state")
+          );
+          assertEquals(isSecretNotFoundError(error), missing);
+          assertEquals(error instanceof SecretNotFoundError, missing);
+        },
+        undefined,
+        REMOTE_PROTOCOL_VERSION,
+        {
+          wrapDataPlaneVault: (vault) => {
+            const get = vault.get.bind(vault);
+            vault.get = (vaultName, key, callerContext) => {
+              if (key !== target) return get(vaultName, key, callerContext);
+              return Promise.reject(
+                missing
+                  ? new ExtensionSecretNotFoundError(vaultName, key)
+                  : new Error("vault token expired"),
+              );
+            };
+            return vault;
+          },
+        },
+      );
     }
   },
 });

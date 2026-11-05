@@ -25,6 +25,17 @@ import type {
   VaultAnnotationData as CanonicalVaultAnnotationData,
   VaultAnnotationProvider as CanonicalVaultAnnotationProvider,
 } from "./vault_annotation.ts";
+import { assertEquals } from "@std/assert";
+import {
+  isSecretNotFoundError as testingIsSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE as TESTING_SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError as TestingSecretNotFoundError,
+} from "../../../packages/testing/vault_types.ts";
+import {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 import type {
   VaultAnnotation as TestingVaultAnnotation,
   VaultAnnotationData as TestingVaultAnnotationData,
@@ -125,4 +136,16 @@ Deno.test("testing package vault types: compile-time compatibility check", () =>
     _checkVaultAnnotationDataFields,
     _checkVaultAnnotationMethods,
   ];
+});
+
+Deno.test("testing package SecretNotFoundError: each side recognises the other's error", () => {
+  assertEquals(TESTING_SECRET_NOT_FOUND_CODE, SECRET_NOT_FOUND_CODE);
+  const fromExtension = new TestingSecretNotFoundError("creds", "token");
+  const fromHost = new SecretNotFoundError("creds", "token");
+  assertEquals(isSecretNotFoundError(fromExtension), true);
+  assertEquals(testingIsSecretNotFoundError(fromHost), true);
+  assertEquals(fromExtension.name, fromHost.name);
+  assertEquals(fromExtension.message, fromHost.message);
+  assertEquals(fromExtension.vaultName, fromHost.vaultName);
+  assertEquals(fromExtension.key, fromHost.key);
 });

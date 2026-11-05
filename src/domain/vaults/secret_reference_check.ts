@@ -69,6 +69,7 @@ export async function checkSecretReference(
     throw secretReferenceError(
       `Failed to resolve vault expression ${options.call} (at ${options.location})`,
       error,
+      reference,
     );
   }
 }

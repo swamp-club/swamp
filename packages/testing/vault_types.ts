@@ -33,13 +33,91 @@ export interface VaultPutOptions {
   tags?: Record<string, string>;
 }
 
+/** The `code` a vault provider's error carries when a secret does not exist. */
+export const SECRET_NOT_FOUND_CODE = "secret_not_found";
+
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * Thrown by a vault provider's `get()` when the key does not exist, and only
+ * then — never for an authentication, permission or network failure.
+ *
+ * swamp keeps the `code` intact through `context.readResource()` and vault
+ * expressions, on local and remote workers. Check for it with {@link isSecretNotFoundError}, not `instanceof`:
+ * each extension bundle carries its own copy of this class.
+ *
+ * @example
+ * ```ts
+ * import { SecretNotFoundError } from "@swamp-club/swamp-testing";
+ *
+ * async get(key: string): Promise<string> {
+ *   const value = await lookup(key);
+ *   if (value === undefined) throw new SecretNotFoundError(this.name, key);
+ *   return value;
+ * }
+ * ```
+ */
+export class SecretNotFoundError extends Error {
+  /** Always {@link SECRET_NOT_FOUND_CODE}. */
+  readonly code: typeof SECRET_NOT_FOUND_CODE = SECRET_NOT_FOUND_CODE;
+
+  constructor(
+    /** The vault the key was looked up in. */
+    readonly vaultName: string,
+    /** The key that does not exist. */
+    readonly key: string,
+    options?: { message?: string; cause?: unknown },
+  ) {
+    super(
+      options?.message ?? `Secret '${key}' not found in vault '${vaultName}'`,
+    );
+    this.name = "SecretNotFoundError";
+    if (options?.cause !== undefined) this.cause = options.cause;
+  }
+}
+
+/**
+ * True when the error, or an error in its `cause` chain, carries the
+ * {@link SECRET_NOT_FOUND_CODE}. Matches by `code`, so it recognises the error
+ * whichever bundle or process constructed it.
+ *
+ * @example
+ * ```ts
+ * try {
+ *   session = await context.readResource("session");
+ * } catch (err) {
+ *   if (!isSecretNotFoundError(err)) throw err;
+ *   session = await logIn();
+ * }
+ * ```
+ */
+export function isSecretNotFoundError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    if (typeof current !== "object" || current === null) return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if ((current as { code?: unknown }).code === SECRET_NOT_FOUND_CODE) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
  * Interface for vault providers that securely store and retrieve secrets.
  *
  * Extension authors implement this interface to create custom vault backends.
  */
 export interface VaultProvider {
-  /** Retrieves a secret value from the vault. */
+  /**
+   * Retrieves a secret value from the vault. Rejects with a
+   * {@link SecretNotFoundError} (or any error whose `code` is
+   * `"secret_not_found"`) when the key does not exist, and with any other
+   * error for every other failure.
+   */
   get(secretKey: string): Promise<string>;
   /** Stores a secret value in the vault. */
   put(

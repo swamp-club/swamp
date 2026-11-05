@@ -371,6 +371,20 @@ Deno.test("DispatchSecretLoads: a vault error names the reference and never echo
   assertFalse(refused.text.includes(SECRET));
 });
 
+Deno.test("DispatchSecretLoads: a missing key is refused as secret_not_found, naming the reference and never echoing the provider's message", async () => {
+  const f = fixture({
+    vaultError: Object.assign(new Error(`backend said ${SECRET}`), {
+      code: "secret_not_found",
+    }),
+  });
+  const refused = await refusalOf(
+    await load(f, request({ references: [IN_BAG] }, f.credential)),
+  );
+  assertEquals([refused.status, refused.code], [404, "secret_not_found"]);
+  assertEquals(JSON.parse(refused.text).reference, IN_BAG);
+  assertFalse(refused.text.includes(SECRET));
+});
+
 for (
   const [ending, end] of [
     [

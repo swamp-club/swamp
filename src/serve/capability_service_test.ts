@@ -41,7 +41,8 @@ import {
   type UnscopedChange,
   useUnscopedChangeReporterForTesting,
 } from "../infrastructure/persistence/unit_of_work_scope.ts";
-import { RpcChannel } from "../domain/remote/rpc_channel.ts";
+import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import { SECRET_NOT_FOUND_CODE } from "../domain/vaults/secret_not_found_error.ts";
 import { RemoteMethod } from "../domain/remote/protocol.ts";
 
 interface StubQueryOptions {
@@ -594,6 +595,57 @@ Deno.test("resolveSecret: passes without dispatch registry (no scoping)", async 
     secretKey: "any-key",
   });
   assertEquals(result.value, "value");
+});
+
+function connectWorker(storeError: Error) {
+  const service = new CapabilityService({
+    repoDir: "/tmp/test",
+    repoContext: stubRepoContext(),
+    createVaultService: () =>
+      Promise.resolve({ get: () => Promise.reject(storeError) } as never),
+  });
+  const workerSide: RpcChannel = new RpcChannel({
+    send: (data) =>
+      void Promise.resolve().then(() => serveSide.handleRaw(data)),
+  });
+  const serveSide: RpcChannel = new RpcChannel({
+    send: (data) =>
+      void Promise.resolve().then(() => workerSide.handleRaw(data)),
+  });
+  service.registerHandlers(serveSide, "worker-1");
+  return workerSide;
+}
+
+Deno.test("resolveSecret: a store's missing key reaches the worker as secret_not_found in swamp's own words", async () => {
+  const storeError = Object.assign(
+    new Error("[ERROR] 'gone' isn't an item in the 'Private' vault"),
+    { code: SECRET_NOT_FOUND_CODE },
+  );
+  const workerSide = connectWorker(storeError);
+  const error = await assertRejects(
+    () =>
+      workerSide.call(RemoteMethod.resolveSecret, {
+        vaultName: "creds",
+        secretKey: "gone",
+      }),
+    RpcError,
+  );
+  assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+  assertEquals(error.message, "Secret 'gone' not found in vault 'creds'");
+});
+
+Deno.test("resolveSecret: a store's other failure still reaches the worker as handler_failed", async () => {
+  const workerSide = connectWorker(new Error("token expired"));
+  const error = await assertRejects(
+    () =>
+      workerSide.call(RemoteMethod.resolveSecret, {
+        vaultName: "creds",
+        secretKey: "gone",
+      }),
+    RpcError,
+  );
+  assertEquals(error.code, "handler_failed");
+  assertEquals(error.message, "token expired");
 });
 
 Deno.test("resolveSecret: registers the delivered value with the dispatch redactor (swamp-club#3527)", async () => {

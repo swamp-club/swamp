@@ -19,6 +19,10 @@
 
 import { UserError } from "../errors.ts";
 import { VaultAccessDeniedError } from "./run_vault_access.ts";
+import {
+  isSecretNotFoundError,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 import type { SecretReference } from "./secret_bag_registry.ts";
 
 export class SecretReferenceUnavailableError extends UserError {
@@ -32,6 +36,7 @@ export class SecretReferenceUnavailableError extends UserError {
       "secret_reference_unavailable",
     );
     this.name = "SecretReferenceUnavailableError";
+    this.cause = new SecretNotFoundError(reference.vaultName, reference.key);
   }
 }
 
@@ -52,16 +57,27 @@ export class ResourceSensitiveFieldsInvalidError extends UserError {
 }
 
 /**
- * a vault access refusal keeps its vault_access_denied code; any other error
- * keeps its text on one line; a missing key is already its own error
+ * a vault access refusal keeps its vault_access_denied code and a missing key
+ * its secret_not_found code; any other error keeps its text on one line
  */
-export function secretReferenceError(context: string, error: unknown): Error {
+export function secretReferenceError(
+  context: string,
+  error: unknown,
+  reference: SecretReference,
+): Error {
   if (error instanceof SecretReferenceUnavailableError) return error;
   const message = `${context}: ${
     (error instanceof Error ? error.message : String(error))
       .replace(/\n\s*/g, " — ")
   }`;
-  return error instanceof VaultAccessDeniedError
-    ? new UserError(message, error.code)
-    : new Error(message);
+  if (error instanceof VaultAccessDeniedError) {
+    return new UserError(message, error.code);
+  }
+  if (isSecretNotFoundError(error)) {
+    return new SecretNotFoundError(reference.vaultName, reference.key, {
+      message,
+      cause: error,
+    });
+  }
+  return new Error(message);
 }

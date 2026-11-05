@@ -154,6 +154,13 @@ With `withExistence`, `getOperationsByMethod("get")` and
 `getOperationsByMethod("has")` count value reads and existence checks
 separately.
 
+A missing key rejects with `SecretNotFoundError`, whose `code` is
+`"secret_not_found"`. A real vault provider throws the same error from `get()`
+when a key does not exist, and only then; `assertVaultConformance` checks it.
+Code that reads secrets checks for it with `isSecretNotFoundError(err)`, which
+matches the `code` (and the `cause` chain), so it works whichever bundle
+constructed the error.
+
 ## `createDatastoreTestContext`
 
 In-memory `DatastoreProvider` with fake locking, health checks, and sync.

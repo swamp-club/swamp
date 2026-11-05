@@ -76,6 +76,10 @@ import {
   VaultAccessDeniedError,
 } from "../vaults/run_vault_access.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
+import {
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "../vaults/secret_not_found_error.ts";
 import { ExecutionOutputNames } from "./execution_output_names.ts";
 import { UserError } from "../errors.ts";
 
@@ -1409,6 +1413,37 @@ Deno.test("createResourceReader: resolves vault references when VaultService pro
   const result = await readResource("my-instance");
   assertEquals(result?.name, "my-resource");
   assertEquals(result?.secret, "resolved-secret");
+});
+
+Deno.test("createResourceReader: a missing vault key rejects with the store's own secret_not_found error", async () => {
+  const vaultService = createTestVaultService();
+  const data = {
+    name: "my-resource",
+    secret: "${{ vault.get('test-vault', 'gone') }}",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({
+    [SENSITIVE_FIELDS_TAG]: JSON.stringify(["secret"]),
+  });
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const error = await assertRejects(
+    () => readResource("my-instance"),
+    SecretNotFoundError,
+  );
+  assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+  assertEquals(error.vaultName, "test-vault");
+  assertEquals(error.key, "gone");
 });
 
 Deno.test("createResourceReader: resolves vault references in nested objects", async () => {

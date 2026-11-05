@@ -27,8 +27,29 @@ Retrieves a secret value from the vault.
 
 - `secretKey` — the key identifier for the secret
 - Returns the secret value as a string
-- Throws `Error` if the secret cannot be retrieved (not found, access denied,
-  network error, etc.)
+- When the key does not exist, throws `SecretNotFoundError` from
+  `jsr:@swamp-club/swamp-testing`, or any error whose `code` is
+  `"secret_not_found"`
+- Throws any other `Error` for every other failure (access denied, expired
+  credentials, network error, etc.) — never `secret_not_found`
+
+swamp keeps the `secret_not_found` code intact through `context.readResource()`
+and vault expressions, on local and remote workers, so a behavior can tell a
+missing secret from a broken vault without matching your error text. Raise it
+only when the key is absent: a behavior may treat it as "safe to recreate".
+
+```typescript
+import { SecretNotFoundError } from "jsr:@swamp-club/swamp-testing";
+
+get: async (secretKey: string): Promise<string> => {
+  const value = await lookup(secretKey);
+  if (value === undefined) throw new SecretNotFoundError(name, secretKey);
+  return value;
+},
+```
+
+`assertVaultConformance` checks that `get()` of a missing key rejects with this
+code.
 
 ### `put(secretKey, secretValue)`
 

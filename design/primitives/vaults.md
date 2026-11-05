@@ -1526,7 +1526,11 @@ editing the factory:
 ### Runtime Errors
 
 - Network connectivity problems
-- Secret not found in vault
+- Secret not found in vault — the provider raises an error with code
+  `secret_not_found` (`SecretNotFoundError`), and swamp keeps that code through
+  `readResource`, vault expressions, serve's RPC (`RpcError` code) and the
+  protected secret-load route (refusal code), so an extension can tell a missing
+  key from a broken vault
 - Permission denied accessing specific secrets
 - Vault service unavailable
 
