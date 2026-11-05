@@ -19,7 +19,11 @@
 
 import { assertEquals, assertExists } from "@std/assert";
 import { TelemetryService } from "./telemetry_service.ts";
-import type { TelemetryRepository } from "./repositories.ts";
+import type {
+  TelemetryFlushRecordRepository,
+  TelemetryRepository,
+} from "./repositories.ts";
+import type { TelemetryFlushRecord } from "./telemetry_flush_record.ts";
 import type {
   TelemetryFlushResult,
   TelemetrySender,
@@ -971,4 +975,164 @@ Deno.test("TelemetryService.setAuthMode is a no-op without an invocationContext"
     new Date(),
   );
   assertEquals(repo.savedEntries[0].invocationContext, undefined);
+});
+
+class MockFlushRecordRepository implements TelemetryFlushRecordRepository {
+  record: TelemetryFlushRecord | null = null;
+  writes = 0;
+  writeThrows = false;
+
+  read(): Promise<TelemetryFlushRecord | null> {
+    return Promise.resolve(this.record);
+  }
+
+  write(record: TelemetryFlushRecord): Promise<void> {
+    if (this.writeThrows) return Promise.reject(new Error("disk full"));
+    this.writes++;
+    this.record = record;
+    return Promise.resolve();
+  }
+}
+
+function serviceWithFlushRecords(
+  repo: TelemetryRepository,
+  records: TelemetryFlushRecordRepository,
+  endpoint?: string,
+): TelemetryService {
+  return new TelemetryService(
+    repo,
+    "1.0.0",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    endpoint,
+    records,
+  );
+}
+
+Deno.test("TelemetryService.flushTelemetry records a successful flush with its count", async () => {
+  const repo = new MockTelemetryRepository();
+  repo.mockUnflushedEntries = [
+    createFlushTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z")),
+    createFlushTestEntry("uuid-2", new Date("2024-03-10T11:00:00Z")),
+  ];
+  const records = new MockFlushRecordRepository();
+  const service = serviceWithFlushRecords(repo, records);
+
+  await service.flushTelemetry({
+    sender: new MockTelemetrySender(),
+    distinctId: "user",
+  });
+
+  assertEquals(records.record?.lastAttemptOk, true);
+  assertEquals(records.record?.lastSentCount, 2);
+  assertEquals(records.record?.lastSuccessAt, records.record?.lastAttemptAt);
+});
+
+Deno.test("TelemetryService.flushTelemetry records a failure and keeps the last success", async () => {
+  const repo = new MockTelemetryRepository();
+  repo.mockUnflushedEntries = [
+    createFlushTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z")),
+  ];
+  const records = new MockFlushRecordRepository();
+  records.record = {
+    lastAttemptAt: "2024-03-10T09:00:00.000Z",
+    lastAttemptOk: true,
+    lastSuccessAt: "2024-03-10T09:00:00.000Z",
+    lastSentCount: 5,
+  };
+  const sender = new MockTelemetrySender();
+  sender.result = { ok: false, reason: "HTTP 500" };
+  const service = serviceWithFlushRecords(repo, records);
+
+  await service.flushTelemetry({ sender, distinctId: "user" });
+
+  assertEquals(records.record?.lastAttemptOk, false);
+  assertEquals(records.record?.lastFailureReason, "HTTP 500");
+  assertEquals(records.record?.lastSuccessAt, "2024-03-10T09:00:00.000Z");
+  assertEquals(records.record?.lastSentCount, 5);
+});
+
+Deno.test("TelemetryService.flushTelemetry writes no record when nothing is spooled", async () => {
+  const records = new MockFlushRecordRepository();
+  const service = serviceWithFlushRecords(
+    new MockTelemetryRepository(),
+    records,
+  );
+
+  await service.flushTelemetry({
+    sender: new MockTelemetrySender(),
+    distinctId: "user",
+  });
+
+  assertEquals(records.writes, 0);
+});
+
+Deno.test("TelemetryService.flushTelemetry still reports a delivered batch when the record write fails", async () => {
+  const repo = new MockTelemetryRepository();
+  repo.mockUnflushedEntries = [
+    createFlushTestEntry("uuid-1", new Date("2024-03-10T10:00:00Z")),
+  ];
+  const records = new MockFlushRecordRepository();
+  records.writeThrows = true;
+  const service = serviceWithFlushRecords(repo, records);
+
+  const outcome = await service.flushTelemetry({
+    sender: new MockTelemetrySender(),
+    distinctId: "user",
+  });
+
+  assertEquals(outcome.result.ok, true);
+  assertEquals(outcome.sentCount, 1);
+  assertEquals(repo.flushedEntries.length, 1);
+});
+
+Deno.test("TelemetryService.flushEntry records a delivered and a failed single send", async () => {
+  const repo = new MockTelemetryRepository();
+  const records = new MockFlushRecordRepository();
+  const service = serviceWithFlushRecords(repo, records);
+  const entry = createFlushTestEntry(
+    "uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+  const sender = new MockTelemetrySender();
+
+  await service.flushEntry({ entry, sender, distinctId: "user" });
+  assertEquals(records.record?.lastAttemptOk, true);
+  assertEquals(records.record?.lastSentCount, 1);
+
+  sender.result = { ok: false, reason: "timeout" };
+  await service.flushEntry({ entry, sender, distinctId: "user" });
+  assertEquals(records.record?.lastAttemptOk, false);
+  assertEquals(records.record?.lastFailureReason, "timeout");
+  assertEquals(records.record?.lastSentCount, 1);
+});
+
+Deno.test("TelemetryService.flushEntry writes no record for an entry of another endpoint", async () => {
+  const records = new MockFlushRecordRepository();
+  const service = serviceWithFlushRecords(
+    new MockTelemetryRepository(),
+    records,
+    "https://public.example",
+  );
+  const now = new Date();
+  const foreign = TelemetryEntry.create({
+    invocation: ENDPOINT_TEST_INVOCATION,
+    result: { status: "success", exitCode: 0 },
+    startedAt: now,
+    completedAt: now,
+    swampVersion: "1.0.0",
+    denoVersion: "2.0.0",
+    platform: "linux",
+    endpoint: "https://private.example",
+  });
+
+  await service.flushEntry({
+    entry: foreign,
+    sender: new MockTelemetrySender(),
+    distinctId: "user",
+  });
+
+  assertEquals(records.writes, 0);
 });

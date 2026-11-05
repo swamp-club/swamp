@@ -430,7 +430,9 @@ Deno.test("auth gate integration: a blocked run records one telemetry event and 
     const spool = join(configDir, "telemetry");
     const entries: Record<string, unknown>[] = [];
     for await (const f of Deno.readDir(spool)) {
-      if (f.isFile && f.name.endsWith(".json")) {
+      if (
+        f.isFile && f.name.startsWith("telemetry-") && f.name.endsWith(".json")
+      ) {
         entries.push(JSON.parse(await Deno.readTextFile(join(spool, f.name))));
       }
     }

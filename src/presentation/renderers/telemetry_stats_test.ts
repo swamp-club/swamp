@@ -17,10 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/stream.ts";
 import type { TelemetryStatsEvent } from "../../libswamp/telemetry/stats.ts";
-import { createTelemetryStatsRenderer } from "./telemetry_stats.ts";
+import {
+  createTelemetryStatsRenderer,
+  describeEmptyTelemetry,
+} from "./telemetry_stats.ts";
 import { UserError } from "../../domain/errors.ts";
 
 function makeStatsData() {
@@ -103,4 +106,133 @@ Deno.test("TelemetryStatsRenderer - error throws UserError", () => {
     UserError,
     "boom",
   );
+});
+
+const SUCCESS = {
+  lastAttemptAt: "2026-11-05T10:00:00.000Z",
+  lastAttemptOk: true,
+  lastSuccessAt: "2026-11-05T10:00:00.000Z",
+  lastSentCount: 3,
+};
+
+Deno.test("describeEmptyTelemetry: names each opt-out and how to undo it", () => {
+  const text = describeEmptyTelemetry({
+    telemetryEnabled: false,
+    disabledBy: ["telemetry.collection", "SWAMP_NO_TELEMETRY"],
+    lastFlush: SUCCESS,
+    daysAnalyzed: 2,
+  }).join("\n");
+  assertStringIncludes(
+    text,
+    "turned off by telemetry.collection, SWAMP_NO_TELEMETRY",
+  );
+  assertStringIncludes(text, "swamp config set telemetry.collection enabled");
+  assertStringIncludes(text, "unset SWAMP_NO_TELEMETRY");
+});
+
+Deno.test("describeEmptyTelemetry: a successful flush explains the empty spool and the keep key", () => {
+  const text = describeEmptyTelemetry({
+    telemetryEnabled: true,
+    disabledBy: [],
+    lastFlush: SUCCESS,
+    daysAnalyzed: 2,
+  }).join("\n");
+  assertStringIncludes(text, "No user-level or environment opt-out is set");
+  assertStringIncludes(
+    text,
+    "the last successful send delivered 3 entries at 2026-11-05T10:00:00.000Z",
+  );
+  assertStringIncludes(text, "telemetryKeepFlushed: true");
+});
+
+Deno.test("describeEmptyTelemetry: a failed last attempt says entries are queued outside the window", () => {
+  const text = describeEmptyTelemetry({
+    telemetryEnabled: true,
+    disabledBy: [],
+    lastFlush: {
+      ...SUCCESS,
+      lastAttemptAt: "2026-11-05T11:00:00.000Z",
+      lastAttemptOk: false,
+      lastFailureReason: "HTTP 500",
+    },
+    daysAnalyzed: 1,
+  }).join("\n");
+  assertStringIncludes(text, "at 2026-11-05T11:00:00.000Z failed (HTTP 500)");
+  assertStringIncludes(text, "older than the last 1 day.");
+  assertStringIncludes(text, "--days 7");
+  assertStringIncludes(
+    text,
+    "Before that, the last successful send delivered 3",
+  );
+});
+
+Deno.test("describeEmptyTelemetry: no record says nothing has been flushed yet", () => {
+  const text = describeEmptyTelemetry({
+    telemetryEnabled: true,
+    disabledBy: [],
+    lastFlush: null,
+    daysAnalyzed: 2,
+  }).join("\n");
+  assertStringIncludes(text, "no flush has been recorded on this machine yet");
+});
+
+Deno.test("JsonTelemetryStatsRenderer - empty state keeps the message and adds fields", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTelemetryStatsRenderer("json");
+    await consumeStream(
+      toStream([
+        { kind: "resolving" },
+        {
+          kind: "completed",
+          data: null,
+          emptyState: {
+            telemetryEnabled: true,
+            disabledBy: [],
+            lastFlush: SUCCESS,
+            daysAnalyzed: 2,
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed, {
+      message: "No telemetry data found",
+      telemetryEnabled: true,
+      disabledBy: [],
+      lastFlush: SUCCESS,
+      daysAnalyzed: 2,
+      keepFlushedKey: "telemetryKeepFlushed",
+    });
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("describeEmptyTelemetry: one sent entry reads in the singular", () => {
+  const text = describeEmptyTelemetry({
+    telemetryEnabled: true,
+    disabledBy: [],
+    lastFlush: { ...SUCCESS, lastSentCount: 1 },
+    daysAnalyzed: 2,
+  }).join("\n");
+  assertStringIncludes(text, "delivered 1 entry at");
+});
+
+Deno.test("describeEmptyTelemetry: no --days hint when the window already covers queued entries", () => {
+  const text = describeEmptyTelemetry({
+    telemetryEnabled: true,
+    disabledBy: [],
+    lastFlush: {
+      lastAttemptAt: "2026-11-05T11:00:00.000Z",
+      lastAttemptOk: false,
+    },
+    daysAnalyzed: 7,
+  }).join("\n");
+  assertStringIncludes(text, "older than the last 7 days.");
+  assertEquals(text.includes("--days"), false);
 });

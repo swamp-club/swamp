@@ -18,13 +18,92 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { EventHandlers } from "../../libswamp/stream.ts";
-import type { TelemetryStatsEvent } from "../../libswamp/telemetry/stats.ts";
+import type {
+  TelemetryOptOutSource,
+  TelemetryStatsEmptyState,
+  TelemetryStatsEvent,
+} from "../../libswamp/telemetry/stats.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { HARD_RETENTION_DAYS } from "../../domain/telemetry/telemetry_service.ts";
 
 const logger = getSwampLogger(["telemetry", "stats"]);
+
+const NO_DATA_MESSAGE = "No telemetry data found";
+
+const KEEP_FLUSHED_KEY = "telemetryKeepFlushed";
+
+const REENABLE: Record<TelemetryOptOutSource, string> = {
+  "telemetry.collection": "swamp config set telemetry.collection enabled",
+  SWAMP_NO_TELEMETRY: "unset SWAMP_NO_TELEMETRY",
+  DO_NOT_TRACK: "unset DO_NOT_TRACK",
+};
+
+function dayCount(count: number): string {
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
+
+function entryCount(count: number): string {
+  return `${count} ${count === 1 ? "entry" : "entries"}`;
+}
+
+export function describeEmptyTelemetry(
+  state: TelemetryStatsEmptyState,
+): string[] {
+  if (!state.telemetryEnabled) {
+    return [
+      `Telemetry is turned off by ${
+        state.disabledBy.join(", ")
+      }, so nothing is recorded.`,
+      `To turn it back on: ${
+        state.disabledBy.map((source) => REENABLE[source]).join("; ")
+      }.`,
+    ];
+  }
+
+  const optOut = "No user-level or environment opt-out is set";
+  const flush = state.lastFlush;
+  if (flush === null) {
+    return [`${optOut}, and no flush has been recorded on this machine yet.`];
+  }
+
+  const lastSuccess = flush.lastSuccessAt !== undefined
+    ? `the last successful send delivered ${
+      entryCount(flush.lastSentCount ?? 0)
+    } at ${flush.lastSuccessAt}`
+    : undefined;
+
+  if (flush.lastAttemptOk) {
+    return [
+      `${optOut}. Sent entries are removed from the spool; ${
+        lastSuccess ?? `the last flush at ${flush.lastAttemptAt} succeeded`
+      }.`,
+      `Set ${KEEP_FLUSHED_KEY}: true in a repository's .swamp.yaml to keep sent entries for inspection.`,
+    ];
+  }
+
+  const reason = flush.lastFailureReason !== undefined
+    ? ` (${flush.lastFailureReason})`
+    : "";
+  const lines = [
+    `${optOut}. The last flush attempt at ${flush.lastAttemptAt} failed${reason}; unsent entries stay queued and may be older than the last ${
+      dayCount(state.daysAnalyzed)
+    }.`,
+  ];
+  // unsent entries are pruned after HARD_RETENTION_DAYS, so that window holds
+  // every one still queued
+  if (state.daysAnalyzed < HARD_RETENTION_DAYS) {
+    lines.push(
+      `Run swamp telemetry stats --days ${HARD_RETENTION_DAYS} to include them.`,
+    );
+  }
+  if (lastSuccess !== undefined) {
+    lines.push(`Before that, ${lastSuccess}.`);
+  }
+  return lines;
+}
 
 class LogTelemetryStatsRenderer implements Renderer<TelemetryStatsEvent> {
   handlers(): EventHandlers<TelemetryStatsEvent> {
@@ -32,7 +111,14 @@ class LogTelemetryStatsRenderer implements Renderer<TelemetryStatsEvent> {
       resolving: () => {},
       completed: (e) => {
         if (e.data === null) {
-          logger.info("No telemetry data found.");
+          logger.info(`${NO_DATA_MESSAGE}.`);
+          if (e.emptyState) {
+            for (const line of describeEmptyTelemetry(e.emptyState)) {
+              // a recorded failure reason is free text; braces would read as
+              // LogTape placeholders
+              logger.info(line.replaceAll("{", "{{").replaceAll("}", "}}"));
+            }
+          }
           return;
         }
         console.log(JSON.stringify(e.data, null, 2));
@@ -51,7 +137,22 @@ class JsonTelemetryStatsRenderer implements Renderer<TelemetryStatsEvent> {
       completed: (e) => {
         if (e.data === null) {
           console.log(
-            JSON.stringify({ message: "No telemetry data found" }, null, 2),
+            JSON.stringify(
+              {
+                message: NO_DATA_MESSAGE,
+                ...(e.emptyState
+                  ? {
+                    telemetryEnabled: e.emptyState.telemetryEnabled,
+                    disabledBy: e.emptyState.disabledBy,
+                    lastFlush: e.emptyState.lastFlush,
+                    daysAnalyzed: e.emptyState.daysAnalyzed,
+                    keepFlushedKey: KEEP_FLUSHED_KEY,
+                  }
+                  : {}),
+              },
+              null,
+              2,
+            ),
           );
           return;
         }
