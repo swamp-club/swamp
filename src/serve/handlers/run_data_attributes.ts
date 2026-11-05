@@ -21,7 +21,11 @@ import type { Principal } from "../../domain/access/principal.ts";
 import { MAX_RPC_FRAME_BYTES } from "../../domain/remote/rpc_channel.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
-import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
+import {
+  createDataRepositoryAttributeReader,
+  type ResourceAttributeReader,
+  type ResourceReadPolicy,
+} from "../../domain/workflows/step_output_resolver.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   resolveCompletedRunOutputs,
@@ -65,6 +69,50 @@ function oversizeBytes(
 export interface CompletedRunSlot {
   run?: WorkflowRun;
   verbose?: boolean;
+  reads?: SharedReads;
+}
+
+/**
+ * one datastore read per record however many clients attach; each client
+ * still gets its own read decision per resource
+ */
+interface SharedReads {
+  cache: Map<string, Promise<Record<string, unknown> | undefined>>;
+  bytes: number;
+  // past the budget the event cannot carry them, so later clients read nothing
+  overBudget: boolean;
+}
+
+function sharedReader(
+  reads: SharedReads,
+  read: ResourceAttributeReader,
+  maxBytes: number,
+): ResourceAttributeReader {
+  return (ref) => {
+    if (reads.overBudget) return Promise.resolve(undefined);
+    const key = JSON.stringify([
+      ref.modelType,
+      ref.modelId,
+      ref.name,
+      ref.version,
+    ]);
+    const cached = reads.cache.get(key);
+    if (cached) return cached;
+    const pending = read(ref).then((attributes) => {
+      if (attributes !== undefined && !reads.overBudget) {
+        reads.bytes += JSON.stringify(attributes).length;
+        if (reads.bytes > maxBytes) markOverBudget(reads);
+      }
+      return attributes;
+    });
+    reads.cache.set(key, pending);
+    return pending;
+  };
+}
+
+function markOverBudget(reads: SharedReads): void {
+  reads.overBudget = true;
+  reads.cache.clear();
 }
 
 /**
@@ -109,16 +157,32 @@ export function dataAttributesFor(
     const run = slot.run;
     if (event.kind !== "completed" || run === undefined) return event;
     if (signal?.aborted) return event;
+    slot.reads ??= { cache: new Map(), bytes: 0, overBudget: false };
+    const reads = slot.reads;
+    if (reads.overBudget) return event;
+    const dataRepo = ctx.repoContext.unifiedDataRepo;
     const canRead = ctx.authConfig.mode === "none"
       ? undefined
       : dataReadPolicy(socket, ctx, principal, signal);
     const stepOutputs = await resolveCompletedRunOutputs(
       run,
-      ctx.repoContext.unifiedDataRepo,
+      dataRepo,
       ctx.repoContext.workflowRunRepo,
       signal,
       canRead,
+      sharedReader(
+        reads,
+        createDataRepositoryAttributeReader(dataRepo),
+        maxEventBytes,
+      ),
     );
+    if (reads.overBudget) {
+      logger.info(
+        "Run {runId} completed event sent without data attributes: they pass {bytes} bytes, over the {limit} byte budget",
+        { runId: run.id, bytes: reads.bytes, limit: maxEventBytes },
+      );
+      return event;
+    }
     if (stepOutputs === undefined) return event;
     const attributed = serializeEvent({
       ...event,
@@ -131,6 +195,7 @@ export function dataAttributesFor(
     });
     const bytes = oversizeBytes(attributed, maxEventBytes);
     if (bytes === undefined) return attributed;
+    markOverBudget(reads);
     logger.info(
       "Run {runId} completed event sent without data attributes: with them it is {bytes} bytes, over the {limit} byte budget",
       { runId: run.id, bytes, limit: maxEventBytes },

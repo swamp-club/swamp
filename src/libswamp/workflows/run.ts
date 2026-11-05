@@ -38,6 +38,7 @@ import type { StepRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createDataRepositoryAttributeReader,
   type ResolvedStepOutputs,
+  type ResourceAttributeReader,
   type ResourceReadPolicy,
   StepOutputResolver,
 } from "../../domain/workflows/step_output_resolver.ts";
@@ -512,9 +513,12 @@ export async function resolveCompletedRunOutputs(
   runRepo: WorkflowRunRepository,
   signal?: AbortSignal,
   canRead?: ResourceReadPolicy,
+  readAttributes: ResourceAttributeReader = createDataRepositoryAttributeReader(
+    dataRepo,
+  ),
 ): Promise<RunStepOutputs | undefined> {
   const resolver = new StepOutputResolver({
-    readAttributes: createDataRepositoryAttributeReader(dataRepo),
+    readAttributes,
     findChildRun: (workflowId, runId) =>
       runRepo.findById(
         createWorkflowId(workflowId),

@@ -3172,7 +3172,7 @@ Deno.test("dataAttributesFor: a completed event its attributes would push past t
         ctx,
         socket,
         null,
-        slot,
+        { run: slot.run },
         undefined,
         bareBytes * 10,
       )(completed);
@@ -3184,6 +3184,89 @@ Deno.test("dataAttributesFor: a completed event its attributes would push past t
         stdout: "hello",
         apiKey: "not-for-you",
       });
+    } finally {
+      close();
+    }
+  });
+});
+
+function countContentReads(ctx: ConnectionContext): { reads: number } {
+  const counter = { reads: 0 };
+  const dataRepo = ctx.repoContext.unifiedDataRepo;
+  const getContent = dataRepo.getContent.bind(dataRepo);
+  dataRepo.getContent = (...args: Parameters<typeof getContent>) => {
+    counter.reads++;
+    return getContent(...args);
+  };
+  return counter;
+}
+
+Deno.test("runStreamFor: clients attached to one run share its data reads, each still judged on its own", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, buffer, close } = await servedHistoryRun(
+      dir,
+      workflow,
+      [
+        grantFor("wf", "workflow", "history-wf"),
+        grantFor("data", "data", "*"),
+      ],
+    );
+    try {
+      const counter = countContentReads(ctx);
+
+      const first = await attributesSent(ctx, buffer, slot, searchPrincipal);
+      const second = await attributesSent(ctx, buffer, slot, searchPrincipal);
+      const stranger = await attributesSent(ctx, buffer, slot, {
+        kind: "user",
+        id: "stranger",
+      });
+
+      assertEquals(counter.reads, 2);
+      assertEquals(first?.jobs[0].steps[0].outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+      assertEquals(second?.jobs[0].steps[0].outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+      assertEquals(stranger?.jobs[0].steps[0].outputs, undefined);
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("dataAttributesFor: once a run's attributes pass the budget, later clients are sent name-only without reading", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const counter = countContentReads(ctx);
+      const { socket } = makeSearchSocket();
+      const completed = serializeEvent({
+        kind: "completed",
+        run: toRunData(slot.run!),
+      });
+      const forClient = dataAttributesFor(
+        ctx,
+        socket,
+        null,
+        slot,
+        undefined,
+        8,
+      );
+
+      const first = await forClient(completed);
+      const readsAfterFirst = counter.reads;
+      const second = await forClient(completed);
+
+      assertEquals(first, completed);
+      assertEquals(second, completed);
+      assertEquals(readsAfterFirst > 0, true);
+      assertEquals(counter.reads, readsAfterFirst);
+      assertEquals(slot.reads?.cache.size, 0);
     } finally {
       close();
     }
