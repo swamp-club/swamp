@@ -591,20 +591,21 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     const results = await Promise.all(validations);
 
-    const checkWarnings: ValidationWarning[] = [];
+    let checkWarnings: ValidationWarning[] = [];
     if (
       modelDef.checks && checkContext &&
       !results.some((result) =>
         result.name === "Secret usage" && !result.passed
       )
     ) {
-      const checked = await this.runCheckValidations(
-        upgrade.definition,
-        modelDef,
-        checkContext,
-      );
-      results.push(...checked.results);
-      checkWarnings.push(...checked.warnings);
+      const { results: checkResults, warnings } = await this
+        .runCheckValidations(
+          upgrade.definition,
+          modelDef,
+          checkContext,
+        );
+      results.push(...checkResults);
+      checkWarnings = warnings;
     }
 
     const warnings = [
