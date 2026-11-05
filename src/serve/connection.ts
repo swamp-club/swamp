@@ -240,7 +240,7 @@ export {
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
-import { redactingFor } from "./handlers/nested_run_redaction.ts";
+import { runStreamFor } from "./handlers/run_data_attributes.ts";
 import { followerRefusal } from "./follower_requests.ts";
 import { isPeerSocket, PEER_REQUESTS } from "./peer_auth.ts";
 import {
@@ -4683,9 +4683,13 @@ async function handleRunAttach(
     requestId,
     controller,
     payload.afterSeq ?? 0,
-    run.kind === "method-run"
-      ? undefined
-      : redactingFor(ctx, socket, principal),
+    run.kind === "method-run" ? undefined : runStreamFor(
+      ctx,
+      socket,
+      principal,
+      run.completedRun ?? {},
+      controller.signal,
+    ),
   );
 }
 

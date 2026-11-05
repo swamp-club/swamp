@@ -38,6 +38,8 @@ import type { StepRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createDataRepositoryAttributeReader,
   type ResolvedStepOutputs,
+  type ResourceAttributeReader,
+  type ResourceReadPolicy,
   StepOutputResolver,
 } from "../../domain/workflows/step_output_resolver.ts";
 import type { WebhookPayload } from "../../domain/expressions/model_resolver.ts";
@@ -368,6 +370,12 @@ export interface WorkflowRunDeps {
    * completed event; a dep, never an input, as serve must not grant it
    */
   resolveCompletedOutputs?: boolean;
+  /**
+   * handed the live completed run, whose never-persisted sensitive values are
+   * the only mask for its data, before the completed event is yielded; a dep,
+   * never an input
+   */
+  onCompletedRun?: (run: WorkflowRun) => void;
 }
 
 export interface WorkflowRunInput {
@@ -504,14 +512,19 @@ export async function resolveCompletedRunOutputs(
   dataRepo: UnifiedDataRepository,
   runRepo: WorkflowRunRepository,
   signal?: AbortSignal,
+  canRead?: ResourceReadPolicy,
+  readAttributes: ResourceAttributeReader = createDataRepositoryAttributeReader(
+    dataRepo,
+  ),
 ): Promise<RunStepOutputs | undefined> {
   const resolver = new StepOutputResolver({
-    readAttributes: createDataRepositoryAttributeReader(dataRepo),
+    readAttributes,
     findChildRun: (workflowId, runId) =>
       runRepo.findById(
         createWorkflowId(workflowId),
         createWorkflowRunId(runId),
       ),
+    canRead,
     namespace: dataRepo.namespace,
     signal,
   });
@@ -562,6 +575,40 @@ export async function* deferCompletedForOutputs(
   if (held?.kind === "completed") {
     yield { event: held, stepOutputs: await resolve(held.run) };
   }
+}
+
+/** placed and masked through toRunData, so the live run's sensitive values apply */
+export function withRunStepOutputs(
+  view: WorkflowRunView,
+  run: WorkflowRun,
+  stepOutputs: RunStepOutputs,
+  verbose?: boolean,
+): WorkflowRunView {
+  const resolved = toRunData(run, view.path, verbose, stepOutputs);
+  return {
+    ...view,
+    jobs: view.jobs.map((job) => {
+      const resolvedJob = resolved.jobs.find((j) => j.name === job.name);
+      if (!resolvedJob) return job;
+      return {
+        ...job,
+        steps: job.steps.map((step) => {
+          const from = resolvedJob.steps.find((s) => s.name === step.name);
+          if (!from) return step;
+          return {
+            ...step,
+            ...(from.dataArtifacts !== undefined
+              ? { dataArtifacts: from.dataArtifacts }
+              : {}),
+            ...(from.outputs !== undefined ? { outputs: from.outputs } : {}),
+            ...(from.artifacts !== undefined
+              ? { artifacts: from.artifacts }
+              : {}),
+          };
+        }),
+      };
+    }),
+  };
 }
 
 export function toRunData(
@@ -1026,14 +1073,18 @@ export async function* workflowRun(
                   instanceId: resolvedInput.instanceId,
                   triggerSource: resolvedInput.triggerSource,
                 }),
-                outputsRepo
-                  ? (run) =>
-                    resolveCompletedRunOutputs(
-                      run,
-                      outputsRepo,
-                      deps.runRepo,
-                      ctx.signal,
-                    )
+                outputsRepo || deps.onCompletedRun
+                  ? (run) => {
+                    deps.onCompletedRun?.(run);
+                    return outputsRepo
+                      ? resolveCompletedRunOutputs(
+                        run,
+                        outputsRepo,
+                        deps.runRepo,
+                        ctx.signal,
+                      )
+                      : Promise.resolve(undefined);
+                  }
                   : undefined,
               )
             ) {

@@ -22,6 +22,7 @@ export interface DataArtifactView {
   name: string;
   path: string;
   attributes?: Record<string, unknown>;
+  tags?: Record<string, string>;
 }
 
 export interface ReportResultView {

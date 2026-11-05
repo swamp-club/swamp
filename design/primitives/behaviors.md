@@ -894,6 +894,11 @@ Resources and files share these properties:
 - A garbage collection setting: how many versions to store. It takes the same
   values as lifetime, or a raw integer for a specific number.
 - A set of tags that mark data for human indexing and later retrieval.
+- An optional `display` flag. `display: false` leaves the spec's records out of
+  the "Data produced" box that ends `swamp behavior run`, `workflow run` and
+  `workflow resume`; the writer stamps them `_swamp.display: hidden`. The method
+  still returns the handle, and the run record, `data list` and every `--json`
+  output keep the data.
 
 Data is immutable. Each write to the same spec name creates a new version.
 Versions are auto-incrementing integers starting at 1. The latest version can
@@ -972,7 +977,7 @@ Lightweight reference to data already persisted:
 | `dataId`   | Unique ID for this data                   |
 | `version`  | Version number of this write              |
 | `size`     | Size of the written content in bytes      |
-| `tags`     | Tags from the writer options              |
+| `tags`     | Tags from the writer options, plus the reserved tags the writer stamps (`specName`, `_swamp.kind`, and `_swamp.display` for a `display: false` spec) |
 | `metadata` | Full metadata for the data artifact       |
 | `attributes` | Top-level resource attributes (resource kind only, optional) |
 

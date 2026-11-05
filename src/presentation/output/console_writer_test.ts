@@ -25,11 +25,16 @@ import {
   formatDuration,
   formatTimestamp,
   gutterLine,
+  isUserFacingArtifact,
   PipeWriter,
   renderDataBox,
   STATUS_COLORS,
 } from "./console_writer.ts";
 import { interactiveFormatter } from "../../infrastructure/logging/log_format.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../../domain/data/data.ts";
 
 function noColor<T>(fn: () => T): T {
   setColorEnabled(false);
@@ -393,4 +398,25 @@ Deno.test("renderDataBox: prints the data query hint below the box, keeping its 
       assertEquals(line.length <= lines[bottom].length, true, line);
     }
   });
+});
+
+Deno.test("isUserFacingArtifact: hides reports, logs and display-hidden data", () => {
+  assertEquals(isUserFacingArtifact({ name: "result" }), true);
+  assertEquals(isUserFacingArtifact({ name: "result", tags: {} }), true);
+  assertEquals(isUserFacingArtifact({ name: "report-summary" }), false);
+  assertEquals(isUserFacingArtifact({ name: "log" }), false);
+  assertEquals(
+    isUserFacingArtifact({
+      name: "result",
+      tags: { [SUMMARY_DISPLAY_TAG]: SUMMARY_DISPLAY_HIDDEN },
+    }),
+    false,
+  );
+  assertEquals(
+    isUserFacingArtifact({
+      name: "result",
+      tags: { [SUMMARY_DISPLAY_TAG]: "shown" },
+    }),
+    true,
+  );
 });

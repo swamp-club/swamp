@@ -1219,5 +1219,6 @@ export interface ModelMethodRunView {
     name: string;
     path: string;
     attributes?: Record<string, unknown>;
+    tags?: Record<string, string>;
   }>;
 }

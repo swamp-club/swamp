@@ -62,7 +62,11 @@ import type { MethodExecutionEvent } from "./method_events.ts";
 import { sensitiveOutputTargetVaults } from "./sensitive_output_vault.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
-import { Data } from "../data/data.ts";
+import {
+  Data,
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../data/data.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
@@ -3955,6 +3959,112 @@ Deno.test("createFileWriterFactory: stamps the record kind after every tag sourc
   assertEquals(handle.tags[RECORD_KIND_TAG], "file");
   assertEquals(handle.tags["specName"], "log");
   assertEquals(handle.tags["type"], "override-type");
+});
+
+Deno.test("createResourceWriter: a display: false spec stamps the hidden display tag", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    {
+      hidden: { ...testResources.item, display: false },
+      shown: { ...testResources.item, display: true },
+      plain: testResources.item,
+    },
+  );
+
+  const hidden = await writeResource("hidden", "a", { value: "v" });
+  assertEquals(hidden.tags[SUMMARY_DISPLAY_TAG], SUMMARY_DISPLAY_HIDDEN);
+  const shown = await writeResource("shown", "b", { value: "v" });
+  assertEquals(SUMMARY_DISPLAY_TAG in shown.tags, false);
+  const plain = await writeResource("plain", "c", { value: "v" });
+  assertEquals(SUMMARY_DISPLAY_TAG in plain.tags, false);
+});
+
+Deno.test("createFileWriterFactory: a display: false spec stamps the hidden display tag", async () => {
+  const { createFileWriter } = createFileWriterFactory(
+    createMockRepo(),
+    modelType,
+    modelId,
+    {
+      hidden: { ...testFiles.log, display: false },
+      shown: { ...testFiles.log, display: true },
+      plain: testFiles.log,
+    },
+  );
+
+  const hidden = await createFileWriter("hidden", "a").writeText("x");
+  assertEquals(hidden.tags[SUMMARY_DISPLAY_TAG], SUMMARY_DISPLAY_HIDDEN);
+  const shown = await createFileWriter("shown", "b").writeText("x");
+  assertEquals(SUMMARY_DISPLAY_TAG in shown.tags, false);
+  const plain = await createFileWriter("plain", "c").writeText("x");
+  assertEquals(SUMMARY_DISPLAY_TAG in plain.tags, false);
+});
+
+Deno.test("createResourceWriter: no tag source can forge or clear the display tag", async () => {
+  const hiddenSpec = { hidden: { ...testResources.item, display: false } };
+  const forged = { [SUMMARY_DISPLAY_TAG]: "shown" };
+  const cases = [
+    {
+      resources: hiddenSpec,
+      runtimeTags: forged,
+      message: `Tag '${SUMMARY_DISPLAY_TAG}' from --tag is reserved`,
+    },
+    {
+      resources: { hidden: { ...testResources.item, tags: forged } },
+      runtimeTags: undefined,
+      message: `Tag '${SUMMARY_DISPLAY_TAG}' from the default tags`,
+    },
+  ];
+  for (const { resources, runtimeTags, message } of cases) {
+    const repo = createCountingRepo();
+    const { writeResource } = createResourceWriter(
+      repo,
+      modelType,
+      modelId,
+      resources,
+      undefined,
+      undefined,
+      undefined,
+      runtimeTags,
+    );
+    await assertRejects(
+      () => writeResource("hidden", "main", { value: "v" }),
+      Error,
+      message,
+    );
+    assertEquals(repo.writes(), 0);
+  }
+
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    hiddenSpec,
+  );
+  await assertRejects(
+    () =>
+      writeResource("hidden", "main", { value: "v" }, {
+        tags: { [SUMMARY_DISPLAY_TAG]: "shown" },
+      }),
+    Error,
+    `Tag '${SUMMARY_DISPLAY_TAG}' from the write overrides`,
+  );
+});
+
+Deno.test("createFileWriterFactory: no tag source can forge or clear the display tag", () => {
+  const { createFileWriter } = createFileWriterFactory(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { hidden: { ...testFiles.log, display: false } },
+    { [SUMMARY_DISPLAY_TAG]: "shown" },
+  );
+  assertThrows(
+    () => createFileWriter("hidden", "main"),
+    Error,
+    `Tag '${SUMMARY_DISPLAY_TAG}' from the workflow's tags is reserved`,
+  );
 });
 
 Deno.test("createResourceWriter: the writer still sets its own sensitive-fields tag after vaulting", async () => {

@@ -1695,6 +1695,7 @@ export async function* modelMethodRun(
                     name: handle.name,
                     path: dataPath,
                     attributes,
+                    tags: handle.tags,
                   });
                   yield {
                     kind: "data_artifact_saved",

@@ -82,6 +82,7 @@ import {
   type WorkflowWaitsEvent,
 } from "../../libswamp/workflows/waits.ts";
 import {
+  deferCompletedForOutputs,
   mapWorkflowExecutionEvent,
   type WorkflowRunEvent,
 } from "../../libswamp/workflows/run.ts";
@@ -196,11 +197,14 @@ import {
   orphanedRefusalForClient,
   readableNestedCascade,
   readableNestedRuns,
-  redactingFor,
   redactParentRun,
   redactRunViewLinks,
-  redactStreamEvent,
 } from "./nested_run_redaction.ts";
+import {
+  type CompletedRunSlot,
+  dataReadPolicy,
+  runStreamFor,
+} from "./run_data_attributes.ts";
 import {
   autoResumeAfterApproval,
   autoResumeParentAfterChild,
@@ -251,8 +255,6 @@ import {
   wasRequestErrored,
   withCommittedUnknownSteps,
 } from "./shared.ts";
-import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
-import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
@@ -360,7 +362,14 @@ export async function handleWorkflowRun(
     // events are redacted per client before sending, which may wait: sends are
     // chained to keep the run's order and drained before the request's own
     // reply
-    const redact = redactingFor(ctx, socket, principal);
+    const completedRun: CompletedRunSlot = { verbose: payload.verbose };
+    const forClient = runStreamFor(
+      ctx,
+      socket,
+      principal,
+      completedRun,
+      controller.signal,
+    );
     let sending = Promise.resolve();
     try {
       await executeWorkflowWithLocks(
@@ -411,7 +420,7 @@ export async function handleWorkflowRun(
             event as { kind: string; [key: string]: unknown },
           );
           sending = sending.then(async () => {
-            const visible = redact ? await redact(serialized) : serialized;
+            const visible = await forClient(serialized);
             if (socket.readyState !== WebSocket.OPEN) return;
             send(socket, { type: "event", id: requestId, event: visible });
           }).catch((error) => {
@@ -429,6 +438,9 @@ export async function handleWorkflowRun(
           vaultAccess,
           defaultVault: ctx.defaultVault,
           runWriteFence: ctx.runWriteFence,
+          onCompletedRun: (run) => {
+            completedRun.run = run;
+          },
         },
       );
       await sending;
@@ -468,6 +480,7 @@ export async function handleWorkflowRun(
   const runController = new AbortController();
   let runId: string = crypto.randomUUID();
   const startedAt = new Date();
+  const completedRun: CompletedRunSlot = { verbose: payload.verbose };
 
   let resolveCompletion!: () => void;
   const completion = new Promise<void>((r) => {
@@ -485,6 +498,7 @@ export async function handleWorkflowRun(
       startedAt,
       completion,
       principalId: principal ? principalToString(principal) : null,
+      completedRun,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -576,6 +590,9 @@ export async function handleWorkflowRun(
           vaultAccess,
           defaultVault: ctx.defaultVault,
           runWriteFence: ctx.runWriteFence,
+          onCompletedRun: (run) => {
+            completedRun.run = run;
+          },
         },
       );
       // reported finished only once its commits are replicated
@@ -649,7 +666,7 @@ export async function handleWorkflowRun(
     requestId,
     controller,
     0,
-    redactingFor(ctx, socket, principal),
+    runStreamFor(ctx, socket, principal, completedRun, controller.signal),
   );
 }
 
@@ -916,32 +933,6 @@ export async function handleWorkflowGet(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_get_failed", message);
   }
-}
-
-/**
- * reading history must not reveal data that data.get would refuse, so each
- * resource goes through the same data read decision
- */
-function dataReadPolicy(
-  socket: WebSocket,
-  ctx: ConnectionContext,
-  principal: Principal | null,
-  signal?: AbortSignal,
-): ResourceReadPolicy {
-  const canonical = canonicalResources(ctx, signal);
-  return async (ref) =>
-    (await filterByResources(
-      [ref],
-      (item) =>
-        currentDiagnosticTally().measure(
-          "owner_lookup",
-          () => canonical.dataOwners(item),
-        ),
-      socket,
-      principal,
-      "read",
-      ctx,
-    )).length === 1;
 }
 
 export async function handleWorkflowHistoryGet(
@@ -2454,33 +2445,45 @@ export async function handleWorkflowResume(
           > {
             // held to the principal that triggered the run, never the resumer
             for await (
-              const event of runGeneratorWithVaultAccess(
-                resumeRunVaultScope(runVaultScopeContext(ctx), run)?.access,
-                () =>
-                  service.resume(workflowName, run.id, {
-                    signal: controller.signal,
-                    inputs: resumeInputs,
-                    fromStep: payload.from,
-                    fromJob: payload.fromJob,
-                    instanceId: ctx.instanceId,
-                  }),
+              const { event } of deferCompletedForOutputs(
+                runGeneratorWithVaultAccess(
+                  resumeRunVaultScope(runVaultScopeContext(ctx), run)?.access,
+                  () =>
+                    service.resume(workflowName, run.id, {
+                      signal: controller.signal,
+                      inputs: resumeInputs,
+                      fromStep: payload.from,
+                      fromJob: payload.fromJob,
+                      instanceId: ctx.instanceId,
+                    }),
+                ),
+                (completed) => {
+                  completedRun.run = completed;
+                  return Promise.resolve(undefined);
+                },
               )
             ) {
               yield mapWorkflowExecutionEvent(event, runRepo);
             }
           };
 
-          const canRead = nestedRunReadDecider(ctx, socket, principal);
+          const completedRun: CompletedRunSlot = {};
+          const forClient = runStreamFor(
+            ctx,
+            socket,
+            principal,
+            completedRun,
+            controller.signal,
+          );
           const run_ = async () => {
             try {
               for await (const event of resumeGenerator()) {
                 if (socket.readyState !== WebSocket.OPEN) break;
                 if (!isWireEvent(event)) continue;
-                const serialized = await redactStreamEvent(
+                const serialized = await forClient(
                   serializeEvent(
                     event as { kind: string; [key: string]: unknown },
                   ),
-                  canRead,
                 );
                 send(socket, {
                   type: "event",
@@ -2579,7 +2582,13 @@ export async function handleWorkflowResume(
     requestId,
     controller,
     0,
-    redactingFor(ctx, socket, principal),
+    runStreamFor(
+      ctx,
+      socket,
+      principal,
+      launched.completedRun,
+      controller.signal,
+    ),
   );
 }
 

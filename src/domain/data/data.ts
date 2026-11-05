@@ -59,6 +59,10 @@ export const RESTATES_TAG = `${RESERVED_TAG_PREFIX}restates`;
  */
 export const RECORD_KIND_TAG = `${RESERVED_TAG_PREFIX}kind`;
 
+/** stamped by both writers when the spec sets display: false; summaries skip it */
+export const SUMMARY_DISPLAY_TAG = `${RESERVED_TAG_PREFIX}display`;
+export const SUMMARY_DISPLAY_HIDDEN = "hidden";
+
 /**
  * tag keys outside the prefix that data writers set and readers trust, such as
  * specName; refused from every user source like a key under the prefix

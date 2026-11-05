@@ -95,6 +95,15 @@ import { RunEventBuffer } from "../run_event_buffer.ts";
 import { SUSPENDED_RUN_BUSY_MESSAGE } from "../suspended_run_cancel.ts";
 import { createSocketSubscriber, subscribeUntilDetach } from "./shared.ts";
 import { redactingFor } from "./nested_run_redaction.ts";
+import {
+  type CompletedRunSlot,
+  dataAttributesFor,
+  runStreamFor,
+} from "./run_data_attributes.ts";
+import { toRunData } from "../../libswamp/workflows/run.ts";
+import { serializeEvent } from "../serializer.ts";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 
 function makeWorkflowRepo(
   workflows: Map<string, Workflow>,
@@ -2942,5 +2951,354 @@ Deno.test("handleWorkflowTriggerGet: effective catch-up is null when neither set
 
     assertEquals(frame.payload.data.builtIn.catchUp, null);
     assertEquals(frame.payload.data.effective.catchUp, null);
+  });
+});
+
+interface AttributeFrame {
+  type: string;
+  event?: {
+    kind: string;
+    run?: {
+      jobs: Array<{
+        steps: Array<{
+          outputs?: Record<string, unknown>;
+          dataArtifacts?: Array<
+            { name: string; attributes?: Record<string, unknown> }
+          >;
+        }>;
+      }>;
+    };
+  };
+}
+
+/**
+ * a seeded history run as a served run leaves it: the live run in its slot
+ * and its completed event in a finished buffer, carrying no attributes
+ */
+async function servedHistoryRun(
+  dir: string,
+  workflow: Workflow,
+  grants?: Grant[],
+): Promise<{
+  ctx: ConnectionContext;
+  slot: CompletedRunSlot;
+  buffer: RunEventBuffer;
+  close: () => void;
+}> {
+  const runRepo = new YamlWorkflowRunRepository(dir);
+  const live = await runRepo.findLatestByWorkflowId(workflow.id);
+  if (!live) throw new Error("no seeded run");
+  const step = live.getJob("main")!.getStep("write")!;
+  step.addDataArtifact({
+    dataId: "data-record",
+    name: "record",
+    version: 1,
+    tags: {},
+  });
+  step.addDataArtifact({
+    dataId: "data-token",
+    name: "token",
+    version: 1,
+    tags: {},
+  });
+  const catalogStore = createCatalogStore(dir);
+  const ctx = makeHistoryCtx(dir, workflow, grants);
+  const repoContext = ctx.repoContext as unknown as Record<string, unknown>;
+  repoContext.unifiedDataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalogStore,
+  );
+  repoContext.workflowRunRepo = runRepo;
+  const buffer = new RunEventBuffer(16);
+  buffer.push({ kind: "started", runId: live.id });
+  buffer.push(serializeEvent({ kind: "completed", run: toRunData(live) }));
+  buffer.finish({ kind: "done" });
+  return {
+    ctx,
+    slot: { run: live },
+    buffer,
+    close: () => catalogStore.close(),
+  };
+}
+
+async function attributesSent(
+  ctx: ConnectionContext,
+  buffer: RunEventBuffer,
+  slot: CompletedRunSlot,
+  principal: Principal | null,
+): Promise<NonNullable<AttributeFrame["event"]>["run"]> {
+  const { socket, frames } = makeSearchSocket();
+  const controller = new AbortController();
+  await subscribeUntilDetach(
+    buffer,
+    socket,
+    "req-attrs",
+    controller,
+    0,
+    runStreamFor(ctx, socket, principal, slot, controller.signal),
+  );
+  const completed = (frames as unknown as AttributeFrame[]).find((f) =>
+    f.event?.kind === "completed"
+  );
+  return completed?.event?.run;
+}
+
+Deno.test("runStreamFor: each subscriber of one buffer gets only the attributes it may read, and the buffered event keeps none", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, buffer, close } = await servedHistoryRun(
+      dir,
+      workflow,
+      [
+        grantFor("wf", "workflow", "history-wf"),
+        grantFor("writer-data", "data", "writer"),
+      ],
+    );
+    try {
+      const reader = await attributesSent(ctx, buffer, slot, searchPrincipal);
+      const stranger = await attributesSent(ctx, buffer, slot, {
+        kind: "user",
+        id: "stranger",
+      });
+
+      const readerStep = reader?.jobs[0].steps[0];
+      assertEquals(readerStep?.outputs, { stdout: "hello" });
+      assertEquals(
+        readerStep?.dataArtifacts?.map((a) => [a.name, a.attributes]),
+        [["record", { stdout: "hello" }], ["token", undefined]],
+      );
+      assertEquals(stranger?.jobs[0].steps[0].outputs, undefined);
+      assertEquals(
+        stranger?.jobs[0].steps[0].dataArtifacts?.map((a) => a.attributes),
+        [undefined, undefined],
+      );
+
+      const plain = await attributesSent(ctx, buffer, {}, null);
+      assertEquals(plain?.jobs[0].steps[0].outputs, undefined);
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("runStreamFor: without auth every attribute is added", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, buffer, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const run = await attributesSent(ctx, buffer, slot, null);
+
+      assertEquals(run?.jobs[0].steps[0].outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("runStreamFor: attributes are masked by the live run's sensitive values", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, buffer, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const values = new RunSensitiveValues(
+        undefined,
+        new SecretBagRegistry(),
+      );
+      values.addSecret("not-for-you", { vaultName: "v", key: "k" });
+      slot.run!.attachSensitiveValues(values);
+
+      const run = await attributesSent(ctx, buffer, slot, null);
+
+      assertEquals(run?.jobs[0].steps[0].outputs?.apiKey, "***");
+      assertEquals(
+        JSON.stringify(run).includes("not-for-you"),
+        false,
+      );
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("runStreamFor: a subscriber whose read is cancelled gets the completed event name-only", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const { socket, frames } = makeSearchSocket();
+      const aborted = new AbortController();
+      aborted.abort();
+      const forClient = runStreamFor(ctx, socket, null, slot, aborted.signal);
+      const completed = serializeEvent({
+        kind: "completed",
+        run: toRunData(slot.run!),
+      });
+
+      const sent = await forClient(completed);
+
+      assertEquals(sent, completed);
+      assertEquals(frames.length, 0);
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("dataAttributesFor: a completed event its attributes would push past the frame budget is sent name-only", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const { socket } = makeSearchSocket();
+      const completed = serializeEvent({
+        kind: "completed",
+        run: toRunData(slot.run!),
+      });
+      const bareBytes = JSON.stringify(completed).length;
+
+      const tight = await dataAttributesFor(
+        ctx,
+        socket,
+        null,
+        slot,
+        undefined,
+        bareBytes + 8,
+      )(completed);
+      const roomy = await dataAttributesFor(
+        ctx,
+        socket,
+        null,
+        { run: slot.run },
+        undefined,
+        bareBytes * 10,
+      )(completed);
+
+      assertEquals(tight, completed);
+      const step = (roomy as unknown as AttributeFrame["event"])?.run
+        ?.jobs[0].steps[0];
+      assertEquals(step?.outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+    } finally {
+      close();
+    }
+  });
+});
+
+function countContentReads(ctx: ConnectionContext): { reads: number } {
+  const counter = { reads: 0 };
+  const dataRepo = ctx.repoContext.unifiedDataRepo;
+  const getContent = dataRepo.getContent.bind(dataRepo);
+  dataRepo.getContent = (...args: Parameters<typeof getContent>) => {
+    counter.reads++;
+    return getContent(...args);
+  };
+  return counter;
+}
+
+Deno.test("runStreamFor: clients attached to one run share its data reads, each still judged on its own", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, buffer, close } = await servedHistoryRun(
+      dir,
+      workflow,
+      [
+        grantFor("wf", "workflow", "history-wf"),
+        grantFor("data", "data", "*"),
+      ],
+    );
+    try {
+      const counter = countContentReads(ctx);
+
+      const first = await attributesSent(ctx, buffer, slot, searchPrincipal);
+      const second = await attributesSent(ctx, buffer, slot, searchPrincipal);
+      const stranger = await attributesSent(ctx, buffer, slot, {
+        kind: "user",
+        id: "stranger",
+      });
+
+      assertEquals(counter.reads, 2);
+      assertEquals(first?.jobs[0].steps[0].outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+      assertEquals(second?.jobs[0].steps[0].outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+      assertEquals(stranger?.jobs[0].steps[0].outputs, undefined);
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("dataAttributesFor: once a run's attributes pass the budget, later clients are sent name-only without reading", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const counter = countContentReads(ctx);
+      const { socket } = makeSearchSocket();
+      const completed = serializeEvent({
+        kind: "completed",
+        run: toRunData(slot.run!),
+      });
+      const forClient = dataAttributesFor(
+        ctx,
+        socket,
+        null,
+        slot,
+        undefined,
+        8,
+      );
+
+      const first = await forClient(completed);
+      const readsAfterFirst = counter.reads;
+      const second = await forClient(completed);
+
+      assertEquals(first, completed);
+      assertEquals(second, completed);
+      assertEquals(readsAfterFirst > 0, true);
+      assertEquals(counter.reads, readsAfterFirst);
+      assertEquals(slot.reads?.cache.size, 0);
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("runStreamFor: a read that failed for one client is tried again for the next", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, buffer, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const dataRepo = ctx.repoContext.unifiedDataRepo;
+      const getContent = dataRepo.getContent.bind(dataRepo);
+      let failNext = true;
+      dataRepo.getContent = (...args: Parameters<typeof getContent>) => {
+        if (failNext && args[2] === "record") {
+          failNext = false;
+          return Promise.reject(new Error("datastore briefly offline"));
+        }
+        return getContent(...args);
+      };
+
+      const first = await attributesSent(ctx, buffer, slot, null);
+      const second = await attributesSent(ctx, buffer, slot, null);
+
+      assertEquals(first?.jobs[0].steps[0].outputs, { apiKey: "not-for-you" });
+      assertEquals(second?.jobs[0].steps[0].outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+    } finally {
+      close();
+    }
   });
 });

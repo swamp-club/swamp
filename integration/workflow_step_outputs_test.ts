@@ -36,7 +36,16 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
-import { workflowRun } from "../src/libswamp/workflows/run.ts";
+import {
+  resolveCompletedRunOutputs,
+  withRunStepOutputs,
+  workflowRun,
+} from "../src/libswamp/workflows/run.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../src/domain/data/data.ts";
+import { isUserFacingArtifact } from "../src/presentation/output/console_writer.ts";
 import {
   createWorkflowHistoryGetDeps,
   workflowHistoryGet,
@@ -81,6 +90,13 @@ async function withRepo(
         lifetime: "infinite",
         garbageCollection: 20,
       },
+      bookkeeping: {
+        description: "A record kept for queries, not for the run summary",
+        schema: z.object({ stdout: z.string(), exitCode: z.number() }),
+        lifetime: "infinite",
+        garbageCollection: 20,
+        display: false,
+      },
     },
     methods: {
       write: {
@@ -91,6 +107,18 @@ async function withRepo(
             stdout: WriteArgs.parse(args).text,
             exitCode: 0,
           });
+          return { dataHandles: [handle] };
+        },
+      },
+      writeQuietly: {
+        description: "Write a record the run summary leaves out",
+        arguments: WriteArgs,
+        execute: async (args, context) => {
+          const handle = await context.writeResource!(
+            "bookkeeping",
+            "bookkeeping",
+            { stdout: WriteArgs.parse(args).text, exitCode: 0 },
+          );
           return { dataHandles: [handle] };
         },
       },
@@ -556,5 +584,123 @@ Deno.test("step outputs: a completed run shows its data attributes once the run 
       .find((a) => a.name === "result");
     assertEquals(unresolved?.attributes, undefined);
     assertEquals(notAsked.statusAtFirstRead, undefined);
+  });
+});
+
+Deno.test("step outputs: serve's run hands the live run over once it is saved, and its attributes are read under the caller's read policy", async () => {
+  await withRepo(async (repo, dir) => {
+    const workflow = Workflow.create({
+      name: "served-attributes",
+      jobs: [Job.create({
+        name: "main",
+        steps: [writeStep("write_record", "hello")],
+      })],
+    });
+    await repo.workflowRepo.save(workflow);
+    let live: WorkflowRun | undefined;
+    let savedStatusAtHook: string | undefined;
+    let pendingCheck: Promise<void> = Promise.resolve();
+    const deps = await createWorkflowRunDeps(
+      dir,
+      repo,
+      { type: "filesystem", path: join(dir, ".swamp") },
+      undefined,
+      undefined,
+      {
+        onCompletedRun: (run) => {
+          live = run;
+          pendingCheck = repo.workflowRunRepo.findLatestByWorkflowId(
+            workflow.id,
+          ).then((saved) => {
+            savedStatusAtHook = saved?.status ?? "missing";
+          });
+        },
+      },
+    );
+    let view: WorkflowRunView | undefined;
+    for await (
+      const event of workflowRun(createLibSwampContext(), deps, {
+        workflowIdOrName: workflow.name,
+      })
+    ) {
+      if (event.kind === "completed") view = event.run;
+      if (event.kind === "error") throw new Error(event.error.message);
+    }
+    await pendingCheck;
+
+    assertEquals(savedStatusAtHook, "succeeded");
+    assertEquals(live?.id, view?.id);
+    const bare = stepView(view!, "write_record").dataArtifacts!
+      .find((a) => a.name === "result");
+    assertEquals(bare?.attributes, undefined);
+
+    const refused = await resolveCompletedRunOutputs(
+      live!,
+      repo.unifiedDataRepo,
+      repo.workflowRunRepo,
+      undefined,
+      () => Promise.resolve(false),
+    );
+    const allowed = await resolveCompletedRunOutputs(
+      live!,
+      repo.unifiedDataRepo,
+      repo.workflowRunRepo,
+      undefined,
+      () => Promise.resolve(true),
+    );
+    const refusedView = withRunStepOutputs(view!, live!, refused!);
+    const allowedView = withRunStepOutputs(view!, live!, allowed!);
+    assertEquals(
+      stepView(refusedView, "write_record").dataArtifacts!
+        .find((a) => a.name === "result")?.attributes,
+      undefined,
+    );
+    assertEquals(
+      stepView(allowedView, "write_record").dataArtifacts!
+        .find((a) => a.name === "result")?.attributes,
+      { stdout: "hello", exitCode: 0 },
+    );
+  });
+});
+
+Deno.test("step outputs: a record whose spec says display false keeps its handle, run record entry and data, and only the summary leaves it out", async () => {
+  await withRepo(async (repo, dir) => {
+    const workflow = Workflow.create({
+      name: "quiet-record",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          writeStep("write_record", "shown"),
+          Step.create({
+            name: "write_bookkeeping",
+            task: StepTask.model("writer", "writeQuietly", { text: "kept" }),
+          }),
+        ],
+      })],
+    });
+    await repo.workflowRepo.save(workflow);
+
+    const { view } = await completedRunView(repo, dir, workflow, true);
+    const quiet = stepView(view, "write_bookkeeping").dataArtifacts!
+      .find((a) => a.name === "bookkeeping");
+    const shown = stepView(view, "write_record").dataArtifacts!
+      .find((a) => a.name === "result");
+    assertEquals(quiet?.tags?.[SUMMARY_DISPLAY_TAG], SUMMARY_DISPLAY_HIDDEN);
+    assertEquals(quiet?.attributes, { stdout: "kept", exitCode: 0 });
+    assertEquals(isUserFacingArtifact(quiet!), false);
+    assertEquals(shown?.tags?.[SUMMARY_DISPLAY_TAG], undefined);
+    assertEquals(isUserFacingArtifact(shown!), true);
+
+    const saved = await repo.workflowRunRepo.findById(
+      createWorkflowId(workflow.id),
+      createWorkflowRunId(view.id),
+    );
+    const savedArtifacts = saved!.getJob("main")!.getStep("write_bookkeeping")!
+      .dataArtifacts;
+    const savedQuiet = savedArtifacts.find((a) => a.name === "bookkeeping");
+    assertEquals(
+      savedQuiet?.tags[SUMMARY_DISPLAY_TAG],
+      SUMMARY_DISPLAY_HIDDEN,
+    );
   });
 });

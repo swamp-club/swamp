@@ -53,6 +53,7 @@ export interface ResourceOutputSpec<
   sensitiveOutput?: boolean;
   vaultName?: string;
   streaming?: boolean;
+  display?: boolean;
 }
 
 /**
@@ -67,6 +68,7 @@ export interface FileOutputSpec {
   streaming?: boolean;
   sensitiveOutput?: boolean;
   vaultName?: string;
+  display?: boolean;
 }
 
 /**

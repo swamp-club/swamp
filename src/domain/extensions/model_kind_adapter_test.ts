@@ -264,6 +264,36 @@ Deno.test("validatePrimaryExport: model with matching last toVersion passes", ()
   assertEquals(result.success, true);
 });
 
+Deno.test("validatePrimaryExport: a spec's display flag survives parsing", () => {
+  const result = modelKindAdapter.validatePrimaryExport(
+    makeValidModel({
+      resources: {
+        state: {
+          schema: z.object({ phase: z.string() }),
+          lifetime: "infinite",
+          garbageCollection: 10,
+          display: false,
+        },
+      },
+      files: {
+        blob: {
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          display: false,
+        },
+      },
+    }),
+  );
+  if (!result.success) throw result.error;
+  const data = result.data as {
+    resources: Record<string, { display?: boolean }>;
+    files: Record<string, { display?: boolean }>;
+  };
+  assertEquals(data.resources.state.display, false);
+  assertEquals(data.files.blob.display, false);
+});
+
 Deno.test("validatePrimaryExport: model with mismatching last toVersion fails", () => {
   const result = modelKindAdapter.validatePrimaryExport(
     makeValidModel({

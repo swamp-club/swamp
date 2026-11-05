@@ -28,6 +28,7 @@ import {
   resolveRunStepOutputs,
   type RunStepOutputs,
   toRunData,
+  withRunStepOutputs,
   workflowExecutionFailed,
   workflowNotFound,
   workflowRun,
@@ -2389,4 +2390,107 @@ Deno.test("workflowRun: without resolveCompletedOutputs the completed run carrie
 
   assertEquals(run.jobs[0].steps[0].dataArtifacts?.[0].attributes, undefined);
   assertEquals(run.reports?.map((r) => r.name), ["test-report"]);
+});
+
+Deno.test("resolveCompletedRunOutputs: a resource the read policy refuses is left out of attributes and outputs", async () => {
+  const asked: string[] = [];
+  const resolved = await resolveCompletedRunOutputs(
+    createModelMethodRun(),
+    audienceDataRepo(() => Promise.resolve(AUDIENCE_JSON)),
+    new InMemoryWorkflowRunRepository(),
+    undefined,
+    (ref) => {
+      asked.push(ref.name);
+      return Promise.resolve(false);
+    },
+  );
+
+  assertEquals(asked.length, 1);
+  assertEquals(resolved?.job1.step1.attributesByDataId, {});
+  assertEquals(resolved?.job1.step1.outputs, undefined);
+});
+
+Deno.test("resolveCompletedRunOutputs: a read policy that throws gives no outputs instead of an error", async () => {
+  const resolved = await resolveCompletedRunOutputs(
+    createModelMethodRun(),
+    audienceDataRepo(() => Promise.resolve(AUDIENCE_JSON)),
+    new InMemoryWorkflowRunRepository(),
+    undefined,
+    () => Promise.reject(new Error("token revoked")),
+  );
+
+  assertEquals(resolved, undefined);
+});
+
+Deno.test("withRunStepOutputs: adds attributes and outputs as toRunData places and masks them, keeping the view's other fields", () => {
+  const run = createModelMethodRun();
+  const values = new RunSensitiveValues(undefined, new SecretBagRegistry());
+  values.addSecret("aud_123", { vaultName: "v", key: "k" });
+  run.attachSensitiveValues(values);
+  const view = {
+    ...toRunData(run, "/runs/r.yaml"),
+    reports: [{ name: "kept", scope: "workflow", success: true }],
+  };
+
+  const merged = withRunStepOutputs(view, run, AUDIENCE_OUTPUTS);
+  const expected = toRunData(run, "/runs/r.yaml", false, AUDIENCE_OUTPUTS);
+
+  assertEquals(merged.jobs, expected.jobs);
+  assertEquals(merged.jobs[0].steps[0].dataArtifacts?.[0].attributes, {
+    audienceId: "***",
+    status: "Building",
+  });
+  assertEquals(merged.reports, view.reports);
+  assertEquals(view.jobs[0].steps[0].dataArtifacts?.[0].attributes, undefined);
+});
+
+Deno.test("workflowRun: onCompletedRun is handed the live run before the completed event is yielded, and only once the source has ended", async () => {
+  const run = createModelMethodRun();
+  const order: string[] = [];
+  const deps = createTestDeps(createTestWorkflow(), [
+    { kind: "completed", run },
+    { kind: "job_started", jobId: "after" },
+  ]);
+  deps.onCompletedRun = (live) => {
+    order.push(live === run ? "hook:live" : "hook:other");
+  };
+
+  for await (
+    const event of workflowRun(createLibSwampContext(), deps, {
+      workflowIdOrName: "test-workflow",
+    })
+  ) {
+    order.push(event.kind);
+  }
+
+  const hook = order.indexOf("hook:live");
+  assertEquals(hook >= 0, true);
+  assertEquals(order.indexOf("job_started") < hook, true);
+  assertEquals(hook < order.indexOf("completed"), true);
+});
+
+Deno.test("workflowRun: onCompletedRun alone reads no data attributes", async () => {
+  const run = createModelMethodRun();
+  let reads = 0;
+  const deps = createTestDeps(createTestWorkflow(), [{
+    kind: "completed",
+    run,
+  }]);
+  deps.dataRepo = audienceDataRepo(() => {
+    reads++;
+    return Promise.resolve(AUDIENCE_JSON);
+  });
+  deps.onCompletedRun = () => {};
+
+  const events = await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+  const completed = events.find((e) => e.kind === "completed");
+
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  assertEquals(reads, 0);
+  assertEquals(
+    completed.run.jobs[0].steps[0].dataArtifacts?.[0].attributes,
+    undefined,
+  );
 });

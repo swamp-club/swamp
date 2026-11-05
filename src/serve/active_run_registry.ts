@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RunEventBuffer } from "./run_event_buffer.ts";
+import type { CompletedRunSlot } from "./handlers/run_data_attributes.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "active-run-registry"]);
@@ -66,6 +67,11 @@ export interface ActiveRun {
   readonly startedAt: Date;
   readonly completion: Promise<void>;
   readonly principalId: string | null;
+  /**
+   * subscribers take it when they attach, so it outlives deregister for the
+   * ones still draining the buffer
+   */
+  readonly completedRun?: CompletedRunSlot;
 }
 
 export interface ActiveRunRegistryOptions {
