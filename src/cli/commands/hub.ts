@@ -25,7 +25,16 @@ import { groupCommandAction } from "../group_action.ts";
 import { UserError } from "../../domain/errors.ts";
 import { HUB_SERVICE } from "../../domain/serve/service_config.ts";
 import { createServiceScheduler } from "../../infrastructure/daemon/service_scheduler_factory.ts";
-import { locateHubBinaries } from "../../infrastructure/process/hub_binary.ts";
+import {
+  type HubBinaries,
+  locateHubBinaries,
+} from "../../infrastructure/process/hub_binary.ts";
+import { findOrLaunchLocalHub } from "../../infrastructure/process/hub_launcher.ts";
+import { HubAdminClient } from "../../infrastructure/http/hub_admin_client.ts";
+import { HubLeaseSession } from "../../serve/local/hub_lease_session.ts";
+import { holdUntilSignal } from "../hold_until_signal.ts";
+import { tryOpenBrowser } from "../open_browser_page.ts";
+import { GIT_SHA } from "./version.ts";
 import {
   hubDir,
   hubRecordPath,
@@ -40,6 +49,10 @@ import {
   renderDaemonEnabled,
   renderDaemonStatus,
 } from "../../presentation/output/serve_daemon_output.ts";
+import {
+  renderHubOpened,
+  renderHubOpenEnded,
+} from "../../presentation/output/hub_open_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -64,6 +77,57 @@ export function hubServiceArgs(
   ];
 }
 
+async function requireHubBinaries(): Promise<HubBinaries> {
+  const binaries = await locateHubBinaries();
+  if (binaries === null) {
+    throw new UserError(
+      "This swamp install has no hub: swampd isn't next to the swamp executable. Install a swamp release that includes it, or set SWAMPD_BINARY.",
+      "hub_unavailable",
+    );
+  }
+  return binaries;
+}
+
+/** the hub overview; the token rides in the fragment, never sent in the URL */
+export function hubOverviewUrl(port: number, token: string): string {
+  return `http://127.0.0.1:${port}/dashboard/hub#token=${token}`;
+}
+
+const hubOpenCommand = new Command()
+  .name("open")
+  .description(
+    "Open your swamp hub's overview: every workspace it serves with its\n" +
+      "engine, the swamp start and swamp dashboard sessions using it, and its\n" +
+      "log. Starts the hub if it isn't running. The page keeps its access\n" +
+      "until you stop this command.",
+  )
+  .option("--no-browser", "Print the page's address instead of opening it")
+  .example("Open the hub overview", "swamp hub open")
+  .action(async function (options: AnyOptions) {
+    const ctx = createContext(options as GlobalOptions, ["hub", "open"]);
+    const binaries = await requireHubBinaries();
+    const hub = await findOrLaunchLocalHub(binaries, GIT_SHA);
+    const session = await HubLeaseSession.open(
+      new HubAdminClient(hub.port, hub.adminToken),
+      { scope: "all", manage: true, client: "hub", pid: Deno.pid },
+    );
+    try {
+      const url = hubOverviewUrl(hub.port, session.token);
+      renderHubOpened(
+        ctx.outputMode,
+        { url, port: hub.port, pid: hub.pid },
+        await tryOpenBrowser(url, options.browser !== false),
+      );
+      const { result, exitCode } = await holdUntilSignal(
+        session.whenLost().then(() => "lost" as const),
+      );
+      renderHubOpenEnded(ctx.outputMode, result === "lost" ? "hub" : "signal");
+      if (exitCode !== undefined) Deno.exitCode = exitCode;
+    } finally {
+      await session.close();
+    }
+  });
+
 const hubDaemonEnableCommand = new Command()
   .name("enable")
   .description(
@@ -80,13 +144,7 @@ const hubDaemonEnableCommand = new Command()
       "daemon",
       "enable",
     ]);
-    const binaries = await locateHubBinaries();
-    if (binaries === null) {
-      throw new UserError(
-        "This swamp install has no hub: swampd isn't next to the swamp executable. Install a swamp release that includes it, or set SWAMPD_BINARY.",
-        "hub_unavailable",
-      );
-    }
+    const binaries = await requireHubBinaries();
     const dataDir = resolve(getSwampDataDir());
     await refuseSymlinks([dataDir, hubDir(dataDir)]);
     await ensureDir(hubDir(dataDir));
@@ -167,4 +225,5 @@ export const hubCommand = new Command()
       "swamp dashboard pages for every workspace (EXPERIMENTAL)",
   )
   .action(groupCommandAction)
+  .command("open", hubOpenCommand)
   .command("daemon", hubDaemonCommand);

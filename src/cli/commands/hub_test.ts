@@ -22,7 +22,7 @@ import { join } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { UserError } from "../../domain/errors.ts";
-import { hubCommand, hubServiceArgs } from "./hub.ts";
+import { hubCommand, hubOverviewUrl, hubServiceArgs } from "./hub.ts";
 
 import "../../domain/models/models.ts";
 
@@ -57,5 +57,25 @@ Deno.test("hubCommand: daemon enable refuses an install without the hub", async 
         "no hub",
       );
     },
+  );
+});
+
+Deno.test("hubCommand: open refuses an install without the hub", async () => {
+  await withMockedEnv(
+    { SWAMP_HUB_ENGINE: undefined, SWAMPD_BINARY: undefined },
+    async () => {
+      await assertRejects(
+        () => hubCommand.parse(["open", "--no-browser"]),
+        UserError,
+        "no hub",
+      );
+    },
+  );
+});
+
+Deno.test("hubOverviewUrl: the token rides in the fragment", () => {
+  assertEquals(
+    hubOverviewUrl(4100, "abc"),
+    "http://127.0.0.1:4100/dashboard/hub#token=abc",
   );
 });
