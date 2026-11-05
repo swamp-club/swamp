@@ -825,7 +825,9 @@ Deno.test({
   },
 });
 
-async function writeState(f: Fixture): Promise<{ key: string }> {
+async function writeState(
+  f: Fixture,
+): Promise<{ vaultName: string; key: string }> {
   const { writeResource } = createResourceWriter(
     f.o.repoContext.unifiedDataRepo,
     f.typeA,
@@ -843,10 +845,11 @@ async function writeState(f: Fixture): Promise<{ key: string }> {
     password: canary("session"),
     note: "n",
   });
-  const [{ key }] = sensitiveVaultReferences(written.attributes!, [
-    "password",
-  ]);
-  return { key };
+  const [{ vaultName, key }] = sensitiveVaultReferences(
+    written.attributes!,
+    ["password"],
+  );
+  return { vaultName, key };
 }
 
 Deno.test({
@@ -863,15 +866,15 @@ Deno.test({
     ) {
       await withFixture(
         async (f) => {
-          const { key } = await writeState(f);
+          const { vaultName, key } = await writeState(f);
           const vault = await VaultService.fromRepository(f.o.repoDir);
-          await vault.delete(BASELINE_VAULT, key);
+          await vault.delete(vaultName, key);
           const error = await assertRejects(
             () => f.context.readResource!("state"),
             SecretNotFoundError,
           );
           assertEquals(error.code, SECRET_NOT_FOUND_CODE);
-          assertEquals(error.vaultName, BASELINE_VAULT);
+          assertEquals(error.vaultName, vaultName);
           assertEquals(error.key, key);
         },
         undefined,

@@ -204,6 +204,22 @@ Deno.test("assertVaultConformance: fails for a get() that rejects a missing key 
   );
 });
 
+Deno.test("assertVaultConformance: fails for a get() that carries secret_not_found only in a cause", async () => {
+  const { vault } = createVaultTestContext();
+  const wrapped: VaultProvider = {
+    ...vault,
+    get: (key) =>
+      vault.get(key).catch((error) => {
+        throw new Error("lookup failed", { cause: error });
+      }),
+  };
+  await assertRejects(
+    () => assertVaultConformance(wrapped, { cleanup: false }),
+    Error,
+    "secret_not_found",
+  );
+});
+
 Deno.test("assertVaultConformance: accepts any error carrying the secret_not_found code", async () => {
   const { vault } = createVaultTestContext();
   const coded: VaultProvider = {

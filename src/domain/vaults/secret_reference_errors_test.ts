@@ -73,10 +73,22 @@ Deno.test("secretReferenceError: any other error stays a plain one-line Error wi
   assertEquals(isSecretNotFoundError(error), false);
 });
 
-Deno.test("SecretReferenceUnavailableError: keeps its own code and reads as a missing key through its cause", () => {
+Deno.test("secretReferenceError: a store failure whose cause is some other secret's absence is not a missing key", () => {
+  const error = secretReferenceError(
+    "Failed to load",
+    new Error("could not authenticate", {
+      cause: new SecretNotFoundError("login", "service-token"),
+    }),
+    REFERENCE,
+  );
+  assertEquals(error.constructor, Error);
+  assertEquals(isSecretNotFoundError(error), false);
+});
+
+Deno.test("SecretReferenceUnavailableError: keeps its own code, with a SecretNotFoundError as its cause", () => {
   const error = new SecretReferenceUnavailableError(REFERENCE, "call", "loc");
   assertEquals(error.code, "secret_reference_unavailable");
-  assertEquals(isSecretNotFoundError(error), true);
+  assertEquals(isSecretNotFoundError(error.cause), true);
   const cause = error.cause as SecretNotFoundError;
   assertEquals(cause.vaultName, "erp");
   assertEquals(cause.key, "token");

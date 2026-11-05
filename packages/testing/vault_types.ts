@@ -40,7 +40,9 @@ const MAX_CAUSE_DEPTH = 8;
 
 /**
  * Thrown by a vault provider's `get()` when the key does not exist, and only
- * then — never for an authentication, permission or network failure.
+ * then — never for an authentication, permission or network failure. Throw it
+ * as the rejection itself: swamp reads the `code` on the rejected error, not
+ * on its `cause`.
  *
  * swamp keeps the `code` intact through `context.readResource()` and vault
  * expressions, on local and remote workers. Check for it with {@link isSecretNotFoundError}, not `instanceof`:

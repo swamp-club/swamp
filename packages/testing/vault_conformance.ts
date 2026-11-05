@@ -20,7 +20,6 @@
 // deno-lint-ignore-file no-import-prefix
 import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
 import {
-  isSecretNotFoundError,
   SECRET_NOT_FOUND_CODE,
   VaultAnnotation,
   type VaultAnnotationProvider,
@@ -273,8 +272,8 @@ export async function assertVaultConformance(
       "get() must reject for a key that was never put()",
     );
     assertEquals(
-      isSecretNotFoundError(getMissingError),
-      true,
+      (getMissingError as { code?: unknown } | undefined)?.code,
+      SECRET_NOT_FOUND_CODE,
       `get() must reject a key that was never put() with an error whose code is "${SECRET_NOT_FOUND_CODE}" (throw SecretNotFoundError)`,
     );
 

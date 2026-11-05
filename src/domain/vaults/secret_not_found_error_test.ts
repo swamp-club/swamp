@@ -55,12 +55,12 @@ Deno.test("isSecretNotFoundError: matches the class and any error carrying the c
   assertEquals(isSecretNotFoundError({ code: SECRET_NOT_FOUND_CODE }), true);
 });
 
-Deno.test("isSecretNotFoundError: follows the cause chain", () => {
-  const inner = new SecretNotFoundError("v", "k");
-  const outer = new Error("wrapped", {
-    cause: new Error("mid", { cause: inner }),
+Deno.test("isSecretNotFoundError: ignores a code buried in the cause chain", () => {
+  const otherSecretMissing = new SecretNotFoundError("login", "service-token");
+  const wrapped = new Error("could not authenticate", {
+    cause: otherSecretMissing,
   });
-  assertEquals(isSecretNotFoundError(outer), true);
+  assertEquals(isSecretNotFoundError(wrapped), false);
 });
 
 Deno.test("isSecretNotFoundError: rejects other errors and non-errors", () => {
@@ -72,15 +72,4 @@ Deno.test("isSecretNotFoundError: rejects other errors and non-errors", () => {
   assertEquals(isSecretNotFoundError(undefined), false);
   assertEquals(isSecretNotFoundError(null), false);
   assertEquals(isSecretNotFoundError(SECRET_NOT_FOUND_CODE), false);
-});
-
-Deno.test("isSecretNotFoundError: stops on a cause cycle and past the depth bound", () => {
-  const a = new Error("a");
-  const b = new Error("b", { cause: a });
-  (a as { cause?: unknown }).cause = b;
-  assertEquals(isSecretNotFoundError(a), false);
-
-  let deep: unknown = new SecretNotFoundError("v", "k");
-  for (let i = 0; i < 20; i++) deep = new Error(`layer ${i}`, { cause: deep });
-  assertEquals(isSecretNotFoundError(deep), false);
 });

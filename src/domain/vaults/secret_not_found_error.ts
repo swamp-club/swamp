@@ -21,8 +21,6 @@ import { UserError } from "../errors.ts";
 
 export const SECRET_NOT_FOUND_CODE = "secret_not_found";
 
-const MAX_CAUSE_DEPTH = 8;
-
 export interface SecretNotFoundErrorOptions {
   message?: string;
   cause?: unknown;
@@ -45,20 +43,10 @@ export class SecretNotFoundError extends UserError {
 }
 
 /**
- * matches by code, never instanceof: extension bundles carry their own copy of
- * the class and RPC rebuilds errors
+ * matches the error's own code, never instanceof or its cause chain: a store
+ * may wrap some other secret's absence, which must not relabel this read
  */
 export function isSecretNotFoundError(error: unknown): boolean {
-  const seen = new Set<unknown>();
-  let current = error;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (typeof current !== "object" || current === null) return false;
-    if (seen.has(current)) return false;
-    seen.add(current);
-    if ((current as { code?: unknown }).code === SECRET_NOT_FOUND_CODE) {
-      return true;
-    }
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
+  return typeof error === "object" && error !== null &&
+    (error as { code?: unknown }).code === SECRET_NOT_FOUND_CODE;
 }

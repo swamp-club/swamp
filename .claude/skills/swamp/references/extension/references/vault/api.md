@@ -32,6 +32,9 @@ Retrieves a secret value from the vault.
   `"secret_not_found"`
 - Throws any other `Error` for every other failure (access denied, expired
   credentials, network error, etc.) — never `secret_not_found`
+- The code must be on the error `get()` rejects with. swamp ignores a
+  `secret_not_found` buried in a `cause`, since that may be some other secret's
+  absence (your own login token, say), not the key that was asked for
 
 swamp keeps the `secret_not_found` code intact through `context.readResource()`
 and vault expressions, on local and remote workers, so a behavior can tell a
