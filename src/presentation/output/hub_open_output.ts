@@ -27,8 +27,6 @@ export interface HubOpenedData {
   readonly pid: number;
 }
 
-export type HubOpenEnd = "signal" | "hub";
-
 export function renderHubOpened(
   mode: OutputMode,
   data: HubOpenedData,
@@ -46,22 +44,8 @@ export function renderHubOpened(
         : "Open your swamp hub overview in your browser:",
       `  ${cyan(data.url)}`,
       dim(
-        `  Hub pid ${data.pid} on port ${data.port}. Press Ctrl-C to close the page's access.`,
+        `  Hub pid ${data.pid} on port ${data.port}. The page keeps its access while it is open.`,
       ),
     ].join("\n"),
-  );
-}
-
-export function renderHubOpenEnded(mode: OutputMode, end: HubOpenEnd): void {
-  if (mode === "json") {
-    // deno-lint-ignore no-console
-    console.log(JSON.stringify({ stopped: end }, null, 2));
-    return;
-  }
-  writeOutput("");
-  writeOutput(
-    end === "hub"
-      ? "The swamp hub ended this session. Run `swamp hub open` to open it again."
-      : "Stopped. Run `swamp hub open` to open it again.",
   );
 }

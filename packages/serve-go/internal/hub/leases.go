@@ -48,8 +48,11 @@ type PageLease struct {
 	// Client and PID name the swamp command that holds the lease, for the overview.
 	Client string
 	PID    int
-	hash   [32]byte
-	store  *LeaseStore
+	// pageRenewed leases are kept alive by their own page's requests and open
+	// tabs, so no swamp process has to stay running for them.
+	pageRenewed bool
+	hash        [32]byte
+	store       *LeaseStore
 	// boundPath serves Scope.Workspace from this repository, registered or not.
 	boundPath string
 	backend   string
@@ -71,6 +74,19 @@ func (l *PageLease) Allows(workspace string) bool {
 func (l *PageLease) ScopeOf() (bool, string) { return l.Scope.All, l.Scope.Workspace }
 
 func (l *PageLease) CanManage() bool { return l.Manage && l.Scope.All }
+
+// Touch renews a lease its page keeps alive; any other lease renews only
+// through the swamp process that holds it.
+func (l *PageLease) Touch() {
+	if !l.pageRenewed {
+		return
+	}
+	l.store.mu.Lock()
+	defer l.store.mu.Unlock()
+	if !l.revoked {
+		l.renewed = l.store.now()
+	}
+}
 
 func (l *PageLease) LeaseID() string { return l.ID }
 
@@ -149,11 +165,12 @@ func (s *LeaseStore) IssueBound(scope LeaseScope, path string) (*PageLease, stri
 
 // LeaseOptions describes a lease to issue; Path binds a workspace-scoped lease to a folder.
 type LeaseOptions struct {
-	Scope  LeaseScope
-	Path   string
-	Manage bool
-	Client string
-	PID    int
+	Scope       LeaseScope
+	Path        string
+	Manage      bool
+	Client      string
+	PID         int
+	PageRenewed bool
 }
 
 func (s *LeaseStore) IssueWith(options LeaseOptions) (*PageLease, string, error) {
@@ -167,7 +184,7 @@ func (s *LeaseStore) IssueWith(options LeaseOptions) (*PageLease, string, error)
 		return nil, "", err
 	}
 	now := s.now()
-	lease := &PageLease{ID: hex.EncodeToString(id[:]), Scope: scope, CreatedAt: now, Manage: options.Manage && scope.All, Client: options.Client, PID: options.PID, renewed: now, boundPath: path, hash: sha256.Sum256([]byte(token)), store: s, holds: map[int]hold{}}
+	lease := &PageLease{ID: hex.EncodeToString(id[:]), Scope: scope, CreatedAt: now, Manage: options.Manage && scope.All, Client: options.Client, PID: options.PID, pageRenewed: options.PageRenewed, renewed: now, boundPath: path, hash: sha256.Sum256([]byte(token)), store: s, holds: map[int]hold{}}
 	s.mu.Lock()
 	s.byHash[lease.hash] = lease
 	s.byID[lease.ID] = lease
@@ -217,19 +234,21 @@ func (l *PageLease) pagesLocked() int {
 
 // LeaseInfo is one lease as the hub overview shows it; it never carries the token.
 type LeaseInfo struct {
-	ID        string    `json:"id"`
-	Client    string    `json:"client,omitempty"`
-	PID       int       `json:"pid,omitempty"`
-	All       bool      `json:"-"`
-	Scope     string    `json:"scope"`
-	Workspace string    `json:"workspace,omitempty"`
-	Path      string    `json:"path,omitempty"`
-	Manage    bool      `json:"manage"`
-	Pages     int       `json:"pages"`
-	Backend   bool      `json:"backend"`
-	CreatedAt time.Time `json:"createdAt"`
-	RenewedAt time.Time `json:"renewedAt"`
-	ExpiresAt time.Time `json:"expiresAt,omitempty"`
+	ID        string `json:"id"`
+	Client    string `json:"client,omitempty"`
+	PID       int    `json:"pid,omitempty"`
+	All       bool   `json:"-"`
+	Scope     string `json:"scope"`
+	Workspace string `json:"workspace,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Manage    bool   `json:"manage"`
+	// PageRenewed outlives the command that opened it, while its page is in use.
+	PageRenewed bool      `json:"pageRenewed"`
+	Pages       int       `json:"pages"`
+	Backend     bool      `json:"backend"`
+	CreatedAt   time.Time `json:"createdAt"`
+	RenewedAt   time.Time `json:"renewedAt"`
+	ExpiresAt   time.Time `json:"expiresAt,omitempty"`
 }
 
 // List copies every lease without renewing any.
@@ -238,7 +257,7 @@ func (s *LeaseStore) List() []LeaseInfo {
 	defer s.mu.Unlock()
 	out := make([]LeaseInfo, 0, len(s.byID))
 	for _, lease := range s.byID {
-		info := LeaseInfo{ID: lease.ID, Client: lease.Client, PID: lease.PID, All: lease.Scope.All, Scope: "workspace", Workspace: lease.Scope.Workspace, Path: lease.boundPath, Manage: lease.Manage, Pages: lease.pagesLocked(), Backend: lease.backend != "", CreatedAt: lease.CreatedAt, RenewedAt: lease.renewed}
+		info := LeaseInfo{ID: lease.ID, Client: lease.Client, PID: lease.PID, All: lease.Scope.All, Scope: "workspace", Workspace: lease.Scope.Workspace, Path: lease.boundPath, Manage: lease.Manage, PageRenewed: lease.pageRenewed, Pages: lease.pagesLocked(), Backend: lease.backend != "", CreatedAt: lease.CreatedAt, RenewedAt: lease.renewed}
 		if lease.Scope.All {
 			info.Scope = "all"
 		}
@@ -281,6 +300,10 @@ func (s *LeaseStore) Expire() {
 	cutoff := s.now().Add(-s.ttl)
 	var stale []string
 	for id, lease := range s.byID {
+		if lease.pageRenewed && lease.pagesLocked() > 0 {
+			lease.renewed = s.now()
+			continue
+		}
 		if lease.renewed.Before(cutoff) {
 			stale = append(stale, id)
 		}

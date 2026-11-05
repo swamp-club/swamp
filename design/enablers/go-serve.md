@@ -350,9 +350,12 @@ revoked. Revoking a lease closes its sockets, health streams and start sockets.
 **Admin API.** It is served only to loopback peers with the record's admin
 token:
 
-- `POST /hub/leases` (`{scope, workspace?, path?, manage?, client?, pid?}`)
-  issues a lease. `manage` is allowed only with `scope: "all"`; `client`
-  (`start`, `dashboard` or `hub`) and `pid` name the holder for the overview.
+- `POST /hub/leases`
+  (`{scope, workspace?, path?, manage?, client?, pid?, pageRenewed?}`) issues a
+  lease. `manage` is allowed only with `scope: "all"`; `client` (`start`,
+  `dashboard` or `hub`) and `pid` name the holder for the overview. A
+  `pageRenewed` lease is renewed by every request made with it and while any
+  tab holds it, instead of by its invoker.
 - `PUT /hub/leases/<id>/backend` sets its backend.
 - `GET /hub/leases/<id>` renews it and returns its open dashboard pages.
 - `DELETE /hub/leases/<id>` revokes it.

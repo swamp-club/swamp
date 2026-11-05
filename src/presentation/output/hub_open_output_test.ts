@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
-import { renderHubOpened, renderHubOpenEnded } from "./hub_open_output.ts";
+import { renderHubOpened } from "./hub_open_output.ts";
 
 function captureLogs(run: () => void): string {
   const logs: string[] = [];
@@ -51,6 +51,7 @@ Deno.test("renderHubOpened: log mode prints the page address either way", () => 
   assertStringIncludes(opened, "Opened your swamp hub overview:");
   assertStringIncludes(opened, data.url);
   assertStringIncludes(opened, "Hub pid 77 on port 4100");
+  assertStringIncludes(opened, "keeps its access while it is open");
   const printed = stripAnsiCode(
     captureLogs(() => renderHubOpened("log", data, false)),
   );
@@ -59,19 +60,4 @@ Deno.test("renderHubOpened: log mode prints the page address either way", () => 
     "Open your swamp hub overview in your browser:",
   );
   assertStringIncludes(printed, data.url);
-});
-
-Deno.test("renderHubOpenEnded: says whether the user or the hub ended it", () => {
-  assertStringIncludes(
-    captureLogs(() => renderHubOpenEnded("log", "signal")),
-    "Stopped. Run `swamp hub open` to open it again.",
-  );
-  assertStringIncludes(
-    captureLogs(() => renderHubOpenEnded("log", "hub")),
-    "The swamp hub ended this session.",
-  );
-  assertEquals(
-    JSON.parse(captureLogs(() => renderHubOpenEnded("json", "hub"))),
-    { stopped: "hub" },
-  );
 });

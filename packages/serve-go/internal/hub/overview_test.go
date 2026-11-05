@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/swamp-club/swamp/packages/serve-go/internal/gateway"
 )
@@ -266,7 +267,7 @@ func TestAdminIssuesManageLeasesOnlyOverEveryWorkspaceAndNamesTheirClient(t *tes
 			t.Fatalf("%s: %d", body, w.Code)
 		}
 	}
-	w := p.adminRequest("POST", "/hub/leases", `{"scope":"all","manage":true,"client":"hub","pid":99}`)
+	w := p.adminRequest("POST", "/hub/leases", `{"scope":"all","manage":true,"client":"hub","pid":99,"pageRenewed":true}`)
 	var issued struct{ ID, Token string }
 	if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &issued) != nil {
 		t.Fatalf("issue: %d %s", w.Code, w.Body.String())
@@ -278,7 +279,7 @@ func TestAdminIssuesManageLeasesOnlyOverEveryWorkspaceAndNamesTheirClient(t *tes
 	found := false
 	for _, info := range p.leases.List() {
 		if info.ID == issued.ID {
-			found = info.Client == "hub" && info.PID == 99 && info.Manage && info.Scope == "all"
+			found = info.Client == "hub" && info.PID == 99 && info.Manage && info.PageRenewed && info.Scope == "all"
 		}
 	}
 	if !found {
@@ -303,5 +304,46 @@ func TestLeaseListingNeverRenews(t *testing.T) {
 	store.List()
 	if lease.renewed != renewed {
 		t.Fatal("List renewed a lease")
+	}
+}
+
+func TestPageRenewedLeasesLiveWhileTheirPageIsInUse(t *testing.T) {
+	p := newSiteHarness(t, siteFiles())
+	now := time.Unix(1000, 0)
+	p.leases.ttl = time.Minute
+	p.leases.now = func() time.Time { return now }
+	renewed, token, _ := p.leases.IssueWith(LeaseOptions{Scope: LeaseScope{All: true}, Manage: true, Client: "hub", PageRenewed: true})
+	plain, plainToken, _ := p.leases.Issue(LeaseScope{All: true})
+
+	now = now.Add(45 * time.Second)
+	for _, tok := range []string{token, plainToken} {
+		if w := p.serve(p.request("GET", "/api/local/workspaces", tok, nil)); w.Code != 200 {
+			t.Fatalf("workspaces: %d", w.Code)
+		}
+	}
+	now = now.Add(30 * time.Second)
+	p.leases.Expire()
+	if _, ok := p.leases.Lookup(plainToken); ok {
+		t.Fatal("a page request renewed a lease its invoker holds")
+	}
+	if _, ok := p.leases.Lookup(token); !ok {
+		t.Fatal("a page-renewed lease expired while its page polled")
+	}
+
+	held, _ := p.leases.Lookup(token)
+	release, _ := held.Hold(func() {})
+	now = now.Add(5 * time.Minute)
+	p.leases.Expire()
+	if _, ok := p.leases.Lookup(token); !ok {
+		t.Fatal("a page-renewed lease expired under an open tab")
+	}
+	release()
+	now = now.Add(61 * time.Second)
+	p.leases.Expire()
+	if _, ok := p.leases.Lookup(token); ok {
+		t.Fatal("a page-renewed lease outlived its last tab")
+	}
+	if renewed.ID == plain.ID {
+		t.Fatal("lease ids collided")
 	}
 }

@@ -40,6 +40,8 @@ export type LeaseClient = "start" | "dashboard" | "hub";
 interface LeaseOwner {
   readonly client?: LeaseClient;
   readonly pid?: number;
+  /** the page's own requests and open tabs keep the lease, not a running command */
+  readonly pageRenewed?: true;
 }
 
 export type LeaseRequest =

@@ -48,6 +48,8 @@ import {
 } from "./helpers.ts";
 
 const POLL_MS = 3_000;
+/** A hidden tab still polls, inside the hub's one-minute lease TTL, to keep its access. */
+const HIDDEN_POLL_MS = 20_000;
 /** The start page's sessionStorage key, which workspace pages also read. */
 const START_TOKEN_KEY = "swamp-start-token";
 
@@ -460,13 +462,15 @@ export function Hub() {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
-      if (document.visibilityState === "visible") {
-        const next = await fetchOverview(token, controller.signal);
-        setResult(next);
-        setNow(Date.now());
-        if (next.kind === "unauthorized" || next.kind === "forbidden") return;
-      }
-      timer = setTimeout(() => tick().catch(() => {}), POLL_MS);
+      const next = await fetchOverview(token, controller.signal);
+      setResult(next);
+      setNow(Date.now());
+      if (next.kind === "unauthorized" || next.kind === "forbidden") return;
+      const visible = document.visibilityState === "visible";
+      timer = setTimeout(
+        () => tick().catch(() => {}),
+        visible ? POLL_MS : HIDDEN_POLL_MS,
+      );
     };
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;

@@ -31,8 +31,6 @@ import {
 } from "../../infrastructure/process/hub_binary.ts";
 import { findOrLaunchLocalHub } from "../../infrastructure/process/hub_launcher.ts";
 import { HubAdminClient } from "../../infrastructure/http/hub_admin_client.ts";
-import { HubLeaseSession } from "../../serve/local/hub_lease_session.ts";
-import { holdUntilSignal } from "../hold_until_signal.ts";
 import { tryOpenBrowser } from "../open_browser_page.ts";
 import { GIT_SHA } from "./version.ts";
 import {
@@ -49,10 +47,7 @@ import {
   renderDaemonEnabled,
   renderDaemonStatus,
 } from "../../presentation/output/serve_daemon_output.ts";
-import {
-  renderHubOpened,
-  renderHubOpenEnded,
-} from "../../presentation/output/hub_open_output.ts";
+import { renderHubOpened } from "../../presentation/output/hub_open_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -98,8 +93,8 @@ const hubOpenCommand = new Command()
   .description(
     "Open your swamp hub's overview: every workspace it serves with its\n" +
       "engine, the swamp start and swamp dashboard sessions using it, and its\n" +
-      "log. Starts the hub if it isn't running. The page keeps its access\n" +
-      "until you stop this command.",
+      "log. Starts the hub if it isn't running. The page keeps its own access\n" +
+      "while it is open, so this returns at once.",
   )
   .option("--no-browser", "Print the page's address instead of opening it")
   .example("Open the hub overview", "swamp hub open")
@@ -107,25 +102,15 @@ const hubOpenCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["hub", "open"]);
     const binaries = await requireHubBinaries();
     const hub = await findOrLaunchLocalHub(binaries, GIT_SHA);
-    const session = await HubLeaseSession.open(
-      new HubAdminClient(hub.port, hub.adminToken),
-      { scope: "all", manage: true, client: "hub", pid: Deno.pid },
+    const lease = await new HubAdminClient(hub.port, hub.adminToken).issueLease(
+      { scope: "all", manage: true, client: "hub", pageRenewed: true },
     );
-    try {
-      const url = hubOverviewUrl(hub.port, session.token);
-      renderHubOpened(
-        ctx.outputMode,
-        { url, port: hub.port, pid: hub.pid },
-        await tryOpenBrowser(url, options.browser !== false),
-      );
-      const { result, exitCode } = await holdUntilSignal(
-        session.whenLost().then(() => "lost" as const),
-      );
-      renderHubOpenEnded(ctx.outputMode, result === "lost" ? "hub" : "signal");
-      if (exitCode !== undefined) Deno.exitCode = exitCode;
-    } finally {
-      await session.close();
-    }
+    const url = hubOverviewUrl(hub.port, lease.token);
+    renderHubOpened(
+      ctx.outputMode,
+      { url, port: hub.port, pid: hub.pid },
+      await tryOpenBrowser(url, options.browser !== false),
+    );
   });
 
 const hubDaemonEnableCommand = new Command()

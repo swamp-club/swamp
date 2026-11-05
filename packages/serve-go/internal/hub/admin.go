@@ -160,6 +160,8 @@ func (a *Admin) issue(w http.ResponseWriter, r *http.Request) {
 		Manage    bool   `json:"manage"`
 		Client    string `json:"client"`
 		PID       int    `json:"pid"`
+		// PageRenewed lets the page keep the lease alive after its command exits.
+		PageRenewed bool `json:"pageRenewed"`
 	}
 	if !readBody(r, &body) || body.PID < 0 || (body.Client != "" && !leaseClients[body.Client]) {
 		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
@@ -202,7 +204,7 @@ func (a *Admin) issue(w http.ResponseWriter, r *http.Request) {
 		}
 		bound = path
 	}
-	lease, token, err := a.Leases.IssueWith(LeaseOptions{Scope: scope, Path: bound, Manage: body.Manage, Client: body.Client, PID: body.PID})
+	lease, token, err := a.Leases.IssueWith(LeaseOptions{Scope: scope, Path: bound, Manage: body.Manage, Client: body.Client, PID: body.PID, PageRenewed: body.PageRenewed})
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": "lease_unavailable"})
 		return

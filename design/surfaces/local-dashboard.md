@@ -75,8 +75,10 @@ command opened it. A `swamp dashboard` lease has no backend, so its token
 cannot open a start page socket.
 
 **Hub overview.** `swamp hub open` takes an all-workspaces lease with
-**manage** and opens `/dashboard/hub`, holding the lease until Ctrl-C. The
-page polls `/api/local/hub` every 3 s while visible and shows:
+**manage**, opens `/dashboard/hub` and returns. The lease is **page-renewed**:
+the page's own requests and open tabs keep it, so it ends about a minute after
+the last tab closes, not when the command exits. The page polls
+`/api/local/hub` every 3 s while visible (every 20 s while hidden) and shows:
 - the hub: version, engine, address, uptime and idle exit
 - every workspace: registered, lease-bound (`swamp dashboard`) or registered
   with its folder gone, each with its engine's state, pid, tabs and uptime

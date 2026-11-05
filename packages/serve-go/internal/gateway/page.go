@@ -60,6 +60,8 @@ type Lease interface {
 	// CanManage lets the lease read the hub overview and act on the hub.
 	CanManage() bool
 	LeaseID() string
+	// Touch renews a lease its page keeps alive itself; others ignore it.
+	Touch()
 }
 
 type Leases interface {
@@ -220,6 +222,7 @@ func (g *Gateway) guardLease(w http.ResponseWriter, r *http.Request, token strin
 		writeText(w, 401, "Unauthorized")
 		return nil, false
 	}
+	lease.Touch()
 	return lease, true
 }
 
