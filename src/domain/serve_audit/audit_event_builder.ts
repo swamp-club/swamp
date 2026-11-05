@@ -57,6 +57,7 @@ export interface AuditEventInput {
   readonly principalId: string;
   readonly initiatedBy: string;
   readonly actor?: ActorIdentity;
+  readonly client?: string;
   readonly sourceIp: string;
   readonly requestId: string;
   readonly methodName?: string;
@@ -84,6 +85,7 @@ export function buildAuditEvent(input: AuditEventInput): AuditEvent {
     ...(input.actor?.email !== undefined
       ? { principalEmail: input.actor.email }
       : {}),
+    ...(input.client !== undefined ? { client: input.client } : {}),
     sourceIp: input.sourceIp,
     requestId: input.requestId,
     methodName: input.methodName,

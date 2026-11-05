@@ -65,6 +65,10 @@ import {
 import type { AuditSubscriptionFilter } from "./audit_sinks/websocket_sink.ts";
 import { formatCefLine } from "./audit_sinks/cef_formatter.ts";
 import {
+  AUDIT_CSV_HEADER,
+  formatAuditCsvRow,
+} from "./audit_sinks/csv_formatter.ts";
+import {
   GIT_SHA as SERVER_GIT_SHA,
   VERSION as SERVER_VERSION,
 } from "../cli/commands/version.ts";
@@ -219,6 +223,7 @@ import {
   connectionActorIdentity,
   type ConnectionContext,
   emitRunCancelAudit,
+  getConnectionClient,
   getConnectionLoginIdentity,
   getConnectionSourceIp,
   isAuthorized,
@@ -2076,6 +2081,7 @@ export function handleMessage(
       methodName,
       resolvedUserNames: ctx.resolvedUserNames,
       actor: connectionActorIdentity(socket, principal, ctx),
+      client: getConnectionClient(socket),
       socket,
     };
   }
@@ -2576,8 +2582,6 @@ export function handleMessage(
             outcome: request.payload.outcome,
             resource: request.payload.resource,
           };
-          const csvHeader =
-            "id,timestamp,instanceId,category,action,stage,outcome,principalKind,principalId,initiatedBy,sourceIp,requestId,resourceKind,resourceName,decision.effect,decision.grantId,detail";
           const cefOpts = ctx.auditNamespace
             ? { namespace: ctx.auditNamespace }
             : undefined;
@@ -2618,41 +2622,9 @@ export function handleMessage(
                 },
               });
             } else {
-              const csvRows = sorted.map((e) => {
-                const fields = [
-                  e.id,
-                  e.timestamp,
-                  e.instanceId,
-                  e.category,
-                  e.action,
-                  e.stage,
-                  e.outcome,
-                  e.principalKind,
-                  e.principalId,
-                  e.initiatedBy,
-                  e.sourceIp,
-                  e.requestId,
-                  e.resourceKind,
-                  e.resourceName,
-                  e.decision?.effect ?? "",
-                  e.decision?.grantId ?? "",
-                  e.detail ?? "",
-                ];
-                return fields.map((f) => {
-                  let s = String(f);
-                  if (/^[=+\-@\t\r]/.test(s)) {
-                    s = `\t${s}`;
-                  }
-                  if (
-                    s.includes(",") || s.includes('"') || s.includes("\n")
-                  ) {
-                    return `"${s.replace(/"/g, '""')}"`;
-                  }
-                  return s;
-                }).join(",");
-              });
+              const csvRows = sorted.map(formatAuditCsvRow);
               const csvData = totalCount === sorted.length
-                ? [csvHeader, ...csvRows].join("\n")
+                ? [AUDIT_CSV_HEADER, ...csvRows].join("\n")
                 : csvRows.join("\n");
               send(socket, {
                 type: "audit.export",
@@ -4489,6 +4461,7 @@ async function handleCancelRun(
       resourceName: requestId,
       principal,
       loginIdentity: getConnectionLoginIdentity(socket),
+      client: getConnectionClient(socket),
       sourceIp: getConnectionSourceIp(socket),
       requestId,
       outcome: cancelled ? "success" : "failure",

@@ -194,6 +194,7 @@ export async function handleSignalHttpRequest(
       groups: auth.groups,
       sourceIp,
       loginIdentity: auth.oauthIdentity,
+      client: auth.client,
     };
   }
 
@@ -356,6 +357,7 @@ function emitResponseAudit(
       ctx.resolvedUserNames,
       caller.loginIdentity,
     ),
+    client: caller.client,
     sourceIp,
     requestId,
     detail: result.status === "delivered" ? undefined : result.status,

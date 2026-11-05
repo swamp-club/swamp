@@ -30,6 +30,7 @@ import type {
 } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
+import { DIRECT_CLI_CLIENT } from "../domain/access/client.ts";
 import {
   DeviceGrantPollError,
   type DeviceGrantResponse,
@@ -105,6 +106,7 @@ export interface DeviceAuthDeps {
     repoDir: string,
     repoContext: RepositoryContext,
     username?: string,
+    client?: string,
   ) => Promise<string>;
   readonly storeAccessToken: (
     tokenName: string,
@@ -121,6 +123,8 @@ export interface DeviceAuthDeps {
 export interface DeviceAuthRoutes {
   readonly startPath: string;
   readonly tokenPath: string;
+  /** fixed per route, so nothing in a sign-in request can choose it */
+  readonly client: string;
   readonly onAuthenticated?: (token: string) => Promise<Response>;
 }
 
@@ -188,6 +192,7 @@ export async function handleDeviceAuth(
   routes: DeviceAuthRoutes = {
     startPath: "/auth/device",
     tokenPath: "/auth/device/token",
+    client: DIRECT_CLI_CLIENT,
   },
 ): Promise<Response | null> {
   const url = new URL(req.url);
@@ -203,7 +208,12 @@ export async function handleDeviceAuth(
     if (req.method !== "POST") {
       return jsonResponse(405, { error: "Method not allowed" });
     }
-    return await handleDeviceToken(req, deps, routes.onAuthenticated);
+    return await handleDeviceToken(
+      req,
+      deps,
+      routes.client,
+      routes.onAuthenticated,
+    );
   }
 
   return null;
@@ -255,6 +265,7 @@ export const MAX_AUTH_BODY_BYTES = 16 * 1024;
 async function handleDeviceToken(
   req: Request,
   deps: DeviceAuthDeps,
+  client: string,
   onAuthenticated?: (token: string) => Promise<Response>,
 ): Promise<Response> {
   const bytes = await readBodyWithLimit(req, MAX_AUTH_BODY_BYTES);
@@ -361,6 +372,7 @@ async function handleDeviceToken(
           deps.repoDir,
           deps.repoContext,
           userInfo.username,
+          client,
         );
         span.setAttribute("token.name", minted.split(".")[0]);
         return minted;
@@ -446,6 +458,7 @@ async function mintServerTokenImpl(
   syncService?: DatastoreSyncService,
   namespace?: string,
   username?: string,
+  client: string = DIRECT_CLI_CLIENT,
 ): Promise<string> {
   const tokenName = `oauth-${crypto.randomUUID().slice(0, 8)}`;
   const secretKey = serverTokenSecretKey(tokenName);
@@ -513,6 +526,7 @@ async function mintServerTokenImpl(
           email: principalEmail,
           ...(username !== undefined ? { username } : {}),
         },
+        client,
         collectives,
         groups,
         createdAt: new Date(now).toISOString(),
@@ -629,6 +643,7 @@ export function createDeviceAuthDeps(
       rd: string,
       rc: RepositoryContext,
       username?: string,
+      client?: string,
     ) =>
       // mint and push are one unit a poller pull must not interleave with;
       // never reached from a gated handler, so the non-reentrant gate is safe;
@@ -645,6 +660,7 @@ export function createDeviceAuthDeps(
           syncService,
           namespace,
           username,
+          client,
         )).then(async (minted) => {
           await confirmReplicated?.();
           return minted;

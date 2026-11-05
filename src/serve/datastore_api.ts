@@ -2534,6 +2534,7 @@ class DatastoreApi {
         this.#deps.ctx.resolvedUserNames,
         this.#caller.access.loginIdentity,
       ),
+      client: this.#caller.access.client,
       sourceIp: this.#caller.access.sourceIp,
       requestId: this.#requestId,
       ...(detail === undefined ? {} : { detail }),

@@ -78,6 +78,41 @@ different mint of the name (swamp-club#2482). See "Tokens" in
 Implementation: `src/serve/token_auth.ts`,
 `src/domain/models/access/server_token_model.ts`.
 
+### Clients
+
+A token records a client, written `<kind>:<id>`, separate from its principal.
+"Client" here is not the OAuth client serve registers at swamp-club, nor
+swamp-lib's `SwampClient`.
+
+- The **kind** says what serve treats differently. `direct` applies no ceiling.
+  `integration` is reserved for an app an admin registers, whose rights will be
+  the person's grants intersected with what the admin approved. No production
+  path issues an `integration` token yet.
+- The **id** says which one, for the record. No behavior branches on it.
+
+| How the token is issued                 | Client             |
+| --------------------------------------- | ------------------ |
+| `swamp auth login --server`             | `direct:cli`       |
+| Dashboard login                         | `direct:dashboard` |
+| `swamp access token mint`, or `mint`    | `direct:token`     |
+
+Serve writes the client when it issues the token and only reads it afterwards:
+it is not a `mint` argument, nothing in a sign-in request can choose it, and
+rotation keeps it. Authentication parses it strictly and refuses a malformed
+value with `401 invalid-client`. The stored field stays a loose string, because
+listing and GC skip a record that fails to parse and a bad value must not hide a
+token from revocation. A token issued before clients has none and reads as
+direct with no id. A dashboard session started from a pasted token keeps that
+token's client.
+
+The client labels how a token was issued, not what presents it: a copied
+`direct:cli` token still reads `direct:cli`, so a `direct` id is not a security
+boundary. No access decision reads the client, so it changes no allow or deny.
+Runs and audit events record it; see "Actor identity" in
+`design/enablers/serve-audit.md` and "Run records: the threat model" below.
+
+Implementation: `src/domain/access/client.ts`.
+
 ## Admission
 
 Before authorization, an admission gate decides who may connect at all. In
@@ -1665,6 +1700,13 @@ and its work is run again; there is no path that accepts it as it is.
 
 **Login tokens.** An admin may revoke any token but may not reveal a login
 token (one an OAuth or device login minted) through serve.
+
+A record's `client` follows the same split. Only serve records it, so a forwarded
+first record that carries one is refused and it cannot change afterwards. A
+decision serve recorded on a member-driven run may come back without its client,
+because an older CLI strips a field it does not know, and nothing else about the
+decision may differ. A modified CLI can do the same, so on such a run the audit
+event is the authority on the client.
 
 **Out of scope:**
 

@@ -151,3 +151,13 @@ Deno.test("formatCefLine: omits cs1 when namespace not provided", () => {
   const line = formatCefLine(makeEvent());
   assert(!line.includes("cs1="), "Should not include cs1 without namespace");
 });
+
+Deno.test("formatCefLine: names the client when set", () => {
+  const line = formatCefLine(makeEvent({ client: "integration:ops-slack" }));
+  assertStringIncludes(line, "cs4=integration:ops-slack");
+  assertStringIncludes(line, "cs4Label=client");
+});
+
+Deno.test("formatCefLine: an event with no client has no client field", () => {
+  assert(!formatCefLine(makeEvent()).includes("cs4"));
+});

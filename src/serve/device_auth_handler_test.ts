@@ -933,3 +933,65 @@ Deno.test("handleDeviceAuth: a login without a provider username is named by its
   assertEquals(learned, []);
   assertEquals(sink.events[0].initiatedBy, "user:configured-admin");
 });
+
+async function clientMintedBy(
+  request: Request,
+  routes?: Parameters<typeof handleDeviceAuth>[2],
+): Promise<string | undefined> {
+  let minted: string | undefined;
+  await handleDeviceAuth(
+    request,
+    makeMockDeps({
+      mintServerToken: (
+        _principalId,
+        _principalEmail,
+        _collectives,
+        _groups,
+        _repoDir,
+        _repoContext,
+        _username,
+        client,
+      ) => {
+        minted = client;
+        return Promise.resolve("minted-token.secret");
+      },
+    }),
+    routes,
+  );
+  return minted;
+}
+
+Deno.test("handleDeviceAuth: a CLI login mints direct:cli", async () => {
+  assertEquals(
+    await clientMintedBy(
+      postRequest("/auth/device/token", { deviceCode: "code" }),
+    ),
+    "direct:cli",
+  );
+});
+
+Deno.test("handleDeviceAuth: a route mints the client it was configured with", async () => {
+  assertEquals(
+    await clientMintedBy(
+      postRequest("/auth/dashboard/device/token", { deviceCode: "code" }),
+      {
+        startPath: "/auth/dashboard/device",
+        tokenPath: "/auth/dashboard/device/token",
+        client: "direct:dashboard",
+      },
+    ),
+    "direct:dashboard",
+  );
+});
+
+Deno.test("handleDeviceAuth: a client in the sign-in request has no effect", async () => {
+  assertEquals(
+    await clientMintedBy(
+      postRequest("/auth/device/token", {
+        deviceCode: "code",
+        client: "integration:ops-slack",
+      }),
+    ),
+    "direct:cli",
+  );
+});

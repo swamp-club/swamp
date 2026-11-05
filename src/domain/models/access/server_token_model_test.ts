@@ -715,3 +715,63 @@ Deno.test("serverTokenModel: redeem rejects a record paired with another mint's 
     ServerTokenSecretMismatchError,
   );
 });
+
+Deno.test("serverTokenModel: mint records direct:token whatever its arguments say", async () => {
+  const { store } = await mintToken();
+  assertEquals(store.get("token-main")!.client, "direct:token");
+
+  const harness = createInMemoryWorkerContext(
+    SERVER_TOKEN_MODEL_TYPE,
+    "forged",
+  );
+  await serverTokenModel.methods.mint.execute(
+    { ...mintArgs, client: "integration:ops-slack" } as typeof mintArgs,
+    harness.context,
+  );
+  assertEquals(harness.store.get("token-main")!.client, "direct:token");
+});
+
+Deno.test("serverTokenModel: rotate keeps the client", async () => {
+  const { context, store } = await mintToken();
+  store.set("token-main", {
+    ...store.get("token-main")!,
+    client: "direct:cli",
+  });
+  await serverTokenModel.methods.rotate.execute({}, context);
+  assertEquals(store.get("token-main")!.client, "direct:cli");
+});
+
+Deno.test("serverTokenModel: revoke keeps the client", async () => {
+  const { context, store } = await mintToken();
+  await serverTokenModel.methods.revoke.execute({}, context);
+  assertEquals(store.get("token-main")!.client, "direct:token");
+});
+
+Deno.test("ServerTokenSchema: a token from before clients parses with none", () => {
+  const parsed = ServerTokenSchema.parse({
+    name: "old",
+    state: "active",
+    principalId: "user:old",
+    principalEmail: "old@example.com",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-02-01T00:00:00.000Z",
+    vaultName: "local",
+    secretKey: "server-token-old",
+  });
+  assertEquals(parsed.client, undefined);
+});
+
+Deno.test("ServerTokenSchema: a malformed client still parses, so the token can be listed and revoked", () => {
+  const parsed = ServerTokenSchema.safeParse({
+    name: "bad",
+    state: "active",
+    principalId: "user:bad",
+    principalEmail: "bad@example.com",
+    client: "not a client",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-02-01T00:00:00.000Z",
+    vaultName: "local",
+    secretKey: "server-token-bad",
+  });
+  assertEquals(parsed.success, true);
+});

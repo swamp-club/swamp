@@ -37,6 +37,7 @@ import type {
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import { parsePrincipal, type Principal } from "../domain/access/principal.ts";
+import { parseClient } from "../domain/access/client.ts";
 import { assertAuthenticatablePrincipal } from "../domain/access/service_principal.ts";
 import {
   displayPrincipal,
@@ -282,6 +283,7 @@ export type TokenAuthRejectionReason =
   | "secret-mismatch"
   | "mispaired-secret"
   | "invalid-principal"
+  | "invalid-client"
   | "no-definition"
   | "invalid-format"
   | "vault-error"
@@ -304,6 +306,8 @@ export type ServerTokenAuthResult =
      * minted any other way
      */
     oauthIdentity?: ActorIdentity;
+    /** how serve issued the token; absent when the token records none */
+    client?: string;
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
@@ -332,7 +336,8 @@ export function shouldInvalidateDashboardSession(
   reason: TokenAuthRejectionReason,
 ): boolean {
   return reason === "expired" || reason === "revoked" ||
-    reason === "invalid-principal" || reason === "no-definition";
+    reason === "invalid-principal" || reason === "invalid-client" ||
+    reason === "no-definition";
 }
 
 /**
@@ -425,6 +430,14 @@ export async function authenticateServerToken(
       };
     }
 
+    if (!hasValidClient(token)) {
+      return {
+        ok: false,
+        error: "Authentication failed",
+        reason: "invalid-client",
+      };
+    }
+
     rememberTokenUsername(auditContext, token);
     emitTokenUseAuditEvent(auditContext, split.name, principal, token);
     logger.info("Authenticated token {name} as {principal}", {
@@ -439,6 +452,7 @@ export async function authenticateServerToken(
       tokenName: split.name,
       tokenCreatedAt: token.createdAt,
       ...(token.oauthIdentity ? { oauthIdentity: token.oauthIdentity } : {}),
+      ...(token.client !== undefined ? { client: token.client } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -494,6 +508,13 @@ export async function authenticateDashboardSession(
         reason: "invalid-principal",
       };
     }
+    if (!hasValidClient(token)) {
+      return {
+        ok: false,
+        error: "Authentication failed",
+        reason: "invalid-client",
+      };
+    }
     rememberTokenUsername(auditContext, token);
     emitTokenUseAuditEvent(auditContext, binding.tokenName, principal, token);
     return {
@@ -504,6 +525,7 @@ export async function authenticateDashboardSession(
       tokenName: binding.tokenName,
       tokenCreatedAt: token.createdAt,
       ...(token.oauthIdentity ? { oauthIdentity: token.oauthIdentity } : {}),
+      ...(token.client !== undefined ? { client: token.client } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -513,6 +535,23 @@ export async function authenticateDashboardSession(
       { name: binding.tokenName, reason, error: message },
     );
     return { ok: false, error: "Authentication failed", reason };
+  }
+}
+
+function hasValidClient(token: ServerToken): boolean {
+  if (token.client === undefined) return true;
+  try {
+    parseClient(token.client);
+    return true;
+  } catch (error) {
+    logger.warn(
+      "Token authentication rejected for {name} (invalid-client): {error}",
+      {
+        name: token.name,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return false;
   }
 }
 
@@ -554,6 +593,7 @@ function emitTokenUseAuditEvent(
         auditContext.resolvedUserNames,
         token.oauthIdentity,
       ),
+      client: token.client,
       sourceIp: auditContext.sourceIp ?? "unknown",
       requestId: auditContext.requestId ?? crypto.randomUUID(),
       detail: auditContext.ingress,

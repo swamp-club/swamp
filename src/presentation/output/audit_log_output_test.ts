@@ -163,3 +163,37 @@ Deno.test("renderAuditEvent: json mode prints JSON", () => {
   assertEquals(parsed.action, "vault.get");
   assertEquals(parsed.outcome, "denied");
 });
+
+Deno.test("renderAuditLog: log mode shows a CLIENT column, blank when none is recorded", () => {
+  const withClient: AuditQueryResponse = {
+    ...sampleData,
+    events: [
+      { ...sampleData.events[0], client: "integration:ops-slack" },
+      sampleData.events[1],
+    ],
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderAuditLog(withClient, "log")),
+  );
+  const lines = output.split("\n");
+  const header = lines.find((line) => line.includes("RESOURCE"))!;
+  assertStringIncludes(header, "CLIENT");
+  const named = lines.find((line) => line.includes("model:hello"))!;
+  assertEquals(
+    named.indexOf("integration:ops-slack"),
+    header.indexOf("CLIENT"),
+  );
+  const blank = lines.find((line) => line.includes("vault:prod"))!;
+  assertEquals(blank.trimEnd(), blank);
+  assertEquals(blank.endsWith("vault:prod"), true);
+});
+
+Deno.test("renderAuditLog: json mode carries the client as recorded", () => {
+  const output = captureLogs(() =>
+    renderAuditLog({
+      ...sampleData,
+      events: [{ ...sampleData.events[0], client: "direct:cli" }],
+    }, "json")
+  );
+  assertEquals(JSON.parse(output).events[0].client, "direct:cli");
+});

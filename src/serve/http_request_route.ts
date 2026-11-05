@@ -27,6 +27,7 @@ import {
   type ConnectionContext,
   markUncappedSocket,
   removeConnection,
+  setConnectionClient,
   setConnectionCollectives,
   setConnectionLoginIdentity,
   setConnectionSourceIp,
@@ -203,6 +204,7 @@ function replyStream(
     setConnectionToken(socket, caller.token);
   }
   setConnectionLoginIdentity(socket, caller.access.loginIdentity);
+  setConnectionClient(socket, caller.access.client);
 
   const activeRequests = new Map<string, AbortController>();
   // a disconnect or a revoked session aborts the request, as a closed socket's

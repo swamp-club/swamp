@@ -37,6 +37,10 @@ export function renderWorkflowRunDisplay(
   }
 }
 
+function viaClient(client: string | undefined): string {
+  return client !== undefined ? ` via ${escapeControlCharacters(client)}` : "";
+}
+
 function keySuffix(key: string | undefined): string {
   return key === undefined ? "" : ` (key ${escapeControlCharacters(key)})`;
 }
@@ -135,15 +139,15 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         const a = step.approval;
         if (a.status === "approved") {
           writeOutput(
-            `      ${green("Approved")} by ${a.approvedBy ?? "unknown"} at ${
-              formatTimestamp(a.approvedAt)
-            }`,
+            `      ${green("Approved")} by ${a.approvedBy ?? "unknown"}${
+              viaClient(a.client)
+            } at ${formatTimestamp(a.approvedAt)}`,
           );
         } else if (a.status === "rejected") {
           writeOutput(
-            `      ${red("Rejected")} by ${a.rejectedBy ?? "unknown"} at ${
-              formatTimestamp(a.rejectedAt)
-            }`,
+            `      ${red("Rejected")} by ${a.rejectedBy ?? "unknown"}${
+              viaClient(a.client)
+            } at ${formatTimestamp(a.rejectedAt)}`,
           );
           if (a.reason) {
             writeOutput(`      Reason: ${a.reason}`);

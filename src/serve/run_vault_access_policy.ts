@@ -52,6 +52,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   captureDecisionSubject,
   type ConnectionContext,
+  getConnectionClient,
   getConnectionCollectives,
   getConnectionGroups,
   getConnectionLoginIdentity,
@@ -268,6 +269,7 @@ export type RunPrincipalInputs =
     readonly tokenBinding: NonNullable<RunTriggeringPrincipal["tokenBinding"]>;
     readonly idpGroups: readonly string[];
     readonly collectives: readonly string[];
+    readonly client?: string;
   }
   | {
     /**
@@ -279,6 +281,7 @@ export type RunPrincipalInputs =
     readonly tokenBinding?: RunTriggeringPrincipal["tokenBinding"];
     readonly idpGroups: readonly string[];
     readonly collectives: readonly string[];
+    readonly client?: string;
   }
   | {
     readonly source: "missing";
@@ -470,6 +473,7 @@ export function captureRunPrincipal(
   const idpGroups = [...getConnectionGroups(socket)];
   const collectives = [...getConnectionCollectives(socket)];
   const token = captureDecisionSubject(socket, principal).token;
+  const client = getConnectionClient(socket);
   if (token && getConnectionLoginIdentity(socket) === undefined) {
     return {
       source: "token",
@@ -477,6 +481,7 @@ export function captureRunPrincipal(
       tokenBinding: token,
       idpGroups,
       collectives,
+      ...(client !== undefined ? { client } : {}),
     };
   }
   return {
@@ -485,6 +490,7 @@ export function captureRunPrincipal(
     ...(token ? { tokenBinding: token } : {}),
     idpGroups,
     collectives,
+    ...(client !== undefined ? { client } : {}),
   };
 }
 
@@ -542,6 +548,7 @@ export function resumeRunVaultScope(
   run: {
     readonly id: string;
     readonly initiatedBy?: string;
+    readonly client?: string;
     readonly triggeringPrincipal?: RunTriggeringPrincipal;
   },
 ): ServeRunVaultScope | undefined {
@@ -557,6 +564,7 @@ export function resumeRunVaultScope(
           : {}),
         idpGroups: recorded.membership.idpGroups,
         collectives: recorded.membership.collectives,
+        ...(run.client !== undefined ? { client: run.client } : {}),
       }
       : {
         source: "missing",
@@ -603,6 +611,7 @@ export function emitRunVaultDenial(
         ctx.resolvedUserNames,
         undefined,
       ),
+      client: inputs.source === "missing" ? undefined : inputs.client,
       // As emitSystemAuditEvent and trigger denials: loopback, random id.
       sourceIp: "127.0.0.1",
       requestId: runId ?? crypto.randomUUID(),

@@ -25,6 +25,7 @@
 
 import { canonicalJson } from "../expressions/expression_references.ts";
 import {
+  type ApprovalDecisionData,
   isServeDrivenRun,
   type StepRunData,
   type WorkflowRunData,
@@ -140,7 +141,7 @@ export interface AddedStepOutput {
 }
 
 export interface HeldChildRun {
-  readonly decisions: readonly unknown[];
+  readonly decisions: readonly ApprovalDecisionData[];
 }
 
 export interface RunRecordJudgement {
@@ -243,6 +244,9 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
         "it records a triggering principal, which only serve records",
       );
     }
+    if (after.client !== undefined) {
+      return refuse("it records a client, which only serve records");
+    }
     if (
       after.allowedVaults !== undefined &&
       !after.allowedVaults.every((vault) =>
@@ -261,6 +265,7 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
       ["parent run", before.parentRun, after.parentRun],
       ["allowed vaults", before.allowedVaults, after.allowedVaults],
       ["initiator", before.initiatedBy, after.initiatedBy],
+      ["client", before.client, after.client],
       ["plan", before.runPlan, after.runPlan],
       [
         "inherited expressions",
@@ -379,13 +384,29 @@ function judgeStep(
     signalRefusal(prior, step);
 }
 
+/**
+ * an older CLI strips a client it does not know when it rewrites a record, so a
+ * missing client still matches; the audit event keeps the value
+ */
+function sameDecision(
+  held: ApprovalDecisionData | undefined,
+  forwarded: ApprovalDecisionData | undefined,
+): boolean {
+  if (same(held, forwarded)) return true;
+  if (held === undefined) return false;
+  const { client: _client, ...withoutClient } = held;
+  return same(withoutClient, forwarded);
+}
+
 function decisionRefusal(
   context: RunRecordContext,
   jobName: string,
   prior: StepRunData | undefined,
   step: StepRunData,
 ): string | undefined {
-  if (same(prior?.approvalDecision, step.approvalDecision)) return undefined;
+  if (sameDecision(prior?.approvalDecision, step.approvalDecision)) {
+    return undefined;
+  }
   if (step.approvalDecision === undefined) {
     return step.status === "pending"
       ? undefined
@@ -399,7 +420,7 @@ function decisionRefusal(
   const held = context.storedStepIsNested?.(jobName, step) === true
     ? context.heldChild?.(jobName, step)?.decisions ?? []
     : [];
-  return held.some((decision) => same(decision, step.approvalDecision))
+  return held.some((decision) => sameDecision(decision, step.approvalDecision))
     ? undefined
     : "it records an approval decision serve does not hold";
 }
