@@ -1001,7 +1001,23 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
         (key) => Promise.resolve(key === "present"),
         () => Promise.reject(new Error("backend dropped the read")),
       );
+      let countedCalls = 0;
+      const countedType = register(
+        () => {
+          countedCalls++;
+          return Promise.reject(new Error(unreachable));
+        },
+        () => Promise.reject(new Error(unreachable)),
+      );
       const vaultConfigs = new YamlVaultConfigRepository(f.repoDir);
+      await vaultConfigs.save(
+        VaultConfig.create(
+          createVaultConfigId(crypto.randomUUID()),
+          "counted",
+          countedType,
+          {},
+        ),
+      );
       for (const [name, type] of [["down", downType], ["strict", strictType]]) {
         await vaultConfigs.save(
           VaultConfig.create(
@@ -1051,6 +1067,19 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
         key: "item",
         reason: unreachable,
       }]);
+
+      // One probe per reference per validation, so a slow backend costs one wait.
+      const counted = await deps.validateModel(
+        await define("counted", "${{ vault.get('counted', 'item') }}"),
+        f.model,
+        f.type,
+      );
+      assertEquals(countedCalls, 1);
+      assertEquals(
+        counted.warnings.find((w) => w.name === "Secret references not checked")
+          ?.secretReferences?.length,
+        1,
+      );
 
       const failures: [string, string, string][] = [
         ["strict-missing", "${{ vault.get('strict', 'absent') }}", "not found"],
@@ -1104,7 +1133,7 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
       });
       const checksBeforeRun = f.checked.length;
       const receivedBeforeRun = f.received.length;
-      // A run needs the value: the provider's failure stops it, as before.
+      // A run needs the value: the provider's failure stops it.
       await assertRejects(
         () =>
           collect<ModelMethodRunEvent>(

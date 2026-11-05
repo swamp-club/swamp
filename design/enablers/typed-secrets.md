@@ -1409,7 +1409,9 @@ receives global arguments after delivery, method arguments as sentinels and the
 loaded `context.vaultSecrets`. Absent input/environment bindings stay
 unevaluated. So does a reference the provider cannot answer for (its CLI absent,
 its backend down, its own credentials refused), which validate reports in a
-`Secret references not checked` warning; a run still fails on it. A get-only
+`Secret references not checked` warning; no sentinel is issued for it, so
+neither its value nor a refusing destination is checked there, and a run still
+fails on it. A get-only
 provider cannot tell a missing key from such a failure, so its missing key is
 reported the same way and fails at run time. Other failures stop delivery and
 produce one delivery finding.

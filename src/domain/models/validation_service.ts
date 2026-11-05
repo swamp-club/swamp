@@ -147,7 +147,7 @@ export class ValidationWarning {
     references: UncheckedSecretReference[],
   ): ValidationWarning {
     const message =
-      "The vault could not be reached to check these references, so the checks, policy checks included, received them as stored text and did not judge their values. A run checks again with the delivered values and fails if the vault is still unreachable.";
+      "The vault could not confirm these references: it did not answer, or a provider without an existence check could not read the key. The checks, policy checks included, received them as stored text, so neither their values nor whether their fields accept a secret were checked. A run checks both with the delivered values and fails if the vault still cannot answer.";
     return new ValidationWarning(
       UNCHECKED_SECRET_REFERENCES_WARNING_NAME,
       message,

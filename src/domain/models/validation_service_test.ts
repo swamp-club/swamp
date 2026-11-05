@@ -3807,7 +3807,7 @@ Deno.test("validateModel: references the vault could not answer for run the chec
     w.name === UNCHECKED_SECRET_REFERENCES_WARNING_NAME
   );
   assertEquals(warning?.secretReferences, [unchecked]);
-  assertStringIncludes(warning?.message ?? "", "A run checks again");
+  assertStringIncludes(warning?.message ?? "", "whether their fields accept a secret");
 });
 
 Deno.test("validateModel: a delivery with every reference checked adds no unchecked-references warning", async () => {
