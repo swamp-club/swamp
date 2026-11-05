@@ -58,7 +58,7 @@ it.
   (lowercased, other characters to `-`). It is trusted, since the user ran
   swamp there. The command ends paused after 10 minutes with no tab open.
 
-The hub serves `/` (redirect to `/dashboard/start`), the bundle under
+The hub serves `/` (redirect to `/dashboard/hub`), the bundle under
 `/dashboard/` (fetched from the control engine in chunks and kept in memory
 when immutable) and `/api/local/workspaces` (every registered workspace for
 an all-workspaces lease, else the lease's one, with `switchable: false`). The
@@ -73,6 +73,22 @@ minute. The hub exits a minute after no lease and no engine remain.
 On the shared hub, `/` and `/dashboard/start` load for every page, whatever
 command opened it. A `swamp dashboard` lease has no backend, so its token
 cannot open a start page socket.
+
+**Hub overview.** `swamp hub open` takes an all-workspaces lease with
+**manage** and opens `/dashboard/hub`, holding the lease until Ctrl-C. The
+page polls `/api/local/hub` every 3 s while visible and shows:
+- the hub: version, engine, address, uptime and idle exit
+- every workspace: registered, lease-bound (`swamp dashboard`) or registered
+  with its folder gone, each with its engine's state, pid, tabs and uptime
+- the sessions holding leases, named by command and pid
+- the tail of `hub.log`
+
+From the page you can stop one engine (its tabs reconnect to a new one), end
+another session (its command exits with "The swamp hub ended this session.")
+or stop an auto-launched hub; each asks first. A service hub can't be stopped
+there, since its service manager would restart it. Workspace links open that
+workspace's dashboard, and its switcher leads back to the overview. A `swamp
+start` or `swamp dashboard` token gets 403 on the overview.
 
 ## Why this shape
 

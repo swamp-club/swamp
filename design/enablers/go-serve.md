@@ -350,7 +350,9 @@ revoked. Revoking a lease closes its sockets, health streams and start sockets.
 **Admin API.** It is served only to loopback peers with the record's admin
 token:
 
-- `POST /hub/leases` (`{scope, workspace?, path?}`) issues a lease.
+- `POST /hub/leases` (`{scope, workspace?, path?, manage?, client?, pid?}`)
+  issues a lease. `manage` is allowed only with `scope: "all"`; `client`
+  (`start`, `dashboard` or `hub`) and `pid` name the holder for the overview.
 - `PUT /hub/leases/<id>/backend` sets its backend.
 - `GET /hub/leases/<id>` renews it and returns its open dashboard pages.
 - `DELETE /hub/leases/<id>` revokes it.
@@ -384,7 +386,7 @@ The routes are:
 
 Outside any workspace, after the loopback and `Host` checks:
 
-- `/` redirects to `/dashboard/start`.
+- `/` redirects to `/dashboard/hub`.
 - `/dashboard/…` needs no lease. The control engine's `asset.get` answers it in
   chunks that fit a control reply, with the SPA fallback to `index.html`.
   Immutable files stay in memory, up to 64 MiB.
@@ -392,6 +394,16 @@ Outside any workspace, after the loopback and `Host` checks:
   all-workspaces lease, else the lease's one.
 - `/start/ws` and `/start/ping` need a lease with a backend. The socket also
   needs the exact origin, and is bridged frame by frame.
+- `GET /api/local/hub` needs a manage lease, else 403 `manage_required`. It
+  returns the hub record without its token, every registered and lease-bound
+  workspace with its engine, the leases (never their tokens) and the last
+  200 lines of the last 64 KiB of `--log-file`.
+- `POST /api/local/hub/engines/<id>/stop`, `…/leases/<id>/revoke` and
+  `…/stop` need a manage lease and `Origin` equal to the hub's own. Stopping
+  an engine retires it; the next request starts a new generation. A lease
+  cannot revoke itself (409). Stopping the hub works only with
+  `--exit-when-idle` (409 `hub_is_service` otherwise), even while other
+  leases remain.
 
 An engine stays up for `--page-idle-grace` (default 10 minutes) after its last
 page session closes. Forced least-recently-used eviction ignores the grace.
