@@ -19,7 +19,7 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { Logo } from "../../components/Logo.tsx";
 import { StatusPill } from "../../components/StatusPill.tsx";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle.ts";
@@ -31,13 +31,16 @@ import {
 import { parseTokenFromHash } from "../start/helpers.ts";
 import {
   fetchOverview,
+  fetchServeLog,
   type OverviewResult,
   postAction,
   revokeLeasePath,
-  START_SERVE_PATH,
-  startServeBody,
+  START_DASHBOARD_PATH,
+  START_SWAMP_SERVE_PATH,
+  startDashboardBody,
   STOP_HUB_PATH,
   stopEnginePath,
+  stopSwampServePath,
   TRUST_WORKSPACE_PATH,
 } from "./client.ts";
 import {
@@ -45,6 +48,10 @@ import {
   type HubLease,
   type HubOverview,
   type HubWorkspace,
+  serveAuthNote,
+  serveDashboardUrl,
+  serveIsLive,
+  serveStatus,
   sessionLabel,
   sessionScope,
   since,
@@ -232,7 +239,9 @@ function workspaceKind(workspace: HubWorkspace): ReactNode {
 }
 
 /** Starts a stopped dashboard; shows that it is starting until the overview catches up. */
-function StartButton({ onStart }: { onStart: () => Promise<void> }) {
+function StartButton(
+  { label, onStart }: { label: string; onStart: () => Promise<void> },
+) {
   const [busy, setBusy] = useState(false);
   return (
     <button
@@ -244,18 +253,23 @@ function StartButton({ onStart }: { onStart: () => Promise<void> }) {
         onStart().finally(() => setBusy(false)).catch(() => {});
       }}
     >
-      {busy ? "Starting…" : "Start"}
+      {busy ? "Starting…" : label}
     </button>
   );
 }
 
-function ServeActions(
+/** loads a hub-started serve's log tail */
+type LoadLog = (
+  id: string,
+) => Promise<{ lines: string[]; path: string } | { error: string }>;
+
+function DashboardActions(
   { workspace, act }: { workspace: HubWorkspace; act: Act },
 ) {
-  const serve = workspace.engine;
-  if (serve !== null && serve.running) {
+  const engine = workspace.engine;
+  if (engine !== null && engine.running) {
     return (
-      <>
+      <span className="hub-buttons">
         {workspace.temporary || workspace.missing ? null : (
           <a
             className="btn-sm hub-open"
@@ -266,27 +280,188 @@ function ServeActions(
         )}
         <ConfirmButton
           label="Stop"
-          question={serve.pages > 0
-            ? `Close ${serve.pages} open tab${serve.pages === 1 ? "" : "s"}?`
+          question={engine.pages > 0
+            ? `Close ${engine.pages} open tab${engine.pages === 1 ? "" : "s"}?`
             : "Stop this dashboard?"}
-          onConfirm={() => act(stopEnginePath(serve.id)).catch(() => {})}
+          onConfirm={() => act(stopEnginePath(engine.id)).catch(() => {})}
         />
-      </>
+      </span>
     );
   }
   // A registered folder that is gone has nothing to serve.
   if (workspace.missing) return null;
   return (
     <StartButton
+      label="Start"
       onStart={() =>
         act(
-          START_SERVE_PATH,
-          startServeBody(
+          START_DASHBOARD_PATH,
+          startDashboardBody(
             workspace.name,
             workspace.temporary ? workspace.path : undefined,
           ),
         )}
     />
+  );
+}
+
+function DashboardCell(
+  { workspace, now, act }: { workspace: HubWorkspace; now: number; act: Act },
+) {
+  const status = engineStatus(workspace.engine);
+  const engine = workspace.engine;
+  const running = engine !== null && engine.running;
+  return (
+    <div className="hub-cell">
+      <div className="hub-cell-head">
+        <StatusPill status={status.tone} label={status.label} />
+        <DashboardActions workspace={workspace} act={act} />
+      </div>
+      {running
+        ? (
+          <div className="hub-dim hub-detail">
+            {engine.pid ? `pid ${engine.pid} · ` : ""}
+            {engine.pages} tab{engine.pages === 1 ? "" : "s"} · up{" "}
+            {since(engine.startedAt, now)}
+          </div>
+        )
+        : engine?.lastUsed
+        ? (
+          <div className="hub-dim hub-detail">
+            last used {since(engine.lastUsed, now)} ago
+          </div>
+        )
+        : null}
+    </div>
+  );
+}
+
+function ServeLog({ id, loadLog }: { id: string; loadLog: LoadLog }) {
+  const [log, setLog] = useState<
+    { lines: string[]; path: string } | { error: string } | null
+  >(null);
+  useEffect(() => {
+    let current = true;
+    loadLog(id).then((result) => {
+      if (current) setLog(result);
+    }).catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [id, loadLog]);
+  if (log === null) return <p className="hub-empty">Loading the log…</p>;
+  if ("error" in log) return <p className="hub-empty">{log.error}</p>;
+  return (
+    <div>
+      <code className="hub-dim hub-path">{log.path}</code>
+      {log.lines.length === 0
+        ? <p className="hub-empty">The log is empty.</p>
+        : <pre className="hub-log">{log.lines.join("\n")}</pre>}
+    </div>
+  );
+}
+
+function SwampServeCell(
+  { workspace, now, act, loadLog }: {
+    workspace: HubWorkspace;
+    now: number;
+    act: Act;
+    loadLog: LoadLog;
+  },
+) {
+  const [logFor, setLogFor] = useState<string | null>(null);
+  const live = workspace.serves.some(serveIsLive);
+  // Only a registered workspace can start one; swamp serve always loads extensions.
+  const startable = !live && !workspace.temporary && !workspace.missing;
+  return (
+    <div className="hub-cell">
+      {workspace.serves.map((serve, index) => {
+        const status = serveStatus(serve);
+        const link = serveDashboardUrl(serve);
+        const auth = serveAuthNote(serve);
+        const key = serve.id ?? `pid-${serve.pid ?? index}`;
+        return (
+          <div key={key} className="hub-serve">
+            <div className="hub-cell-head">
+              <StatusPill status={status.tone} label={status.label} />
+              <span className="hub-buttons">
+                {serve.owner === "hub" && serve.id !== undefined &&
+                    serveIsLive(serve) && serve.state !== "stopping"
+                  ? (
+                    <ConfirmButton
+                      label="Stop serve"
+                      question="Stop this swamp serve? Its runs drain first."
+                      onConfirm={() =>
+                        act(stopSwampServePath(serve.id!)).catch(() => {})}
+                    />
+                  )
+                  : null}
+                {serve.owner === "hub" && serve.id !== undefined
+                  ? (
+                    <button
+                      type="button"
+                      className="btn-sm"
+                      onClick={() =>
+                        setLogFor(logFor === serve.id ? null : serve.id!)}
+                    >
+                      {logFor === serve.id ? "Hide log" : "Log"}
+                    </button>
+                  )
+                  : null}
+              </span>
+            </div>
+            <div className="hub-dim hub-detail">
+              {link
+                ? (
+                  <a href={link} target="_blank" rel="noreferrer">
+                    {serve.url!.replace(/^https?:\/\//, "")}
+                  </a>
+                )
+                : serve.port
+                ? `port ${serve.port}`
+                : null}
+              {auth ? ` · ${auth}` : ""}
+              {serve.pid ? ` · pid ${serve.pid}` : ""}
+              {serve.startedAt && serveIsLive(serve)
+                ? ` · up ${since(serve.startedAt, now)}`
+                : ""}
+              {serve.owner === "other" ? " · started elsewhere" : ""}
+              {serve.reason ? ` · ${serve.reason}` : ""}
+              {!serveIsLive(serve) && serve.exitCode !== undefined
+                ? ` · exit ${serve.exitCode}`
+                : ""}
+            </div>
+            {logFor !== null && logFor === serve.id
+              ? <ServeLog id={serve.id} loadLog={loadLog} />
+              : null}
+          </div>
+        );
+      })}
+      {startable
+        ? (
+          workspace.trusted
+            ? (
+              <StartButton
+                label="Start serve"
+                onStart={() =>
+                  act(START_SWAMP_SERVE_PATH, { name: workspace.name })}
+              />
+            )
+            : (
+              <button
+                type="button"
+                className="btn-sm"
+                disabled
+                title="swamp serve loads this workspace's extensions: trust it first"
+              >
+                Start serve
+              </button>
+            )
+        )
+        : workspace.serves.length === 0
+        ? <span className="hub-dim">—</span>
+        : null}
+    </div>
   );
 }
 
@@ -296,30 +471,23 @@ function WorkspaceActions(
   // Only a registered workspace records trust; a swamp dashboard folder already has it.
   const trustable = !workspace.trusted && !workspace.temporary &&
     !workspace.missing;
+  if (!trustable) return null;
   return (
-    <span className="hub-buttons">
-      {trustable
-        ? (
-          <ConfirmButton
-            label="Trust"
-            question={`Trust ${workspace.name}? Its extensions run as you.`}
-            onConfirm={() =>
-              act(TRUST_WORKSPACE_PATH, { name: workspace.name }).catch(
-                () => {},
-              )}
-          />
-        )
-        : null}
-      <ServeActions workspace={workspace} act={act} />
-    </span>
+    <ConfirmButton
+      label="Trust"
+      question={`Trust ${workspace.name}? Its extensions run as you.`}
+      onConfirm={() =>
+        act(TRUST_WORKSPACE_PATH, { name: workspace.name }).catch(() => {})}
+    />
   );
 }
 
 function WorkspacesTable(
-  { workspaces, now, act }: {
+  { workspaces, now, act, loadLog }: {
     workspaces: HubWorkspace[];
     now: number;
     act: Act;
+    loadLog: LoadLog;
   },
 ) {
   return (
@@ -337,49 +505,43 @@ function WorkspacesTable(
         )
         : (
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table hub-workspaces">
               <thead>
                 <tr>
                   <th>Workspace</th>
                   <th>Dashboard</th>
-                  <th>Tabs</th>
-                  <th>Up</th>
-                  <th>Last used</th>
+                  <th>swamp serve</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
-                {workspaces.map((w) => {
-                  const status = engineStatus(w.engine);
-                  const running = w.engine !== null && w.engine.running;
-                  return (
-                    <tr
-                      key={`${
-                        w.temporary ? "path" : "name"
-                      }:${w.name}:${w.path}`}
-                    >
-                      <td>
-                        <div className="hub-workspace">
-                          <strong>{w.name}</strong>
-                          {workspaceKind(w)}
-                        </div>
-                        <div className="hub-dim hub-path">{w.path}</div>
-                      </td>
-                      <td>
-                        <StatusPill status={status.tone} label={status.label} />
-                        {running && w.engine?.pid
-                          ? <span className="hub-dim">pid {w.engine.pid}</span>
-                          : null}
-                      </td>
-                      <td>{running ? w.engine!.pages : "—"}</td>
-                      <td>{running ? since(w.engine!.startedAt, now) : "—"}</td>
-                      <td>{w.engine ? since(w.engine.lastUsed, now) : "—"}</td>
-                      <td className="hub-actions">
-                        <WorkspaceActions workspace={w} act={act} />
-                      </td>
-                    </tr>
-                  );
-                })}
+                {workspaces.map((w) => (
+                  <tr
+                    key={`${w.temporary ? "path" : "name"}:${w.name}:${w.path}`}
+                  >
+                    <td>
+                      <div className="hub-workspace">
+                        <strong>{w.name}</strong>
+                        {workspaceKind(w)}
+                      </div>
+                      <div className="hub-dim hub-path">{w.path}</div>
+                    </td>
+                    <td>
+                      <DashboardCell workspace={w} now={now} act={act} />
+                    </td>
+                    <td>
+                      <SwampServeCell
+                        workspace={w}
+                        now={now}
+                        act={act}
+                        loadLog={loadLog}
+                      />
+                    </td>
+                    <td className="hub-actions">
+                      <WorkspaceActions workspace={w} act={act} />
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -474,10 +636,11 @@ function LogPanel({ overview }: { overview: HubOverview }) {
 
 /** The loaded overview; separate from {@link Hub} so it renders without a server. */
 export function HubOverviewView(
-  { overview, now, act, actionError }: {
+  { overview, now, act, loadLog, actionError }: {
     overview: HubOverview;
     now: number;
     act: Act;
+    loadLog: LoadLog;
     actionError: string | null;
   },
 ) {
@@ -486,7 +649,13 @@ export function HubOverviewView(
       {actionError ? <Notice text={actionError} /> : null}
       {overview.registryError ? <Notice text={overview.registryError} /> : null}
       <HubCard overview={overview} now={now} act={act} />
-      <WorkspacesTable workspaces={overview.workspaces} now={now} act={act} />
+      {overview.servesError ? <Notice text={overview.servesError} /> : null}
+      <WorkspacesTable
+        workspaces={overview.workspaces}
+        now={now}
+        act={act}
+        loadLog={loadLog}
+      />
       <SessionsTable leases={overview.leases} now={now} act={act} />
       <LogPanel overview={overview} />
     </>
@@ -561,6 +730,14 @@ export function Hub() {
     };
   }, [token, version, stopped]);
 
+  const loadLog = useCallback<LoadLog>(
+    (id) =>
+      token
+        ? fetchServeLog(token, id)
+        : Promise.resolve({ error: "No token." }),
+    [token],
+  );
+
   const act: Act = async (path, body) => {
     if (!token) return;
     const error = await postAction(token, path, body);
@@ -587,6 +764,7 @@ export function Hub() {
             overview={result.overview}
             now={now}
             act={act}
+            loadLog={loadLog}
             actionError={actionError}
           />
         )

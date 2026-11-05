@@ -83,6 +83,8 @@ the last tab closes, not when the command exits. The page polls
 - every workspace: registered, lease-bound (`swamp dashboard`) or registered
   with its folder gone, each with its dashboard's state, pid, tabs and uptime (the
   page says "dashboard" for a workspace engine)
+- each workspace's running `swamp serve` processes: the hub's own and any
+  started elsewhere, with a link to serve's own dashboard and its auth mode
 - the sessions holding leases, named by command and pid
 - the tail of `hub.log`
 
@@ -97,7 +99,11 @@ open tabs reconnect to one that loads extensions. You can also end another
 session (its command
 exits with "The swamp hub ended this session.") or stop an auto-launched hub;
 each stop asks first. A service hub can't be stopped there, since its service
-manager would restart it. A workspace's switcher leads back to the overview. A
+manager would restart it. **Start serve** runs `swamp serve` for a trusted registered workspace, on the
+port its serve config sets or a free one, with its own auth config and the
+dashboard on; **Stop serve** and **Log** apply only to serves the hub started.
+Hub-started serves stop when the hub stops. A workspace's switcher leads back
+to the overview. A
 `swamp start` or `swamp dashboard` token gets 403 on the overview.
 
 ## Why this shape

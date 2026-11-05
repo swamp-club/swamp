@@ -73,7 +73,10 @@ const ACTION_ERRORS: Record<string, string> = {
   unknown_engine: "That dashboard has already stopped.",
   unknown_workspace: "That workspace isn't available any more.",
   workspace_untrusted:
-    "That workspace's datastore is extension code, which an untrusted workspace can't load.",
+    "That workspace isn't trusted, so its extensions can't load. Trust it first.",
+  serve_running: "A swamp serve is already running for that workspace.",
+  unknown_serve: "That swamp serve has already stopped.",
+  serves_unavailable: "This hub can't start swamp serve.",
   engine_unavailable: "That dashboard didn't start. See the hub log below.",
   unknown_lease: "That session has already ended.",
   origin_mismatch: "The hub refused a request from another page.",
@@ -124,12 +127,47 @@ export function revokeLeasePath(id: string): string {
 
 export const STOP_HUB_PATH = "/api/local/hub/stop";
 
-export const START_SERVE_PATH = "/api/local/hub/workspaces/start";
+export const START_DASHBOARD_PATH = "/api/local/hub/workspaces/start-dashboard";
+
+export const START_SWAMP_SERVE_PATH = "/api/local/hub/serves/start";
+
+export function stopSwampServePath(id: string): string {
+  return `/api/local/hub/serves/${encodeURIComponent(id)}/stop`;
+}
+
+/** the tail of a hub-started serve's log, or why it can't be shown */
+export async function fetchServeLog(
+  token: string,
+  id: string,
+): Promise<{ lines: string[]; path: string } | { error: string }> {
+  try {
+    const response = await fetch(
+      `/api/local/hub/serves/${encodeURIComponent(id)}/log`,
+      {
+        headers: { [LOCAL_TOKEN_HEADER]: token },
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { error: "That swamp serve's log isn't available." };
+    }
+    const body = await response.json() as Record<string, unknown> | null;
+    return {
+      path: typeof body?.path === "string" ? body.path : "",
+      lines: Array.isArray(body?.lines)
+        ? body.lines.filter((line): line is string => typeof line === "string")
+        : [],
+    };
+  } catch {
+    return { error: "The swamp hub isn't answering." };
+  }
+}
 
 export const TRUST_WORKSPACE_PATH = "/api/local/hub/workspaces/trust";
 
-/** the body that starts a workspace's serve; a lease-bound folder names its path */
-export function startServeBody(
+/** the body that starts a workspace's dashboard; a lease-bound folder names its path */
+export function startDashboardBody(
   name: string,
   path: string | undefined,
 ): { name: string; path?: string } {

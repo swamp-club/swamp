@@ -30,6 +30,22 @@ export interface HubEngine {
   starts: number;
 }
 
+/** a running or recently ended `swamp serve` for a workspace */
+export interface HubServe {
+  /** set for serves the hub started, which the page can stop */
+  id?: string;
+  owner: "hub" | "other";
+  state: string;
+  pid?: number;
+  port?: number;
+  url?: string;
+  authMode?: string;
+  dashboard: boolean;
+  startedAt?: string;
+  exitCode?: number;
+  reason?: string;
+}
+
 export interface HubWorkspace {
   name: string;
   path: string;
@@ -37,6 +53,7 @@ export interface HubWorkspace {
   temporary: boolean;
   missing: boolean;
   engine: HubEngine | null;
+  serves: HubServe[];
 }
 
 export interface HubLease {
@@ -75,6 +92,7 @@ export interface HubOverview {
   leases: HubLease[];
   log: { path: string; lines: string[] } | null;
   registryError?: string;
+  servesError?: string;
 }
 
 type Raw = Record<string, unknown>;
@@ -114,6 +132,25 @@ function parseEngine(value: unknown): HubEngine | null {
   };
 }
 
+function parseServe(value: unknown): HubServe | null {
+  const raw = record(value);
+  const state = text(raw.state);
+  if (state === undefined) return null;
+  return {
+    id: text(raw.id),
+    owner: raw.owner === "hub" ? "hub" : "other",
+    state,
+    pid: optionalNumber(raw.pid),
+    port: optionalNumber(raw.port),
+    url: text(raw.url),
+    authMode: text(raw.authMode),
+    dashboard: raw.dashboard === true,
+    startedAt: text(raw.startedAt),
+    exitCode: typeof raw.exitCode === "number" ? raw.exitCode : undefined,
+    reason: text(raw.reason),
+  };
+}
+
 /** Reads `/api/local/hub`, dropping entries it can't use rather than failing. */
 export function parseOverview(body: unknown): HubOverview {
   const raw = record(body);
@@ -145,6 +182,9 @@ export function parseOverview(body: unknown): HubOverview {
       temporary: w.temporary === true,
       missing: w.missing === true,
       engine: parseEngine(w.engine),
+      serves: Array.isArray(w.serves)
+        ? w.serves.map(parseServe).filter((x): x is HubServe => x !== null)
+        : [],
     })),
     leases: leases.map(record).filter((l) => text(l.id) !== undefined).map((
       l,
@@ -170,7 +210,49 @@ export function parseOverview(body: unknown): HubOverview {
         : [],
     },
     registryError: text(raw.registryError),
+    servesError: text(raw.servesError),
   };
+}
+
+const LIVE_SERVE_STATES = new Set(["starting", "running", "stopping"]);
+
+export function serveIsLive(serve: HubServe): boolean {
+  return LIVE_SERVE_STATES.has(serve.state);
+}
+
+const SERVE_TONES: Record<string, string> = {
+  running: "active",
+  starting: "running",
+  stopping: "degraded",
+  failed: "failed",
+  exited: "idle",
+};
+
+export function serveStatus(serve: HubServe): EngineStatus {
+  return { tone: SERVE_TONES[serve.state] ?? "idle", label: serve.state };
+}
+
+/** serve's own dashboard, when it serves one and has said where */
+export function serveDashboardUrl(serve: HubServe): string | undefined {
+  return serve.dashboard && serve.url !== undefined && serveIsLive(serve)
+    ? `${serve.url}/dashboard`
+    : undefined;
+}
+
+/** what logging in to serve's own dashboard takes, in its auth mode */
+export function serveAuthNote(serve: HubServe): string | undefined {
+  switch (serve.authMode) {
+    case undefined:
+      return undefined;
+    case "none":
+      return "no login";
+    case "token":
+      return "token login";
+    case "oauth":
+      return "swamp club login";
+    default:
+      return `${serve.authMode} login`;
+  }
 }
 
 /** A pill tone (a `StatusPill` style) and the word it shows. */

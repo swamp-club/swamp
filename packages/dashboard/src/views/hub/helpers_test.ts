@@ -22,7 +22,12 @@ import {
   engineStatus,
   formatDuration,
   type HubLease,
+  type HubServe,
   parseOverview,
+  serveAuthNote,
+  serveDashboardUrl,
+  serveIsLive,
+  serveStatus,
   sessionLabel,
   sessionScope,
   since,
@@ -141,4 +146,47 @@ Deno.test("formatDuration and since: two largest units, a dash for nothing", () 
     since("2026-11-05T10:00:00Z", Date.parse("2026-11-05T10:01:30Z")),
     "1m",
   );
+});
+
+Deno.test("parseOverview: reads each workspace's swamp serves and drops odd ones", () => {
+  const overview = parseOverview({
+    workspaces: [{
+      name: "a",
+      path: "/repos/a",
+      serves: [
+        { id: "s1", owner: "hub", state: "failed", exitCode: 1, reason: "x" },
+        { owner: "someone", state: "running", port: 9190 },
+        { state: 3 },
+      ],
+    }, { name: "b", path: "/repos/b" }],
+    servesError: "nope",
+  });
+  assertEquals(overview.workspaces[0].serves.length, 2);
+  assertEquals(overview.workspaces[0].serves[0].exitCode, 1);
+  assertEquals(overview.workspaces[0].serves[1].owner, "other");
+  assertEquals(overview.workspaces[1].serves, []);
+  assertEquals(overview.servesError, "nope");
+});
+
+Deno.test("serve labels: state tones, dashboard link only while live, auth notes", () => {
+  const serve = (fields: Partial<HubServe>): HubServe => ({
+    owner: "hub",
+    state: "running",
+    dashboard: true,
+    url: "http://127.0.0.1:9190",
+    ...fields,
+  });
+  assertEquals(serveStatus(serve({})), { tone: "active", label: "running" });
+  assertEquals(serveStatus(serve({ state: "starting" })).tone, "running");
+  assertEquals(serveStatus(serve({ state: "failed" })).tone, "failed");
+  assertEquals(serveIsLive(serve({ state: "exited" })), false);
+  assertEquals(
+    serveDashboardUrl(serve({})),
+    "http://127.0.0.1:9190/dashboard",
+  );
+  assertEquals(serveDashboardUrl(serve({ dashboard: false })), undefined);
+  assertEquals(serveDashboardUrl(serve({ state: "exited" })), undefined);
+  assertEquals(serveAuthNote(serve({ authMode: "none" })), "no login");
+  assertEquals(serveAuthNote(serve({ authMode: "token" })), "token login");
+  assertEquals(serveAuthNote(serve({})), undefined);
 });

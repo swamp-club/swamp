@@ -52,6 +52,25 @@ function overview(autoExit: boolean, log: unknown = null): HubOverview {
           pages: 2,
           startedAt: "2026-11-05T11:30:00Z",
         },
+        serves: [{
+          id: "s1",
+          owner: "hub",
+          state: "running",
+          pid: 900,
+          port: 9190,
+          url: "http://127.0.0.1:9190",
+          authMode: "none",
+          dashboard: true,
+          startedAt: "2026-11-05T11:50:00Z",
+        }, {
+          owner: "other",
+          state: "running",
+          pid: 901,
+          port: 9191,
+          url: "http://127.0.0.1:9191",
+          authMode: "token",
+          dashboard: false,
+        }],
       },
       { name: "docs", path: "/repos/docs", trusted: false, engine: null },
       {
@@ -84,6 +103,7 @@ function render(data: HubOverview, actionError: string | null = null): string {
       overview={data}
       now={NOW}
       act={() => Promise.resolve()}
+      loadLog={() => Promise.resolve({ lines: [], path: "" })}
       actionError={actionError}
     />,
   );
@@ -110,6 +130,18 @@ Deno.test("HubOverviewView: shows the hub, its workspaces with their dashboards,
   // docs is registered and stopped, loose is a stopped lease-bound folder: both start.
   assertEquals(html.split(">Start</button>").length - 1, 2);
   assertEquals(html.includes(`<a href="/dashboard/w/`), false);
+  assertStringIncludes(html, ">swamp serve</th>");
+  assertStringIncludes(html, `href="http://127.0.0.1:9190/dashboard"`);
+  assertStringIncludes(html, "no login");
+  assertStringIncludes(html, ">Stop serve</button>");
+  assertStringIncludes(html, ">Log</button>");
+  // The serve started elsewhere has no dashboard link and no Stop.
+  assertStringIncludes(html, "port 9191 · token login · pid 901");
+  assertStringIncludes(html, "started elsewhere");
+  assertEquals(html.split(">Stop serve</button>").length - 1, 1);
+  // docs is untrusted: its Start serve is disabled; loose can't start one.
+  assertStringIncludes(html, `disabled="" title="swamp serve loads`);
+  assertEquals(html.split("Start serve</button>").length - 1, 1);
   // Only docs is registered and untrusted; loose came from swamp dashboard.
   assertEquals(html.split(">Trust</button>").length - 1, 1);
   assertStringIncludes(html, "started\nready");

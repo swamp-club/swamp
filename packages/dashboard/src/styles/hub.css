@@ -144,3 +144,31 @@ a.btn-sm.hub-open {
   display: inline-block;
   text-decoration: none;
 }
+
+.hub-workspaces td {
+  vertical-align: top;
+  white-space: normal;
+}
+
+.hub-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+}
+
+.hub-cell-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hub-detail {
+  margin-left: 0;
+}
+
+.hub-serve + .hub-serve {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 6px;
+}
