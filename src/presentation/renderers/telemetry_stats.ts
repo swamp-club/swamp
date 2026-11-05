@@ -70,14 +70,16 @@ export function describeEmptyTelemetry(
   }
 
   const lastSuccess = flush.lastSuccessAt !== undefined
-    ? `the last successful flush sent ${
+    ? `the last successful send delivered ${
       entryCount(flush.lastSentCount ?? 0)
     } at ${flush.lastSuccessAt}`
     : undefined;
 
   if (flush.lastAttemptOk) {
     return [
-      `${optOut}. Sent entries are removed from the spool; ${lastSuccess}.`,
+      `${optOut}. Sent entries are removed from the spool; ${
+        lastSuccess ?? `the last flush at ${flush.lastAttemptAt} succeeded`
+      }.`,
       `Set ${KEEP_FLUSHED_KEY}: true in a repository's .swamp.yaml to keep sent entries for inspection.`,
     ];
   }

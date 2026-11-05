@@ -29,13 +29,19 @@ export const TELEMETRY_FLUSH_RECORD_FILE = "flush-state.json";
 
 const MAX_REASON_LENGTH = 200;
 
+// applyFlushAttempt writes the success fields together and always on success,
+// so any other shape was edited by hand
 const FlushRecordSchema = z.object({
   lastAttemptAt: z.iso.datetime(),
   lastAttemptOk: z.boolean(),
   lastFailureReason: z.string().max(MAX_REASON_LENGTH).optional(),
   lastSuccessAt: z.iso.datetime().optional(),
   lastSentCount: z.number().int().nonnegative().optional(),
-});
+}).refine(
+  (r) =>
+    (r.lastSuccessAt === undefined) === (r.lastSentCount === undefined) &&
+    (!r.lastAttemptOk || r.lastSuccessAt !== undefined),
+);
 
 export class JsonTelemetryFlushRecordRepository
   implements TelemetryFlushRecordRepository {

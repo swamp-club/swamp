@@ -82,6 +82,18 @@ Deno.test("JsonTelemetryFlushRecordRepository: wrong field types read as null", 
     { ...RECORD, lastAttemptOk: "true" },
     { ...RECORD, lastFailureReason: "x".repeat(201) },
     { lastAttemptOk: true },
+    { lastAttemptAt: RECORD.lastAttemptAt, lastAttemptOk: true },
+    {
+      lastAttemptAt: RECORD.lastAttemptAt,
+      lastAttemptOk: true,
+      lastSuccessAt: RECORD.lastSuccessAt,
+    },
+    { ...RECORD, lastSentCount: undefined },
+    {
+      lastAttemptAt: RECORD.lastAttemptAt,
+      lastAttemptOk: false,
+      lastSentCount: 2,
+    },
     [],
     null,
   ];
@@ -114,5 +126,18 @@ Deno.test("JsonTelemetryFlushRecordRepository: write never throws when the direc
     );
     await repo.write(RECORD);
     assertEquals(await repo.read(), null);
+  });
+});
+
+Deno.test("JsonTelemetryFlushRecordRepository: a first failure with no success fields reads back", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryFlushRecordRepository(dir);
+    const record = {
+      lastAttemptAt: RECORD.lastAttemptAt,
+      lastAttemptOk: false,
+      lastFailureReason: "timeout",
+    };
+    await repo.write(record);
+    assertEquals(await repo.read(), record);
   });
 });

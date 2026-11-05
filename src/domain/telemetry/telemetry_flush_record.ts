@@ -26,6 +26,7 @@ export interface TelemetryFlushRecord {
   readonly lastAttemptOk: boolean;
   readonly lastFailureReason?: string;
   readonly lastSuccessAt?: string;
+  /** entries in that one send, not a total: serve drains in several sends */
   readonly lastSentCount?: number;
 }
 

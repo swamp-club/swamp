@@ -138,7 +138,10 @@ Deno.test("describeEmptyTelemetry: a successful flush explains the empty spool a
     daysAnalyzed: 2,
   }).join("\n");
   assertStringIncludes(text, "No user-level or environment opt-out is set");
-  assertStringIncludes(text, "sent 3 entries at 2026-11-05T10:00:00.000Z");
+  assertStringIncludes(
+    text,
+    "the last successful send delivered 3 entries at 2026-11-05T10:00:00.000Z",
+  );
   assertStringIncludes(text, "telemetryKeepFlushed: true");
 });
 
@@ -157,7 +160,10 @@ Deno.test("describeEmptyTelemetry: a failed last attempt says entries are queued
   assertStringIncludes(text, "at 2026-11-05T11:00:00.000Z failed (HTTP 500)");
   assertStringIncludes(text, "older than the last 1 day.");
   assertStringIncludes(text, "--days 7");
-  assertStringIncludes(text, "Before that, the last successful flush sent 3");
+  assertStringIncludes(
+    text,
+    "Before that, the last successful send delivered 3",
+  );
 });
 
 Deno.test("describeEmptyTelemetry: no record says nothing has been flushed yet", () => {
@@ -214,7 +220,7 @@ Deno.test("describeEmptyTelemetry: one sent entry reads in the singular", () => 
     lastFlush: { ...SUCCESS, lastSentCount: 1 },
     daysAnalyzed: 2,
   }).join("\n");
-  assertStringIncludes(text, "sent 1 entry at");
+  assertStringIncludes(text, "delivered 1 entry at");
 });
 
 Deno.test("describeEmptyTelemetry: no --days hint when the window already covers queued entries", () => {
