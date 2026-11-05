@@ -26,6 +26,8 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,6 +90,8 @@ func ParseRoute(path string) (name, rest string, ok bool) {
 
 type workspaceEngine struct {
 	*engine.Supervisor
+	// id names this engine for the hub overview; a replacement gets a new one.
+	id        string
 	key       string
 	workspace Workspace
 	lastUsed  atomic.Int64
@@ -153,6 +157,7 @@ type Hub struct {
 	retiring sync.WaitGroup
 	retired  []error
 	stopping bool
+	serial   uint64
 }
 
 func New(config Config, resolver Resolver) *Hub {
@@ -258,8 +263,10 @@ func (h *Hub) engineFor(workspace Workspace) (*workspaceEngine, error) {
 		}
 		h.retire(existing)
 	}
+	h.serial++
 	e := &workspaceEngine{
 		Supervisor: engine.NewSupervisorWith(h.config.Engine, h.config.Starter(workspace), engine.HubHandshake(workspace.Path, workspace.Trusted)),
+		id:         "e" + strconv.FormatUint(h.serial, 10),
 		key:        key,
 		workspace:  workspace,
 	}
@@ -392,6 +399,53 @@ func (h *Hub) Reset(name string) error {
 		return ErrUnknownWorkspace
 	}
 	return e.Reset()
+}
+
+// EngineInfo is one workspace engine as the hub overview shows it.
+type EngineInfo struct {
+	ID        string
+	Workspace Workspace
+	Temporary bool
+	Snapshot  engine.Snapshot
+	Details   engine.Details
+	Running   bool
+	LastUsed  time.Time
+}
+
+func (h *Hub) Engines() []EngineInfo {
+	h.mu.Lock()
+	engines := make([]*workspaceEngine, 0, len(h.engines))
+	for _, e := range h.engines {
+		engines = append(engines, e)
+	}
+	h.mu.Unlock()
+	out := make([]EngineInfo, 0, len(engines))
+	for _, e := range engines {
+		info := EngineInfo{ID: e.id, Workspace: e.workspace, Temporary: e.workspace.bound, Snapshot: e.Snapshot(), Details: e.Details(), Running: e.Activity().Running}
+		if used := e.lastUsed.Load(); used != 0 {
+			info.LastUsed = time.Unix(0, used)
+		}
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Workspace.Name < out[j].Workspace.Name })
+	return out
+}
+
+// StopEngine retires one engine now, closing its sessions; the next request
+// for its workspace starts a new generation.
+func (h *Hub) StopEngine(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for key, e := range h.engines {
+		if e.id != id {
+			continue
+		}
+		delete(h.engines, key)
+		delete(h.pending, key)
+		h.retire(e)
+		return true
+	}
+	return false
 }
 
 // Idle reports no engine running or starting, so nothing would be lost if

@@ -215,7 +215,21 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 		}
 		gatewayConfig.Leases = leases
 		gatewayConfig.Admin = admin
-		gatewayConfig.Site = &hub.Site{Control: resolver, Hub: workspaces}
+		startedAt := time.Now()
+		gatewayConfig.Site = &hub.Site{Control: resolver, Hub: workspaces, Leases: leases, Overviews: hub.OverviewConfig{
+			StartedAt:    startedAt,
+			ExitWhenIdle: options.exitIdle,
+			LogFile:      options.logFile,
+			Info:         admin.Info,
+			Stop: func() error {
+				// A service manager would restart it at once; disabling the service stops it.
+				if !record.AutoExit {
+					return gateway.ErrHubIsService
+				}
+				stop()
+				return nil
+			},
+		}}
 		onListening = func(addr *net.TCPAddr) error {
 			record.Port = addr.Port
 			return writeHubRecord(recordPath, record)

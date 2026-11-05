@@ -57,6 +57,9 @@ type Lease interface {
 	Hold(stop func()) (release func(), ok bool)
 	// HoldBackend registers a proxied start socket, which is not a dashboard page.
 	HoldBackend(stop func()) (release func(), ok bool)
+	// CanManage lets the lease read the hub overview and act on the hub.
+	CanManage() bool
+	LeaseID() string
 }
 
 type Leases interface {
@@ -96,6 +99,17 @@ var (
 	ErrAssetsUnavailable = errors.New("dashboard assets unavailable")
 	ErrAssetForbidden    = errors.New("dashboard asset outside the bundle")
 )
+
+// HubSite is the hub overview a manage lease reads and acts through.
+type HubSite interface {
+	Overview(ctx context.Context, lease Lease) (interface{}, error)
+	StopEngine(id string) bool
+	RevokeLease(id string) bool
+	StopHub() error
+}
+
+// ErrHubIsService refuses to stop a hub a service manager would restart.
+var ErrHubIsService = errors.New("hub runs as a user service")
 
 // Site serves what a dashboard tab loads outside any workspace.
 type Site interface {

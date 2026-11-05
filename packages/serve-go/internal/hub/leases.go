@@ -25,6 +25,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"sort"
 	"sync"
 	"time"
 
@@ -42,8 +43,13 @@ type PageLease struct {
 	ID        string
 	Scope     LeaseScope
 	CreatedAt time.Time
-	hash      [32]byte
-	store     *LeaseStore
+	// Manage lets the lease read the hub overview and stop engines, sessions or the hub.
+	Manage bool
+	// Client and PID name the swamp command that holds the lease, for the overview.
+	Client string
+	PID    int
+	hash   [32]byte
+	store  *LeaseStore
 	// boundPath serves Scope.Workspace from this repository, registered or not.
 	boundPath string
 	backend   string
@@ -63,6 +69,10 @@ func (l *PageLease) Allows(workspace string) bool {
 }
 
 func (l *PageLease) ScopeOf() (bool, string) { return l.Scope.All, l.Scope.Workspace }
+
+func (l *PageLease) CanManage() bool { return l.Manage && l.Scope.All }
+
+func (l *PageLease) LeaseID() string { return l.ID }
 
 // Bound is the repository a lease serves its workspace from, when the
 // invoking process named one instead of the registry.
@@ -129,11 +139,25 @@ func NewToken() (string, error) {
 }
 
 func (s *LeaseStore) Issue(scope LeaseScope) (*PageLease, string, error) {
-	return s.IssueBound(scope, "")
+	return s.IssueWith(LeaseOptions{Scope: scope})
 }
 
 // IssueBound issues a lease whose workspace is served from path.
 func (s *LeaseStore) IssueBound(scope LeaseScope, path string) (*PageLease, string, error) {
+	return s.IssueWith(LeaseOptions{Scope: scope, Path: path})
+}
+
+// LeaseOptions describes a lease to issue; Path binds a workspace-scoped lease to a folder.
+type LeaseOptions struct {
+	Scope  LeaseScope
+	Path   string
+	Manage bool
+	Client string
+	PID    int
+}
+
+func (s *LeaseStore) IssueWith(options LeaseOptions) (*PageLease, string, error) {
+	scope, path := options.Scope, options.Path
 	token, err := NewToken()
 	if err != nil {
 		return nil, "", err
@@ -143,7 +167,7 @@ func (s *LeaseStore) IssueBound(scope LeaseScope, path string) (*PageLease, stri
 		return nil, "", err
 	}
 	now := s.now()
-	lease := &PageLease{ID: hex.EncodeToString(id[:]), Scope: scope, CreatedAt: now, renewed: now, boundPath: path, hash: sha256.Sum256([]byte(token)), store: s, holds: map[int]hold{}}
+	lease := &PageLease{ID: hex.EncodeToString(id[:]), Scope: scope, CreatedAt: now, Manage: options.Manage && scope.All, Client: options.Client, PID: options.PID, renewed: now, boundPath: path, hash: sha256.Sum256([]byte(token)), store: s, holds: map[int]hold{}}
 	s.mu.Lock()
 	s.byHash[lease.hash] = lease
 	s.byID[lease.ID] = lease
@@ -177,14 +201,57 @@ func (s *LeaseStore) Renew(id string) (LeaseStatus, bool) {
 		return LeaseStatus{}, false
 	}
 	lease.renewed = s.now()
+	return LeaseStatus{ID: id, Pages: lease.pagesLocked()}, true
+}
+
+// pagesLocked is called with store.mu held.
+func (l *PageLease) pagesLocked() int {
 	pages := 0
-	for _, h := range lease.holds {
+	for _, h := range l.holds {
 		if h.page {
 			pages++
 		}
 	}
-	return LeaseStatus{ID: id, Pages: pages}, true
+	return pages
 }
+
+// LeaseInfo is one lease as the hub overview shows it; it never carries the token.
+type LeaseInfo struct {
+	ID        string    `json:"id"`
+	Client    string    `json:"client,omitempty"`
+	PID       int       `json:"pid,omitempty"`
+	All       bool      `json:"-"`
+	Scope     string    `json:"scope"`
+	Workspace string    `json:"workspace,omitempty"`
+	Path      string    `json:"path,omitempty"`
+	Manage    bool      `json:"manage"`
+	Pages     int       `json:"pages"`
+	Backend   bool      `json:"backend"`
+	CreatedAt time.Time `json:"createdAt"`
+	RenewedAt time.Time `json:"renewedAt"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
+}
+
+// List copies every lease without renewing any.
+func (s *LeaseStore) List() []LeaseInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]LeaseInfo, 0, len(s.byID))
+	for _, lease := range s.byID {
+		info := LeaseInfo{ID: lease.ID, Client: lease.Client, PID: lease.PID, All: lease.Scope.All, Scope: "workspace", Workspace: lease.Scope.Workspace, Path: lease.boundPath, Manage: lease.Manage, Pages: lease.pagesLocked(), Backend: lease.backend != "", CreatedAt: lease.CreatedAt, RenewedAt: lease.renewed}
+		if lease.Scope.All {
+			info.Scope = "all"
+		}
+		if s.ttl > 0 {
+			info.ExpiresAt = lease.renewed.Add(s.ttl)
+		}
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out
+}
+
+func (s *LeaseStore) TTL() time.Duration { return s.ttl }
 
 func (s *LeaseStore) SetBackend(id, backend string) bool {
 	s.mu.Lock()

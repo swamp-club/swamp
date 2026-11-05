@@ -34,6 +34,9 @@ import (
 	"time"
 )
 
+// leaseClients are the swamp commands that take leases, as the overview names them.
+var leaseClients = map[string]bool{"start": true, "dashboard": true, "hub": true}
+
 // ErrShutdownRefused answers a shutdown request the hub won't honour.
 var ErrShutdownRefused = errors.New("shutdown refused")
 
@@ -154,8 +157,11 @@ func (a *Admin) issue(w http.ResponseWriter, r *http.Request) {
 		Scope     string `json:"scope"`
 		Workspace string `json:"workspace"`
 		Path      string `json:"path"`
+		Manage    bool   `json:"manage"`
+		Client    string `json:"client"`
+		PID       int    `json:"pid"`
 	}
-	if !readBody(r, &body) {
+	if !readBody(r, &body) || body.PID < 0 || (body.Client != "" && !leaseClients[body.Client]) {
 		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
 		return
 	}
@@ -170,6 +176,10 @@ func (a *Admin) issue(w http.ResponseWriter, r *http.Request) {
 		}
 		scope.Workspace = body.Workspace
 	default:
+		writeJSON(w, 400, map[string]string{"error": "invalid_scope"})
+		return
+	}
+	if body.Manage && !scope.All {
 		writeJSON(w, 400, map[string]string{"error": "invalid_scope"})
 		return
 	}
@@ -192,7 +202,7 @@ func (a *Admin) issue(w http.ResponseWriter, r *http.Request) {
 		}
 		bound = path
 	}
-	lease, token, err := a.Leases.IssueBound(scope, bound)
+	lease, token, err := a.Leases.IssueWith(LeaseOptions{Scope: scope, Path: bound, Manage: body.Manage, Client: body.Client, PID: body.PID})
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": "lease_unavailable"})
 		return

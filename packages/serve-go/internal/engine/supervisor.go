@@ -97,6 +97,7 @@ type Supervisor struct {
 	sessions        int
 	pageSessions    int
 	lastPageClose   time.Time
+	readyAt         time.Time
 	draining        bool
 	cleanupError    error
 	uncertain       *Client
@@ -282,6 +283,27 @@ func (s *Supervisor) Activity() Activity {
 	return Activity{Running: s.client != nil || s.starting != nil, Sessions: s.sessions}
 }
 
+// Details is what the hub overview shows about a generation beyond its state.
+type Details struct {
+	PID       int
+	StartedAt time.Time
+	Sessions  int
+	Pages     int
+}
+
+func (s *Supervisor) Details() Details {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	details := Details{Sessions: s.sessions, Pages: s.pageSessions}
+	if s.client != nil {
+		details.StartedAt = s.readyAt
+		if process, ok := s.client.process.(interface{ Pid() int }); ok {
+			details.PID = process.Pid()
+		}
+	}
+	return details
+}
+
 // Reset is the operator's acknowledgement that the commands of an unconfirmed
 // generation have stopped; it never discards a live or starting generation.
 func (s *Supervisor) Reset() error {
@@ -462,6 +484,7 @@ func (s *Supervisor) launch(ctx context.Context, ready chan struct{}) {
 	} else {
 		s.state = "ready"
 		s.validated = true
+		s.readyAt = time.Now()
 	}
 	close(ready)
 	s.mu.Unlock()

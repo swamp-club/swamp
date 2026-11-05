@@ -78,6 +78,12 @@ func (p *childProcess) startUncertainReaper(reap func() error) {
 }
 
 func (p *childProcess) Input() io.WriteCloser { return p.in }
+func (p *childProcess) Pid() int {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
 func (p *childProcess) Output() io.ReadCloser { return p.out }
 func (p *childProcess) Wait() error {
 	err := p.waitContained()

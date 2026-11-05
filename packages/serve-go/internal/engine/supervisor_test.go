@@ -1076,3 +1076,33 @@ func TestHubHandshakeRecordsModeAndRefusesMismatches(t *testing.T) {
 	}
 	_ = legacy.Shutdown(ctx)
 }
+
+type pidProcess struct{ *fakeProcess }
+
+func (pidProcess) Pid() int { return 321 }
+
+func TestSupervisorDetailsReportTheRunningGeneration(t *testing.T) {
+	var opened []string
+	var mu sync.Mutex
+	s := NewSupervisorWith(DefaultConfig(), func(context.Context) (Process, error) {
+		return pidProcess{pageProcess("full", true, "/repo", &opened, &mu)}, nil
+	}, HubHandshake("/repo", true))
+	if details := s.Details(); details != (Details{}) {
+		t.Fatalf("details before start: %+v", details)
+	}
+	ctx := testContext(t)
+	session, err := s.OpenAs(ctx, OpenRequest{Class: ClassPage, SourceIP: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := s.Details()
+	if details.PID != 321 || details.StartedAt.IsZero() || details.Sessions != 1 || details.Pages != 1 {
+		t.Fatalf("details: %+v", details)
+	}
+	if err := s.Close(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if details := s.Details(); details.Sessions != 0 || details.Pages != 0 || details.PID != 321 {
+		t.Fatalf("details after close: %+v", details)
+	}
+}

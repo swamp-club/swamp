@@ -45,6 +45,7 @@ type pageHarness struct {
 	leases  *LeaseStore
 	admin   *Admin
 	gateway *gateway.Gateway
+	site    *Site
 	server  *httptest.Server
 	port    int
 	token   string

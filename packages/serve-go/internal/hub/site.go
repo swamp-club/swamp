@@ -45,11 +45,13 @@ const (
 // bundle lives inside the swamp binary, so every byte comes from the control
 // engine; immutable files are kept after the first fetch.
 type Site struct {
-	Control SiteControl
-	Hub     *Hub
-	mu      sync.Mutex
-	cache   map[string]gateway.Asset
-	cached  int
+	Control   SiteControl
+	Hub       *Hub
+	Leases    *LeaseStore
+	Overviews OverviewConfig
+	mu        sync.Mutex
+	cache     map[string]gateway.Asset
+	cached    int
 }
 
 func (s *Site) Asset(ctx context.Context, path string) (gateway.Asset, error) {

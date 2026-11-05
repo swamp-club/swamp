@@ -75,7 +75,8 @@ func newSiteHarness(t *testing.T, control *fakeSiteControl, workspaces ...Worksp
 	t.Helper()
 	p := &pageHarness{harness: newHarness(t, 0, workspaces...), leases: NewLeaseStore(0)}
 	p.admin = NewAdmin("admin-secret", p.leases)
-	site := &Site{Control: control, Hub: p.hub}
+	site := &Site{Control: control, Hub: p.hub, Leases: p.leases}
+	p.site = site
 	p.gateway = gateway.New(gateway.Config{Host: "127.0.0.1", AuthTimeout: 10 * time.Second, ControlTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, Profile: "hub", Leases: p.leases, Admin: p.admin, Site: site}, p.hub)
 	p.server = httptest.NewServer(p.gateway)
 	t.Cleanup(p.server.Close)
@@ -139,7 +140,7 @@ func TestSiteServesTheBundleWithoutALeaseAndKeepsOnlyImmutableFiles(t *testing.T
 	if w := p.serve(p.request("GET", "/dashboard/missing-bundle", "", nil)); w.Code != 404 || w.Body.String() != "Dashboard assets not available in this build" {
 		t.Fatalf("no bundle: %d %q", w.Code, w.Body.String())
 	}
-	if w := p.serve(p.request("GET", "/", "", nil)); w.Code != 302 || w.Header().Get("Location") != "/dashboard/start" {
+	if w := p.serve(p.request("GET", "/", "", nil)); w.Code != 302 || w.Header().Get("Location") != "/dashboard/hub" {
 		t.Fatalf("root: %d %v", w.Code, w.Header())
 	}
 	rebound := p.request("GET", "/dashboard/assets/app.js", "", nil)
@@ -162,17 +163,17 @@ func TestSiteListsWorkspacesByLeaseScope(t *testing.T) {
 		t.Fatalf("no lease: %d", w.Code)
 	}
 	w := p.serve(p.request("GET", "/api/local/workspaces", p.token, nil))
-	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"switchable":true,"workspaces":[{"name":"a","path":"/home/a"},{"name":"b","path":"/home/b"}]}` {
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"home":null,"switchable":true,"workspaces":[{"name":"a","path":"/home/a"},{"name":"b","path":"/home/b"}]}` {
 		t.Fatalf("all: %d %s", w.Code, w.Body.String())
 	}
 	_, registered, _ := p.leases.Issue(LeaseScope{Workspace: "a"})
 	w = p.serve(p.request("GET", "/api/local/workspaces", registered, nil))
-	if strings.TrimSpace(w.Body.String()) != `{"switchable":false,"workspaces":[{"name":"a","path":"/real/a"}]}` {
+	if strings.TrimSpace(w.Body.String()) != `{"home":null,"switchable":false,"workspaces":[{"name":"a","path":"/real/a"}]}` {
 		t.Fatalf("registered: %s", w.Body.String())
 	}
 	_, bound, _ := p.leases.IssueBound(LeaseScope{Workspace: "loose"}, "/tmp/loose")
 	w = p.serve(p.request("GET", "/api/local/workspaces", bound, nil))
-	if strings.TrimSpace(w.Body.String()) != `{"switchable":false,"workspaces":[{"name":"loose","path":"/tmp/loose"}]}` {
+	if strings.TrimSpace(w.Body.String()) != `{"home":null,"switchable":false,"workspaces":[{"name":"loose","path":"/tmp/loose"}]}` {
 		t.Fatalf("bound: %s", w.Body.String())
 	}
 }

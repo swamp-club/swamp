@@ -43,12 +43,14 @@ func (g *Gateway) serveLocal(w http.ResponseWriter, r *http.Request) bool {
 			return false
 		}
 		if g.guardLocal(w, r) {
-			http.Redirect(w, r, "/dashboard/start", http.StatusFound)
+			http.Redirect(w, r, "/dashboard/hub", http.StatusFound)
 		}
 	case path == "/dashboard" || strings.HasPrefix(path, "/dashboard/"):
 		g.serveAsset(w, r)
 	case path == "/api/local/workspaces":
 		g.serveWorkspaces(w, r)
+	case path == "/api/local/hub" || strings.HasPrefix(path, "/api/local/hub/"):
+		g.serveHub(w, r)
 	case path == "/start/ping":
 		g.proxyStartPing(w, r)
 	case path == "/start/ws":
@@ -111,7 +113,94 @@ func (g *Gateway) serveWorkspaces(w http.ResponseWriter, r *http.Request) {
 		writeRouteFailure(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]interface{}{"workspaces": workspaces, "switchable": switchable})
+	writeJSON(w, 200, map[string]interface{}{"workspaces": workspaces, "switchable": switchable, "home": homeOf(lease)})
+}
+
+// homeOf is where the switcher's "All workspaces" leads for this lease.
+func homeOf(lease Lease) interface{} {
+	switch {
+	case lease.CanManage():
+		return "hub"
+	case lease.Backend() != "":
+		return "start"
+	}
+	return nil
+}
+
+// serveHub is the hub overview: a manage lease reads it and acts through it.
+// Actions also need the page's own Origin, beyond the token header.
+func (g *Gateway) serveHub(w http.ResponseWriter, r *http.Request) {
+	token, _, _ := classifyPage(r)
+	lease, ok := g.guardLease(w, r, token)
+	if !ok {
+		return
+	}
+	site, ok := g.config.Site.(HubSite)
+	if !ok {
+		writeText(w, 404, "Not found")
+		return
+	}
+	if !lease.CanManage() {
+		writeJSON(w, 403, map[string]string{"error": "manage_required"})
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/local/hub")
+	if rest == "" {
+		if r.Method != http.MethodGet {
+			writeText(w, 405, "Method not allowed")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), g.config.AuthTimeout)
+		defer cancel()
+		overview, err := site.Overview(ctx, lease)
+		if err != nil {
+			writeRouteFailure(w, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, 200, overview)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeText(w, 405, "Method not allowed")
+		return
+	}
+	if r.Header.Get("Origin") != "http://"+r.Host {
+		writeJSON(w, 403, map[string]string{"error": "origin_mismatch"})
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
+	switch {
+	case len(parts) == 1 && parts[0] == "stop":
+		err := site.StopHub()
+		if errors.Is(err, ErrHubIsService) {
+			writeJSON(w, 409, map[string]string{"error": "hub_is_service"})
+			return
+		}
+		if err != nil {
+			writeRouteFailure(w, err)
+			return
+		}
+		w.WriteHeader(202)
+	case len(parts) == 3 && parts[0] == "engines" && parts[2] == "stop" && parts[1] != "":
+		if !site.StopEngine(parts[1]) {
+			writeJSON(w, 404, map[string]string{"error": "unknown_engine"})
+			return
+		}
+		w.WriteHeader(204)
+	case len(parts) == 3 && parts[0] == "leases" && parts[2] == "revoke" && parts[1] != "":
+		if parts[1] == lease.LeaseID() {
+			writeJSON(w, 409, map[string]string{"error": "own_lease"})
+			return
+		}
+		if !site.RevokeLease(parts[1]) {
+			writeJSON(w, 404, map[string]string{"error": "unknown_lease"})
+			return
+		}
+		w.WriteHeader(204)
+	default:
+		writeText(w, 404, "Not found")
+	}
 }
 
 func (g *Gateway) proxyStartPing(w http.ResponseWriter, r *http.Request) {
