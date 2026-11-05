@@ -28,7 +28,12 @@ const CAPTURED_METHODS = [
   "warn",
   "error",
   "dir",
+  "table",
+  "trace",
+  "assert",
 ] as const;
+
+type CapturedMethod = typeof CAPTURED_METHODS[number];
 
 const STDERR_ENCODER = new TextEncoder();
 
@@ -63,6 +68,47 @@ function formatArg(a: unknown): string {
     });
   }
 }
+
+// undefined when the call prints nothing, as a passing console.assert does
+function renderLine(
+  method: CapturedMethod,
+  args: unknown[],
+): string | undefined {
+  switch (method) {
+    case "dir":
+    case "table":
+      return Deno.inspect(args[0], {
+        ...(method === "dir"
+          ? args[1] as Deno.InspectOptions | undefined
+          : undefined),
+        // Truncating a secret before redaction would expose its prefix.
+        strAbbreviateSize: Infinity,
+        breakLength: Infinity,
+      });
+    case "assert": {
+      if (args[0]) return undefined;
+      const data = args.slice(1).map(formatArg).join(" ");
+      return data ? `Assertion failed: ${data}` : "Assertion failed";
+    }
+    case "trace": {
+      const data = args.map(formatArg).join(" ");
+      // drops the Error line and the renderLine and patched console frames
+      const frames = new Error().stack?.split("\n").slice(3).join("\n") ?? "";
+      return `Trace${data ? `: ${data}` : ""}\n${frames}`;
+    }
+    default:
+      return args.map(formatArg).join(" ");
+  }
+}
+
+// a rendered table or dir would be quoted by its own method, and trace and
+// assert report on stderr, so log mode prints the masked line through these
+const LOG_MODE_TARGET: Partial<Record<CapturedMethod, "log" | "error">> = {
+  dir: "log",
+  table: "log",
+  trace: "error",
+  assert: "error",
+};
 
 let activeGuards = 0;
 const allActiveLogs: Set<string[]> = new Set();
@@ -115,20 +161,13 @@ export async function withConsoleGuard<T>(
           original(...args);
           return;
         }
-        const line = method === "dir"
-          ? Deno.inspect(args[0], {
-            ...args[1] as Deno.InspectOptions | undefined,
-            // Truncating a secret before redaction would expose its prefix.
-            strAbbreviateSize: Infinity,
-            breakLength: Infinity,
-          })
-          : args.map(formatArg).join(" ");
+        const line = renderLine(method, args);
+        if (line === undefined) return;
         if (allActiveLogs.size === 0) {
-          // console.dir would quote a string, so the rendered line goes to log
-          const target = method === "dir"
-            ? preGuardConsole.get("log")!
-            : original;
-          target(runFileSink.redactActive(line));
+          const target = LOG_MODE_TARGET[method];
+          (target ? preGuardConsole.get(target)! : original)(
+            runFileSink.redactActive(line),
+          );
           return;
         }
         for (const logArray of allActiveLogs) {

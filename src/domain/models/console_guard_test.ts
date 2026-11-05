@@ -504,3 +504,84 @@ Deno.test("withConsoleGuard: a JSON-mode guard keeps capturing while a log-mode 
     setConsoleGuardStderrWriter(undefined);
   }
 });
+
+Deno.test("withConsoleGuard: in log mode console.table, trace and assert print masked lines on their usual stream", async () => {
+  const secret = `table-secret-${crypto.randomUUID()}`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const handle = runFileSink.registerRedactor(redactor);
+  const original = {
+    log: console.log,
+    error: console.error,
+    table: console.table,
+    trace: console.trace,
+    assert: console.assert,
+  };
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  console.log = (...args: unknown[]) => stdout.push(args.join(" "));
+  console.error = (...args: unknown[]) => stderr.push(args.join(" "));
+
+  try {
+    await withConsoleGuard(
+      () => {
+        console.table([{ token: secret }]);
+        console.trace("tracing", secret);
+        console.assert(true, `passing ${secret}`);
+        console.assert(false, `failing ${secret}`);
+      },
+      [],
+      { jsonMode: false },
+    );
+
+    const output = [...stdout, ...stderr].join("\n");
+    assertEquals(output.includes(secret), false, output);
+    assertEquals(stdout.length, 1);
+    assertStringIncludes(stdout[0], 'token: "***"');
+    assertEquals(stderr.length, 2);
+    assertStringIncludes(stderr[0], "Trace: tracing ***\n");
+    assertStringIncludes(stderr[0], "console_guard_test.ts");
+    assertEquals(stderr[0].includes("renderLine"), false, stderr[0]);
+    assertEquals(stderr[1], "Assertion failed: failing ***");
+    assertEquals(console.table, original.table);
+    assertEquals(console.trace, original.trace);
+    assertEquals(console.assert, original.assert);
+  } finally {
+    console.log = original.log;
+    console.error = original.error;
+    runFileSink.unregisterRedactor(handle);
+  }
+});
+
+Deno.test("withConsoleGuard: in JSON mode console.table, trace and failing assert are captured and reach stderr masked", async () => {
+  const secret = `json-table-secret-${crypto.randomUUID()}`;
+  const redactor = new SecretRedactor();
+  redactor.addSecret(secret);
+  const handle = runFileSink.registerRedactor(redactor);
+  const stderr: string[] = [];
+  setConsoleGuardStderrWriter((line) => stderr.push(line));
+  const logs: string[] = [];
+
+  try {
+    await withConsoleGuard(
+      () => {
+        console.table({ token: secret });
+        console.trace(secret);
+        console.assert(true, "never printed");
+        console.assert(false);
+      },
+      logs,
+      { jsonMode: true },
+    );
+
+    assertEquals(logs.length, 3);
+    assertEquals(stderr.length, 3);
+    assertEquals(stderr.join("\n").includes(secret), false);
+    assertStringIncludes(logs[0], secret);
+    assertStringIncludes(stderr[1], "Trace: ***");
+    assertEquals(logs[2], "Assertion failed");
+  } finally {
+    setConsoleGuardStderrWriter(undefined);
+    runFileSink.unregisterRedactor(handle);
+  }
+});
