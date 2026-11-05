@@ -75,7 +75,11 @@ import { renderAwaitingParent } from "./nested_run_hints.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { awaitingParentOf } from "../../libswamp/workflows/nested_runs.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
-import { mapWorkflowExecutionEvent } from "../../libswamp/workflows/run.ts";
+import {
+  deferCompletedForOutputs,
+  mapWorkflowExecutionEvent,
+  resolveCompletedRunOutputs,
+} from "../../libswamp/workflows/run.ts";
 import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
@@ -545,15 +549,29 @@ export const workflowResumeCommand = withRemoteOptions(
         tracestate,
         (async function* () {
           for await (
-            const event of service.resume(workflowName, run.id, {
-              signal: abort.signal,
-              swampSha: GIT_SHA,
-              inputs: resumeInputs,
-              fromStep,
-              fromJob,
-            })
+            const { event, stepOutputs } of deferCompletedForOutputs(
+              service.resume(workflowName, run.id, {
+                signal: abort.signal,
+                swampSha: GIT_SHA,
+                inputs: resumeInputs,
+                fromStep,
+                fromJob,
+              }),
+              (completed) =>
+                resolveCompletedRunOutputs(
+                  completed,
+                  repoContext.unifiedDataRepo,
+                  runRepo,
+                  abort.signal,
+                ),
+            )
           ) {
-            yield mapWorkflowExecutionEvent(event, runRepo);
+            yield mapWorkflowExecutionEvent(
+              event,
+              runRepo,
+              undefined,
+              stepOutputs,
+            );
           }
         })(),
       );

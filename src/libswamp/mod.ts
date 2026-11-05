@@ -132,10 +132,13 @@ export {
 } from "./account_notices/notice.ts";
 
 export {
+  deferCompletedForOutputs,
+  type ExecutionEventWithOutputs,
   extractStepArtifacts,
   inputValidationFailed,
   mapWorkflowExecutionEvent,
   type NestedSignalWaitData,
+  resolveCompletedRunOutputs,
   toRunData,
   type WaitKeyHolder,
   workflowExecutionFailed,

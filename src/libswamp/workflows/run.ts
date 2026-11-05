@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { cancelled, type SwampError } from "../errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
@@ -34,8 +35,9 @@ import type {
   WorkflowRun,
 } from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
-import type {
-  ResolvedStepOutputs,
+import {
+  createDataRepositoryAttributeReader,
+  type ResolvedStepOutputs,
   StepOutputResolver,
 } from "../../domain/workflows/step_output_resolver.ts";
 import type { WebhookPayload } from "../../domain/expressions/model_resolver.ts";
@@ -361,6 +363,11 @@ export interface WorkflowRunDeps {
    * execution service loads the cache itself
    */
   supersede?: SupersedeDeps;
+  /**
+   * reads the attributes of the run's data back from the datastore for the
+   * completed event; a dep, never an input, as serve must not grant it
+   */
+  resolveCompletedOutputs?: boolean;
 }
 
 export interface WorkflowRunInput {
@@ -485,6 +492,78 @@ export async function resolveRunStepOutputs(
   return resolved;
 }
 
+const runLogger = getLogger(["swamp", "workflow", "run"]);
+
+/**
+ * the attributes of a finished run's data, read from the datastore as local
+ * history get reads them; a missing resource is left out, and a walk that
+ * fails or is aborted gives undefined
+ */
+export async function resolveCompletedRunOutputs(
+  run: WorkflowRun,
+  dataRepo: UnifiedDataRepository,
+  runRepo: WorkflowRunRepository,
+  signal?: AbortSignal,
+): Promise<RunStepOutputs | undefined> {
+  const resolver = new StepOutputResolver({
+    readAttributes: createDataRepositoryAttributeReader(dataRepo),
+    findChildRun: (workflowId, runId) =>
+      runRepo.findById(
+        createWorkflowId(workflowId),
+        createWorkflowRunId(runId),
+      ),
+    namespace: dataRepo.namespace,
+    signal,
+  });
+  try {
+    return await resolveRunStepOutputs(run, resolver);
+  } catch (error) {
+    // The run is already saved; only its summary goes without attributes.
+    runLogger.debug`Data attributes of run ${run.id} not read: ${error}`;
+    return undefined;
+  }
+}
+
+export interface ExecutionEventWithOutputs {
+  event: WorkflowExecutionEvent;
+  stepOutputs?: RunStepOutputs;
+}
+
+/**
+ * holds the completed event until the source ends: the execution service saves
+ * the run after yielding it, and a read before then would delay that save
+ */
+export async function* deferCompletedForOutputs(
+  source: AsyncIterable<WorkflowExecutionEvent>,
+  resolve?: (run: WorkflowRun) => Promise<RunStepOutputs | undefined>,
+): AsyncGenerator<ExecutionEventWithOutputs> {
+  if (!resolve) {
+    for await (const event of source) yield { event };
+    return;
+  }
+  let held: WorkflowExecutionEvent | undefined;
+  try {
+    for await (const event of source) {
+      if (event.kind === "completed") {
+        held = event;
+        continue;
+      }
+      yield { event };
+    }
+  } catch (error) {
+    // a run that stops with an error yields completed first, then throws
+    if (held?.kind === "completed") {
+      const completed = held;
+      held = undefined;
+      yield { event: completed, stepOutputs: await resolve(completed.run) };
+    }
+    throw error;
+  }
+  if (held?.kind === "completed") {
+    yield { event: held, stepOutputs: await resolve(held.run) };
+  }
+}
+
 export function toRunData(
   run: WorkflowRun,
   path?: string,
@@ -544,7 +623,7 @@ export function toRunData(
               name: a.name,
               version: a.version,
               tags: a.tags,
-              attributes: resolved?.attributesByDataId[a.dataId],
+              attributes: run.mask(resolved?.attributesByDataId[a.dataId]),
             }));
           }
 
@@ -605,7 +684,7 @@ export function toRunData(
           }
 
           if (resolved?.outputs) {
-            stepData.outputs = resolved.outputs;
+            stepData.outputs = run.mask(resolved.outputs);
           }
 
           return stepData;
@@ -651,6 +730,7 @@ export function mapWorkflowExecutionEvent(
   event: WorkflowExecutionEvent,
   runRepo: WorkflowRunRepository,
   verbose?: boolean,
+  stepOutputs?: RunStepOutputs,
 ): WorkflowRunEvent {
   switch (event.kind) {
     case "started":
@@ -672,7 +752,7 @@ export function mapWorkflowExecutionEvent(
         createWorkflowId(event.run.workflowId),
         createWorkflowRunId(event.run.id),
       );
-      const data = toRunData(event.run, path, verbose);
+      const data = toRunData(event.run, path, verbose, stepOutputs);
       return { kind: "completed", run: data };
     }
     case "cancelled": {
@@ -916,32 +996,46 @@ export async function* workflowRun(
             // workflow-scope, arrive before the completed event, so the
             // accumulated list is attached there
             const reportResults: ReportResultView[] = [];
+            const outputsRepo = deps.resolveCompletedOutputs
+              ? deps.dataRepo
+              : undefined;
 
             for await (
-              const event of service.run(resolvedInput.workflowIdOrName, {
-                byId: resolvedInput.byId,
-                expectedName: resolvedInput.expectedName,
-                lastEvaluated: resolvedInput.lastEvaluated,
-                evaluatedCache: evaluatedCache ?? undefined,
-                inputs: resolvedInput.inputs,
-                runtimeTags: resolvedInput.runtimeTags,
-                signal: ctx.signal,
-                reportFilterOptions: {
-                  skipAllReports: resolvedInput.skipAllReports,
-                  skipReportNames: resolvedInput.skipReportNames,
-                  skipReportLabels: resolvedInput.skipReportLabels,
-                  reportNames: resolvedInput.reportNames,
-                  reportLabels: resolvedInput.reportLabels,
-                },
-                swampSha: resolvedInput.swampSha,
-                skipCheckNames: resolvedInput.skipCheckNames,
-                skipCheckLabels: resolvedInput.skipCheckLabels,
-                skipAllChecks: resolvedInput.skipAllChecks,
-                assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
-                initiatedBy: resolvedInput.initiatedBy,
-                instanceId: resolvedInput.instanceId,
-                triggerSource: resolvedInput.triggerSource,
-              })
+              const { event, stepOutputs } of deferCompletedForOutputs(
+                service.run(resolvedInput.workflowIdOrName, {
+                  byId: resolvedInput.byId,
+                  expectedName: resolvedInput.expectedName,
+                  lastEvaluated: resolvedInput.lastEvaluated,
+                  evaluatedCache: evaluatedCache ?? undefined,
+                  inputs: resolvedInput.inputs,
+                  runtimeTags: resolvedInput.runtimeTags,
+                  signal: ctx.signal,
+                  reportFilterOptions: {
+                    skipAllReports: resolvedInput.skipAllReports,
+                    skipReportNames: resolvedInput.skipReportNames,
+                    skipReportLabels: resolvedInput.skipReportLabels,
+                    reportNames: resolvedInput.reportNames,
+                    reportLabels: resolvedInput.reportLabels,
+                  },
+                  swampSha: resolvedInput.swampSha,
+                  skipCheckNames: resolvedInput.skipCheckNames,
+                  skipCheckLabels: resolvedInput.skipCheckLabels,
+                  skipAllChecks: resolvedInput.skipAllChecks,
+                  assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
+                  initiatedBy: resolvedInput.initiatedBy,
+                  instanceId: resolvedInput.instanceId,
+                  triggerSource: resolvedInput.triggerSource,
+                }),
+                outputsRepo
+                  ? (run) =>
+                    resolveCompletedRunOutputs(
+                      run,
+                      outputsRepo,
+                      deps.runRepo,
+                      ctx.signal,
+                    )
+                  : undefined,
+              )
             ) {
               if (event.kind === "report_completed") {
                 reportResults.push({
@@ -964,6 +1058,7 @@ export async function* workflowRun(
                 event,
                 deps.runRepo,
                 resolvedInput.verbose,
+                stepOutputs,
               );
 
               // takes the domain event: pairing a step's events needs the

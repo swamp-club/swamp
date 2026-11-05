@@ -1090,7 +1090,8 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             if (!isUserFacingArtifact(artifact)) continue;
             artifacts.push({
               name: artifact.name,
-              attributes: artifact.attributes,
+              // a step's stdout is one of its attributes, and -q hides output
+              attributes: this.quiet ? undefined : artifact.attributes,
               source: job.name,
             });
           }
@@ -1102,7 +1103,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         if (!isUserFacingArtifact(artifact)) continue;
         artifacts.push({
           name: artifact.name,
-          attributes: artifact.attributes,
+          attributes: this.quiet ? undefined : artifact.attributes,
         });
       }
     }

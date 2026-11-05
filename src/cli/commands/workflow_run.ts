@@ -642,6 +642,7 @@ export const workflowRunCommand = new Command()
               dataRepo: repoContext.unifiedDataRepo,
               definitionRepo: repoContext.definitionRepo,
               telemetrySink,
+              resolveCompletedOutputs: true,
               supersede: {
                 findSuspendedRuns: (workflowId, signal) =>
                   runRepo.findByStatus(workflowId, "suspended", signal),
