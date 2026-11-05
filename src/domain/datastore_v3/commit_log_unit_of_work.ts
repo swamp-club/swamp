@@ -137,6 +137,45 @@ export class PartitionsRefusedError extends CommitRejectedError {
   }
 }
 
+export const COMMIT_LEASE_LOST_CODE = "datastore_v3_commit_lease_lost";
+
+/**
+ * serve refused a commit because the behavior's lease was not held: nothing of
+ * the refused partitions landed, though earlier commits of the command may
+ * have
+ */
+export class CommitLeaseLostError extends UserError {
+  constructor(message: string) {
+    super(message, COMMIT_LEASE_LOST_CODE);
+    this.name = "CommitLeaseLostError";
+  }
+}
+
+const MAX_CAUSE_DEPTH = 8;
+
+/** a refusal, or one it wraps, in which every refused partition lost its lease */
+export function leaseLostRefusalOf(
+  error: unknown,
+): PartitionsRefusedError | undefined {
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    // a change that may still land says so in its own words
+    if (current instanceof MayLandLaterError) return undefined;
+    if (current instanceof PartitionsRefusedError) {
+      return current.refusals.every((refusal) =>
+          refusal.reason === "lease-lost"
+        )
+        ? current
+        : undefined;
+    }
+    if (!(current instanceof Error)) return undefined;
+    current = current.cause;
+  }
+  return undefined;
+}
+
+export const LEASE_LAPSED_CODE = "datastore_v3_lease_lapsed";
+
 export const COMMIT_MAY_LAND_CODE = "datastore_v3_commit_may_land";
 
 /**

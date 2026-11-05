@@ -25,6 +25,7 @@ import {
   extractPositionalArgs,
   extractUnknownName,
   getSubcommandNames,
+  unknownCommandErrorJson,
   unknownSubcommandBehindOption,
 } from "./unknown_command_handler.ts";
 
@@ -684,4 +685,12 @@ Deno.test("buildTooManyArgumentsMessage - single extra arg shows help fallback",
     ["extension", "search", "aws"],
   );
   assertStringIncludes(msg, "--help");
+});
+
+Deno.test("unknownCommandErrorJson: carries the message and no stack", () => {
+  const json = unknownCommandErrorJson(
+    '"bogus" is not a subcommand of "model".',
+  );
+  assertEquals(json.error, '"bogus" is not a subcommand of "model".');
+  assertEquals("stack" in json, false);
 });

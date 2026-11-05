@@ -190,6 +190,7 @@ export const workflowEditCommand = withRemoteOptions(
               }),
               renderer.handlers(),
             ),
+          { outputOnlyOnSuccess: true },
         ), `the workflow definition "${editIdOrName}"`);
 
     // a stored workflow is edited on a copy and saved like a piped edit so it

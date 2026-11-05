@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { CommitLeaseLostError } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import { recordServeUpstreamFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
@@ -2619,7 +2620,7 @@ async function checkpointStepUnderLease(
     return;
   }
   if (outcome === "refused") {
-    throw new UserError(
+    throw new CommitLeaseLostError(
       "Serve refused this step's writes while it held the behavior's lock: " +
         "the lease may have lapsed. See 'swamp datastore lock status'",
     );

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   SERVE_FOLLOWER_BEHIND_CODE,
   ServeFollowerBehindError,
@@ -51,8 +52,10 @@ import {
 } from "./chunk_ingest.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
+  clearServeUnreachableLatches,
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
+  latchServeUnreachable,
   MAX_HAS_HASHES,
   MAX_PUT_OP_REPLY_BYTES,
   MAX_WRITTEN_COMMIT_REPLY_BYTES,
@@ -1325,4 +1328,61 @@ Deno.test("routeTemplate: a span's route names the kind of resource, never its i
       "quarantine/{txnId}/accept",
     ],
   );
+});
+
+Deno.test("ServeDatastoreClient: once a write latched serve unreachable, a request in flight ends maybe sent and the next fails at once, until the command ends", async () => {
+  let pending = 0;
+  const { client, requests } = clientWith((req) => {
+    pending++;
+    return new Promise<Response>((_, reject) => {
+      req.signal.addEventListener("abort", () => reject(req.signal.reason));
+    });
+  });
+  try {
+    const inFlight = assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    await waitFor(() => pending === 1, "the request to be sent");
+    latchServeUnreachable(client.baseUrl, new Error("a commit timed out"));
+    assertEquals((await inFlight).sent, "maybe");
+
+    const next = await assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(next.sent, "never");
+    assertEquals(requests.length, 1, "nothing more was sent");
+  } finally {
+    clearServeUnreachableLatches();
+  }
+  const fresh = clientWith(() => Response.json({ changes: [], head: 0 }));
+  await fresh.client.changes(0, signal()).catch(() => {});
+  assertEquals(fresh.requests.length, 1, "a new command asks serve again");
+});
+
+Deno.test("ServeDatastoreClient: a dedicated HTTP client is made once, on first use, and closed by close()", async () => {
+  let made = 0;
+  let closed = 0;
+  const { client } = clientWith(
+    () => Response.json({ changes: [], head: 0 }),
+    {
+      httpClient: () => {
+        made++;
+        const http = Deno.createHttpClient({});
+        const close = http.close.bind(http);
+        http.close = () => {
+          closed++;
+          close();
+        };
+        return http;
+      },
+    },
+  );
+  for (let i = 0; i < 3; i++) {
+    await client.changes(0, signal()).catch(() => {});
+  }
+  assertEquals(made, 1);
+  client.close();
+  assertEquals(closed, 1);
 });

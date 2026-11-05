@@ -35,7 +35,7 @@ import {
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
 function makeRunView(
-  status: "succeeded" | "failed",
+  status: "succeeded" | "failed" | "cancelled",
 ): WorkflowRunView {
   return {
     id: "run-1",
@@ -556,6 +556,20 @@ Deno.test("ConsoleWorkflowRunRenderer: cancelled run sets workflowFailed()", asy
   assertStringIncludes(lines.join("\n"), "user interrupt");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: a run that completes cancelled fails and never reads as succeeded", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events = simpleEvents(makeRunView("cancelled"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(renderer.workflowFailed(), true);
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Cancelled");
+  assertEquals(output.includes("succeeded"), false);
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: forEach steps show [index] notation", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
@@ -893,6 +907,25 @@ Deno.test("JsonWorkflowRunRenderer: completed serializes WorkflowRunView", async
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.workflowName, "test-pipeline");
     assertEquals(parsed.status, "succeeded");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonWorkflowRunRenderer: a run that completes cancelled fails", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    await consumeStream(
+      toStream(simpleEvents(makeRunView("cancelled"))),
+      renderer.handlers(),
+    );
+    assertEquals(renderer.workflowFailed(), true);
+    assertEquals(JSON.parse(logs[0]).status, "cancelled");
   } finally {
     console.log = originalLog;
   }

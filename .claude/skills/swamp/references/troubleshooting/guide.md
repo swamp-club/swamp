@@ -65,6 +65,7 @@ found), see [references/version-check.md](references/version-check.md).
 | `datastore_v3_run_partly_committed` (exit 1)       | Tier 2 → run the `workflow recover` it names, in that checkout   |
 | `datastore_v3_commit_partly_committed` (exit 1)    | Tier 2 → part landed; check the datastore before re-running      |
 | `datastore_v3_*_unreachable` (exit 75)             | Tier 2 → nothing changed; retry once storage is reachable        |
+| `datastore_v3_commit_lease_lost` / `_lease_lapsed` | Tier 2 → exit 75: rerun; exit 1: resume or recover the run       |
 | `datastore_v3_offline_lease_required` (exit 75)    | Serve offline → take `behavior lease acquire --for` online first |
 | `datastore_v3_offline_config_edit` (exit 75)       | Serve offline → edit again once serve is reachable               |
 | Offline work "saved in this checkout" (exit 0)     | Serve offline → next writing command reaching serve sends it     |

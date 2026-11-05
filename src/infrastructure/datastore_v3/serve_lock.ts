@@ -23,6 +23,8 @@
  * fires once and the work is cancelled; unfenced only logs
  */
 
+import { UserError } from "../../domain/errors.ts";
+import { LEASE_LAPSED_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   type DistributedLock,
   type LockInfo,
@@ -38,6 +40,10 @@ import type { ExplicitLease } from "./explicit_model_leases.ts";
 import { dropServeLease, holdServeLease } from "./serve_lease_registry.ts";
 import { ServeUpstreamError } from "./serve_upstream_errors.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import {
+  latchServeUnreachable,
+  serveDatastoreClientFor,
+} from "./serve_datastore_client.ts";
 
 const logger = getSwampLogger(["datastore", "lock", "serve"]);
 
@@ -47,16 +53,19 @@ const RETRY_INTERVAL_MS = 100;
 const MAX_BACKOFF_MS = 1_000;
 
 const MAX_DEADLINE_MARGIN_MS = 2_000;
+/** serve frees an unreleased lease at its TTL, so a release never waits long */
+const RELEASE_DEADLINE_MS = 5_000;
 
 /**
  * the work under a lapsed fenced lease does not hold the lock, so it is
  * cancelled and serve refuses any commit it still sends
  */
-export class ServeLeaseLapsedError extends Error {
+export class ServeLeaseLapsedError extends UserError {
   constructor(readonly lockKey: string, readonly reason: string) {
     super(
       `The lock ${lockKey} at serve lapsed (${reason}), so this work was ` +
         `cancelled: another command may now hold it`,
+      LEASE_LAPSED_CODE,
     );
     this.name = "ServeLeaseLapsedError";
   }
@@ -431,7 +440,10 @@ export class ServeLock implements DistributedLock {
     }
     if (lease === undefined || client === undefined) return;
     try {
-      await client.releaseLock(lease.leaseId, new AbortController().signal);
+      await client.releaseLock(
+        lease.leaseId,
+        AbortSignal.timeout(RELEASE_DEADLINE_MS),
+      );
     } catch (error) {
       // Serve frees it once its TTL passes without a renewal.
       logger
@@ -478,8 +490,22 @@ export class ServeLock implements DistributedLock {
     return this.#lease?.holdMs ?? this.#ttlMs;
   }
 
+  #renewIntervalMs(): number {
+    return Math.max(1, Math.floor(this.#holdTtlMs() / 3));
+  }
+
+  /**
+   * one attempt that ends before the next tick, so a stalled renewal never
+   * holds up the one after it
+   */
+  #renewDeadlineMs(client: ServeLockClient): number {
+    const interval = this.#renewIntervalMs();
+    const margin = Math.min(MAX_DEADLINE_MARGIN_MS, Math.floor(interval / 5));
+    return Math.max(1, Math.min(client.timeoutMs, interval - margin));
+  }
+
   #startHeartbeat(): void {
-    const interval = Math.max(1, Math.floor(this.#holdTtlMs() / 3));
+    const interval = this.#renewIntervalMs();
     this.#heartbeat = setInterval(() => {
       if (this.#renewing !== undefined) return;
       this.#renewing = this.#renew().finally(() => {
@@ -507,7 +533,10 @@ export class ServeLock implements DistributedLock {
       const renewed = await client.renewLock(
         lease.leaseId,
         this.#holdTtlMs(),
-        hold.signal,
+        AbortSignal.any([
+          hold.signal,
+          AbortSignal.timeout(this.#renewDeadlineMs(client)),
+        ]),
       );
       if (this.#lease !== lease || this.#lost) return;
       if (renewed === undefined) {
@@ -553,6 +582,15 @@ export class ServeLock implements DistributedLock {
       this.#stopHeartbeat();
       logger
         .warn`Could not renew the lock ${this.#displayKey()} at serve before its lease ran out`;
+      // serve did not answer for a whole lease: the rest of the command
+      // fails at once rather than waiting out a timeout per call
+      const baseUrl = this.#client?.baseUrl;
+      if (baseUrl !== undefined) {
+        latchServeUnreachable(
+          baseUrl,
+          new Error(`the lease on ${this.#displayKey()} lapsed unrenewed`),
+        );
+      }
       this.#lapse("it could not be renewed in time");
     }, due);
   }
@@ -611,7 +649,14 @@ export function createServeLock(
 ): ServeLock | undefined {
   const binding = serveUpstreamAt(datastorePath);
   if (binding === undefined) return undefined;
-  return new ServeLock({ ...options, client: binding.client });
+  return new ServeLock({
+    ...options,
+    // a renewal on the pool an upload is using could queue behind it
+    client: () =>
+      serveDatastoreClientFor(binding.target, binding.namespace, {
+        ownConnection: true,
+      }),
+  });
 }
 
 function hostOf(url: string): string {

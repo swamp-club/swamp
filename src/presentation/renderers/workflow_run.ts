@@ -727,7 +727,19 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           }
         }
 
-        if (e.run.status === "failed") {
+        if (e.run.status === "cancelled") {
+          this._failed = true;
+          writeBlankLine();
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Cancelled",
+              STATUS_COLORS.warn,
+              `workflow ${this.workflowName}`,
+              formatTimestamp(),
+            ),
+          );
+        } else if (e.run.status === "failed") {
           this._failed = true;
           const stepError = extractFirstStepError(e.run);
           const duration = e.run.duration
@@ -1303,7 +1315,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       report_completed: () => {},
       report_failed: () => {},
       completed: (e) => {
-        if (e.run.status === "failed") this._failed = true;
+        if (e.run.status === "failed" || e.run.status === "cancelled") {
+          this._failed = true;
+        }
         unguardedConsole.log(
           JSON.stringify({ ...e.run, ...this.resultFields() }, null, 2),
         );

@@ -38,7 +38,7 @@ import {
   serveCallerFingerprint,
   ServeCopyHoldsUnlandedCommitsError,
 } from "./checkout_view.ts";
-import { ServeDatastoreClient } from "./serve_datastore_client.ts";
+import { serveDatastoreClientFor } from "./serve_datastore_client.ts";
 import {
   registerServeUpstream,
   serveUpstreamAt,
@@ -92,23 +92,11 @@ export async function bindV3ServeUpstream(
   const root = resolve(
     serveUpstreamLocalRoot(repoDir, target.serverUrl, namespace),
   );
-  const caCerts = target.caCerts;
   registerServeUpstream({
     root,
     target,
     namespace,
-    client: () =>
-      new ServeDatastoreClient({
-        baseUrl: target.serverUrl,
-        namespace,
-        ...(target.token !== undefined ? { token: target.token } : {}),
-        extraHeaders: target.extraHeaders,
-        ...(caCerts !== undefined && caCerts.length > 0
-          ? {
-            httpClient: () => Deno.createHttpClient({ caCerts: [...caCerts] }),
-          }
-          : {}),
-      }),
+    client: () => serveDatastoreClientFor(target, namespace),
   });
   // Registered first: the copy it creates is then never a replicated one.
   const markerSeen = await v3MarkerState(root);

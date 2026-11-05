@@ -236,7 +236,7 @@ export class WriterFencedError extends UserError {
   constructor(
     readonly fence: number | undefined,
     readonly currentFence: number | undefined,
-    reason: WriterFencedReason = "taken-over",
+    readonly reason: WriterFencedReason = "taken-over",
   ) {
     super(fencedMessage(fence, currentFence, reason), WRITER_FENCED_CODE);
     this.name = "WriterFencedError";

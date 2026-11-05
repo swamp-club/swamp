@@ -81,8 +81,11 @@ before), the checkout works offline from its local copy:
   next writing command (a method or workflow run, a data save) that reaches
   serve sends it, renumbering its versions after any written meanwhile.
   Read-only commands never send it.
-- A command that started online and lost serve midway still exits 75 with
-  nothing changed.
+- A command that started online and lost serve midway stops at its next commit,
+  or when its behavior lease lapses (about 30 s without a renewal). It exits 75
+  when nothing of the command landed, and 1 when something did: resume a
+  workflow run with `swamp workflow resume` or settle it with
+  `swamp workflow recover` instead of rerunning it.
 
 To work offline on a behavior, take its lease first:
 `swamp behavior lease acquire my-server --for 8h`.

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeLeaseLapsedError } from "../../infrastructure/datastore_v3/serve_lock.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -722,6 +723,12 @@ export const workflowResumeCommand = withRemoteOptions(
       shutdownHandle.dispose();
       exitSuppress.dispose();
       ephemeral.dispose();
+    }
+    // a run the lapse stopped exits as the lapse, once its root committed;
+    // one that finished first keeps its own exit
+    const lapsed = stepLeaseLost.signal.reason;
+    if (lapsed instanceof ServeLeaseLapsedError && Deno.exitCode === 1) {
+      throw lapsed;
     }
     if (!finished) return;
 

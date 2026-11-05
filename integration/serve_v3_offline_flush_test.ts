@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import "../src/domain/models/models.ts";
+import {
+  commandLanded,
+  resetCommandLandedForTesting,
+} from "../src/infrastructure/datastore_v3/command_landed.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { walk } from "@std/fs";
 import { join, SEPARATOR } from "@std/path";
@@ -421,6 +425,57 @@ Deno.test({
         assertEquals(await latestBy(scratch, serve, alice, env), {
           version: 3,
           by: "offline 2",
+        });
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline: a command under an explicit lease that loses serve before its commit stops with nothing landed, and the next command queues offline under the lease and flushes once serve is back",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        assertEquals(
+          await command(
+            scratch,
+            alice,
+            env,
+            (ctx) => saveOut(ctx, serve, "online"),
+          ),
+          1,
+        );
+        await takeLease(scratch, serve, alice, env);
+
+        resetCommandLandedForTesting();
+        const cut = await assertRejects(() =>
+          command(scratch, alice, env, async (ctx) => {
+            await proxy.down();
+            return await saveOut(ctx, serve, "cut");
+          })
+        );
+        assertEquals(commandLanded(), false);
+        assertEquals(exitCodeForError(cut, { commandLanded: false }), 75);
+        assertEquals(await servedVersions(serve), [1]);
+
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "offline"),
+          2,
+        );
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.up();
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        assertEquals(await latestBy(scratch, serve, alice, env), {
+          version: 2,
+          by: "offline",
         });
       });
     });

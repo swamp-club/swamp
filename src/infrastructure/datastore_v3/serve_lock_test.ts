@@ -54,6 +54,8 @@ class FakeServe implements ServeLockClient {
   readonly calls: string[] = [];
   answers: Array<"held" | "acquired" | Error> = ["acquired"];
   renewal: "renew" | "expired" | Error = "renew";
+  /** renewals left that never answer until their signal aborts */
+  hangingRenewals = 0;
   releaseError: Error | undefined;
   closed = 0;
   fence: number | undefined;
@@ -80,8 +82,20 @@ class FakeServe implements ServeLockClient {
     return Promise.resolve({ acquired: true, lease: this.#lease(ttlMs) });
   }
 
-  renewLock(leaseId: string, ttlMs: number): Promise<LockLease | undefined> {
+  renewLock(
+    leaseId: string,
+    ttlMs: number,
+    signal?: AbortSignal,
+  ): Promise<LockLease | undefined> {
     this.calls.push(`renew ${leaseId}`);
+    if (this.hangingRenewals > 0) {
+      this.hangingRenewals--;
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    }
     if (this.renewal instanceof Error) return Promise.reject(this.renewal);
     return Promise.resolve(
       this.renewal === "expired"
@@ -90,8 +104,18 @@ class FakeServe implements ServeLockClient {
     );
   }
 
-  releaseLock(leaseId: string): Promise<boolean> {
+  /** a release that never answers until its signal aborts */
+  hangingRelease = false;
+
+  releaseLock(leaseId: string, signal?: AbortSignal): Promise<boolean> {
     this.calls.push(`release ${leaseId}`);
+    if (this.hangingRelease) {
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    }
     if (this.releaseError !== undefined) {
       return Promise.reject(this.releaseError);
     }
@@ -596,5 +620,60 @@ Deno.test("ServeLock.acquire: an abort between asks stops the wait with its reas
     1,
   );
   assertEquals(subject.lease, undefined);
+  assertEquals(serve.closed, 1);
+});
+
+Deno.test("ServeLock: a renewal that never answers is abandoned at its deadline, so the next one is sent and the lease holds", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 2;
+  serve.hangingRenewals = 1;
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    root: ROOT,
+    ttlMs: 300,
+    onLost: (error) => lost.push(error),
+  });
+  await subject.acquire();
+  try {
+    await waitFor(
+      () => serve.calls.filter((call) => call.startsWith("renew")).length >= 3,
+      "renewals after the stalled one",
+      { timeoutMs: 5_000 },
+    );
+    assertEquals(lost, []);
+  } finally {
+    await subject.release();
+  }
+});
+
+Deno.test("ServeLock: every lock a long run takes closes the client it opened, so connections never pile up", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 2;
+  let made = 0;
+  const cycles = 50;
+  for (let i = 0; i < cycles; i++) {
+    const subject = lock(serve, {
+      root: ROOT,
+      client: () => {
+        made++;
+        return serve;
+      },
+    });
+    await subject.acquire();
+    await subject.release();
+  }
+  assertEquals(made, cycles);
+  assertEquals(serve.closed, cycles);
+});
+
+Deno.test("ServeLock.release: a release serve never answers is given up at its deadline, and the client is still closed", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.hangingRelease = true;
+  const subject = lock(serve);
+  await subject.acquire();
+  await subject.release();
   assertEquals(serve.closed, 1);
 });

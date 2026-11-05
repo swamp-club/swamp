@@ -473,6 +473,15 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#4253: another command setting up a serve-mode checkout's copy
   // is a stable, retryable code the CLI maps to exit 75.
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/copy_setup_raced_error.ts",
+  // an admin force-releases a lease by id without opening the checkout's
+  // copy; a refused step names the lease-lost code; a lapsed lease decides a
+  // run's exit; serve unreachable bounds the teardown.
+  "src/cli/commands/datastore_lock.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
+  "src/cli/commands/model_method_run.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
+  "src/cli/commands/workflow_resume.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
+  "src/cli/commands/workflow_run.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
+  "src/cli/repo_context.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
