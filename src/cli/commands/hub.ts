@@ -92,7 +92,7 @@ const hubOpenCommand = new Command()
   .name("open")
   .description(
     "Open your swamp hub's overview: every workspace it serves, whether its\n" +
-      "serve is running, the swamp start and swamp dashboard sessions using it, and its\n" +
+      "dashboard is running, the swamp start and swamp dashboard sessions using it, and its\n" +
       "log. Starts the hub if it isn't running. The page keeps its own access\n" +
       "while it is open, so this returns at once.",
   )

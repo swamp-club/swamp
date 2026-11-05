@@ -212,7 +212,7 @@ function HubCard(
           {hub.autoExit
             ? `after ${
               hub.exitWhenIdle ?? "a while"
-            } with no sessions or serves`
+            } with no sessions or dashboards`
             : "never: runs as a user service"}
         </Field>
       </dl>
@@ -231,7 +231,7 @@ function workspaceKind(workspace: HubWorkspace): ReactNode {
   return null;
 }
 
-/** Starts a stopped serve; shows that it is starting until the overview catches up. */
+/** Starts a stopped dashboard; shows that it is starting until the overview catches up. */
 function StartButton({ onStart }: { onStart: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   return (
@@ -268,7 +268,7 @@ function ServeActions(
           label="Stop"
           question={serve.pages > 0
             ? `Close ${serve.pages} open tab${serve.pages === 1 ? "" : "s"}?`
-            : "Stop this serve?"}
+            : "Stop this dashboard?"}
           onConfirm={() => act(stopEnginePath(serve.id)).catch(() => {})}
         />
       </>
@@ -341,7 +341,7 @@ function WorkspacesTable(
               <thead>
                 <tr>
                   <th>Workspace</th>
-                  <th>Serve</th>
+                  <th>Dashboard</th>
                   <th>Tabs</th>
                   <th>Up</th>
                   <th>Last used</th>

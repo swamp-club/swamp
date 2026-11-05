@@ -89,15 +89,15 @@ function render(data: HubOverview, actionError: string | null = null): string {
   );
 }
 
-Deno.test("HubOverviewView: shows the hub, its workspaces with their serves, and its sessions", () => {
+Deno.test("HubOverviewView: shows the hub, its workspaces with their dashboards, and its sessions", () => {
   const html = render(
     overview(true, { path: "/h/hub.log", lines: ["started", "ready"] }),
   );
   assertStringIncludes(html, "127.0.0.1:4100");
-  assertStringIncludes(html, "after 1m0s with no sessions or serves");
+  assertStringIncludes(html, "after 1m0s with no sessions or dashboards");
   assertStringIncludes(html, `href="/dashboard/w/infra"`);
   assertStringIncludes(html, ">Open</a>");
-  assertStringIncludes(html, ">Serve</th>");
+  assertStringIncludes(html, ">Dashboard</th>");
   assertStringIncludes(html, "running");
   assertStringIncludes(html, "pid 55");
   assertStringIncludes(html, "untrusted");

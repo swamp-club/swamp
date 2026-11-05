@@ -70,11 +70,11 @@ const ACTION_ERRORS: Record<string, string> = {
   hub_is_service:
     "This hub runs as a user service. Stop it with `swamp hub daemon disable`.",
   own_lease: "That is this page's own session.",
-  unknown_engine: "That serve has already stopped.",
+  unknown_engine: "That dashboard has already stopped.",
   unknown_workspace: "That workspace isn't available any more.",
   workspace_untrusted:
     "That workspace's datastore is extension code, which an untrusted workspace can't load.",
-  engine_unavailable: "That serve didn't start. See the hub log below.",
+  engine_unavailable: "That dashboard didn't start. See the hub log below.",
   unknown_lease: "That session has already ended.",
   origin_mismatch: "The hub refused a request from another page.",
   manage_required: "This page can't manage the hub. Run `swamp hub open`.",

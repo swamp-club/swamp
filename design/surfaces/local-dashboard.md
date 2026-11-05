@@ -81,18 +81,18 @@ the last tab closes, not when the command exits. The page polls
 `/api/local/hub` every 3 s while visible (every 20 s while hidden) and shows:
 - the hub: version, swamp executable, address, uptime and idle exit
 - every workspace: registered, lease-bound (`swamp dashboard`) or registered
-  with its folder gone, each with its serve's state, pid, tabs and uptime (the
-  page says "serve" for a workspace engine)
+  with its folder gone, each with its dashboard's state, pid, tabs and uptime (the
+  page says "dashboard" for a workspace engine)
 - the sessions holding leases, named by command and pid
 - the tail of `hub.log`
 
-A stopped workspace has a **Start** button, which starts its serve without
+A stopped workspace has a **Start** button, which starts its dashboard without
 opening a page; it then stays up for the page idle grace. A running one has
-**Open**, which loads its dashboard, and **Stop**, which ends its serve (its
+**Open**, which loads its dashboard, and **Stop**, which ends it (its
 tabs reconnect to a new one). A lease-bound folder has no Open: only its own
 `swamp dashboard` can open it. An untrusted registered workspace has
 **Trust**, which asks first and then records `trustedAt` in `workspaces.json`
-as the start page's trust screen does; its untrusted serve is replaced, so
+as the start page's trust screen does; its untrusted dashboard is replaced, so
 open tabs reconnect to one that loads extensions. You can also end another
 session (its command
 exits with "The swamp hub ended this session.") or stop an auto-launched hub;
