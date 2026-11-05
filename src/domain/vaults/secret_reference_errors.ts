@@ -56,6 +56,28 @@ export class ResourceSensitiveFieldsInvalidError extends UserError {
 }
 
 /**
+ * the provider could not answer whether a reference exists (its CLI absent,
+ * its backend down, its own credentials refused); a run fails on it, while
+ * validate leaves the expression as stored text
+ */
+export class SecretReferenceUncheckedError extends Error {
+  constructor(
+    readonly reference: SecretReference,
+    readonly location: string,
+    readonly reason: string,
+    context: string,
+  ) {
+    super(`${context}: ${reason}`);
+    this.name = "SecretReferenceUncheckedError";
+  }
+}
+
+export function oneLineReason(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/\n\s*/g, " — ");
+}
+
+/**
  * a vault access refusal keeps its vault_access_denied code and a missing key
  * its secret_not_found code; any other error keeps its text on one line
  */
@@ -65,10 +87,7 @@ export function secretReferenceError(
   reference: SecretReference,
 ): Error {
   if (error instanceof SecretReferenceUnavailableError) return error;
-  const message = `${context}: ${
-    (error instanceof Error ? error.message : String(error))
-      .replace(/\n\s*/g, " — ")
-  }`;
+  const message = `${context}: ${oneLineReason(error)}`;
   if (error instanceof VaultAccessDeniedError) {
     return new UserError(message, error.code);
   }

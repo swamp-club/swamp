@@ -31,6 +31,7 @@ import {
   type EnvVarUsageDetail,
   type ExpressionPathError,
   type ForeignTemplateDetail,
+  type UncheckedSecretReference,
 } from "../../domain/models/validation_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -72,6 +73,7 @@ import { definitionDescriptionPaths } from "../../domain/expressions/description
 import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
 import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { SecretReferenceUncheckedError } from "../../domain/vaults/secret_reference_errors.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -87,6 +89,7 @@ export interface ValidationWarningData {
   message: string;
   envVars?: EnvVarUsageDetail[];
   templates?: ForeignTemplateDetail[];
+  secretReferences?: UncheckedSecretReference[];
 }
 
 export interface ModelValidateData {
@@ -145,6 +148,7 @@ interface ValidationWarningResult {
   message: string;
   envVars?: EnvVarUsageDetail[];
   templates?: ForeignTemplateDetail[];
+  secretReferences?: UncheckedSecretReference[];
   modelMessage?: string;
 }
 
@@ -305,6 +309,7 @@ export function createModelValidateDeps(
           message: w.message,
           envVars: w.details,
           templates: w.templates,
+          secretReferences: w.secretReferences,
           modelMessage: w.modelMessage,
         })),
       };
@@ -365,14 +370,16 @@ async function deliverCheckArguments(
       .filter((expr) => !isDescription(expr.path))
       .map((expr) => expr.raw),
   );
+  const unchecked = new UncheckedReferences();
   for (const [raw, error] of evaluated.failedExpressions ?? []) {
-    if (delivered.has(raw) && !isEvaluationFailure(error)) throw error;
+    if (!delivered.has(raw) || isEvaluationFailure(error)) continue;
+    if (!unchecked.record(error)) throw error;
   }
   // what validate cannot evaluate (input with no default, unset env var, data
   // not yet produced) stays as stored text per expression, so a bad reference
   // beside it still fails the checks as it would the run
-  const { definition: resolved, secretBag } = await expressionService
-    .resolveRuntimeExpressionsInDefinition(
+  const { definition: resolved, secretBag, failedExpressions } =
+    await expressionService.resolveRuntimeExpressionsInDefinition(
       evaluated.definition,
       sensitiveValues.probeRedactor,
       context,
@@ -383,9 +390,14 @@ async function deliverCheckArguments(
         // position in it is authored.
         provenance: evaluated.provenance ?? ProvenanceMap.authored(),
         methodName,
-        keepUnevaluated: isEvaluationFailure,
+        keepUnevaluated: (error) =>
+          isEvaluationFailure(error) ||
+          error instanceof SecretReferenceUncheckedError,
       },
     );
+  for (const error of failedExpressions?.values() ?? []) {
+    unchecked.record(error);
+  }
   const delivery = await deliverStepSecrets({
     definition: resolved,
     modelDef,
@@ -403,7 +415,33 @@ async function deliverCheckArguments(
     unresolvedMethodArgs: delivery.sentinelArguments ??
       unresolvedArgumentsOf(resolved, methodName),
     vaultSecrets: loaded,
+    ...(unchecked.size > 0 ? { uncheckedReferences: unchecked.list() } : {}),
   };
+}
+
+/** one entry per reference and location, however many passes met it */
+class UncheckedReferences {
+  readonly #byId = new Map<string, UncheckedSecretReference>();
+
+  get size(): number {
+    return this.#byId.size;
+  }
+
+  record(error: unknown): boolean {
+    if (!(error instanceof SecretReferenceUncheckedError)) return false;
+    const { vaultName, key } = error.reference;
+    this.#byId.set(`${error.location}\u0000${vaultName}\u0000${key}`, {
+      location: error.location,
+      vaultName,
+      key,
+      reason: error.reason,
+    });
+    return true;
+  }
+
+  list(): UncheckedSecretReference[] {
+    return [...this.#byId.values()];
+  }
 }
 
 /**
@@ -443,6 +481,7 @@ function toValidationWarningData(
       message: w.message,
       envVars: w.envVars,
       templates: w.templates,
+      secretReferences: w.secretReferences,
     };
     // a hidden marker, so the JSON shape is unchanged
     return w.modelMessage === undefined
