@@ -65,7 +65,10 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
-import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import {
+  createWorkflowRunRenderer,
+  showsDataAttributes,
+} from "../../presentation/renderers/workflow_run.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -75,7 +78,11 @@ import { renderAwaitingParent } from "./nested_run_hints.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { awaitingParentOf } from "../../libswamp/workflows/nested_runs.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
-import { mapWorkflowExecutionEvent } from "../../libswamp/workflows/run.ts";
+import {
+  deferCompletedForOutputs,
+  mapWorkflowExecutionEvent,
+  resolveCompletedRunOutputs,
+} from "../../libswamp/workflows/run.ts";
 import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
@@ -549,15 +556,34 @@ export const workflowResumeCommand = withRemoteOptions(
         tracestate,
         (async function* () {
           for await (
-            const event of service.resume(workflowName, run.id, {
-              signal: abort.signal,
-              swampSha: GIT_SHA,
-              inputs: resumeInputs,
-              fromStep,
-              fromJob,
-            })
+            const { event, stepOutputs } of deferCompletedForOutputs(
+              service.resume(workflowName, run.id, {
+                signal: abort.signal,
+                swampSha: GIT_SHA,
+                inputs: resumeInputs,
+                fromStep,
+                fromJob,
+              }),
+              showsDataAttributes(
+                  cliCtx.outputMode,
+                  cliCtx.verbosity === "quiet",
+                )
+                ? (completed) =>
+                  resolveCompletedRunOutputs(
+                    completed,
+                    repoContext.unifiedDataRepo,
+                    runRepo,
+                    abort.signal,
+                  )
+                : undefined,
+            )
           ) {
-            yield mapWorkflowExecutionEvent(event, runRepo);
+            yield mapWorkflowExecutionEvent(
+              event,
+              runRepo,
+              undefined,
+              stepOutputs,
+            );
           }
         })(),
       );

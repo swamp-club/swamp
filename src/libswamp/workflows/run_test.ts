@@ -18,11 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { StepStart } from "../../domain/workflows/step_start.ts";
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  deferCompletedForOutputs,
   extractStepArtifacts,
   inputValidationFailed,
   mapWorkflowExecutionEvent,
+  resolveCompletedRunOutputs,
   resolveRunStepOutputs,
   type RunStepOutputs,
   toRunData,
@@ -59,6 +61,8 @@ import type {
 } from "../../domain/workflows/repositories.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import { createNamespace } from "../../domain/data/namespace.ts";
+import { UserError } from "../../domain/errors.ts";
+import { UNREADABLE_CONTENT_CODE } from "../../domain/datastore/unreadable_content.ts";
 
 class InMemoryWorkflowRepository implements WorkflowRepository {
   private workflows = new Map<string, Workflow>();
@@ -2127,4 +2131,262 @@ Deno.test("toRunData: inputs, a step error and assert text are shown through the
   const plain = WorkflowRun.create(workflow);
   plain.captureInputs({ token: "plain" });
   assertEquals(toRunData(plain).inputs, { token: "plain" });
+});
+
+function audienceDataRepo(
+  getContent: () => Promise<Uint8Array | null>,
+): UnifiedDataRepository {
+  return {
+    namespace: createNamespace("team-a"),
+    getContent,
+  } as unknown as UnifiedDataRepository;
+}
+
+const AUDIENCE_JSON = new TextEncoder().encode(
+  JSON.stringify({ audienceId: "aud_123", status: "Building" }),
+);
+
+Deno.test("mapWorkflowExecutionEvent: a completed event shows the resolved attributes and outputs it is given", () => {
+  const repo = new InMemoryWorkflowRunRepository();
+  const event: WorkflowExecutionEvent = {
+    kind: "completed",
+    run: createModelMethodRun(),
+  };
+
+  const withOutputs = mapWorkflowExecutionEvent(
+    event,
+    repo,
+    undefined,
+    AUDIENCE_OUTPUTS,
+  );
+  const without = mapWorkflowExecutionEvent(event, repo);
+
+  if (withOutputs.kind !== "completed" || without.kind !== "completed") {
+    throw new Error("expected completed events");
+  }
+  const step = withOutputs.run.jobs[0].steps[0];
+  assertEquals(step.dataArtifacts?.[0].attributes, {
+    audienceId: "aud_123",
+    status: "Building",
+  });
+  assertEquals(step.outputs, { audienceId: "aud_123", status: "Building" });
+  assertEquals(
+    without.run.jobs[0].steps[0].dataArtifacts?.[0].attributes,
+    undefined,
+  );
+  assertEquals(without.run.jobs[0].steps[0].outputs, undefined);
+});
+
+Deno.test("mapWorkflowExecutionEvent: a cancelled event ignores resolved outputs", () => {
+  const mapped = mapWorkflowExecutionEvent(
+    { kind: "cancelled", run: createModelMethodRun(), reason: "stopped" },
+    new InMemoryWorkflowRunRepository(),
+    undefined,
+    AUDIENCE_OUTPUTS,
+  );
+
+  if (mapped.kind !== "cancelled") throw new Error("expected cancelled");
+  assertEquals(
+    mapped.run.jobs[0].steps[0].dataArtifacts?.[0].attributes,
+    undefined,
+  );
+});
+
+Deno.test("toRunData: data attributes and step outputs are shown through the run's mask", () => {
+  const run = createModelMethodRun();
+  const values = new RunSensitiveValues(undefined, new SecretBagRegistry());
+  values.addSecret("aud_123", { vaultName: "v", key: "k" });
+  run.attachSensitiveValues(values);
+
+  const step = toRunData(run, undefined, false, AUDIENCE_OUTPUTS).jobs[0]
+    .steps[0];
+
+  assertEquals(step.dataArtifacts?.[0].attributes, {
+    audienceId: "***",
+    status: "Building",
+  });
+  assertEquals(step.outputs, { audienceId: "***", status: "Building" });
+});
+
+Deno.test("deferCompletedForOutputs: resolves the completed run only after the source has ended", async () => {
+  const run = createModelMethodRun();
+  let saved = false;
+  const savedWhenResolved: boolean[] = [];
+  async function* source(): AsyncGenerator<WorkflowExecutionEvent> {
+    yield { kind: "job_started", jobId: "job1" };
+    yield { kind: "completed", run };
+    saved = true;
+  }
+
+  const seen: string[] = [];
+  for await (
+    const { event, stepOutputs } of deferCompletedForOutputs(
+      source(),
+      () => {
+        savedWhenResolved.push(saved);
+        return Promise.resolve(AUDIENCE_OUTPUTS);
+      },
+    )
+  ) {
+    seen.push(event.kind);
+    if (event.kind === "job_started") {
+      assertEquals(savedWhenResolved, []);
+      assertEquals(stepOutputs, undefined);
+    } else {
+      assertEquals(stepOutputs, AUDIENCE_OUTPUTS);
+    }
+  }
+
+  assertEquals(seen, ["job_started", "completed"]);
+  assertEquals(savedWhenResolved, [true]);
+});
+
+Deno.test("deferCompletedForOutputs: a source that throws after completed yields completed first, then the error", async () => {
+  const run = createModelMethodRun();
+  async function* source(): AsyncGenerator<WorkflowExecutionEvent> {
+    yield { kind: "completed", run };
+    throw new Error("run stopped");
+  }
+
+  const seen: Array<{ kind: string; outputs: boolean }> = [];
+  await assertRejects(
+    async () => {
+      for await (
+        const { event, stepOutputs } of deferCompletedForOutputs(
+          source(),
+          () => Promise.resolve(AUDIENCE_OUTPUTS),
+        )
+      ) {
+        seen.push({ kind: event.kind, outputs: stepOutputs !== undefined });
+      }
+    },
+    Error,
+    "run stopped",
+  );
+
+  assertEquals(seen, [{ kind: "completed", outputs: true }]);
+});
+
+Deno.test("deferCompletedForOutputs: a source that throws before completed never resolves", async () => {
+  let resolved = 0;
+  // deno-lint-ignore require-yield
+  async function* source(): AsyncGenerator<WorkflowExecutionEvent> {
+    throw new Error("no run");
+  }
+
+  await assertRejects(
+    () =>
+      Array.fromAsync(deferCompletedForOutputs(source(), () => {
+        resolved++;
+        return Promise.resolve(undefined);
+      })),
+    Error,
+    "no run",
+  );
+  assertEquals(resolved, 0);
+});
+
+Deno.test("deferCompletedForOutputs: without a resolver the events pass through in order", async () => {
+  const run = createModelMethodRun();
+  async function* source(): AsyncGenerator<WorkflowExecutionEvent> {
+    yield { kind: "completed", run };
+    yield { kind: "job_started", jobId: "late" };
+  }
+
+  const seen = await Array.fromAsync(deferCompletedForOutputs(source()));
+
+  assertEquals(seen.map((e) => e.event.kind), ["completed", "job_started"]);
+  assertEquals(seen.every((e) => e.stepOutputs === undefined), true);
+});
+
+Deno.test("resolveCompletedRunOutputs: reads each resource's attributes keyed by its data id", async () => {
+  const resolved = await resolveCompletedRunOutputs(
+    createModelMethodRun(),
+    audienceDataRepo(() => Promise.resolve(AUDIENCE_JSON)),
+    new InMemoryWorkflowRunRepository(),
+  );
+
+  assertEquals(resolved?.job1.step1.attributesByDataId, {
+    "data-audience": { audienceId: "aud_123", status: "Building" },
+  });
+});
+
+Deno.test("resolveCompletedRunOutputs: a resource that cannot be read is left out", async () => {
+  const resolved = await resolveCompletedRunOutputs(
+    createModelMethodRun(),
+    audienceDataRepo(() => Promise.reject(new Error("datastore offline"))),
+    new InMemoryWorkflowRunRepository(),
+  );
+
+  assertEquals(resolved?.job1.step1.attributesByDataId, {});
+});
+
+Deno.test("resolveCompletedRunOutputs: a record the datastore cannot materialise gives no outputs instead of an error", async () => {
+  const resolved = await resolveCompletedRunOutputs(
+    createModelMethodRun(),
+    audienceDataRepo(() =>
+      Promise.reject(
+        new UserError("record unreadable", UNREADABLE_CONTENT_CODE),
+      )
+    ),
+    new InMemoryWorkflowRunRepository(),
+  );
+
+  assertEquals(resolved, undefined);
+});
+
+Deno.test("resolveCompletedRunOutputs: an aborted signal gives no outputs instead of an error", async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  const resolved = await resolveCompletedRunOutputs(
+    createModelMethodRun(),
+    audienceDataRepo(() => Promise.resolve(AUDIENCE_JSON)),
+    new InMemoryWorkflowRunRepository(),
+    controller.signal,
+  );
+
+  assertEquals(resolved, undefined);
+});
+
+async function completedRunOf(
+  resolveCompletedOutputs: boolean | undefined,
+) {
+  const run = createModelMethodRun();
+  const deps = createTestDeps(createTestWorkflow(), [
+    {
+      kind: "report_completed",
+      reportName: "test-report",
+      scope: "workflow",
+      markdown: "# Report",
+      json: {},
+    },
+    { kind: "completed", run },
+  ]);
+  deps.dataRepo = audienceDataRepo(() => Promise.resolve(AUDIENCE_JSON));
+  deps.resolveCompletedOutputs = resolveCompletedOutputs;
+
+  const events = await collect(workflowRun(createLibSwampContext(), deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  return completed.run;
+}
+
+Deno.test("workflowRun: with resolveCompletedOutputs the completed run carries data attributes and its reports", async () => {
+  const run = await completedRunOf(true);
+
+  assertEquals(run.jobs[0].steps[0].dataArtifacts?.[0].attributes, {
+    audienceId: "aud_123",
+    status: "Building",
+  });
+  assertEquals(run.reports?.map((r) => r.name), ["test-report"]);
+});
+
+Deno.test("workflowRun: without resolveCompletedOutputs the completed run carries no data attributes", async () => {
+  const run = await completedRunOf(undefined);
+
+  assertEquals(run.jobs[0].steps[0].dataArtifacts?.[0].attributes, undefined);
+  assertEquals(run.reports?.map((r) => r.name), ["test-report"]);
 });

@@ -226,6 +226,9 @@ its size doesn't depend on the data steps write. A live run takes outputs from
 each step's full output before stripping. A resumed run, a parent reading a
 child run, and `swamp workflow history get --json` / `swamp workflow history
 outputs` load them from the datastore through the run's resource references.
+A local `swamp workflow run` or `resume` does the same for its completed
+summary, the Data produced box and `--json`, only after the run is saved;
+`-q` leaves attributes out of the box, and a run over serve carries none.
 These reads are best-effort: ephemeral-lifetime data, garbage-collected versions
 and an uncached remote datastore yield no outputs. The readers keep stored
 references and source metadata. The CEL adapter presents an own-namespace tagged

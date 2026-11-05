@@ -30,6 +30,7 @@ import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view
 import {
   createWorkflowRunRenderer,
   renderWorkflowRunAccepted,
+  showsDataAttributes,
 } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
@@ -298,6 +299,61 @@ Deno.test("ConsoleWorkflowRunRenderer: shows inline data artifacts", async () =>
   assertStringIncludes(output, "Data produced");
   assertStringIncludes(output, "api-records");
   assertStringIncludes(output, "total_records");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: -q lists data artifacts by name without their attributes", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    quiet: true,
+  });
+  const runView = makeRunView("succeeded");
+  runView.jobs[0].steps[0].dataArtifacts![0].attributes = {
+    stdout: "STEP-STDOUT",
+  };
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Data produced");
+  assertStringIncludes(output, "api-records");
+  assertEquals(output.includes("STEP-STDOUT"), false, output);
+});
+
+Deno.test("showsDataAttributes: only quiet log output leaves data attributes out", () => {
+  assertEquals(showsDataAttributes("log", false), true);
+  assertEquals(showsDataAttributes("log", true), false);
+  assertEquals(showsDataAttributes("json", false), true);
+  assertEquals(showsDataAttributes("json", true), true);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: report and log artifacts stay out of the data box when they carry attributes", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const runView = makeRunView("succeeded");
+  runView.jobs[0].steps[0].dataArtifacts!.push(
+    {
+      dataId: "d-2",
+      name: "report-summary",
+      version: 1,
+      tags: {},
+      attributes: { hidden_report: 1 },
+    },
+    {
+      dataId: "d-3",
+      name: "log",
+      version: 1,
+      tags: {},
+      attributes: { hidden_log: 1 },
+    },
+  );
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "total_records");
+  assertEquals(output.includes("hidden_report"), false, output);
+  assertEquals(output.includes("hidden_log"), false, output);
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: error event throws UserError", () => {

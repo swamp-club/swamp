@@ -1082,6 +1082,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   }
 
   private renderDataArtifacts(run: WorkflowRunView): void {
+    const withAttributes = showsDataAttributes("log", this.quiet);
     const artifacts: DataArtifact[] = [];
     for (const job of run.jobs) {
       for (const step of job.steps) {
@@ -1090,7 +1091,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             if (!isUserFacingArtifact(artifact)) continue;
             artifacts.push({
               name: artifact.name,
-              attributes: artifact.attributes,
+              attributes: withAttributes ? artifact.attributes : undefined,
               source: job.name,
             });
           }
@@ -1102,7 +1103,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         if (!isUserFacingArtifact(artifact)) continue;
         artifacts.push({
           name: artifact.name,
-          attributes: artifact.attributes,
+          attributes: withAttributes ? artifact.attributes : undefined,
         });
       }
     }
@@ -1437,6 +1438,14 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   workflowFailed(): boolean {
     return this._failed;
   }
+}
+
+/**
+ * a step's stdout is one of its attributes and -q hides step output; callers
+ * skip reading what is not shown
+ */
+export function showsDataAttributes(mode: OutputMode, quiet: boolean): boolean {
+  return mode === "json" || !quiet;
 }
 
 export function createWorkflowRunRenderer(
