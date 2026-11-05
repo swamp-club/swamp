@@ -3272,3 +3272,33 @@ Deno.test("dataAttributesFor: once a run's attributes pass the budget, later cli
     }
   });
 });
+
+Deno.test("runStreamFor: a read that failed for one client is tried again for the next", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, buffer, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const dataRepo = ctx.repoContext.unifiedDataRepo;
+      const getContent = dataRepo.getContent.bind(dataRepo);
+      let failNext = true;
+      dataRepo.getContent = (...args: Parameters<typeof getContent>) => {
+        if (failNext && args[2] === "record") {
+          failNext = false;
+          return Promise.reject(new Error("datastore briefly offline"));
+        }
+        return getContent(...args);
+      };
+
+      const first = await attributesSent(ctx, buffer, slot, null);
+      const second = await attributesSent(ctx, buffer, slot, null);
+
+      assertEquals(first?.jobs[0].steps[0].outputs, { apiKey: "not-for-you" });
+      assertEquals(second?.jobs[0].steps[0].outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
+    } finally {
+      close();
+    }
+  });
+});

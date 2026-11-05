@@ -104,12 +104,18 @@ function sharedReader(
         if (reads.bytes > maxBytes) markOverBudget(reads);
       }
       return attributes;
+    }, (error) => {
+      // a failed read may be transient, so the next client tries again
+      reads.cache.delete(key);
+      throw error;
     });
     reads.cache.set(key, pending);
     return pending;
   };
 }
 
+// judged on everything read for the run, so a client with narrower rights whose
+// share would have fit is also sent name-only
 function markOverBudget(reads: SharedReads): void {
   reads.overBudget = true;
   reads.cache.clear();
