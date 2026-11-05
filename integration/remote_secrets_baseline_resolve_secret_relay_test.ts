@@ -288,17 +288,19 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote secrets baseline: resolveSecret relay: a vault error on a referenced key reaches the runner as serve logged it",
+    "remote secrets baseline: resolveSecret relay: a missing referenced key reaches the runner as secret_not_found in swamp's words, while serve logs the store's",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     await withRelay(async (relay) => {
       const vaultError =
         `Secret '${relay.missingKey}' not found in local vault '${BASELINE_VAULT}'`;
+      const relayed =
+        `Secret '${relay.missingKey}' not found in vault '${BASELINE_VAULT}'`;
       const { error, logs } = await refused(relay, relay.missingKey);
 
-      assertEquals(error.code, "handler_failed");
-      assertEquals(error.message, vaultError);
+      assertEquals(error.code, "secret_not_found");
+      assertEquals(error.message, relayed);
       assertEquals(hop(logs, "serve.capability"), [
         "debug: Handler start: capability.resolveSecret for worker <worker> (request <id>)",
         `warning: Handler error: capability.resolveSecret for worker <worker> after <n>ms (request <id>): ${
@@ -308,7 +310,7 @@ Deno.test({
       assertEquals(hop(logs, "worker.bridge"), [
         "debug: Bridging capability.resolveSecret to orchestrator [<dispatch>] (request <id>)",
         `warning: Bridge capability.resolveSecret failed after <n>ms [<dispatch>] (request <id>): ${
-          vaultError.replace(UUID, "<id>")
+          relayed.replace(UUID, "<id>")
         }`,
       ]);
     });

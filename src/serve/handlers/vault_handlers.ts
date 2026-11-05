@@ -93,6 +93,7 @@ import {
   principalToString,
 } from "../../domain/access/principal.ts";
 import { VaultConfigParseError } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { isSecretNotFoundError } from "../../domain/vaults/secret_not_found_error.ts";
 import { listVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
@@ -550,8 +551,9 @@ export async function handleVaultDelete(
         error,
       );
     } else if (
-      error instanceof Error &&
-      /not found|can't find|ResourceNotFoundException/i.test(error.message)
+      isSecretNotFoundError(error) ||
+      (error instanceof Error &&
+        /not found|can't find|ResourceNotFoundException/i.test(error.message))
     ) {
       if (payload.force) {
         send(socket, {

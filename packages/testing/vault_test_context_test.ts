@@ -24,7 +24,12 @@ import {
   assertThrows,
 } from "@std/assert";
 import { createVaultTestContext } from "./vault_test_context.ts";
-import { VaultAnnotation } from "./vault_types.ts";
+import {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+  VaultAnnotation,
+} from "./vault_types.ts";
 
 Deno.test("createVaultTestContext: defaults to empty vault named test-vault", () => {
   const { vault, getStoredSecrets } = createVaultTestContext();
@@ -52,6 +57,24 @@ Deno.test("createVaultTestContext: get throws for missing key by default", async
     Error,
     "not found in test vault",
   );
+});
+
+Deno.test("createVaultTestContext: a missing key rejects with SecretNotFoundError", async () => {
+  const { vault } = createVaultTestContext({ name: "creds" });
+  const error = await assertRejects(
+    () => vault.get("nonexistent"),
+    SecretNotFoundError,
+  );
+  assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+  assertEquals(error.vaultName, "creds");
+  assertEquals(error.key, "nonexistent");
+  assertEquals(isSecretNotFoundError(error), true);
+});
+
+Deno.test("createVaultTestContext: an unauthorized key is not a missing key", async () => {
+  const { vault } = createVaultTestContext({ unauthorizedKeys: ["locked"] });
+  const error = await assertRejects(() => vault.get("locked"));
+  assertEquals(isSecretNotFoundError(error), false);
 });
 
 Deno.test("createVaultTestContext: get returns empty string when throwOnMissing is false", async () => {

@@ -22,6 +22,7 @@ import type {
   SecretReference,
 } from "./secret_bag_registry.ts";
 import { VaultAccessDeniedError } from "./run_vault_access.ts";
+import { isSecretNotFoundError } from "./secret_not_found_error.ts";
 import {
   oneLineReason,
   secretReferenceError,
@@ -72,10 +73,11 @@ export async function checkSecretReference(
         const probed = await vaultService.get(vaultName, key, PROBE_PURPOSE);
         options.redactor?.addSecret(probed);
       } catch (error) {
-        // Only a provider failing to answer is unchecked, a get-only provider's missing key included.
+        // A store's not-found is an answer; only a provider failing to answer is unchecked.
         if (
           !configured || error instanceof SecretReferenceUnavailableError ||
-          error instanceof VaultAccessDeniedError
+          error instanceof VaultAccessDeniedError ||
+          isSecretNotFoundError(error)
         ) {
           throw error;
         }
@@ -89,6 +91,6 @@ export async function checkSecretReference(
     });
   } catch (error) {
     if (error instanceof SecretReferenceUncheckedError) throw error;
-    throw secretReferenceError(context, error);
+    throw secretReferenceError(context, error, reference);
   }
 }

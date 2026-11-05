@@ -35,6 +35,11 @@ import {
   VaultAccessDeniedError,
 } from "./run_vault_access.ts";
 import { SecretBagRegistry } from "./secret_bag_registry.ts";
+import {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 import { checkSecretReference } from "./secret_reference_check.ts";
 import {
   SecretReferenceUnavailableError,
@@ -140,6 +145,33 @@ Deno.test("checkSecretReference: a key has() denies fails with secret_reference_
   );
 });
 
+Deno.test("checkSecretReference: a probe read of a missing key keeps the secret_not_found code an extension store raised", async () => {
+  await withTestVault("erp", { secrets: {} }, async (service) => {
+    const error = await assertRejects(
+      () => check(service, new SecretBagRegistry(), "token"),
+      SecretNotFoundError,
+      `Failed to resolve vault expression ${CALL} (at ${LOCATION}): `,
+    );
+    assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+    assertEquals(error.vaultName, "erp");
+    assertEquals(error.key, "token");
+    assertEquals(isSecretNotFoundError(error.cause), true);
+  });
+});
+
+Deno.test("checkSecretReference: a store's other failure does not read as secret_not_found", async () => {
+  await withTestVault(
+    "erp",
+    { unauthorizedKeys: ["token"] },
+    async (service) => {
+      const error = await assertRejects(() =>
+        check(service, new SecretBagRegistry(), "token")
+      );
+      assertEquals(isSecretNotFoundError(error), false);
+    },
+  );
+});
+
 Deno.test("checkSecretReference: a refusal by the run's vault access keeps its code and reaches no provider, even for a confirmed reference", async () => {
   await withTestVault(
     "erp",
@@ -225,12 +257,14 @@ Deno.test("checkSecretReference: a provider that cannot answer is unchecked with
   }
 });
 
-Deno.test("checkSecretReference: a get-only provider's missing key is unchecked, a has() provider's is unavailable", async () => {
+Deno.test("checkSecretReference: a missing key is never unchecked: a get-only store's secret_not_found and a has() provider's false both fail", async () => {
   await withTestVault("erp", { secrets: {} }, async (service) => {
-    await assertRejects(
+    const error = await assertRejects(
       () => check(service, new SecretBagRegistry(), "token"),
-      SecretReferenceUncheckedError,
+      UserError,
     );
+    assertEquals(error.code, "secret_not_found");
+    assertEquals(error instanceof SecretReferenceUncheckedError, false);
   });
   await withTestVault(
     "erp",

@@ -39,9 +39,10 @@ Deno.test("vault contract", async () => {
 });
 ```
 
-Tests: put/get roundtrip, get-missing rejects, put overwrites, list includes
-stored keys, getName returns non-empty string. Test keys are prefixed with
-`swamp-conformance-test-` and cleaned up automatically.
+Tests: put/get roundtrip, get-missing rejects with an error whose `code` is
+`"secret_not_found"` (throw `SecretNotFoundError` — see [api.md](api.md)), put
+overwrites, list includes stored keys, getName returns non-empty string. Test
+keys are prefixed with `swamp-conformance-test-` and cleaned up automatically.
 
 | Option      | Default                     | Description             |
 | ----------- | --------------------------- | ----------------------- |
@@ -323,6 +324,11 @@ Deno.test({
   },
 });
 ```
+
+The mock answers a missing secret with `ResourceNotFoundException`, as AWS does.
+Conformance passes only when the provider maps that to `SecretNotFoundError` in
+`get()`, and leaves every other AWS error (access denied, throttling, expired
+credentials) as it is.
 
 ### REST API-based vaults
 

@@ -1411,10 +1411,11 @@ unevaluated. So does a reference the provider cannot answer for (its CLI absent,
 its backend down, its own credentials refused), which validate reports in a
 `Secret references not checked` warning; no sentinel is issued for it, so
 neither its value nor a refusing destination is checked there, and a run still
-fails on it. A get-only
-provider cannot tell a missing key from such a failure, so its missing key is
-reported the same way and fails at run time. Other failures stop delivery and
-produce one delivery finding.
+fails on it. A missing key is an answer, not a failure to
+answer: `has` returning false or a store's `secret_not_found` fails delivery. A
+get-only store that throws a plain error for a missing key cannot be told apart
+from a broken one, so its missing key is reported as unchecked and fails at run
+time. Other failures stop delivery and produce one delivery finding.
 Static findings carry `code` and `location` in JSON. Plain expressions initialize
 no vault scope. Providers without `has` still perform one probe per reference at
 evaluation plus a load at delivery. Remote transport remains the Phase 5 baseline.

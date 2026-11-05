@@ -86,6 +86,9 @@ export type {
 } from "./vault_test_context.ts";
 
 export {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
   VaultAnnotation,
   type VaultAnnotationData,
   type VaultAnnotationProvider,

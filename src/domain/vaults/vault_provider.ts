@@ -22,6 +22,7 @@ export interface VaultPutOptions {
 }
 
 export interface VaultProvider {
+  /** rejects with an error whose code is secret_not_found when the key is absent */
   get(secretKey: string): Promise<string>;
 
   put(

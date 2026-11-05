@@ -54,6 +54,7 @@ import {
   VaultConfig,
 } from "../src/domain/vaults/vault_config.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
+import { SecretNotFoundError } from "../src/domain/vaults/secret_not_found_error.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import {
@@ -972,7 +973,7 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
     const unreachable = "1Password CLI (op) is not installed or not in PATH.";
     const types: string[] = [];
     const register = (
-      has: (key: string) => Promise<boolean>,
+      has: ((key: string) => Promise<boolean>) | undefined,
       get: (key: string) => Promise<string>,
     ) => {
       const type = `@test/unanswering-${crypto.randomUUID()}`;
@@ -983,7 +984,7 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
         description: "A provider whose backend fails",
         isBuiltIn: false,
         createProvider: (name: string) => ({
-          has,
+          ...(has === undefined ? {} : { has }),
           get,
           put: () => Promise.resolve(),
           list: () => Promise.resolve([]),
@@ -1009,6 +1010,10 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
         },
         () => Promise.reject(new Error(unreachable)),
       );
+      const notFoundType = register(
+        undefined,
+        (key) => Promise.reject(new SecretNotFoundError("gone", key)),
+      );
       const vaultConfigs = new YamlVaultConfigRepository(f.repoDir);
       await vaultConfigs.save(
         VaultConfig.create(
@@ -1018,7 +1023,13 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
           {},
         ),
       );
-      for (const [name, type] of [["down", downType], ["strict", strictType]]) {
+      for (
+        const [name, type] of [
+          ["down", downType],
+          ["strict", strictType],
+          ["gone", notFoundType],
+        ]
+      ) {
         await vaultConfigs.save(
           VaultConfig.create(
             createVaultConfigId(crypto.randomUUID()),
@@ -1082,6 +1093,7 @@ Deno.test("typed local behavior: validate leaves a reference the vault cannot an
       );
 
       const failures: [string, string, string][] = [
+        ["gone", "${{ vault.get('gone', 'item') }}", "not found"],
         ["strict-missing", "${{ vault.get('strict', 'absent') }}", "not found"],
         [
           "strict-load",

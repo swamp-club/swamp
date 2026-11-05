@@ -30,6 +30,10 @@ import {
   moveLocalEncryptionSecrets,
   removeLocalEncryptionSecrets,
 } from "./local_encryption_vault_provider.ts";
+import {
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 import { VaultAnnotation } from "./vault_annotation.ts";
 
 async function grantEveryoneReadAcl(path: string): Promise<number> {
@@ -389,13 +393,16 @@ Deno.test("LocalEncryptionVaultProvider - error handling", async (t) => {
 
       const error = await assertRejects(
         () => vault.get("non-existent-key"),
-        Error,
+        SecretNotFoundError,
       );
 
       assertStringIncludes(
         error.message,
         "Secret 'non-existent-key' not found in local vault 'empty-vault'",
       );
+      assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+      assertEquals(error.vaultName, "empty-vault");
+      assertEquals(error.key, "non-existent-key");
     });
   });
 

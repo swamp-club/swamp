@@ -65,6 +65,7 @@ function vaultServiceSource(
           throw secretReferenceError(
             `Failed to load secret '${key}' from vault '${vaultName}' (at ${location})`,
             error,
+            reference,
           );
         }
       }

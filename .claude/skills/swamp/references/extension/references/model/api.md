@@ -360,6 +360,27 @@ readResource(
   available
 - Cast the result using `z.infer<typeof YourSchema>` to get type-safe access
   (the data was already validated against the schema on write)
+- If a sensitive field's vault key no longer exists (the secret was deleted, or
+  the vault config now points at a different vault), it rejects with an error
+  whose `code` is `"secret_not_found"`. Any other vault failure rejects with a
+  different error. Check with `isSecretNotFoundError` from
+  `jsr:@swamp-club/swamp-testing`, or by comparing `err.code`, never with
+  `instanceof`: each bundle has its own copy of the class.
+
+```typescript
+import { isSecretNotFoundError } from "jsr:@swamp-club/swamp-testing";
+
+let session: Session | null;
+try {
+  session = await context.readResource!("session") as Session | null;
+} catch (err) {
+  if (!isSecretNotFoundError(err)) throw err; // broken vault: fail, don't retry
+  session = null; // the cached secret is gone: recreate it
+}
+```
+
+To test that branch, give the test context a `readResource` that throws
+`new SecretNotFoundError("my-vault", "key")` from the same package.
 
 **Low-level alternative for binary data:**
 

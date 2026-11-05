@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SecretNotFoundError } from "./secret_not_found_error.ts";
 import type {
   VaultDeleteProvider,
   VaultExistenceProvider,
@@ -45,9 +46,10 @@ export class MockVaultProvider
     const secret = this.secrets.get(secretKey);
     if (secret === undefined) {
       return Promise.reject(
-        new Error(
-          `Secret '${secretKey}' not found in mock vault '${this.name}'`,
-        ),
+        new SecretNotFoundError(this.name, secretKey, {
+          message:
+            `Secret '${secretKey}' not found in mock vault '${this.name}'`,
+        }),
       );
     }
     return Promise.resolve(secret);
@@ -73,9 +75,10 @@ export class MockVaultProvider
   delete(secretKey: string): Promise<void> {
     if (!this.secrets.has(secretKey)) {
       return Promise.reject(
-        new Error(
-          `Secret '${secretKey}' not found in mock vault '${this.name}'`,
-        ),
+        new SecretNotFoundError(this.name, secretKey, {
+          message:
+            `Secret '${secretKey}' not found in mock vault '${this.name}'`,
+        }),
       );
     }
     this.secrets.delete(secretKey);

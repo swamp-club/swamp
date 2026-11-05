@@ -40,6 +40,7 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { isSecretNotFoundError } from "../../domain/vaults/secret_not_found_error.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -180,8 +181,9 @@ When using --server, the confirmation prompt is not available — use --force to
       );
     } catch (error) {
       if (
-        error instanceof Error &&
-        /not found|can't find|ResourceNotFoundException/i.test(error.message)
+        isSecretNotFoundError(error) ||
+        (error instanceof Error &&
+          /not found|can't find|ResourceNotFoundException/i.test(error.message))
       ) {
         if (options.force) {
           const renderer = createVaultDeleteRenderer(cliCtx.outputMode);

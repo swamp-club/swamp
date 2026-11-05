@@ -43,6 +43,11 @@ import {
   type RunVaultAccess,
   runWithVaultAccess,
 } from "../domain/vaults/run_vault_access.ts";
+import {
+  isSecretNotFoundError,
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "../domain/vaults/secret_not_found_error.ts";
 import { createModelOutputId } from "../domain/models/model_output.ts";
 import { createDefinitionId } from "../domain/definitions/definition.ts";
 import {
@@ -69,9 +74,10 @@ import {
   ResolveSecretParamsSchema,
   shipsReferencesOnly,
 } from "../domain/remote/protocol.ts";
-import type {
-  RpcChannel,
-  RpcHandlerContext,
+import {
+  type RpcChannel,
+  RpcError,
+  type RpcHandlerContext,
 } from "../domain/remote/rpc_channel.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { jsonSafeClone } from "./serializer.ts";
@@ -119,6 +125,14 @@ export function sanitizeRpcError(error: unknown): string {
     return raw.slice(0, 200) + "...";
   }
   return raw;
+}
+
+/** swamp's own wording: a store's not-found text is never echoed to a worker */
+function secretNotFoundRpcMessage(params: unknown): string {
+  const { vaultName, secretKey } = (params ?? {}) as Record<string, unknown>;
+  return typeof vaultName === "string" && typeof secretKey === "string"
+    ? new SecretNotFoundError(vaultName, secretKey).message
+    : "Secret not found";
 }
 
 export function dataContentPath(
@@ -833,6 +847,12 @@ export class CapabilityService {
             error: error instanceof Error ? error.message : String(error),
           },
         );
+        if (isSecretNotFoundError(error)) {
+          throw new RpcError({
+            code: SECRET_NOT_FOUND_CODE,
+            message: secretNotFoundRpcMessage(params),
+          });
+        }
         throw new Error(sanitizeRpcError(error));
       }
     };

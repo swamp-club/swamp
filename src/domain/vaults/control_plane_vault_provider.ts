@@ -32,6 +32,7 @@ import {
   importAesKey,
 } from "../crypto/aes_gcm.ts";
 import { getLogger } from "@logtape/logtape";
+import { SecretNotFoundError } from "./secret_not_found_error.ts";
 import {
   classifyTokenKeyRecord,
   serializeTokenKeyMarker,
@@ -119,9 +120,10 @@ export class ControlPlaneVaultProvider
     const key = this.#requireKey();
     const data = await this.#store.get(`${SECRET_PREFIX}${secretKey}`);
     if (data === null) {
-      throw new Error(
-        `Secret '${secretKey}' not found in ${TOKEN_SECRETS_VAULT_NAME}`,
-      );
+      throw new SecretNotFoundError(TOKEN_SECRETS_VAULT_NAME, secretKey, {
+        message:
+          `Secret '${secretKey}' not found in ${TOKEN_SECRETS_VAULT_NAME}`,
+      });
     }
     const blob: EncryptedBlob = JSON.parse(new TextDecoder().decode(data));
     return await aesGcmDecrypt(blob, key);

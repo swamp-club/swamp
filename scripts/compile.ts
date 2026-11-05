@@ -152,6 +152,8 @@ async function main() {
       "deno",
       "compile",
       "--unstable-bundle",
+      // the dashboard's build packages stay in the workspace but never ship
+      "--exclude-unused-npm",
       "--allow-read",
       "--allow-write",
       "--allow-env",

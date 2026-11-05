@@ -109,8 +109,9 @@ per-repo hooks so the agent's commands are audited
 
 `swamp` compiles to a single Deno binary. `scripts/compile.ts` also embeds a
 second Deno runtime for bundling extensions, the bundled skills, and the
-dashboard build (only if `packages/dashboard/dist` exists at compile time). The
-subcommand decides the role:
+dashboard build (only if `packages/dashboard/dist` exists at compile time). Only
+npm packages reachable from `main.ts` are embedded, and per-target size limits
+guard against a jump. The subcommand decides the role:
 
 | Role                     | Runs as                                              | Owns                                                                                             |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
