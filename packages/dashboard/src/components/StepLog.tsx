@@ -26,7 +26,13 @@ import { buildPath, isPlainLeftClick } from "../routes.ts";
 import type { DataItem } from "../views/data_target.ts";
 import type { DrawerItem } from "../views/run_item_param.ts";
 import { Skeleton, SkeletonRegion } from "./Skeleton.tsx";
-import { logFromOutputs, parseLog, pickLogArtifact } from "./step_log.ts";
+import {
+  logFromOutputs,
+  logFromQueryReply,
+  parseLog,
+  pickLogArtifact,
+  stepLogQuery,
+} from "./step_log.ts";
 import type { ArtifactRefLike } from "./run_graph_model.ts";
 
 /**
@@ -44,13 +50,26 @@ export function StepLog(
 ) {
   const ref = pickLogArtifact(artifacts);
   const modelName = ref?.tags?.modelName;
-  const req = useRequest("data.get", {
+  // the run-pinned query reads the log even after its behavior is deleted;
+  // an artifact without run tags is read by behavior name as before
+  const query = ref ? stepLogQuery(ref) : null;
+  const queryReq = useRequest("data.query", query ?? undefined, {
+    enabled: query !== null,
+  });
+  const getReq = useRequest("data.get", {
     modelIdOrName: modelName,
     dataName: ref?.name,
     version: ref?.version,
     includeContent: true,
-  }, { enabled: ref !== null && !!modelName });
-  const item = req.error ? null : extractObject<DataItem>(req.data);
+  }, { enabled: ref !== null && query === null && !!modelName });
+  const req = query ? queryReq : getReq;
+  const item: { content?: string; contentEncoding?: string } | null =
+    req.error || !req.data
+      ? null
+      : query
+      ? logFromQueryReply(req.data)
+      : extractObject<DataItem>(req.data);
+  const missing = query !== null && !!req.data && !req.error && !item;
   const binary = item?.contentEncoding === "base64";
   const text = item && !binary
     ? item.content ?? ""
@@ -93,6 +112,16 @@ export function StepLog(
           <Skeleton key={i} width={`${w}%`} height={10} />
         ))}
       </SkeletonRegion>
+    );
+  }
+  if (missing) {
+    return (
+      <div className="sl sl-empty">
+        No stored log matches this step's run.{" "}
+        <button type="button" className="btn-sm" onClick={req.refetch}>
+          Retry
+        </button>
+      </div>
     );
   }
   if (ref && req.error) {

@@ -68,6 +68,60 @@ export function parseLog(text: string, limit = 500): {
   return { lines: truncated > 0 ? lines.slice(truncated) : lines, truncated };
 }
 
+// a type alias, not an interface, so it passes as a request payload record
+export type StepLogQueryPayload = {
+  predicate: string;
+  select: string;
+  limit: number;
+};
+
+/**
+ * The data.query that reads exactly this artifact, pinned by the run, job and
+ * step it recorded, so the read never resolves the behavior that wrote it;
+ * null when the artifact lacks those tags.
+ */
+export function stepLogQuery(ref: ArtifactRefLike): StepLogQueryPayload | null {
+  const runId = ref.tags?.workflowRunId;
+  const job = ref.tags?.job;
+  const step = ref.tags?.step;
+  if (!runId || !job || !step) return null;
+  // JSON string literals are valid CEL string literals
+  const str = (value: string) => JSON.stringify(value);
+  return {
+    predicate: [
+      `workflowRunId == ${str(runId)}`,
+      `jobName == ${str(job)}`,
+      `stepName == ${str(step)}`,
+      `name == ${str(ref.name)}`,
+      `version == ${ref.version}`,
+    ].join(" && "),
+    select: '{"content": content, "contentEncoding": contentEncoding}',
+    limit: 1,
+  };
+}
+
+export interface QueriedLog {
+  content: string;
+  contentEncoding?: string;
+}
+
+/**
+ * The first match of a {@link stepLogQuery} reply, or null for none. A select
+ * answers in projected rows, not results.
+ */
+export function logFromQueryReply(payload: unknown): QueriedLog | null {
+  const data = (payload as { data?: { projected?: { rows?: unknown } } } | null)
+    ?.data;
+  const rows = data?.projected?.rows;
+  const first = Array.isArray(rows) ? rows[0] : undefined;
+  if (!first || typeof first !== "object") return null;
+  const { content, contentEncoding } = first as Record<string, unknown>;
+  return {
+    content: typeof content === "string" ? content : "",
+    ...(typeof contentEncoding === "string" && { contentEncoding }),
+  };
+}
+
 /** A log built from a step's `stdout`/`stderr` outputs, when it has them. */
 export function logFromOutputs(
   outputs: Record<string, unknown> | undefined,

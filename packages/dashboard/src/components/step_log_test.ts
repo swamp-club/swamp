@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { logFromOutputs, parseLog, pickLogArtifact } from "./step_log.ts";
+import {
+  logFromOutputs,
+  logFromQueryReply,
+  parseLog,
+  pickLogArtifact,
+  stepLogQuery,
+} from "./step_log.ts";
 
 const ref = (name: string, tags: Record<string, string>) => ({
   dataId: `${name}-id`,
@@ -65,4 +71,73 @@ Deno.test("logFromOutputs: rebuilds a log from captured output", () => {
   );
   assertEquals(logFromOutputs({ exitCode: 0 }), null);
   assertEquals(logFromOutputs(undefined), null);
+});
+
+const runTags = {
+  type: "file",
+  modelName: "review-cb586fdc",
+  workflowRunId: "cb586fdc-3919-4db5-95a5-df200f59c514",
+  job: "review",
+  step: "comments",
+};
+
+Deno.test("stepLogQuery: pins the run, job, step, name and version the artifact recorded", () => {
+  assertEquals(stepLogQuery(ref("log", runTags)), {
+    predicate: 'workflowRunId == "cb586fdc-3919-4db5-95a5-df200f59c514" && ' +
+      'jobName == "review" && stepName == "comments" && name == "log" && ' +
+      "version == 3",
+    select: '{"content": content, "contentEncoding": contentEncoding}',
+    limit: 1,
+  });
+});
+
+Deno.test("stepLogQuery: keeps quotes, backslashes and unicode inside one string literal", () => {
+  const query = stepLogQuery(
+    ref("log", { ...runTags, job: 'a" || true || "', step: "s\\ü-[item]" }),
+  );
+  assertEquals(
+    query?.predicate,
+    'workflowRunId == "cb586fdc-3919-4db5-95a5-df200f59c514" && ' +
+      'jobName == "a\\" || true || \\"" && stepName == "s\\\\ü-[item]" && ' +
+      'name == "log" && version == 3',
+  );
+});
+
+Deno.test("stepLogQuery: null when the artifact lacks a run, job or step tag", () => {
+  for (const missing of ["workflowRunId", "job", "step"]) {
+    const tags: Record<string, string> = { ...runTags };
+    delete tags[missing];
+    assertEquals(stepLogQuery(ref("log", tags)), null, missing);
+  }
+  assertEquals(stepLogQuery({ dataId: "d", name: "log", version: 1 }), null);
+});
+
+const projected = (rows: Record<string, unknown>[]) => ({
+  data: {
+    results: [],
+    projected: { shape: "map", columns: ["content", "contentEncoding"], rows },
+    total: rows.length,
+    limited: false,
+  },
+});
+
+Deno.test("logFromQueryReply: reads the first projected row, or null for none", () => {
+  assertEquals(
+    logFromQueryReply(
+      projected([{ content: "[stdout]\nhello", contentEncoding: "utf-8" }]),
+    ),
+    { content: "[stdout]\nhello", contentEncoding: "utf-8" },
+  );
+  assertEquals(
+    logFromQueryReply(
+      projected([{ content: "AAE=", contentEncoding: "base64" }]),
+    ),
+    { content: "AAE=", contentEncoding: "base64" },
+  );
+  assertEquals(logFromQueryReply(projected([])), null);
+  assertEquals(
+    logFromQueryReply({ data: { results: [], total: 0, limited: false } }),
+    null,
+  );
+  assertEquals(logFromQueryReply(null), null);
 });
