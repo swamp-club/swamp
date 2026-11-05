@@ -132,6 +132,10 @@ export class ExtensionRepository {
     return this.catalog;
   }
 
+  isInstalledExtension(name: string): boolean {
+    return this.lockfileRepository.getLockedVersion(name) !== null;
+  }
+
   close(): void {
     this.catalog.close();
   }

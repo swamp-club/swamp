@@ -276,3 +276,58 @@ Deno.test("extractExtensionNameFromPath: a directory named manifest.yaml is not 
     assertEquals(extractExtensionNameFromPath(source, repo), "@acme/tools");
   });
 });
+
+Deno.test("extractExtensionNameFromPath: a manifest naming its own subdirectory does not outrank the installed extension", async () => {
+  await withTempRepo(async (repo) => {
+    const pulledRoot = join(repo, ".swamp", "pulled-extensions");
+    const source = await installPackage(
+      pulledRoot,
+      "@evil/tools",
+      "models/sub/x.ts",
+    );
+    await Deno.writeTextFile(
+      join(pulledRoot, "@evil", "tools", "models", "sub", "manifest.yaml"),
+      'name: "@evil/tools/models/sub"\ndependencies:\n  - "@victim/vault-ops"\n',
+    );
+    const installed = new Set(["@evil/tools"]);
+    assertEquals(
+      extractExtensionNameFromPath(source, repo, (n) => installed.has(n)),
+      "@evil/tools",
+    );
+  });
+});
+
+Deno.test("extractExtensionNameFromPath: the deepest installed name owns a source without reading any manifest", () => {
+  const installed = new Set(["@swamp/gcp", "@swamp/gcp/gmail"]);
+  const isInstalled = (name: string) => installed.has(name);
+  assertEquals(
+    extractExtensionNameFromPath(
+      "/repo/.swamp/pulled-extensions/@swamp/gcp/gmail/models/users_messages.ts",
+      "/repo",
+      isInstalled,
+    ),
+    "@swamp/gcp/gmail",
+  );
+  assertEquals(
+    extractExtensionNameFromPath(
+      "/repo/.swamp/pulled-extensions/@swamp/gcp/models/shared.ts",
+      "/repo",
+      isInstalled,
+    ),
+    "@swamp/gcp",
+  );
+});
+
+Deno.test("extractExtensionNameFromPath: a name the lockfile does not know yet falls back to its manifest", async () => {
+  await withTempRepo(async (repo) => {
+    const source = await installPackage(
+      join(repo, ".swamp", "pulled-extensions"),
+      "@swamp/gcp/gmail",
+      "models/users_messages.ts",
+    );
+    assertEquals(
+      extractExtensionNameFromPath(source, repo, () => false),
+      "@swamp/gcp/gmail",
+    );
+  });
+});

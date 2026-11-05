@@ -139,6 +139,7 @@ interface OtherSpellingRows {
 export function extractExtensionNameFromPath(
   absolutePath: string,
   repoDir: string | null,
+  isInstalled?: (name: string) => boolean,
 ): string | undefined {
   if (!repoDir) return undefined;
 
@@ -185,37 +186,36 @@ export function extractExtensionNameFromPath(
 
   const segments = relative.split(SEPARATOR);
   if (segments.length < 2) return undefined;
-  const name = nearestManifestName(root, segments) ??
+  // an installed name outranks a manifest: a package can ship a manifest.yaml
+  // naming one of its own subdirectories, which would otherwise own the
+  // sources there with dependencies its published manifest never declared
+  const name = deepestOwner(segments, isInstalled ?? (() => false)) ??
+    deepestOwner(segments, (candidate) => manifestNames(root, candidate)) ??
     segmentGuessName(segments);
   if (name.includes("..") || name.includes("\0")) return undefined;
   return name;
 }
 
-/**
- * an extension is installed at <pulled root>/<name>/manifest.yaml, so the
- * nearest manifest above the source that names its own directory is the owner;
- * any other manifest.yaml in the tree is package content
- */
-function nearestManifestName(
-  root: string,
+/** an extension is installed at <pulled root>/<name>/, however many segments */
+function deepestOwner(
   segments: readonly string[],
+  isOwner: (candidate: string) => boolean,
 ): string | undefined {
   const minSegments = segments[0].startsWith("@") ? 2 : 1;
   for (let depth = segments.length - 1; depth >= minSegments; depth--) {
-    const dirSegments = segments.slice(0, depth);
-    const name = dirSegments.join("/");
-    if (manifestDeclaresName(join(root, ...dirSegments), name)) return name;
+    const candidate = segments.slice(0, depth).join("/");
+    if (isOwner(candidate)) return candidate;
   }
   return undefined;
 }
 
-function manifestDeclaresName(dir: string, name: string): boolean {
-  const manifestPath = join(dir, "manifest.yaml");
+function manifestNames(root: string, candidate: string): boolean {
+  const manifestPath = join(root, ...candidate.split("/"), "manifest.yaml");
   try {
     if (!Deno.lstatSync(manifestPath).isFile) return false;
     const parsed = parseYaml(Deno.readTextFileSync(manifestPath));
     return typeof parsed === "object" && parsed !== null &&
-      (parsed as Record<string, unknown>).name === name;
+      (parsed as Record<string, unknown>).name === candidate;
   } catch {
     return false;
   }
@@ -323,6 +323,15 @@ export class ExtensionLoader {
     this.repository = repository;
     this.logger = getLogger(["swamp", adapter.kind, "loader"]);
     this.appliedSourceRows = this.localSourceRows();
+  }
+
+  private owningExtension(sourcePath: string): string | undefined {
+    const repository = this.repository;
+    return extractExtensionNameFromPath(
+      sourcePath,
+      this.repoDir,
+      repository && ((name) => repository.isInstalledExtension(name)),
+    );
   }
 
   private sourceModules(): SourceModuleLookup {
@@ -765,10 +774,7 @@ export class ExtensionLoader {
             ...ctx,
             absolutePath,
             pulled: this.isPulledBoundary(baseDir),
-            extensionName: extractExtensionNameFromPath(
-              absolutePath,
-              this.repoDir,
-            ),
+            extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: fingerprint,
             sourceSnapshot: snapshot,
           },
@@ -1655,10 +1661,7 @@ export class ExtensionLoader {
         denoRuntime: this.denoRuntime,
         repoDir: this.repoDir,
         pulled: this.isPulledBoundary(entry.source_path),
-        extensionName: extractExtensionNameFromPath(
-          entry.source_path,
-          this.repoDir,
-        ),
+        extensionName: this.owningExtension(entry.source_path),
         sourceFingerprint: entry.source_fingerprint || undefined,
         sourceSnapshot: snapshot,
       },
@@ -2283,10 +2286,7 @@ export class ExtensionLoader {
             denoRuntime: this.denoRuntime,
             repoDir: this.repoDir,
             pulled: this.isPulledBoundary(baseDir),
-            extensionName: extractExtensionNameFromPath(
-              absolutePath,
-              this.repoDir,
-            ),
+            extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: effectiveFingerprint,
             sourceSnapshot: snapshot,
           },

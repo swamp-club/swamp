@@ -1738,3 +1738,21 @@ Deno.test("ExtensionRepository.saveAll: a rolled-back save keeps the stale row a
     assert(bundleExists(bundle));
   });
 });
+
+Deno.test("ExtensionRepository: isInstalledExtension answers from the lockfile, nested names included", () => {
+  withRepository((repo) => {
+    assertEquals(repo.isInstalledExtension("@swamp/gcp/gmail"), true);
+    assertEquals(repo.isInstalledExtension("@swamp/gcp"), false);
+    assertEquals(
+      repo.isInstalledExtension("@swamp/gcp/gmail/models/sub"),
+      false,
+    );
+  }, {
+    lockedVersions: {
+      "@swamp/gcp/gmail": {
+        version: "2026.10.23.1",
+        pulledAt: "2026-10-23T00:00:00.000Z",
+      },
+    },
+  });
+});
