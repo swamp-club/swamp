@@ -95,7 +95,11 @@ import { RunEventBuffer } from "../run_event_buffer.ts";
 import { SUSPENDED_RUN_BUSY_MESSAGE } from "../suspended_run_cancel.ts";
 import { createSocketSubscriber, subscribeUntilDetach } from "./shared.ts";
 import { redactingFor } from "./nested_run_redaction.ts";
-import { type CompletedRunSlot, runStreamFor } from "./run_data_attributes.ts";
+import {
+  type CompletedRunSlot,
+  dataAttributesFor,
+  runStreamFor,
+} from "./run_data_attributes.ts";
 import { toRunData } from "../../libswamp/workflows/run.ts";
 import { serializeEvent } from "../serializer.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
@@ -3138,6 +3142,48 @@ Deno.test("runStreamFor: a subscriber whose read is cancelled gets the completed
 
       assertEquals(sent, completed);
       assertEquals(frames.length, 0);
+    } finally {
+      close();
+    }
+  });
+});
+
+Deno.test("dataAttributesFor: a completed event its attributes would push past the frame budget is sent name-only", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, slot, close } = await servedHistoryRun(dir, workflow);
+    try {
+      const { socket } = makeSearchSocket();
+      const completed = serializeEvent({
+        kind: "completed",
+        run: toRunData(slot.run!),
+      });
+      const bareBytes = JSON.stringify(completed).length;
+
+      const tight = await dataAttributesFor(
+        ctx,
+        socket,
+        null,
+        slot,
+        undefined,
+        bareBytes + 8,
+      )(completed);
+      const roomy = await dataAttributesFor(
+        ctx,
+        socket,
+        null,
+        slot,
+        undefined,
+        bareBytes * 10,
+      )(completed);
+
+      assertEquals(tight, completed);
+      const step = (roomy as unknown as AttributeFrame["event"])?.run
+        ?.jobs[0].steps[0];
+      assertEquals(step?.outputs, {
+        stdout: "hello",
+        apiKey: "not-for-you",
+      });
     } finally {
       close();
     }
