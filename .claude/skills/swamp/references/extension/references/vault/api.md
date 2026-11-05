@@ -37,9 +37,12 @@ Retrieves a secret value from the vault.
   absence (your own login token, say), not the key that was asked for
 
 swamp keeps the `secret_not_found` code intact through `context.readResource()`
-and vault expressions, on local and remote workers, so a behavior can tell a
-missing secret from a broken vault without matching your error text. Raise it
-only when the key is absent: a behavior may treat it as "safe to recreate".
+on local and remote workers, and through a vault expression that reads the
+value, so a behavior can tell a missing secret from a broken vault without
+matching your error text. If your provider implements `has()`, a vault
+expression whose key `has()` reports absent fails earlier, with code
+`secret_reference_unavailable`. Raise it only when the key is absent: a behavior
+may treat it as "safe to recreate".
 
 ```typescript
 import { SecretNotFoundError } from "jsr:@swamp-club/swamp-testing";

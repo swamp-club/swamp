@@ -85,12 +85,8 @@ Deno.test("secretReferenceError: a store failure whose cause is some other secre
   assertEquals(isSecretNotFoundError(error), false);
 });
 
-Deno.test("SecretReferenceUnavailableError: keeps its own code, with a SecretNotFoundError as its cause", () => {
+Deno.test("SecretReferenceUnavailableError: passes through unchanged and is not relabelled", () => {
   const error = new SecretReferenceUnavailableError(REFERENCE, "call", "loc");
   assertEquals(error.code, "secret_reference_unavailable");
-  assertEquals(isSecretNotFoundError(error.cause), true);
-  const cause = error.cause as SecretNotFoundError;
-  assertEquals(cause.vaultName, "erp");
-  assertEquals(cause.key, "token");
   assertStrictEquals(secretReferenceError("ctx", error, REFERENCE), error);
 });

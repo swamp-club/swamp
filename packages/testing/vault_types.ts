@@ -36,17 +36,15 @@ export interface VaultPutOptions {
 /** The `code` a vault provider's error carries when a secret does not exist. */
 export const SECRET_NOT_FOUND_CODE = "secret_not_found";
 
-const MAX_CAUSE_DEPTH = 8;
-
 /**
  * Thrown by a vault provider's `get()` when the key does not exist, and only
  * then — never for an authentication, permission or network failure. Throw it
  * as the rejection itself: swamp reads the `code` on the rejected error, not
  * on its `cause`.
  *
- * swamp keeps the `code` intact through `context.readResource()` and vault
- * expressions, on local and remote workers. Check for it with {@link isSecretNotFoundError}, not `instanceof`:
- * each extension bundle carries its own copy of this class.
+ * swamp keeps the `code` intact through `context.readResource()`, on local and
+ * remote workers. Check for it with {@link isSecretNotFoundError}, not
+ * `instanceof`: each extension bundle carries its own copy of this class.
  *
  * @example
  * ```ts
@@ -79,9 +77,11 @@ export class SecretNotFoundError extends Error {
 }
 
 /**
- * True when the error, or an error in its `cause` chain, carries the
- * {@link SECRET_NOT_FOUND_CODE}. Matches by `code`, so it recognises the error
- * whichever bundle or process constructed it.
+ * True when the error itself carries the {@link SECRET_NOT_FOUND_CODE}. Matches
+ * by `code`, so it recognises the error whichever bundle or process
+ * constructed it. It never looks at `cause`: a provider may wrap some other
+ * secret's absence (its own login token, say), which does not mean the key
+ * you asked for is gone. swamp applies the same rule.
  *
  * @example
  * ```ts
@@ -94,18 +94,8 @@ export class SecretNotFoundError extends Error {
  * ```
  */
 export function isSecretNotFoundError(error: unknown): boolean {
-  const seen = new Set<unknown>();
-  let current = error;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (typeof current !== "object" || current === null) return false;
-    if (seen.has(current)) return false;
-    seen.add(current);
-    if ((current as { code?: unknown }).code === SECRET_NOT_FOUND_CODE) {
-      return true;
-    }
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
+  return typeof error === "object" && error !== null &&
+    (error as { code?: unknown }).code === SECRET_NOT_FOUND_CODE;
 }
 
 /**

@@ -1527,10 +1527,12 @@ editing the factory:
 
 - Network connectivity problems
 - Secret not found in vault — the provider raises an error with code
-  `secret_not_found` (`SecretNotFoundError`), and swamp keeps that code through
-  `readResource`, vault expressions, serve's RPC (`RpcError` code) and the
-  protected secret-load route (refusal code), so an extension can tell a missing
-  key from a broken vault
+  `secret_not_found` (`SecretNotFoundError`) on the rejection itself, and swamp
+  keeps that code through `readResource`, a vault expression's value read,
+  serve's RPC (`RpcError` code) and the protected secret-load route (refusal
+  code), so an extension can tell a missing key from a broken vault. Swamp reads
+  only the error's own code, never a `cause`. A provider with `has()` reports an
+  absent expression key earlier, as `secret_reference_unavailable`
 - Permission denied accessing specific secrets
 - Vault service unavailable
 

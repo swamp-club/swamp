@@ -127,7 +127,6 @@ Deno.test("checkSecretReference: a key has() denies fails with secret_reference_
         error.message,
         `Failed to resolve vault expression ${CALL} (at ${LOCATION}): Secret 'token' not found in vault 'erp'`,
       );
-      assertEquals(isSecretNotFoundError(error.cause), true);
       await assertRejects(() => check(service, registry, "token"));
       assertEquals(ctx.getOperationsByMethod("has").length, 2);
     },

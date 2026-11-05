@@ -149,3 +149,11 @@ Deno.test("testing package SecretNotFoundError: each side recognises the other's
   assertEquals(fromExtension.vaultName, fromHost.vaultName);
   assertEquals(fromExtension.key, fromHost.key);
 });
+
+Deno.test("testing package SecretNotFoundError: both helpers ignore a code found only in a cause", () => {
+  const wrapped = new Error("could not authenticate", {
+    cause: new TestingSecretNotFoundError("login", "service-token"),
+  });
+  assertEquals(isSecretNotFoundError(wrapped), false);
+  assertEquals(testingIsSecretNotFoundError(wrapped), false);
+});

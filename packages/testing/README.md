@@ -158,8 +158,13 @@ A missing key rejects with `SecretNotFoundError`, whose `code` is
 `"secret_not_found"`. A real vault provider throws the same error from `get()`
 when a key does not exist, and only then; `assertVaultConformance` checks it.
 Code that reads secrets checks for it with `isSecretNotFoundError(err)`, which
-matches the `code` (and the `cause` chain), so it works whichever bundle
-constructed the error.
+matches the `code`, so it works whichever bundle constructed the error. Like
+swamp, it reads only the error's own `code`, never a `cause`: throw the error
+itself, not one wrapped inside another.
+
+Upgrading from 0.3: a provider whose `get()` rejects a missing key with a plain
+`Error` now fails `assertVaultConformance`. Throw `SecretNotFoundError` there,
+and only there.
 
 ## `createDatastoreTestContext`
 

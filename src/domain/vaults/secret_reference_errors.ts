@@ -36,7 +36,6 @@ export class SecretReferenceUnavailableError extends UserError {
       "secret_reference_unavailable",
     );
     this.name = "SecretReferenceUnavailableError";
-    this.cause = new SecretNotFoundError(reference.vaultName, reference.key);
   }
 }
 
