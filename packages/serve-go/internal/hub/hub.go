@@ -431,6 +431,20 @@ func (h *Hub) Engines() []EngineInfo {
 	return out
 }
 
+// StartWorkspace starts a workspace's engine without opening a page; it then
+// stays up for the page idle grace.
+func (h *Hub) StartWorkspace(ctx context.Context, workspace Workspace) error {
+	e, err := h.admitted(ctx, workspace)
+	if err != nil {
+		return err
+	}
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.Linger()
+	return nil
+}
+
 // StopEngine retires one engine now, closing its sessions; the next request
 // for its workspace starts a new generation.
 func (h *Hub) StopEngine(id string) bool {

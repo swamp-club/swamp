@@ -105,6 +105,8 @@ var (
 // HubSite is the hub overview a manage lease reads and acts through.
 type HubSite interface {
 	Overview(ctx context.Context, lease Lease) (interface{}, error)
+	// StartServe starts a workspace's engine; path names a lease-bound folder.
+	StartServe(ctx context.Context, name, path string) error
 	StopEngine(id string) bool
 	RevokeLease(id string) bool
 	StopHub() error

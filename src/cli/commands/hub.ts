@@ -91,8 +91,8 @@ export function hubOverviewUrl(port: number, token: string): string {
 const hubOpenCommand = new Command()
   .name("open")
   .description(
-    "Open your swamp hub's overview: every workspace it serves with its\n" +
-      "engine, the swamp start and swamp dashboard sessions using it, and its\n" +
+    "Open your swamp hub's overview: every workspace it serves, whether its\n" +
+      "serve is running, the swamp start and swamp dashboard sessions using it, and its\n" +
       "log. Starts the hub if it isn't running. The page keeps its own access\n" +
       "while it is open, so this returns at once.",
   )

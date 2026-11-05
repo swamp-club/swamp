@@ -283,6 +283,16 @@ func (s *Supervisor) Activity() Activity {
 	return Activity{Running: s.client != nil || s.starting != nil, Sessions: s.sessions}
 }
 
+// Linger keeps the running generation up for the page idle grace, as if a
+// dashboard page had just closed; a serve started by hand outlives its start.
+func (s *Supervisor) Linger() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.client != nil {
+		s.lastPageClose = time.Now()
+	}
+}
+
 // Details is what the hub overview shows about a generation beyond its state.
 type Details struct {
 	PID       int

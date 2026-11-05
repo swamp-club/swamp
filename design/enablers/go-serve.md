@@ -401,8 +401,11 @@ Outside any workspace, after the loopback and `Host` checks:
   returns the hub record without its token, every registered and lease-bound
   workspace with its engine, the leases (never their tokens) and the last
   200 lines of the last 64 KiB of `--log-file`.
-- `POST /api/local/hub/engines/<id>/stop`, `…/leases/<id>/revoke` and
-  `…/stop` need a manage lease and `Origin` equal to the hub's own. Stopping
+- `POST /api/local/hub/workspaces/start` (`{name, path?}`),
+  `…/engines/<id>/stop`, `…/leases/<id>/revoke` and `…/stop` need a manage
+  lease and `Origin` equal to the hub's own. Starting resolves a registered
+  workspace, or a folder some live lease is bound to, and keeps the new engine
+  up for `--page-idle-grace`. Stopping
   an engine retires it; the next request starts a new generation. A lease
   cannot revoke itself (409). Stopping the hub works only with
   `--exit-when-idle` (409 `hub_is_service` otherwise), even while other

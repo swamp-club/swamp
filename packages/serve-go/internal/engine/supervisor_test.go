@@ -1106,3 +1106,29 @@ func TestSupervisorDetailsReportTheRunningGeneration(t *testing.T) {
 		t.Fatalf("details after close: %+v", details)
 	}
 }
+
+func TestSupervisorLingerKeepsAPagelessGenerationThroughTheGrace(t *testing.T) {
+	config := DefaultConfig()
+	config.IdleTimeout = time.Second
+	config.PageIdleGrace = time.Hour
+	var opened []string
+	var mu sync.Mutex
+	s := NewSupervisorWith(config, func(context.Context) (Process, error) {
+		return pageProcess("full", true, "/repo", &opened, &mu), nil
+	}, HubHandshake("/repo", true))
+	ctx := testContext(t)
+	s.Linger()
+	if err := s.Validate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.Linger()
+	now := time.Now()
+	for _, at := range []time.Time{now, now.Add(30 * time.Minute)} {
+		if err := s.Tick(ctx, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.Snapshot().State != "ready" {
+		t.Fatal("a lingering engine stopped inside the grace")
+	}
+}

@@ -34,6 +34,8 @@ import {
   type OverviewResult,
   postAction,
   revokeLeasePath,
+  START_SERVE_PATH,
+  startServeBody,
   STOP_HUB_PATH,
   stopEnginePath,
 } from "./client.ts";
@@ -46,6 +48,9 @@ import {
   sessionScope,
   since,
 } from "./helpers.ts";
+
+/** runs one hub action; resolves once the page has the result */
+type Act = (path: string, body?: unknown) => Promise<void>;
 
 const POLL_MS = 3_000;
 /** A hidden tab still polls, inside the hub's one-minute lease TTL, to keep its access. */
@@ -161,7 +166,7 @@ function HubCard(
   { overview, now, act }: {
     overview: HubOverview;
     now: number;
-    act: (path: string) => void;
+    act: Act;
   },
 ) {
   const { hub } = overview;
@@ -177,7 +182,7 @@ function HubCard(
             : `Stop the hub? This ends ${others} other session${
               others === 1 ? "" : "s"
             }.`}
-          onConfirm={() => act(STOP_HUB_PATH)}
+          onConfirm={() => act(STOP_HUB_PATH).catch(() => {})}
           disabled={!hub.autoExit}
           title={hub.autoExit
             ? undefined
@@ -191,7 +196,7 @@ function HubCard(
             ? <span className="hub-dim">{hub.gitSha.slice(0, 9)}</span>
             : null}
         </Field>
-        <Field label="Engine">
+        <Field label="Swamp">
           <code>{hub.engine ?? "—"}</code>
           {hub.engineVersion
             ? <span className="hub-dim">{hub.engineVersion}</span>
@@ -206,7 +211,7 @@ function HubCard(
           {hub.autoExit
             ? `after ${
               hub.exitWhenIdle ?? "a while"
-            } with no sessions or engines`
+            } with no sessions or serves`
             : "never: runs as a user service"}
         </Field>
       </dl>
@@ -225,11 +230,70 @@ function workspaceKind(workspace: HubWorkspace): ReactNode {
   return null;
 }
 
+/** Starts a stopped serve; shows that it is starting until the overview catches up. */
+function StartButton({ onStart }: { onStart: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      className="btn-sm btn-approve"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        onStart().finally(() => setBusy(false)).catch(() => {});
+      }}
+    >
+      {busy ? "Starting…" : "Start"}
+    </button>
+  );
+}
+
+function WorkspaceActions(
+  { workspace, act }: { workspace: HubWorkspace; act: Act },
+) {
+  const serve = workspace.engine;
+  if (serve !== null && serve.running) {
+    return (
+      <span className="hub-buttons">
+        {workspace.temporary || workspace.missing ? null : (
+          <a
+            className="btn-sm hub-open"
+            href={dashboardBaseFor(workspace.name)}
+          >
+            Open
+          </a>
+        )}
+        <ConfirmButton
+          label="Stop"
+          question={serve.pages > 0
+            ? `Close ${serve.pages} open tab${serve.pages === 1 ? "" : "s"}?`
+            : "Stop this serve?"}
+          onConfirm={() => act(stopEnginePath(serve.id)).catch(() => {})}
+        />
+      </span>
+    );
+  }
+  // A registered folder that is gone has nothing to serve.
+  if (workspace.missing) return null;
+  return (
+    <StartButton
+      onStart={() =>
+        act(
+          START_SERVE_PATH,
+          startServeBody(
+            workspace.name,
+            workspace.temporary ? workspace.path : undefined,
+          ),
+        )}
+    />
+  );
+}
+
 function WorkspacesTable(
   { workspaces, now, act }: {
     workspaces: HubWorkspace[];
     now: number;
-    act: (path: string) => void;
+    act: Act;
   },
 ) {
   return (
@@ -251,7 +315,7 @@ function WorkspacesTable(
               <thead>
                 <tr>
                   <th>Workspace</th>
-                  <th>Engine</th>
+                  <th>Serve</th>
                   <th>Tabs</th>
                   <th>Up</th>
                   <th>Last used</th>
@@ -261,8 +325,7 @@ function WorkspacesTable(
               <tbody>
                 {workspaces.map((w) => {
                   const status = engineStatus(w.engine);
-                  // A lease-bound folder opens only through its own swamp dashboard.
-                  const openable = !w.temporary && !w.missing;
+                  const running = w.engine !== null && w.engine.running;
                   return (
                     <tr
                       key={`${
@@ -271,37 +334,22 @@ function WorkspacesTable(
                     >
                       <td>
                         <div className="hub-workspace">
-                          {openable
-                            ? <a href={dashboardBaseFor(w.name)}>{w.name}</a>
-                            : <strong>{w.name}</strong>}
+                          <strong>{w.name}</strong>
                           {workspaceKind(w)}
                         </div>
                         <div className="hub-dim hub-path">{w.path}</div>
                       </td>
                       <td>
                         <StatusPill status={status.tone} label={status.label} />
-                        {w.engine?.pid
+                        {running && w.engine?.pid
                           ? <span className="hub-dim">pid {w.engine.pid}</span>
                           : null}
                       </td>
-                      <td>{w.engine ? w.engine.pages : "—"}</td>
-                      <td>{w.engine ? since(w.engine.startedAt, now) : "—"}</td>
+                      <td>{running ? w.engine!.pages : "—"}</td>
+                      <td>{running ? since(w.engine!.startedAt, now) : "—"}</td>
                       <td>{w.engine ? since(w.engine.lastUsed, now) : "—"}</td>
                       <td className="hub-actions">
-                        {w.engine
-                          ? (
-                            <ConfirmButton
-                              label="Stop engine"
-                              question={w.engine.pages > 0
-                                ? `Close ${w.engine.pages} open tab${
-                                  w.engine.pages === 1 ? "" : "s"
-                                }?`
-                                : "Stop it?"}
-                              onConfirm={() =>
-                                act(stopEnginePath(w.engine!.id))}
-                            />
-                          )
-                          : null}
+                        <WorkspaceActions workspace={w} act={act} />
                       </td>
                     </tr>
                   );
@@ -318,7 +366,7 @@ function SessionsTable(
   { leases, now, act }: {
     leases: HubLease[];
     now: number;
-    act: (path: string) => void;
+    act: Act;
   },
 ) {
   return (
@@ -359,7 +407,8 @@ function SessionsTable(
                       <ConfirmButton
                         label="End session"
                         question={`End ${sessionLabel(l)}? Its tabs close.`}
-                        onConfirm={() => act(revokeLeasePath(l.id))}
+                        onConfirm={() =>
+                          act(revokeLeasePath(l.id)).catch(() => {})}
                       />
                     )}
                 </td>
@@ -402,7 +451,7 @@ export function HubOverviewView(
   { overview, now, act, actionError }: {
     overview: HubOverview;
     now: number;
-    act: (path: string) => void;
+    act: Act;
     actionError: string | null;
   },
 ) {
@@ -486,13 +535,12 @@ export function Hub() {
     };
   }, [token, version, stopped]);
 
-  const act = (path: string) => {
+  const act: Act = async (path, body) => {
     if (!token) return;
-    postAction(token, path).then((error) => {
-      setActionError(error);
-      if (error === null && path === STOP_HUB_PATH) setStopped(true);
-      setVersion((v) => v + 1);
-    }).catch(() => {});
+    const error = await postAction(token, path, body);
+    setActionError(error);
+    if (error === null && path === STOP_HUB_PATH) setStopped(true);
+    setVersion((v) => v + 1);
   };
 
   if (!token) {

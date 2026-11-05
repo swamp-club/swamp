@@ -83,19 +83,21 @@ function render(data: HubOverview, actionError: string | null = null): string {
     <HubOverviewView
       overview={data}
       now={NOW}
-      act={() => {}}
+      act={() => Promise.resolve()}
       actionError={actionError}
     />,
   );
 }
 
-Deno.test("HubOverviewView: shows the hub, its workspaces with engines, and its sessions", () => {
+Deno.test("HubOverviewView: shows the hub, its workspaces with their serves, and its sessions", () => {
   const html = render(
     overview(true, { path: "/h/hub.log", lines: ["started", "ready"] }),
   );
   assertStringIncludes(html, "127.0.0.1:4100");
-  assertStringIncludes(html, "after 1m0s with no sessions or engines");
+  assertStringIncludes(html, "after 1m0s with no sessions or serves");
   assertStringIncludes(html, `href="/dashboard/w/infra"`);
+  assertStringIncludes(html, ">Open</a>");
+  assertStringIncludes(html, ">Serve</th>");
   assertStringIncludes(html, "running");
   assertStringIncludes(html, "pid 55");
   assertStringIncludes(html, "untrusted");
@@ -103,7 +105,11 @@ Deno.test("HubOverviewView: shows the hub, its workspaces with engines, and its 
   assertStringIncludes(html, "pid 4121");
   assertStringIncludes(html, "This page");
   assertStringIncludes(html, "End session");
-  assertStringIncludes(html, "Stop engine");
+  assertStringIncludes(html, ">Stop</button>");
+  assertEquals(html.includes("ngine"), false);
+  // docs is registered and stopped, loose is a stopped lease-bound folder: both start.
+  assertEquals(html.split(">Start</button>").length - 1, 2);
+  assertEquals(html.includes(`<a href="/dashboard/w/`), false);
   assertStringIncludes(html, "started\nready");
   assertEquals(html.includes(`href="/dashboard/w/loose"`), false);
 });

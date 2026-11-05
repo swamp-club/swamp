@@ -133,3 +133,14 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.hub-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+a.btn-sm.hub-open {
+  display: inline-block;
+  text-decoration: none;
+}

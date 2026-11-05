@@ -21,7 +21,9 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -171,6 +173,23 @@ func (g *Gateway) serveHub(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
 	switch {
+	case len(parts) == 2 && parts[0] == "workspaces" && parts[1] == "start":
+		var body struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if err != nil || json.Unmarshal(raw, &body) != nil || body.Name == "" {
+			writeJSON(w, 400, map[string]string{"error": "invalid_request"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), g.config.AuthTimeout)
+		defer cancel()
+		if err := site.StartServe(ctx, body.Name, body.Path); err != nil {
+			writeRouteFailure(w, err)
+			return
+		}
+		w.WriteHeader(204)
 	case len(parts) == 1 && parts[0] == "stop":
 		err := site.StopHub()
 		if errors.Is(err, ErrHubIsService) {

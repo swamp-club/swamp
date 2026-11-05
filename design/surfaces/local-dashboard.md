@@ -79,18 +79,22 @@ cannot open a start page socket.
 the page's own requests and open tabs keep it, so it ends about a minute after
 the last tab closes, not when the command exits. The page polls
 `/api/local/hub` every 3 s while visible (every 20 s while hidden) and shows:
-- the hub: version, engine, address, uptime and idle exit
+- the hub: version, swamp executable, address, uptime and idle exit
 - every workspace: registered, lease-bound (`swamp dashboard`) or registered
-  with its folder gone, each with its engine's state, pid, tabs and uptime
+  with its folder gone, each with its serve's state, pid, tabs and uptime (the
+  page says "serve" for a workspace engine)
 - the sessions holding leases, named by command and pid
 - the tail of `hub.log`
 
-From the page you can stop one engine (its tabs reconnect to a new one), end
-another session (its command exits with "The swamp hub ended this session.")
-or stop an auto-launched hub; each asks first. A service hub can't be stopped
-there, since its service manager would restart it. Workspace links open that
-workspace's dashboard, and its switcher leads back to the overview. A `swamp
-start` or `swamp dashboard` token gets 403 on the overview.
+A stopped workspace has a **Start** button, which starts its serve without
+opening a page; it then stays up for the page idle grace. A running one has
+**Open**, which loads its dashboard, and **Stop**, which ends its serve (its
+tabs reconnect to a new one). A lease-bound folder has no Open: only its own
+`swamp dashboard` can open it. You can also end another session (its command
+exits with "The swamp hub ended this session.") or stop an auto-launched hub;
+each stop asks first. A service hub can't be stopped there, since its service
+manager would restart it. A workspace's switcher leads back to the overview. A
+`swamp start` or `swamp dashboard` token gets 403 on the overview.
 
 ## Why this shape
 

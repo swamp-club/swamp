@@ -70,7 +70,11 @@ const ACTION_ERRORS: Record<string, string> = {
   hub_is_service:
     "This hub runs as a user service. Stop it with `swamp hub daemon disable`.",
   own_lease: "That is this page's own session.",
-  unknown_engine: "That engine has already stopped.",
+  unknown_engine: "That serve has already stopped.",
+  unknown_workspace: "That workspace isn't available any more.",
+  workspace_untrusted:
+    "That workspace's datastore is extension code, which an untrusted workspace can't load.",
+  engine_unavailable: "That serve didn't start. See the hub log below.",
   unknown_lease: "That session has already ended.",
   origin_mismatch: "The hub refused a request from another page.",
   manage_required: "This page can't manage the hub. Run `swamp hub open`.",
@@ -80,13 +84,19 @@ const ACTION_ERRORS: Record<string, string> = {
 export async function postAction(
   token: string,
   path: string,
+  body?: unknown,
 ): Promise<string | null> {
   let response: Response;
   try {
     response = await fetch(path, {
       method: "POST",
-      headers: { [LOCAL_TOKEN_HEADER]: token },
-      signal: AbortSignal.timeout(15_000),
+      headers: {
+        [LOCAL_TOKEN_HEADER]: token,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      // A cold start can take as long as the hub's startup timeout.
+      signal: AbortSignal.timeout(90_000),
     });
   } catch {
     return "The swamp hub isn't answering.";
@@ -113,3 +123,13 @@ export function revokeLeasePath(id: string): string {
 }
 
 export const STOP_HUB_PATH = "/api/local/hub/stop";
+
+export const START_SERVE_PATH = "/api/local/hub/workspaces/start";
+
+/** the body that starts a workspace's serve; a lease-bound folder names its path */
+export function startServeBody(
+  name: string,
+  path: string | undefined,
+): { name: string; path?: string } {
+  return path === undefined ? { name } : { name, path };
+}

@@ -347,3 +347,48 @@ func TestPageRenewedLeasesLiveWhileTheirPageIsInUse(t *testing.T) {
 		t.Fatal("lease ids collided")
 	}
 }
+
+func (p *pageHarness) startServe(token, body string) int {
+	r := p.request("POST", "/api/local/hub/workspaces/start", token, strings.NewReader(body))
+	r.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", p.port))
+	return p.serve(r).Code
+}
+
+func TestHubStartsAServeWithoutOpeningAPage(t *testing.T) {
+	control := siteFiles()
+	control.list = []Workspace{{Name: "a", Path: "/repos/a", Trusted: true}}
+	p := newSiteHarness(t, control, Workspace{Name: "a", Path: "/repos/a", Trusted: true})
+	p.leases.IssueWith(LeaseOptions{Scope: LeaseScope{Workspace: "loose"}, Path: "/tmp/loose", Client: "dashboard"})
+	_, manage := p.manageToken(t)
+
+	if code := p.startServe(p.token, `{"name":"a"}`); code != 403 {
+		t.Fatalf("start without manage: %d", code)
+	}
+	for _, body := range []string{`{}`, `not json`} {
+		if code := p.startServe(manage, body); code != 400 {
+			t.Fatalf("start %s: %d", body, code)
+		}
+	}
+	if code := p.startServe(manage, `{"name":"nope"}`); code != 404 {
+		t.Fatalf("start unknown: %d", code)
+	}
+	if code := p.startServe(manage, `{"name":"loose","path":"/elsewhere"}`); code != 404 {
+		t.Fatalf("start an unleased folder: %d", code)
+	}
+	if p.startCount("/repos/a") != 0 || p.startCount("/elsewhere") != 0 {
+		t.Fatal("a refused start launched an engine")
+	}
+
+	if code := p.startServe(manage, `{"name":"a"}`); code != 204 || p.startCount("/repos/a") != 1 {
+		t.Fatalf("start registered: %d, %d starts", code, p.startCount("/repos/a"))
+	}
+	if engine := p.overview(t, manage).Workspaces[0].Engine; engine == nil || !engine.Running {
+		t.Fatalf("started serve: %+v", engine)
+	}
+	if code := p.startServe(manage, `{"name":"loose","path":"/tmp/loose"}`); code != 204 || p.startCount("/tmp/loose") != 1 {
+		t.Fatalf("start bound folder: %d, %d starts", code, p.startCount("/tmp/loose"))
+	}
+	if code := p.startServe(manage, `{"name":"a"}`); code != 204 || p.startCount("/repos/a") != 1 {
+		t.Fatalf("start a running serve: %d, %d starts", code, p.startCount("/repos/a"))
+	}
+}

@@ -22,6 +22,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sort"
@@ -219,6 +220,31 @@ func tailLog(path string) *overviewLog {
 	}
 	view.Lines = lines
 	return view
+}
+
+// StartServe starts a registered workspace's engine, or a lease-bound
+// folder's when path names one a live lease is bound to.
+func (s *Site) StartServe(ctx context.Context, name, path string) error {
+	unknown := &gateway.RouteError{Status: 404, Code: "unknown_workspace"}
+	if path == "" {
+		workspace, err := s.Hub.resolve(ctx, name)
+		if errors.Is(err, ErrUnknownWorkspace) {
+			return unknown
+		}
+		if err != nil {
+			return err
+		}
+		return s.Hub.StartWorkspace(ctx, workspace)
+	}
+	if s.Leases == nil {
+		return unknown
+	}
+	for _, lease := range s.Leases.List() {
+		if lease.Path == path && lease.Workspace == name {
+			return s.Hub.StartWorkspace(ctx, Workspace{Name: name, Path: path, Trusted: true, bound: true})
+		}
+	}
+	return unknown
 }
 
 func (s *Site) StopEngine(id string) bool { return s.Hub.StopEngine(id) }
