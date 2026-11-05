@@ -133,7 +133,11 @@ import {
 } from "../remote_run.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
-import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
+import {
+  releaseRegisteredLocks,
+  suppressSyncExitOnSignal,
+} from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { watchV3ServeFeeds } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -163,7 +167,7 @@ export function workflowStepLockHook(
   );
   // a serve-mode checkout working offline judges each step before it starts:
   // one that changes things needs its behavior's lease
-  return async (modelType, modelId, step) => {
+  return async (modelType, modelId, step, signal) => {
     if (step !== undefined) {
       await assertOfflineRunAllowed(datastoreConfig, {
         modelType,
@@ -173,7 +177,7 @@ export function workflowStepLockHook(
         methodKind: await methodKindOf(modelType, step.methodName),
       });
     }
-    return await hook(modelType, modelId, step);
+    return await hook(modelType, modelId, step, signal);
   };
 }
 
@@ -684,6 +688,8 @@ export const workflowRunCommand = new Command()
             shutdownHandle = registerShutdownHandler({
               handler: () => abort.abort(),
               forceExitOnRepeat: true,
+              dataWrites: processDataWrites,
+              beforeForceExit: releaseRegisteredLocks,
             });
             const baseLibCtx = libSwampContextForRepo(repoContext, {
               signal: abort.signal,

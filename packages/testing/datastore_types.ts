@@ -47,7 +47,8 @@ export interface LockOptions {
 
 /** A distributed lock that can be acquired and released. */
 export interface DistributedLock {
-  acquire(): Promise<void>;
+  /** an aborted signal stops the wait with its reason, holding nothing */
+  acquire(signal?: AbortSignal): Promise<void>;
   release(): Promise<void>;
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   inspect(): Promise<LockInfo | null>;

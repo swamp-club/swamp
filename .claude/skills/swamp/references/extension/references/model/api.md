@@ -695,6 +695,13 @@ execute: (async (
 | `context.modelId`              | `string`                                                                                       | The behavior instance ID                             |
 | `context.traceHeaders`         | `Readonly<Record<string, string>> \| undefined`                                                | This execution's W3C trace headers                   |
 
+A cancelled run (Ctrl+C, `--timeout`, `swamp workflow cancel`) aborts
+`context.signal`, waits about 4 s for the method to stop, then a little longer
+only for a `writeResource` or file save already under way; a write the method
+starts after that is lost. A method with an external side effect (creating a
+remote task, charging a card) should write a pending record before the side
+effect, pass `context.signal` to its own calls, and finalize the record after.
+
 For the cross-behavior APIs, see
 [Cross-Behavior Access](#cross-behavior-access). Locally,
 `dataRepository.getContent` and `findAllForModel` also accept a definition name

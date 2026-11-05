@@ -4172,6 +4172,29 @@ engine evaluates the remaining steps in topological order:
   dead owner is swamp-club#2930.
   A method that answers late does not change the step: it stays `failed` with
   reason `cancelled`, while its method run records what the method did.
+- A data write a method has already started (`writeResource`, or a file
+  writer's save) is waited for past that grace, until
+  `DATA_WRITE_STOP_GRACE_MS` (4.75 s) after the cancellation, inside the run so
+  it is pushed with the run (`InFlightDataWrites`,
+  `src/domain/data/in_flight_data_writes.ts`). A write that starts after the
+  run has settled is not waited for: the step's model lock is released in
+  teardown, so it would race other writers. A method that does an external side
+  effect should therefore write a pending record before it and honour
+  `context.signal`.
+- A step queued on its model's lock behind a sibling (two steps on one
+  behavior instance take turns on its lock) stops waiting when the
+  cancellation fires, and a step whose lock arrives after it never starts its
+  method: no side effect, no method run. The first Ctrl+C no longer releases
+  the model locks of `workflow run`, `workflow resume` or `behavior run`,
+  which own their shutdown (`suppressSyncExitOnSignal`): a method still
+  running keeps its lock until it settles or the command's teardown releases
+  it.
+- A second Ctrl+C exits 130, but first waits up to `DATA_WRITE_STOP_GRACE_MS`
+  for data writes already started, then releases the command's registered
+  locks (bounded), since it skips the teardown that would; a third exits at
+  once. The wait never
+  pushes: on a remote datastore the record syncs on the next command, and on a
+  v3 datastore the uncommitted root unit still loses it.
 - Steps, `forEach` iterations and jobs that the interrupted level never started
   (queued behind a `concurrency` limit) are settled at the end of that level as
   if they had been reached: skipped when their `dependsOn` is not met (reason

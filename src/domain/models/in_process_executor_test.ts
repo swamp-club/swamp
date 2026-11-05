@@ -46,6 +46,7 @@ import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+import { InFlightDataWrites } from "../data/in_flight_data_writes.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 
 const TEST_MODEL_TYPE = ModelType.create("test/in-process-executor");
@@ -1277,4 +1278,53 @@ Deno.test("InProcessExecutor: a line the method logs reaches onEvent with the co
 
   assertEquals(result.status, "success");
   assertEquals(lines, ["token is ***"]);
+});
+
+Deno.test("InProcessExecutor: a resource or file write counts as started on the run's tracker until its save settles", async () => {
+  const saving = Promise.withResolvers<void>();
+  const context = createMockContext();
+  const dataWrites = new InFlightDataWrites();
+  context.inFlightDataWrites = dataWrites;
+  const repo = context.dataRepository as unknown as Record<string, unknown>;
+  repo.save = async () => {
+    await saving.promise;
+    return { version: 1 };
+  };
+  const sizes: number[] = [];
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, ctx) => {
+      const resource = ctx.writeResource!("output", "output", {
+        value: "test",
+      });
+      const file = ctx.createFileWriter!("blob", "report").writeText("hi");
+      sizes.push(dataWrites.size);
+      saving.resolve();
+      await Promise.all([resource, file]);
+      return {};
+    },
+  };
+  const modelDef: ModelDefinition = {
+    ...testModelDef,
+    files: {
+      blob: {
+        description: "Test file",
+        contentType: "text/plain",
+        lifetime: "ephemeral",
+        garbageCollection: 10,
+      },
+    },
+  };
+
+  const result = await new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    modelDef,
+    context,
+    "test",
+  ).execute(createMockRequest());
+
+  assertEquals(result.status, "success", result.error);
+  assertEquals(sizes[0], 2);
+  assertEquals(await dataWrites.settle(1_000), 0);
 });

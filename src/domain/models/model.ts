@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { isZodSchemaLike } from "../zod_compat.ts";
 import { boundedRecord } from "../untrusted_parse.ts";
+import type { InFlightDataWrites } from "../data/in_flight_data_writes.ts";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Environment } from "cel-js";
 import { getLogger, type Logger } from "@logtape/logtape";
@@ -245,6 +246,9 @@ export interface MethodContext {
    * forces fail-instead-of-redispatch on worker disconnect
    */
   declaredWrites?: boolean;
+
+  /** the run's started writes; absent outside a workflow run */
+  inFlightDataWrites?: InFlightDataWrites;
 
   onEvent?: (event: MethodExecutionEvent) => void;
 

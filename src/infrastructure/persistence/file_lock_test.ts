@@ -1273,3 +1273,38 @@ Deno.test("FileLock.withLock: outside a diagnostic area it exports nothing", asy
     });
   });
 });
+
+Deno.test("FileLock.acquire: an already aborted signal rejects with its reason and takes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 5000 });
+    const abort = new AbortController();
+    abort.abort(new Error("run cancelled"));
+    await assertRejects(
+      () => lock.acquire(abort.signal),
+      Error,
+      "run cancelled",
+    );
+    assertEquals(await lock.inspect(), null);
+  });
+});
+
+Deno.test("FileLock.acquire: an abort during the wait stops it and leaves the holder's lock alone", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 5000 });
+    await holder.acquire();
+    try {
+      const waiter = new FileLock(dir, {
+        ttlMs: 5000,
+        retryIntervalMs: 10,
+        maxWaitMs: 60_000,
+      });
+      const abort = new AbortController();
+      const waiting = waiter.acquire(abort.signal);
+      abort.abort(new Error("run cancelled"));
+      await assertRejects(() => waiting, Error, "run cancelled");
+      assertEquals((await holder.inspect())?.nonce, holder.heldNonce);
+    } finally {
+      await holder.release();
+    }
+  });
+});

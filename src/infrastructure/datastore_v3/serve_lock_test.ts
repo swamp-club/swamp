@@ -574,3 +574,27 @@ Deno.test("ServeLock: offline, the work under an adopted lease is cancelled when
   assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
   await subject.release();
 });
+
+Deno.test("ServeLock.acquire: an abort between asks stops the wait with its reason and holds no lease", async () => {
+  const serve = new FakeServe();
+  serve.answers = ["held"];
+  const abort = new AbortController();
+  const asked = serve.acquireLock.bind(serve);
+  serve.acquireLock = (lockKey, ttlMs, waitMs) => {
+    const reply = asked(lockKey, ttlMs, waitMs);
+    abort.abort(new Error("run cancelled"));
+    return reply;
+  };
+  const subject = lock(serve, { requestWaitMs: 0, maxWaitMs: 60_000 });
+  await assertRejects(
+    () => subject.acquire(abort.signal),
+    Error,
+    "run cancelled",
+  );
+  assertEquals(
+    serve.calls.filter((call) => call.startsWith("acquire")).length,
+    1,
+  );
+  assertEquals(subject.lease, undefined);
+  assertEquals(serve.closed, 1);
+});

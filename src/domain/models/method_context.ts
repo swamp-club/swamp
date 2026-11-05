@@ -70,6 +70,7 @@ export interface MethodInvocationContext {
   reportLabels?: MethodContext["reportLabels"];
   placement?: MethodContext["placement"];
   declaredWrites?: MethodContext["declaredWrites"];
+  inFlightDataWrites?: MethodContext["inFlightDataWrites"];
   vaultSecrets?: MethodContext["vaultSecrets"];
   unresolvedMethodArgs?: MethodContext["unresolvedMethodArgs"];
   /**
@@ -123,6 +124,7 @@ export function buildMethodContext(
     reportLabels: invocation.reportLabels,
     placement: invocation.placement,
     declaredWrites: invocation.declaredWrites,
+    inFlightDataWrites: invocation.inFlightDataWrites,
     vaultSecrets: invocation.vaultSecrets,
     unresolvedMethodArgs: invocation.unresolvedMethodArgs,
     extensionFile: (relPath: string) => resolveExtensionFile(root, relPath),
