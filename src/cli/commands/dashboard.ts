@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
-import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
-import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -31,18 +27,9 @@ import {
   requireInitializedRepoReadOnly,
   resolveDatastoreForRepo,
 } from "../repo_context.ts";
-import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
-import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
-import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
-import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
-import type { ConnectionContext } from "../../serve/handlers/shared.ts";
-import {
-  createLocalHealthCollector,
-  startLocalDashboardServer,
-  trackedRunsFrom,
-} from "../../serve/local/local_dashboard_server.ts";
+import { startLocalDashboardServer } from "../../serve/local/local_dashboard_server.ts";
+import { composeReadOnlyDashboard } from "../../serve/local/read_only_dashboard.ts";
 import { HUB_TOKEN_ENV } from "../../serve/local/hub_token.ts";
 import { runStart } from "./start.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -67,54 +54,27 @@ async function runChild(options: AnyOptions): Promise<void> {
     outputMode: cliCtx.outputMode,
   });
 
-  const activeRunRegistry = new ActiveRunRegistry();
-  const runTracker = RunTrackerStore.fromSwampDir(swampPath(repo.repoDir));
-  const instanceId = crypto.randomUUID();
-  const ctx: ConnectionContext = {
+  const dashboard = composeReadOnlyDashboard({
     repoDir: repo.repoDir,
     repoContext: repo.repoContext,
     datastoreConfig,
     datastoreResolver: repo.datastoreResolver,
-    authConfig: buildServeAuthConfig({}),
-    cancelRegistry: new RunCancelRegistry(),
-    activeRunRegistry,
-    runTracker,
-    instanceId,
     vaultsDir: repo.vaultsDir,
     defaultVault: repo.marker?.defaultVault,
-  };
-  const healthCollector = createLocalHealthCollector({
-    instanceId,
-    activeRunRegistry,
-    datastoreConfig,
   });
-  ctx.healthCollector = healthCollector;
+  const { context: ctx, healthCollector, warmup: runIndexWarmup } = dashboard;
+  const activeRunRegistry = ctx.activeRunRegistry!;
 
   const server = startLocalDashboardServer({
     ctx,
     healthCollector,
     hubToken,
     busy: () => activeRunRegistry.list().length > 0,
-    trackedRuns: trackedRunsFrom(runTracker),
+    trackedRuns: dashboard.trackedRuns,
   });
   await Deno.stdout.write(
     new TextEncoder().encode(JSON.stringify({ port: server.port }) + "\n"),
   );
-  const runIndexWarmup = new RunIndexWarmup({
-    listWorkflowIds: async () =>
-      (await listWorkflows(repo.repoContext.workflowRepo)).map((w) => w.id),
-    countRunRecords: (id, signal) =>
-      repo.repoContext.workflowRunRepo.countRunRecords(
-        createWorkflowId(id),
-        signal,
-      ),
-    maxRuns: RUN_INDEX_CACHE_MAX_RUNS,
-    warm: (id, signal) =>
-      repo.repoContext.workflowRunRepo.runIndexSnapshot(
-        createWorkflowId(id),
-        signal,
-      ),
-  });
   runIndexWarmup.start();
 
   // The hub closes stdin when it stops (or dies): stop with it.

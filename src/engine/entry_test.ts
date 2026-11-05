@@ -139,6 +139,39 @@ Deno.test("parseEngineLaunchArgs: a repository engine reports the repository it 
   ], "linux");
   assertEquals(launch?.mode, "repo");
   assertEquals(launch?.mode === "repo" ? launch.repo : undefined, "/repo");
+  assertEquals(launch?.mode === "repo" ? launch.extensions : undefined, true);
+});
+
+Deno.test("parseEngineLaunchArgs: an untrusted workspace's engine loads no extensions, and the flag has one place", () => {
+  const pipes = [
+    "--input-fd",
+    "3",
+    "--output-fd",
+    "4",
+    "--command-guardian",
+    "/installed/swamp-serve",
+    "--command-fence",
+    "/private/generation.sock",
+  ];
+  const launch = parseEngineLaunchArgs(
+    ["--stdio", "--repo", "/repo", "--no-extensions", ...pipes],
+    "linux",
+  );
+  assertEquals(launch?.mode === "repo" ? launch.extensions : undefined, false);
+  assertEquals(
+    parseEngineLaunchArgs(
+      ["--stdio", "--no-extensions", "--repo", "/repo", ...pipes],
+      "linux",
+    ),
+    undefined,
+  );
+  assertEquals(
+    parseEngineLaunchArgs(
+      ["--stdio", "--repo", "/repo", ...pipes, "--no-extensions"],
+      "linux",
+    ),
+    undefined,
+  );
 });
 
 Deno.test("engineStartupFailure: missing marker has fixed actionable recovery even if error properties are modified", () => {

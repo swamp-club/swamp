@@ -33,7 +33,12 @@ import {
   openEngineOutput,
   parseEngineOutputTarget,
 } from "../infrastructure/runtime/engine_output.ts";
-import { createLocalEngineContext } from "../serve/local_engine_context.ts";
+import {
+  createLocalEngineContext,
+  createReadOnlyEngineContext,
+  type LocalEngineComposition,
+} from "../serve/local_engine_context.ts";
+import type { ReadOnlyRepoOpener } from "../serve/local/read_only_dashboard.ts";
 import { EngineRuntime } from "./runtime.ts";
 import { ControlRuntime } from "./control_runtime.ts";
 import { WorkspaceRegistryFileRepository } from "../infrastructure/persistence/workspace_registry_file_repository.ts";
@@ -46,7 +51,9 @@ import {
 } from "./protocol.ts";
 import {
   EngineProfileError,
+  EngineReadOnlyFallback,
   EngineRepositoryNotInitializedError,
+  EngineWorkspaceUntrustedError,
 } from "./profile.ts";
 import {
   admitEngineOperator,
@@ -69,6 +76,10 @@ export function engineStartupFailure(
     const failure = new EngineRepositoryNotInitializedError();
     return { code: failure.code, message: failure.message };
   }
+  if (error instanceof EngineWorkspaceUntrustedError) {
+    const failure = new EngineWorkspaceUntrustedError();
+    return { code: failure.code, message: failure.message };
+  }
   if (
     error instanceof EngineProfileError ||
     (!operatorAdmitted && error instanceof EngineOperatorAuthError)
@@ -89,7 +100,12 @@ export interface EnginePipes {
   readonly fence: string;
 }
 export type EngineLaunch =
-  | { readonly mode: "repo"; readonly repo: string } & EnginePipes
+  | {
+    readonly mode: "repo";
+    readonly repo: string;
+    /** false for an untrusted workspace: no extension code loads */
+    readonly extensions: boolean;
+  } & EnginePipes
   | { readonly mode: "control" } & EnginePipes;
 
 /** Parse the complete supervisor contract before acquiring native resources. */
@@ -101,9 +117,17 @@ export function parseEngineLaunchArgs(
   if (args[0] !== "--stdio") return undefined;
   let rest: readonly string[];
   let repo: string | undefined;
+  let extensions = true;
   if (args[1] === "--repo" && args.length === 11 && args[2]) {
     repo = args[2];
     rest = args.slice(3);
+  } else if (
+    args[1] === "--repo" && args.length === 12 && args[2] &&
+    args[3] === "--no-extensions"
+  ) {
+    repo = args[2];
+    extensions = false;
+    rest = args.slice(4);
   } else if (args[1] === "--control" && args.length === 10) {
     rest = args.slice(2);
   } else {
@@ -131,7 +155,7 @@ export function parseEngineLaunchArgs(
   };
   return repo === undefined
     ? { mode: "control", ...pipes }
-    : { mode: "repo", repo, ...pipes };
+    : { mode: "repo", repo, extensions, ...pipes };
 }
 
 /** Validate the repository engine contract before acquiring native resources. */
@@ -142,10 +166,16 @@ export function validateEngineLaunchArgs(
   return parseEngineLaunchArgs(args, os)?.mode === "repo";
 }
 
+export interface EngineMainDeps {
+  /** from the composition root; without it a repo local-v1 refuses fails */
+  readonly openReadOnlyRepo?: ReadOnlyRepoOpener;
+}
+
 /** Hidden process entry. Paths come only from the trusted supervisor argv. */
 export async function runEngineMain(
   args: readonly string[],
   identity: { version: string; gitSha?: string },
+  deps: EngineMainDeps = {},
 ): Promise<number> {
   const launch = parseEngineLaunchArgs(args);
   if (!launch) {
@@ -193,7 +223,20 @@ export async function runEngineMain(
     const accepted = await admitEngineOperator(identity.version);
     admission = accepted;
     publishNestedGatePass(accepted.handoff);
-    const composed = await createLocalEngineContext(launch.repo);
+    // Only a hub serves dashboard pages; a single-repository server never
+    // asks, so its engine refuses what local-v1 refuses, as before.
+    const pages = hello.params?.pages === true;
+    const composed = launch.extensions
+      ? await composeRepositoryEngine(
+        async () => await createLocalEngineContext(launch.repo),
+        launch.repo,
+        pages ? deps.openReadOnlyRepo : undefined,
+      )
+      : await createReadOnlyEngineContext(
+        launch.repo,
+        requireOpener(pages ? deps.openReadOnlyRepo : undefined),
+        { extensions: false },
+      );
     contextCreated = true;
     const runtime = new EngineRuntime({
       ...composed,
@@ -240,6 +283,33 @@ export async function runEngineMain(
       }
     }
   }
+}
+
+async function composeRepositoryEngine(
+  full: () => Promise<LocalEngineComposition>,
+  repo: string,
+  open: ReadOnlyRepoOpener | undefined,
+): Promise<LocalEngineComposition> {
+  try {
+    return await full();
+  } catch (error) {
+    if (!(error instanceof EngineReadOnlyFallback) || !open) throw error;
+    return {
+      ...await createReadOnlyEngineContext(repo, open, { extensions: true }),
+      readOnlyReason: error.message,
+    };
+  }
+}
+
+function requireOpener(
+  open: ReadOnlyRepoOpener | undefined,
+): ReadOnlyRepoOpener {
+  if (!open) {
+    throw new EngineProfileError(
+      "untrusted workspaces without a read-only repository opener",
+    );
+  }
+  return open;
 }
 
 /** The hub's control engine reads only the user's workspace registry. */

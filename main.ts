@@ -67,6 +67,20 @@ if (import.meta.main) {
       await runEngineMain(Deno.args.slice(1), {
         version: VERSION,
         gitSha: GIT_SHA,
+      }, {
+        // Loaded only when a repo needs the dashboard child's read-only open;
+        // like the child, that engine then holds the whole CLI.
+        openReadOnlyRepo: async (repoDir, options) => {
+          const [{ readOnlyEngineRepoOpener }, { configureStartupExtensions }] =
+            await Promise.all([
+              import("./src/cli/read_only_engine_repo.ts"),
+              import("./src/cli/mod.ts"),
+            ]);
+          return await readOnlyEngineRepoOpener(configureStartupExtensions)(
+            repoDir,
+            options,
+          );
+        },
       }),
     );
   }

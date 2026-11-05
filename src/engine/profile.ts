@@ -55,6 +55,27 @@ export class EngineProfileError extends UserError {
   }
 }
 
+/** A profile refusal raised before the first write: the repo can be served read-only. */
+export class EngineReadOnlyFallback extends EngineProfileError {
+  constructor(refusal: EngineProfileError) {
+    super("");
+    this.message = refusal.message;
+    this.name = "EngineReadOnlyFallback";
+  }
+}
+
+/** An untrusted workspace's datastore is extension code the engine won't load. */
+export class EngineWorkspaceUntrustedError extends UserError {
+  override readonly code = "workspace_untrusted";
+
+  constructor() {
+    super(
+      "This workspace is not trusted and its datastore is an extension. Trust the workspace to open its dashboard.",
+    );
+    this.name = "EngineWorkspaceUntrustedError";
+  }
+}
+
 /**
  * Validate resolved options too: an environment override has the same policy
  * meaning as its serve.yaml setting. The composition root supplies local-v1

@@ -124,10 +124,17 @@ import {
 } from "./token_session_revalidation_service.ts";
 import {
   EngineProfileError,
+  EngineReadOnlyFallback,
   EngineRepositoryNotInitializedError,
+  EngineWorkspaceUntrustedError,
   validateEngineConfig,
   validateEngineWorkflow,
 } from "../engine/profile.ts";
+import { effectiveDatastoreType } from "../infrastructure/persistence/managed_config_lockfile.ts";
+import {
+  composeReadOnlyDashboard,
+  type ReadOnlyRepoOpener,
+} from "./local/read_only_dashboard.ts";
 
 export interface LocalEngineComposition {
   context: ConnectionContext;
@@ -135,12 +142,76 @@ export interface LocalEngineComposition {
   health(signal: AbortSignal): Promise<unknown>;
   mode: "full" | "read-only";
   extensions: boolean;
+  /** why a repo local-v1 refused is served read-only; cli callers are told */
+  readOnlyReason?: string;
   dispose(): Promise<void>;
 }
 
-/** Composition for the explicitly local profile; never starts a listener or CLI. */
+/**
+ * Composition for the explicitly local profile; never starts a listener or CLI.
+ * A profile refusal raised before the first write becomes EngineReadOnlyFallback.
+ */
 export async function createLocalEngineContext(
   repoDir: string,
+): Promise<LocalEngineComposition> {
+  const progress = { writing: false };
+  try {
+    return await composeFullEngine(repoDir, progress);
+  } catch (error) {
+    if (!progress.writing && error instanceof EngineProfileError) {
+      throw new EngineReadOnlyFallback(error);
+    }
+    throw error;
+  }
+}
+
+/** The dashboard child's composition, for repos local-v1 cannot serve. */
+export async function createReadOnlyEngineContext(
+  repoDir: string,
+  open: ReadOnlyRepoOpener,
+  options: { readonly extensions: boolean },
+): Promise<LocalEngineComposition> {
+  repoDir = await Deno.realPath(repoDir);
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoDir),
+  );
+  if (!marker) throw new EngineRepositoryNotInitializedError();
+  if (!options.extensions && effectiveDatastoreType(marker) !== "filesystem") {
+    throw new EngineWorkspaceUntrustedError();
+  }
+  const repo = await open(repoDir, options);
+  try {
+    const dashboard = composeReadOnlyDashboard(repo);
+    dashboard.warmup.start();
+    return {
+      context: dashboard.context,
+      page: { context: dashboard.context },
+      health: (signal) =>
+        collectLocalHealth(
+          dashboard.healthCollector,
+          dashboard.trackedRuns,
+          signal,
+        ),
+      mode: "read-only",
+      extensions: options.extensions,
+      dispose: async () => {
+        try {
+          await dashboard.warmup.dispose();
+          dashboard.runTracker.close();
+        } finally {
+          await repo.dispose();
+        }
+      },
+    };
+  } catch (error) {
+    await repo.dispose();
+    throw error;
+  }
+}
+
+async function composeFullEngine(
+  repoDir: string,
+  progress: { writing: boolean },
 ): Promise<LocalEngineComposition> {
   if (modelsDirEnvConflict()) {
     throw new EngineProfileError(
@@ -231,6 +302,7 @@ export async function createLocalEngineContext(
     : [];
   const modelsDir = resolve(repoDir, resolveModelsDir(marker));
   const lockfilePath = join(modelsDir, "upstream_extensions.json");
+  progress.writing = true;
   await ensureDir(join(repoDir, ".swamp"));
   const cleanups: Array<() => void | Promise<void>> = [];
   const stops: Array<() => void | Promise<void>> = [];
