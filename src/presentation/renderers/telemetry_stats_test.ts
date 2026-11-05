@@ -155,7 +155,7 @@ Deno.test("describeEmptyTelemetry: a failed last attempt says entries are queued
     daysAnalyzed: 1,
   }).join("\n");
   assertStringIncludes(text, "at 2026-11-05T11:00:00.000Z failed (HTTP 500)");
-  assertStringIncludes(text, "older than the last 1 days");
+  assertStringIncludes(text, "older than the last 1 day.");
   assertStringIncludes(text, "--days 7");
   assertStringIncludes(text, "Before that, the last successful flush sent 3");
 });
@@ -199,6 +199,7 @@ Deno.test("JsonTelemetryStatsRenderer - empty state keeps the message and adds f
       telemetryEnabled: true,
       disabledBy: [],
       lastFlush: SUCCESS,
+      daysAnalyzed: 2,
       keepFlushedKey: "telemetryKeepFlushed",
     });
   } finally {
@@ -214,4 +215,18 @@ Deno.test("describeEmptyTelemetry: one sent entry reads in the singular", () => 
     daysAnalyzed: 2,
   }).join("\n");
   assertStringIncludes(text, "sent 1 entry at");
+});
+
+Deno.test("describeEmptyTelemetry: no --days hint when the window already covers queued entries", () => {
+  const text = describeEmptyTelemetry({
+    telemetryEnabled: true,
+    disabledBy: [],
+    lastFlush: {
+      lastAttemptAt: "2026-11-05T11:00:00.000Z",
+      lastAttemptOk: false,
+    },
+    daysAnalyzed: 7,
+  }).join("\n");
+  assertStringIncludes(text, "older than the last 7 days.");
+  assertEquals(text.includes("--days"), false);
 });

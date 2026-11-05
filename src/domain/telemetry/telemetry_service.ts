@@ -93,7 +93,7 @@ export interface TelemetryStats {
 
 const DEFAULT_RETENTION_DAYS = 2;
 
-const HARD_RETENTION_DAYS = 7;
+export const HARD_RETENTION_DAYS = 7;
 
 /**
  * longer than flushed retention because a quarantined entry is evidence, but

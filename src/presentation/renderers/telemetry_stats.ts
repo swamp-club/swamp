@@ -27,6 +27,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { HARD_RETENTION_DAYS } from "../../domain/telemetry/telemetry_service.ts";
 
 const logger = getSwampLogger(["telemetry", "stats"]);
 
@@ -34,14 +35,15 @@ const NO_DATA_MESSAGE = "No telemetry data found";
 
 const KEEP_FLUSHED_KEY = "telemetryKeepFlushed";
 
-/** stats keeps a week of unsent entries at most, so this window covers them */
-const QUEUED_ENTRIES_DAYS = 7;
-
 const REENABLE: Record<TelemetryOptOutSource, string> = {
   "telemetry.collection": "swamp config set telemetry.collection enabled",
   SWAMP_NO_TELEMETRY: "unset SWAMP_NO_TELEMETRY",
   DO_NOT_TRACK: "unset DO_NOT_TRACK",
 };
+
+function dayCount(count: number): string {
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
 
 function entryCount(count: number): string {
   return `${count} ${count === 1 ? "entry" : "entries"}`;
@@ -84,9 +86,17 @@ export function describeEmptyTelemetry(
     ? ` (${flush.lastFailureReason})`
     : "";
   const lines = [
-    `${optOut}. The last flush attempt at ${flush.lastAttemptAt} failed${reason}; unsent entries stay queued and may be older than the last ${state.daysAnalyzed} days.`,
-    `Run swamp telemetry stats --days ${QUEUED_ENTRIES_DAYS} to include them.`,
+    `${optOut}. The last flush attempt at ${flush.lastAttemptAt} failed${reason}; unsent entries stay queued and may be older than the last ${
+      dayCount(state.daysAnalyzed)
+    }.`,
   ];
+  // unsent entries are pruned after HARD_RETENTION_DAYS, so that window holds
+  // every one still queued
+  if (state.daysAnalyzed < HARD_RETENTION_DAYS) {
+    lines.push(
+      `Run swamp telemetry stats --days ${HARD_RETENTION_DAYS} to include them.`,
+    );
+  }
   if (lastSuccess !== undefined) {
     lines.push(`Before that, ${lastSuccess}.`);
   }
@@ -133,6 +143,7 @@ class JsonTelemetryStatsRenderer implements Renderer<TelemetryStatsEvent> {
                     telemetryEnabled: e.emptyState.telemetryEnabled,
                     disabledBy: e.emptyState.disabledBy,
                     lastFlush: e.emptyState.lastFlush,
+                    daysAnalyzed: e.emptyState.daysAnalyzed,
                     keepFlushedKey: KEEP_FLUSHED_KEY,
                   }
                   : {}),

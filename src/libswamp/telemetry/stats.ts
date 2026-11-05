@@ -33,7 +33,6 @@ import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export interface TelemetryStatsData extends TelemetryStats {}
 
-/** the user-level preference key, or an opt-out environment variable */
 export type TelemetryOptOutSource =
   | "telemetry.collection"
   | "SWAMP_NO_TELEMETRY"
