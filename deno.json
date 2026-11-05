@@ -16,6 +16,7 @@
     "lint": "deno lint",
     "fmt": "deno fmt",
     "compile": "deno run -A scripts/compile.ts",
+    "check-binary-size": "deno run --allow-read scripts/check_binary_size.ts",
     "license-headers": "deno run --allow-read --allow-write scripts/add_license_headers.ts",
     "unbarrel": "deno run --allow-read --allow-write scripts/unbarrel.ts",
     "agent-session-schema": "deno run --allow-read --allow-write=design/surfaces/agent-session-record.schema.json,design/surfaces/agent-session-summary.schema.json scripts/generate_agent_session_schema.ts",
@@ -71,7 +72,7 @@
     "@opentelemetry/core": "npm:@opentelemetry/core@^1.30.1",
     "@opentelemetry/context-async-hooks": "npm:@opentelemetry/context-async-hooks@^1.30.1",
     "@opentelemetry/resources": "npm:@opentelemetry/resources@^1.30.1",
-    "@opentelemetry/semantic-conventions": "npm:@opentelemetry/semantic-conventions@^1.40.0",
+    "@opentelemetry/semantic-conventions": "npm:@opentelemetry/semantic-conventions@1.28.0",
     "@vercel/beautiful-mermaid": "npm:@vercel/beautiful-mermaid@^0.1.5",
     "yaml": "npm:yaml@^2.9.0"
   },

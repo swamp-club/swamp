@@ -105,6 +105,15 @@ jobs:
           (cd /tmp && zip -j "$GITHUB_WORKSPACE/dist/swamp-windows-x86_64.zip" swamp.exe)
           rm /tmp/swamp.exe
 
+      - name: Check binary sizes
+        run: |
+          deno task check-binary-size \
+            x86_64-unknown-linux-gnu=dist/swamp-linux-x86_64 \
+            aarch64-unknown-linux-gnu=dist/swamp-linux-aarch64 \
+            x86_64-apple-darwin=dist/swamp-darwin-x86_64 \
+            aarch64-apple-darwin=dist/swamp-darwin-aarch64 \
+            x86_64-pc-windows-msvc=dist/swamp-windows-x86_64
+
       - name: Create checksums
         working-directory: dist
         run: |
