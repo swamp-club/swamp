@@ -29,7 +29,7 @@ import { join } from "@std/path";
 import {
   configureStartupExtensions,
   type DeferredWarning,
-} from "../src/cli/mod.ts";
+} from "../src/cli/startup_extensions.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../src/domain/datastore/datastore_type_registry.ts";

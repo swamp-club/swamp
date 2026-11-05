@@ -93,6 +93,41 @@ Deno.test("engine boundary: shared locks, operator admission and datastore norma
   );
 });
 
+Deno.test("engine boundary: the read-only engine opener never loads the command tree", async () => {
+  const pending = ["src/cli/read_only_engine_repo.ts"];
+  const visited = new Set<string>();
+  const violations: string[] = [];
+  while (pending.length > 0) {
+    const module = pending.pop()!;
+    if (visited.has(module)) continue;
+    visited.add(module);
+    const path = join(ROOT, module);
+    for (
+      const reference of findModuleReferences(
+        path,
+        await Deno.readTextFile(path),
+      )
+    ) {
+      const target = resolveImport(path, reference.specifier);
+      if (target === undefined || !/\.tsx?$/.test(target)) continue;
+      const commandModule = isUnder(target, "src/cli/commands") &&
+        target !== "src/cli/commands/version.ts";
+      if (target === "src/cli/mod.ts" || commandModule) {
+        violations.push(`${module} -> ${target}`);
+      } else {
+        pending.push(target);
+      }
+    }
+  }
+  assert(visited.size > 1, "Inspect the opener and its dependencies");
+  assertPinnedSet(
+    violations.sort(),
+    [],
+    "read-only engine opener -> CLI command tree",
+    "A read-only engine loads the repo bootstrap and extension loaders only; keep shared setup out of src/cli/mod.ts and the command modules.",
+  );
+});
+
 Deno.test("engine boundary: Go source has licenses and no domain persistence dependencies", async () => {
   const missing: string[] = [];
   const persistence: string[] = [];

@@ -68,18 +68,13 @@ if (import.meta.main) {
         version: VERSION,
         gitSha: GIT_SHA,
       }, {
-        // Loaded only when a repo needs the dashboard child's read-only open;
-        // like the child, that engine then holds the whole CLI.
+        // Loaded only when a repo needs the dashboard child's read-only open:
+        // the repo bootstrap and extension loaders, not the command tree.
         openReadOnlyRepo: async (repoDir, options) => {
-          const [{ readOnlyEngineRepoOpener }, { configureStartupExtensions }] =
-            await Promise.all([
-              import("./src/cli/read_only_engine_repo.ts"),
-              import("./src/cli/mod.ts"),
-            ]);
-          return await readOnlyEngineRepoOpener(configureStartupExtensions)(
-            repoDir,
-            options,
+          const { openReadOnlyEngineRepo } = await import(
+            "./src/cli/read_only_engine_repo.ts"
           );
+          return await openReadOnlyEngineRepo(repoDir, options);
         },
       }),
     );

@@ -21,10 +21,8 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import {
-  configureExtensionAutoResolver,
-  configureStartupExtensions,
-} from "../src/cli/mod.ts";
+import { configureExtensionAutoResolver } from "../src/cli/mod.ts";
+import { configureStartupExtensions } from "../src/cli/startup_extensions.ts";
 import {
   getAutoResolver,
   setAutoResolver,

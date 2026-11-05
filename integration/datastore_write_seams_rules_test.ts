@@ -404,7 +404,7 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
   "src/libswamp/datastores/resolve_expressions.ts: createEarlyVaultService: YamlVaultConfigRepository",
   "src/cli/mod.ts: configureExtensionAutoResolver: LockfileRepository",
-  "src/cli/mod.ts: configureStartupExtensions: LockfileRepository",
+  "src/cli/startup_extensions.ts: configureStartupExtensions: LockfileRepository",
   "src/cli/mod.ts: initTelemetryService: YamlVaultConfigRepository",
   "src/domain/vaults/vault_service.ts: VaultService: JsonlVaultAuditRepository",
   "src/domain/vaults/vault_service.ts: VaultService: YamlVaultConfigRepository",

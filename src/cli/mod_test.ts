@@ -21,7 +21,6 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   assertModelsDirEnvConsistent,
   commandNeedsLoaderSetup,
-  type DeferredWarning,
   defersExtensionCatalog,
   isDispatchRunnerCommand,
   isHookCommand,
@@ -40,8 +39,11 @@ import {
   resolveTelemetryEndpoint,
   resolveWorkflowsDir,
   runsLocallyWithServeUpstream,
-  shouldSuppressMissingExtensionsWarning,
 } from "./mod.ts";
+import {
+  type DeferredWarning,
+  shouldSuppressMissingExtensionsWarning,
+} from "./startup_extensions.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
 import {
   resetServeUpstreamCommandPath,

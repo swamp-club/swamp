@@ -30,37 +30,22 @@ import type {
   ReadOnlyRepo,
   ReadOnlyRepoOpener,
 } from "../serve/local/read_only_dashboard.ts";
-import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
-
-/** the CLI's loader setup, which lives in the composition root */
-export type ConfigureStartupExtensions = (options: {
-  repoDir: string;
-  marker: RepoMarkerData | null;
-  resolvedSources: ResolvedSourceDirs[];
-  deferredWarnings: never[];
-  quiet?: boolean;
-  deferCatalog?: boolean;
-}) => Promise<() => void>;
 import {
   requireInitializedRepoReadOnly,
   resolveDatastoreForRepo,
 } from "./repo_context.ts";
+import { configureStartupExtensions } from "./startup_extensions.ts";
 
 /**
  * Opens a repo the way `swamp dashboard --child` does. Without extensions no
- * loader is configured, so only built-in types resolve. The caller passes the
- * loader setup, since only the composition root may import the CLI's.
+ * loader is configured, so only built-in types resolve.
  */
-export function readOnlyEngineRepoOpener(
-  configure: ConfigureStartupExtensions,
-): ReadOnlyRepoOpener {
-  return (repoDir, options) => openReadOnly(repoDir, options, configure);
-}
+export const openReadOnlyEngineRepo: ReadOnlyRepoOpener = (repoDir, options) =>
+  openReadOnly(repoDir, options);
 
 async function openReadOnly(
   repoDir: string,
   { extensions }: { readonly extensions: boolean },
-  configureStartupExtensions: ConfigureStartupExtensions,
 ): Promise<ReadOnlyRepo & { dispose(): Promise<void> }> {
   let disposeExtensions = () => {};
   if (extensions) {

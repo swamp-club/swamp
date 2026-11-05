@@ -23,7 +23,7 @@ import { dirname, join } from "@std/path";
 import {
   configureStartupExtensions,
   type DeferredWarning,
-} from "../src/cli/mod.ts";
+} from "../src/cli/startup_extensions.ts";
 import {
   ManagedConfigUnresolvedError,
   resolveManagedLockfileForWrite,
