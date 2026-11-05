@@ -47,8 +47,7 @@ import {
   writeStartServerRecord,
 } from "../../infrastructure/persistence/start_server_record.ts";
 import { isStartServing } from "../../infrastructure/process/start_instance_probe.ts";
-import { openBrowser } from "../../infrastructure/process/browser.ts";
-import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { tryOpenBrowser } from "../open_browser_page.ts";
 import {
   StartServerError,
   startStartServer,
@@ -63,6 +62,7 @@ import {
   routableWorkspaceName,
 } from "../../serve/local/fixed_repo.ts";
 import { HubLeaseSession } from "../../serve/local/hub_lease_session.ts";
+import { holdUntilSignal } from "../hold_until_signal.ts";
 import { DEFAULT_START_SERVER_TIMEOUTS } from "../../serve/start/start_server.ts";
 import { locateHubBinaries } from "../../infrastructure/process/hub_binary.ts";
 import { findOrLaunchLocalHub } from "../../infrastructure/process/hub_launcher.ts";
@@ -139,16 +139,6 @@ function dashboardUrl(port: number, token: string, workspace: string): string {
   return `http://127.0.0.1:${port}/dashboard/w/${
     encodeURIComponent(workspace)
   }#token=${token}`;
-}
-
-async function tryOpenBrowser(url: string, enabled: boolean): Promise<boolean> {
-  if (!enabled) return false;
-  try {
-    await openBrowser(url);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -272,8 +262,10 @@ export async function runStart(
     : await findOrLaunchLocalHub(hubBinaries, GIT_SHA);
   const session = hub === null ? null : await HubLeaseSession.open(
     new HubAdminClient(hub.port, hub.adminToken),
-    fixed === null ? { scope: "all" } : {
+    fixed === null ? { scope: "all", client: "start", pid: Deno.pid } : {
       scope: "workspace",
+      client: "dashboard",
+      pid: Deno.pid,
       workspace: fixed.registered
         ? fixed.name
         : routableWorkspaceName(fixed.name),
@@ -330,49 +322,26 @@ export async function runStart(
         fixed !== null,
       );
 
-      let signalExitCode: number | undefined;
-      let onInterrupt!: () => void;
-      const interruptedPromise = new Promise<"interrupted">((resolve) => {
-        onInterrupt = () => resolve("interrupted");
-      });
-      const stopWith = (code: number) => () => {
-        signalExitCode ??= code;
-        onInterrupt();
-      };
-      // SIGINT through the shared handler (Windows too); SIGTERM and SIGHUP
-      // here, so each gets its own exit code.
-      const shutdownHandle = registerShutdownHandler({
-        handler: stopWith(130),
-        includePosixSignals: false,
-      });
-      const posixSignals: Array<[Deno.Signal, () => void]> =
-        Deno.build.os === "windows"
-          ? []
-          : [["SIGTERM", stopWith(143)], ["SIGHUP", stopWith(129)]];
-      for (const [signal, listener] of posixSignals) {
-        Deno.addSignalListener(signal, listener);
-      }
-      try {
-        const ended = server !== null ? server.ended : session!
+      // The hub can end the lease: its overview revoked it, or it stopped.
+      const lost = session?.whenLost().then(() => ({ kind: "lost" as const }));
+      const ended = server !== null
+        ? (lost === undefined
+          ? server.ended
+          : Promise.race([server.ended, lost]))
+        : session!
           .whenIdle(DEFAULT_START_SERVER_TIMEOUTS.beforeLaunchIdleMs)
-          .then(() => ({ kind: "paused" as const }));
-        const end = await Promise.race([ended, interruptedPromise]);
-        if (end === "interrupted" || end.kind === "paused") {
-          renderer.paused(fixed !== null);
-        } else {
-          renderer.launchedEnd(end.displayName);
-        }
-      } finally {
-        shutdownHandle.dispose();
-        for (const [signal, listener] of posixSignals) {
-          try {
-            Deno.removeSignalListener(signal, listener);
-          } catch {
-            // Already removed.
-          }
-        }
+          .then(() => ({
+            kind: session!.lost ? "lost" as const : "paused" as const,
+          }));
+      const { result: end, exitCode } = await holdUntilSignal(ended);
+      if (end === "interrupted" || end.kind === "paused") {
+        renderer.paused(fixed !== null);
+      } else if (end.kind === "lost") {
+        renderer.hubEnded(fixed !== null);
+      } else {
+        renderer.launchedEnd(end.displayName);
       }
-      if (signalExitCode !== undefined) Deno.exitCode = signalExitCode;
+      if (exitCode !== undefined) Deno.exitCode = exitCode;
     } finally {
       await server?.shutdown();
     }

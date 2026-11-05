@@ -34,9 +34,21 @@ export interface HubPing {
   readonly autoExit: boolean;
 }
 
+/** the swamp command holding a lease, as the hub overview names it */
+export type LeaseClient = "start" | "dashboard" | "hub";
+
+interface LeaseOwner {
+  readonly client?: LeaseClient;
+  readonly pid?: number;
+}
+
 export type LeaseRequest =
-  | { readonly scope: "all" }
-  | {
+  | LeaseOwner & {
+    readonly scope: "all";
+    /** lets the page read the hub overview and stop engines, sessions or the hub */
+    readonly manage?: true;
+  }
+  | LeaseOwner & {
     readonly scope: "workspace";
     readonly workspace: string;
     /** serve the workspace from this folder instead of the registry */
@@ -117,6 +129,9 @@ export class HubAdminClient {
       return await response.json();
     } catch (error) {
       if (error instanceof HubAdminError && error.status === 404) return null;
+      // A refused loopback connection is a hub that has exited; a new one
+      // would have a new admin token, so the lease is gone either way.
+      if (error instanceof TypeError) return null;
       throw error;
     }
   }

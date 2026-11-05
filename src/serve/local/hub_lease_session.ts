@@ -46,6 +46,7 @@ export class HubLeaseSession {
   #lost = false;
   #loop: Promise<void> | undefined;
   #onPages: ((pages: number) => void) | undefined;
+  readonly #lostSignal = Promise.withResolvers<void>();
   #idle:
     | {
       readonly ms: number;
@@ -91,6 +92,11 @@ export class HubLeaseSession {
   /** true once the hub no longer holds the lease (it stopped or expired it) */
   get lost(): boolean {
     return this.#lost;
+  }
+
+  /** resolves once the hub no longer holds the lease; never after close() */
+  whenLost(): Promise<void> {
+    return this.#lostSignal.promise;
   }
 
   onPages(listener: (pages: number) => void): void {
@@ -158,6 +164,7 @@ export class HubLeaseSession {
           this.#lost = true;
           this.#setPages(0);
           this.#endIdle();
+          this.#lostSignal.resolve();
           return;
         }
         this.#setPages(status.pages);

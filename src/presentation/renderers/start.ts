@@ -35,6 +35,8 @@ export interface StartRenderer {
   pageReady(url: string, opened: boolean, dashboard?: boolean): void;
   launchedEnd(displayName: string): void;
   paused(dashboard?: boolean): void;
+  /** the hub ended this session's lease: the overview revoked it or the hub stopped */
+  hubEnded(dashboard?: boolean): void;
   /**
    * `workspaceName` is the `--workspace` filter; when given, an empty result
    * says no workspace by that name
@@ -99,6 +101,15 @@ class LogStartRenderer implements StartRenderer {
       dashboard
         ? "Stopped. Run `swamp dashboard` to open it again."
         : "Stopped. Run `swamp start` to get back to your workspaces.",
+    );
+  }
+
+  hubEnded(dashboard = false): void {
+    writeOutput("");
+    writeOutput(
+      `The swamp hub ended this session. Run \`swamp ${
+        dashboard ? "dashboard" : "start"
+      }\` to open it again.`,
     );
   }
 
@@ -215,6 +226,7 @@ class JsonStartRenderer implements StartRenderer {
   pageReady(): void {}
   launchedEnd(): void {}
   paused(): void {}
+  hubEnded(): void {}
   inspection(data: StartInspection): void {
     writeOutput(JSON.stringify(data, null, 2));
   }

@@ -126,3 +126,22 @@ Deno.test("HubLeaseSession: whenIdle ends when the session closes or the lease i
   assertEquals(lost.lost, true);
   await lost.close();
 });
+
+Deno.test("HubLeaseSession: whenLost resolves once the hub no longer holds the lease", async () => {
+  const fake = fakeClient();
+  const session = await HubLeaseSession.open(fake.client, { scope: "all" }, {
+    renewMs: 2,
+  });
+  let lost = false;
+  const watching = session.whenLost().then(() => lost = true);
+  await waitFor(
+    () => fake.calls.filter((c) => c.startsWith("renew")).length > 2,
+    "renewals continue",
+  );
+  assertEquals(lost, false);
+  fake.setPages(null);
+  await watching;
+  assertEquals(session.lost, true);
+  await session.close();
+  assertEquals(fake.calls.includes("revoke lease-1"), false);
+});
