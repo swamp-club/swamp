@@ -42,6 +42,7 @@ import {
   MODEL_METHOD_RUN_SYNTAX,
 } from "../src/cli/commands/model_method_run.ts";
 import { workflowRunCommand } from "../src/cli/commands/workflow_run.ts";
+import { setRunCheckpointIntervalForTesting } from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
 import { dataGetCommand } from "../src/cli/commands/data_get.ts";
 import { dataListCommand } from "../src/cli/commands/data_list.ts";
 import {
@@ -326,38 +327,44 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    await withMember(async (member) => {
-      const run = () =>
-        runCommand(
-          member.scratch,
-          member.client,
-          member.env,
-          ["workflow", "run"],
-          (root) => {
-            root.command("cmd", workflowRunCommand);
-          },
-          [WORKFLOW],
-        );
-      const step = [
-        LOCK,
-        ...CATCH_UP,
-        ...FORWARD, // the step's start
-        ...FORWARD, // its data under the lock
-        RELEASE,
-        ...FORWARD, // the run's checkpoint
-      ];
-      assertEquals(await steadyState(member, run), [
-        ...CATCH_UP,
-        ...FORWARD,
-        ...FORWARD,
-        ...FORWARD,
-        ...FORWARD,
-        ...step,
-        ...step,
-        HAS, // the run record, over the inline limit by its end
-        ...FORWARD,
-      ]);
-    });
+    // A paced checkpoint firing mid-run on a slow host races a step's lock.
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
+    try {
+      await withMember(async (member) => {
+        const run = () =>
+          runCommand(
+            member.scratch,
+            member.client,
+            member.env,
+            ["workflow", "run"],
+            (root) => {
+              root.command("cmd", workflowRunCommand);
+            },
+            [WORKFLOW],
+          );
+        const step = [
+          ...FORWARD, // the step's start, before its lock
+          LOCK,
+          ...CATCH_UP,
+          ...FORWARD, // its data under the lock
+          ...FORWARD, // the run record, still under the lock
+          RELEASE,
+        ];
+        assertEquals(await steadyState(member, run), [
+          ...CATCH_UP,
+          ...FORWARD, // the run record
+          ...FORWARD, // the evaluated workflow
+          ...FORWARD, // the run's evaluated workflow with its record
+          ...step,
+          ...step,
+          ...FORWARD, // the run's summary report
+          HAS, // the run record, over the inline limit by its end
+          ...FORWARD,
+        ]);
+      });
+    } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
   },
 });
 
