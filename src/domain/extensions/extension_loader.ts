@@ -19,6 +19,7 @@
 
 import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import { parse as parseYaml } from "@std/yaml";
 import {
   bundleExtension,
   fixCjsEsmInterop,
@@ -138,6 +139,7 @@ interface OtherSpellingRows {
 export function extractExtensionNameFromPath(
   absolutePath: string,
   repoDir: string | null,
+  isInstalled?: (name: string) => boolean,
 ): string | undefined {
   if (!repoDir) return undefined;
 
@@ -148,11 +150,13 @@ export function extractExtensionNameFromPath(
   ];
   const cheapResolved = resolve(absolutePath);
 
+  let root: string;
   let relative: string;
   const matchedCheap = pulledRoots.find((r) =>
     cheapResolved.startsWith(r + SEPARATOR)
   );
   if (matchedCheap) {
+    root = matchedCheap;
     relative = cheapResolved.slice(matchedCheap.length + 1);
   } else {
     let realRepoDir: string;
@@ -176,19 +180,78 @@ export function extractExtensionNameFromPath(
       realResolved.startsWith(r + SEPARATOR)
     );
     if (!matchedReal) return undefined;
+    root = matchedReal;
     relative = realResolved.slice(matchedReal.length + 1);
   }
 
   const segments = relative.split(SEPARATOR);
   if (segments.length < 2) return undefined;
-  let name: string;
-  if (segments[0].startsWith("@") && segments.length >= 3) {
-    name = `${segments[0]}/${segments[1]}`;
-  } else {
-    name = segments[0];
-  }
+  // a package can ship a manifest.yaml naming one of its own subdirectories, so
+  // only the lockfile may pick an owner inside another manifest's directory;
+  // without it the outermost manifest.yaml decides or the guess applies
+  const candidates = ownerCandidates(segments);
+  const name = candidates.findLast((candidate) => isInstalled?.(candidate)) ??
+    outermostManifestOwner(root, candidates) ??
+    segmentGuessName(segments);
   if (name.includes("..") || name.includes("\0")) return undefined;
   return name;
+}
+
+/**
+ * an extension is installed at <pulled root>/<name>/, however many segments;
+ * outermost first
+ */
+function ownerCandidates(segments: readonly string[]): string[] {
+  const minSegments = segments[0].startsWith("@") ? 2 : 1;
+  const candidates: string[] = [];
+  for (let depth = minSegments; depth < segments.length; depth++) {
+    candidates.push(segments.slice(0, depth).join("/"));
+  }
+  return candidates;
+}
+
+/**
+ * the search never passes a manifest.yaml: one that is not a file naming its
+ * own directory decides nothing, so nothing deeper inside the package can win
+ */
+function outermostManifestOwner(
+  root: string,
+  candidates: readonly string[],
+): string | undefined {
+  for (const candidate of candidates) {
+    const manifestPath = join(root, ...candidate.split("/"), "manifest.yaml");
+    let entry: Deno.FileInfo;
+    try {
+      entry = Deno.lstatSync(manifestPath);
+    } catch {
+      continue;
+    }
+    return entry.isFile && manifestNames(manifestPath, candidate)
+      ? candidate
+      : undefined;
+  }
+  return undefined;
+}
+
+function manifestNames(manifestPath: string, candidate: string): boolean {
+  try {
+    const parsed = parseYaml(Deno.readTextFileSync(manifestPath));
+    return typeof parsed === "object" && parsed !== null &&
+      (parsed as Record<string, unknown>).name === candidate;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * never undefined for a pulled source: an unnamed caller skips runModel
+ * authorization, so a source with no manifest must still fail closed
+ */
+function segmentGuessName(segments: readonly string[]): string {
+  if (segments[0].startsWith("@") && segments.length >= 3) {
+    return `${segments[0]}/${segments[1]}`;
+  }
+  return segments[0];
 }
 
 /**
@@ -282,6 +345,15 @@ export class ExtensionLoader {
     this.repository = repository;
     this.logger = getLogger(["swamp", adapter.kind, "loader"]);
     this.appliedSourceRows = this.localSourceRows();
+  }
+
+  private owningExtension(sourcePath: string): string | undefined {
+    const repository = this.repository;
+    return extractExtensionNameFromPath(
+      sourcePath,
+      this.repoDir,
+      repository && ((name) => repository.isInstalledExtension(name)),
+    );
   }
 
   private sourceModules(): SourceModuleLookup {
@@ -724,10 +796,7 @@ export class ExtensionLoader {
             ...ctx,
             absolutePath,
             pulled: this.isPulledBoundary(baseDir),
-            extensionName: extractExtensionNameFromPath(
-              absolutePath,
-              this.repoDir,
-            ),
+            extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: fingerprint,
             sourceSnapshot: snapshot,
           },
@@ -1614,10 +1683,7 @@ export class ExtensionLoader {
         denoRuntime: this.denoRuntime,
         repoDir: this.repoDir,
         pulled: this.isPulledBoundary(entry.source_path),
-        extensionName: extractExtensionNameFromPath(
-          entry.source_path,
-          this.repoDir,
-        ),
+        extensionName: this.owningExtension(entry.source_path),
         sourceFingerprint: entry.source_fingerprint || undefined,
         sourceSnapshot: snapshot,
       },
@@ -2242,10 +2308,7 @@ export class ExtensionLoader {
             denoRuntime: this.denoRuntime,
             repoDir: this.repoDir,
             pulled: this.isPulledBoundary(baseDir),
-            extensionName: extractExtensionNameFromPath(
-              absolutePath,
-              this.repoDir,
-            ),
+            extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: effectiveFingerprint,
             sourceSnapshot: snapshot,
           },
