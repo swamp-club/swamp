@@ -224,3 +224,51 @@ Deno.test("auditDoctor: aborts mid-run when the signal is already aborted", asyn
   >;
   assertEquals(completed.report.checks.length, 0);
 });
+
+function warningCheck(seen: { homeDir?: string; gitRoot?: string | null }) {
+  return {
+    name: "agent-config-loadable",
+    description: "fake",
+    appliesTo: () => true,
+    run: (ctx) => {
+      seen.homeDir = ctx.homeDir;
+      seen.gitRoot = ctx.findGitRoot?.(ctx.repoPath);
+      return Promise.resolve({
+        name: "agent-config-loadable",
+        status: "pass",
+        message: "ok",
+        warning: "nested",
+      });
+    },
+  } satisfies PreflightCheck;
+}
+
+function overall(events: AuditDoctorEvent[]): string {
+  const completed = events.at(-1) as Extract<
+    AuditDoctorEvent,
+    { kind: "completed" }
+  >;
+  return completed.report.overallStatus;
+}
+
+Deno.test("auditDoctor: overall status is `warn` when a passing check carries a warning", async () => {
+  const seen: { homeDir?: string; gitRoot?: string | null } = {};
+  const events = await collect(auditDoctor({
+    ...makeDeps("claude", [
+      fakeCheck("binary-on-path", "pass"),
+      warningCheck(seen),
+    ]),
+    homeDir: "/home/u",
+    findGitRoot: (dir) => `${dir}/..`,
+  }));
+  assertEquals(overall(events), "warn");
+  assertEquals(seen, { homeDir: "/home/u", gitRoot: "/tmp/repo/.." });
+});
+
+Deno.test("auditDoctor: a failing check outranks a warning", async () => {
+  const events = await collect(auditDoctor(makeDeps("claude", [
+    warningCheck({}),
+    fakeCheck("recording-smoke-test", "fail"),
+  ])));
+  assertEquals(overall(events), "fail");
+});

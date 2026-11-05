@@ -231,7 +231,7 @@ function isAtOrAbove(ancestor: string, descendant: string): boolean {
  * a linked worktree, where the repository marker usually lives; kept as the git
  * root unless the main tree is its ancestor
  */
-function getGitRootSync(startDir: string): string | null {
+export function getGitRootSync(startDir: string): string | null {
   try {
     const result = new Deno.Command("git", {
       args: ["rev-parse", "--show-toplevel", "--git-common-dir"],

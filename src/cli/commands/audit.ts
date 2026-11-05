@@ -33,6 +33,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { AuditTimelineResponse } from "../../serve/protocol.ts";
+import { auditInstallCommand, auditUninstallCommand } from "./audit_install.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -329,7 +330,9 @@ export const auditCommand = withRemoteOptions(
 }).command("record", auditRecordCommand)
   .command("alerts", auditAlertsCommand)
   .command("export", auditExportCommand)
+  .command("install", auditInstallCommand)
   .command("log", auditLogCommand)
   .command("report", auditReportCommand)
   .command("rotate-key", auditRotateKeyCommand)
+  .command("uninstall", auditUninstallCommand)
   .command("verify", auditVerifyCommand);

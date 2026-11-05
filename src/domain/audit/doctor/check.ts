@@ -60,6 +60,8 @@ export interface CheckResult {
   hint?: string;
   /** Structured payload for JSON consumers. */
   details?: Record<string, unknown>;
+  /** set on a pass that still leaves recording gaps; makes the report warn */
+  warning?: string;
 }
 
 /**
@@ -92,6 +94,12 @@ export interface CheckContext {
   abortSignal: AbortSignal;
   /** Spawn the swamp binary. Production wires the real binary; tests inject a fake. */
   spawnSwamp: SpawnFn;
+  /** absent when HOME is unset; a git root at home gets no nested-repo warning */
+  homeDir?: string;
+  /** absent when it cannot be found; user-level hooks are then not looked for */
+  claudeConfigDir?: string;
+  /** the git root Claude Code reads project settings from, or null outside git */
+  findGitRoot?: (dir: string) => string | null;
 }
 
 /** A single preflight check. */

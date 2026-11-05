@@ -38,6 +38,18 @@ They run in a fixed order so output is stable:
    universal-format array entry with trigger `postToolUse`.
    For Claude, Cursor and Copilot it also fails when an event runs the audit
    hook more than once, since each copy records every tool call.
+   For Claude, a user-level audit hook (`settings.json` in `CLAUDE_CONFIG_DIR`
+   or `~/.claude`, see `swamp audit install --user`) counts when the repo file
+   has none. When both run the hook but with different handlers, the check
+   passes with a `warning`: Claude Code runs both, recording each call twice.
+   Without a user-level hook, a repo below its git root passes with a
+   `warning`: Claude Code reads `.claude/settings.local.json` from the git
+   root, so the repo's own hook does not fire for sessions started there. No
+   warning when the git root is the home directory, where Claude Code keeps
+   the file in the start folder, or when the git root's file runs the audit
+   hook itself. The git root comes from a `findGitRoot` port on `CheckContext`;
+   the CLI wires the same lookup repo discovery uses, which resolves a linked
+   worktree to its main checkout, as Claude Code does.
    For OpenCode it also fails when the plugin has no default export with
    `setup`, the entry point OpenCode 2 requires; the hint says the rewritten
    plugin needs OpenCode 1.3.4 or later, or OpenCode 2.
@@ -47,6 +59,10 @@ They run in a fixed order so output is stable:
    catches upstream normalizer changes. It pipes a synthetic `postToolUse`
    payload for the tool through `swamp audit record --from-hook`, then asserts
    that today's JSONL has a row with the sentinel command prefix.
+
+A check result may carry a `warning` on a pass. The report's `overallStatus`
+is `fail` when any check fails, `warn` when every check is skipped or any
+carries a warning, and `pass` otherwise. Only `fail` exits non-zero.
 
 ## Architecture
 

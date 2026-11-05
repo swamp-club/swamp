@@ -20,12 +20,14 @@
 import { Command } from "@cliffy/command";
 import { auditDoctor } from "../../domain/audit/doctor/doctor_service.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
+import { resolveClaudeUserConfigDir } from "../../libswamp/audit/install.ts";
 import {
   NoToolConfiguredError,
   type SpawnFn,
 } from "../../domain/audit/doctor/check.ts";
 
 import {
+  homeDirectory,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
@@ -34,12 +36,29 @@ import { createAuditDoctorRenderer } from "../../presentation/renderers/audit_do
 import { parseAiToolOrThrow, VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 import {
   createContext,
+  getGitRootSync,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveServeUrl, withRemoteOptions } from "../remote_run.ts";
+
+function userClaudeConfigDir(): string | undefined {
+  try {
+    return resolveClaudeUserConfigDir();
+  } catch {
+    return undefined;
+  }
+}
+
+function userHomeDir(): string | undefined {
+  try {
+    return homeDirectory();
+  } catch {
+    return undefined;
+  }
+}
 
 export function resolveTargetTool(
   flagTool: string | undefined,
@@ -200,6 +219,9 @@ export const doctorAuditCommand = withRemoteOptions(
         spawnSwamp: makeSwampSpawnFn(repoDir),
         abortSignal: controller.signal,
         resolveBinary: (name) => commandResolver.resolve(name),
+        homeDir: userHomeDir(),
+        claudeConfigDir: userClaudeConfigDir(),
+        findGitRoot: getGitRootSync,
       }),
       renderer.handlers(),
     );

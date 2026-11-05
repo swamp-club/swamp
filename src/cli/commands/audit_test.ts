@@ -39,6 +39,16 @@ Deno.test("auditCommand: is hidden after a single registration", () => {
 Deno.test("auditCommand: hides none of its subcommands", () => {
   assertEquals(
     auditCommand.getCommands(false).map((cmd) => cmd.getName()),
-    ["record", "alerts", "export", "log", "report", "rotate-key", "verify"],
+    [
+      "record",
+      "alerts",
+      "export",
+      "install",
+      "log",
+      "report",
+      "rotate-key",
+      "uninstall",
+      "verify",
+    ],
   );
 });

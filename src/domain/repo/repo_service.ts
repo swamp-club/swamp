@@ -337,6 +337,44 @@ export const CLAUDE_AUDIT_HOOK_SHAPE: AuditHookShape = {
   applies: (entry) => claudeMatcherCoversBash(entry.matcher),
 };
 
+const CLAUDE_AUDIT_HOOK_EVENTS = ["PostToolUse", "PostToolUseFailure"];
+
+function claudeAuditHookEntry(matcher: string): Record<string, unknown> {
+  return {
+    matcher,
+    hooks: [{ type: "command", command: "swamp audit record --from-hook" }],
+  };
+}
+
+export function claudeAuditHooks(): Record<string, unknown[]> {
+  return Object.fromEntries(
+    CLAUDE_AUDIT_HOOK_EVENTS.map((event) => [
+      event,
+      [claudeAuditHookEntry("Bash|PowerShell")],
+    ]),
+  );
+}
+
+export const LEGACY_CLAUDE_AUDIT_HOOK_ENTRY: Readonly<Record<string, unknown>> =
+  claudeAuditHookEntry("Bash");
+
+/** mergeAuditHooks alone would count the Bash-only entry as present and never widen it */
+export function migrateLegacyClaudeAuditHooks(
+  hooks: Record<string, unknown>,
+): Record<string, unknown> {
+  const legacyJson = JSON.stringify(LEGACY_CLAUDE_AUDIT_HOOK_ENTRY);
+  const current = claudeAuditHooks();
+  const migrated = { ...hooks };
+  for (const event of CLAUDE_AUDIT_HOOK_EVENTS) {
+    const entries = migrated[event];
+    if (!Array.isArray(entries)) continue;
+    migrated[event] = entries.map((entry) =>
+      JSON.stringify(entry) === legacyJson ? current[event][0] : entry
+    );
+  }
+  return migrated;
+}
+
 export const CURSOR_AUDIT_HOOK_SHAPE: AuditHookShape = flatAuditHookShape(
   "swamp audit record --from-hook --tool cursor",
 );
@@ -1667,30 +1705,7 @@ directly). Every \`swamp model …\` spelling remains supported.
   }
 
   private getClaudeHooks(): Record<string, unknown[]> {
-    return {
-      PostToolUse: [
-        {
-          matcher: "Bash",
-          hooks: [
-            {
-              type: "command",
-              command: "swamp audit record --from-hook",
-            },
-          ],
-        },
-      ],
-      PostToolUseFailure: [
-        {
-          matcher: "Bash",
-          hooks: [
-            {
-              type: "command",
-              command: "swamp audit record --from-hook",
-            },
-          ],
-        },
-      ],
-    };
+    return claudeAuditHooks();
   }
 
   private async createFileIfNotExists(
@@ -1769,7 +1784,7 @@ directly). Every \`swamp model …\` spelling remains supported.
 
     const ourHooks = this.getClaudeHooks();
     const mergedHooks = mergeAuditHooks(
-      existingSettings.hooks ?? {},
+      migrateLegacyClaudeAuditHooks(existingSettings.hooks ?? {}),
       ourHooks,
       CLAUDE_AUDIT_HOOK_SHAPE,
     );

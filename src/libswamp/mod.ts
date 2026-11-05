@@ -1832,6 +1832,16 @@ export {
 } from "./audit/timeline.ts";
 
 export {
+  auditInstall,
+  auditUninstall,
+  type AuditUserHookData,
+  type AuditUserHookDeps,
+  type AuditUserHookEvent,
+  createAuditUserHookDeps,
+  resolveClaudeUserConfigDir,
+} from "./audit/install.ts";
+
+export {
   createUpdateCheckDeps,
   updateCheck,
   type UpdateCheckData,

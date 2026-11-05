@@ -744,7 +744,8 @@ function claudeEntry(
   return { matcher, hooks: [{ type: "command", command, ...extra }] };
 }
 
-const CLAUDE_SWAMP_ENTRY = claudeEntry(CLAUDE_AUDIT);
+const CLAUDE_SWAMP_ENTRY = claudeEntry(CLAUDE_AUDIT, "Bash|PowerShell");
+const CLAUDE_LEGACY_ENTRY = claudeEntry(CLAUDE_AUDIT, "Bash");
 
 async function claudeHooksAfterUpgrade(
   hooks: unknown,
@@ -777,6 +778,83 @@ async function claudeHooksAfterUpgrade(
   });
   return result;
 }
+
+Deno.test("RepoService.init writes the Claude audit hook for Bash and PowerShell", async () => {
+  await withTempDir(async (tempDir) => {
+    await testService("0.1.0", tempDir).init(RepoPath.create(tempDir));
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(tempDir, ".claude", "settings.local.json")),
+    );
+    assertEquals(settings.hooks, {
+      PostToolUse: [CLAUDE_SWAMP_ENTRY],
+      PostToolUseFailure: [CLAUDE_SWAMP_ENTRY],
+    });
+  });
+});
+
+Deno.test("RepoService.upgrade widens swamp's Bash-only Claude audit hook to PowerShell", async () => {
+  const { first, second, secondUpdated } = await claudeHooksAfterUpgrade({
+    PostToolUse: [CLAUDE_LEGACY_ENTRY],
+    PostToolUseFailure: [CLAUDE_LEGACY_ENTRY],
+  });
+  const widened = {
+    PostToolUse: [CLAUDE_SWAMP_ENTRY],
+    PostToolUseFailure: [CLAUDE_SWAMP_ENTRY],
+  };
+  assertEquals(first, widened);
+  assertEquals(second, widened);
+  assertEquals(secondUpdated, false);
+});
+
+Deno.test("RepoService.upgrade widens swamp's Bash-only Claude audit hook where it stands", async () => {
+  const formatter = claudeEntry("prettier --write", "Edit|Write");
+  const notify = claudeEntry("notify-send done", "Bash");
+  const { first } = await claudeHooksAfterUpgrade({
+    PostToolUse: [formatter, CLAUDE_LEGACY_ENTRY, notify],
+    PostToolUseFailure: [CLAUDE_LEGACY_ENTRY, CLAUDE_LEGACY_ENTRY],
+  });
+  assertEquals(first, {
+    PostToolUse: [formatter, CLAUDE_SWAMP_ENTRY, notify],
+    PostToolUseFailure: [CLAUDE_SWAMP_ENTRY],
+  });
+});
+
+Deno.test("RepoService.init with force widens swamp's Bash-only Claude audit hook", async () => {
+  const { first } = await claudeHooksAfterUpgrade(
+    {
+      PostToolUse: [CLAUDE_LEGACY_ENTRY],
+      PostToolUseFailure: [CLAUDE_LEGACY_ENTRY],
+    },
+    (repoPath, tempDir) =>
+      testService("0.2.0", tempDir).init(repoPath, {
+        tools: ["claude"],
+        force: true,
+      }),
+  );
+  assertEquals(first, {
+    PostToolUse: [CLAUDE_SWAMP_ENTRY],
+    PostToolUseFailure: [CLAUDE_SWAMP_ENTRY],
+  });
+});
+
+Deno.test("RepoService.upgrade drops swamp's Bash-only Claude audit hook beside a user variant", async () => {
+  const { first } = await claudeHooksAfterUpgrade({
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT), CLAUDE_LEGACY_ENTRY],
+    PostToolUseFailure: [CLAUDE_LEGACY_ENTRY, claudeEntry(BACKGROUNDED_AUDIT)],
+  });
+  assertEquals(first, {
+    PostToolUse: [claudeEntry(BACKGROUNDED_AUDIT)],
+    PostToolUseFailure: [claudeEntry(BACKGROUNDED_AUDIT)],
+  });
+});
+
+Deno.test("RepoService.upgrade keeps a user's Bash-only Claude audit hook that differs from swamp's", async () => {
+  const hooks = {
+    PostToolUse: [claudeEntry(CLAUDE_AUDIT, "Bash", { timeout: 5 })],
+    PostToolUseFailure: [claudeEntry(CLAUDE_AUDIT, "Bash", { timeout: 5 })],
+  };
+  assertEquals((await claudeHooksAfterUpgrade(hooks)).first, hooks);
+});
 
 Deno.test("RepoService.upgrade keeps an existing backgrounded Claude audit hook without adding swamp's", async () => {
   const hooks = {

@@ -52,6 +52,9 @@ export interface AuditDoctorDeps {
   abortSignal: AbortSignal;
   resolveBinary?: ResolveBinary;
   checks?: readonly PreflightCheck[];
+  homeDir?: string;
+  claudeConfigDir?: string;
+  findGitRoot?: (dir: string) => string | null;
 }
 
 /**
@@ -74,6 +77,7 @@ export function defaultCheckOrder(
 function overallStatus(checks: CheckResult[]): OverallStatus {
   if (checks.some((c) => c.status === "fail")) return "fail";
   if (checks.every((c) => c.status === "skip")) return "warn";
+  if (checks.some((c) => c.warning !== undefined)) return "warn";
   return "pass";
 }
 
@@ -138,6 +142,9 @@ export async function* auditDoctor(
         tool,
         abortSignal,
         spawnSwamp: deps.spawnSwamp,
+        homeDir: deps.homeDir,
+        claudeConfigDir: deps.claudeConfigDir,
+        findGitRoot: deps.findGitRoot,
       });
     } catch (error) {
       result = {
