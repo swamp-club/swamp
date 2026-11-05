@@ -92,14 +92,14 @@ async function check(): Promise<void> {
       : "Go race detector unavailable on this host/toolchain; running ordinary tests",
   );
   await run("go", ["test", ...(race ? ["-race"] : []), "-count=1", "./..."]);
-  const temporary = await Deno.makeTempDir({ prefix: "swamp-serve-build-" });
+  const temporary = await Deno.makeTempDir({ prefix: "swampd-build-" });
   try {
     await run("go", [
       "build",
       "-trimpath",
       "-o",
-      join(temporary, os === "windows" ? "swamp-serve.exe" : "swamp-serve"),
-      "./cmd/swamp-serve",
+      join(temporary, os === "windows" ? "swampd.exe" : "swampd"),
+      "./cmd/swampd",
     ]);
   } finally {
     await Deno.remove(temporary, { recursive: true });
@@ -135,15 +135,15 @@ async function release(
       "-ldflags",
       `-s -w -X main.version=${version} -X main.gitSHA=${sha}`,
       "-o",
-      join(directory, `swamp-serve-${target.name}`),
-      "./cmd/swamp-serve",
+      join(directory, `swampd-${target.name}`),
+      "./cmd/swampd",
     ], { GOOS: target.os, GOARCH: target.arch, CGO_ENABLED: "0" });
   }
   const protocol = JSON.parse(
     await Deno.readTextFile(join(moduleDir, "protocol.json")),
   ) as Record<string, unknown>;
   await Deno.writeTextFile(
-    join(directory, "swamp-serve-pair.json"),
+    join(directory, "swampd-pair.json"),
     JSON.stringify(
       {
         experimental: true,

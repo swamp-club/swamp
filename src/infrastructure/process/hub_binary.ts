@@ -20,7 +20,7 @@
 import { basename, dirname, isAbsolute, join } from "@std/path";
 
 export interface HubBinaries {
-  /** the Go hub, `swamp-serve` */
+  /** the Go hub, `swampd` */
   readonly hub: string;
   /** the swamp executable the hub starts as its engines */
   readonly engine: string;
@@ -59,8 +59,8 @@ export async function locateHubBinaries(
   const engine = deps.env("SWAMP_HUB_ENGINE") ??
     (/^deno(\.exe)?$/i.test(basename(execPath)) ? undefined : execPath);
   if (engine === undefined || !isAbsolute(engine)) return null;
-  const hub = deps.env("SWAMP_SERVE_BINARY") ??
-    join(dirname(engine), `swamp-serve${exe}`);
+  const hub = deps.env("SWAMPD_BINARY") ??
+    join(dirname(engine), `swampd${exe}`);
   if (!isAbsolute(hub)) return null;
   if (!await deps.isFile(hub) || !await deps.isFile(engine)) return null;
   return { hub, engine };

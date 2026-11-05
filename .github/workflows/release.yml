@@ -49,7 +49,7 @@ jobs:
           go mod verify
           go vet ./...
           go test -race -count=1 ./...
-          go build ./cmd/swamp-serve
+          go build ./cmd/swampd
 
   release:
     name: Build and Release

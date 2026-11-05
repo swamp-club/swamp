@@ -23,8 +23,8 @@ reached two ways:
   command's only result is a page in a browser. `swamp start --json` keeps its
   read-only inspection.
 
-Both are served by the user's **hub**. When `swamp-serve` sits next to the
-swamp executable (or `SWAMP_SERVE_BINARY` names it), that is the Go hub, one
+Both are served by the user's **hub**. When `swampd` sits next to the
+swamp executable (or `SWAMPD_BINARY` names it), that is the Go hub, one
 long-lived process per user shared by every invocation (see
 [The Go hub](#the-go-hub)). Otherwise each invocation runs its own TypeScript
 hub inside the [start](./start.md) server, as described from
@@ -77,7 +77,7 @@ cannot open a start page socket.
 ## Why this shape
 
 The rest of this page describes the TypeScript hub, which is used when
-`swamp-serve` is not installed.
+`swampd` is not installed.
 
 **One swamp process serves one repo.** The extension type registries (models,
 vaults, datastores, reports, webhooks) are process-wide and bound to one
@@ -297,8 +297,8 @@ re-read once.
 
 ## Not yet
 
-- Releases do not ship `swamp-serve`, so an installed swamp uses the TypeScript
-  hub unless `SWAMP_SERVE_BINARY` names one.
+- Releases do not ship `swampd`, so an installed swamp uses the TypeScript
+  hub unless `SWAMPD_BINARY` names one.
 - On the Go hub the workspace switcher lists workspaces in registry order, not
   by most recent task as the TypeScript hub does.
 - On a remote datastore a child reads the local cache as CLI read commands do

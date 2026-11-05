@@ -31,7 +31,7 @@ import {
 import { executeProcess, KILL_GRACE_MS } from "./process_executor.ts";
 
 const GUARDIAN = {
-  executable: join(Deno.cwd(), "installed", "swamp-serve"),
+  executable: join(Deno.cwd(), "installed", "swampd"),
   fence: join(Deno.cwd(), "private", "commands.sock"),
 };
 const MODES = [

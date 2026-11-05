@@ -83,7 +83,7 @@ const hubDaemonEnableCommand = new Command()
     const binaries = await locateHubBinaries();
     if (binaries === null) {
       throw new UserError(
-        "This swamp install has no hub: swamp-serve isn't next to the swamp executable. Install a swamp release that includes it, or set SWAMP_SERVE_BINARY.",
+        "This swamp install has no hub: swampd isn't next to the swamp executable. Install a swamp release that includes it, or set SWAMPD_BINARY.",
         "hub_unavailable",
       );
     }

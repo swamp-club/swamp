@@ -200,10 +200,10 @@ func TestHelpAndVersionSupportHumanAndJSONOutput(t *testing.T) {
 					t.Fatalf("version fields changed: %s", &stdout)
 				}
 			} else if test.help {
-				if !strings.Contains(stdout.String(), "Usage: swamp-serve") || !strings.Contains(stdout.String(), "--repo") || !strings.Contains(stdout.String(), "--engine") {
+				if !strings.Contains(stdout.String(), "Usage: swampd") || !strings.Contains(stdout.String(), "--repo") || !strings.Contains(stdout.String(), "--engine") {
 					t.Fatalf("human help missing usage: %s", &stdout)
 				}
-			} else if stdout.String() != fmt.Sprintf("swamp-serve %s (%s)\n", version, gitSHA) {
+			} else if stdout.String() != fmt.Sprintf("swampd %s (%s)\n", version, gitSHA) {
 				t.Fatalf("human version changed: %s", &stdout)
 			}
 		})

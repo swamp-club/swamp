@@ -156,7 +156,7 @@ Deno.test("buildServePlist: does not include StartInterval", () => {
 Deno.test("buildServePlist: another service's identity, logs and arguments replace serve's", () => {
   const plist = buildServePlist(
     {
-      binaryPath: "/opt/swamp/swamp-serve",
+      binaryPath: "/opt/swamp/swampd",
       repoDir: "/Users/me/.swamp",
       port: 0,
       host: "",

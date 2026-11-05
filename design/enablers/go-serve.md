@@ -6,7 +6,7 @@ last-verified: 2026-10-26 @ working-tree
 
 # Experimental Go serve engine
 
-`swamp-serve` is a separate Go listener for sporadic CLI use against one local
+`swampd` is a separate Go listener for sporadic CLI use against one local
 repository. It starts a compatible installed `swamp` executable as a private
 TypeScript engine. Authentication, grants, CEL, vault access, execution, audit,
 and repository persistence remain in TypeScript. The existing `swamp serve`
@@ -242,8 +242,8 @@ not download or embed its engine.
 
 ```sh
 cd packages/serve-go
-go build -o swamp-serve ./cmd/swamp-serve
-./swamp-serve --repo /absolute/repository --engine /absolute/swamp \
+go build -o swampd ./cmd/swampd
+./swampd --repo /absolute/repository --engine /absolute/swamp \
   --bind 127.0.0.1:9876 --idle-timeout 60s --json
 ```
 
@@ -283,13 +283,13 @@ and explicitly refused. OAuth, browser sessions, dashboard access, triggers,
 worker services, HA coordination, token GC, and remote administration are
 excluded.
 
-To roll back, drain and stop `swamp-serve`, then start the existing
+To roll back, drain and stop `swampd`, then start the existing
 `swamp serve` against the same repository. Do not use simultaneous listeners as
 a rollback. This adapter introduces no data migration.
 
 ## Hub: dashboard pages
 
-`swamp-serve hub` fronts every workspace in the user's registry at
+`swampd hub` fronts every workspace in the user's registry at
 `/w/<workspace>/`, one on-demand engine per workspace. A repository-less control
 engine resolves workspace names and trust, so Go still reads no swamp
 persistence. With `--record`, the hub also serves the local dashboard in place
@@ -409,7 +409,7 @@ libswamp's public surface, Go license headers, toolchain pins, and the absence
 of Go persistence adapters.
 
 An explicit `workflow_dispatch` with `experimental_go: true` builds Linux and
-macOS amd64/arm64 and Windows amd64 CI artifacts, plus `swamp-serve-pair.json`
+macOS amd64/arm64 and Windows amd64 CI artifacts, plus `swampd-pair.json`
 identifying the engine revision and protocol and matching engine binaries.
 Native Go tests on Linux, macOS, and Windows gate that job. These opt-in
 artifacts expire after seven days; automatic releases and the promoted channel
@@ -491,7 +491,7 @@ Reproduce from the sibling `swamp-uat` checkout with its benchmark script:
 
 ```sh
 SWAMP_BINARY_PATH=/absolute/swamp \
-SWAMP_SERVE_BINARY_PATH=/absolute/swamp-serve \
+SWAMP_SERVE_BINARY_PATH=/absolute/swampd \
 GO_SERVE_SOURCE_DIR=/absolute/swamp-source \
 GO_SERVE_BENCH_SAMPLES=20 GO_SERVE_BENCH_WORKFLOW_SAMPLES=5 \
 deno run -A scripts/benchmark_go_serve.ts /tmp/go-serve-benchmark.json

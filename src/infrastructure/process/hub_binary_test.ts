@@ -33,12 +33,12 @@ function deps(
   };
 }
 
-Deno.test("locateHubBinaries: finds swamp-serve next to the swamp executable", async () => {
+Deno.test("locateHubBinaries: finds swampd next to the swamp executable", async () => {
   assertEquals(
     await locateHubBinaries(
-      deps({ files: ["/opt/swamp/bin/swamp", "/opt/swamp/bin/swamp-serve"] }),
+      deps({ files: ["/opt/swamp/bin/swamp", "/opt/swamp/bin/swampd"] }),
     ),
-    { hub: "/opt/swamp/bin/swamp-serve", engine: "/opt/swamp/bin/swamp" },
+    { hub: "/opt/swamp/bin/swampd", engine: "/opt/swamp/bin/swamp" },
   );
 });
 
@@ -53,9 +53,9 @@ Deno.test("locateHubBinaries: from source there is no engine unless one is named
   const fromSource = deps({
     execPath: () => "/home/me/.deno/bin/deno",
     files: [
-      "/home/me/.deno/bin/swamp-serve",
+      "/home/me/.deno/bin/swampd",
       "/build/swamp",
-      "/build/swamp-serve",
+      "/build/swampd",
     ],
   });
   assertEquals(await locateHubBinaries(fromSource), null);
@@ -64,33 +64,33 @@ Deno.test("locateHubBinaries: from source there is no engine unless one is named
       ...fromSource,
       env: (name) => name === "SWAMP_HUB_ENGINE" ? "/build/swamp" : undefined,
     }),
-    { hub: "/build/swamp-serve", engine: "/build/swamp" },
+    { hub: "/build/swampd", engine: "/build/swamp" },
   );
 });
 
-Deno.test("locateHubBinaries: SWAMP_SERVE_BINARY names the hub, and only an absolute path counts", async () => {
-  const files = ["/opt/swamp/bin/swamp", "/elsewhere/swamp-serve"];
+Deno.test("locateHubBinaries: SWAMPD_BINARY names the hub, and only an absolute path counts", async () => {
+  const files = ["/opt/swamp/bin/swamp", "/elsewhere/swampd"];
   const named = (value: string) =>
     deps({
       files,
-      env: (name) => name === "SWAMP_SERVE_BINARY" ? value : undefined,
+      env: (name) => name === "SWAMPD_BINARY" ? value : undefined,
     });
-  assertEquals(await locateHubBinaries(named("/elsewhere/swamp-serve")), {
-    hub: "/elsewhere/swamp-serve",
+  assertEquals(await locateHubBinaries(named("/elsewhere/swampd")), {
+    hub: "/elsewhere/swampd",
     engine: "/opt/swamp/bin/swamp",
   });
-  assertEquals(await locateHubBinaries(named("swamp-serve")), null);
+  assertEquals(await locateHubBinaries(named("swampd")), null);
 });
 
-Deno.test("locateHubBinaries: Windows looks for swamp-serve.exe", async () => {
+Deno.test("locateHubBinaries: Windows looks for swampd.exe", async () => {
   assertEquals(
     await locateHubBinaries(deps({
       os: "windows",
       execPath: () => "C:\\swamp\\swamp.exe",
-      files: ["C:\\swamp\\swamp.exe", "C:\\swamp\\swamp-serve.exe"],
+      files: ["C:\\swamp\\swamp.exe", "C:\\swamp\\swampd.exe"],
     })),
     Deno.build.os === "windows"
-      ? { hub: "C:\\swamp\\swamp-serve.exe", engine: "C:\\swamp\\swamp.exe" }
+      ? { hub: "C:\\swamp\\swampd.exe", engine: "C:\\swamp\\swamp.exe" }
       : null,
   );
 });

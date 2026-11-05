@@ -167,7 +167,7 @@ Deno.test("buildServeService: does not include OnCalendar or timer config", () =
 Deno.test("buildServeService: another service's identity and arguments replace serve's", () => {
   const unit = buildServeService(
     {
-      binaryPath: "/opt/swamp/swamp-serve",
+      binaryPath: "/opt/swamp/swampd",
       repoDir: "/home/me/.swamp",
       port: 0,
       host: "",
@@ -179,7 +179,7 @@ Deno.test("buildServeService: another service's identity and arguments replace s
   assertStringIncludes(unit, "Description=Swamp hub");
   assertStringIncludes(
     unit,
-    'ExecStart="/opt/swamp/swamp-serve" "hub" "--engine" "/opt/swamp/swamp" "--bind" "127.0.0.1:9870"',
+    'ExecStart="/opt/swamp/swampd" "hub" "--engine" "/opt/swamp/swamp" "--bind" "127.0.0.1:9870"',
   );
   assertEquals(unit.includes("--repo-dir"), false);
   assertStringIncludes(unit, "WorkingDirectory=/home/me/.swamp");

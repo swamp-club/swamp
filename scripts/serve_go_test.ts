@@ -57,7 +57,7 @@ function hostCommands(
 
 async function withOutputDirectory(fn: (directory: string) => Promise<void>) {
   const directory = await Deno.makeTempDir({
-    prefix: "swamp-serve-driver-test-",
+    prefix: "swampd-driver-test-",
   });
   try {
     await fn(directory);
@@ -109,7 +109,7 @@ Deno.test("runServeGo: race verification depends on both host support and CGO", 
       const output = build.args[build.args.indexOf("-o") + 1];
       assertEquals(
         basename(output),
-        os === "windows" ? "swamp-serve.exe" : "swamp-serve",
+        os === "windows" ? "swampd.exe" : "swampd",
       );
       await assertRejects(
         () => Deno.stat(dirname(output)),
@@ -204,7 +204,7 @@ Deno.test("runServeGo: release builds five targets and writes the matching exper
       const output = call.args[call.args.indexOf("-o") + 1];
       assertPathEquals(
         output,
-        join(directory, `swamp-serve-${platforms[index]}`),
+        join(directory, `swampd-${platforms[index]}`),
       );
       assertEquals(await Deno.readTextFile(output), "compiled fixture");
       assert(call.args.includes("-trimpath"));
@@ -216,7 +216,7 @@ Deno.test("runServeGo: release builds five targets and writes the matching exper
       assertPathEquals(String(call.cwd), moduleDir);
     }
     const manifest = JSON.parse(
-      await Deno.readTextFile(join(directory, "swamp-serve-pair.json")),
+      await Deno.readTextFile(join(directory, "swampd-pair.json")),
     );
     assertEquals(manifest.experimental, true);
     assertEquals(manifest.version, "v1.2.3");
@@ -256,7 +256,7 @@ Deno.test("runServeGo: failed cross-builds do not claim a complete release pair"
       3,
     );
     await assertRejects(
-      () => Deno.stat(join(directory, "swamp-serve-pair.json")),
+      () => Deno.stat(join(directory, "swampd-pair.json")),
       Deno.errors.NotFound,
     );
   });

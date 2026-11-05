@@ -48,7 +48,7 @@ Deno.test("hubServiceArgs: the service hub binds a fixed address and writes the 
 
 Deno.test("hubCommand: daemon enable refuses an install without the hub", async () => {
   await withMockedEnv(
-    { SWAMP_HUB_ENGINE: undefined, SWAMP_SERVE_BINARY: undefined },
+    { SWAMP_HUB_ENGINE: undefined, SWAMPD_BINARY: undefined },
     async () => {
       // Tests run under deno, which the hub can't start as its engine.
       await assertRejects(

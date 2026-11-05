@@ -36,7 +36,7 @@ Deno.test("validateEngineLaunchArgs: private pipes and cleanup fence are mandato
     "--output-fd",
     "4",
     "--command-guardian",
-    "/installed/swamp-serve",
+    "/installed/swampd",
     "--command-fence",
     "/private/generation.sock",
   ];
@@ -50,7 +50,7 @@ Deno.test("validateEngineLaunchArgs: private pipes and cleanup fence are mandato
       [4, "0"],
       [5, "--output-handle"],
       [6, "3"],
-      [8, "relative/swamp-serve"],
+      [8, "relative/swampd"],
       [9, "--unknown-fence"],
       [10, "none"],
       [10, "relative.sock"],
@@ -73,7 +73,7 @@ Deno.test("validateEngineLaunchArgs: Windows uses private handles and an explici
     "--output-handle",
     "9007199254740994",
     "--command-guardian",
-    "C:\\installed\\swamp-serve.exe",
+    "C:\\installed\\swampd.exe",
     "--command-fence",
     "none",
   ];
@@ -96,7 +96,7 @@ Deno.test("parseEngineLaunchArgs: the hub control engine takes no repository and
     "--output-fd",
     "4",
     "--command-guardian",
-    "/installed/swamp-serve",
+    "/installed/swampd",
     "--command-fence",
     "/private/generation.sock",
   ];
@@ -104,7 +104,7 @@ Deno.test("parseEngineLaunchArgs: the hub control engine takes no repository and
     mode: "control",
     input: ["--input-fd", "3"],
     output: ["--output-fd", "4"],
-    guardian: "/installed/swamp-serve",
+    guardian: "/installed/swampd",
     fence: "/private/generation.sock",
   });
   // A control launch is never mistaken for a repository engine.
@@ -133,7 +133,7 @@ Deno.test("parseEngineLaunchArgs: a repository engine reports the repository it 
     "--output-fd",
     "4",
     "--command-guardian",
-    "/installed/swamp-serve",
+    "/installed/swampd",
     "--command-fence",
     "/private/generation.sock",
   ], "linux");
@@ -149,7 +149,7 @@ Deno.test("parseEngineLaunchArgs: an untrusted workspace's engine loads no exten
     "--output-fd",
     "4",
     "--command-guardian",
-    "/installed/swamp-serve",
+    "/installed/swampd",
     "--command-fence",
     "/private/generation.sock",
   ];

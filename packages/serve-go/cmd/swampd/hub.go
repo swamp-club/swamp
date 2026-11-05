@@ -41,7 +41,7 @@ import (
 	"github.com/swamp-club/swamp/packages/serve-go/internal/hub"
 )
 
-const hubUsage = "swamp-serve hub --engine <executable> [options]"
+const hubUsage = "swampd hub --engine <executable> [options]"
 
 type hubOptions struct {
 	executable  string
@@ -61,7 +61,7 @@ type hubOptions struct {
 }
 
 func hubFlags(options *hubOptions) *flag.FlagSet {
-	flags := flag.NewFlagSet("swamp-serve hub", flag.ContinueOnError)
+	flags := flag.NewFlagSet("swampd hub", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	options.engine = engine.DefaultConfig()
 	flags.StringVar(&options.executable, "engine", "", "Explicit installed swamp executable path (required)")
@@ -104,10 +104,10 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 	}
 	requestedJSON = options.jsonMode
 	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected positional argument %q; use swamp-serve hub --help for options", flags.Arg(0))
+		return fmt.Errorf("unexpected positional argument %q; use swampd hub --help for options", flags.Arg(0))
 	}
 	if options.executable == "" {
-		return errors.New("--engine is required; use swamp-serve hub --help for options")
+		return errors.New("--engine is required; use swampd hub --help for options")
 	}
 	config := options.engine
 	if config.StartupTimeout <= 0 || config.ControlTimeout <= 0 || config.DrainTimeout <= 0 || config.Cooldown <= 0 || config.IdleTimeout < 0 || options.controlIdle < 0 || options.resolveTTL < 0 || config.PageIdleGrace < 0 || options.exitIdle < 0 || options.leaseTTL < 0 {
@@ -342,7 +342,7 @@ func writeHubHelp(output io.Writer, flags *flag.FlagSet, jsonMode bool) error {
 			Profile string   `json:"profile"`
 			Usage   string   `json:"usage"`
 			Options []option `json:"options"`
-		}{"swamp-serve hub", "hub", hubUsage, options})
+		}{"swampd hub", "hub", hubUsage, options})
 	}
 	var help strings.Builder
 	fmt.Fprintf(&help, "Usage: %s\n\nServes every workspace in your registry at /w/<workspace>/, each through its own on-demand engine.\n\nOptions:\n", hubUsage)

@@ -60,7 +60,7 @@ function machine(initial: HubRecord | null, liveness: HubLiveness = "live") {
   };
   const deps: HubLauncherDeps = {
     dataDir: "/data",
-    binaries: { hub: "/opt/swamp/bin/swamp-serve", engine: ENGINE },
+    binaries: { hub: "/opt/swamp/bin/swampd", engine: ENGINE },
     gitSha: "build-1",
     readRecord: () => Promise.resolve(state.record),
     probe: (record) =>

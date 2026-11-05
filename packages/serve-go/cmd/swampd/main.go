@@ -63,7 +63,7 @@ func main() {
 	}
 }
 func run(args []string, stdout, stderr io.Writer) (result error) {
-	flags := flag.NewFlagSet("swamp-serve", flag.ContinueOnError)
+	flags := flag.NewFlagSet("swampd", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	config := engine.DefaultConfig()
 	repo := flags.String("repo", "", "Local swamp repository (required)")
@@ -103,7 +103,7 @@ func run(args []string, stdout, stderr io.Writer) (result error) {
 		if *jsonMode {
 			return json.NewEncoder(stdout).Encode(map[string]string{"version": version, "gitSha": gitSHA, "profile": "local-v1"})
 		}
-		_, err := fmt.Fprintf(stdout, "swamp-serve %s (%s)\n", version, gitSHA)
+		_, err := fmt.Fprintf(stdout, "swampd %s (%s)\n", version, gitSHA)
 		return err
 	}
 	if *repo == "" || *executable == "" {
@@ -354,7 +354,7 @@ func writeError(output io.Writer, err error, jsonMode bool) {
 }
 
 func writeHelp(output io.Writer, flags *flag.FlagSet, jsonMode bool) error {
-	const usage = "swamp-serve --repo <directory> --engine <executable> [options]"
+	const usage = "swampd --repo <directory> --engine <executable> [options]"
 	if jsonMode {
 		type option struct {
 			Name        string `json:"name"`
@@ -370,7 +370,7 @@ func writeHelp(output io.Writer, flags *flag.FlagSet, jsonMode bool) error {
 			Profile string   `json:"profile"`
 			Usage   string   `json:"usage"`
 			Options []option `json:"options"`
-		}{"swamp-serve", "local-v1", usage, options})
+		}{"swampd", "local-v1", usage, options})
 	}
 	var help strings.Builder
 	fmt.Fprintf(&help, "Usage: %s\n\nExperimental local-v1 server options:\n", usage)

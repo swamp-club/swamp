@@ -28,7 +28,7 @@ Deno.test("command guardian policy: nested engine scopes restore ordinary execut
   try {
     assertEquals(getCommandGuardian(), undefined);
     const first = setCommandGuardian({
-      executable: "/trusted/swamp-serve",
+      executable: "/trusted/swampd",
       fence: "/private/fence",
     });
     assertEquals(first, undefined);
@@ -36,14 +36,14 @@ Deno.test("command guardian policy: nested engine scopes restore ordinary execut
       getCommandGuardian(),
       Deno.build.os === "windows"
         ? undefined
-        : { executable: "/trusted/swamp-serve", fence: "/private/fence" },
+        : { executable: "/trusted/swampd", fence: "/private/fence" },
     );
     const second = setCommandGuardian({
-      executable: "/other/swamp-serve",
+      executable: "/other/swampd",
       fence: "/other/fence",
     });
     assertEquals(second, {
-      executable: "/trusted/swamp-serve",
+      executable: "/trusted/swampd",
       fence: "/private/fence",
     });
     setCommandGuardian(second);

@@ -243,7 +243,7 @@ Deno.test("engine boundary: Go pairs require explicit experimental release selec
   const publish = workflow.jobs["github-release"].steps?.find((step) =>
     step.uses?.startsWith("softprops/action-gh-release@")
   );
-  assertEquals(String(publish?.with?.files).includes("swamp-serve"), false);
+  assertEquals(String(publish?.with?.files).includes("swampd"), false);
 });
 
 Deno.test("engine boundary: operator admission precedes repository and extension composition", async () => {
