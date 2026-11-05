@@ -301,6 +301,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       CLI_REINVOCATION,
     "src/serve/local/delegated_actions.ts: SWAMP_CLI_ACTIONS": CLI_REINVOCATION,
     "src/serve/local/workspace_hub.ts: spawnDashboardChild": CLI_REINVOCATION,
+    "src/infrastructure/process/hub_launcher.ts: findOrLaunchLocalHub":
+      CLI_REINVOCATION,
     "src/cli/context.ts: getGitRootSync": TOOLING,
     "src/domain/extensions/dependency_resolution/deno_info.ts: runDenoInfo":
       TOOLING,
