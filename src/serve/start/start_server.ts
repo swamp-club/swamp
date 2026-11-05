@@ -111,6 +111,11 @@ export interface StartServerHandle {
     location?: StartWorkspaceLocationInput,
   ): Promise<StartStatus>;
   workspacePath(): string | null;
+  /**
+   * dashboard tabs open on another server, such as the Go hub, that keep this
+   * one from ending as its own open sockets do
+   */
+  setExternalPages(count: number): void;
   shutdown(): Promise<void>;
 }
 
@@ -324,6 +329,7 @@ export function startStartServer(
   };
 
   const opened = new Set<WebSocket>();
+  let externalPages = 0;
   let finished = false;
   let copyFallback = false;
   let launchedName: string | undefined;
@@ -341,7 +347,7 @@ export function startStartServer(
   const reevaluate = () => {
     clearTimeout(timer);
     if (finished) return;
-    if (opened.size === 0) {
+    if (opened.size + externalPages === 0) {
       // A copy-command launch opened no window, so it ends as a plain stop.
       timer = launchedName !== undefined
         ? setTimeout(
@@ -1094,6 +1100,11 @@ export function startStartServer(
     ended,
     openWorkspace,
     workspacePath: () => bound?.path ?? null,
+    setExternalPages: (count) => {
+      if (count === externalPages) return;
+      externalPages = count;
+      reevaluate();
+    },
     shutdown: async () => {
       // Queued work from here on bails, so nothing claims after the
       // release below.

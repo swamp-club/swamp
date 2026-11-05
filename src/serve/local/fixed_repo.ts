@@ -29,7 +29,7 @@ export interface FixedRepoDeps {
 export async function resolveFixedRepo(
   deps: FixedRepoDeps,
   repoDir: string,
-): Promise<{ name: string; path: string }> {
+): Promise<{ name: string; path: string; registered: boolean }> {
   let path: string;
   try {
     path = await deps.realPath(repoDir);
@@ -52,9 +52,23 @@ export async function resolveFixedRepo(
     } catch {
       // A registered folder that is gone matches nothing.
     }
-    if (entryPath === path) return { name: entry.name, path };
+    if (entryPath === path) return { name: entry.name, path, registered: true };
   }
   // A repo at the filesystem root has no folder name to show.
   const name = basename(path);
-  return { name: name === "" || name === "/" ? "root" : name, path };
+  return {
+    name: name === "" || name === "/" ? "root" : name,
+    path,
+    registered: false,
+  };
+}
+
+/**
+ * A name the Go hub routes at /w/<name>, which accepts only workspace-name
+ * characters; a registered workspace's name already is one.
+ */
+export function routableWorkspaceName(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/, "");
+  return slug === "" ? "repo" : slug;
 }

@@ -36,6 +36,7 @@ import type {
 } from "../src/libswamp/start/start.ts";
 import type { HarnessLaunchSpec } from "../src/domain/start/harness.ts";
 import type { WorkspaceHub } from "../src/serve/local/workspace_hub.ts";
+import { HubLeaseSession } from "../src/serve/local/hub_lease_session.ts";
 import { StartSessionFileRepository } from "../src/infrastructure/persistence/start_session_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../src/infrastructure/persistence/workspace_registry_file_repository.ts";
 import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -1759,4 +1760,61 @@ Deno.test("startStartServer: start.folder.pick asks where to create when picking
       await c.close();
     }
   });
+});
+
+Deno.test("startStartServer: dashboard tabs open on the Go hub keep the server up after a launch, until none are left", async () => {
+  await withStartServer(async ({ handle }) => {
+    handle.setExternalPages(1);
+    const client = await Client.open(handle.port);
+    await walkToTrust(client);
+    await client.request("start.launch", { trustConfirmed: true });
+    await client.close();
+    assertEquals(await settlesWithin(handle.ended, 100), false);
+    handle.setExternalPages(0);
+    assertEquals(await handle.ended, {
+      kind: "launched",
+      displayName: "Claude Code",
+    });
+  }, { ...LONG, afterLaunchIdleMs: 20 });
+});
+
+Deno.test("startStartServer: on the Go hub, the lease's token is the page token and its renewals report the open tabs", async () => {
+  const calls: string[] = [];
+  let pages = 0;
+  const session = await HubLeaseSession.open(
+    {
+      issueLease: () => Promise.resolve({ id: "lease-1", token: TOKEN }),
+      setBackend: (id, port) => {
+        calls.push(`backend ${id} ${port}`);
+        return Promise.resolve();
+      },
+      renew: () => Promise.resolve({ pages }),
+      revoke: (id) => {
+        calls.push(`revoke ${id}`);
+        return Promise.resolve();
+      },
+    },
+    { scope: "all" },
+    { renewMs: 2 },
+  );
+  try {
+    await withStartServer(async ({ handle }) => {
+      await session.attachBackend(handle.port);
+      session.onPages((count) => handle.setExternalPages(count));
+      pages = 1;
+      await waitFor(() => session.pages === 1, "the hub reports a tab");
+      const ping = await fetch(`http://127.0.0.1:${handle.port}/start/ping`, {
+        headers: { [START_PING_TOKEN_HEADER]: session.token },
+      });
+      assertEquals(ping.status, 204);
+      await ping.body?.cancel();
+      assertEquals(await settlesWithin(handle.ended, 60), false);
+      pages = 0;
+      assertEquals(await handle.ended, { kind: "paused" });
+    }, { ...LONG, beforeLaunchIdleMs: 20 });
+  } finally {
+    await session.close();
+  }
+  assertEquals(calls[0].startsWith("backend lease-1 "), true);
+  assertEquals(calls.at(-1), "revoke lease-1");
 });

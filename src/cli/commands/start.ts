@@ -31,7 +31,7 @@ import {
 } from "../../libswamp/start/start.ts";
 import { createStartRenderer } from "../../presentation/renderers/start.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { VERSION } from "./version.ts";
+import { GIT_SHA, VERSION } from "./version.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { blockMessage, createAuthGateDeps, runAuthGate } from "../auth_gate.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
@@ -58,7 +58,15 @@ import {
   createWorkspaceHub,
   spawnDashboardChild,
 } from "../../serve/local/workspace_hub.ts";
-import { resolveFixedRepo } from "../../serve/local/fixed_repo.ts";
+import {
+  resolveFixedRepo,
+  routableWorkspaceName,
+} from "../../serve/local/fixed_repo.ts";
+import { HubLeaseSession } from "../../serve/local/hub_lease_session.ts";
+import { DEFAULT_START_SERVER_TIMEOUTS } from "../../serve/start/start_server.ts";
+import { locateHubBinaries } from "../../infrastructure/process/hub_binary.ts";
+import { findOrLaunchLocalHub } from "../../infrastructure/process/hub_launcher.ts";
+import { HubAdminClient } from "../../infrastructure/http/hub_admin_client.ts";
 import {
   DASHBOARD_DIST_DIR,
   dashboardBundleExists,
@@ -256,117 +264,167 @@ export async function runStart(
     registered: async () => (await deps.registry.load())?.list() ?? [],
   }, landingRepoDir);
 
-  const token = newToken();
-  let port = 0;
-  const server = startStartServer({
-    ctx,
-    deps,
-    token,
-    distDir: DASHBOARD_DIST_DIR,
-    // `swamp dashboard` serves no start page, so its token can't change
-    // the swamp start workspaces.
-    startPage: fixed === null,
-    hub: createWorkspaceHub({
-      token,
-      resolveWorkspace: async (name) => {
-        if (fixed) return name === fixed.name ? fixed.path : null;
-        let parsed: string;
-        try {
-          parsed = parseWorkspaceName(name);
-        } catch {
-          return null;
-        }
-        const entry = (await deps.registry.load())?.get(parsed);
-        return entry && await deps.repo.isRepo(entry.path) ? entry.path : null;
-      },
-      listWorkspaces: async () =>
-        fixed ? [fixed] : (await startListWorkspaces(ctx, deps, {
-          readOnly: true,
-        }))
-          .workspaces.map(({ name, path }) => ({ name, path })),
-      switchable: fixed === null,
-      spawnChild: spawnDashboardChild,
-    }),
-    claims: createWorkspaceClaims(() => ({ port, token })),
-    onWorkspaceOpened: (path, created) =>
-      renderer.workspaceOpened(path, created),
-  });
-  port = server.port;
+  // With the Go hub installed, pages are served by the user's one hub under
+  // a lease this process holds; otherwise this process runs its own hub.
+  const hubBinaries = await locateHubBinaries();
+  const hub = hubBinaries === null
+    ? null
+    : await findOrLaunchLocalHub(hubBinaries, GIT_SHA);
+  const session = hub === null ? null : await HubLeaseSession.open(
+    new HubAdminClient(hub.port, hub.adminToken),
+    fixed === null ? { scope: "all" } : {
+      scope: "workspace",
+      workspace: fixed.registered
+        ? fixed.name
+        : routableWorkspaceName(fixed.name),
+      ...(fixed.registered ? {} : { path: fixed.path }),
+    },
+  );
+  const pageName = fixed === null
+    ? null
+    : fixed.registered || session === null
+    ? fixed.name
+    : routableWorkspaceName(fixed.name);
   try {
-    if (workspaceName !== undefined) {
-      try {
-        await server.openWorkspace(
-          workspaceName,
-          options.path !== undefined
-            ? { parent: options.path, relativeTo: Deno.cwd() }
-            : {},
-        );
-      } catch (error) {
-        if (error instanceof StartServerError) {
-          const message = error.code === "not_signed_in"
-            ? "Sign in first: run `swamp start` without --workspace to sign in from the page, or run `swamp auth login`."
-            : error.message;
-          // Keep the original error's marked paths for telemetry.
-          throw markErrorPaths(
-            new UserError(message, error.code),
-            errorPaths(error),
-          );
-        }
-        throw error;
-      }
-    }
-
-    const url = fixed === null
-      ? pageUrl(server.port, token)
-      : dashboardUrl(server.port, token, fixed.name);
-    renderer.pageReady(
-      url,
-      await tryOpenBrowser(url, openBrowserEnabled),
-      fixed !== null,
-    );
-
-    let signalExitCode: number | undefined;
-    let onInterrupt!: () => void;
-    const interruptedPromise = new Promise<"interrupted">((resolve) => {
-      onInterrupt = () => resolve("interrupted");
-    });
-    const stopWith = (code: number) => () => {
-      signalExitCode ??= code;
-      onInterrupt();
-    };
-    // SIGINT through the shared handler (Windows too); SIGTERM and SIGHUP
-    // here, so each gets its own exit code.
-    const shutdownHandle = registerShutdownHandler({
-      handler: stopWith(130),
-      includePosixSignals: false,
-    });
-    const posixSignals: Array<[Deno.Signal, () => void]> =
-      Deno.build.os === "windows"
-        ? []
-        : [["SIGTERM", stopWith(143)], ["SIGHUP", stopWith(129)]];
-    for (const [signal, listener] of posixSignals) {
-      Deno.addSignalListener(signal, listener);
+    const token = session?.token ?? newToken();
+    // On the hub, `swamp dashboard` needs no server of its own: the hub
+    // serves its page, and it has no start page.
+    const server = session !== null && fixed !== null
+      ? null
+      : startOwnServer(token, session === null);
+    const pagePort = hub?.port ?? server!.port;
+    if (session !== null && server !== null) {
+      await session.attachBackend(server.port);
+      session.onPages((pages) => server.setExternalPages(pages));
     }
     try {
-      const end = await Promise.race([server.ended, interruptedPromise]);
-      if (end === "interrupted" || end.kind === "paused") {
-        renderer.paused(fixed !== null);
-      } else {
-        renderer.launchedEnd(end.displayName);
-      }
-    } finally {
-      shutdownHandle.dispose();
-      for (const [signal, listener] of posixSignals) {
+      if (workspaceName !== undefined && server !== null) {
         try {
-          Deno.removeSignalListener(signal, listener);
-        } catch {
-          // Already removed.
+          await server.openWorkspace(
+            workspaceName,
+            options.path !== undefined
+              ? { parent: options.path, relativeTo: Deno.cwd() }
+              : {},
+          );
+        } catch (error) {
+          if (error instanceof StartServerError) {
+            const message = error.code === "not_signed_in"
+              ? "Sign in first: run `swamp start` without --workspace to sign in from the page, or run `swamp auth login`."
+              : error.message;
+            // Keep the original error's marked paths for telemetry.
+            throw markErrorPaths(
+              new UserError(message, error.code),
+              errorPaths(error),
+            );
+          }
+          throw error;
         }
       }
+
+      const url = pageName === null
+        ? pageUrl(pagePort, token)
+        : dashboardUrl(pagePort, token, pageName);
+      renderer.pageReady(
+        url,
+        await tryOpenBrowser(url, openBrowserEnabled),
+        fixed !== null,
+      );
+
+      let signalExitCode: number | undefined;
+      let onInterrupt!: () => void;
+      const interruptedPromise = new Promise<"interrupted">((resolve) => {
+        onInterrupt = () => resolve("interrupted");
+      });
+      const stopWith = (code: number) => () => {
+        signalExitCode ??= code;
+        onInterrupt();
+      };
+      // SIGINT through the shared handler (Windows too); SIGTERM and SIGHUP
+      // here, so each gets its own exit code.
+      const shutdownHandle = registerShutdownHandler({
+        handler: stopWith(130),
+        includePosixSignals: false,
+      });
+      const posixSignals: Array<[Deno.Signal, () => void]> =
+        Deno.build.os === "windows"
+          ? []
+          : [["SIGTERM", stopWith(143)], ["SIGHUP", stopWith(129)]];
+      for (const [signal, listener] of posixSignals) {
+        Deno.addSignalListener(signal, listener);
+      }
+      try {
+        const ended = server !== null ? server.ended : session!
+          .whenIdle(DEFAULT_START_SERVER_TIMEOUTS.beforeLaunchIdleMs)
+          .then(() => ({ kind: "paused" as const }));
+        const end = await Promise.race([ended, interruptedPromise]);
+        if (end === "interrupted" || end.kind === "paused") {
+          renderer.paused(fixed !== null);
+        } else {
+          renderer.launchedEnd(end.displayName);
+        }
+      } finally {
+        shutdownHandle.dispose();
+        for (const [signal, listener] of posixSignals) {
+          try {
+            Deno.removeSignalListener(signal, listener);
+          } catch {
+            // Already removed.
+          }
+        }
+      }
+      if (signalExitCode !== undefined) Deno.exitCode = signalExitCode;
+    } finally {
+      await server?.shutdown();
     }
-    if (signalExitCode !== undefined) Deno.exitCode = signalExitCode;
   } finally {
-    await server.shutdown();
+    await session?.close();
+  }
+
+  function startOwnServer(token: string, ownHub: boolean) {
+    let port = 0;
+    const server = startStartServer({
+      ctx,
+      deps,
+      token,
+      distDir: DASHBOARD_DIST_DIR,
+      // `swamp dashboard` serves no start page, so its token can't change
+      // the swamp start workspaces.
+      startPage: fixed === null,
+      ...(ownHub
+        ? {
+          hub: createWorkspaceHub({
+            token,
+            resolveWorkspace: async (name) => {
+              if (fixed) return name === fixed.name ? fixed.path : null;
+              let parsed: string;
+              try {
+                parsed = parseWorkspaceName(name);
+              } catch {
+                return null;
+              }
+              const entry = (await deps.registry.load())?.get(parsed);
+              return entry && await deps.repo.isRepo(entry.path)
+                ? entry.path
+                : null;
+            },
+            listWorkspaces: async () =>
+              fixed
+                ? [{ name: fixed.name, path: fixed.path }]
+                : (await startListWorkspaces(ctx, deps, {
+                  readOnly: true,
+                }))
+                  .workspaces.map(({ name, path }) => ({ name, path })),
+            switchable: fixed === null,
+            spawnChild: spawnDashboardChild,
+          }),
+        }
+        : {}),
+      claims: createWorkspaceClaims(() => ({ port, token })),
+      onWorkspaceOpened: (path, created) =>
+        renderer.workspaceOpened(path, created),
+    });
+    port = server.port;
+    return server;
   }
 }
 

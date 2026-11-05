@@ -46,6 +46,13 @@ export class HubLeaseSession {
   #lost = false;
   #loop: Promise<void> | undefined;
   #onPages: ((pages: number) => void) | undefined;
+  #idle:
+    | {
+      readonly ms: number;
+      readonly resolve: () => void;
+      timer?: ReturnType<typeof setTimeout>;
+    }
+    | undefined;
 
   private constructor(
     client: HubLeaseClient,
@@ -90,6 +97,46 @@ export class HubLeaseSession {
     this.#onPages = listener;
   }
 
+  /**
+   * Resolves once no dashboard tab has been open on the lease for `idleMs`,
+   * or the hub no longer holds it, or the session closes.
+   */
+  whenIdle(idleMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.#idle = { ms: idleMs, resolve };
+      if (this.#lost || this.#stop.signal.aborted) {
+        this.#endIdle();
+        return;
+      }
+      this.#armIdle();
+    });
+  }
+
+  #armIdle(): void {
+    const idle = this.#idle;
+    if (idle === undefined) return;
+    if (this.#pages > 0) {
+      clearTimeout(idle.timer);
+      idle.timer = undefined;
+    } else if (idle.timer === undefined) {
+      idle.timer = setTimeout(() => this.#endIdle(), idle.ms);
+    }
+  }
+
+  #endIdle(): void {
+    const idle = this.#idle;
+    this.#idle = undefined;
+    if (idle === undefined) return;
+    clearTimeout(idle.timer);
+    idle.resolve();
+  }
+
+  #setPages(pages: number): void {
+    this.#pages = pages;
+    this.#onPages?.(pages);
+    this.#armIdle();
+  }
+
   async attachBackend(port: number): Promise<void> {
     await this.#client.setBackend(this.#lease.id, port);
   }
@@ -109,12 +156,11 @@ export class HubLeaseSession {
         const status = await this.#client.renew(this.#lease.id);
         if (status === null) {
           this.#lost = true;
-          this.#pages = 0;
-          this.#onPages?.(0);
+          this.#setPages(0);
+          this.#endIdle();
           return;
         }
-        this.#pages = status.pages;
-        this.#onPages?.(status.pages);
+        this.#setPages(status.pages);
       } catch {
         // A missed renewal is retried; the hub's TTL outlasts several.
       }
@@ -123,6 +169,7 @@ export class HubLeaseSession {
 
   async close(): Promise<void> {
     this.#stop.abort();
+    this.#endIdle();
     await this.#loop;
     if (!this.#lost) {
       try {

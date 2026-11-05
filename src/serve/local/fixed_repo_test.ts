@@ -19,7 +19,11 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
-import { type FixedRepoDeps, resolveFixedRepo } from "./fixed_repo.ts";
+import {
+  type FixedRepoDeps,
+  resolveFixedRepo,
+  routableWorkspaceName,
+} from "./fixed_repo.ts";
 
 function deps(over: Partial<FixedRepoDeps> = {}): FixedRepoDeps {
   return {
@@ -34,6 +38,7 @@ Deno.test("resolveFixedRepo: an unregistered repo is served under its folder nam
   assertEquals(await resolveFixedRepo(deps(), "/tmp/work/my-repo"), {
     name: "my-repo",
     path: "/private/tmp/work/my-repo",
+    registered: false,
   });
 });
 
@@ -51,6 +56,7 @@ Deno.test("resolveFixedRepo: a registered folder keeps its workspace name, match
   assertEquals(found, {
     name: "misty-heron",
     path: "/private/tmp/work/my-repo",
+    registered: true,
   });
 });
 
@@ -82,4 +88,12 @@ Deno.test("resolveFixedRepo: a folder that is not a swamp repo is refused with n
 
 Deno.test("resolveFixedRepo: a repo at the filesystem root still gets a name", async () => {
   assertEquals((await resolveFixedRepo(deps(), "/")).name, "root");
+});
+
+Deno.test("routableWorkspaceName: folder names become names the hub routes", () => {
+  assertEquals(routableWorkspaceName("misty-heron"), "misty-heron");
+  assertEquals(routableWorkspaceName("My_Repo.v2"), "my-repo-v2");
+  assertEquals(routableWorkspaceName("--x--"), "x");
+  assertEquals(routableWorkspaceName("日本"), "repo");
+  assertEquals(routableWorkspaceName("a".repeat(80)).length, 63);
 });

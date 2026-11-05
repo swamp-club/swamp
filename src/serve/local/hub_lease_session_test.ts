@@ -88,3 +88,41 @@ Deno.test("HubLeaseSession: closing before the first renewal revokes at once", a
   await session.close();
   assertEquals(fake.calls, [`issue {"scope":"all"}`, "revoke lease-1"]);
 });
+
+Deno.test("HubLeaseSession: whenIdle waits out open pages and then the idle time", async () => {
+  const fake = fakeClient();
+  fake.setPages(1);
+  const session = await HubLeaseSession.open(fake.client, { scope: "all" }, {
+    renewMs: 2,
+  });
+  await waitFor(() => session.pages === 1, "a page is open");
+  let idle = false;
+  const waiting = session.whenIdle(20).then(() => idle = true);
+  await waitFor(
+    () => fake.calls.filter((c) => c.startsWith("renew")).length > 5,
+    "renewals continue",
+  );
+  assertEquals(idle, false);
+  fake.setPages(0);
+  await waiting;
+  assertEquals(session.pages, 0);
+  await session.close();
+});
+
+Deno.test("HubLeaseSession: whenIdle ends when the session closes or the lease is lost", async () => {
+  const fake = fakeClient();
+  const session = await HubLeaseSession.open(fake.client, { scope: "all" }, {
+    renewMs: 60_000,
+  });
+  const waiting = session.whenIdle(60_000);
+  await session.close();
+  await waiting;
+  const lostFake = fakeClient();
+  lostFake.setPages(null);
+  const lost = await HubLeaseSession.open(lostFake.client, { scope: "all" }, {
+    renewMs: 2,
+  });
+  await lost.whenIdle(60_000);
+  assertEquals(lost.lost, true);
+  await lost.close();
+});
