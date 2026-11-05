@@ -30,6 +30,7 @@ import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view
 import {
   createWorkflowRunRenderer,
   renderWorkflowRunAccepted,
+  showsDataAttributes,
 } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
@@ -316,6 +317,13 @@ Deno.test("ConsoleWorkflowRunRenderer: -q lists data artifacts by name without t
   assertStringIncludes(output, "Data produced");
   assertStringIncludes(output, "api-records");
   assertEquals(output.includes("STEP-STDOUT"), false, output);
+});
+
+Deno.test("showsDataAttributes: only quiet log output leaves data attributes out", () => {
+  assertEquals(showsDataAttributes("log", false), true);
+  assertEquals(showsDataAttributes("log", true), false);
+  assertEquals(showsDataAttributes("json", false), true);
+  assertEquals(showsDataAttributes("json", true), true);
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: report and log artifacts stay out of the data box when they carry attributes", async () => {

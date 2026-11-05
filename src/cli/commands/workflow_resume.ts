@@ -65,7 +65,10 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
-import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import {
+  createWorkflowRunRenderer,
+  showsDataAttributes,
+} from "../../presentation/renderers/workflow_run.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -557,13 +560,18 @@ export const workflowResumeCommand = withRemoteOptions(
                 fromStep,
                 fromJob,
               }),
-              (completed) =>
-                resolveCompletedRunOutputs(
-                  completed,
-                  repoContext.unifiedDataRepo,
-                  runRepo,
-                  abort.signal,
-                ),
+              showsDataAttributes(
+                  cliCtx.outputMode,
+                  cliCtx.verbosity === "quiet",
+                )
+                ? (completed) =>
+                  resolveCompletedRunOutputs(
+                    completed,
+                    repoContext.unifiedDataRepo,
+                    runRepo,
+                    abort.signal,
+                  )
+                : undefined,
             )
           ) {
             yield mapWorkflowExecutionEvent(

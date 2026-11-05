@@ -118,6 +118,7 @@ import {
 import {
   createWorkflowRunRenderer,
   renderWorkflowRunAccepted,
+  showsDataAttributes,
 } from "../../presentation/renderers/workflow_run.ts";
 import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";
@@ -642,7 +643,10 @@ export const workflowRunCommand = new Command()
               dataRepo: repoContext.unifiedDataRepo,
               definitionRepo: repoContext.definitionRepo,
               telemetrySink,
-              resolveCompletedOutputs: true,
+              resolveCompletedOutputs: showsDataAttributes(
+                ctx.outputMode,
+                ctx.verbosity === "quiet",
+              ),
               supersede: {
                 findSuspendedRuns: (workflowId, signal) =>
                   runRepo.findByStatus(workflowId, "suspended", signal),
