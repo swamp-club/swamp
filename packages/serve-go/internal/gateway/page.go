@@ -105,8 +105,13 @@ var (
 // HubSite is the hub overview a manage lease reads and acts through.
 type HubSite interface {
 	Overview(ctx context.Context, lease Lease) (interface{}, error)
-	// StartServe starts a workspace's engine; path names a lease-bound folder.
-	StartServe(ctx context.Context, name, path string) error
+	// StartDashboard starts a workspace's engine; path names a lease-bound folder.
+	StartDashboard(ctx context.Context, name, path string) error
+	// StartSwampServe starts `swamp serve` for a trusted registered workspace.
+	StartSwampServe(ctx context.Context, name string) error
+	StopSwampServe(id string) error
+	// ServeLog is the tail of a hub-started serve's log.
+	ServeLog(id string) (interface{}, bool)
 	// TrustWorkspace lets a registered workspace's engine load its extensions.
 	TrustWorkspace(ctx context.Context, name string) error
 	StopEngine(id string) bool

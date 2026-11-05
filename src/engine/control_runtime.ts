@@ -33,8 +33,24 @@ export interface HubWorkspace {
   readonly trusted: boolean;
 }
 
+/** a running `swamp serve`, as its instance record in the repo describes it */
+export interface HubServeInstance {
+  readonly pid: number;
+  readonly host: string;
+  readonly port: number;
+  readonly url: string;
+  readonly authMode: string;
+  readonly dashboard: boolean;
+  readonly startedAt: string;
+  readonly version: string;
+}
+
 export interface ControlRuntimeOptions {
   readonly workspaces: WorkspaceRegistryRepository;
+  /** the live `swamp serve` processes that recorded themselves in a repo */
+  listServes(repoPath: string): Promise<readonly HubServeInstance[]>;
+  /** the port the repo's serve config sets, if it sets one */
+  configuredServePort(repoPath: string): Promise<number | undefined>;
   isRepo(path: string): Promise<boolean>;
   realPath(path: string): Promise<string>;
   /** the file answering `/dashboard/<subPath>`, SPA fallback included */
@@ -69,6 +85,9 @@ const UNKNOWN_ASSET = new ControlFailure(
   "unknown_asset",
   "No dashboard asset at that path",
 );
+
+/** keeps a workspace.serves reply well under the control reply limit */
+const MAX_SERVE_PATHS = 64;
 
 /** base64 of a chunk stays under the 64 KiB control reply limit */
 export const ASSET_CHUNK_BYTES = 32 * 1024;
@@ -163,6 +182,10 @@ export class ControlRuntime {
         return await this.#inspect(params.path);
       case "workspace.trust":
         return await this.#trust(params.name);
+      case "workspace.serves":
+        return { workspaces: await this.#serves(params.paths) };
+      case "workspace.serveConfig":
+        return await this.#serveConfig(params.name);
       case "asset.get":
         return await this.#asset(params.path, params.offset);
       case "engine.status":
@@ -222,6 +245,45 @@ export class ControlRuntime {
       registry.markTrusted(entry.path, at);
     });
     return { ...workspace, trusted: true };
+  }
+
+  async #serves(
+    paths: unknown,
+  ): Promise<
+    { path: string; serves: readonly HubServeInstance[] }[]
+  > {
+    if (
+      !Array.isArray(paths) || paths.length > MAX_SERVE_PATHS ||
+      !paths.every((path) => typeof path === "string" && path !== "")
+    ) {
+      throw new ControlFailure("invalid_params", "paths must be folder paths");
+    }
+    const found = [];
+    for (const path of paths as string[]) {
+      let real: string;
+      try {
+        real = await this.#options.realPath(path);
+      } catch {
+        continue;
+      }
+      if (!await this.#options.isRepo(real)) continue;
+      found.push({ path, serves: await this.#options.listServes(real) });
+    }
+    return found;
+  }
+
+  /** what the hub needs to start a registered workspace's `swamp serve` */
+  async #serveConfig(
+    name: unknown,
+  ): Promise<HubWorkspace & { readonly port?: number }> {
+    const workspace = await this.#resolve(name);
+    let port: number | undefined;
+    try {
+      port = await this.#options.configuredServePort(workspace.path);
+    } catch {
+      // An unreadable serve config is serve's to report when it starts.
+    }
+    return port === undefined ? workspace : { ...workspace, port };
   }
 
   /** what the start page lists: registered folders that are still repos */

@@ -401,7 +401,7 @@ Outside any workspace, after the loopback and `Host` checks:
   returns the hub record without its token, every registered and lease-bound
   workspace with its engine, the leases (never their tokens) and the last
   200 lines of the last 64 KiB of `--log-file`.
-- `POST /api/local/hub/workspaces/start` (`{name, path?}`),
+- `POST /api/local/hub/workspaces/start-dashboard` (`{name, path?}`),
   `…/workspaces/trust` (`{name}`, through the control engine's
   `workspace.trust`, which replaces the workspace's untrusted engine),
   `…/engines/<id>/stop`, `…/leases/<id>/revoke` and `…/stop` need a manage
@@ -412,6 +412,23 @@ Outside any workspace, after the loopback and `Host` checks:
   cannot revoke itself (409). Stopping the hub works only with
   `--exit-when-idle` (409 `hub_is_service` otherwise), even while other
   leases remain.
+
+**swamp serve from the hub.** `internal/serves` supervises the `swamp serve`
+processes the hub starts, one per workspace, as plain children in their own
+process group: `swamp serve --repo-dir <path> --port <port|0> --dashboard
+--json`, with stdout and stderr appended to `<hubDir>/serves/<name>.log`. The
+port is the one the repo's serve config sets (control `workspace.serveConfig`),
+else a free one read from serve's `listening` line; a serve is `running` once
+its `/ready` answers 200. Stopping sends SIGTERM to the group and SIGKILL after
+60 s (serve's drain plus cleanup). Only a trusted registered workspace with no
+running serve can start one. Running serves are listed from their instance
+records (control `workspace.serves`), marked as the hub's when it started that
+pid. A running hub-started serve keeps an auto-launched hub from idling out,
+makes `POST /hub/shutdown` answer 409, and is stopped when the hub stops.
+Routes: `POST /api/local/hub/serves/start` (`{name}`), `…/serves/<id>/stop`
+and `GET …/serves/<id>/log`, all with a manage lease. Starting a workspace's
+dashboard engine moved to `…/workspaces/start-dashboard`. On Windows a stop
+kills the serve.
 
 An engine stays up for `--page-idle-grace` (default 10 minutes) after its last
 page session closes. Forced least-recently-used eviction ignores the grace.

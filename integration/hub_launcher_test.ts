@@ -146,7 +146,7 @@ Deno.test("findOrLaunchHub: never replaces a hub service or a hub with pages ope
   await assertRejects(
     () => findOrLaunchHub(busy.deps),
     UserError,
-    "still has pages open",
+    "still has pages or swamp serves open",
   );
   assertEquals(busy.state.spawned, []);
 });

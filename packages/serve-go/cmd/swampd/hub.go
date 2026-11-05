@@ -39,6 +39,7 @@ import (
 	"github.com/swamp-club/swamp/packages/serve-go/internal/engine"
 	"github.com/swamp-club/swamp/packages/serve-go/internal/gateway"
 	"github.com/swamp-club/swamp/packages/serve-go/internal/hub"
+	"github.com/swamp-club/swamp/packages/serve-go/internal/serves"
 )
 
 const hubUsage = "swampd hub --engine <executable> [options]"
@@ -199,6 +200,7 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 	leases := hub.NewLeaseStore(options.leaseTTL)
 	var record hubRecord
 	var onListening func(*net.TCPAddr) error
+	var swampServes *serves.Manager
 	if recordPath != "" {
 		engineVersion, engineGitSHA := identity.Get()
 		record = hubRecord{PID: os.Getpid(), AdminToken: adminToken, Version: version, GitSHA: gitSHA, Engine: executable, EngineVersion: engineVersion, EngineGitSHA: engineGitSHA, AutoExit: options.exitIdle > 0}
@@ -206,8 +208,9 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 		admin.Timeout = gatewayConfig.AuthTimeout
 		admin.Inspect = resolver.Inspect
 		admin.Info = func() interface{} { info := record; info.AdminToken = ""; return info }
+		swampServes = serves.NewManager(executable, filepath.Join(filepath.Dir(recordPath), "serves"))
 		admin.Shutdown = func() error {
-			if !record.AutoExit || leases.Count() != 0 {
+			if !record.AutoExit || leases.Count() != 0 || swampServes.Count() != 0 {
 				return hub.ErrShutdownRefused
 			}
 			stop()
@@ -216,7 +219,7 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 		gatewayConfig.Leases = leases
 		gatewayConfig.Admin = admin
 		startedAt := time.Now()
-		gatewayConfig.Site = &hub.Site{Control: resolver, Hub: workspaces, Leases: leases, Overviews: hub.OverviewConfig{
+		gatewayConfig.Site = &hub.Site{Control: resolver, Hub: workspaces, Leases: leases, Serves: swampServes, Overviews: hub.OverviewConfig{
 			StartedAt:    startedAt,
 			ExitWhenIdle: options.exitIdle,
 			LogFile:      options.logFile,
@@ -242,7 +245,9 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 		ticker := time.NewTicker(time.Second)
 		go func() {
 			defer ticker.Stop()
-			watchLeases(ctx, ticker.C, leases, workspaces.Idle, options.exitIdle, stop)
+			// A running swamp serve keeps an auto-launched hub up.
+			idle := func() bool { return workspaces.Idle() && (swampServes == nil || swampServes.Count() == 0) }
+			watchLeases(ctx, ticker.C, leases, idle, options.exitIdle, stop)
 		}()
 		workspaces.Run(ctx)
 		<-done
@@ -250,7 +255,18 @@ func runHub(args []string, stdout, stderr io.Writer) (result error) {
 	shutdownEngines := func(ctx context.Context) error {
 		controlDone := make(chan error, 1)
 		go func() { controlDone <- control.Shutdown(ctx) }()
-		return errors.Join(workspaces.Shutdown(ctx), <-controlDone)
+		servesDone := make(chan error, 1)
+		go func() {
+			if swampServes == nil {
+				servesDone <- nil
+				return
+			}
+			// swamp serve drains its own runs; it gets its full stop timeout, not the engines' drain.
+			stopCtx, cancel := context.WithTimeout(context.Background(), swampServes.StopTimeout)
+			defer cancel()
+			servesDone <- swampServes.Shutdown(stopCtx)
+		}()
+		return errors.Join(workspaces.Shutdown(ctx), <-controlDone, <-servesDone)
 	}
 	return serveUntilStopped(ctx, stop, options.bind, gateway.New(gatewayConfig, workspaces), tlsConfig, logger, "hub", config.DrainTimeout, runEngines, shutdownEngines, onListening)
 }

@@ -28,12 +28,15 @@ import (
 
 	"github.com/swamp-club/swamp/packages/serve-go/internal/gateway"
 	"github.com/swamp-club/swamp/packages/serve-go/internal/protocol"
+	"github.com/swamp-club/swamp/packages/serve-go/internal/serves"
 )
 
 // SiteControl is what the dashboard site needs from the control engine.
 type SiteControl interface {
 	List(ctx context.Context) ([]Workspace, error)
 	Trust(ctx context.Context, name string) (Workspace, error)
+	Serves(ctx context.Context, paths []string) ([]WorkspaceServes, error)
+	ServeConfig(ctx context.Context, name string) (ServeConfig, error)
 	AssetChunk(ctx context.Context, path string, offset int64) (AssetChunk, error)
 }
 
@@ -49,6 +52,7 @@ type Site struct {
 	Control   SiteControl
 	Hub       *Hub
 	Leases    *LeaseStore
+	Serves    *serves.Manager
 	Overviews OverviewConfig
 	mu        sync.Mutex
 	cache     map[string]gateway.Asset

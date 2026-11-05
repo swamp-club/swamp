@@ -58,6 +58,8 @@
       "workspace.list",
       "workspace.inspect",
       "workspace.trust",
+      "workspace.serves",
+      "workspace.serveConfig",
       "asset.get",
       "engine.status",
       "engine.quiesce",

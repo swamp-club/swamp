@@ -349,7 +349,7 @@ func TestPageRenewedLeasesLiveWhileTheirPageIsInUse(t *testing.T) {
 }
 
 func (p *pageHarness) startServe(token, body string) int {
-	r := p.request("POST", "/api/local/hub/workspaces/start", token, strings.NewReader(body))
+	r := p.request("POST", "/api/local/hub/workspaces/start-dashboard", token, strings.NewReader(body))
 	r.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", p.port))
 	return p.serve(r).Code
 }

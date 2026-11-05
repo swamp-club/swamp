@@ -113,7 +113,7 @@ export async function findOrLaunchHub(
       }
       if (!await deps.shutdown(existing)) {
         throw new UserError(
-          "A swamp hub from another swamp build still has pages open. Close those `swamp start` or `swamp dashboard` sessions, then try again.",
+          "A swamp hub from another swamp build still has pages or swamp serves open. Close those sessions, or stop its serves from `swamp hub open`, then try again.",
           "hub_incompatible",
         );
       }

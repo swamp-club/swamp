@@ -61,6 +61,27 @@ function options(
       { name: "beta", path: "/repos/beta", createdAt: "2026-01-01T00:00:00Z" },
       { name: "gone", path: "/repos/gone", createdAt: "2026-01-01T00:00:00Z" },
     ]),
+    listServes: (path) =>
+      Promise.resolve(
+        path === "/real/repos/alpha"
+          ? [{
+            pid: 41,
+            host: "127.0.0.1",
+            port: 9190,
+            url: "http://127.0.0.1:9190",
+            authMode: "token",
+            dashboard: true,
+            startedAt: "2026-11-05T10:00:00Z",
+            version: "dev",
+          }]
+          : [],
+      ),
+    configuredServePort: (path) =>
+      path === "/real/repos/alpha"
+        ? Promise.resolve(9190)
+        : path === "/real/repos/beta"
+        ? Promise.resolve(undefined)
+        : Promise.reject(new Error("bad serve.yaml")),
     isRepo: (path) => Promise.resolve(!path.endsWith("/repos/gone")),
     realPath: (path) =>
       path.startsWith("/missing")
@@ -351,4 +372,46 @@ Deno.test("ControlRuntime: workspace.trust records trust for a registered repo a
       id,
     );
   }
+});
+
+Deno.test("ControlRuntime: workspace.serves lists the recorded serves of each repo path", async () => {
+  const replies = await exchange(options(), [
+    hello,
+    request("serves", "workspace.serves", {
+      paths: ["/repos/alpha", "/repos/beta", "/repos/gone", "/missing/x"],
+    }),
+    request("bad", "workspace.serves", { paths: "/repos/alpha" }),
+  ]);
+  const result = replies.serves.result as {
+    workspaces: { path: string; serves: { pid: number }[] }[];
+  };
+  assertEquals(
+    result.workspaces.map((w) => [w.path, w.serves.map((s) => s.pid)]),
+    [["/repos/alpha", [41]], ["/repos/beta", []]],
+  );
+  assertEquals((replies.bad.error as { code: string }).code, "invalid_params");
+});
+
+Deno.test("ControlRuntime: workspace.serveConfig reports a configured port only when the repo sets one", async () => {
+  const replies = await exchange(options(), [
+    hello,
+    request("alpha", "workspace.serveConfig", { name: "alpha" }),
+    request("beta", "workspace.serveConfig", { name: "beta" }),
+    request("nope", "workspace.serveConfig", { name: "nope" }),
+  ]);
+  assertEquals(replies.alpha.result, {
+    name: "alpha",
+    path: "/real/repos/alpha",
+    trusted: true,
+    port: 9190,
+  });
+  assertEquals(replies.beta.result, {
+    name: "beta",
+    path: "/real/repos/beta",
+    trusted: false,
+  });
+  assertEquals(
+    (replies.nope.error as { code: string }).code,
+    "unknown_workspace",
+  );
 });

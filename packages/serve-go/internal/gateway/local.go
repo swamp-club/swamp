@@ -163,6 +163,17 @@ func (g *Gateway) serveHub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, overview)
 		return
 	}
+	parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
+	if r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "serves" && parts[2] == "log" {
+		tail, ok := site.ServeLog(parts[1])
+		if !ok {
+			writeJSON(w, 404, map[string]string{"error": "unknown_serve"})
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, 200, tail)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeText(w, 405, "Method not allowed")
 		return
@@ -171,9 +182,30 @@ func (g *Gateway) serveHub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 403, map[string]string{"error": "origin_mismatch"})
 		return
 	}
-	parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
 	switch {
-	case len(parts) == 2 && parts[0] == "workspaces" && (parts[1] == "start" || parts[1] == "trust"):
+	case len(parts) == 2 && parts[0] == "serves" && parts[1] == "start":
+		var body struct {
+			Name string `json:"name"`
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if err != nil || json.Unmarshal(raw, &body) != nil || body.Name == "" {
+			writeJSON(w, 400, map[string]string{"error": "invalid_request"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), g.config.AuthTimeout)
+		defer cancel()
+		if err := site.StartSwampServe(ctx, body.Name); err != nil {
+			writeRouteFailure(w, err)
+			return
+		}
+		w.WriteHeader(202)
+	case len(parts) == 3 && parts[0] == "serves" && parts[2] == "stop" && parts[1] != "":
+		if err := site.StopSwampServe(parts[1]); err != nil {
+			writeRouteFailure(w, err)
+			return
+		}
+		w.WriteHeader(202)
+	case len(parts) == 2 && parts[0] == "workspaces" && (parts[1] == "start-dashboard" || parts[1] == "trust"):
 		var body struct {
 			Name string `json:"name"`
 			Path string `json:"path"`
@@ -188,7 +220,7 @@ func (g *Gateway) serveHub(w http.ResponseWriter, r *http.Request) {
 		if parts[1] == "trust" {
 			err = site.TrustWorkspace(ctx, body.Name)
 		} else {
-			err = site.StartServe(ctx, body.Name, body.Path)
+			err = site.StartDashboard(ctx, body.Name, body.Path)
 		}
 		if err != nil {
 			writeRouteFailure(w, err)

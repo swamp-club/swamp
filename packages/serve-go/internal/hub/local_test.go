@@ -42,6 +42,26 @@ type fakeSiteControl struct {
 	list    []Workspace
 	trusted []string
 	chunk   int
+	// recorded is the swamp serves each path's instance records name.
+	recorded map[string][]ServeRecord
+	ports    map[string]int
+}
+
+func (c *fakeSiteControl) Serves(_ context.Context, paths []string) ([]WorkspaceServes, error) {
+	found := []WorkspaceServes{}
+	for _, path := range paths {
+		found = append(found, WorkspaceServes{Path: path, Serves: c.recorded[path]})
+	}
+	return found, nil
+}
+
+func (c *fakeSiteControl) ServeConfig(_ context.Context, name string) (ServeConfig, error) {
+	for _, w := range c.list {
+		if w.Name == name {
+			return ServeConfig{Workspace: w, Port: c.ports[name]}, nil
+		}
+	}
+	return ServeConfig{}, ErrUnknownWorkspace
 }
 
 func (c *fakeSiteControl) List(context.Context) ([]Workspace, error) { return c.list, nil }

@@ -30,7 +30,11 @@ import (
 	"time"
 
 	"github.com/swamp-club/swamp/packages/serve-go/internal/gateway"
+	"github.com/swamp-club/swamp/packages/serve-go/internal/serves"
 )
+
+// A missing method would only show at runtime, as a 404 on every overview route.
+var _ gateway.HubSite = (*Site)(nil)
 
 const (
 	logTailBytes = 64 << 10
@@ -68,6 +72,7 @@ type overviewWorkspace struct {
 	Temporary bool            `json:"temporary"`
 	Missing   bool            `json:"missing"`
 	Engine    *overviewEngine `json:"engine"`
+	Serves    []overviewServe `json:"serves"`
 }
 
 type overviewLease struct {
@@ -104,14 +109,28 @@ func (s *Site) Overview(ctx context.Context, lease gateway.Lease) (interface{}, 
 		}
 	}
 	listed, listErr := s.Control.List(ctx)
+	rows := mergeWorkspaces(listed, s.Hub.Engines(), leases)
+	paths := make([]string, 0, len(rows))
+	for _, row := range rows {
+		paths = append(paths, row.Path)
+	}
+	recorded, servesErr := s.Control.Serves(ctx, paths)
+	var hubServes []serves.Info
+	if s.Serves != nil {
+		hubServes = s.Serves.List()
+	}
+	attachServes(rows, recorded, hubServes)
 	result := map[string]interface{}{
 		"hub":        hubInfo,
-		"workspaces": mergeWorkspaces(listed, s.Hub.Engines(), leases),
+		"workspaces": rows,
 		"leases":     markSelf(leases, lease.LeaseID()),
 		"log":        tailLog(s.Overviews.LogFile),
 	}
 	if listErr != nil {
 		result["registryError"] = "The workspace list could not be read: " + listErr.Error()
+	}
+	if servesErr != nil {
+		result["servesError"] = "The running swamp serves could not be read: " + servesErr.Error()
 	}
 	return result, nil
 }
@@ -222,9 +241,9 @@ func tailLog(path string) *overviewLog {
 	return view
 }
 
-// StartServe starts a registered workspace's engine, or a lease-bound
+// StartDashboard starts a registered workspace's engine, or a lease-bound
 // folder's when path names one a live lease is bound to.
-func (s *Site) StartServe(ctx context.Context, name, path string) error {
+func (s *Site) StartDashboard(ctx context.Context, name, path string) error {
 	unknown := &gateway.RouteError{Status: 404, Code: "unknown_workspace"}
 	if path == "" {
 		workspace, err := s.Hub.resolve(ctx, name)

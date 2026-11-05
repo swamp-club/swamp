@@ -20,6 +20,9 @@
 import "../domain/models/models.ts";
 import "../domain/datastore/datastore_types.ts";
 import "../domain/reports/builtin/mod.ts";
+import { listServeInstances } from "../infrastructure/persistence/serve_instance_record.ts";
+import { isProcessAlive } from "../infrastructure/process/process_kill.ts";
+import { loadServeConfig } from "../serve/serve_config.ts";
 import { isAbsolute as isPosixAbsolute } from "@std/path/posix";
 import { isAbsolute as isWindowsAbsolute } from "@std/path/windows";
 import { setCommandGuardian } from "../infrastructure/process/command_guardian_policy.ts";
@@ -325,6 +328,9 @@ async function runControlEngine(
 ): Promise<number> {
   const runtime = new ControlRuntime({
     workspaces: new WorkspaceRegistryFileRepository(),
+    listServes: (path) => listServeInstances(path, isProcessAlive),
+    configuredServePort: (path) =>
+      Promise.resolve(loadServeConfig(undefined, path)?.port),
     isRepo: (path) => exists(join(path, ".swamp.yaml")),
     realPath: (path) => Deno.realPath(path),
     locateAsset: (subPath) => locateDashboardRoute(DASHBOARD_DIST_DIR, subPath),
