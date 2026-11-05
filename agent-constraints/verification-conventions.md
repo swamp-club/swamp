@@ -273,6 +273,7 @@ Verification Checklist (commit <short-sha>)
 ✓ Compile + Smoke
   ✓ compile          build-compile      8.7s
   ✓ binary-check     build-smoke        0.1s
+  ✓ binary-size      build-size         0.1s
 
 ✓ Code Review
   ✓ review           review-code       87.0s   GATE_VERDICT: pass
@@ -552,7 +553,7 @@ SWAMP_WORKFLOWS_DIR=verification swamp data query \
 The step names per workflow (from `verification/workflow-verify-*.yaml`):
 
 - `verify-build`: `lint`, `fmt-check`, `type-check`, `run-tests`,
-  `vuln-scan`, `build`, `binary-check`
+  `vuln-scan`, `build`, `binary-check`, `binary-size`
 - `verify-reviews`: `code-review`, `adversarial-review`, `ux-review`,
   `ci-security-review`, `comment-review`
 - `verify-skills`: `skill-review`, `skill-trigger-eval`

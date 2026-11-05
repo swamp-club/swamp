@@ -177,6 +177,20 @@ jobs:
             run: "ls -la swamp && chmod +x swamp && ./swamp --version"
             workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
+      - name: binary-size
+        dependsOn:
+          - step: binary-check
+            condition:
+              type: succeeded
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: build-size-${{ run.id }}
+          methodName: execute
+          inputs:
+            run: "deno task check-binary-size swamp"
+            workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
+
   # ── Cleanup ──────────────────────────────────────────────────
   - name: cleanup
     description: Remove the temporary worktree.
