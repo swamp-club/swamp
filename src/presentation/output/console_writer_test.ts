@@ -32,6 +32,7 @@ import {
   STATUS_COLORS,
 } from "./console_writer.ts";
 import { interactiveFormatter } from "../../infrastructure/logging/log_format.ts";
+import { hasControlCharacter } from "../../domain/control_characters.ts";
 import {
   SUMMARY_DISPLAY_HIDDEN,
   SUMMARY_DISPLAY_TAG,
@@ -560,4 +561,98 @@ Deno.test("renderDataBox: a cut row with colors enabled leaves no style open at 
   } finally {
     setColorEnabled(enabled);
   }
+});
+
+function assertNoControlCharacters(lines: string[]): void {
+  for (const line of lines) {
+    assertEquals(hasControlCharacter(line), false, JSON.stringify(line));
+  }
+}
+
+function boxWith(attributes: Record<string, unknown>): string[] {
+  return noColor(() => renderDataBox([{ name: "out", attributes }]));
+}
+
+Deno.test("renderDataBox: a tab in a value is drawn as one space", () => {
+  const lines = boxWith({ stdout: "a\tb\tc" });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("a b c")), true);
+});
+
+Deno.test("renderDataBox: a value with CR LF shows its first line and an ellipsis", () => {
+  const lines = boxWith({ stdout: "first\r\nsecond" });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("first...")), true);
+  assertEquals(lines.some((line) => line.includes("second")), false);
+});
+
+Deno.test("renderDataBox: a lone carriage return ends the value's first line", () => {
+  const lines = boxWith({ stdout: "progress 10%\rprogress 100%" });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("progress 10%...")), true);
+  assertEquals(lines.some((line) => line.includes("100%")), false);
+});
+
+Deno.test("renderDataBox: erase-line and cursor-movement sequences are removed", () => {
+  const lines = boxWith({ stdout: "before\x1b[2K\x1b[1Aafter" });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("beforeafter")), true);
+});
+
+Deno.test("renderDataBox: an OSC 8 hyperlink keeps only its label", () => {
+  const lines = boxWith({
+    link: "\x1b]8;;https://example.com\x07label\x1b]8;;\x1b\\",
+  });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("label")), true);
+  assertEquals(lines.some((line) => line.includes("example.com")), false);
+});
+
+Deno.test("renderDataBox: an unterminated OSC before a newline keeps the ellipsis", () => {
+  const lines = boxWith({ stdout: "text\x1b]0;title\nmore" });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("text...")), true);
+  assertEquals(lines.some((line) => line.includes("more")), false);
+});
+
+Deno.test("renderDataBox: colon-form SGR color codes are removed with their parameters", () => {
+  const lines = boxWith({ stdout: "\x1b[38:5:196mred\x1b[0m" });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("38:5")), false);
+});
+
+Deno.test("renderDataBox: C1 control characters are dropped", () => {
+  const lines = boxWith({ stdout: "a\x9b2Kb\x85c" });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+});
+
+Deno.test("renderDataBox: a newline in a key keeps the row on one line with an ellipsis", () => {
+  const lines = boxWith({ "multi\nkey": 1 });
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(lines.some((line) => line.includes("multi...")), true);
+});
+
+Deno.test("renderDataBox: a newline in an artifact name or source keeps the header on one line", () => {
+  const lines = noColor(() =>
+    renderDataBox([{
+      name: "art\nname",
+      source: "job\tone\nmore",
+      attributes: { a: 1 },
+    }])
+  );
+  assertBoxAligned(lines);
+  assertNoControlCharacters(lines);
+  assertEquals(
+    lines.some((line) => line.includes("art...    from job one...")),
+    true,
+  );
 });
