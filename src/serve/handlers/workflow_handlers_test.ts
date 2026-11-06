@@ -607,7 +607,10 @@ function historyResource(name: string, modelId: string, modelName: string) {
   };
 }
 
-async function seedHistoryRun(dir: string): Promise<Workflow> {
+async function seedHistoryRun(
+  dir: string,
+  recordSize?: number,
+): Promise<Workflow> {
   const workflow = Workflow.create({
     name: "history-wf",
     jobs: [
@@ -628,14 +631,29 @@ async function seedHistoryRun(dir: string): Promise<Workflow> {
   job.start();
   const step = job.getStep("write")!;
   step.start();
+  // the run record requires uuid data ids on artifacts
+  const dataIds = { record: crypto.randomUUID(), token: crypto.randomUUID() };
+  if (recordSize !== undefined) {
+    for (const [name, dataId] of Object.entries(dataIds)) {
+      step.addDataArtifact({ dataId, name, version: 1, tags: {} });
+    }
+  }
   step.succeed({
     type: "model_method",
     model: "writer",
     method: "execute",
     resources: {
       result: {
-        record: historyResource("record", WRITER_ID, "writer"),
-        token: historyResource("token", SECRETS_ID, "secrets"),
+        record: {
+          ...historyResource("record", WRITER_ID, "writer"),
+          ...(recordSize !== undefined
+            ? { id: dataIds.record, size: recordSize }
+            : {}),
+        },
+        token: {
+          ...historyResource("token", SECRETS_ID, "secrets"),
+          ...(recordSize !== undefined ? { id: dataIds.token } : {}),
+        },
       },
     },
   });
@@ -723,7 +741,15 @@ interface HistoryFrame {
   type: string;
   payload?: {
     data: {
-      jobs: Array<{ steps: Array<{ outputs?: Record<string, unknown> }> }>;
+      jobs: Array<{
+        steps: Array<{
+          outputs?: Record<string, unknown>;
+          outputsPartial?: true;
+          dataArtifacts?: Array<
+            { name: string; attributes?: Record<string, unknown> }
+          >;
+        }>;
+      }>;
     };
   };
   error?: { code: string };
@@ -732,6 +758,7 @@ interface HistoryFrame {
 async function historyGet(
   ctx: ConnectionContext,
   principal: Principal | null,
+  allAttributes?: boolean,
 ): Promise<HistoryFrame> {
   const frames: HistoryFrame[] = [];
   const socket = {
@@ -742,7 +769,10 @@ async function historyGet(
     socket,
     ctx,
     "req-history",
-    { workflowIdOrName: "history-wf" },
+    {
+      workflowIdOrName: "history-wf",
+      ...(allAttributes !== undefined ? { allAttributes } : {}),
+    },
     new AbortController(),
     principal,
   );
@@ -759,6 +789,53 @@ Deno.test("handleWorkflowHistoryGet: returns step outputs read from the datastor
     assertEquals(frame.payload?.data.jobs[0].steps[0].outputs, {
       stdout: "hello",
       apiKey: "not-for-you",
+    });
+  });
+});
+
+const PAST_ATTRIBUTE_CAP = 17 * 1024 * 1024;
+
+Deno.test("handleWorkflowHistoryGet: a resource past the attribute budget is left out of outputs and marked partial", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir, PAST_ATTRIBUTE_CAP);
+
+    const frame = await historyGet(makeHistoryCtx(dir, workflow), null);
+
+    const step = frame.payload?.data.jobs[0].steps[0];
+    assertEquals(step?.outputs, undefined);
+    assertEquals(step?.outputsPartial, true);
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: allAttributes reads past the budget and sends merged outputs without artifact attributes", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir, PAST_ATTRIBUTE_CAP);
+
+    const frame = await historyGet(makeHistoryCtx(dir, workflow), null, true);
+
+    const step = frame.payload?.data.jobs[0].steps[0];
+    assertEquals(step?.outputs, { stdout: "hello", apiKey: "not-for-you" });
+    assertEquals(step?.outputsPartial, undefined);
+    assertEquals(step?.dataArtifacts?.map((a) => a.name), ["record", "token"]);
+    assertEquals(step?.dataArtifacts?.map((a) => a.attributes), [
+      undefined,
+      undefined,
+    ]);
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: allAttributes still leaves out outputs of models the principal cannot read as data", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir, PAST_ATTRIBUTE_CAP);
+    const ctx = makeHistoryCtx(dir, workflow, [
+      grantFor("wf", "workflow", "history-wf"),
+      grantFor("writer-data", "data", "writer"),
+    ]);
+
+    const frame = await historyGet(ctx, searchPrincipal, true);
+
+    assertEquals(frame.payload?.data.jobs[0].steps[0].outputs, {
+      stdout: "hello",
     });
   });
 });

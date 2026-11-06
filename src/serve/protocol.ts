@@ -446,6 +446,11 @@ export interface WorkflowGetPayload {
 
 export interface WorkflowHistoryGetPayload {
   workflowIdOrName: string;
+  /**
+   * reads every resource past the run's attribute budget, for a caller that
+   * keeps only merged step outputs; the reply carries no artifact attributes
+   */
+  allAttributes?: boolean;
 }
 
 export interface WorkflowHistoryLogsPayload {

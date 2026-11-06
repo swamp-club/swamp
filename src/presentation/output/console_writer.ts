@@ -208,6 +208,7 @@ export class PipeWriter {
 export interface DataArtifact {
   name: string;
   attributes?: Record<string, unknown>;
+  attributesOmitted?: true;
   source?: string;
 }
 
@@ -264,6 +265,7 @@ export function renderDataBox(
   if (artifacts.length > 0) {
     const dataRows: BoxRow[] = [];
     const complexArtifactNames: string[] = [];
+    const omittedArtifactNames: string[] = [];
 
     for (const artifact of artifacts) {
       dataRows.push([
@@ -276,6 +278,14 @@ export function renderDataBox(
           ]
           : []),
       ]);
+
+      if (artifact.attributesOmitted) {
+        dataRows.push([{
+          text: "    content not shown: run output limit reached",
+          style: dim,
+        }]);
+        omittedArtifactNames.push(artifact.name);
+      }
 
       if (artifact.attributes) {
         const keys = Object.keys(artifact.attributes);
@@ -324,6 +334,22 @@ export function renderDataBox(
           }`),
         );
       }
+    }
+    // one hint for all of them: a run past the limit can omit thousands
+    if (omittedArtifactNames.length > 0 && options?.modelName) {
+      const count = omittedArtifactNames.length;
+      retrievalHints.push(
+        dim(
+          `  → ${count} ${
+            count === 1 ? "artifact" : "artifacts"
+          } not shown; read one with ${
+            dataQueryCommand({
+              modelName: options.modelName,
+              dataName: omittedArtifactNames[0],
+            }, { includeContent: true })
+          }`,
+        ),
+      );
     }
 
     sections.push([

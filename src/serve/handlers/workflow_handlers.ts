@@ -1022,6 +1022,7 @@ export async function handleWorkflowHistoryGet(
     await consumeStream(
       workflowHistoryGet(libCtx, deps, payload.workflowIdOrName, {
         includeOutputs: true,
+        allAttributes: payload.allAttributes === true,
         reference,
         // a cancelled read stops resolving outputs
         signal: controller.signal,
@@ -1066,6 +1067,17 @@ export async function handleWorkflowHistoryGet(
           ),
         ),
     );
+
+    if (payload.allAttributes === true) {
+      // read whole, every artifact's attributes would double the reply
+      for (const job of view.jobs) {
+        for (const step of job.steps) {
+          for (const artifact of step.dataArtifacts ?? []) {
+            delete artifact.attributes;
+          }
+        }
+      }
+    }
 
     await sendTraced(socket, {
       type: "workflow.history.get",

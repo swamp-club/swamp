@@ -50,6 +50,10 @@ import {
 } from "../data/in_flight_data_writes.ts";
 import { withConsoleGuard } from "./console_guard.ts";
 import { processTraceEnv } from "./process_trace_env.ts";
+import {
+  RESOURCE_ATTRIBUTE_CAP_BYTES,
+  ResourceAttributeBudget,
+} from "./resource_attribute_budget.ts";
 
 /**
  * without props a single-brace span is left as written so plain output such as
@@ -181,6 +185,7 @@ export class InProcessExecutor {
       ) => ReturnType<NonNullable<MethodContext["runModel"]>>;
     },
     private readonly workflowGateService?: WorkflowGateService,
+    private readonly resourceAttributeCapBytes = RESOURCE_ATTRIBUTE_CAP_BYTES,
   ) {}
 
   async execute(
@@ -215,6 +220,7 @@ export class InProcessExecutor {
       deferred,
       Deno.build.os,
       outputNames,
+      new ResourceAttributeBudget(this.resourceAttributeCapBytes),
     );
 
     const {

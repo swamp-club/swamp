@@ -825,6 +825,7 @@ const WorkflowHistoryGetRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     workflowIdOrName: z.string(),
+    allAttributes: z.boolean().optional(),
   }),
 });
 

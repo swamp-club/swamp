@@ -57,6 +57,7 @@ import {
   sensitiveVaultReferences,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
+import { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
 import type { ResourceOutputSpec } from "./model.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { sensitiveOutputTargetVaults } from "./sensitive_output_vault.ts";
@@ -2435,6 +2436,64 @@ Deno.test("createResourceWriter: attributes is a shallow copy of the data", asyn
   const handle = await writeResource("item", "test-item", data);
   data.value = "mutated";
   assertEquals(handle.attributes, { value: "hello" });
+});
+
+function budgetedWriter(capBytes: number) {
+  return createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    Deno.build.os,
+    undefined,
+    new ResourceAttributeBudget(capBytes),
+  );
+}
+
+Deno.test("createResourceWriter: a budget admits attributes up to its cap", async () => {
+  const serialized = JSON.stringify({ value: "hello" }).length;
+  const { writeResource } = budgetedWriter(serialized * 2);
+
+  const first = await writeResource("item", "first", { value: "hello" });
+  const second = await writeResource("item", "second", { value: "hello" });
+  assertEquals(first.attributes, { value: "hello" });
+  assertEquals(second.attributes, { value: "hello" });
+});
+
+Deno.test("createResourceWriter: handles past the budget carry no attributes but are still written", async () => {
+  const serialized = JSON.stringify({ value: "hello" }).length;
+  const { writeResource, getHandles } = budgetedWriter(serialized);
+
+  const first = await writeResource("item", "first", { value: "hello" });
+  const second = await writeResource("item", "second", { value: "hello" });
+  const third = await writeResource("item", "third", { value: "hi" });
+  assertEquals(first.attributes, { value: "hello" });
+  assertEquals(second.attributes, undefined);
+  assertEquals(third.attributes, undefined);
+  assertEquals(second.size, serialized);
+  assertEquals(getHandles().map((h) => h.name), ["first", "second", "third"]);
+  assertEquals(getHandles()[1].attributes, undefined);
+});
+
+Deno.test("createResourceWriter: the budget counts stored bytes, not string length", async () => {
+  const data = { value: "日本語のテキスト" };
+  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
+  assert(JSON.stringify(data).length < bytes);
+  const { writeResource } = budgetedWriter(bytes - 1);
+
+  const handle = await writeResource("item", "wide", data);
+  assertEquals(handle.size, bytes);
+  assertEquals(handle.attributes, undefined);
 });
 
 Deno.test("resolveSensitiveVaultRefs: resolves only specified field paths", async () => {

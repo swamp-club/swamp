@@ -37,6 +37,7 @@ import type {
   UnifiedDataRepository,
 } from "../data/repositories.ts";
 import type { ModelType } from "./model_type.ts";
+import type { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import type {
   DataHandle,
@@ -1130,6 +1131,7 @@ export function createResourceWriter(
   deferred = false,
   os: typeof Deno.build.os = Deno.build.os,
   outputNames?: ExecutionOutputNames,
+  attributeBudget?: ResourceAttributeBudget,
 ): {
   writeResource: (
     specName: string,
@@ -1143,6 +1145,7 @@ export function createResourceWriter(
   const handles: DataHandle[] = [];
   const deferredReceipts: DeferredWriteReceipt[] = [];
   const portabilityWarned = new Set<string>();
+  let attributesOmittedLogged = false;
   const assertWriteTagsUnreserved = writeTagsGuard(
     modelType,
     definitionTags,
@@ -1421,7 +1424,15 @@ export function createResourceWriter(
     );
 
     const handle = await writer.writeText(serialized);
-    handle.attributes = { ...data };
+    if (!attributeBudget || attributeBudget.admit(handle.size)) {
+      handle.attributes = { ...data };
+    } else if (!attributesOmittedLogged) {
+      attributesOmittedLogged = true;
+      writerLogger.debug(
+        "Resource attributes past {cap} bytes in this run are left off their handles, starting at {specName} {name}",
+        { cap: attributeBudget.capBytes, specName, name: instanceName },
+      );
+    }
     handles.push(handle);
     const receipt = writer.getDeferredReceipt();
     if (receipt) {

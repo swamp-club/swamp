@@ -38,10 +38,38 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowHistoryGetResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { writeJsonValue } from "../../presentation/output/json_stream.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * the run read whole carries no partial step, so one means a server that read
+ * within its budget; refused rather than printed incomplete
+ */
+export function stepOutputsOf(
+  runView: WorkflowRunView,
+): Record<string, Record<string, unknown>> {
+  const outputs: Record<string, Record<string, unknown>> = {};
+  const partial: string[] = [];
+  for (const job of runView.jobs) {
+    for (const step of job.steps) {
+      if (step.outputsPartial) partial.push(step.name);
+      if (step.outputs && Object.keys(step.outputs).length > 0) {
+        outputs[step.name] = step.outputs;
+      }
+    }
+  }
+  if (partial.length > 0) {
+    throw new UserError(
+      `The server returned partial outputs for ${
+        partial.join(", ")
+      }: it read only part of the run's resources. Upgrade the server, or run without --server.`,
+    );
+  }
+  return outputs;
+}
 
 export async function workflowHistoryOutputsAction(
   options: AnyOptions,
@@ -62,7 +90,7 @@ export async function workflowHistoryOutputsAction(
       { server, token },
       {
         type: "workflow.history.get",
-        payload: { workflowIdOrName: runIdOrWorkflow },
+        payload: { workflowIdOrName: runIdOrWorkflow, allAttributes: true },
       },
     );
     runView = response.data as unknown as WorkflowRunView;
@@ -87,6 +115,7 @@ export async function workflowHistoryOutputsAction(
     for await (
       const event of workflowHistoryGet(ctx, deps, runIdOrWorkflow, {
         includeOutputs: true,
+        allAttributes: true,
       })
     ) {
       if (event.kind === "completed") {
@@ -99,17 +128,10 @@ export async function workflowHistoryOutputsAction(
     throw new UserError(`Run not found: ${runIdOrWorkflow}`);
   }
 
-  const outputs: Record<string, Record<string, unknown>> = {};
-  for (const job of runView.jobs) {
-    for (const step of job.steps) {
-      if (step.outputs && Object.keys(step.outputs).length > 0) {
-        outputs[step.name] = step.outputs;
-      }
-    }
-  }
+  const outputs = stepOutputsOf(runView);
 
   if (cliCtx.outputMode === "json") {
-    console.log(JSON.stringify(outputs, null, 2));
+    await writeJsonValue(outputs);
   } else {
     if (Object.keys(outputs).length === 0) {
       writeOutput("No step outputs found for this run.");
