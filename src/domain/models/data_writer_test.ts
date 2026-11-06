@@ -2485,6 +2485,17 @@ Deno.test("createResourceWriter: handles past the budget carry no attributes but
   assertEquals(getHandles()[1].attributes, undefined);
 });
 
+Deno.test("createResourceWriter: the budget counts stored bytes, not string length", async () => {
+  const data = { value: "日本語のテキスト" };
+  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
+  assert(JSON.stringify(data).length < bytes);
+  const { writeResource } = budgetedWriter(bytes - 1);
+
+  const handle = await writeResource("item", "wide", data);
+  assertEquals(handle.size, bytes);
+  assertEquals(handle.attributes, undefined);
+});
+
 Deno.test("resolveSensitiveVaultRefs: resolves only specified field paths", async () => {
   const vaultService = createTestVaultService();
   await vaultService.put("test-vault", "k1", "secret-value");

@@ -920,5 +920,8 @@ Deno.test("ConsoleModelMethodRunRenderer: an artifact past the attribute budget 
   });
   const output = lines.join("\n");
   assertStringIncludes(output, "content not shown: run output limit reached");
-  assertStringIncludes(output, `name == "second"' --select content`);
+  assertStringIncludes(
+    output,
+    `1 artifact not shown; read one with swamp data query 'modelName == "test-model" && name == "second"' --select content`,
+  );
 });

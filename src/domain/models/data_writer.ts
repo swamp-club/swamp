@@ -1424,7 +1424,7 @@ export function createResourceWriter(
     );
 
     const handle = await writer.writeText(serialized);
-    if (!attributeBudget || attributeBudget.admit(serialized.length)) {
+    if (!attributeBudget || attributeBudget.admit(handle.size)) {
       handle.attributes = { ...data };
     } else if (!attributesOmittedLogged) {
       attributesOmittedLogged = true;

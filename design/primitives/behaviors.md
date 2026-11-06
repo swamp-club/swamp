@@ -981,12 +981,13 @@ Lightweight reference to data already persisted:
 | `metadata` | Full metadata for the data artifact       |
 | `attributes` | Top-level resource attributes (resource kind only, optional) |
 
-A run keeps at most 64 MiB of serialized resource content as attributes
-(`ResourceAttributeBudget`). Once a run's resources pass that cap, their handles
-carry no `attributes`, and the run result lists those artifacts with
-`attributesOmitted: true` instead of their content, so a run that writes
-thousands of resources keeps bounded memory and a `--json` result that fits in
-one string. The content is still written; read it with `swamp data get`.
+A run keeps at most 16 MiB of resource content, counted in stored bytes, as
+parsed attributes (`ResourceAttributeBudget`). Once a run's resources pass that
+cap, their handles carry no `attributes`; separately, the run result lists the
+artifacts past its own 16 MiB budget with `attributesOmitted: true` instead of
+their content. A run that writes thousands of resources therefore keeps bounded
+memory and a `--json` result that fits in one string. The content is still
+written; read it with `swamp data get`.
 
 ### Write Atomicity (rollbackOnFailure)
 

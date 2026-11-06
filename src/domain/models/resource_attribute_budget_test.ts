@@ -53,6 +53,15 @@ Deno.test("ResourceAttributeBudget: a zero cap admits only empty content", () =>
   assertEquals(budget.admit(1), false);
 });
 
+Deno.test("ResourceAttributeBudget: refuses a size that is not a byte count, and everything after it", () => {
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    const budget = new ResourceAttributeBudget(10);
+    assertEquals(budget.admit(bad), false);
+    assertEquals(budget.admit(1), false);
+    assertEquals(budget.admittedBytes, 0);
+  }
+});
+
 Deno.test("ResourceAttributeBudget: rejects a negative or fractional cap", () => {
   assertThrows(() => new ResourceAttributeBudget(-1), RangeError);
   assertThrows(() => new ResourceAttributeBudget(1.5), RangeError);

@@ -17,14 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Pretty-printed, 64 MiB of JSON stays well under V8's ~512M-character string
-// limit, so a run's whole result can still be serialized as one document.
-export const RESOURCE_ATTRIBUTE_CAP_BYTES = 64 * 1024 * 1024;
+// Counted in compact bytes; leaves room for pretty-printing deeply nested
+// content to expand about 30x before the result reaches V8's string limit.
+export const RESOURCE_ATTRIBUTE_CAP_BYTES = 16 * 1024 * 1024;
 
 /**
- * bounds how much resource content one run keeps as parsed attributes; once a
- * resource is refused every later one is too, so the omitted resources are
- * always the run's last ones
+ * once a resource is refused every later one is too, so the omitted resources
+ * are always the run's last ones; a size that is not a byte count is refused
  */
 export class ResourceAttributeBudget {
   readonly capBytes: number;
@@ -50,7 +49,10 @@ export class ResourceAttributeBudget {
 
   admit(bytes: number): boolean {
     if (this.#exhausted) return false;
-    if (this.#admittedBytes + bytes > this.capBytes) {
+    if (
+      !Number.isFinite(bytes) || bytes < 0 ||
+      this.#admittedBytes + bytes > this.capBytes
+    ) {
       this.#exhausted = true;
       return false;
     }
