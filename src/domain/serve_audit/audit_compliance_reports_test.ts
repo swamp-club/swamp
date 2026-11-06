@@ -242,3 +242,26 @@ Deno.test("getComplianceReport: finds report by name", () => {
 Deno.test("getComplianceReport: returns undefined for unknown name", () => {
   assertEquals(getComplianceReport("nonexistent"), undefined);
 });
+
+Deno.test("secretAccessReport: includes token reveals with vault secret reads", async () => {
+  const events = [
+    makeChainedEvent({
+      category: "secrets",
+      action: "vault.read-secret",
+      principalId: "alice",
+      resourceName: "api-key",
+    }),
+    makeChainedEvent({
+      category: "secrets",
+      action: "access.token.reveal",
+      principalId: "admin-carol",
+      resourceName: "member-token",
+    }),
+  ];
+  const service = new AuditQueryService(makeStore(events));
+  const result = await secretAccessReport.execute(service, makeParams());
+
+  assertStringIncludes(result.markdown, "admin-carol");
+  assertStringIncludes(result.markdown, "member-token");
+  assertStringIncludes(result.markdown, "**Total accesses:** 2");
+});
