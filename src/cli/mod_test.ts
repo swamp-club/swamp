@@ -1112,8 +1112,6 @@ Deno.test("flushTelemetryIfDue: commands within one interval send the spool once
     const sender = new CountingSender();
     const start = Date.now();
     const minute = 60_000;
-    // ten commands a minute apart: the first flushes, the next ones only spool
-    // until the interval has passed
     let flushes = 0;
     for (let i = 0; i < 10; i++) {
       const ctx = command();
@@ -1128,7 +1126,6 @@ Deno.test("flushTelemetryIfDue: commands within one interval send the spool once
     assertEquals(flushes, 1 + intervals);
     assertEquals(sender.batches.flat().length, 1 + 5 * intervals);
 
-    // nothing spooled is lost: a due flush sends the remaining records
     await flushTelemetryIfDue(command(), {
       sender,
       now: new Date(start + 60 * minute),

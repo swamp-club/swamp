@@ -570,9 +570,7 @@ export interface V3Datastore {
   ): Promise<void>;
   /** the read model alone, for a copy just caught up with catchUpForWrite */
   catchUpReadModel?(signal?: AbortSignal): Promise<void>;
-  /** the cursor of serve's feed this copy has applied */
   serveFeedCursor?(): number;
-  /** whether this process sent the commit to serve */
   sentToServe?(txnId: string): boolean;
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   readonly offlineFlushPort?: OfflineFlushPort;

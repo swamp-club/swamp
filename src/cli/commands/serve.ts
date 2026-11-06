@@ -7127,7 +7127,7 @@ export const serveCommand = new Command()
           const forbidden = new Response(`Forbidden: ${requestTrust.reason}`, {
             status: 403,
           });
-          // datastore routes are traced by handleDatastoreRequest, not reached here
+          // refused before handleDatastoreRequest, which opens a datastore route's span
           return matchDatastoreRoute(apiUrl.pathname) === undefined
             ? forbidden
             : await withHttpServerSpan(req, () => forbidden);

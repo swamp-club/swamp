@@ -406,10 +406,6 @@ export class ChunkStore {
     );
   }
 
-  /**
-   * lets a storage that keeps what it fetches drop it, once the files made
-   * from it are durable; nothing for any other storage
-   */
   async releaseFetched(signal: AbortSignal): Promise<void> {
     const storage = this.#storage as Partial<ReleasingStorage>;
     await storage.releaseFetched?.(signal);

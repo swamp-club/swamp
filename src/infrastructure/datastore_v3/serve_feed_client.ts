@@ -41,11 +41,8 @@ export interface ServeFeedWatchOptions {
   >;
   /** Runs the checkout's catch-up; called again only once it settled. */
   catchUp(): Promise<unknown>;
-  /** The feed cursor the checkout's copy has applied. */
   readonly appliedCursor?: () => number;
-  /** Whether this process sent the commit, so its copy already read it back. */
   readonly sentHere?: (txnId: string) => boolean;
-  /** Applies what the copy already holds, asking serve nothing. */
   readonly catchUpLocally?: () => Promise<unknown>;
   readonly openSocket?: (url: string, headers: Headers) => WebSocket;
 }
@@ -69,8 +66,7 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
     return typeof txnId === "string" && options.sentHere(txnId);
   };
 
-  // a serve catch-up also does the local one, so a pending local one waits
-  // behind it and a pending serve one is never downgraded
+  // a serve catch-up includes the local one, so a pending one is never downgraded
   const catchUp = (kind: "serve" | "local" = "serve") => {
     if (kind === "local" && options.catchUpLocally === undefined) return;
     if (running !== undefined) {

@@ -1308,7 +1308,6 @@ export class SqliteReadModel implements ReadModel {
     return undefined;
   }
 
-  /** the chunks a base load will write, fetched together as a page's are */
   async #prefetchBaseChunks(
     writes: readonly { namespace: string; record_key: string }[],
     signal: AbortSignal,
@@ -1444,7 +1443,6 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
-  /** the page's files are durable, so the chunks fetched for them can go */
   async #releaseFetched(signal: AbortSignal): Promise<void> {
     try {
       await this.#chunkStore.releaseFetched(signal);

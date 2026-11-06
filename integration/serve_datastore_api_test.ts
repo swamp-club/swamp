@@ -481,7 +481,6 @@ Deno.test({
         assertEquals(adopted.spanContext().traceId, MEMBER_TRACE);
         assertEquals(adopted.parentSpanId, MEMBER_SPAN);
         assertEquals(adopted.attributes["http.response.status_code"], 409);
-        // authentication ran before the caller's trace could be trusted
         const auth = findSpan(spans, "swamp.serve.datastore.authenticate");
         assertEquals(auth.parentSpanId, undefined);
         assert(auth.spanContext().traceId !== MEMBER_TRACE);

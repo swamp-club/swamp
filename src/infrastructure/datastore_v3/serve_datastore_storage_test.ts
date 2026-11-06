@@ -416,7 +416,6 @@ Deno.test("CachedServeStorage.prefetch: stops at the first failure, so a hung se
   });
 });
 
-/** whether the cache alone holds the chunk, without asking serve */
 async function cached(cache: CachedServeStorage, sha256: string) {
   return (await cache.statChunks("_default", [sha256], live())).has(sha256);
 }

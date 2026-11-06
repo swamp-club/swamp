@@ -173,7 +173,6 @@ async function runCommand(
   });
 }
 
-/** chunk files the member's copy of serve's datastore keeps */
 async function copyChunkFiles(repoDir: string): Promise<number> {
   const copies = join(repoDir, ".swamp", "_datastore_v3_copies");
   let count = 0;
@@ -610,9 +609,7 @@ Deno.test({
         fetches.map((span) => parentNames.get(parentIdOf(span))),
         Array(4).fill("swamp.datastore.v3.readmodel.prefetch"),
       );
-      // the files hold the content; serve keeps the chunks
       assertEquals(await copyChunkFiles(member.client.repoDir), 0);
-      // every path data get prints names a file with the content
       const paths = await readCommand(
         member.scratch,
         member.client,

@@ -2067,15 +2067,9 @@ async function recordAndFlushError(
   await flushTelemetryIfDue(telemetryCtx);
 }
 
-/** a command sends the spool at most once per interval; the rest only spool */
 export const TELEMETRY_FLUSH_INTERVAL_MS = 5 * 60_000;
 const MAX_FLUSH_BATCHES = 4;
 
-/**
- * sends what the spool holds when a flush is due, in up to MAX_FLUSH_BATCHES
- * batches under one 2 s budget, then cleans the spool; resolves to the last
- * batch's outcome, or undefined when nothing was due
- */
 export async function flushTelemetryIfDue(
   telemetryCtx: TelemetryContext,
   options: { readonly now?: Date; readonly sender?: TelemetrySender } = {},

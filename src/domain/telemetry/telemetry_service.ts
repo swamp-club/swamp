@@ -55,7 +55,6 @@ export interface TelemetryFlushConfig {
    * sending the same invocation once per attempt
    */
   skipIds?: ReadonlySet<string>;
-  /** when the flush runs, as the flush record keeps it; now by default */
   at?: Date;
 }
 

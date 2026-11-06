@@ -892,7 +892,6 @@ async function measure(
   return samples;
 }
 
-// every member's first read after serve's token cache went cold
 async function measureCold(
   lanes: readonly [string, string, Lane][],
   options: Options,
@@ -971,7 +970,6 @@ interface CloneSample {
   readonly bytes: number;
 }
 
-// a new member checkout's first data list: the whole catch-up from serve
 async function measureClone(
   label: string,
   binary: string,
@@ -1012,7 +1010,6 @@ async function measureClone(
   return samples;
 }
 
-// the same history on a v2 bucket, cloned in the given hydration mode
 async function measureV2Clone(
   label: string,
   binary: string,
@@ -1183,7 +1180,6 @@ function spanTotal(sample: Sample, name: string): number {
     .reduce((sum, span) => sum + span.endMs - span.startMs, 0);
 }
 
-// process start-up and exit: the wall time outside the swamp.cli span
 function outsideCliMs(sample: Sample): number {
   return sample.ms - spanTotal(sample, "swamp.cli");
 }
