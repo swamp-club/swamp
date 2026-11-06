@@ -36,6 +36,10 @@ import { setApiKeyFileOverride } from "../infrastructure/persistence/api_key_sou
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 import { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import {
+  lockHolderName,
+  setLockHolderName,
+} from "../infrastructure/persistence/lock_holder_name.ts";
+import {
   noteServeInitiator,
   registerServeUpstream,
   resetServeUpstreamBindingsForTesting,
@@ -316,4 +320,23 @@ Deno.test("assertRunInitiatorKnown: refuses a run before it starts only in a ser
   });
   assertRunInitiatorKnown("/not/a/serve/mode/checkout");
   assertRunInitiatorKnown(undefined);
+});
+
+Deno.test("nameLockHolder: locks a serve-mode checkout takes name the principal serve knows the caller by", async () => {
+  await withServeModeCheckout(async (datastorePath) => {
+    try {
+      await withMockedEnv({ USER: "pat", USERNAME: undefined }, () => {
+        nameLockHolder(datastorePath);
+        assertEquals(lockHolderName(), "pat");
+        noteServeInitiator(datastorePath, {
+          kind: "checked",
+          principal: "user:m1",
+        });
+        nameLockHolder(datastorePath);
+        assertEquals(lockHolderName(), "user:m1");
+      });
+    } finally {
+      setLockHolderName(undefined);
+    }
+  });
 });
