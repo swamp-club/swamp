@@ -48,14 +48,12 @@ function propertyRun(): WorkflowRun {
 type Op =
   | { kind: "stamp" }
   | { kind: "begin" }
-  | { kind: "land"; pick: number }
-  | { kind: "refuse"; pick: number };
+  | { kind: "land"; pick: number };
 
 const opArb: fc.Arbitrary<Op> = fc.oneof(
   fc.constant({ kind: "stamp" as const }),
   fc.constant({ kind: "begin" as const }),
   fc.nat().map((pick) => ({ kind: "land" as const, pick })),
-  fc.nat().map((pick) => ({ kind: "refuse" as const, pick })),
 );
 
 Deno.test("RunSaveHorizon: an event is covered exactly when a save that began after it was stamped has landed", () => {
@@ -63,7 +61,6 @@ Deno.test("RunSaveHorizon: an event is covered exactly when a save that began af
     fc.property(fc.array(opArb, { maxLength: 60 }), (ops) => {
       const horizon = new RunSaveHorizon();
       const run = propertyRun();
-      // Each event remembers how many saves had begun before it was stamped.
       const events: { event: object; beganBefore: number }[] = [];
       const begun: number[] = [];
       const landedSaves = new Set<number>();
@@ -76,10 +73,8 @@ Deno.test("RunSaveHorizon: an event is covered exactly when a save that began af
           begun.push(horizon.begin());
         } else if (begun.length > 0) {
           const save = op.pick % begun.length;
-          if (op.kind === "land") {
-            horizon.landed(run, begun[save]);
-            landedSaves.add(save);
-          }
+          horizon.landed(run, begun[save]);
+          landedSaves.add(save);
         }
       }
       for (const { event, beganBefore } of events) {

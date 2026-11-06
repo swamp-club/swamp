@@ -4500,7 +4500,6 @@ function backlogWorkflow(): Workflow {
 
 const backlogIds = Array.from({ length: BACKLOG_ITEMS }, (_, i) => `${i}`);
 
-/** each step event against the newest record landed when it was read */
 function assertEventsFollowTheirSave(
   event: WorkflowExecutionEvent,
   runRepo: BacklogRunRepository,
