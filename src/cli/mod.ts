@@ -155,7 +155,7 @@ import { resolveSupersededSkillDirs } from "../domain/repo/superseded_skills.ts"
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
-import { loadIdentity, USER_AGENT } from "./load_identity.ts";
+import { loadIdentity } from "./load_identity.ts";
 import {
   isCollectiveToken,
   setAuthenticated,
@@ -178,7 +178,7 @@ import { isTelemetryDisabledByEnv } from "../infrastructure/telemetry/telemetry_
 import { JsonTelemetryFlushRecordRepository } from "../infrastructure/persistence/json_telemetry_flush_record_repository.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
 import { YamlVaultConfigRepository } from "../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { startTelemetrySender } from "../infrastructure/telemetry/telemetry_sender_process.ts";
+import { sendTelemetryAtCommandEnd } from "./telemetry_end_of_command.ts";
 import {
   buildInvocationContext,
   clearActiveTelemetryContext,
@@ -2060,26 +2060,7 @@ async function recordAndFlushError(
     sensitiveValues,
   );
 
-  await startTelemetrySenderIfSpooled(telemetryCtx);
-}
-
-/** the spool is sent by a detached sender, so no command waits on the ingest */
-async function startTelemetrySenderIfSpooled(
-  telemetryCtx: TelemetryContext,
-): Promise<void> {
-  try {
-    if (!await telemetryCtx.service.hasUnflushed()) return;
-    await startTelemetrySender(globalTelemetryDir(), {
-      endpoint: telemetryCtx.telemetryEndpoint,
-      userAgent: USER_AGENT,
-      ...(telemetryCtx.repoId !== undefined
-        ? { repoId: telemetryCtx.repoId }
-        : {}),
-      keepFlushed: telemetryCtx.keepFlushed,
-    });
-  } catch {
-    // Best effort: the entry stays spooled for the next command's sender.
-  }
+  await sendTelemetryAtCommandEnd(telemetryCtx, { succeeded: false });
 }
 
 function endInvocation(): void {
@@ -2751,7 +2732,7 @@ async function runInvocation(
             startTime,
           );
 
-          await startTelemetrySenderIfSpooled(telemetryCtx);
+          await sendTelemetryAtCommandEnd(telemetryCtx, { succeeded: true });
         } catch {
           // Best effort — never break the CLI for telemetry failures
         }
