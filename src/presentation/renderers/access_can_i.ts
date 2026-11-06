@@ -107,7 +107,9 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
     writeOutput(
       `${effect} via ${via} (${first.via} → ${result.query!.action} → ${
         result.query!.resource
-      })${impliedMarker(first)}`,
+      })${impliedMarker(first)}${
+        first.dependsOn ? " (depends on the run)" : ""
+      }`,
     );
 
     if (result.decisions.length > 1) {

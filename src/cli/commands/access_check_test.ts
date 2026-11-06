@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -437,4 +437,33 @@ Deno.test({
       },
     );
   },
+});
+
+Deno.test("accessCheckCommand: --client is refused with --server, since a request cannot name a client", async () => {
+  const { accessCheckCommand } = await import("./access_check.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("check", accessCheckCommand);
+  const refusal = await assertRejects(() =>
+    root.parse([
+      "check",
+      "--json",
+      "--server",
+      "ws://127.0.0.1:1",
+      "--token",
+      "test.token",
+      "--subject",
+      "user:adam",
+      "--action",
+      "run",
+      "--on",
+      "workflow:w",
+      "--client",
+      "integration:slack",
+    ])
+  );
+  assertStringIncludes(
+    (refusal as Error).message,
+    "--client is not supported with --server",
+  );
 });

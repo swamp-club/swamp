@@ -16,19 +16,17 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import type { Action } from "./action.ts";
-import {
-  conditionFieldAbsentValue,
-  conditionFieldsUnavailableForActions,
-} from "./condition_fields.ts";
-import { assertEquals } from "@std/assert";
-import { Environment } from "cel-js";
 import {
   CONDITION_FIELDS,
+  conditionFieldAbsentValue,
+  conditionFieldsUnavailableForActions,
   conditionFieldZeroValue,
   referencedConditionFields,
   suppliedResourceFields,
 } from "./condition_fields.ts";
+import type { Action } from "./action.ts";
+import { assertEquals } from "@std/assert";
+import { Environment } from "cel-js";
 
 function ast(condition: string): unknown {
   const env = new Environment({ unlistedVariablesAreDyn: true });

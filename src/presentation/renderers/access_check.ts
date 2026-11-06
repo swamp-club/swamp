@@ -41,6 +41,7 @@ export interface AccessCheckResult {
   action: string;
   resource: string;
   collectives: string[];
+  client?: string;
   decisions: AccessDecision[];
   method?: string;
   /**
@@ -267,7 +268,9 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
     writeOutput(
       `${effect} via ${via} (${subject} → ${result.action} → ${
         checkedTarget(result)
-      })${impliedMarker(firstDecision)}`,
+      })${impliedMarker(firstDecision)}${
+        firstDecision.dependsOn ? " (depends on the run)" : ""
+      }${result.client ? ` as ${result.client}` : ""}`,
     );
 
     if (result.decisions.length > 1) {
@@ -311,6 +314,7 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
           resource: result.resource,
           ...(result.method ? { method: result.method } : {}),
           collectives: result.collectives,
+          ...(result.client !== undefined ? { client: result.client } : {}),
           effect: finalEffect,
           matchingGrants: result.decisions,
           ...(result.approveRequiresExplicitGrant !== undefined

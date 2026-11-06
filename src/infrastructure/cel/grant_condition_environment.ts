@@ -28,6 +28,7 @@ import {
   CONDITION_FIELDS,
   conditionFieldsUnavailableForActions,
   referencedConditionFields,
+  unknownRunPaths,
 } from "../../domain/access/condition_fields.ts";
 import type { Effect } from "../../domain/access/effect.ts";
 import type {
@@ -328,6 +329,17 @@ export function validateGrantCondition(
     const regexError = checkRegexComplexity(matchesCall.pattern!);
     if (regexError) {
       return { valid: false, error: regexError };
+    }
+  }
+
+  if (CONDITION_FIELDS[resourceKind].some((f) => f.name === "run")) {
+    const [unknownPath] = unknownRunPaths(parsed.ast);
+    if (unknownPath) {
+      return {
+        valid: false,
+        error:
+          `Condition names ${unknownPath}, which a run does not have: use run.initiator.kind, run.initiator.id, run.initiator.sub or run.serveDriven`,
+      };
     }
   }
 

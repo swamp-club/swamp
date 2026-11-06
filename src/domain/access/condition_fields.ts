@@ -185,6 +185,66 @@ export function referencedConditionFields(
   return [...found];
 }
 
+const RUN_PATHS = new Set([
+  "initiator",
+  "initiator.kind",
+  "initiator.id",
+  "initiator.sub",
+  "serveDriven",
+]);
+
+/**
+ * a typo under run would error at evaluation, and a deny that errors does not
+ * fire, so a path the run lacks, or one not written as a dotted path, is named
+ */
+export function unknownRunPaths(ast: unknown): string[] {
+  const unknown = new Set<string>();
+  const pathOf = (node: unknown): string[] | null => {
+    if (!isNode(node)) return null;
+    if (node.op === "id") return node.args === "run" ? [] : null;
+    if (node.op === "." || node.op === ".?") {
+      const [target, member] = node.args as [unknown, unknown];
+      const base = pathOf(target);
+      return base === null ? null : [...base, String(member)];
+    }
+    return null;
+  };
+  const walk = (node: unknown, bound: boolean): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child, bound);
+      return;
+    }
+    if (!isNode(node)) return;
+    const path = bound ? null : pathOf(node);
+    if (path !== null) {
+      if (!RUN_PATHS.has(path.join("."))) {
+        unknown.add(["run", ...path].join("."));
+      }
+      return;
+    }
+    if (node.op === "rcall" && Array.isArray(node.args)) {
+      const [method, receiver, callArgs] = node.args as [
+        string,
+        unknown,
+        unknown[],
+      ];
+      walk(receiver, bound);
+      const binder = callArgs?.[0];
+      const binds = BINDING_MACROS.has(method) && isNode(binder) &&
+        binder.op === "id" && binder.args === "run";
+      walk(binds ? callArgs.slice(1) : callArgs, bound || binds);
+      return;
+    }
+    if (node.op === "." || node.op === ".?") {
+      walk((node.args as unknown[])[0], bound);
+      return;
+    }
+    walk(node.args, bound);
+  };
+  walk(ast, false);
+  return [...unknown];
+}
+
 /** fields a condition names that a decision on one of these actions cannot supply */
 export function conditionFieldsUnavailableForActions(
   ast: unknown,

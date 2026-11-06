@@ -186,9 +186,12 @@ export function renderApprovals(
         // A serve instance fetches a parent record it does not hold before
         // it decides, so a record missing there may only not be local yet.
         const parentGone = item.parentMissing === true && server === undefined;
-        if (item.parentEnded || parentGone) {
-          // the run above it ended, or its record is gone: the gate cannot be
-          // decided, so only the cancel is offered
+        if (
+          item.parentEnded || parentGone ||
+          item.canDecideReason === "grant-condition"
+        ) {
+          // the run above it ended, its record is gone, or this caller is
+          // refused on this run: only the cancel is offered
           if (!quiet) {
             writeOutput(
               `  ${

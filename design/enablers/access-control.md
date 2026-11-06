@@ -911,7 +911,9 @@ decide it. A run with no usable initiator (none recorded, `ghost`, or text that
 does not parse) has no `run` at all, so a deny needing it refuses and an allow
 needing it does not match. A grant naming `run` on any other action is refused
 when written, because no other decision can supply it, including `[run]` and
-`[approve, read]`. A stored grant that reaches a node anyway warns at load and
+`[approve, read]`. So is a path `run` does not have, such as
+`run.initiatr.sub`: at run time it would error, and a deny that errors does not
+fire. A stored grant that reaches a node anyway warns at load and
 decides by the rule above.
 
 **Missing fields fail closed** (swamp-club#2675). Serve authorizes every

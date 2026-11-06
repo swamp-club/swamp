@@ -457,3 +457,33 @@ Deno.test("validateGrantCondition: a binder named client or run names no new fie
     );
   }
 });
+
+Deno.test("validateGrantCondition: a path the run does not have is refused, since a deny that errors does not fire", () => {
+  for (
+    const condition of [
+      "principal.sub == run.initiatr.sub",
+      'run.initiator.subject == "x"',
+      "run.serve_driven",
+      'run["initiator"].sub == "x"',
+      "run == {}",
+    ]
+  ) {
+    const result = validateGrantCondition(condition, "workflow", APPROVE_DENY);
+    assertEquals(result.valid, false, condition);
+    assertStringIncludes(result.error!, "which a run does not have");
+  }
+  for (
+    const condition of [
+      "principal.sub == run.initiator.sub",
+      'run.initiator.kind == "service"',
+      'run.initiator.id == "scheduler"',
+      "!run.serveDriven",
+    ]
+  ) {
+    assertEquals(
+      validateGrantCondition(condition, "workflow", APPROVE_DENY).valid,
+      true,
+      condition,
+    );
+  }
+});

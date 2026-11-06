@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { walk } from "@std/fs";
 import { fromFileUrl, relative, SEPARATOR } from "@std/path";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
@@ -128,6 +128,7 @@ Deno.test("serve client rules: a run's vault policy never hands a decision the r
   );
   const start = policy.indexOf("#accessPrincipal(): Promise");
   const end = policy.indexOf("export interface RunVaultScopeContext");
+  assert(start !== -1 && start < end, "the policy's markers moved");
   assertEquals(policy.slice(start, end).includes("client"), false);
 });
 

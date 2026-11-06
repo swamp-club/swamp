@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { clientConditionValue, clientLiteralFinding } from "./client.ts";
+import {
+  clientConditionValue,
+  clientLiteralFinding,
+  clientToString,
+  parseClient,
+} from "./client.ts";
 import { assertEquals, assertThrows } from "@std/assert";
-import { clientToString, parseClient } from "./client.ts";
 
 Deno.test("parseClient: accepts each direct id", () => {
   for (const id of ["cli", "dashboard", "token"]) {

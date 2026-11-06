@@ -104,7 +104,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--client <client:string>",
-    "Client to simulate for CEL conditions on client, as <kind>:<id>; omitted reads as direct",
+    "Client to simulate for CEL conditions on client, as <kind>:<id>; omitted reads as direct; local checks only",
   )
   .option(
     "--collectives <collectives:string>",
@@ -144,6 +144,11 @@ export const accessCheckCommand = new Command()
       if (options.field && (options.field as string[]).length > 0) {
         throw new UserError(
           "--field is not supported with --server: the server evaluates conditions against its own resource context",
+        );
+      }
+      if (options.client !== undefined) {
+        throw new UserError(
+          "--client is not supported with --server: the server reads the client from the caller's own session and a request cannot name one; check locally with --client",
         );
       }
       if (options.groups) {
@@ -218,7 +223,7 @@ export const accessCheckCommand = new Command()
     }
     const action: Action = actionResult.data;
     let client: string | undefined;
-    if (options.client) {
+    if (options.client !== undefined) {
       try {
         client = clientToString(parseClient(options.client as string));
       } catch (error) {
@@ -287,6 +292,7 @@ export const accessCheckCommand = new Command()
         collectives,
         decisions,
         ...(options.method ? { method: options.method as string } : {}),
+        ...(client !== undefined ? { client } : {}),
       };
 
       const renderer = createAccessCheckRenderer(ctx.outputMode);

@@ -254,8 +254,16 @@ swamp access grant create --subject group:ops --deny run \
 - Upgrade every serve instance before writing these grants: an older one does
   not enforce the deny.
 
-Check with `swamp access check --client integration:slack`. Self-approval's
-limits for member-driven runs are in `design/enablers/access-control.md`.
+Check a condition locally, since a server reads the client from the caller's own
+session:
+
+```bash
+swamp access check --subject user:alice --action run \
+  --on 'workflow:@acme/deploy' --client integration:slack
+```
+
+Self-approval's limits for member-driven runs are in
+`design/enablers/access-control.md`.
 
 ## Vault Access
 
