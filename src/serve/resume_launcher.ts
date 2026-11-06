@@ -26,9 +26,11 @@ import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
 import { withRunCondition } from "../domain/access/access_resources.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
 import { isWireEvent, serializeEvent } from "./serializer.ts";
+import { UserError } from "../domain/errors.ts";
 import {
   resolveResumableRun,
   RunNotSuspendedError,
+  SuspendedRunNotFoundError,
 } from "../domain/workflows/suspended_run_resolver.ts";
 import {
   isServeDrivenRun,
@@ -150,7 +152,10 @@ export type DetachedResumeResult =
     buffer: RunEventBuffer;
     completedRun: CompletedRunSlot;
   }
-  | { ok: false; code: string; message: string };
+  | { ok: false; code: string; message: string; refusal?: ResumeRefusal };
+
+/** told apart here since a refused resume shares one code */
+export type ResumeRefusal = "not_found" | "nested_pending" | "refused";
 
 function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
   return request.lostRaceIsOrdinary === true &&
@@ -198,6 +203,7 @@ export async function startDetachedResume(
           error,
           request.canReadWorkflow,
         ),
+        refusal: "nested_pending",
       };
     }
     if (error instanceof OrphanedNestedRunError) {
@@ -208,6 +214,7 @@ export async function startDetachedResume(
           error,
           request.canReadWorkflow,
         ),
+        refusal: "refused",
       };
     }
     return {
@@ -216,6 +223,12 @@ export async function startDetachedResume(
         ? RUN_NOT_SUSPENDED_CODE
         : "workflow_resume_failed",
       message: sanitizeErrorForClient(error),
+      // anything else is a fault, not an answer: a caller may try it again
+      ...(error instanceof SuspendedRunNotFoundError
+        ? { refusal: "not_found" as const }
+        : error instanceof UserError
+        ? { refusal: "refused" as const }
+        : {}),
     };
   }
 

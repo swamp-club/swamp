@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { GateState } from "../domain/workflows/gate_state.ts";
+
 export interface WorkflowRunPayload {
   workflowIdOrName: string;
   inputs?: Record<string, unknown>;
@@ -35,6 +37,12 @@ export interface WorkflowRunPayload {
   tracestate?: string;
   noSupersede?: boolean;
   /**
+   * a retry with the same key gets the first start's run, not a new run; send
+   * only to a server advertising the http-actions capability, since an older
+   * one drops it
+   */
+  idempotencyKey?: string;
+  /**
    * the client's inherited held-lock list, so a run requested by a step of this
    * server's own run skips that step's lock
    */
@@ -47,10 +55,31 @@ export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
 
 export const SERVE_CAPABILITY_SCHEDULE_CATCH_UP = "schedule-catch-up";
 
+export const SERVE_CAPABILITY_HTTP_ACTIONS = "http-actions";
+
+/** an older serve ignores suspendedAt, deciding whichever attempt now waits */
+export const SERVE_CAPABILITY_GATE_ATTEMPT = "gate-attempt";
+
 /** the HTTP route for client reads too large for a WebSocket frame */
 export const SERVE_REQUEST_PATH = "/api/v1/request";
 
 export const MAX_HTTP_REQUEST_BODY_BYTES = 64 * 1024;
+
+/** bearer only; a browser's ambient cookie never reaches this path */
+export const SERVE_ACTION_PATH = "/api/v1/action";
+
+// above the signal route's limit, so a signal it takes is taken here
+export const MAX_HTTP_ACTION_BODY_BYTES = 128 * 1024;
+
+export const HTTP_ACTION_TYPES: ReadonlySet<string> = new Set([
+  "workflow.run",
+  "workflow.resume",
+  "workflow.history.get",
+  "workflow.approvals",
+  "workflow.approve",
+  "workflow.reject",
+  "workflow.signal",
+]);
 
 /** a refusal of the HTTP route that the WebSocket would answer */
 export const USE_WEBSOCKET_CODE = "use_websocket";
@@ -451,6 +480,8 @@ export interface WorkflowHistoryGetPayload {
    * keeps only merged step outputs; the reply carries no artifact attributes
    */
   allAttributes?: boolean;
+  /** names a run by its full id: no scan, no workflow fallback, no outputs */
+  exactRun?: boolean;
 }
 
 export interface WorkflowHistoryLogsPayload {
@@ -502,9 +533,19 @@ export interface WorkflowSchemaPayload {
   workflowIdOrName?: string;
 }
 
-export interface WorkflowApprovePayload {
-  workflowIdOrName: string;
+export interface GateTargetPayload {
   stepName: string;
+  jobName?: string;
+  strictGate?: boolean;
+  /**
+   * send only to a server advertising the gate-attempt capability; an older one
+   * ignores it
+   */
+  suspendedAt?: string;
+}
+
+export interface WorkflowApprovePayload extends GateTargetPayload {
+  workflowIdOrName: string;
   reason?: string;
   runId?: string;
   decidedBy?: string;
@@ -548,9 +589,8 @@ export interface WorkflowWaitsPayload {
   includePending?: boolean;
 }
 
-export interface WorkflowRejectPayload {
+export interface WorkflowRejectPayload extends GateTargetPayload {
   workflowIdOrName: string;
-  stepName: string;
   reason?: string;
   runId?: string;
   decidedBy?: string;
@@ -571,6 +611,8 @@ export interface WorkflowResumePayload {
    * one ignores the field and resets the from step in every job that has it
    */
   fromJob?: string;
+  /** resumes only a suspended run, so a retry can't re-run a failed run */
+  suspendedOnly?: boolean;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
@@ -891,7 +933,7 @@ export interface RunAttachPayload {
 }
 
 export type ServerRequest =
-  | { type: "server.version"; id: string }
+  | { type: "server.version"; id: string; payload?: { leader?: boolean } }
   | { type: "workflow.run"; id: string; payload: WorkflowRunPayload }
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
   | { type: "access.grant.list"; id: string; payload?: AccessGrantListPayload }
@@ -1572,7 +1614,9 @@ export const SERVER_WAITS_COMMAND = "swamp workflow waits --server <server>";
  * the same refusal has there
  */
 export interface WorkflowGateRefusalDetails {
-  refusalCode: string;
+  refusalCode?: string;
+  /** what became of the gate, told apart only after the grant decision */
+  gateState?: GateState | "busy";
 }
 
 /**

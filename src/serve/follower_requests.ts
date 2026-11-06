@@ -179,9 +179,11 @@ export interface FollowerGate {
 export function followerRefusal(
   type: string,
   gate: FollowerGate | undefined,
+  // the leader decides, so what it supports is only its own to answer
+  forLeader = false,
 ): ServeNotLeaderError | undefined {
   if (gate === undefined || gate.role === "leader") return undefined;
-  if (!FOLLOWER_READ_REQUESTS.has(type)) {
+  if (forLeader || !FOLLOWER_READ_REQUESTS.has(type)) {
     return new ServeNotLeaderError(gate.leader());
   }
   // the version handshake answers whatever the copy's age

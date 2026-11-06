@@ -26,7 +26,7 @@ import {
   datastoreRouteTemplate,
   matchDatastoreRoute,
 } from "./datastore_routes.ts";
-import { SERVE_REQUEST_PATH } from "./protocol.ts";
+import { SERVE_ACTION_PATH, SERVE_REQUEST_PATH } from "./protocol.ts";
 
 // Routes `swamp serve` answers at a fixed path; serve_http_route_span_rules_test
 // fails when the handler in src/cli/commands/serve.ts answers one missing here.
@@ -46,6 +46,7 @@ const EXACT_ROUTES: ReadonlySet<string> = new Set([
   "/api/v1/serve/config",
   "/api/v1/cancel",
   SERVE_REQUEST_PATH,
+  SERVE_ACTION_PATH,
   "/internal/runs",
   "/dashboard",
 ]);

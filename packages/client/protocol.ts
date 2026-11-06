@@ -45,6 +45,12 @@ export interface WorkflowRunPayload {
   tracestate?: string;
   noSupersede?: boolean;
   /**
+   * a retry with the same key gets the first start's run, not a new run; send
+   * only to a server advertising the http-actions capability, since an older
+   * one drops it
+   */
+  idempotencyKey?: string;
+  /**
    * The client's inherited held-lock list (`SWAMP_LOCK_HOLDER_TOKENS`), so a
    * run requested by a step of this server's own run skips that step's lock.
    */
@@ -277,6 +283,8 @@ export interface WorkflowHistoryGetPayload {
    * keeps only merged step outputs; the reply carries no artifact attributes
    */
   allAttributes?: boolean;
+  /** names a run by its full id: no scan, no workflow fallback, no outputs */
+  exactRun?: boolean;
 }
 
 export interface WorkflowHistoryLogsPayload {
@@ -454,6 +462,10 @@ export interface WorkflowSchemaPayload {
 export interface WorkflowApprovePayload {
   workflowIdOrName: string;
   stepName: string;
+  jobName?: string;
+  strictGate?: boolean;
+  /** send only to a server advertising the gate-attempt capability */
+  suspendedAt?: string;
   reason?: string;
   runId?: string;
   decidedBy?: string;
@@ -462,6 +474,10 @@ export interface WorkflowApprovePayload {
 export interface WorkflowRejectPayload {
   workflowIdOrName: string;
   stepName: string;
+  jobName?: string;
+  strictGate?: boolean;
+  /** send only to a server advertising the gate-attempt capability */
+  suspendedAt?: string;
   reason?: string;
   runId?: string;
   decidedBy?: string;
@@ -484,6 +500,8 @@ export interface WorkflowResumePayload {
    * the field and resets the `from` step in every job that has it.
    */
   fromJob?: string;
+  /** resumes only a suspended run, so a retry can't re-run a failed run */
+  suspendedOnly?: boolean;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
@@ -799,7 +817,7 @@ export type ServerRequest =
   | { type: "datastore.status"; id: string }
   | { type: "cluster.instances"; id: string }
   | { type: "serve.config"; id: string }
-  | { type: "server.version"; id: string }
+  | { type: "server.version"; id: string; payload?: { leader?: boolean } }
   // Control
   | { type: "cancel"; id: string };
 

@@ -19,6 +19,8 @@
 
 import { z } from "zod";
 import {
+  SERVE_CAPABILITY_GATE_ATTEMPT,
+  SERVE_CAPABILITY_HTTP_ACTIONS,
   SERVE_CAPABILITY_LITERAL_INPUTS,
   SERVE_CAPABILITY_RESUME_FROM_JOB,
   SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
@@ -263,6 +265,11 @@ export type { ConnectionContext } from "./handlers/shared.ts";
 export const MAX_ACTIVE_REQUESTS = 100;
 const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
 
+const SignalIdempotencyKeySchema = z.string()
+  .max(SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH)
+  .refine(isIdempotencyKey, `must be ${IDEMPOTENCY_KEY_FORM}`)
+  .optional();
+
 const WorkflowRunRequestSchema = z.object({
   type: z.literal("workflow.run"),
   id: z.string().min(1).max(256),
@@ -283,6 +290,7 @@ const WorkflowRunRequestSchema = z.object({
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
     noSupersede: z.boolean().optional(),
+    idempotencyKey: SignalIdempotencyKeySchema,
     lockHolderTokens: z.string().max(MAX_FORWARDED_LOCK_TOKENS_LENGTH)
       .optional(),
   }),
@@ -826,6 +834,7 @@ const WorkflowHistoryGetRequestSchema = z.object({
   payload: z.object({
     workflowIdOrName: z.string(),
     allAttributes: z.boolean().optional(),
+    exactRun: z.boolean().optional(),
   }),
 });
 
@@ -898,6 +907,9 @@ const WorkflowApproveRequestSchema = z.object({
   payload: z.object({
     workflowIdOrName: z.string(),
     stepName: z.string(),
+    jobName: z.string().optional(),
+    strictGate: z.boolean().optional(),
+    suspendedAt: z.string().max(64).optional(),
     reason: z.string().optional(),
     runId: z.string().optional(),
     decidedBy: z.string().max(256).optional(),
@@ -910,6 +922,9 @@ const WorkflowRejectRequestSchema = z.object({
   payload: z.object({
     workflowIdOrName: z.string(),
     stepName: z.string(),
+    jobName: z.string().optional(),
+    strictGate: z.boolean().optional(),
+    suspendedAt: z.string().max(64).optional(),
     reason: z.string().optional(),
     runId: z.string().optional(),
     decidedBy: z.string().max(256).optional(),
@@ -919,11 +934,6 @@ const WorkflowRejectRequestSchema = z.object({
 // a wait ID, when present, is the address and strips other fields; only a UUID
 // is accepted, via normalizeWaitId as HTTP and CLI do. Without one, workflow
 // and key are the address, only bounded here
-const SignalIdempotencyKeySchema = z.string()
-  .max(SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH)
-  .refine(isIdempotencyKey, `must be ${IDEMPOTENCY_KEY_FORM}`)
-  .optional();
-
 const WorkflowSignalRequestSchema = z.object({
   type: z.literal("workflow.signal"),
   id: z.string().min(1).max(256),
@@ -990,6 +1000,7 @@ const WorkflowResumeRequestSchema = z.object({
     runId: z.string().optional(),
     from: z.string().optional(),
     fromJob: z.string().optional(),
+    suspendedOnly: z.boolean().optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
@@ -1543,6 +1554,7 @@ const ServeConfigRequestSchema = z.object({
 const ServerVersionRequestSchema = z.object({
   type: z.literal("server.version"),
   id: z.string().min(1).max(256),
+  payload: z.object({ leader: z.boolean().optional() }).optional(),
 });
 
 const ServerRequestSchema = z.discriminatedUnion("type", [
@@ -2037,7 +2049,11 @@ export function handleMessage(
   // a follower takes no write and runs nothing: it forwards with the caller's
   // credential, or refuses when no leader is reachable; before the handler runs
   // so no step's side effect happens first
-  const notLeader = followerRefusal(request.type, ctx.followerGate);
+  const notLeader = followerRefusal(
+    request.type,
+    ctx.followerGate,
+    request.type === "server.version" && request.payload?.leader === true,
+  );
   if (
     notLeader !== undefined && !notLeader.reads &&
     forwarderFor(socket, ctx.leaderLink, ctx.feedBarrier)?.forward(
@@ -2120,6 +2136,8 @@ export function handleMessage(
                 SERVE_CAPABILITY_LITERAL_INPUTS,
                 SERVE_CAPABILITY_RESUME_FROM_JOB,
                 SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
+                SERVE_CAPABILITY_HTTP_ACTIONS,
+                SERVE_CAPABILITY_GATE_ATTEMPT,
               ],
             },
           }),

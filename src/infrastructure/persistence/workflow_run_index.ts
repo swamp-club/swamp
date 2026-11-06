@@ -61,6 +61,9 @@ export interface WorkflowRunIndexEntry {
   waitingOnRun?: unknown;
   waitsOnlyOnNestedRuns?: boolean;
   inputsOmitted?: unknown;
+  // no version bump: an older entry holds no key, and a bump would rebuild the
+  // index each time binaries of two versions take turns
+  startKeyLookup?: unknown;
   /**
    * stat of the record file the entry was built from, so a replaced record is
    * told apart without reading it; an entry without a valid one is checked by

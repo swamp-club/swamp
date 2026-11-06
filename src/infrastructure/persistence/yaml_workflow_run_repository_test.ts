@@ -32,6 +32,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { SCAN_CONCURRENCY, SEARCH_SCAN_SHARE } from "./scan_permits.ts";
 import {
+  compactRunIndex,
   getIndexPath,
   INDEX_COMPACTION_FLOOR_BYTES,
   INDEX_SCHEMA_VERSION,
@@ -5900,5 +5901,124 @@ Deno.test("YamlWorkflowRunRepository.isRunDamaged: follows the record as it is n
 
     await Deno.remove(path);
     assertEquals(await check(), false);
+  });
+});
+
+const START_KEY = { lookup: "lookup-1", salt: "salt", fingerprint: "print" };
+
+async function savedRunWithStartKey(
+  repo: YamlWorkflowRunRepository,
+): Promise<
+  { workflow: ReturnType<typeof createTestWorkflow>; run: WorkflowRun }
+> {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.recordStartKey(START_KEY);
+  run.start();
+  await repo.save(workflow.id, run);
+  return { workflow, run };
+}
+
+Deno.test("runIndexSnapshot: finds a run by its start key, and the record holds the whole key", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const { workflow, run } = await savedRunWithStartKey(repo);
+
+    const snapshot = await repo.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.withStartKey("lookup-1")?.summary.id, run.id);
+    assertEquals(snapshot.withStartKey("other"), undefined);
+    assertEquals(
+      (await repo.findById(workflow.id, run.id))!.startKey,
+      START_KEY,
+    );
+  });
+});
+
+Deno.test("runIndexSnapshot: a start key survives a later save of the run", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const { workflow, run } = await savedRunWithStartKey(repo);
+    run.suspend();
+    await repo.save(workflow.id, run);
+
+    const fresh = new YamlWorkflowRunRepository(dir);
+    const snapshot = await fresh.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.withStartKey("lookup-1")?.summary.id, run.id);
+    assertEquals(
+      snapshot.withStartKey("lookup-1")?.summary.status,
+      "suspended",
+    );
+  });
+});
+
+Deno.test("runIndexSnapshot: a start key survives rebuilding a deleted index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const { workflow, run } = await savedRunWithStartKey(repo);
+    await Deno.remove(getIndexPath(runsDirOf(dir, workflow.id)));
+
+    const fresh = new YamlWorkflowRunRepository(dir);
+    const snapshot = await fresh.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.withStartKey("lookup-1")?.summary.id, run.id);
+  });
+});
+
+Deno.test("runIndexSnapshot: a start key survives repairing a torn index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const { workflow, run } = await savedRunWithStartKey(repo);
+    const indexPath = getIndexPath(runsDirOf(dir, workflow.id));
+    await Deno.writeTextFile(
+      indexPath,
+      (await Deno.readTextFile(indexPath)) + "{not json\n",
+    );
+
+    const fresh = new YamlWorkflowRunRepository(dir);
+    const snapshot = await fresh.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.withStartKey("lookup-1")?.summary.id, run.id);
+  });
+});
+
+Deno.test("runIndexSnapshot: a malformed start key in the index is dropped, not fatal", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const { workflow, run } = await savedRunWithStartKey(repo);
+    const indexPath = getIndexPath(runsDirOf(dir, workflow.id));
+    const text = await Deno.readTextFile(indexPath);
+    await Deno.writeTextFile(
+      indexPath,
+      text.replaceAll('"startKeyLookup":"lookup-1"', '"startKeyLookup":7'),
+    );
+
+    const fresh = new YamlWorkflowRunRepository(dir);
+    const snapshot = await fresh.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.get(run.id)?.summary.id, run.id);
+  });
+});
+
+Deno.test("findById: a run without a start key still reads, and its summary has none", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    await repo.save(workflow.id, run);
+    assertEquals(
+      (await repo.findById(workflow.id, run.id))!.startKey,
+      undefined,
+    );
+    const snapshot = await repo.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.get(run.id)?.summary.startKeyLookup, undefined);
+  });
+});
+
+Deno.test("runIndexSnapshot: a start key survives compacting the index", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const { workflow, run } = await savedRunWithStartKey(repo);
+    await compactRunIndex(runsDirOf(dir, workflow.id));
+
+    const fresh = new YamlWorkflowRunRepository(dir);
+    const snapshot = await fresh.runIndexSnapshot(workflow.id);
+    assertEquals(snapshot.withStartKey("lookup-1")?.summary.id, run.id);
   });
 });

@@ -20,10 +20,15 @@
 import type { Command } from "@cliffy/command";
 import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
+import {
+  AMBIGUOUS_GATE_CODE,
+  GATE_REOPENED_CODE,
+} from "../libswamp/workflows/gate_refusals.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   HTTP_REQUEST_TYPES,
   type ModelMethodRunPayload,
+  SERVE_CAPABILITY_GATE_ATTEMPT,
   SERVE_REQUEST_PATH,
   type ServerMessage,
   USE_WEBSOCKET_CODE,
@@ -205,6 +210,8 @@ export class ServerResponseError extends UserError {
 const LOCAL_GATE_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "validation_failed",
   "not_found",
+  GATE_REOPENED_CODE,
+  AMBIGUOUS_GATE_CODE,
 ]);
 
 /**
@@ -230,6 +237,21 @@ export function remoteGateRefusalUserError(
     return error;
   }
   return new UserError(error.serverMessage, refusalCode);
+}
+
+/** an older serve would drop the field and decide whichever attempt now waits */
+export async function requireGateAttemptCheck(
+  target: Parameters<typeof requestServerResponse>[0],
+): Promise<void> {
+  const version = await requestServerResponse<
+    { version: string; capabilities?: string[] }
+  >(target, { type: "server.version", payload: { leader: true } });
+  if (!version.capabilities?.includes(SERVE_CAPABILITY_GATE_ATTEMPT)) {
+    throw new UserError(
+      `The server (swamp ${version.version}) can't check which attempt of this gate a decision answers, so it could decide a later one. Upgrade swamp serve, or drop --suspended-at to decide whichever attempt now waits.`,
+      "gate_attempt_unsupported",
+    );
+  }
 }
 
 const CANCEL_DRAIN_MS = 10_000;

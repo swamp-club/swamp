@@ -118,6 +118,35 @@ curl -X POST https://<host>/api/v1/signal \
   -d '{"workflow":"<name>","key":"<key>","payload":{"verdict":"ship"}}'
 ```
 
+### Acting over HTTP
+
+`POST /api/v1/action` runs workflow actions for an integration: bearer token
+only, per-person rate limit, one JSON reply with a stable `code` on failure.
+
+```bash
+curl -X POST https://<host>/api/v1/action \
+  -H "Authorization: Bearer <name>.<secret>" -H "Content-Type: application/json" \
+  -d '{"type":"workflow.run","payload":{"workflowIdOrName":"<name>","idempotencyKey":"button-812"}}'
+# 202 {"data":{"runId":"...","replayed":false}}; a retry with the same key returns
+# the same run with replayed true, and other inputs get idempotency_conflict
+
+curl ... -d '{"type":"workflow.history.get","payload":{"runId":"<full id>"}}'
+curl ... -d '{"type":"workflow.approvals"}'   # each row's suspendedAt names the attempt
+curl ... -d '{"type":"workflow.approve","payload":{"workflowIdOrName":"<name>","runId":"<id>","stepName":"<gate>","suspendedAt":"<from the row>"}}'
+```
+
+A success is `{requestId, type, data}`, with the action's result in `data`; a
+failure is `{code, message}`, plus `requestId` once the action was dispatched.
+`workflow.reject`, `workflow.resume` (runId required, suspended runs only) and
+`workflow.signal` work the same way. Fields not listed for a type are refused. A
+repeated decision gets `already_decided`, a decision for an attempt since
+re-opened `gate_reopened`, and a step name in several jobs `ambiguous_gate`
+until `jobName` picks one (read the job from status). A paused run reads
+`suspended` in status. An approved run continues with `--auto-resume`, or
+`autoResume: true` when it has inputs, or a `workflow.resume`; the reply's
+`autoResumed` says which. A repeated start is safe only on one node or a team
+leader.
+
 `swamp workflow run --server` prints the wait ID and the signal command with
 `--server` when the run suspends on a wait, its own or a nested run's, and for a
 keyed wait the by-key command too. A nested run's wait is named only to a caller

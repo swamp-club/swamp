@@ -20,7 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServeLeader } from "../src/domain/datastore_v3/serve_leader.ts";
-import { handleConnection } from "../src/serve/connection.ts";
+import { handleConnection, handleMessage } from "../src/serve/connection.ts";
 import {
   forwardCredentialOf,
   rememberForwardCredential,
@@ -81,6 +81,7 @@ async function withFollower(
   fn: (connect: () => Promise<WebSocket & { frames: unknown[] }>) => Promise<
     void
   >,
+  feedBarrier?: () => Promise<void>,
 ): Promise<void> {
   await withServeRepo(async (repo) => {
     const leader: ServeLeader = {
@@ -99,6 +100,7 @@ async function withFollower(
       isStale: () => false,
     };
     ctx.leaderLink = leaderLink;
+    if (feedBarrier) ctx.feedBarrier = feedBarrier;
     const http = Deno.serve(
       { port: 0, hostname: "127.0.0.1", onListen: () => {} },
       (req) => {
@@ -316,6 +318,123 @@ Deno.test({
         );
         assert(sockets[0].received[0].includes('"enroll"'));
       });
+    });
+  },
+});
+
+for (
+  const [label, capabilities, supported] of [
+    ["an older leader", ["literal-inputs"], false],
+    ["a current leader", ["literal-inputs", "gate-attempt"], true],
+  ] as const
+) {
+  Deno.test({
+    name:
+      `team ws forwarding: a version check for the leader reports ${label}, while a plain handshake stays this node's own`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withLeader((leader, frame) => {
+        leader.socket.send(JSON.stringify({
+          type: "server.version",
+          id: frame.id,
+          payload: { version: "leader", capabilities },
+        }));
+      }, async (address, sockets) => {
+        await withFollower(address, async (connect) => {
+          const client = await connect();
+          client.send(JSON.stringify({ type: "server.version", id: "own" }));
+          await waitFor(() => client.frames.length === 1, "the handshake");
+          const own = client.frames[0] as {
+            payload: { capabilities: string[] };
+          };
+          assertEquals(own.payload.capabilities.includes("gate-attempt"), true);
+          assertEquals(sockets.length, 0);
+
+          client.send(JSON.stringify({
+            type: "server.version",
+            id: "leader",
+            payload: { leader: true },
+          }));
+          await waitFor(() => client.frames.length === 2, "the leader's reply");
+          const reply = client.frames[1] as {
+            payload: { version: string; capabilities: string[] };
+          };
+          assertEquals(reply.payload.version, "leader");
+          assertEquals(
+            reply.payload.capabilities.includes("gate-attempt"),
+            supported,
+          );
+        });
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "team ws forwarding: a version check for the leader wrote nothing, so it does not wait on this node's copy",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withLeader((leader, frame) => {
+      leader.socket.send(JSON.stringify({
+        type: "server.version",
+        id: frame.id,
+        payload: { version: "leader", capabilities: ["gate-attempt"] },
+      }));
+    }, async (address) => {
+      let barriers = 0;
+      await withFollower(address, async (connect) => {
+        const client = await connect();
+        client.send(JSON.stringify({
+          type: "server.version",
+          id: "leader",
+          payload: { leader: true },
+        }));
+        await waitFor(() => client.frames.length === 1, "the leader's reply");
+        assertEquals(barriers, 0);
+      }, () => {
+        barriers++;
+        return Promise.resolve();
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "team ws forwarding: a version check for a leader that can't be reached is refused, never answered by the follower",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const ctx = createServeCtx(repo, []);
+      ctx.followerGate = {
+        role: "follower",
+        leader: () => undefined,
+        isStale: () => false,
+      };
+      const frames: { type: string; error?: { code: string } }[] = [];
+      const socket = {
+        readyState: WebSocket.OPEN,
+        send: (data: string) => frames.push(JSON.parse(data)),
+        close() {},
+      } as unknown as WebSocket;
+      await handleMessage(
+        socket,
+        ctx,
+        new Map(),
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "server.version",
+            id: "v",
+            payload: { leader: true },
+          }),
+        }),
+        CALLER,
+      );
+      assertEquals(frames.map((f) => f.type), ["error"]);
     });
   },
 });

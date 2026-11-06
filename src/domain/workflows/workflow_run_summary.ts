@@ -54,6 +54,7 @@ export interface WorkflowRunSummary {
   waitsOnlyOnNestedRuns?: boolean;
   /** keys whose values only the run's record holds: inputs lacks them */
   inputsOmitted?: string[];
+  startKeyLookup?: string;
 }
 
 export const INDEXED_INPUT_MAX_BYTES = 1024;
@@ -138,6 +139,8 @@ const WorkflowRunSummarySchema = z.object({
     total: z.number().int().nonnegative(),
   }).optional(),
   awaitingResume: z.boolean().optional(),
+  // a malformed key never blocks a listing; the record is what a retry trusts
+  startKey: z.object({ lookup: z.string() }).optional().catch(undefined),
 });
 
 /**
@@ -226,6 +229,7 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
       failedStep: v.failedStep,
       failureReason: v.failureReason,
       stepProgress: v.stepProgress,
+      startKeyLookup: v.startKey?.lookup,
       parentRun: parentRun.success ? parentRun.data : undefined,
       ...deriveWaitingOnRun(data),
     }),
@@ -241,6 +245,7 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     failedStep?: string;
     failureReason?: string;
     stepProgress?: { completed: number; total: number };
+    startKeyLookup?: string;
     parentRun?: ParentRunRef;
     waitingOnRun?: NestedRunRef[];
     waitsOnlyOnNestedRuns?: boolean;
@@ -263,5 +268,6 @@ export function parseWorkflowRunSummary(data: unknown): WorkflowRunSummary {
     parentRun: detached.parentRun,
     waitingOnRun: detached.waitingOnRun,
     waitsOnlyOnNestedRuns: detached.waitsOnlyOnNestedRuns,
+    startKeyLookup: detached.startKeyLookup,
   };
 }

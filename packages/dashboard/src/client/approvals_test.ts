@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { expiredApprovals, pendingApprovals } from "./approvals.ts";
+import {
+  decisionPayload,
+  expiredApprovals,
+  pendingApprovals,
+} from "./approvals.ts";
 
 const pending = { workflowName: "deploy", runId: "run-1", stepName: "gate" };
 const expired = {
@@ -61,4 +65,25 @@ Deno.test("pendingApprovals: empty before the reply arrives or for a malformed o
     assertEquals(pendingApprovals(payload), []);
     assertEquals(expiredApprovals(payload), []);
   }
+});
+
+Deno.test("decisionPayload: names the attempt on screen, and any reason", () => {
+  const gate = {
+    workflowName: "deploy",
+    runId: "run-1",
+    stepName: "gate",
+    suspendedAt: "2026-11-06T10:00:00.000Z",
+  };
+  assertEquals(decisionPayload(gate, "ok"), {
+    workflowIdOrName: "deploy",
+    stepName: "gate",
+    runId: "run-1",
+    suspendedAt: "2026-11-06T10:00:00.000Z",
+    reason: "ok",
+  });
+  assertEquals(decisionPayload({ ...gate, suspendedAt: undefined }), {
+    workflowIdOrName: "deploy",
+    stepName: "gate",
+    runId: "run-1",
+  });
 });

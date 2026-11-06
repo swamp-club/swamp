@@ -27,6 +27,7 @@ import type { Principal } from "../domain/access/principal.ts";
 import {
   clearRequestErrored,
   resolveDisplayPrincipal,
+  takeAuditedDetail,
   takeAuditedResource,
   wasRequestErrored,
 } from "./handlers/shared.ts";
@@ -96,7 +97,11 @@ export function audited(
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,
-      detail: errored ? "handler sent error response" : undefined,
+      detail: errored
+        ? "handler sent error response"
+        : options.socket
+        ? takeAuditedDetail(options.socket, options.requestId)
+        : undefined,
     }));
   }, (error: unknown) => {
     if (options.socket) {

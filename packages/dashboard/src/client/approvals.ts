@@ -77,3 +77,22 @@ export function pendingApprovals(payload: unknown): ApprovalInfo[] {
 export function expiredApprovals(payload: unknown): ExpiredGate[] {
   return listAt<ExpiredGate>(payload, "expired");
 }
+
+/** names the attempt on screen, so a gate asked again since is refused */
+export function decisionPayload(
+  gate: Pick<
+    ApprovalInfo,
+    "workflowName" | "runId" | "stepName" | "suspendedAt"
+  >,
+  reason?: string,
+): Record<string, string> {
+  return {
+    workflowIdOrName: gate.workflowName,
+    stepName: gate.stepName,
+    runId: gate.runId,
+    ...(gate.suspendedAt !== undefined
+      ? { suspendedAt: gate.suspendedAt }
+      : {}),
+    ...(reason !== undefined ? { reason } : {}),
+  };
+}

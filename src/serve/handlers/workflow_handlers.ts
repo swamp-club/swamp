@@ -122,6 +122,7 @@ import { isWireEvent, serializeEvent } from "../serializer.ts";
 import { UserError } from "../../domain/errors.ts";
 import type {
   EffectiveTrigger,
+  GateTargetPayload,
   WorkflowApprovePayload,
   WorkflowCancelPayload,
   WorkflowCreatePayload,
@@ -153,9 +154,22 @@ import type {
   WorkflowWaitsPayload,
 } from "../protocol.ts";
 import {
+  lookupWorkflow,
   resolveResumableRun,
   resolveSuspendedRun,
 } from "../../domain/workflows/suspended_run_resolver.ts";
+import {
+  classifyGate,
+  type GateState,
+} from "../../domain/workflows/gate_state.ts";
+import { RunStartKey } from "../../domain/workflows/run_start_key.ts";
+import { type RunStartClaim, runStartClaims } from "../run_start_claims.ts";
+import {
+  AMBIGUOUS_GATE_CODE,
+  GATE_REOPENED_CODE,
+  type GateTarget,
+} from "../../libswamp/workflows/gate_refusals.ts";
+import { exactRunReference } from "../../libswamp/workflows/run_lookup.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -250,6 +264,7 @@ import {
   lockTimeoutErrorForClient,
   paginate,
   pushChangedToRemote,
+  recordAuditedDetail,
   recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
@@ -336,6 +351,128 @@ export function workflowAccessFields(
   return { name: target.name, tags: target.tags ?? {} };
 }
 
+interface KeyedStartRequest {
+  readonly workflowId: string;
+  readonly workflowName: string;
+  readonly initiatedBy: string;
+  readonly key: string;
+  /** what a retry must repeat, or it is refused as a different start */
+  readonly fingerprinted: Readonly<Record<string, unknown>>;
+  readonly signal: AbortSignal;
+}
+
+/**
+ * answers a retry itself, or returns the claim the caller starts its run under;
+ * a retry waits only for the first attempt's start, never for the run to end
+ */
+async function beginKeyedStart(
+  ctx: ConnectionContext,
+  socket: WebSocket,
+  requestId: string,
+  request: KeyedStartRequest,
+): Promise<"answered" | { key: RunStartKey; claim: RunStartClaim }> {
+  const { workflowId, workflowName, initiatedBy, fingerprinted, signal } =
+    request;
+  const identity = {
+    workflowId,
+    principal: initiatedBy,
+    client: getConnectionClient(socket),
+    key: request.key,
+  };
+  const key = await RunStartKey.create(identity, fingerprinted);
+  const answer = async (runId: string, recorded: RunStartKey) => {
+    if (!(await recorded.sameInputs(fingerprinted))) {
+      sendError(
+        socket,
+        requestId,
+        "idempotency_conflict",
+        "This idempotency key was already used with different inputs",
+      );
+      return;
+    }
+    recordAuditedDetail(socket, requestId, "replayed start");
+    send(socket, {
+      type: "event",
+      id: requestId,
+      event: { kind: "started", runId, workflowName, replayed: true },
+    });
+    send(socket, { type: "done", id: requestId });
+  };
+
+  for (
+    let held = runStartClaims.holder(key.lookup);
+    held !== undefined;
+    held = runStartClaims.holder(key.lookup)
+  ) {
+    const aborted = abortPromise(signal);
+    const runId = await Promise.race([held.started, aborted.promise]);
+    aborted.dispose();
+    if (signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return "answered";
+    }
+    if (runId !== undefined) {
+      await answer(runId, held.key);
+      return "answered";
+    }
+  }
+
+  const claim = runStartClaims.claim(key.lookup, key);
+  try {
+    const run = await findRunOfStartKey(
+      ctx,
+      workflowId,
+      key.lookup,
+      initiatedBy,
+    );
+    if (run?.startKey !== undefined) {
+      claim.settled();
+      await answer(run.id, RunStartKey.fromData(run.startKey));
+      return "answered";
+    }
+  } catch (error) {
+    claim.settled();
+    throw error;
+  }
+  return { key, claim };
+}
+
+/** the index only points at a candidate: it is untrusted, and the record decides */
+async function findRunOfStartKey(
+  ctx: ConnectionContext,
+  workflowId: string,
+  lookup: string,
+  initiatedBy: string,
+): Promise<WorkflowRun | null> {
+  const repo = ctx.repoContext.workflowRunRepo;
+  const id = createWorkflowId(workflowId);
+  const candidate = (await repo.runIndexSnapshot(id)).withStartKey(lookup);
+  if (!candidate) return null;
+  const run = await repo.findById(
+    id,
+    createWorkflowRunId(candidate.summary.id),
+  );
+  return run?.startKey?.lookup === lookup && run.workflowId === workflowId &&
+      run.initiatedBy === initiatedBy
+    ? run
+    : null;
+}
+
+function abortPromise(
+  signal: AbortSignal,
+): { promise: Promise<undefined>; dispose: () => void } {
+  let onAbort = () => {};
+  const promise = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return {
+    promise,
+    dispose: () => signal.removeEventListener("abort", onAbort),
+  };
+}
+
 export async function handleWorkflowRun(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -367,6 +504,32 @@ export async function handleWorkflowRun(
   // operations are decided for this principal
   const vaultAccess = requestRunVaultScope(ctx, socket, principal);
   const registry = ctx.activeRunRegistry;
+  // the key's guarantee needs the registry, so it is refused rather than dropped
+  if (!registry && payload.idempotencyKey !== undefined) {
+    sendError(
+      socket,
+      requestId,
+      "runs_unavailable",
+      "This server can't check an idempotency key",
+    );
+    return;
+  }
+  // after the grant decision, so a refused caller learns nothing of a key's run
+  const keyedStart = registry && payload.idempotencyKey !== undefined &&
+      target.status === "found"
+    ? await beginKeyedStart(ctx, socket, requestId, {
+      workflowId: target.id,
+      workflowName: target.name,
+      initiatedBy,
+      key: payload.idempotencyKey,
+      fingerprinted: {
+        inputs: payload.inputs ?? {},
+        runtimeTags: payload.runtimeTags ?? {},
+      },
+      signal: controller.signal,
+    })
+    : undefined;
+  if (keyedStart === "answered") return;
   if (!registry) {
     let registeredRunId: string | undefined;
     // events are redacted per client before sending, which may wait: sends are
@@ -525,6 +688,7 @@ export async function handleWorkflowRun(
     } else {
       sendError(socket, requestId, "internal_error", "Run registration failed");
     }
+    keyedStart?.claim.settled();
     return;
   }
 
@@ -538,6 +702,7 @@ export async function handleWorkflowRun(
           workflowIdOrName: workflow.idOrName,
           byId: workflow.byId,
           expectedName: workflow.expectedName,
+          startKey: keyedStart?.key.data,
           inputs: payload.inputs,
           lastEvaluated: payload.lastEvaluated,
           verbose: payload.verbose,
@@ -566,6 +731,7 @@ export async function handleWorkflowRun(
             registry.addNestedRun(runId, event.runId);
           } else if (event.kind === "started") {
             const domainRunId = (event as { runId: string }).runId;
+            keyedStart?.claim.started(domainRunId);
             if (domainRunId && domainRunId !== runId) {
               if (registry.rekey(runId, domainRunId)) {
                 const oldRunId = runId;
@@ -643,6 +809,7 @@ export async function handleWorkflowRun(
         });
       }
     } finally {
+      keyedStart?.claim.settled();
       registry.deregister(runId);
       try {
         if (ctx.controlPlaneStore && ctx.instanceId) {
@@ -996,7 +1163,12 @@ export async function handleWorkflowHistoryGet(
       };
       return {
         deps,
-        reference: await resolveRunReference(deps, payload.workflowIdOrName),
+        reference: payload.exactRun
+          ? await exactRunReference(
+            ctx.repoContext.workflowRunRepo,
+            payload.workflowIdOrName,
+          )
+          : await resolveRunReference(deps, payload.workflowIdOrName),
       };
     },
     payload.workflowIdOrName,
@@ -1021,7 +1193,7 @@ export async function handleWorkflowHistoryGet(
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowHistoryGet(libCtx, deps, payload.workflowIdOrName, {
-        includeOutputs: true,
+        includeOutputs: !payload.exactRun,
         allAttributes: payload.allAttributes === true,
         reference,
         // a cancelled read stops resolving outputs
@@ -1612,6 +1784,87 @@ function conditionRunOf(
   return { initiatedBy: run.initiatedBy, serveDriven: isServeDrivenRun(run) };
 }
 
+function gateTargetOf(payload: GateTargetPayload): GateTarget {
+  return {
+    stepName: payload.stepName,
+    jobName: payload.jobName,
+    strictGate: payload.strictGate,
+    suspendedAt: payload.suspendedAt,
+  };
+}
+
+/**
+ * read only after the grant decision, and a grant conditional on the run is
+ * decided on this record first, so a refused caller cannot tell a decided gate
+ * from a waiting one
+ */
+async function storedGateState(
+  ctx: ConnectionContext,
+  workflow: { idOrName: string; byId: boolean; expectedName?: string },
+  payload: GateTargetPayload & { runId?: string },
+  authorizeRun: (run: WorkflowRun) => boolean,
+): Promise<GateState | undefined> {
+  if (payload.runId === undefined) return undefined;
+  try {
+    const found = await lookupWorkflow(
+      ctx.repoContext.workflowRepo,
+      workflow.idOrName,
+      workflow,
+    );
+    if (!found) return "absent";
+    const run = await ctx.repoContext.workflowRunRepo.findById(
+      found.id,
+      createWorkflowRunId(payload.runId),
+    );
+    if (!run) return "absent";
+    if (!authorizeRun(run)) return undefined;
+    return classifyGate(run, found, payload.stepName, {
+      jobName: payload.jobName,
+    });
+  } catch (error) {
+    logger.warn("Could not classify a refused decision: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+/** a run held elsewhere is busy, unless its gate was already decided */
+async function busyGateState(
+  ctx: ConnectionContext,
+  workflow: { idOrName: string; byId: boolean; expectedName?: string },
+  payload: GateTargetPayload & { runId?: string },
+  authorizeRun: (run: WorkflowRun) => boolean,
+): Promise<GateState | "busy"> {
+  const state = await storedGateState(ctx, workflow, payload, authorizeRun);
+  return state === "decided" ? state : "busy";
+}
+
+async function refusedDecisionDetails(
+  ctx: ConnectionContext,
+  workflow: { idOrName: string; byId: boolean; expectedName?: string },
+  payload: GateTargetPayload & { runId?: string },
+  error: unknown,
+  sentMessage: string,
+  authorizeRun: (run: WorkflowRun) => boolean,
+): Promise<WorkflowGateRefusalDetails | undefined> {
+  const details = gateRefusalDetails(error, sentMessage);
+  if (!(error instanceof GateRefusalError)) return details;
+  // these fixed codes hold no message text, so a withheld message keeps them
+  const fixed = error.refusalCode === GATE_REOPENED_CODE ||
+      error.refusalCode === AMBIGUOUS_GATE_CODE
+    ? { refusalCode: error.refusalCode }
+    : details;
+  if (payload.strictGate !== true) return fixed;
+  const gateState = await storedGateState(
+    ctx,
+    workflow,
+    payload,
+    authorizeRun,
+  );
+  return gateState === undefined ? fixed : { ...fixed, gateState };
+}
+
 export async function handleWorkflowApprove(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1653,11 +1906,23 @@ export async function handleWorkflowApprove(
           payload.runId,
         );
         if (!reserved.ok) {
+          const busy = payload.strictGate === true
+            ? {
+              gateState: await busyGateState(
+                ctx,
+                workflow,
+                payload,
+                decideRun.authorize,
+              ),
+            }
+            : undefined;
+          if (decideRun.refused()) return undefined;
           sendError(
             socket,
             requestId,
             "workflow_approve_failed",
             reserved.message,
+            busy,
           );
           return undefined;
         }
@@ -1688,7 +1953,7 @@ export async function handleWorkflowApprove(
             workflowIdOrName: workflow.idOrName,
             byId: workflow.byId,
             expectedName: workflow.expectedName,
-            stepName: payload.stepName,
+            ...gateTargetOf(payload),
             reason: payload.reason,
             runId: reserved.runId,
             decidedBy: principal
@@ -1733,12 +1998,21 @@ export async function handleWorkflowApprove(
       } catch (error) {
         if (decideRun.refused()) return undefined;
         const message = sanitizeErrorForClient(error);
+        const details = await refusedDecisionDetails(
+          ctx,
+          workflow,
+          payload,
+          error,
+          message,
+          decideRun.authorize,
+        );
+        if (decideRun.refused()) return undefined;
         sendError(
           socket,
           requestId,
           "workflow_approve_failed",
           message,
-          gateRefusalDetails(error, message),
+          details,
         );
         return undefined;
       } finally {
@@ -2077,11 +2351,23 @@ export async function handleWorkflowReject(
           payload.runId,
         );
         if (!reserved.ok) {
+          const busy = payload.strictGate === true
+            ? {
+              gateState: await busyGateState(
+                ctx,
+                workflow,
+                payload,
+                decideRun.authorize,
+              ),
+            }
+            : undefined;
+          if (decideRun.refused()) return;
           sendError(
             socket,
             requestId,
             "workflow_reject_failed",
             reserved.message,
+            busy,
           );
           return;
         }
@@ -2123,7 +2409,7 @@ export async function handleWorkflowReject(
             workflowIdOrName: workflow.idOrName,
             byId: workflow.byId,
             expectedName: workflow.expectedName,
-            stepName: payload.stepName,
+            ...gateTargetOf(payload),
             reason: payload.reason,
             runId: reserved.runId,
             decidedBy: principal
@@ -2186,12 +2472,21 @@ export async function handleWorkflowReject(
       } catch (error) {
         if (decideRun.refused()) return;
         const message = sanitizeErrorForClient(error);
+        const details = await refusedDecisionDetails(
+          ctx,
+          workflow,
+          payload,
+          error,
+          message,
+          decideRun.authorize,
+        );
+        if (decideRun.refused()) return;
         sendError(
           socket,
           requestId,
           "workflow_reject_failed",
           message,
-          gateRefusalDetails(error, message),
+          details,
         );
       } finally {
         release?.();
@@ -2453,6 +2748,16 @@ export async function handleWorkflowResume(
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
 
+  // the limit's guarantee needs the registry, so it is refused rather than dropped
+  if (!ctx.activeRunRegistry && payload.suspendedOnly) {
+    sendError(
+      socket,
+      requestId,
+      "runs_unavailable",
+      "This server can't limit a resume to a suspended run",
+    );
+    return;
+  }
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     const runCheckpointer = new WorkflowRunCheckpointer(ctx.repoContext);
@@ -2652,6 +2957,8 @@ export async function handleWorkflowResume(
     runId: payload.runId,
     from: payload.from,
     fromJob: payload.fromJob,
+    suspendedOnly: payload.suspendedOnly,
+    lostRaceIsOrdinary: payload.suspendedOnly,
     inputs: payload.inputs,
     traceparent: payload.traceparent,
     tracestate: payload.tracestate,
@@ -2662,7 +2969,13 @@ export async function handleWorkflowResume(
     canReadWorkflow: nestedRunReadDecider(ctx, socket, principal),
   });
   if (!launched.ok) {
-    sendError(socket, requestId, launched.code, launched.message);
+    sendError(
+      socket,
+      requestId,
+      launched.code,
+      launched.message,
+      launched.refusal ? { resumeRefusal: launched.refusal } : undefined,
+    );
     return;
   }
 

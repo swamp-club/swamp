@@ -58,6 +58,20 @@ function toCanonicalUuid(value: string): string | null {
 }
 
 /**
+ * only the run a complete UUID names: a miss is final, with no scan and no
+ * reading of the id as a workflow, so a caller's random id costs one lookup
+ */
+export async function exactRunReference(
+  runRepo: Pick<RunLookupRepository, "findGlobalById">,
+  runId: string,
+): Promise<{ kind: "run"; run: WorkflowRun } | { kind: "not_found" }> {
+  const canonical = toCanonicalUuid(runId);
+  if (!canonical) return { kind: "not_found" };
+  const hit = await runRepo.findGlobalById(createWorkflowRunId(canonical));
+  return hit ? { kind: "run", run: hit.run } : { kind: "not_found" };
+}
+
+/**
  * a complete run UUID gets a targeted lookup; everything else falls through to
  * the global scan. Nothing is cached, so repeated lookups see a run's status as
  * it progresses.

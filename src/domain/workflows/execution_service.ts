@@ -47,6 +47,7 @@ import {
   WorkflowRun,
   type WorkflowRunData,
 } from "./workflow_run.ts";
+import type { RunStartKeyData } from "./run_start_key.ts";
 import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {
   acquireContinuation,
@@ -3391,6 +3392,7 @@ export class WorkflowExecutionService {
       assertFailOnSeverity?: AssertSeverity;
       initiatedBy?: string;
       client?: string;
+      startKey?: RunStartKeyData;
       instanceId?: string;
       triggerSource?: string;
       references?: Record<string, string>;
@@ -3467,6 +3469,7 @@ export class WorkflowExecutionService {
     const tracer = getTracer();
 
     let workflowRun: WorkflowRun | undefined;
+    let runStartReported = false;
     // The evaluated workflow the walk settles against, set with workflowRun
     // so a cancel from the catch below settles the same way.
     let settleWorkflow: Workflow | undefined;
@@ -3730,6 +3733,7 @@ export class WorkflowExecutionService {
           options?.triggerSource,
           options?.client,
         );
+        if (options?.startKey) run.recordStartKey(options.startKey);
         this.startedRunIds.add(run.id);
         // a serve run records who triggered it, so a resume is held to that
         // principal's vault access, not the resumer's
@@ -3845,6 +3849,7 @@ export class WorkflowExecutionService {
       // can read at once
       await this.saveRun(workflow.id, run);
 
+      runStartReported = true;
       yield {
         kind: "started",
         runId: run.id,
@@ -4127,6 +4132,8 @@ export class WorkflowExecutionService {
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
+      // the caller was told nothing started, so a retry of its key starts afresh
+      if (!runStartReported) workflowRun?.clearStartKey();
       if (
         workflowRun && options?.signal?.aborted
       ) {

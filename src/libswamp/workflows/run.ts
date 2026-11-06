@@ -91,6 +91,7 @@ import {
   supersedeMatchInputs,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
+import type { RunStartKeyData } from "../../domain/workflows/run_start_key.ts";
 import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
 import {
@@ -423,6 +424,7 @@ export interface WorkflowRunInput {
   assertFailOnSeverity?: AssertSeverity;
   initiatedBy?: string;
   client?: string;
+  startKey?: RunStartKeyData;
   instanceId?: string;
   triggerSource?: string;
   noSupersede?: boolean;
@@ -1198,6 +1200,7 @@ export async function* workflowRun(
                   assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
                   initiatedBy: resolvedInput.initiatedBy,
                   client: resolvedInput.client,
+                  startKey: resolvedInput.startKey,
                   instanceId: resolvedInput.instanceId,
                   triggerSource: resolvedInput.triggerSource,
                 }),
