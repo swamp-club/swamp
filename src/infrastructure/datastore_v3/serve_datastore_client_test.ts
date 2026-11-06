@@ -1427,3 +1427,77 @@ Deno.test("ServeDatastoreClient.initiatorMode: read from serve's replies that ca
   await client.partitionCommits(modelPartition(), 0, signal(), 10);
   assertEquals(client.initiatorMode(), { kind: "not-checked" });
 });
+
+Deno.test("ServeDatastoreClient.acquireLock: a held reply's holder is read, and the budget goes only to a serve that names lease-holder", async () => {
+  let features = "step-starts";
+  const holder = {
+    principal: "user:boss",
+    explicit: true,
+    expiresAt: "2026-11-06T10:00:00.000Z",
+  };
+  const { client, requests } = clientWith(() =>
+    Response.json({
+      code: "lock_held",
+      heldBy: "other",
+      message: "held",
+      holder,
+    }, {
+      status: 409,
+      headers: {
+        "x-swamp-datastore-log": "log-a",
+        "x-swamp-datastore-features": features,
+      },
+    })
+  );
+  const first = await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal(), {
+    budgetMs: 50_000,
+  });
+  assertEquals(first, {
+    acquired: false,
+    heldBy: "other",
+    message: "held",
+    holder,
+  });
+  assertEquals((await requests[0].json()).budgetMs, undefined);
+  features = "step-starts,lease-holder";
+  await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal(), {
+    budgetMs: 50_000,
+  });
+  assertEquals((await requests[1].json()).budgetMs, 50_000);
+});
+
+Deno.test("ServeDatastoreClient: a held reply or listing without a holder (an older serve) still reads, and a malformed holder is left out", async () => {
+  const { client } = clientWith((_req, call) =>
+    call === 1
+      ? Response.json({
+        code: "lock_held",
+        heldBy: "other",
+        message: "held",
+        holder: { principal: 7 },
+      }, { status: 409 })
+      : Response.json({
+        leases: [{
+          lockKey: LOCK_KEY,
+          heldBy: "other",
+          expiresAt: "2026-10-29T12:00:30.000Z",
+          holder: {
+            principal: "user:boss",
+            explicit: true,
+            expiresAt: "2026-10-29T12:00:30.000Z",
+          },
+        }],
+        truncated: false,
+      })
+  );
+  assertEquals(await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal()), {
+    acquired: false,
+    heldBy: "other",
+    message: "held",
+  });
+  const listing = await client.listLocks("data/", signal());
+  assertEquals(listing?.leases[0].holder, {
+    principal: "user:boss",
+    explicit: true,
+    expiresAt: "2026-10-29T12:00:30.000Z",
+  });
+});

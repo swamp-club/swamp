@@ -1379,3 +1379,68 @@ Deno.test("DatastoreLockLeases.adopt: a retry never holds back writes to a lease
     await first;
   }
 });
+
+Deno.test("DatastoreLockLeases.acquire: a held lock names its holder, whether the lease is explicit, and when it ends", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    const held = await subject.acquire(explicit("user:boss"));
+    assert(held.kind === "acquired");
+    const refused = await subject.acquire(request("user:m2"));
+    assert(refused.kind === "held");
+    assertEquals(refused.heldBy, "other");
+    assertEquals(refused.holder?.principal, "user:boss");
+    assertEquals(refused.holder?.explicit, true);
+    assertEquals(refused.holder?.expiresAt, held.lease.expiresAt);
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.acquire: an explicit lease that outlasts the caller's budget is answered at once, not waited out", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    assert((await subject.acquire(explicit("user:boss"))).kind === "acquired");
+    // a wait this long would time the test out were it waited
+    const refused = await subject.acquire({
+      ...request("user:m2", { waitMs: 600_000 }),
+      budgetMs: 60_000,
+    });
+    assert(refused.kind === "held");
+    assertEquals(refused.holder?.explicit, true);
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.acquire: a renewing run lease is waited for, whatever the budget, so its release is caught", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    const run = await subject.acquire(request("user:alice"));
+    assert(run.kind === "acquired");
+    const waiting = subject.acquire({
+      ...request("user:bob", { waitMs: 600_000 }),
+      budgetMs: 1,
+    });
+    await subject.release("user:alice", run.lease.leaseId);
+    assertEquals((await waiting).kind, "acquired");
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.acquire: serve's own lock names no principal", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    locks.serveTakes(lockKeyOf(model));
+    const refused = await subject.acquire(request("user:bob"));
+    assert(refused.kind === "held");
+    assertEquals(refused.heldBy, "serve");
+    assertEquals(refused.holder, undefined);
+  } finally {
+    await subject.dispose();
+  }
+});

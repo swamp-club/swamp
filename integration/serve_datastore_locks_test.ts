@@ -260,3 +260,55 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "serve datastore locks: a held lock's refusal and the lease listing name the holder, whether the lease is explicit, and when it ends; a bad budget is refused",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(twoMembers(), async (server) => {
+      const key = modelKey(server);
+      const taken = await call(server, "POST", "locks", "alice-token", {
+        lockKey: key,
+        fenced: true,
+        holdMs: 600_000,
+      });
+      assertEquals(taken.status, 201, JSON.stringify(taken.json));
+
+      const held = await call(server, "POST", "locks", "bob-token", {
+        lockKey: key,
+        waitMs: 600_000,
+        budgetMs: 60_000,
+      });
+      assertEquals([held.status, held.json.heldBy], [409, "other"]);
+      assertEquals(held.json.holder, {
+        principal: "user:caller",
+        explicit: true,
+        expiresAt: taken.json.expiresAt,
+      });
+
+      const listed = await call(
+        server,
+        "GET",
+        "locks?prefix=data/",
+        "bob-token",
+      );
+      const leases = listed.json.leases as Record<string, unknown>[];
+      assertEquals(leases[0].heldBy, "other");
+      assertEquals(leases[0].holder, {
+        principal: "user:caller",
+        explicit: true,
+        expiresAt: taken.json.expiresAt,
+      });
+
+      for (const budgetMs of [-1, 1.5, "60000"]) {
+        const bad = await call(server, "POST", "locks", "bob-token", {
+          lockKey: key,
+          budgetMs,
+        });
+        assertEquals(bad.status, 400, String(budgetMs));
+      }
+    });
+  },
+});
