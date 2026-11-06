@@ -983,10 +983,11 @@ Lightweight reference to data already persisted:
 
 A run keeps at most 16 MiB of resource content, counted in stored bytes, as
 parsed attributes (`ResourceAttributeBudget`). Once a run's resources pass that
-cap, their handles carry no `attributes`; separately, the run result lists the
-artifacts past its own 16 MiB budget with `attributesOmitted: true` instead of
-their content. A run that writes thousands of resources therefore keeps bounded
-memory and a `--json` result that fits in one string. The content is still
+cap, their handles carry no `attributes`; separately, the result of a method
+run, and of a workflow run or resume, lists the artifacts past its own 16 MiB
+budget with `attributesOmitted: true` instead of their content. A run that
+writes thousands of resources therefore keeps bounded memory and a `--json`
+result that fits in one string. The content is still
 written; read it with `swamp data get`.
 
 ### Write Atomicity (rollbackOnFailure)

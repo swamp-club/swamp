@@ -3083,3 +3083,49 @@ Deno.test("JsonWorkflowRunRenderer: a suspended run carries the key holders a st
   const plain = await renderJson([suspended]);
   assertEquals("waitKeyHolders" in (plain.stdout[0] as object), false);
 });
+
+Deno.test("ConsoleWorkflowRunRenderer: an artifact past the attribute budget says its content is not shown", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const runView = makeRunView("succeeded");
+  runView.jobs[0].steps[0].dataArtifacts!.push({
+    dataId: "d-omitted",
+    name: "bulk-item",
+    version: 1,
+    tags: {},
+    attributesOmitted: true,
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "bulk-item");
+  assertStringIncludes(output, "content not shown: run output limit reached");
+});
+
+Deno.test("JsonWorkflowRunRenderer: an artifact past the attribute budget carries attributesOmitted", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const runView = makeRunView("succeeded");
+    runView.jobs[0].steps[0].dataArtifacts!.push({
+      dataId: "d-omitted",
+      name: "bulk-item",
+      version: 1,
+      tags: {},
+      attributesOmitted: true,
+    });
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+    const parsed = JSON.parse(logs.at(-1)!);
+    const artifact = parsed.jobs[0].steps[0].dataArtifacts.at(-1);
+    assertEquals(artifact.attributesOmitted, true);
+    assertEquals("attributes" in artifact, false);
+  } finally {
+    console.log = originalLog;
+  }
+});

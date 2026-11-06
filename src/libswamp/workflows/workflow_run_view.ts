@@ -33,6 +33,8 @@ export interface DataArtifactRefData {
   version: number;
   tags: Record<string, string>;
   attributes?: Record<string, unknown>;
+  /** content left out: the run's attribute budget was spent */
+  attributesOmitted?: true;
 }
 
 export interface AssertResultView {

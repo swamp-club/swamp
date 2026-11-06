@@ -387,6 +387,10 @@ stdin item.
 }
 ```
 
+Each data artifact carries its `attributes` until the run's artifacts pass 16
+MiB of stored JSON; later artifacts carry `attributesOmitted: true` instead.
+Read their content with `swamp data get`.
+
 ## Workflow History
 
 ### Search Run History

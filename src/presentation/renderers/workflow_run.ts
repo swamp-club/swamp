@@ -1097,6 +1097,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             artifacts.push({
               name: artifact.name,
               attributes: withAttributes ? artifact.attributes : undefined,
+              ...(withAttributes && artifact.attributesOmitted
+                ? { attributesOmitted: true as const }
+                : {}),
               source: job.name,
             });
           }

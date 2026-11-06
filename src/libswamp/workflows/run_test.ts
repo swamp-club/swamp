@@ -2530,3 +2530,112 @@ Deno.test("workflowRun: onCompletedRun alone reads no data attributes", async ()
     undefined,
   );
 });
+
+function createBulkRun(contents: string[], withSize: boolean): WorkflowRun {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const job = run.getJob("job1")!;
+  job.start();
+  const step = job.getStep("step1")!;
+  step.start();
+  const records: Record<string, Record<string, unknown>> = {};
+  contents.forEach((content, i) => {
+    const name = `item-${i}`;
+    step.addDataArtifact({ dataId: `data-${i}`, name, version: 1, tags: {} });
+    records[name] = {
+      id: `data-${i}`,
+      name,
+      version: 1,
+      modelType: "test/model",
+      modelId: "model-1",
+      contentType: "application/json",
+      tags: {},
+      attributes: null,
+      content: null,
+      ...(withSize ? { size: new TextEncoder().encode(content).length } : {}),
+    };
+  });
+  step.succeed({
+    type: "model_method",
+    model: "test-model",
+    method: "run",
+    resources: { item: records },
+  });
+  job.succeed();
+  run.complete();
+  return run;
+}
+
+function bulkDataRepo(
+  contents: string[],
+  reads: string[],
+): UnifiedDataRepository {
+  return {
+    namespace: createNamespace("team-a"),
+    getContent: (_type: unknown, _id: unknown, name: string) => {
+      reads.push(name);
+      const index = Number(name.slice("item-".length));
+      return Promise.resolve(new TextEncoder().encode(contents[index]));
+    },
+  } as unknown as UnifiedDataRepository;
+}
+
+const BULK_ITEM = JSON.stringify({ blob: "x".repeat(40) });
+const BULK_CONTENTS = [BULK_ITEM, BULK_ITEM, BULK_ITEM];
+
+Deno.test("resolveCompletedRunOutputs: resources past the attribute budget are never read and are named as omitted", async () => {
+  const reads: string[] = [];
+  const run = createBulkRun(BULK_CONTENTS, true);
+  const resolved = await resolveCompletedRunOutputs(
+    run,
+    bulkDataRepo(BULK_CONTENTS, reads),
+    new InMemoryWorkflowRunRepository(),
+    undefined,
+    undefined,
+    undefined,
+    BULK_ITEM.length + 1,
+  );
+
+  assertEquals(reads, ["item-0"]);
+  assertEquals(Object.keys(resolved!.job1.step1.attributesByDataId), [
+    "data-0",
+  ]);
+  assertEquals(resolved!.job1.step1.attributesOmitted, ["data-1", "data-2"]);
+
+  const view = toRunData(run, undefined, false, resolved);
+  const artifacts = view.jobs[0].steps[0].dataArtifacts!;
+  assertEquals(artifacts.map((a) => a.attributesOmitted === true), [
+    false,
+    true,
+    true,
+  ]);
+  assertEquals(artifacts[0].attributes, { blob: "x".repeat(40) });
+  assertEquals(artifacts[1].attributes, undefined);
+});
+
+Deno.test("resolveCompletedRunOutputs: a record without a stored size is measured after its read", async () => {
+  const reads: string[] = [];
+  const resolved = await resolveCompletedRunOutputs(
+    createBulkRun(BULK_CONTENTS, false),
+    bulkDataRepo(BULK_CONTENTS, reads),
+    new InMemoryWorkflowRunRepository(),
+    undefined,
+    undefined,
+    undefined,
+    BULK_ITEM.length + 1,
+  );
+
+  assertEquals(reads, ["item-0", "item-1"]);
+  assertEquals(resolved!.job1.step1.attributesOmitted, ["data-1", "data-2"]);
+});
+
+Deno.test("resolveCompletedRunOutputs: a run under the attribute budget names nothing as omitted", async () => {
+  const resolved = await resolveCompletedRunOutputs(
+    createBulkRun(BULK_CONTENTS, true),
+    bulkDataRepo(BULK_CONTENTS, []),
+    new InMemoryWorkflowRunRepository(),
+  );
+
+  assertEquals(Object.keys(resolved!.job1.step1.attributesByDataId).length, 3);
+  assertEquals(resolved!.job1.step1.attributesOmitted, undefined);
+});

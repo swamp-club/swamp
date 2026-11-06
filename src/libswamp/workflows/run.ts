@@ -28,6 +28,10 @@ import type {
 import { markErrorPaths } from "../../domain/errors.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
+import {
+  RESOURCE_ATTRIBUTE_CAP_BYTES,
+  ResourceAttributeBudget,
+} from "../../domain/models/resource_attribute_budget.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 import type {
@@ -41,6 +45,7 @@ import {
   type ResourceAttributeReader,
   type ResourceReadPolicy,
   StepOutputResolver,
+  type StepResourceRef,
 } from "../../domain/workflows/step_output_resolver.ts";
 import type { WebhookPayload } from "../../domain/expressions/model_resolver.ts";
 import type {
@@ -370,6 +375,8 @@ export interface WorkflowRunDeps {
    * completed event; a dep, never an input, as serve must not grant it
    */
   resolveCompletedOutputs?: boolean;
+  /** lowers the run's attribute budget; production runs leave it at the default */
+  resourceAttributeCapBytes?: number;
   /**
    * handed the live completed run, whose never-persisted sensitive values are
    * the only mask for its data, before the completed event is yielded; a dep,
@@ -519,9 +526,28 @@ export async function resolveCompletedRunOutputs(
   readAttributes: ResourceAttributeReader = createDataRepositoryAttributeReader(
     dataRepo,
   ),
+  attributeCapBytes: number = RESOURCE_ATTRIBUTE_CAP_BYTES,
 ): Promise<RunStepOutputs | undefined> {
+  const budget = new ResourceAttributeBudget(attributeCapBytes);
+  const omitted = new Set<string>();
+  const omit = (ref: StepResourceRef) => {
+    if (ref.dataId) omitted.add(ref.dataId);
+    return undefined;
+  };
   const resolver = new StepOutputResolver({
-    readAttributes,
+    // a recorded size is decided before the read, so content past the budget
+    // is never loaded; a record without one is read once and measured
+    readAttributes: async (ref) => {
+      if (budget.exhausted) return omit(ref);
+      if (ref.size !== undefined) {
+        return budget.admit(ref.size) ? await readAttributes(ref) : omit(ref);
+      }
+      const attributes = await readAttributes(ref);
+      if (attributes === undefined) return undefined;
+      return budget.admit(JSON.stringify(attributes).length)
+        ? attributes
+        : omit(ref);
+    },
     findChildRun: (workflowId, runId) =>
       runRepo.findById(
         createWorkflowId(workflowId),
@@ -532,11 +558,29 @@ export async function resolveCompletedRunOutputs(
     signal,
   });
   try {
-    return await resolveRunStepOutputs(run, resolver);
+    const resolved = await resolveRunStepOutputs(run, resolver);
+    if (omitted.size > 0) markOmittedAttributes(run, resolved, omitted);
+    return resolved;
   } catch (error) {
     // The run is already saved; only its summary goes without attributes.
     runLogger.debug`Data attributes of run ${run.id} not read: ${error}`;
     return undefined;
+  }
+}
+
+function markOmittedAttributes(
+  run: WorkflowRun,
+  resolved: RunStepOutputs,
+  omitted: ReadonlySet<string>,
+): void {
+  for (const job of run.jobs) {
+    for (const step of job.steps) {
+      const ids = (step.dataArtifacts ?? [])
+        .map((a) => a.dataId)
+        .filter((id) => omitted.has(id));
+      const outputs = resolved[job.jobName]?.[step.stepName];
+      if (ids.length > 0 && outputs) outputs.attributesOmitted = ids;
+    }
   }
 }
 
@@ -668,12 +712,16 @@ export function toRunData(
           }
 
           if (step.dataArtifacts && step.dataArtifacts.length > 0) {
+            const omitted = new Set(resolved?.attributesOmitted);
             stepData.dataArtifacts = step.dataArtifacts.map((a) => ({
               dataId: a.dataId,
               name: a.name,
               version: a.version,
               tags: a.tags,
               attributes: run.mask(resolved?.attributesByDataId[a.dataId]),
+              ...(omitted.has(a.dataId)
+                ? { attributesOmitted: true as const }
+                : {}),
             }));
           }
 
@@ -1087,6 +1135,9 @@ export async function* workflowRun(
                         outputsRepo,
                         deps.runRepo,
                         ctx.signal,
+                        undefined,
+                        undefined,
+                        deps.resourceAttributeCapBytes,
                       )
                       : Promise.resolve(undefined);
                   }

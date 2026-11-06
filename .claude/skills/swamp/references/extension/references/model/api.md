@@ -320,9 +320,9 @@ Returned by `writeResource` and writer methods:
 `attributes` is absent once a run's written resources pass 16 MiB of stored
 JSON; the data is still written. Read content through
 `context.dataRepository.getContent` rather than relying on `attributes` in a
-method or report that may write or read many resources. The `--json` run result
-applies its own 16 MiB budget and marks artifacts past it
-`attributesOmitted: true`.
+method or report that may write or read many resources. The `--json` result of a
+method run or workflow run applies its own 16 MiB budget and marks artifacts
+past it `attributesOmitted: true`.
 
 **`metadata` sub-fields:**
 

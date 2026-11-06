@@ -47,6 +47,8 @@ export interface StepResourceRef {
    * the reader supplies its own
    */
   namespace?: string;
+  /** stored bytes, when the run record kept them */
+  size?: number;
 }
 
 export type ResourceAttributeReader = (
@@ -63,6 +65,8 @@ export type ResourceReadPolicy = (ref: StepResourceRef) => Promise<boolean>;
 export interface ResolvedStepOutputs {
   outputs?: Record<string, unknown>;
   attributesByDataId: Record<string, Record<string, unknown>>;
+  /** data ids left unread because the run's attribute budget was spent */
+  attributesOmitted?: readonly string[];
   sources?: StepOutputSources;
 }
 
@@ -123,6 +127,7 @@ function jsonResourceRecords(
           ...(typeof record.namespace === "string"
             ? { namespace: record.namespace }
             : {}),
+          ...(typeof record.size === "number" ? { size: record.size } : {}),
         },
         record,
       });

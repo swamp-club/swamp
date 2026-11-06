@@ -26,6 +26,10 @@ import { DefaultMethodExecutionService } from "../src/domain/models/method_execu
 import { type DataHandle, modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
@@ -35,7 +39,11 @@ import {
   type ModelMethodRunEvent,
 } from "../src/libswamp/models/run.ts";
 import { collect } from "../src/libswamp/testing.ts";
-import { createModelMethodRunDeps } from "../src/serve/deps.ts";
+import { workflowRun } from "../src/libswamp/workflows/run.ts";
+import {
+  createModelMethodRunDeps,
+  createWorkflowRunDeps,
+} from "../src/serve/deps.ts";
 
 await initializeLogging({});
 
@@ -44,14 +52,22 @@ const ITEM = { blob: "x".repeat(1000) };
 const ITEM_BYTES = JSON.stringify(ITEM).length;
 // room for two items and part of a third
 const CAP_BYTES = ITEM_BYTES * 2 + Math.floor(ITEM_BYTES / 2);
+const OMITTED_PAST_TWO = [false, false, true, true, true, true];
 
-Deno.test("resource attribute budget: a method run past the cap succeeds, keeps later handles light and marks their artifacts omitted", async () => {
+type Repo = ReturnType<typeof createRepositoryContext>;
+
+interface Fixture {
+  dir: string;
+  repo: Repo;
+  type: ModelType;
+  definition: Definition;
+  returned: DataHandle[];
+}
+
+async function withBulkModel(fn: (fx: Fixture) => Promise<void>) {
   const dir = await Deno.makeTempDir({ prefix: "swamp-attr-budget-" });
   const type = ModelType.create(`test/attr-budget-${crypto.randomUUID()}`);
-  const definition = Definition.create({
-    name: "bulk",
-    type: type.normalized,
-  });
+  const definition = Definition.create({ name: "bulk", type: type.normalized });
   const returned: DataHandle[] = [];
   modelRegistry.register({
     type,
@@ -90,69 +106,7 @@ Deno.test("resource attribute budget: a method run past the cap succeeds, keeps 
     const repo = createRepositoryContext({ repoDir: dir });
     try {
       await repo.definitionRepo.save(type, definition);
-      const deps = await createModelMethodRunDeps(dir, repo);
-      deps.resourceAttributeCapBytes = CAP_BYTES;
-      deps.createExecutionService = () =>
-        new DefaultMethodExecutionService(CAP_BYTES);
-
-      const events = await collect<ModelMethodRunEvent>(
-        modelMethodRun(createLibSwampContext(), deps, {
-          modelIdOrName: "bulk",
-          methodName: "write",
-          inputs: {},
-          lastEvaluated: false,
-        }),
-      );
-
-      const last = events.at(-1);
-      assert(last?.kind === "completed", JSON.stringify(last));
-      assertEquals(last.run.status, "succeeded");
-      const items = last.run.dataArtifacts.filter((a) =>
-        a.name.startsWith("item-")
-      );
-      assertEquals(items.length, ITEM_COUNT);
-      assertEquals(items.map((a) => a.attributesOmitted === true), [
-        false,
-        false,
-        true,
-        true,
-        true,
-        true,
-      ]);
-      assertEquals(items[0].attributes, ITEM);
-      assertEquals(items[2].attributes, undefined);
-      assertEquals(
-        JSON.parse(JSON.stringify(last.run)).dataArtifacts.length,
-        last.run.dataArtifacts.length,
-      );
-
-      assertEquals(returned.map((h) => h.attributes !== undefined), [
-        true,
-        true,
-        false,
-        false,
-        false,
-        false,
-      ]);
-
-      for (let i = 0; i < ITEM_COUNT; i++) {
-        const bytes = await repo.unifiedDataRepo.getContent(
-          type,
-          definition.id,
-          `item-${i}`,
-        );
-        assertExists(bytes, `item-${i}`);
-        assertEquals(JSON.parse(new TextDecoder().decode(bytes)), ITEM);
-      }
-
-      const summaryBytes = await repo.unifiedDataRepo.getContent(
-        type,
-        definition.id,
-        "report-swamp-method-summary-json",
-      );
-      assertExists(summaryBytes);
-      const summary = JSON.parse(new TextDecoder().decode(summaryBytes));
-      assertEquals(summary.status, "succeeded");
+      await fn({ dir, repo, type, definition, returned });
     } finally {
       repo.catalogStore.close();
     }
@@ -162,4 +116,116 @@ Deno.test("resource attribute budget: a method run past the cap succeeds, keeps 
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else await Deno.remove(dir, { recursive: true });
   }
+}
+
+async function assertItemsWritten(fx: Fixture) {
+  for (let i = 0; i < ITEM_COUNT; i++) {
+    const bytes = await fx.repo.unifiedDataRepo.getContent(
+      fx.type,
+      fx.definition.id,
+      `item-${i}`,
+    );
+    assertExists(bytes, `item-${i}`);
+    assertEquals(JSON.parse(new TextDecoder().decode(bytes)), ITEM);
+  }
+}
+
+Deno.test("resource attribute budget: a method run past the cap succeeds, keeps later handles light and marks their artifacts omitted", async () => {
+  await withBulkModel(async (fx) => {
+    const deps = await createModelMethodRunDeps(fx.dir, fx.repo);
+    deps.resourceAttributeCapBytes = CAP_BYTES;
+    deps.createExecutionService = () =>
+      new DefaultMethodExecutionService(CAP_BYTES);
+
+    const events = await collect<ModelMethodRunEvent>(
+      modelMethodRun(createLibSwampContext(), deps, {
+        modelIdOrName: "bulk",
+        methodName: "write",
+        inputs: {},
+        lastEvaluated: false,
+      }),
+    );
+
+    const last = events.at(-1);
+    assert(last?.kind === "completed", JSON.stringify(last));
+    assertEquals(last.run.status, "succeeded");
+    const items = last.run.dataArtifacts.filter((a) =>
+      a.name.startsWith("item-")
+    );
+    assertEquals(items.length, ITEM_COUNT);
+    assertEquals(
+      items.map((a) => a.attributesOmitted === true),
+      OMITTED_PAST_TWO,
+    );
+    assertEquals(items[0].attributes, ITEM);
+    assertEquals(items[2].attributes, undefined);
+    assertEquals(
+      JSON.parse(JSON.stringify(last.run)).dataArtifacts.length,
+      last.run.dataArtifacts.length,
+    );
+    assertEquals(
+      fx.returned.map((h) => h.attributes === undefined),
+      OMITTED_PAST_TWO,
+    );
+    await assertItemsWritten(fx);
+
+    const summaryBytes = await fx.repo.unifiedDataRepo.getContent(
+      fx.type,
+      fx.definition.id,
+      "report-swamp-method-summary-json",
+    );
+    assertExists(summaryBytes);
+    const summary = JSON.parse(new TextDecoder().decode(summaryBytes));
+    assertEquals(summary.status, "succeeded");
+  });
+});
+
+Deno.test("resource attribute budget: a workflow run past the cap completes with later artifacts marked omitted", async () => {
+  await withBulkModel(async (fx) => {
+    const deps = await createWorkflowRunDeps(fx.dir, fx.repo, {
+      type: "filesystem",
+      path: join(fx.dir, ".swamp"),
+    });
+    deps.resolveCompletedOutputs = true;
+    deps.resourceAttributeCapBytes = CAP_BYTES;
+    const workflow = Workflow.create({
+      name: `bulk-${crypto.randomUUID()}`,
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "write",
+            task: StepTask.model("bulk", "write", {}),
+          }),
+        ],
+      })],
+    });
+    await fx.repo.workflowRepo.save(workflow);
+
+    const events = await collect(
+      workflowRun(createLibSwampContext(), deps, {
+        workflowIdOrName: workflow.name,
+      }),
+    );
+
+    const last = events.at(-1);
+    assert(last?.kind === "completed", JSON.stringify(last));
+    assertEquals(last.run.status, "succeeded");
+    const items = last.run.jobs[0].steps[0].dataArtifacts!.filter((a) =>
+      a.name.startsWith("item-")
+    );
+    assertEquals(items.length, ITEM_COUNT);
+    assertEquals(
+      items.map((a) => a.attributesOmitted === true),
+      OMITTED_PAST_TWO,
+    );
+    assertEquals(items[0].attributes, ITEM);
+    assertEquals(items[2].attributes, undefined);
+    assertEquals(
+      JSON.parse(JSON.stringify(last.run)).jobs[0].steps[0].dataArtifacts
+        .length,
+      last.run.jobs[0].steps[0].dataArtifacts!.length,
+    );
+    await assertItemsWritten(fx);
+  });
 });
