@@ -39,10 +39,7 @@ export interface EndOfCommandTelemetryDeps {
   readonly sender?: TelemetrySender;
 }
 
-/**
- * hands the spool to a detached sender, so no command waits on the ingest.
- * Windows keeps the awaited send: its detached processes are untested
- */
+// Windows keeps the awaited send: its detached processes are untested
 export async function sendTelemetryAtCommandEnd(
   ctx: TelemetryContext,
   options: { readonly succeeded: boolean },

@@ -50,10 +50,7 @@ async function loadAuthToken(): Promise<string | undefined> {
   }
 }
 
-/**
- * the detached sender's whole run: it drains the spool under the lock its
- * starter claimed, then cleans the spool; best effort, so it always exits 0
- */
+// best effort, so it always exits 0
 export async function runTelemetrySenderMain(
   args: readonly string[],
   deps: SenderMainDeps = {},
