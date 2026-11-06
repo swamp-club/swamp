@@ -314,7 +314,6 @@ export class ServeDatastoreClient {
   #logCheck: ((logId: string | undefined) => void) | undefined;
   #accessCheck: ((fingerprint: string) => void) | undefined;
   #takesStepStarts = false;
-  #takesLeaseHolder = false;
   #initiatorMode: ServeInitiatorMode | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
@@ -592,8 +591,9 @@ export class ServeDatastoreClient {
     signal: AbortSignal,
     options: { readonly holdMs?: number; readonly budgetMs?: number } = {},
   ): Promise<LockAcquireReply> {
-    // the budget goes only to a serve known to read it
-    const budget = options.budgetMs !== undefined && this.#takesLeaseHolder
+    // an older serve ignores a field it does not know; a command's lock
+    // client has often read no reply yet, so it cannot wait to be told
+    const budget = options.budgetMs !== undefined
       ? { budgetMs: Math.max(0, Math.floor(options.budgetMs)) }
       : {};
     return await this.#exchange(
@@ -1030,7 +1030,6 @@ export class ServeDatastoreClient {
           SERVE_DATASTORE_FEATURES_HEADER,
         ) ?? "").split(",").map((feature) => feature.trim());
         this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
-        this.#takesLeaseHolder = features.includes(LEASE_HOLDER_FEATURE);
         this.#initiatorMode = initiatorModeOf(
           features,
           response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),

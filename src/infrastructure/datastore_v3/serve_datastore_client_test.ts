@@ -1428,8 +1428,7 @@ Deno.test("ServeDatastoreClient.initiatorMode: read from serve's replies that ca
   assertEquals(client.initiatorMode(), { kind: "not-checked" });
 });
 
-Deno.test("ServeDatastoreClient.acquireLock: a held reply's holder is read, and the budget goes only to a serve that names lease-holder", async () => {
-  let features = "step-starts";
+Deno.test("ServeDatastoreClient.acquireLock: a held reply's holder is read, and the budget is sent from the first ask", async () => {
   const holder = {
     principal: "user:boss",
     explicit: true,
@@ -1441,13 +1440,7 @@ Deno.test("ServeDatastoreClient.acquireLock: a held reply's holder is read, and 
       heldBy: "other",
       message: "held",
       holder,
-    }, {
-      status: 409,
-      headers: {
-        "x-swamp-datastore-log": "log-a",
-        "x-swamp-datastore-features": features,
-      },
-    })
+    }, { status: 409 })
   );
   const first = await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal(), {
     budgetMs: 50_000,
@@ -1458,17 +1451,7 @@ Deno.test("ServeDatastoreClient.acquireLock: a held reply's holder is read, and 
     message: "held",
     holder,
   });
-  assertEquals((await requests[0].json()).budgetMs, undefined);
-  // learned from serve's reply, so the ask after it carries the budget
-  features = "step-starts,lease-holder";
-  await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal(), {
-    budgetMs: 50_000,
-  });
-  assertEquals((await requests[1].json()).budgetMs, undefined);
-  await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal(), {
-    budgetMs: 50_000,
-  });
-  assertEquals((await requests[2].json()).budgetMs, 50_000);
+  assertEquals((await requests[0].json()).budgetMs, 50_000);
 });
 
 Deno.test("ServeDatastoreClient: a held reply or listing without a holder (an older serve) still reads, and a malformed holder is left out", async () => {
