@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
-import { prettyJsonChunks, writeJsonValue } from "./json_stream.ts";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { prettyJson, prettyJsonChunks, writeJsonValue } from "./json_stream.ts";
+import { nestedTreeDepth } from "./json_stream_test_helpers.ts";
 
 function collectingSink(maxPerWrite = Infinity) {
   const parts: Uint8Array[] = [];
@@ -130,4 +131,20 @@ Deno.test("writeJsonValue: a sink error other than a closed pipe rejects", async
     Error,
     "disk full",
   );
+});
+
+Deno.test("prettyJson: returns JSON.stringify(value, null, 2), and still does past its depth limit", () => {
+  const shallow = {
+    a: [1, undefined, "é\n", { b: undefined }],
+    d: new Date(0),
+  };
+  assertEquals(prettyJson(shallow), JSON.stringify(shallow, null, 2));
+  const deep = nestedArrays(DEEP);
+  assertEquals(prettyJson(deep), JSON.stringify(deep, null, 2));
+  const tooDeep = nestedArrays(6_000);
+  assertThrows(() => JSON.stringify(tooDeep, null, 2), RangeError);
+  assertEquals(nestedTreeDepth(JSON.parse(prettyJson(tooDeep))), {
+    depth: 6_000,
+    leaf: [0, 1, 2],
+  });
 });

@@ -102,6 +102,11 @@ export function* prettyJsonChunks(value: unknown): Generator<string> {
   }
 }
 
+/** JSON.stringify(value, null, 2) with no depth limit, still as one string */
+export function prettyJson(value: unknown): string {
+  return [...prettyJsonChunks(value)].join("");
+}
+
 /**
  * writes a `--json` value as JSON.stringify(value, null, 2) plus a newline, in
  * chunks, so a value too large for one string still prints; a reader that

@@ -17,10 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { setColorEnabled } from "@std/fmt/colors";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import { renderWorkflowRunDisplay } from "./workflow_run_display.ts";
+import {
+  deeplyNestedAttributes,
+  nestedTreeDepth,
+} from "../output/json_stream_test_helpers.ts";
 
 function captureOutput(fn: () => void): string {
   const lines: string[] = [];
@@ -261,4 +265,37 @@ Deno.test("renderWorkflowRunDisplay: a decision with no client reads as before",
   );
   assertStringIncludes(output, "by user:bob at");
   assertEquals(output.includes(" via "), false);
+});
+
+Deno.test("renderWorkflowRunDisplay: json mode prints a run whose attributes nest past JSON.stringify's stack limit", () => {
+  const view: WorkflowRunView = {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "release",
+    status: "succeeded",
+    jobs: [{
+      name: "main",
+      status: "succeeded",
+      steps: [{
+        name: "deep",
+        status: "succeeded",
+        dataArtifacts: [{
+          dataId: "d-1",
+          name: "main",
+          version: 1,
+          tags: {},
+          attributes: deeplyNestedAttributes(),
+        }],
+      }],
+    }],
+  };
+  assertThrows(() => JSON.stringify(view, null, 2), RangeError);
+  const parsed = JSON.parse(
+    captureOutput(() => renderWorkflowRunDisplay(view, "json")),
+  );
+  assertEquals(parsed.status, "succeeded");
+  assertEquals(
+    nestedTreeDepth(parsed.jobs[0].steps[0].dataArtifacts[0].attributes),
+    { depth: 6_000, leaf: [0, 1, 2] },
+  );
 });
