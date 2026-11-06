@@ -337,13 +337,19 @@ function behaviorNotFound(spec: string): UserError {
   );
 }
 
-// a behavior the caller may not read answers as one that does not exist
+// a behavior the caller may not read answers as one that does not exist;
+// serve's handler reports an unknown name as a failed get
 const NOT_FOUND_AT_SERVE: ReadonlySet<string> = new Set([
   "not_found",
-  "model_get_failed",
   "unauthorized",
   "forbidden",
 ]);
+
+function notFoundAtServe(error: ServerResponseError): boolean {
+  return NOT_FOUND_AT_SERVE.has(error.code ?? "") ||
+    (error.code === "model_get_failed" &&
+      error.serverMessage.startsWith("Behavior not found"));
+}
 
 /**
  * serve's model.get, under the caller's read grant: a behavior the caller may
@@ -367,10 +373,7 @@ async function behaviorAtServe(
       { type: "model.get", payload: { modelIdOrName: nameOrId } },
     );
   } catch (error) {
-    if (
-      error instanceof ServerResponseError &&
-      NOT_FOUND_AT_SERVE.has(error.code ?? "")
-    ) {
+    if (error instanceof ServerResponseError && notFoundAtServe(error)) {
       return undefined;
     }
     throw error;

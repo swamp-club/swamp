@@ -505,16 +505,19 @@ export async function startConfigEdit(
   kind: DefinitionKind,
   name: string,
   inEditor: boolean,
+  options: { readonly mayRename?: boolean } = {},
 ): Promise<void> {
   if (inEditor) {
     markConfigLoaded(repoContext, kind, name);
     return;
   }
   // serve decides the grant before the base, so a caller without the grant is
-  // never shown who changed it; offline, the refusal stays here
+  // never shown who changed it; a rename commits its new name first, so it,
+  // and anything offline, is still refused here
   const commitLog = commitLogOf(repoContext);
   if (
-    commitLog?.forwardsToServe === true && commitLog.reachedServe?.() === true
+    options.mayRename === false && commitLog?.forwardsToServe === true &&
+    commitLog.reachedServe?.() === true
   ) {
     return;
   }

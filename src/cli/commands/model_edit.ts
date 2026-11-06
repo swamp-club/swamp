@@ -288,6 +288,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
           "model",
           target.definition.name,
           stdinContent === null,
+          { mayRename: options.allowRename === true },
         );
       }
 

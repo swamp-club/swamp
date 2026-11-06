@@ -45,9 +45,14 @@ function removalOf(change: TypedChange): Op {
 // a file name the output key rule accepts; only the access it needs is judged
 const ANY_OUTPUT_STAMP = "1970-01-01T00-00-00-000Z";
 
+// serve's caps on one authorize request
+const MAX_OPS_PER_COMMIT = 64;
+const MAX_COMMITS = 16;
+
 /**
- * one removal per partition and kind: serve decides each by the access it
- * needs, which is the same for every output, and every version of the data
+ * one removal per data name, since a key can be refused on its own, and one
+ * output, whose access is the behavior's; the definition comes last, as it
+ * commits last. Names past serve's caps are judged at commit
  */
 export function deleteRemovalCommits(
   plan: DeletePlan,
@@ -65,11 +70,24 @@ export function deleteRemovalCommits(
       )),
     );
   }
-  const data = plan.data[0];
-  if (data !== undefined) {
+  const seen = new Set<string>();
+  for (const data of plan.data) {
+    if (seen.has(data.name)) continue;
+    seen.add(data.name);
     modelOps.push(
       removalOf(model.removeVersion("data.delete", data.name, data.version)[0]),
     );
+  }
+  const commits: { partition: PartitionKey; ops: Op[] }[] = [];
+  for (
+    let start = 0;
+    start < modelOps.length && commits.length < MAX_COMMITS - 1;
+    start += MAX_OPS_PER_COMMIT
+  ) {
+    commits.push({
+      partition: model.partition,
+      ops: modelOps.slice(start, start + MAX_OPS_PER_COMMIT),
+    });
   }
   const definition = new ConfigChanges("model", plan.definition.name).remove(
     "definition.delete",
@@ -77,12 +95,11 @@ export function deleteRemovalCommits(
       `config/models/${plan.type.normalized}/${plan.definition.name}.yaml`,
     ),
   );
-  return [
-    ...(modelOps.length > 0
-      ? [{ partition: model.partition, ops: modelOps }]
-      : []),
-    { partition: definition.partition, ops: [removalOf(definition)] },
-  ];
+  commits.push({
+    partition: definition.partition,
+    ops: [removalOf(definition)],
+  });
+  return commits;
 }
 
 export async function preflightDeleteAtServe(

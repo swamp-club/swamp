@@ -317,7 +317,9 @@ Deno.test({
       // what model edit does with content prepared before the command
       const error = await assertRejects(() =>
         userEdit(scratch, b, bob, async (repos) => {
-          await startConfigEdit(repos, "model", "api", false);
+          await startConfigEdit(repos, "model", "api", false, {
+            mayRename: false,
+          });
           await repos.definitionRepo.save(type, api("B"));
         })
       );
@@ -357,12 +359,68 @@ Deno.test({
       );
       const error = await assertRejects(() =>
         userEdit(scratch, b, env, async (repos) => {
-          await startConfigEdit(repos, "model", "api", false);
+          await startConfigEdit(repos, "model", "api", false, {
+            mayRename: false,
+          });
           await repos.definitionRepo.save(type, api("B"));
         })
       );
       assertConflict(error);
       assertEquals(await editedBy(scratch, a, env, type), "A");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream config conflict: a stale edit that may rename is still refused before anything commits, so its new name is never created",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ managedConfig: true });
+      const bucket = scratch.bucket();
+      const a = await scratch.client("a", { bucket, managedConfig: true });
+      const b = await scratch.client("b", { bucket, managedConfig: true });
+      const env = serveEnv(serve, "alice-token");
+      const type = serve.modelType;
+
+      await userEdit(
+        scratch,
+        a,
+        env,
+        (repos) => repos.definitionRepo.save(type, api("seed")),
+      );
+      assertEquals(await editedBy(scratch, b, env, type), "seed");
+      await userEdit(
+        scratch,
+        a,
+        env,
+        (repos) => repos.definitionRepo.save(type, api("A")),
+      );
+      const renamed = Definition.create({
+        id: API_ID,
+        name: "api2",
+        globalArguments: {},
+        tags: { by: "B" },
+      });
+      const error = await assertRejects(() =>
+        userEdit(scratch, b, env, async (repos) => {
+          await startConfigEdit(repos, "model", "api", false);
+          await repos.definitionRepo.save(type, renamed);
+        })
+      );
+      assertConflict(error);
+      assertEquals(
+        await readCommand(
+          scratch,
+          a,
+          env,
+          async (repos) =>
+            (await repos.definitionRepo.findByName(type, "api2")) === null,
+        ),
+        true,
+      );
     });
   },
 });

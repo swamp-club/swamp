@@ -279,6 +279,7 @@ export const workflowEditCommand = withRemoteOptions(
         "workflow",
         target.name,
         stdinContent === null,
+        { mayRename: options.allowRename === true },
       );
     }
 
