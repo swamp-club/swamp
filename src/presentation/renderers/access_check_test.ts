@@ -443,3 +443,76 @@ Deno.test("accessCheckRenderer: names the checked method in log and JSON output"
   assertEquals(JSON.parse(output[1]).method, "put");
   assertEquals("method" in JSON.parse(output[2]), false);
 });
+
+function logOutput(result: AccessCheckResult): string[] {
+  const renderer = createAccessCheckRenderer("log");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render(result);
+  } finally {
+    console.log = origLog;
+  }
+  return output;
+}
+
+const RUN_DECISION = {
+  grantId: "test-uuid-1234-5678-abcd-ef0123456789",
+  subject: { kind: "user" as const, name: "adam" },
+  condition: "principal.sub != run.initiator.sub",
+  dependsOn: ["run"],
+};
+
+Deno.test("accessCheckRenderer log: a lone decision on the run says so in the headline", () => {
+  const [headline] = logOutput(
+    makeResult({ decisions: [{ effect: "allow", ...RUN_DECISION }] }),
+  );
+  assertStringIncludes(headline, "(depends on the run)");
+});
+
+Deno.test("accessCheckRenderer log: an allow with a deny on the run says the deny depends on it", () => {
+  const output = logOutput(makeResult({
+    decisions: [
+      {
+        effect: "allow",
+        grantId: "allow-uuid",
+        subject: { kind: "user", name: "adam" },
+      },
+      { effect: "deny", ...RUN_DECISION },
+    ],
+  }));
+  assertStringIncludes(output[0], "(a deny depends on the run)");
+  assertStringIncludes(output.join("\n"), "(depends on the run)");
+});
+
+Deno.test("accessCheckRenderer: names the simulated client in log and json", () => {
+  assertStringIncludes(
+    logOutput(makeResult({ client: "integration:slack" }))[0],
+    "as integration:slack",
+  );
+  const renderer = createAccessCheckRenderer("json");
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => output.push(args.join(" "));
+  try {
+    renderer.render(makeResult({ client: "integration:slack" }));
+  } finally {
+    console.log = origLog;
+  }
+  assertEquals(JSON.parse(output[0]).client, "integration:slack");
+});
+
+Deno.test("accessCheckRenderer log: a later allow on the run is not called a deny", () => {
+  const [headline] = logOutput(makeResult({
+    decisions: [
+      {
+        effect: "allow",
+        grantId: "allow-uuid",
+        subject: { kind: "user", name: "adam" },
+      },
+      { effect: "allow", ...RUN_DECISION },
+    ],
+  }));
+  assertEquals(headline.includes("depends on the run"), false);
+});

@@ -17,8 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  clientConditionValue,
+  clientLiteralFinding,
+  clientToString,
+  parseClient,
+} from "./client.ts";
 import { assertEquals, assertThrows } from "@std/assert";
-import { clientToString, parseClient } from "./client.ts";
 
 Deno.test("parseClient: accepts each direct id", () => {
   for (const id of ["cli", "dashboard", "token"]) {
@@ -55,5 +60,22 @@ Deno.test("parseClient: refuses a value with no kind", () => {
 Deno.test("parseClient: refuses a malformed integration id", () => {
   for (const id of ["", "Ops", "-x", "a:b", "a b", "a".repeat(64)]) {
     assertThrows(() => parseClient(`integration:${id}`), Error, "integration");
+  }
+});
+
+Deno.test("clientConditionValue: a token with no client reads as direct with no id", () => {
+  assertEquals(clientConditionValue(undefined), "direct:");
+  assertEquals(clientConditionValue("integration:slack"), "integration:slack");
+});
+
+Deno.test("clientLiteralFinding: an integration or the absent reading is fine", () => {
+  assertEquals(clientLiteralFinding("integration:slack"), undefined);
+  assertEquals(clientLiteralFinding("direct:"), undefined);
+});
+
+Deno.test("clientLiteralFinding: a direct id is not a boundary, and an impossible value never matches", () => {
+  assertEquals(clientLiteralFinding("direct:cli")?.kind, "not-a-boundary");
+  for (const literal of ["integration:Slack", "direct:nope", "slack", ""]) {
+    assertEquals(clientLiteralFinding(literal)?.kind, "never-matches");
   }
 });

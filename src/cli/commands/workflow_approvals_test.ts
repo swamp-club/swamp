@@ -347,3 +347,19 @@ Deno.test("renderApprovals: --quiet prints no cancel command for a nested run wh
   );
   assertEquals(lines, []);
 });
+
+Deno.test("renderApprovals: a caller refused on this run is offered only its cancel", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
+      pending({ canDecide: false, canDecideReason: "grant-condition" }),
+    ])
+  );
+  assertEquals(lines, [`  swamp workflow cancel wipe-drive --run ${RUN_ID}`]);
+});
+
+Deno.test("renderApprovals: a caller who may decide keeps the approve and reject commands", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [pending({ canDecide: true })])
+  );
+  assertEquals(lines.some((l) => l.includes("workflow approve")), true);
+});

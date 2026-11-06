@@ -19,8 +19,8 @@
 
 /**
  * changes whenever a read decision for the principal could, else stays the
- * same; inputs are the principal, its groups, its read or admin grants reduced
- * to decision fields, and the restricted types. A SHA-256 digest
+ * same; inputs are the principal, its client, its groups, its read or admin
+ * grants reduced to decision fields, and the restricted types. A SHA-256 digest
  */
 
 import { createHash } from "node:crypto";
@@ -30,7 +30,7 @@ import type { Action } from "./action.ts";
 import { principalToString } from "./principal.ts";
 
 /** Bumped when the inputs change shape, so old and new never compare equal. */
-const FINGERPRINT_FORMAT = 2;
+const FINGERPRINT_FORMAT = 3;
 
 const READ_ACTIONS: readonly Action[] = ["read", "admin"];
 
@@ -53,6 +53,7 @@ export function readAccessFingerprint(
       .map(decisionFields)
       .sort(compareJson),
     [...new Set(restrictedTypes)].sort(),
+    principal.client ?? null,
   ]);
   return createHash("sha256").update(canonical).digest("hex");
 }

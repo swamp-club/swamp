@@ -48,7 +48,7 @@ means denied.
 | Effects    | `allow`, `deny` (deny wins)                                                                                  |
 | Actions    | `run`, `read`, `write`, `approve`, `signal`, `tag`, `admin`                                                  |
 | Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `access:*`                                   |
-| Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                                         |
+| Conditions | CEL expressions via `--when 'tags.env == "staging"'`, including `client` and, for `approve`, `run`           |
 
 Admin on `access:*` implies all actions (superuser).
 
@@ -223,6 +223,48 @@ Apply with `swamp access reload --server wss://...`. Reload validates all files
 first — rejects the entire reload if any file is invalid. The reconciler only
 touches `source: file:*` grants; CLI-created grants are independent. Both
 `.yaml` and `.yml` are accepted; flat directory only.
+
+## Separation of Duties
+
+Forbid self-approval with a deny, once per subject holding `run`, `approve` or
+`admin`. An allow alone is not enough: `run` implies `approve`, and admins fall
+back to allowed. There is no wildcard subject. `reject` is decided as `approve`.
+
+```bash
+swamp access grant create --subject idp-group:approvers --deny approve \
+  --on 'workflow:@acme/*' --when 'principal.sub == run.initiator.sub'
+```
+
+`run` is available only on workflow grants with exactly the `approve` action. A
+run with no usable initiator fails closed, so finish or cancel such runs first.
+A service run has an empty `run.initiator.sub`, so people can approve it.
+
+Refuse an integration with a condition on `client`, written `<kind>:<id>`:
+
+```bash
+swamp access grant create --subject group:ops --deny run \
+  --on 'workflow:@acme/*' --when 'client == "integration:slack"'
+```
+
+- A token with no client reads as `direct:`.
+- This refuses tokens issued to that integration, not the person, who can still
+  use the CLI. A `direct:` id is not a boundary: a copied token keeps it.
+- Client conditions never narrow a run. A vault deny on `client` stops direct
+  requests; deny `run` on the workflow to keep an integration out of it.
+- Upgrade every serve instance before writing these grants: an older one does
+  not enforce the deny.
+
+Check a condition locally, since a server reads the client from the caller's own
+session:
+
+```bash
+swamp access check --subject user:alice --action run \
+  --on 'workflow:@acme/deploy' --client integration:slack
+```
+
+Add `--field run.initiator.sub=alice` to check a condition on the run.
+Self-approval's limits for member-driven runs are in
+`design/enablers/access-control.md`.
 
 ## Vault Access
 

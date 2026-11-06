@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Action } from "../../domain/access/action.ts";
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import {
@@ -181,6 +182,7 @@ const accessGrantCreateCommand = new Command()
       checkGrantCreateInputs({
         subject: options.subject as string,
         effect,
+        actions: actions as Action[],
         resourceKind: resource.kind,
         resourcePattern: resource.pattern,
         condition: options.when as string | undefined,

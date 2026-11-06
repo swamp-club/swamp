@@ -142,9 +142,14 @@ export interface GrantFileParseResult {
 }
 
 export interface ConditionValidator {
-  (condition: string, resourceKind: ResourceKind): {
+  (
+    condition: string,
+    resourceKind: ResourceKind,
+    grant?: { readonly actions: readonly Action[]; readonly effect: Effect },
+  ): {
     valid: boolean;
     error?: string;
+    warnings?: readonly string[];
   };
 }
 
@@ -290,7 +295,10 @@ export function parseGrantFile(
       }
 
       if (raw.condition && validateCondition) {
-        const validation = validateCondition(raw.condition, resource.kind);
+        const validation = validateCondition(raw.condition, resource.kind, {
+          actions: raw.actions,
+          effect: raw.effect,
+        });
         if (!validation.valid) {
           errors.push({
             filename,
@@ -299,6 +307,9 @@ export function parseGrantFile(
               `CEL condition invalid for resource "${resourceStr}": ${validation.error}`,
           });
           continue;
+        }
+        for (const message of validation.warnings ?? []) {
+          warnings.push({ filename, entryIndex: i, message });
         }
       }
 

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { walk } from "@std/fs";
 import { fromFileUrl, relative, SEPARATOR } from "@std/path";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
@@ -88,26 +88,48 @@ Deno.test("serve client rules: no request schema or handler reads a client from 
   assertEquals(offenders, []);
 });
 
-Deno.test("serve client rules: no access decision reads the client", async () => {
-  const access = await sourceFiles("src/domain/access");
-  const offenders: string[] = [];
-  for (const [rel, source] of access) {
-    if (
-      rel.endsWith("/client.ts") || rel.endsWith("/mod.ts") ||
-      rel.endsWith("/serve_auth_config.ts")
-    ) continue;
-    if (/\.client\b|access\/client\.ts|\.\/client\.ts/.test(source)) {
-      offenders.push(rel);
+// Each decides with no client on purpose: auth mode none has no caller, a trigger
+// has no caller's token, a deposit is replayed with no session, and a run's vault
+// use is delegated by `run`, so client conditions never narrow it.
+const DECIDES_WITHOUT_CLIENT = [
+  "src/serve/datastore_api.ts#3",
+  "src/serve/http_caller_auth.ts#1",
+  "src/serve/signal_http.ts#1",
+  "src/serve/run_vault_access_policy.ts#1",
+  "src/serve/run_vault_access_policy.ts#2",
+  "src/serve/run_vault_access_policy.ts#3",
+  "src/serve/trigger_authorizer.ts#1",
+];
+
+Deno.test("serve client rules: every access principal names the client unless it decides for a run or a trigger", async () => {
+  const without: string[] = [];
+  for (const [rel, source] of await sourceFiles("src/serve")) {
+    let site = 0;
+    for (
+      const match of source.matchAll(
+        /(?:\{\s*principal(?::[^,]*)?,\s*(?:collectives|groups)[^}]*\})/g,
+      )
+    ) {
+      site++;
+      if (!/\bclient\b/.test(match[0])) without.push(`${rel}#${site}`);
     }
   }
-  assertEquals(offenders, []);
-
-  const shared = await Deno.readTextFile(
-    `${ROOT}src/serve/handlers/shared.ts`,
+  assertPinnedSet(
+    without,
+    DECIDES_WITHOUT_CLIENT,
+    "access principals without a client",
+    "a request's decision without a client silently reads as direct, so a client deny would not fire",
   );
-  const start = shared.indexOf("function decideForCaller(");
-  const end = shared.indexOf("\nfunction ", start + 1);
-  assertEquals(shared.slice(start, end).includes(".client"), false);
+});
+
+Deno.test("serve client rules: a run's vault policy never hands a decision the run's client", async () => {
+  const policy = await Deno.readTextFile(
+    `${ROOT}src/serve/run_vault_access_policy.ts`,
+  );
+  const start = policy.indexOf("#accessPrincipal(): Promise");
+  const end = policy.indexOf("export interface RunVaultScopeContext");
+  assert(start !== -1 && start < end, "the policy's markers moved");
+  assertEquals(policy.slice(start, end).includes("client"), false);
 });
 
 Deno.test("serve client rules: behaviour never branches on a client id", async () => {

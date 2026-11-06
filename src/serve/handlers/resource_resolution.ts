@@ -30,6 +30,7 @@ import {
   type ModelResourceKind,
   modelTypeFields,
   unresolvedAccessResource,
+  withRunPending,
   workflowAccessResource,
 } from "../../domain/access/access_resources.ts";
 import {
@@ -377,13 +378,20 @@ export function authorizeResolved(
   kind: AccessResource["kind"],
   ctx: ConnectionContext,
   failedCode: string,
+  runPending = false,
 ): resolution is SettledResolution {
   const resource = resolution.status === "failed"
     ? unresolvedAccessResource(kind, rawIdOrName)
     : resolution.resource;
   if (
-    !authorizeOrReject(socket, requestId, principal, action, resource, ctx)
-      .allowed
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      action,
+      runPending ? withRunPending(resource) : resource,
+      ctx,
+    ).allowed
   ) return false;
   if (resolution.status === "failed") {
     sendError(

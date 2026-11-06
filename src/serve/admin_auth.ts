@@ -279,6 +279,7 @@ export async function authenticateAdmin(
       principal,
       collectives: [...authResult.collectives],
       groups: [...authResult.groups],
+      client: authResult.client,
     },
     "admin",
     { kind: "access", name: "*", fields: {} },
@@ -322,6 +323,7 @@ export function createReadAuthorizer(
     principal: parsePrincipal(principal.principalId),
     collectives: [...principal.collectives],
     groups: [...principal.groups],
+    client: principal.client,
   };
   const isAdmin = () => {
     const decision = loader.decisionService.decide(

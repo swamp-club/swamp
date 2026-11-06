@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
+import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
+import { createConditionEvaluator } from "../domain/access/policy_snapshot_loader.ts";
 import {
   assert,
   assertEquals,
@@ -2009,4 +2012,160 @@ Deno.test("autoResumeParentAfterChild: on a v3 serve a member's report of a chil
   assertEquals(driven.moved, false);
   assertEquals(driven.registered, 0);
   assert(driven.reads.includes(parentId));
+});
+
+const SELF_APPROVAL_POLICY = {
+  decisionService: new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        { effect: "allow" as const, id: "allow" },
+        {
+          effect: "deny" as const,
+          id: "deny",
+          condition: "principal.sub == run.initiator.sub",
+        },
+      ].map((g) => ({
+        subject: { kind: "user" as const, name: "approver" },
+        actions: ["approve" as const],
+        resource: { kind: "workflow" as const, pattern: "*" },
+        state: "active" as const,
+        source: "method" as const,
+        createdBy: { kind: "user" as const, id: "admin" },
+        createdAt: "2026-01-01T00:00:00Z",
+        ...g,
+      })),
+      [],
+      createConditionEvaluator(),
+    ),
+  ),
+};
+
+function withLiveToken(ctx: ConnectionContext): void {
+  const record = {
+    name: "t",
+    state: "active",
+    principalId: "user:approver",
+    principalEmail: "a@example.com",
+    collectives: [],
+    groups: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    vaultName: "_token-secrets",
+    secretKey: "server-token-t",
+  };
+  Object.assign(ctx.repoContext, {
+    definitionRepo: { findByName: () => Promise.resolve({ id: "d" }) },
+    unifiedDataRepo: {
+      getContent: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(record))),
+    },
+  });
+  Object.assign(ctx, { policySnapshotLoader: SELF_APPROVAL_POLICY });
+}
+
+const tokenSubject = {
+  principal: { kind: "user" as const, id: "approver" },
+  token: {
+    name: "t",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    principalId: "user:approver",
+  },
+};
+
+for (
+  const [label, initiatedBy, launches] of [
+    ["someone else's", "user:alice", true],
+    ["the approver's own", "user:approver", false],
+    ["an initiator-less", undefined, false],
+  ] as const
+) {
+  Deno.test(`autoResumeParentAfterChild: a self-approval deny is decided on ${label} parent run`, async () => {
+    const { parent, child } = nestedWorkflows(true);
+    const pair = settledPair(parent, child);
+    const parentRun = WorkflowRun.fromData({
+      ...pair.parentRun.toData(),
+      initiatedBy,
+    });
+    const childRun = WorkflowRun.fromData({
+      ...pair.childRun.toData(),
+      initiatedBy,
+    });
+    const { ctx, registry, audit } = nestedHarness(
+      [parent, child],
+      [parentRun, childRun],
+      "token",
+    );
+    withLiveToken(ctx);
+    const launched = await autoResumeParentAfterChild(
+      ctx,
+      { workflowId: child.id, runId: childRun.id },
+      tokenSubject,
+    );
+    assertEquals(launched, launches);
+    assertEquals(registry.registered.length, launches ? 1 : 0);
+    if (!launches) {
+      assertStringIncludes(audit[0].detail ?? "", "reason=not_authorized");
+    }
+  });
+}
+
+Deno.test("autoResumeParentAfterChild: a resume by the initiator is judged on run, not as an approver", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const pair = settledPair(parent, child);
+  const initiatedBy = "user:approver";
+  const parentRun = WorkflowRun.fromData({
+    ...pair.parentRun.toData(),
+    initiatedBy,
+  });
+  const childRun = WorkflowRun.fromData({
+    ...pair.childRun.toData(),
+    initiatedBy,
+  });
+  const { ctx, registry } = nestedHarness(
+    [parent, child],
+    [parentRun, childRun],
+    "token",
+  );
+  withLiveToken(ctx);
+  const shared = {
+    subject: { kind: "user" as const, name: "approver" },
+    resource: { kind: "workflow" as const, pattern: "*" },
+    state: "active" as const,
+    source: "method" as const,
+    createdBy: { kind: "user" as const, id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  Object.assign(ctx, {
+    policySnapshotLoader: {
+      decisionService: new GrantBasedAccessDecisionService(
+        new PolicySnapshot(
+          [
+            {
+              ...shared,
+              id: "allow",
+              effect: "allow" as const,
+              actions: ["run" as const],
+            },
+            {
+              ...shared,
+              id: "deny",
+              effect: "deny" as const,
+              actions: ["approve" as const],
+              condition: "principal.sub == run.initiator.sub",
+            },
+          ],
+          [],
+          createConditionEvaluator(),
+        ),
+      ),
+    },
+  });
+  const launched = await autoResumeParentAfterChild(
+    ctx,
+    { workflowId: child.id, runId: childRun.id },
+    tokenSubject,
+    "run",
+  );
+  assertEquals(launched, true);
+  assertEquals(registry.registered.length, 1);
 });

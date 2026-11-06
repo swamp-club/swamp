@@ -464,3 +464,22 @@ Deno.test("accessCanIRenderer json: includes the tag policy and impliedBy write"
   assertEquals(parsed.tagRequiresExplicitGrant, true);
   assertEquals(parsed.decisions[0].impliedBy, "write");
 });
+
+Deno.test("accessCanIRenderer log: a decision on the run says so in the headline", () => {
+  const query = { action: "approve", resource: "workflow:w" };
+  const lone = captureRender("log", {
+    principal: "user:adam",
+    query,
+    decisions: [makeDecision({ dependsOn: ["run"] })],
+  } as AccessCanIResult);
+  assertStringIncludes(lone[0], "(depends on the run)");
+  const withDeny = captureRender("log", {
+    principal: "user:adam",
+    query,
+    decisions: [
+      makeDecision(),
+      makeDecision({ effect: "deny", dependsOn: ["run"] }),
+    ],
+  } as AccessCanIResult);
+  assertStringIncludes(withDeny[0], "(a deny depends on the run)");
+});

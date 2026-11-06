@@ -73,3 +73,65 @@ export function parseClient(value: string): Client {
 export function clientToString(client: Client): string {
   return `${client.kind}:${client.id}`;
 }
+
+/** a token with no client is direct with no id; never stored or parsed */
+export const ABSENT_CLIENT_CONDITION_VALUE = "direct:";
+
+export function clientConditionValue(client: string | undefined): string {
+  return client ?? ABSENT_CLIENT_CONDITION_VALUE;
+}
+
+export type ClientLiteralFinding =
+  | { readonly kind: "never-matches"; readonly message: string }
+  | { readonly kind: "not-a-boundary"; readonly message: string };
+
+/** judges a literal a condition requires `client` to start with */
+export function clientPrefixFinding(
+  literal: string,
+): ClientLiteralFinding | undefined {
+  const direct = CLIENT_KINDS.some((kind) => `${kind}:`.startsWith(literal)) ||
+    DIRECT_CLIENT_IDS.some((id) => `direct:${id}`.startsWith(literal));
+  const integration = literal.startsWith("integration:") &&
+    /^([a-z0-9][a-z0-9-]{0,62})?$/.test(literal.slice("integration:".length));
+  if (!direct && !integration) {
+    return {
+      kind: "never-matches",
+      message: `client is required to start with ${
+        JSON.stringify(literal)
+      }, which no token can hold`,
+    };
+  }
+  return literal.length > ABSENT_CLIENT_CONDITION_VALUE.length &&
+      literal.startsWith(ABSENT_CLIENT_CONDITION_VALUE)
+    ? {
+      kind: "not-a-boundary",
+      message:
+        `client is required to start with ${literal}: a client labels how a token was issued, not what presents it, so a copied token still reads the same; a direct id is not a security boundary`,
+    }
+    : undefined;
+}
+
+/** judges a literal a condition compares `client` with, in full */
+export function clientLiteralFinding(
+  literal: string,
+): ClientLiteralFinding | undefined {
+  if (literal === ABSENT_CLIENT_CONDITION_VALUE) return undefined;
+  let parsed: Client;
+  try {
+    parsed = parseClient(literal);
+  } catch (error) {
+    return {
+      kind: "never-matches",
+      message: `client is compared with ${
+        JSON.stringify(literal)
+      }, which no token can hold: ${(error as Error).message}`,
+    };
+  }
+  return parsed.kind === "direct"
+    ? {
+      kind: "not-a-boundary",
+      message:
+        `client is compared with ${literal}: a client labels how a token was issued, not what presents it, so a copied token still reads the same; a direct id is not a security boundary`,
+    }
+    : undefined;
+}

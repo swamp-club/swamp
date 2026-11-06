@@ -41,6 +41,7 @@ export interface AccessCheckResult {
   action: string;
   resource: string;
   collectives: string[];
+  client?: string;
   decisions: AccessDecision[];
   method?: string;
   /**
@@ -267,7 +268,13 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
     writeOutput(
       `${effect} via ${via} (${subject} → ${result.action} → ${
         checkedTarget(result)
-      })${impliedMarker(firstDecision)}`,
+      })${impliedMarker(firstDecision)}${
+        firstDecision.dependsOn
+          ? " (depends on the run)"
+          : result.decisions.some((d) => d.effect === "deny" && d.dependsOn)
+          ? " (a deny depends on the run)"
+          : ""
+      }${result.client ? ` as ${result.client}` : ""}`,
     );
 
     if (result.decisions.length > 1) {
@@ -277,7 +284,11 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
         const e = decision.effect.toUpperCase().padEnd(5);
         const g = decision.grantId.slice(0, 8);
         const s = formatSubject(decision.subject);
-        const cond = decision.condition ? ` [when: ${decision.condition}]` : "";
+        const cond = decision.condition
+          ? ` [when: ${decision.condition}]${
+            decision.dependsOn ? " (depends on the run)" : ""
+          }`
+          : "";
         writeOutput(`  ${e}  ${g}…  via ${s}${cond}${impliedMarker(decision)}`);
       }
     }
@@ -307,6 +318,7 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
           resource: result.resource,
           ...(result.method ? { method: result.method } : {}),
           collectives: result.collectives,
+          ...(result.client !== undefined ? { client: result.client } : {}),
           effect: finalEffect,
           matchingGrants: result.decisions,
           ...(result.approveRequiresExplicitGrant !== undefined

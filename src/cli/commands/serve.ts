@@ -780,6 +780,7 @@ export function authorizeCancelRequest(
       principal: request.principal,
       collectives: [...request.collectives],
       groups: [...request.groups],
+      client: request.client,
     },
     "admin",
     { kind: "access", name: "*", fields: {} },

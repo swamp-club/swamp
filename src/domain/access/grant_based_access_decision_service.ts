@@ -26,6 +26,7 @@ import type {
   AccessResource,
 } from "./access_decision_service.ts";
 import type { Action } from "./action.ts";
+import { clientConditionValue } from "./client.ts";
 import type { ConditionOutcome, PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
 import { isControlPlaneRecordResource } from "./control_plane_records.ts";
@@ -198,6 +199,7 @@ function evaluateGrant(
   snapshot: PolicySnapshot,
   resource: AccessResource,
   principalContext: PrincipalContext,
+  client: string | undefined,
 ): ConditionOutcome {
   if (!grant.condition) {
     return "match";
@@ -206,8 +208,14 @@ function evaluateGrant(
   const outcome = snapshot.evaluateConditionOutcome(
     grant.condition,
     resource.kind,
-    { name: resource.name, ...resource.fields },
+    // set last so no resource field can stand in for it
+    {
+      name: resource.name,
+      ...resource.fields,
+      client: clientConditionValue(client),
+    },
     principalContext,
+    resource.pending,
   );
   // A kind-level check touches no resource, so a condition on resource
   // fields decides nothing there.
@@ -221,13 +229,18 @@ interface MatchedGrant {
   readonly match: ActionMatch;
 }
 
-function toDecision(grant: Grant, match: ActionMatch): AccessDecision {
+function toDecision(
+  grant: Grant,
+  match: ActionMatch,
+  dependsOn?: readonly string[],
+): AccessDecision {
   return {
     effect: grant.effect,
     grantId: grant.id,
     subject: grant.subject,
     condition: grant.condition,
     ...(match !== null && match !== "direct" ? { impliedBy: match } : {}),
+    ...(dependsOn ? { dependsOn } : {}),
   };
 }
 
@@ -339,6 +352,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       [...principal.collectives].sort(),
       [...principal.groups].sort(),
       [...restrictedTypes].sort(),
+      principal.client ?? null,
     ]);
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
@@ -384,6 +398,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     }
 
     let conditionsEvaluated = 0;
+    let pendingAllow: AccessDecision | undefined;
     // A deny whose condition could not be evaluated decides nothing, but it
     // must not let the service trigger default allow what it meant to stop.
     let denyUndecided = false;
@@ -406,6 +421,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         snapshot,
         resource,
         principalContext,
+        principal.client,
       );
       // a deny that needs a field the resource does not carry fails closed
       if (outcome === "match" || outcome === "missing-field") {
@@ -427,13 +443,20 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
           };
         }
       }
-      if (
-        evaluateGrant(grant, snapshot, resource, principalContext) === "match"
-      ) {
-        return toDecision(grant, match);
+      const outcome = evaluateGrant(
+        grant,
+        snapshot,
+        resource,
+        principalContext,
+        principal.client,
+      );
+      if (outcome === "match") return toDecision(grant, match);
+      if (outcome === "pending") {
+        pendingAllow ??= toDecision(grant, match, resource.pending);
       }
     }
 
+    if (pendingAllow) return pendingAllow;
     return denyUndecided
       ? null
       : serviceTriggerDefault(principal, action, resource);
@@ -458,6 +481,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     let denyUndecided = false;
     const denyDecisions: AccessDecision[] = [];
     const allowDecisions: AccessDecision[] = [];
+    const pendingAllows: AccessDecision[] = [];
+    const pendingDenies: AccessDecision[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
       const match = grantMatchesAction(grant, action, this.#implications);
@@ -478,8 +503,14 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         snapshot,
         resource,
         principalContext,
+        principal.client,
       );
       if (outcome === "error" && grant.effect === "deny") denyUndecided = true;
+      if (outcome === "pending") {
+        const decision = toDecision(grant, match, resource.pending);
+        if (grant.effect === "deny") pendingDenies.push(decision);
+        else pendingAllows.push(decision);
+      }
       if (
         outcome === "match" ||
         (outcome === "missing-field" && grant.effect === "deny")
@@ -494,12 +525,18 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
 
     if (
       denyDecisions.length === 0 && allowDecisions.length === 0 &&
+      pendingAllows.length === 0 && pendingDenies.length === 0 &&
       !denyUndecided
     ) {
       const builtin = serviceTriggerDefault(principal, action, resource);
       if (builtin) return [builtin];
     }
-    return [...denyDecisions, ...allowDecisions];
+    return [
+      ...denyDecisions,
+      ...allowDecisions,
+      ...pendingAllows,
+      ...pendingDenies,
+    ];
   }
 
   decideAll(
@@ -524,7 +561,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         snapshot.evaluateConditionOutcome(
             grant.condition,
             kind,
-            {},
+            { client: clientConditionValue(principal.client) },
             principalContext,
           ) === "no-match"
       ) continue;

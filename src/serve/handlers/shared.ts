@@ -1008,7 +1008,6 @@ export interface AccessCaller {
   readonly groups: readonly string[];
   readonly sourceIp: string;
   readonly loginIdentity?: ActorIdentity;
-  /** no access decision reads it */
   readonly client?: string;
 }
 
@@ -1062,13 +1061,15 @@ function decideForCaller(
   const collectives = [...caller.collectives];
   const groups = [...caller.groups];
   const service = ctx.policySnapshotLoader.decisionService;
+  const accessPrincipal: AccessPrincipal = {
+    principal,
+    collectives,
+    groups,
+    client: caller.client,
+  };
   const decision = every
-    ? service.decideAll(
-      { principal, collectives, groups },
-      action,
-      resource.kind,
-    )
-    : service.decide({ principal, collectives, groups }, action, resource);
+    ? service.decideAll(accessPrincipal, action, resource.kind)
+    : service.decide(accessPrincipal, action, resource);
 
   if (decision && decision.effect === "allow") {
     return { kind: "allowed", decision };
@@ -1076,7 +1077,7 @@ function decideForCaller(
 
   if (!decision) {
     const adminDecision = service.decide(
-      { principal, collectives, groups },
+      accessPrincipal,
       "admin",
       { kind: "access", name: "*", fields: {} },
     );
@@ -1139,6 +1140,7 @@ export async function decideSubjectAccess(
     principal,
     collectives: record.collectives,
     groups: record.groups,
+    client: record.client,
   };
   const service = loader.decisionService;
   const decision = service.decide(subjectPrincipal, action, resource);
@@ -1681,6 +1683,7 @@ export function callerResourceDecider(
     principal,
     collectives: [...caller.collectives],
     groups: [...caller.groups],
+    client: caller.client,
   };
   const adminDecision = service.decide(
     accessPrincipal,
@@ -1777,7 +1780,12 @@ export function authorizeAnyOrReject(
   const collectives = connectionCollectives.get(socket) ?? [];
   const groups = connectionGroups.get(socket) ?? [];
   const service = ctx.policySnapshotLoader.decisionService;
-  const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
+  const accessPrincipal: AccessPrincipal = {
+    principal,
+    collectives,
+    groups,
+    client: connectionClient.get(socket),
+  };
 
   if (
     kinds.some((k) => service.hasAnyGrantForKind(accessPrincipal, action, k))
@@ -1862,6 +1870,7 @@ function accessPrincipalOf(
     principal,
     collectives: [...caller.collectives],
     groups: [...caller.groups],
+    client: caller.client,
   };
 }
 

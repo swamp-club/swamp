@@ -19,12 +19,72 @@
 
 import { controlPlaneRecordResource } from "./control_plane_records.ts";
 import type { AccessResource } from "./access_decision_service.ts";
+import type { Action } from "./action.ts";
 import { isControlPlaneModelType } from "../models/control_plane_types.ts";
+import { parsePrincipal } from "./principal.ts";
 import type { DefinitionOwner } from "../definitions/repositories.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Workflow } from "../workflows/workflow.ts";
 
 export type ModelResourceKind = "model" | "data";
+
+export const RUN_CONDITION_FIELD = "run";
+
+export interface RunConditionValue {
+  readonly initiator: {
+    readonly kind: string;
+    readonly id: string;
+    /** a person's id, empty for a service: no person started it, and no id is empty */
+    readonly sub: string;
+  };
+  readonly serveDriven: boolean;
+}
+
+/** undefined when the run names no usable initiator, so conditions on it fail closed */
+export function runConditionValue(
+  run: { readonly initiatedBy?: string; readonly serveDriven: boolean },
+): RunConditionValue | undefined {
+  if (run.initiatedBy === undefined) return undefined;
+  let kind: string;
+  let id: string;
+  try {
+    ({ kind, id } = parsePrincipal(run.initiatedBy));
+  } catch {
+    return undefined;
+  }
+  return {
+    initiator: { kind, id, sub: kind === "user" ? id : "" },
+    serveDriven: run.serveDriven,
+  };
+}
+
+export function withRunCondition(
+  resource: AccessResource,
+  run: { readonly initiatedBy?: string; readonly serveDriven: boolean },
+): AccessResource {
+  const value = runConditionValue(run);
+  const { pending: _pending, ...decided } = resource;
+  return value === undefined ? decided : {
+    ...decided,
+    fields: { ...resource.fields, [RUN_CONDITION_FIELD]: value },
+  };
+}
+
+/** for an approve decision made before the run is read */
+export function withRunPending(resource: AccessResource): AccessResource {
+  return { ...resource, pending: [RUN_CONDITION_FIELD] };
+}
+
+/** an explanation names no run, so it says which decisions depend on one */
+export function explainedForAction(
+  resource: AccessResource,
+  action: Action,
+): AccessResource {
+  return action === "approve" && resource.kind === "workflow" &&
+      !(RUN_CONDITION_FIELD in resource.fields)
+    ? withRunPending(resource)
+    : resource;
+}
 
 /**
  * every resource field of the kind is present, empty when none: a deny needing

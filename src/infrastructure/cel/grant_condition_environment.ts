@@ -19,7 +19,20 @@
 
 import { Environment } from "cel-js";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
-import { CONDITION_FIELDS } from "../../domain/access/condition_fields.ts";
+import type { Action } from "../../domain/access/action.ts";
+import {
+  type ClientLiteralFinding,
+  clientLiteralFinding,
+  clientPrefixFinding,
+} from "../../domain/access/client.ts";
+import {
+  BINDING_MACROS,
+  CONDITION_FIELDS,
+  conditionFieldsUnavailableForActions,
+  referencedConditionFields,
+  unknownRunPaths,
+} from "../../domain/access/condition_fields.ts";
+import type { Effect } from "../../domain/access/effect.ts";
 import type {
   ConditionTypeLiteral,
   ConditionTypeLiteralReader,
@@ -38,6 +51,7 @@ export const MAX_CONDITION_COST = 500;
 export interface GrantConditionValidationResult {
   valid: boolean;
   error?: string;
+  warnings?: readonly string[];
 }
 
 interface ASTNode {
@@ -252,6 +266,7 @@ function createGrantConditionEnvironment(kind: ResourceKind): Environment {
 export function validateGrantCondition(
   condition: string,
   resourceKind: ResourceKind,
+  grant?: { readonly actions: readonly Action[]; readonly effect: Effect },
 ): GrantConditionValidationResult {
   if (condition.length > MAX_CONDITION_LENGTH) {
     return {
@@ -319,7 +334,58 @@ export function validateGrantCondition(
     }
   }
 
-  return { valid: true };
+  if (CONDITION_FIELDS[resourceKind].some((f) => f.name === "run")) {
+    const [unknownPath] = unknownRunPaths(parsed.ast);
+    if (unknownPath) {
+      return {
+        valid: false,
+        error:
+          `Condition names ${unknownPath}, which a run does not have: use run.initiator.kind, run.initiator.id, run.initiator.sub or run.serveDriven`,
+      };
+    }
+  }
+
+  const clientFindings: ClientLiteralFinding[] = [];
+  const clientLiterals: ConditionTypeLiteral[] = [];
+  collectTypeLiterals(parsed.ast, "client", clientLiterals);
+  for (const { literal, match } of clientLiterals) {
+    const finding = match === "exact"
+      ? clientLiteralFinding(literal)
+      : match === "prefix"
+      ? clientPrefixFinding(literal)
+      : undefined;
+    if (finding) clientFindings.push(finding);
+  }
+  const neverMatches = clientFindings.find((f) => f.kind === "never-matches");
+  if (neverMatches) return { valid: false, error: neverMatches.message };
+
+  if (grant) {
+    const [unavailable] = conditionFieldsUnavailableForActions(
+      parsed.ast,
+      resourceKind,
+      grant.actions,
+    );
+    if (unavailable) {
+      return {
+        valid: false,
+        error:
+          `Condition names ${unavailable.field}, which a '${unavailable.action}' decision cannot supply: it is available only for ${
+            unavailable.allowed.join(", ")
+          }`,
+      };
+    }
+  }
+
+  const warnings = clientFindings.map((f) => f.message);
+  if (
+    grant?.effect === "allow" && resourceKind === "vault" &&
+    referencedConditionFields(parsed.ast, resourceKind).includes("client")
+  ) {
+    warnings.push(
+      "A vault allow limits this subject's runs to the vaults it is allowed, whatever its condition, and inside a run client reads as direct, so a condition requiring an integration never matches there",
+    );
+  }
+  return warnings.length > 0 ? { valid: true, warnings } : { valid: true };
 }
 
 function typeVariable(kind: ResourceKind): string | null {
@@ -378,6 +444,14 @@ function collectTypeLiterals(
   }
   if (op === "rcall" && Array.isArray(args)) {
     const [method, receiver, callArgs] = args as [string, unknown, unknown[]];
+    // a comprehension binding this name means its own variable in the body
+    const binder = callArgs?.[0];
+    if (
+      BINDING_MACROS.has(method) && isTypeVariable(binder, variable)
+    ) {
+      collectTypeLiterals(receiver, variable, out);
+      return;
+    }
     const match = TYPE_LITERAL_METHODS[method];
     if (match && isTypeVariable(receiver, variable)) {
       const literal = stringValue(callArgs?.[0]);

@@ -744,3 +744,72 @@ Deno.test("workflowApprove: approves a forEach-expanded gate inside its timeout"
   assertEquals(last?.kind, "completed");
   assertEquals(step.status, "succeeded");
 });
+
+Deno.test("workflowApprove: authorizeRun decides the run read under the claim, and a refusal writes nothing", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const deps = makeDeps(workflow, run);
+  let saved = 0;
+  const save = deps.runRepo.save.bind(deps.runRepo);
+  deps.runRepo.save = (...args) => {
+    saved++;
+    return save(...args);
+  };
+  const seen: string[] = [];
+  deps.authorizeRun = (decided) => {
+    seen.push(decided.id);
+    return false;
+  };
+  const refused = await approve(deps, "gate");
+  assertEquals(refused?.kind, "error");
+  assertEquals(seen, [run.id]);
+  assertEquals(saved, 0);
+  assertEquals(run.getJob("main")!.getStep("gate")!.status, "waiting_approval");
+});
+
+Deno.test("workflowApprove: a run replaced after it was first located is decided as stored", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const first = suspendAtGates(workflow, ["gate"]);
+  const replaced = WorkflowRun.fromData({
+    ...first.toData(),
+    initiatedBy: "user:alice",
+  });
+  const deps = makeDeps(workflow, first);
+  // the claim is located from the listing; the decision reads the record again
+  deps.runRepo.findById = () => Promise.resolve(replaced);
+  const seen: (string | undefined)[] = [];
+  deps.authorizeRun = (decided) => {
+    seen.push(decided.initiatedBy);
+    return false;
+  };
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: workflow.name,
+      stepName: "gate",
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(seen, ["user:alice"]);
+});
+
+Deno.test("workflowReject: authorizeRun refuses before anything is written", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const deps = rejectDeps(makeDeps(workflow, run));
+  let saved = 0;
+  const save = deps.runRepo.save.bind(deps.runRepo);
+  deps.runRepo.save = (...args) => {
+    saved++;
+    return save(...args);
+  };
+  deps.authorizeRun = () => false;
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: workflow.name,
+      stepName: "gate",
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(saved, 0);
+  assertEquals(run.getJob("main")!.getStep("gate")!.status, "waiting_approval");
+});

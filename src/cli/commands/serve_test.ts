@@ -1958,6 +1958,7 @@ for (const effect of ["deny", null] as const) {
         principal: { kind: "user", id: "u-1" },
         collectives: ["acme"],
         groups: ["ops"],
+        client: undefined,
       },
       "admin",
       { kind: "access", name: "*", fields: {} },
