@@ -553,7 +553,7 @@ export class RunAttributeBudget {
       const remaining = this.#budget.capBytes - this.#budget.admittedBytes;
       const bytes = this.#budget.exhausted
         ? undefined
-        : jsonByteLengthWithin(value, remaining);
+        : measuredWithin(value, remaining);
       if (this.#budget.admit(bytes ?? remaining + 1)) {
         // An own key: a step may be named __proto__.
         Object.defineProperty(kept, stepName, {
@@ -585,6 +585,17 @@ export class RunAttributeBudget {
     const omitted = this.#stepOmitted;
     this.#stepOmitted = [];
     return omitted.length > 0 ? omitted : undefined;
+  }
+}
+
+// a value that cannot be measured is refused like one past the budget, so it
+// never reaches the catch that drops the whole run's attributes
+function measuredWithin(value: unknown, limit: number): number | undefined {
+  try {
+    return jsonByteLengthWithin(value, limit);
+  } catch (error) {
+    if (error instanceof RangeError) return undefined;
+    throw error;
   }
 }
 

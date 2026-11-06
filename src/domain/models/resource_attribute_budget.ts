@@ -64,7 +64,7 @@ export class ResourceAttributeBudget {
 /**
  * the UTF-8 length of JSON.stringify(value), or undefined once it would pass
  * limit; never builds the whole string, so a value too large for one string is
- * refused instead of throwing
+ * refused instead of throwing, and walks an explicit stack, so depth is no limit
  */
 export function jsonByteLengthWithin(
   value: unknown,
@@ -75,32 +75,39 @@ export function jsonByteLengthWithin(
   const add = (bytes: number) => (total += bytes) <= limit;
   const skipped = (v: unknown) =>
     v === undefined || typeof v === "function" || typeof v === "symbol";
-  const walk = (v: unknown): boolean => {
+  // the total is a sum, so the order values are visited in does not matter
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const v = pending.pop();
     if (typeof v === "string") {
       // every UTF-16 unit encodes to at least one byte
-      if (v.length > limit - total) return false;
-      return add(encoder.encode(JSON.stringify(v)).length);
+      if (v.length > limit - total) return undefined;
+      if (!add(encoder.encode(JSON.stringify(v)).length)) return undefined;
+      continue;
     }
     if (Array.isArray(v)) {
-      if (!add(2 + Math.max(v.length - 1, 0))) return false;
+      if (!add(2 + Math.max(v.length - 1, 0))) return undefined;
       for (const item of v) {
-        if (!(skipped(item) ? add(4) : walk(item))) return false;
+        if (!skipped(item)) pending.push(item);
+        else if (!add(4)) return undefined;
       }
-      return true;
+      continue;
     }
     if (
       typeof v === "object" && v !== null &&
       typeof (v as { toJSON?: unknown }).toJSON !== "function"
     ) {
       const entries = Object.entries(v).filter(([, x]) => !skipped(x));
-      if (!add(2 + Math.max(entries.length - 1, 0))) return false;
-      for (const [key, x] of entries) {
-        if (!walk(key) || !add(1) || !walk(x)) return false;
+      if (!add(2 + Math.max(entries.length - 1, 0) + entries.length)) {
+        return undefined;
       }
-      return true;
+      for (const [key, x] of entries) pending.push(key, x);
+      continue;
     }
     const text = JSON.stringify(v);
-    return add(text === undefined ? 0 : encoder.encode(text).length);
-  };
-  return walk(value) ? total : undefined;
+    if (!add(text === undefined ? 0 : encoder.encode(text).length)) {
+      return undefined;
+    }
+  }
+  return total;
 }
